@@ -1,7 +1,9 @@
 {
   lib,
+  stdenv,
   rustPlatform,
   pkg-config,
+  autoPatchelfHook,
   openssl,
   dbus,
 
@@ -24,12 +26,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   nativeBuildInputs = [
     pkg-config
-    dbus
+    autoPatchelfHook
   ];
 
   buildInputs = [
     openssl
+    dbus.dev
     dbus.lib
+    stdenv.cc.cc.lib
   ];
 
   nativeCheckInputs = [
@@ -44,7 +48,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     "--package"
     "deepseek-tui"
   ];
-  cargoTestFlags = finalAttrs.cargoBuildFlags;
+  cargoTestFlags = finalAttrs.cargoBuildFlags ++ [
+    "--lib"
+    "--bins"
+  ];
 
   preCheck = ''
     export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
