@@ -3,6 +3,7 @@
 > **This terminal-native coding agent is built around DeepSeek V4's 1M-token context window and prefix cache capability. It is distributed as a single binary and requires no Node.js or Python runtime. It also includes an MCP client, a sandbox, and a durable task queue out of the box.**
 
 [简体中文 README](README.zh-CN.md)
+[日本語 README](README.ja-JP.md)
 
 ## Install
 

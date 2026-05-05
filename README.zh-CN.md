@@ -3,6 +3,7 @@
 > **面向 [DeepSeek V4](https://platform.deepseek.com) 模型的终端原生编程智能体，支持 100 万 token 上下文、思考模式推理流和完整工具调用。单一二进制，无需 Node/Python 运行时——开箱即带 MCP 客户端、沙箱和持久化任务队列。**
 
 [English README](README.md)
+[日本語 README](README.ja-JP.md)
 
 ## 安装
 
