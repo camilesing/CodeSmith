@@ -775,6 +775,10 @@ pub struct App {
     pub tool_log: Vec<String>,
     /// Active skill to apply to next user message
     pub active_skill: Option<String>,
+    /// Cached (name, description) pairs from the skill registry.
+    /// Populated once at startup and refreshed on install/uninstall so
+    /// the slash menu can show skills without filesystem I/O on every keystroke.
+    pub cached_skills: Vec<(String, String)>,
     /// Tool call cells by tool id (for cells already finalized in `history`).
     /// While a tool call is in flight inside `active_cell`, it is tracked by
     /// `active_tool_entries` instead and migrated here at flush time.
@@ -1156,6 +1160,7 @@ impl App {
         } else {
             global_skills_dir
         };
+        let cached_skills = Self::discover_cached_skills(&skills_dir);
 
         let input_history = crate::composer_history::load_history();
         let (initial_input_text, initial_input_cursor) = match initial_input {
@@ -1306,6 +1311,7 @@ impl App {
             mcp_restart_required: false,
             tool_log: Vec::new(),
             active_skill: None,
+            cached_skills,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),
             context_references_by_cell: HashMap::new(),
@@ -1352,6 +1358,18 @@ impl App {
             edit_in_progress: false,
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
         }
+    }
+
+    fn discover_cached_skills(skills_dir: &std::path::Path) -> Vec<(String, String)> {
+        crate::skills::SkillRegistry::discover(skills_dir)
+            .list()
+            .iter()
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect()
+    }
+
+    pub fn refresh_skill_cache(&mut self) {
+        self.cached_skills = Self::discover_cached_skills(&self.skills_dir);
     }
 
     pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
@@ -3785,6 +3803,29 @@ mod tests {
     fn test_trust_mode_follows_yolo_on_startup() {
         let app = App::new(test_options(true), &Config::default());
         assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn new_caches_workspace_skills_for_slash_menu() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let skill_dir = workspace.join(".agents").join("skills").join("local-skill");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: local-skill\ndescription: Local workspace skill\n---\nUse the local skill.\n",
+        )
+        .expect("skill file");
+
+        let mut options = test_options(false);
+        options.workspace = workspace.clone();
+        options.skills_dir = tmp.path().join("global-skills");
+        let app = App::new(options, &Config::default());
+
+        assert_eq!(app.skills_dir, workspace.join(".agents").join("skills"));
+        assert!(app.cached_skills.iter().any(|(name, description)| {
+            name == "local-skill" && description == "Local workspace skill"
+        }));
     }
 
     #[test]

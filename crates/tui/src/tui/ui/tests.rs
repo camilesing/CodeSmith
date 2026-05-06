@@ -1436,19 +1436,57 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
     app.input = "/".to_string();
 
     let entries = visible_slash_menu_entries(&app, 128);
-    assert!(entries.iter().any(|entry| entry == "/config"));
-    assert!(entries.iter().any(|entry| entry == "/links"));
-    assert!(!entries.iter().any(|entry| entry == "/set"));
-    assert!(!entries.iter().any(|entry| entry == "/deepseek"));
+    assert!(entries.iter().any(|entry| entry.name == "/config"));
+    assert!(entries.iter().any(|entry| entry.name == "/links"));
+    assert!(!entries.iter().any(|entry| entry.name == "/set"));
+    assert!(!entries.iter().any(|entry| entry.name == "/deepseek"));
 }
 
 #[test]
 fn apply_slash_menu_selection_appends_space_for_arg_commands() {
     let mut app = create_test_app();
-    let entries = vec!["/model".to_string(), "/settings".to_string()];
+    let entries = vec![
+        crate::tui::widgets::SlashMenuEntry {
+            name: "/model".to_string(),
+            description: String::new(),
+            is_skill: false,
+        },
+        crate::tui::widgets::SlashMenuEntry {
+            name: "/settings".to_string(),
+            description: String::new(),
+            is_skill: false,
+        },
+    ];
     app.slash_menu_selected = 0;
     assert!(apply_slash_menu_selection(&mut app, &entries, true));
     assert_eq!(app.input, "/model ");
+}
+
+#[test]
+fn apply_slash_menu_selection_uses_skill_command_form() {
+    let mut app = create_test_app();
+    let entries = vec![crate::tui::widgets::SlashMenuEntry {
+        name: "/skill search-files".to_string(),
+        description: "Search files".to_string(),
+        is_skill: true,
+    }];
+
+    assert!(apply_slash_menu_selection(&mut app, &entries, true));
+    assert_eq!(app.input, "/skill search-files");
+}
+
+#[test]
+fn try_autocomplete_slash_command_completes_skill_argument() {
+    let mut app = create_test_app();
+    app.cached_skills = vec![
+        ("search-files".to_string(), "Search files".to_string()),
+        ("my-review".to_string(), "Review code".to_string()),
+    ];
+    app.input = "/skill my".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(try_autocomplete_slash_command(&mut app));
+    assert_eq!(app.input, "/skill my-review");
 }
 
 #[test]
