@@ -266,9 +266,17 @@ impl FileKeyringStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&self.path)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&self.path, perms)?;
+            // Best-effort 0o600 — matches the parent-dir chmod above which
+            // is also `let _ = ...`. Filesystems that don't support Unix
+            // chmod (Docker bind-mounts of NTFS, network shares — #897)
+            // would otherwise fail the whole save here even though the
+            // blob already wrote successfully. The host's native ACLs
+            // are doing access control in those environments.
+            if let Ok(meta) = fs::metadata(&self.path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o600);
+                let _ = fs::set_permissions(&self.path, perms);
+            }
         }
         Ok(())
     }

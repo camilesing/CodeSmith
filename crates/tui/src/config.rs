@@ -2289,14 +2289,32 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
         #[cfg(unix)]
         {
-            let mut perms = fs::metadata(parent)
-                .with_context(|| format!("Failed to read metadata for {}", parent.display()))?
-                .permissions();
-            if perms.mode() & 0o077 != 0 {
-                perms.set_mode(perms.mode() & !0o077);
-                fs::set_permissions(parent, perms).with_context(|| {
-                    format!("Failed to set permissions on {}", parent.display())
-                })?;
+            // Tighten group/other bits on the parent dir as a hardening pass.
+            // The dir lives under the user's home, so the chmod is best-effort:
+            // filesystems that don't accept Unix permission bits (Docker
+            // bind-mounts of NTFS, network shares, FAT, certain CI volumes —
+            // see #897) return EPERM/ENOTSUP. The dir already exists by the
+            // time we get here, so failing the whole save just because we
+            // couldn't tighten perms strands the user mid-onboarding. Warn
+            // loudly so a security-sensitive operator can still notice via
+            // `RUST_LOG=warn`, then continue.
+            if let Ok(meta) = fs::metadata(parent) {
+                let mode = meta.permissions().mode();
+                if mode & 0o077 != 0 {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(mode & !0o077);
+                    if let Err(err) = fs::set_permissions(parent, perms) {
+                        tracing::warn!(
+                            target: "deepseek::config",
+                            path = %parent.display(),
+                            error = %err,
+                            "could not tighten parent dir permissions; \
+                             filesystem may not support Unix chmod \
+                             (Docker bind-mount, NTFS, network share). \
+                             Continuing — the file will still be written."
+                        );
+                    }
+                }
             }
         }
     }
@@ -2315,7 +2333,24 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
             .mode(0o600)
             .open(path)?;
         file.write_all(content.as_bytes())?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        // The file was already opened with mode 0o600; the explicit
+        // set_permissions re-asserts that on filesystems where mode-at-open
+        // didn't take effect (or where the file already existed with broader
+        // bits). Filesystems that don't accept Unix chmod at all (Docker
+        // bind-mounts of NTFS, network shares — #897) return EPERM. Treat
+        // that as a warning rather than failing the whole save: the file
+        // contents are written, and on Windows/macOS hosts the parent file
+        // system's native ACL model is doing the access control.
+        if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+            tracing::warn!(
+                target: "deepseek::config",
+                path = %path.display(),
+                error = %err,
+                "could not enforce 0o600 on config file; filesystem may \
+                 not support Unix chmod. File contents written; rely on \
+                 host ACLs for access control."
+            );
+        }
     }
     #[cfg(not(unix))]
     {
