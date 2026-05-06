@@ -391,7 +391,17 @@ pub fn run_cli() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
+            // Use the full anyhow chain so callers see the underlying
+            // cause (e.g. the actual TOML parse error with line/column)
+            // instead of just the top-level context message. The bare
+            // `{err}` Display impl drops the chain — see #767, where
+            // users hit "failed to parse config at <path>" with no
+            // hint that the real error was a stray BOM or unbalanced
+            // quote a few lines down.
             eprintln!("error: {err}");
+            for cause in err.chain().skip(1) {
+                eprintln!("  caused by: {cause}");
+            }
             std::process::ExitCode::FAILURE
         }
     }
@@ -1326,6 +1336,31 @@ mod tests {
     #[test]
     fn clap_command_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    // Regression for #767: `run_cli` prints the full anyhow chain so users
+    // see the underlying TOML parser error (line/column, expected token)
+    // instead of just the top-level "failed to parse config at <path>"
+    // wrapper. anyhow's bare `Display` impl drops the chain — pin both
+    // pieces here so a future refactor of the printing path doesn't
+    // silently regress.
+    #[test]
+    fn anyhow_chain_surfaces_toml_parse_cause() {
+        use anyhow::Context;
+        let inner = anyhow::anyhow!("TOML parse error at line 1, column 20");
+        let err = Err::<(), _>(inner)
+            .context("failed to parse config at C:\\Users\\test\\.deepseek\\config.toml")
+            .unwrap_err();
+
+        // What `eprintln!("error: {err}")` prints (top context only).
+        assert_eq!(
+            err.to_string(),
+            "failed to parse config at C:\\Users\\test\\.deepseek\\config.toml",
+        );
+
+        // What the `for cause in err.chain().skip(1)` loop iterates over.
+        let causes: Vec<String> = err.chain().skip(1).map(ToString::to_string).collect();
+        assert_eq!(causes, vec!["TOML parse error at line 1, column 20"]);
     }
 
     #[test]
