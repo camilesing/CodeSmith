@@ -13,6 +13,8 @@ use tempfile::tempdir;
 const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
 static CAPACITY_MEMORY_ENV_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
+static API_KEY_ENV_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
 
 struct ScopedCapacityMemoryDir {
     previous: Option<OsString>,
@@ -43,6 +45,35 @@ impl Drop for ScopedCapacityMemoryDir {
     }
 }
 
+struct ScopedDeepSeekApiKey {
+    previous: Option<OsString>,
+}
+
+impl ScopedDeepSeekApiKey {
+    fn set(value: &str) -> Self {
+        let previous = std::env::var_os("DEEPSEEK_API_KEY");
+        // Safety: tests using this helper serialize with API_KEY_ENV_LOCK and
+        // restore the original value in Drop.
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", value);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedDeepSeekApiKey {
+    fn drop(&mut self) {
+        // Safety: tests using this helper serialize with API_KEY_ENV_LOCK.
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("DEEPSEEK_API_KEY", previous);
+            } else {
+                std::env::remove_var("DEEPSEEK_API_KEY");
+            }
+        }
+    }
+}
+
 fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     let engine_config = EngineConfig {
         capacity,
@@ -50,6 +81,36 @@ fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     };
     let (engine, _handle) = Engine::new(engine_config, &Config::default());
     engine
+}
+
+#[test]
+fn env_only_auth_error_gets_recovery_hint() {
+    let _guard = API_KEY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = ScopedDeepSeekApiKey::set("stale-env-key");
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    let message =
+        engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
+
+    assert!(message.contains("DEEPSEEK_API_KEY"));
+    assert!(message.contains("no saved config key is present"));
+    assert!(message.contains("deepseek auth set --provider deepseek"));
+}
+
+#[test]
+fn config_auth_error_does_not_blame_env() {
+    let _guard = API_KEY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = ScopedDeepSeekApiKey::set("stale-env-key");
+    let cfg = Config {
+        api_key: Some("fresh-config-key".to_string()),
+        ..Config::default()
+    };
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &cfg);
+
+    let message =
+        engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
+
+    assert_eq!(message, "Authentication failed: invalid API key");
 }
 
 fn make_plan(

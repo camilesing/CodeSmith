@@ -270,7 +270,7 @@ impl Engine {
                     s
                 }
                 Err(e) => {
-                    let message = e.to_string();
+                    let message = self.decorate_auth_error_message(e.to_string());
                     if is_context_length_error_message(&message)
                         && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
                         && self
@@ -410,7 +410,7 @@ impl Engine {
                     }
                     Err(e) => {
                         stream_errors = stream_errors.saturating_add(1);
-                        let message = e.to_string();
+                        let message = self.decorate_auth_error_message(e.to_string());
                         // #103: when the stream errors before any content was
                         // streamed AND we still have retry budget, transparently
                         // resend the request. DeepSeek has not billed for any
@@ -440,7 +440,9 @@ impl Engine {
                                     continue;
                                 }
                                 Err(retry_err) => {
-                                    let retry_msg = format!("Stream retry failed: {retry_err}");
+                                    let retry_msg = self.decorate_auth_error_message(format!(
+                                        "Stream retry failed: {retry_err}"
+                                    ));
                                     turn_error.get_or_insert(retry_msg.clone());
                                     let _ = self
                                         .tx_event

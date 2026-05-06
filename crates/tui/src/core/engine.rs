@@ -25,7 +25,7 @@ use crate::client::DeepSeekClient;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
-use crate::config::{Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
+use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::cycle_manager::{
     CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
     estimate_briefing_tokens, produce_briefing, should_advance_cycle,
@@ -294,6 +294,7 @@ pub struct Engine {
     config: EngineConfig,
     deepseek_client: Option<DeepSeekClient>,
     deepseek_client_error: Option<String>,
+    api_key_env_only_recovery: Option<String>,
     session: Session,
     subagent_manager: SharedSubAgentManager,
     shell_manager: SharedShellManager,
@@ -346,6 +347,42 @@ impl Engine {
         }
     }
 
+    fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
+        if !crate::config::active_provider_uses_env_only_api_key(api_config) {
+            return None;
+        }
+
+        let provider = api_config.api_provider();
+        let env_var = match provider {
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
+            ApiProvider::NvidiaNim => "NVIDIA_API_KEY/NVIDIA_NIM_API_KEY",
+            ApiProvider::Openrouter => "OPENROUTER_API_KEY",
+            ApiProvider::Novita => "NOVITA_API_KEY",
+            ApiProvider::Fireworks => "FIREWORKS_API_KEY",
+            ApiProvider::Sglang => "SGLANG_API_KEY",
+            ApiProvider::Vllm => "VLLM_API_KEY",
+        };
+
+        Some(format!(
+            "The rejected key came from {env_var}; no saved config key is present.\n\
+             Run `deepseek auth set --provider {provider}` to save a valid key in ~/.deepseek/config.toml, \
+             or remove the stale export and open a fresh shell.",
+            provider = provider.as_str()
+        ))
+    }
+
+    pub(super) fn decorate_auth_error_message(&self, message: String) -> String {
+        let Some(hint) = self.api_key_env_only_recovery.as_ref() else {
+            return message;
+        };
+        if crate::error_taxonomy::classify_error_message(&message) != ErrorCategory::Authentication
+            || message.contains("no saved config key is present")
+        {
+            return message;
+        }
+        format!("{message}\n\n{hint}")
+    }
+
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
         let (tx_op, rx_op) = mpsc::channel(32);
@@ -362,6 +399,7 @@ impl Engine {
             Ok(client) => (Some(client), None),
             Err(err) => (None, Some(err.to_string())),
         };
+        let api_key_env_only_recovery = Self::env_only_api_key_recovery_hint(api_config);
 
         let mut session = Session::new(
             config.model.clone(),
@@ -471,6 +509,7 @@ impl Engine {
             config,
             deepseek_client,
             deepseek_client_error,
+            api_key_env_only_recovery,
             session,
             subagent_manager,
             shell_manager,
