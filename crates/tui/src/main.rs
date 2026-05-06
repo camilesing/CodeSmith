@@ -1763,18 +1763,25 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs. Presence is reported here
     // even though they sit lower in the precedence chain so users can
-    // see at a glance whether a `.opencode/skills/` or `.claude/skills/`
-    // directory is contributing to the merged catalogue.
+    // see at a glance whether a `.opencode/skills/`, `.claude/skills/`,
+    // `.cursor/skills/`, or global agentskills.io directory is contributing
+    // to the merged catalogue.
     let opencode_skills_dir = workspace.join(".opencode").join("skills");
     let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
-        &agents_skills_dir
+        agents_skills_dir.clone()
     } else if local_skills_dir.exists() {
-        &local_skills_dir
+        local_skills_dir.clone()
+    } else if config.skills_dir.is_none()
+        && let Some(global_agents) = agents_global_skills_dir.as_ref()
+        && global_agents.exists()
+    {
+        global_agents.clone()
     } else {
-        &global_skills_dir
+        global_skills_dir.clone()
     };
 
     let describe_dir = |dir: &Path| -> usize {
@@ -1811,6 +1818,23 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "·".dimmed(),
             crate::utils::display_path(&agents_skills_dir)
         );
+    }
+
+    if let Some(agents_global_skills_dir) = agents_global_skills_dir.as_ref() {
+        if agents_global_skills_dir.exists() {
+            println!(
+                "  {} global .agents skills dir found at {} ({} items)",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                crate::utils::display_path(agents_global_skills_dir),
+                describe_dir(agents_global_skills_dir)
+            );
+        } else {
+            println!(
+                "  {} global .agents skills dir not found at {}",
+                "·".dimmed(),
+                crate::utils::display_path(agents_global_skills_dir)
+            );
+        }
     }
 
     if global_skills_dir.exists() {
@@ -1851,9 +1875,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!(
         "  {} selected skills dir: {}",
         "·".dimmed(),
-        crate::utils::display_path(selected_skills_dir)
+        crate::utils::display_path(&selected_skills_dir)
     );
-    if !agents_skills_dir.exists() && !local_skills_dir.exists() && !global_skills_dir.exists() {
+    if !agents_skills_dir.exists()
+        && !local_skills_dir.exists()
+        && !agents_global_skills_dir
+            .as_ref()
+            .is_some_and(|dir| dir.exists())
+        && !global_skills_dir.exists()
+    {
         println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
     }
 
@@ -2037,19 +2067,41 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs surface in the JSON
     // report so external dashboards can see whether any
-    // `.opencode/skills/` or `.claude/skills/` content is contributing
-    // to the merged catalogue.
+    // `.opencode/skills/`, `.claude/skills/`, `.cursor/skills/`, or
+    // global agentskills.io content is contributing to the merged catalogue.
     let opencode_skills_dir = workspace.join(".opencode").join("skills");
     let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
         agents_skills_dir.clone()
     } else if local_skills_dir.exists() {
         local_skills_dir.clone()
+    } else if config.skills_dir.is_none()
+        && let Some(global_agents) = agents_global_skills_dir.as_ref()
+        && global_agents.exists()
+    {
+        global_agents.clone()
     } else {
         global_skills_dir.clone()
     };
+    let agents_global_summary = agents_global_skills_dir
+        .as_ref()
+        .map(|path| {
+            json!({
+                "path": path.display().to_string(),
+                "present": path.exists(),
+                "count": skills_count_for(path),
+            })
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "path": null,
+                "present": false,
+                "count": 0,
+            })
+        });
 
     let tools_dir = default_tools_dir();
     let plugins_dir = default_plugins_dir();
@@ -2105,6 +2157,7 @@ fn run_doctor_json(
                 "present": agents_skills_dir.exists(),
                 "count": skills_count_for(&agents_skills_dir),
             },
+            "agents_global": agents_global_summary,
             "local": {
                 "path": local_skills_dir.display().to_string(),
                 "present": local_skills_dir.exists(),

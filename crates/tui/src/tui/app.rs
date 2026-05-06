@@ -1153,10 +1153,16 @@ impl App {
 
         let agents_skills_dir = workspace.join(".agents").join("skills");
         let local_skills_dir = workspace.join("skills");
+        let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
         let skills_dir = if agents_skills_dir.exists() {
             agents_skills_dir
         } else if local_skills_dir.exists() {
             local_skills_dir
+        } else if config.skills_dir.is_none()
+            && let Some(global_agents) = agents_global_skills_dir
+            && global_agents.exists()
+        {
+            global_agents
         } else {
             global_skills_dir
         };

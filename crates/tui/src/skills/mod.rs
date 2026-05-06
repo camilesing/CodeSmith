@@ -36,6 +36,12 @@ pub fn default_skills_dir() -> PathBuf {
     )
 }
 
+/// Global agentskills.io-compatible skills directory (`~/.agents/skills`).
+#[must_use]
+pub fn agents_global_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|p| p.join(".agents").join("skills"))
+}
+
 // === Types ===
 
 /// Parsed representation of a SKILL.md definition.
@@ -265,7 +271,8 @@ impl SkillRegistry {
 /// The full `SKILL.md` body is intentionally not included here. This mirrors
 /// Resolve the active skills directory given a workspace, mirroring the
 /// hierarchy `App::new` walks: `<workspace>/.agents/skills` →
-/// `<workspace>/skills` → [`default_skills_dir`] (`~/.deepseek/skills`).
+/// `<workspace>/skills` → [`agents_global_skills_dir`] (`~/.agents/skills`,
+/// when present) → [`default_skills_dir`] (`~/.deepseek/skills`).
 /// Returns the first directory that exists, or the global default
 /// (which itself falls back to `/tmp/deepseek/skills` if the user
 /// has no home directory).
@@ -285,6 +292,11 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
     if local.exists() {
         return local;
     }
+    if let Some(global_agents) = agents_global_skills_dir()
+        && global_agents.exists()
+    {
+        return global_agents;
+    }
     default_skills_dir()
 }
 
@@ -301,21 +313,29 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// 3. `<workspace>/.opencode/skills` — OpenCode interop.
 /// 4. `<workspace>/.claude/skills` — Claude Code interop.
 /// 5. `<workspace>/.cursor/skills` — Cursor interop.
-/// 6. [`default_skills_dir`] — global, user-installed.
+/// 6. [`agents_global_skills_dir`] — agentskills.io global.
+/// 7. [`default_skills_dir`] — DeepSeek global, user-installed.
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
 /// installed (the system-prompt skills block is then suppressed).
 #[must_use]
 pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
-    let candidates = [
+    let mut candidates = vec![
         workspace.join(".agents").join("skills"),
         workspace.join("skills"),
         workspace.join(".opencode").join("skills"),
         workspace.join(".claude").join("skills"),
         workspace.join(".cursor").join("skills"),
-        default_skills_dir(),
     ];
+    if let Some(global_agents) = agents_global_skills_dir() {
+        candidates.push(global_agents);
+    }
+    candidates.push(default_skills_dir());
+    existing_skill_dirs(candidates)
+}
+
+fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for path in candidates {
         if path.is_dir() && !out.iter().any(|p: &PathBuf| p == &path) {
@@ -700,6 +720,25 @@ mod tests {
             Some(&cursor),
             "cursor must come after claude"
         );
+    }
+
+    #[test]
+    fn existing_skill_dirs_keeps_agents_global_before_deepseek_global() {
+        let tmpdir = TempDir::new().unwrap();
+        let agents_global = tmpdir.path().join(".agents").join("skills");
+        let deepseek_global = tmpdir.path().join(".deepseek").join("skills");
+        let missing = tmpdir.path().join("missing").join("skills");
+        std::fs::create_dir_all(&agents_global).unwrap();
+        std::fs::create_dir_all(&deepseek_global).unwrap();
+
+        let dirs = super::existing_skill_dirs(vec![
+            missing,
+            agents_global.clone(),
+            deepseek_global.clone(),
+            agents_global.clone(),
+        ]);
+
+        assert_eq!(dirs, vec![agents_global, deepseek_global]);
     }
 
     #[test]

@@ -327,10 +327,10 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`.
 
 ## Publishing Your Own Skill
 
-DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills`) and the global `~/.deepseek/skills`. Each skill is a directory with a `SKILL.md` file:
+DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
 
 ```text
-~/.deepseek/skills/my-skill/
+~/.agents/skills/my-skill/
 └── SKILL.md
 ```
 
