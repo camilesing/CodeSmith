@@ -3,11 +3,15 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
+#[cfg(unix)]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::audit::log_sensitive_event;
 use crate::features::{Features, FeaturesToml, is_known_feature_key};
@@ -1564,7 +1568,7 @@ reasoning_effort = "auto"
 "#,
         default_model = DEFAULT_TEXT_MODEL
     );
-    fs::write(&config_path, content)
+    write_config_file_secure(&config_path, &content)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     Ok(Some(config_path))
 }
@@ -2206,6 +2210,39 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(parent)
+                .with_context(|| format!("Failed to read metadata for {}", parent.display()))?
+                .permissions();
+            if perms.mode() & 0o077 != 0 {
+                perms.set_mode(perms.mode() & !0o077);
+                fs::set_permissions(parent, perms).with_context(|| {
+                    format!("Failed to set permissions on {}", parent.display())
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write content to a config file with restrictive permissions (owner-only read/write).
+/// On Unix this sets mode 0o600 before writing.
+fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(content.as_bytes())?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, content)?;
     }
     Ok(())
 }
@@ -2373,7 +2410,7 @@ reasoning_effort = "max"
         )
     };
 
-    fs::write(&config_path, content)
+    write_config_file_secure(&config_path, &content)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     log_sensitive_event(
         "credential.save",
@@ -2583,7 +2620,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     );
 
     let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
-    fs::write(&config_path, serialized)
+    write_config_file_secure(&config_path, &serialized)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     log_sensitive_event(
         "credential.save",
@@ -2637,7 +2674,7 @@ pub fn clear_api_key() -> Result<()> {
         result.push('\n');
     }
 
-    fs::write(&config_path, result)
+    write_config_file_secure(&config_path, &result)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     log_sensitive_event(
         "credential.clear",
@@ -2658,6 +2695,8 @@ mod tests {
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
@@ -2897,6 +2936,17 @@ mod tests {
 
         let contents = fs::read_to_string(&expected)?;
         assert!(contents.contains("api_key = \""));
+
+        #[cfg(unix)]
+        {
+            assert_eq!(fs::metadata(&expected)?.permissions().mode() & 0o777, 0o600);
+            let parent = expected.parent().expect("config has parent dir");
+            assert_eq!(fs::metadata(parent)?.permissions().mode() & 0o077, 0);
+
+            fs::set_permissions(&expected, fs::Permissions::from_mode(0o644))?;
+            save_api_key("second-test-key")?;
+            assert_eq!(fs::metadata(&expected)?.permissions().mode() & 0o777, 0o600);
+        }
         Ok(())
     }
 
