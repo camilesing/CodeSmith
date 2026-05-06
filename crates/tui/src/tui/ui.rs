@@ -1586,24 +1586,6 @@ async fn run_event_loop(
 
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {
-                // After Welcome (and the new Language step) we route to either
-                // the API-key step, the trust prompt, or the tips screen
-                // depending on what the user still needs to set up.
-                let advance_after_language = |app: &mut App| {
-                    app.status_message = None;
-                    if app.onboarding_needs_api_key {
-                        app.onboarding = OnboardingState::ApiKey;
-                    } else if !app.trust_mode && onboarding::needs_trust(&app.workspace) {
-                        app.onboarding = OnboardingState::TrustDirectory;
-                    } else {
-                        app.onboarding = OnboardingState::Tips;
-                    }
-                };
-                let advance_onboarding = |app: &mut App| {
-                    app.status_message = None;
-                    app.onboarding = OnboardingState::Language;
-                };
-
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let _ = engine_handle.send(Op::Shutdown).await;
@@ -1639,7 +1621,7 @@ async fn run_event_loop(
                                         StatusToastLevel::Info,
                                         Some(2_500),
                                     );
-                                    advance_after_language(app);
+                                    advance_onboarding_after_language(app);
                                 }
                                 Err(err) => {
                                     app.status_message =
@@ -1650,12 +1632,12 @@ async fn run_event_loop(
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
-                            advance_onboarding(app);
+                            advance_onboarding_from_welcome(app);
                         }
                         OnboardingState::Language => {
                             // Enter without a digit pick keeps the existing
                             // setting (which defaults to "auto").
-                            advance_after_language(app);
+                            advance_onboarding_after_language(app);
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();
@@ -1708,7 +1690,7 @@ async fn run_event_loop(
                                             .await;
                                     }
 
-                                    advance_onboarding(app);
+                                    advance_onboarding_after_language(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());
@@ -3190,6 +3172,22 @@ fn validate_api_key_for_onboarding(api_key: &str) -> ApiKeyValidation {
         };
     }
     ApiKeyValidation::Accept { warning: None }
+}
+
+fn advance_onboarding_from_welcome(app: &mut App) {
+    app.status_message = None;
+    app.onboarding = OnboardingState::Language;
+}
+
+fn advance_onboarding_after_language(app: &mut App) {
+    app.status_message = None;
+    if app.onboarding_needs_api_key {
+        app.onboarding = OnboardingState::ApiKey;
+    } else if !app.trust_mode && onboarding::needs_trust(&app.workspace) {
+        app.onboarding = OnboardingState::TrustDirectory;
+    } else {
+        app.onboarding = OnboardingState::Tips;
+    }
 }
 
 fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {

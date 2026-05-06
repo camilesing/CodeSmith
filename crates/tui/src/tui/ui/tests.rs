@@ -1589,6 +1589,34 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
 }
 
 #[test]
+fn onboarding_after_api_key_save_does_not_repeat_language_step() {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::ApiKey;
+    app.onboarding_needs_api_key = false;
+    app.trust_mode = true;
+    app.status_message = Some("saved".to_string());
+
+    advance_onboarding_after_language(&mut app);
+
+    assert_eq!(app.onboarding, OnboardingState::Tips);
+    assert_eq!(app.status_message, None);
+}
+
+#[test]
+fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.onboarding = OnboardingState::ApiKey;
+    app.onboarding_needs_api_key = false;
+    app.trust_mode = false;
+
+    advance_onboarding_after_language(&mut app);
+
+    assert_eq!(app.onboarding, OnboardingState::TrustDirectory);
+}
+
+#[test]
 fn api_key_paste_shortcut_is_not_plain_text_input() {
     let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
     assert!(is_paste_shortcut(&ctrl_v));
