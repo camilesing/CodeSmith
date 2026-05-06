@@ -48,6 +48,12 @@ default_text_model = "deepseek-v4-pro"
 reasoning_effort = "max"
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Cost Display
+# ─────────────────────────────────────────────────────────────────────────────────
+# Display estimated usage in USD or CNY. Aliases `yuan` and `rmb` normalize to `cny`.
+cost_currency = "usd" # usd | cny
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────────
 skills_dir = "~/.deepseek/skills"
