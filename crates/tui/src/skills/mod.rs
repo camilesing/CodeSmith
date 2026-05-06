@@ -194,7 +194,11 @@ impl SkillRegistry {
 
     fn parse_skill(_path: &Path, content: &str) -> std::result::Result<Skill, String> {
         let trimmed = content.trim_start();
-        let (frontmatter, body) = if trimmed.starts_with("---") {
+
+        // Try to parse frontmatter block first. If absent, fall back to
+        // extracting the first `# Heading` as the skill name so that plain
+        // Markdown files (no `---` fence) are accepted instead of rejected.
+        if trimmed.starts_with("---") {
             let start = content
                 .find("---")
                 .ok_or_else(|| "missing frontmatter opening delimiter".to_string())?;
@@ -202,38 +206,54 @@ impl SkillRegistry {
             let end = rest
                 .find("---")
                 .ok_or_else(|| "missing frontmatter closing delimiter".to_string())?;
-            (&rest[..end], &rest[end + 3..])
-        } else {
-            return Err("missing frontmatter opening delimiter '---'".to_string());
-        };
+            let frontmatter = &rest[..end];
+            let body = &rest[end + 3..];
 
-        let mut metadata = HashMap::new();
-        for raw in frontmatter.lines() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+            let mut metadata = HashMap::new();
+            for raw in frontmatter.lines() {
+                let line = raw.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once(':') {
+                    metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+                }
             }
-            if let Some((key, value)) = line.split_once(':') {
-                metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-            }
+
+            let name = metadata
+                .get("name")
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
+
+            let description = metadata.get("description").cloned().unwrap_or_default();
+
+            return Ok(Skill {
+                name,
+                description,
+                body: body.trim().to_string(),
+                // Filled in by `discover` after parse succeeds; default to an
+                // empty path so direct constructors (e.g. tests) compile.
+                path: PathBuf::new(),
+            });
         }
 
-        let name = metadata
-            .get("name")
-            .filter(|name| !name.is_empty())
-            .cloned()
-            .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
-
-        let description = metadata.get("description").cloned().unwrap_or_default();
-
-        let body = body.trim().to_string();
+        // Graceful degradation: no frontmatter fence found.
+        // Extract the first `# Heading` as the skill name.
+        let heading_re = regex::Regex::new(r"(?m)^#\s+(.+)$").expect("static regex is valid");
+        let name = heading_re
+            .captures(content)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "no frontmatter and no `# Heading` found to use as skill name".to_string()
+            })?;
 
         Ok(Skill {
             name,
-            description,
-            body,
-            // Filled in by `discover` after parse succeeds; default to an
-            // empty path so direct constructors (e.g. tests) compile.
+            description: String::new(),
+            body: content.trim().to_string(),
             path: PathBuf::new(),
         })
     }
@@ -821,6 +841,46 @@ mod tests {
         assert!(
             registry.get("cursor-only").is_some(),
             ".cursor/skills must be scanned"
+        );
+    }
+
+    #[test]
+    fn discover_accepts_plain_markdown_heading_without_frontmatter() {
+        let tmpdir = TempDir::new().unwrap();
+        let skill_dir = tmpdir.path().join("plain-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Plain Skill\n\nUse this skill without YAML frontmatter.\n",
+        )
+        .unwrap();
+
+        let registry = super::SkillRegistry::discover(tmpdir.path());
+        let skill = registry.get("Plain Skill").expect("plain skill parsed");
+        assert_eq!(skill.description, "");
+        assert!(skill.body.contains("Use this skill"));
+    }
+
+    #[test]
+    fn discover_warns_for_plain_markdown_without_heading() {
+        let tmpdir = TempDir::new().unwrap();
+        let skill_dir = tmpdir.path().join("plain-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "Use this skill without a heading or YAML frontmatter.\n",
+        )
+        .unwrap();
+
+        let registry = super::SkillRegistry::discover(tmpdir.path());
+        assert!(registry.is_empty());
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("no `# Heading` found")),
+            "expected missing-heading warning, got {:?}",
+            registry.warnings()
         );
     }
 
