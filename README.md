@@ -153,11 +153,8 @@ Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.c
 
 ### Windows (Scoop)
 
-[Scoop](https://scoop.sh) is a Windows package manager. Once installed, run:
-
-```bash
-scoop install deepseek-tui
-```
+A Scoop manifest has not been published yet. For now, use npm, Cargo, or the
+prebuilt Windows binaries from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
 
 
 <details id="install-from-source">
@@ -401,16 +398,27 @@ This project ships with help from a growing community of contributors:
 - **[toi500](https://github.com/toi500)** — Windows paste fix report
 - **[xsstomy](https://github.com/xsstomy)** — Terminal startup repaint report
 - **[melody0709](https://github.com/melody0709)** — Slash-prefix Enter activation report
-- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports
+- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports; lloydzhou also contributed deterministic environment context (#813, #922)
 - **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README clarity pass (#685)
-- **[woyxiang](https://github.com/woyxiang)** — Windows Scoop install docs (#696)
+- **[woyxiang](https://github.com/woyxiang)** — Windows install documentation (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — model ID case-sensitivity compatibility report (#729)
 - **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report and Windows clipboard fallback (#738, #850)
-- **[reidliu41](https://github.com/reidliu41)** — resume hint and workspace trust persistence fixes (#863, #870)
+- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, and Ollama provider support (#863, #870, #921)
 - **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
+- **[y0sif](https://github.com/y0sif)** — parent turn-loop wakeup after direct child sub-agent completion (#901)
+- **[mac119](https://github.com/mac119)** and **[leo119](https://github.com/leo119)** — `deepseek update` command documentation (#838, #917)
+- **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — command-safety null-byte hardening (#706, #918)
+- **macworkers** — fork confirmation with the new session id (#600, #919)
+- **zero** and **[zerx-lab](https://github.com/zerx-lab)** — notification condition config and richer OSC 9 notification body (#820, #920)
+- **[chnjames](https://github.com/chnjames)** — cached @mention completions and config recovery polish (#849, #927)
+- **[angziii](https://github.com/angziii)** — config safety, async cleanup, Docker hardening, and command-safety fixes (#822, #824, #827, #831, #833, #835, #837)
+- **[elowen53](https://github.com/elowen53)** — UTF-8 decoding and deterministic test coverage (#825, #840)
+- **[wdw8276](https://github.com/wdw8276)** — `/rename` command for custom session titles (#836)
+- **[banqii](https://github.com/banqii)** — `.cursor/skills` discovery path support (#817)
+- **[junskyeed](https://github.com/junskyeed)** — dynamic `max_tokens` calculation for API requests (#826)
 - **Hafeez Pizofreude** — SSRF protection in `fetch_url` and Star History chart
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
