@@ -3438,6 +3438,44 @@ impl App {
         Some(input)
     }
 
+    /// Composer-Enter dispatch. Returns `Some(input)` when the press should
+    /// fire a submit; `None` when Enter was absorbed (paste-burst Enter
+    /// suppression — see #1073).
+    ///
+    /// Two suppression cases are handled here. Both are silent: nothing
+    /// visible happens beyond the text gaining a newline.
+    ///
+    /// 1. **Burst active.** A paste burst is currently being assembled in
+    ///    `paste_burst.buffer`. The Enter is part of the paste content;
+    ///    append `\n` to the buffer so the next flush includes it, do not
+    ///    submit, and extend the suppression window so a follow-on Enter
+    ///    (i.e. the *next* line of a multi-line paste) is also absorbed.
+    /// 2. **Window open after flush.** A burst just flushed into
+    ///    `self.input`, but the suppression window is still alive. The
+    ///    Enter is the trailing newline of that paste, not a submit gesture
+    ///    by the user. Insert `\n` directly into the composer text and
+    ///    re-arm the window.
+    ///
+    /// Outside both cases the call falls through to [`Self::submit_input`]
+    /// unchanged so normal Enter-to-send behaviour is preserved.
+    pub fn handle_composer_enter(&mut self) -> Option<String> {
+        if self.use_paste_burst_detection {
+            let now = Instant::now();
+            if self
+                .paste_burst
+                .newline_should_insert_instead_of_submit(now)
+            {
+                if !self.paste_burst.append_newline_if_active(now) {
+                    self.insert_char('\n');
+                    self.paste_burst.extend_window(now);
+                }
+                self.needs_redraw = true;
+                return None;
+            }
+        }
+        self.submit_input()
+    }
+
     /// When the composer input exceeds [`MAX_SUBMITTED_INPUT_CHARS`], write
     /// the full content to a timestamped paste file under
     /// `.deepseek/pastes/` and replace `self.input` with an `@`-mention
@@ -4384,6 +4422,104 @@ mod tests {
         assert_eq!(app.input, "xa\nbc");
         assert_eq!(app.cursor_position, "xa\nbc".chars().count());
         assert!(!app.paste_burst.is_active());
+    }
+
+    #[test]
+    fn enter_during_active_paste_burst_appends_newline_to_buffer_not_submit() {
+        // #1073: when chars are still being assembled into a paste burst and
+        // an Enter arrives (the trailing newline of the paste), the Enter
+        // must be absorbed into the burst buffer — not fired as a submit.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = true;
+        let now = Instant::now();
+        app.paste_burst.append_char_to_buffer('h', now);
+        app.paste_burst.append_char_to_buffer('i', now);
+        assert!(app.paste_burst.is_active());
+        assert!(app.input.is_empty());
+
+        let result = app.handle_composer_enter();
+
+        assert!(
+            result.is_none(),
+            "Enter during active paste burst must not submit"
+        );
+        let flushed = app.paste_burst.flush_before_modified_input();
+        assert_eq!(
+            flushed.as_deref(),
+            Some("hi\n"),
+            "newline must land in the burst buffer so the next flush carries it"
+        );
+    }
+
+    #[test]
+    fn enter_inside_paste_burst_window_after_flush_inserts_newline_not_submit() {
+        // #1073: after a burst has flushed (text now in `input`), the
+        // suppression window stays open for ~120ms. An Enter arriving in
+        // that window is the trailing newline of the paste, not a user
+        // submit — insert it as a literal newline into the composer.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = true;
+        app.input = "hello".to_string();
+        app.cursor_position = "hello".chars().count();
+        let now = Instant::now();
+        app.paste_burst.extend_window(now);
+        assert!(!app.paste_burst.is_active());
+        assert!(
+            app.paste_burst.newline_should_insert_instead_of_submit(now),
+            "suppression window should be open"
+        );
+
+        let result = app.handle_composer_enter();
+
+        assert!(
+            result.is_none(),
+            "Enter inside post-flush suppression window must not submit"
+        );
+        assert_eq!(
+            app.input, "hello\n",
+            "newline must be inserted into the composer instead of firing a submit"
+        );
+    }
+
+    #[test]
+    fn enter_outside_any_paste_burst_window_submits_normally() {
+        // Regression guard: the suppression must not trip when the user
+        // actually wants to submit.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = true;
+        app.input = "hello world".to_string();
+        app.cursor_position = "hello world".chars().count();
+
+        let result = app.handle_composer_enter();
+
+        assert_eq!(
+            result.as_deref(),
+            Some("hello world"),
+            "Enter outside any paste burst window must submit normally"
+        );
+        assert!(
+            app.input.is_empty(),
+            "submit_input should clear the composer"
+        );
+    }
+
+    #[test]
+    fn enter_with_paste_burst_detection_disabled_submits_normally() {
+        // When the user has explicitly turned off paste-burst detection
+        // (`bracketed_paste = false` is independent, this is the
+        // `paste_burst_detection` setting), the suppression must be
+        // skipped — otherwise turning it off would not actually turn it
+        // off.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = false;
+        app.input = "ship it".to_string();
+        app.cursor_position = "ship it".chars().count();
+        let now = Instant::now();
+        app.paste_burst.extend_window(now);
+
+        let result = app.handle_composer_enter();
+
+        assert_eq!(result.as_deref(), Some("ship it"));
     }
 
     #[test]

@@ -2544,7 +2544,7 @@ async fn run_event_loop(
                     {
                         app.close_slash_menu();
                     }
-                    if let Some(input) = app.submit_input() {
+                    if let Some(input) = app.handle_composer_enter() {
                         if handle_plan_choice(app, config, &engine_handle, &input).await? {
                             continue;
                         }
