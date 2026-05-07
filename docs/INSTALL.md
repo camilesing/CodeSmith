@@ -116,10 +116,7 @@ Linux/macOS:
 export RUSTUP_DIST_SERVER=https://rsproxy.cn
 export RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
 
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup default stable
-cargo install deepseek-tui-cli --locked
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ```
 
 The `RUSTUP_DIST_SERVER` and `RUSTUP_UPDATE_ROOT` environment variables must
