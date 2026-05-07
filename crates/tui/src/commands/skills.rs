@@ -13,6 +13,10 @@ use crate::tui::history::HistoryCell;
 
 use super::CommandResult;
 
+fn discover_visible_skills(app: &App) -> SkillRegistry {
+    crate::skills::discover_for_workspace_and_dir(&app.workspace, &app.skills_dir)
+}
+
 fn render_skill_warnings(registry: &SkillRegistry) -> String {
     if registry.warnings().is_empty() {
         return String::new();
@@ -44,7 +48,7 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         }
     }
     let skills_dir = app.skills_dir.clone();
-    let registry = SkillRegistry::discover(&skills_dir);
+    let registry = discover_visible_skills(app);
     let warnings = render_skill_warnings(&registry);
 
     if registry.is_empty() {
@@ -86,8 +90,7 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
 /// Try to run a skill by exact name (used for unified slash-command namespace, #435).
 /// Returns None when no skill with that name exists, so the caller can try other sources.
 pub fn run_skill_by_name(app: &mut App, name: &str, _arg: Option<&str>) -> Option<CommandResult> {
-    let skills_dir = app.skills_dir.clone();
-    let registry = crate::skills::SkillRegistry::discover(&skills_dir);
+    let registry = discover_visible_skills(app);
     if registry.get(name).is_some() {
         Some(activate_skill(app, name))
     } else {
@@ -125,8 +128,7 @@ fn activate_skill(app: &mut App, name: &str) -> CommandResult {
     // `/skill new` is a friendly alias for `/skill skill-creator`.
     let name = if name == "new" { "skill-creator" } else { name };
 
-    let skills_dir = app.skills_dir.clone();
-    let registry = SkillRegistry::discover(&skills_dir);
+    let registry = discover_visible_skills(app);
 
     if let Some(skill) = registry.get(name) {
         let instruction = format!(
@@ -506,6 +508,34 @@ mod tests {
         let msg = result.message.unwrap();
         assert!(msg.contains("Available skills"));
         assert!(msg.contains("/test-skill"));
+    }
+
+    #[test]
+    fn test_list_skills_merges_workspace_and_configured_dirs() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace_skill_dir = tmpdir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("workspace-skill");
+        std::fs::create_dir_all(&workspace_skill_dir).unwrap();
+        std::fs::write(
+            workspace_skill_dir.join("SKILL.md"),
+            "---\nname: workspace-skill\ndescription: Workspace skill\n---\nDo workspace work",
+        )
+        .unwrap();
+        create_skill_dir(
+            &tmpdir,
+            "configured-skill",
+            "---\nname: configured-skill\ndescription: Configured skill\n---\nDo configured work",
+        );
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = list_skills(&mut app, None);
+        let msg = result.message.unwrap();
+
+        assert!(msg.contains("/workspace-skill"), "got: {msg}");
+        assert!(msg.contains("/configured-skill"), "got: {msg}");
     }
 
     #[test]

@@ -45,6 +45,16 @@ fn boot_minimal() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harne
     Ok((ws, h))
 }
 
+fn write_skill(root: std::path::PathBuf, name: &str, description: &str) -> anyhow::Result<()> {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {description}\n---\nUse {name}.\n"),
+    )?;
+    Ok(())
+}
+
 /// Smoke: the binary boots into an alt-screen, paints a composer, and the
 /// header shows the project label. If this fails, the harness itself is
 /// broken before we worry about any scenario.
@@ -76,6 +86,54 @@ fn smoke_keystroke_reaches_composer() -> anyhow::Result<()> {
 
     h.send(keys::key::text("hello-from-pty"))?;
     h.wait_for_text("hello-from-pty", KEY_TIMEOUT)?;
+
+    let _ = h.shutdown();
+    Ok(())
+}
+
+/// Regression: `/skills` should reflect the same merged discovery set as the
+/// slash menu and model-visible skills block, not just the first selected
+/// skills directory.
+#[test]
+fn skills_menu_shows_local_and_global_skills() -> anyhow::Result<()> {
+    let ws = make_sealed_workspace()?;
+    write_skill(ws.user_skills_dir(), "global-alpha", "Global alpha skill")?;
+    write_skill(
+        ws.workspace().join(".agents").join("skills"),
+        "workspace-beta",
+        "Workspace beta skill",
+    )?;
+
+    let mut h = Harness::builder(Harness::cargo_bin("deepseek-tui"))
+        .cwd(ws.workspace())
+        .seal_home(ws.home())
+        .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
+        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            ws.workspace().to_str().expect("utf-8 workspace path"),
+            "--no-project-config",
+            "--skip-onboarding",
+        ])
+        .size(40, 140)
+        .spawn()?;
+
+    h.wait_for_text("Composer", BOOT_TIMEOUT)?;
+    h.send(keys::key::text("/skills"))?;
+    h.wait_for_idle(Duration::from_millis(300), Duration::from_secs(2))?;
+    h.send(keys::key::enter())?;
+    h.wait_for_text("Available skills", KEY_TIMEOUT)?;
+    h.wait_for_text("global-alpha", KEY_TIMEOUT)?;
+    h.wait_for_text("workspace-beta", KEY_TIMEOUT)?;
+
+    let f = h.frame();
+    let dump = f.debug_dump();
+    assert!(f.contains("global-alpha"), "global skill missing:\n{dump}");
+    assert!(
+        f.contains("workspace-beta"),
+        "workspace skill missing:\n{dump}"
+    );
 
     let _ = h.shutdown();
     Ok(())

@@ -436,6 +436,31 @@ pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
     merged
 }
 
+/// Discover skills from the workspace search set plus the configured install
+/// directory. Workspace/global directories keep their normal precedence; a
+/// custom configured directory is appended when it is outside that set.
+#[must_use]
+pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> SkillRegistry {
+    let mut dirs = skills_directories(workspace);
+    if skills_dir.is_dir() && !dirs.iter().any(|p| p == skills_dir) {
+        dirs.push(skills_dir.to_path_buf());
+    }
+
+    let mut merged = SkillRegistry::default();
+    for dir in dirs {
+        let registry = SkillRegistry::discover(&dir);
+        for skill in registry.skills {
+            if !merged.skills.iter().any(|s| s.name == skill.name) {
+                merged.skills.push(skill);
+            }
+        }
+        for warning in registry.warnings {
+            merged.warnings.push(warning);
+        }
+    }
+    merged
+}
+
 /// Render the system-prompt skills block from every workspace
 /// candidate directory plus the global default (#432). Wraps
 /// [`discover_in_workspace`] for callers (e.g. `prompts.rs`) that

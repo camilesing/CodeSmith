@@ -215,13 +215,18 @@ impl Harness {
     /// Resolve a binary by Cargo bin-name (uses `CARGO_BIN_EXE_<name>`).
     /// Tests should call this rather than hard-coding paths.
     pub fn cargo_bin(name: &str) -> PathBuf {
-        // CARGO_BIN_EXE_<name> is set by Cargo for binaries declared in the
-        // same crate as the integration test. For deepseek-tui the binary
-        // name is `deepseek-tui`.
+        // Newer Cargo exposes CARGO_BIN_EXE_* at runtime; older supported
+        // Cargo versions expose it to the integration test at compile time.
         let key = format!("CARGO_BIN_EXE_{name}");
-        std::env::var_os(&key)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| panic!("env {key} not set; is the binary declared in this crate?"))
+        if let Some(path) = std::env::var_os(&key) {
+            return PathBuf::from(path);
+        }
+        if name == "deepseek-tui"
+            && let Some(path) = option_env!("CARGO_BIN_EXE_deepseek-tui")
+        {
+            return PathBuf::from(path);
+        }
+        panic!("env {key} not set; is the binary declared in this crate?")
     }
 
     /// Best-effort cooperative shutdown.

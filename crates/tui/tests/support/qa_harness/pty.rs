@@ -209,12 +209,17 @@ impl PtySession {
     }
 
     /// Send SIGTERM-equivalent and wait briefly. Returns the exit status if
-    /// the child reaped within `grace`, or `None` otherwise (in which case
-    /// `kill_hard` is called as a last resort).
+    /// the child reaped within `grace`, or `None` otherwise.
     pub fn shutdown(mut self, grace: Duration) -> Option<i32> {
+        self.kill_and_join_reader(grace)
+    }
+
+    fn kill_and_join_reader(&mut self, grace: Duration) -> Option<i32> {
         let _ = self.child.kill();
         let exit = self.wait_until(Instant::now() + grace);
-        if let Some(handle) = self.reader_handle.take() {
+        if exit.is_some()
+            && let Some(handle) = self.reader_handle.take()
+        {
             // Don't block on the reader thread forever — it exits on EOF.
             let _ = handle.join();
         }
@@ -224,6 +229,6 @@ impl PtySession {
 
 impl Drop for PtySession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        let _ = self.kill_and_join_reader(Duration::from_secs(2));
     }
 }
