@@ -1351,9 +1351,11 @@ impl Config {
             ApiProvider::Ollama => "ollama",
         };
 
-        // 0. Explicit in-memory override (set by onboarding / provider
-        //    picker). Wins so a freshly-entered key takes effect immediately.
-        if let Some(configured) = self.api_key.as_ref()
+        // 0. DeepSeek compatibility slot. The legacy top-level `api_key`
+        // belongs to DeepSeek only; provider-specific keys below must win for
+        // NIM/OpenRouter/etc. so a stale DeepSeek key is not sent elsewhere.
+        if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+            && let Some(configured) = self.api_key.as_ref()
             && !configured.trim().is_empty()
             && configured != API_KEYRING_SENTINEL
         {
@@ -5110,6 +5112,41 @@ model = "deepseek-v4-pro"
         assert_eq!(config.deepseek_api_key()?, "nim-table-key");
         assert_eq!(config.deepseek_base_url(), "https://nim-table.example/v1");
         assert_eq!(config.default_model(), DEFAULT_NVIDIA_NIM_MODEL);
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_provider_table_key_overrides_root_deepseek_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-nim-root-key-precedence-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"api_key = "deepseek-root-key"
+provider = "nvidia-nim"
+
+[providers.nvidia_nim]
+api_key = "nim-table-key"
+base_url = "https://integrate.api.nvidia.com/v1"
+model = "deepseek-ai/deepseek-v4-pro"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
+        assert_eq!(config.deepseek_api_key()?, "nim-table-key");
         Ok(())
     }
 

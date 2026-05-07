@@ -92,6 +92,11 @@ next round of TUI fixes can be verified against real terminal behaviour.
   that compress the response come through clean instead of as protocol
   corruption. Quiets one of the failure modes behind some "stuck working"
   reports. Thanks @MengZ-super.
+- **NVIDIA NIM provider configs use their own API key even when a legacy
+  root DeepSeek key is present** (#1081) — `[providers.nvidia_nim] api_key`
+  now wins for NIM requests, avoiding 401s caused by accidentally sending the
+  top-level DeepSeek credential to NVIDIA. Thanks @wlon for the focused
+  diagnosis.
 
 ### Notes for contributors
 
