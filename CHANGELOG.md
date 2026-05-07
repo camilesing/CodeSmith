@@ -97,6 +97,11 @@ next round of TUI fixes can be verified against real terminal behaviour.
   now wins for NIM requests, avoiding 401s caused by accidentally sending the
   top-level DeepSeek credential to NVIDIA. Thanks @wlon for the focused
   diagnosis.
+- **npm installs explain the release-mirror escape hatch when GitHub Releases
+  are blocked** (#1051, #1056) — network/DNS failures now point at the
+  existing `DEEPSEEK_TUI_RELEASE_BASE_URL` override and the required checksum
+  manifest / binary layout instead of stopping at a raw `ENOTFOUND github.com`.
+  Thanks @axobase001.
 
 ### Notes for contributors
 
