@@ -2687,6 +2687,8 @@ mod tests {
             output: Some("hello world ".repeat(420)),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         }));
         for width in [40u16, 80, 111, 165] {
             let lines = cell.lines(width);
@@ -2731,6 +2733,8 @@ mod tests {
                 output: Some(output),
                 prompts: None,
                 spillover_path: None,
+                    output_summary: None,
+                    is_diff: false,
             })));
 
             let height: u16 = 30;
@@ -3109,6 +3113,8 @@ mod tests {
                     output: Some(format!("found 12 matches in cell-{i}")),
                     prompts: None,
                     spillover_path: None,
+                        output_summary: None,
+                        is_diff: false,
                 }))
             } else if i % 2 == 0 {
                 HistoryCell::User {

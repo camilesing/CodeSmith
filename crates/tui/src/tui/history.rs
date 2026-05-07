@@ -665,6 +665,8 @@ pub struct ExecCell {
     pub duration_ms: Option<u64>,
     pub source: ExecSource,
     pub interaction: Option<String>,
+    /// Cached output summary — avoids re-parsing JSON every frame.
+    pub output_summary: Option<String>,
 }
 
 impl ExecCell {
@@ -716,12 +718,25 @@ impl ExecCell {
 
         if self.interaction.is_none() {
             if let Some(output) = self.output.as_ref() {
-                lines.extend(render_exec_output_mode(
-                    output,
-                    width,
-                    TOOL_OUTPUT_LINE_LIMIT,
-                    mode,
-                ));
+                if matches!(mode, RenderMode::Live) {
+                    let fallback = summarize_tool_output(output);
+                    let summary = self
+                        .output_summary
+                        .as_deref()
+                        .unwrap_or(&fallback);
+                    lines.push(render_tool_output_summary_line(&summary, width));
+                    lines.push(details_affordance_line(
+                        "Enter to expand tool output",
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ));
+                } else {
+                    lines.extend(render_exec_output_mode(
+                        output,
+                        width,
+                        TOOL_OUTPUT_LINE_LIMIT,
+                        mode,
+                    ));
+                }
             } else if self.status == ToolStatus::Running && self.source == ExecSource::Assistant {
                 lines.extend(wrap_plain_line(
                     "  Ctrl+B opens shell controls.",
@@ -1219,6 +1234,11 @@ pub struct GenericToolCell {
     /// OSC 8-aware terminals — the path renders as a hyperlink when
     /// `tui.osc8_links` is enabled).
     pub spillover_path: Option<std::path::PathBuf>,
+    // --- Pre-computed render cache (populated once at cell creation) ---
+    /// Cached output summary — avoids re-parsing JSON every frame.
+    pub output_summary: Option<String>,
+    /// Whether the output looks like a unified diff (cached after first check).
+    pub is_diff: bool,
 }
 
 impl GenericToolCell {
@@ -1307,10 +1327,8 @@ impl GenericToolCell {
         }
 
         if let Some(output) = self.output.as_ref() {
-            // If the output looks like a unified diff (contains hunk headers),
-            // use the full diff renderer with line numbers and colored gutters
-            // instead of the generic output path (#380).
-            if output_looks_like_diff(output) {
+            // Use cached diff detection instead of scanning every frame.
+            if self.is_diff {
                 let diff_summary = diff_render::diff_summary_label(output);
                 lines.push(render_tool_header_with_summary(
                     "Diff",
@@ -1321,12 +1339,20 @@ impl GenericToolCell {
                     low_motion,
                 ));
                 lines.extend(diff_render::render_diff(output, width));
+            } else if matches!(mode, RenderMode::Live) {
+                // Live mode: one-line summary + expand affordance.
+                let fallback = summarize_tool_output(output);
+                let summary = self
+                    .output_summary
+                    .as_deref()
+                    .unwrap_or(&fallback);
+                lines.push(render_tool_output_summary_line(&summary, width));
+                lines.push(details_affordance_line(
+                    "Enter to expand tool output",
+                    Style::default().fg(palette::TEXT_MUTED),
+                ));
             } else {
-                // Multi-line outputs (diff stats, file lists, todo snapshots) used
-                // to be crushed into one line by `render_compact_kv` because its
-                // wrapper joined the entire string before wrapping. Route through
-                // `render_tool_output_mode` so each `\n` becomes a real row, with
-                // a `+N more lines` affordance in live mode (#80).
+                // Transcript mode: full output.
                 lines.extend(render_tool_output_mode(
                     output,
                     width,
@@ -1335,13 +1361,6 @@ impl GenericToolCell {
                 ));
             }
 
-            // #423: surface the spillover-file path inline so the user
-            // (and the model) can find the elided tail. Only emitted in
-            // live mode — transcript replay already has the full output
-            // verbatim. The path is OSC 8-wrapped when the feature is
-            // enabled so terminals that support hyperlinks make it
-            // Cmd+click-openable; the clipboard / selection path
-            // strips the escape on copy.
             if matches!(mode, RenderMode::Live)
                 && let Some(path) = self.spillover_path.as_ref()
             {
@@ -1483,7 +1502,7 @@ fn is_checklist_tool_name(name: &str) -> bool {
 /// Heuristic: does the output look like a unified diff? Returns true when
 /// the output contains at least one hunk header (`@@`) or a `diff --git`
 /// line, which are reliable markers of unified diff content (#380).
-fn output_looks_like_diff(output: &str) -> bool {
+pub(crate) fn output_looks_like_diff(output: &str) -> bool {
     let mut lines = output.lines();
     // Check first 5 lines for diff markers
     for _ in 0..5 {
@@ -2250,6 +2269,17 @@ fn exploring_header_summary(entries: &[ExploringEntry]) -> Option<String> {
 
 fn render_compact_kv(label: &str, value: &str, style: Style, width: u16) -> Vec<Line<'static>> {
     render_card_detail_line(Some(label.trim_end_matches(':')), value, style, width)
+}
+
+/// Render a single-line tool output summary for the collapsed (Live) view.
+/// Truncates to fit within `width` columns.
+fn render_tool_output_summary_line(summary: &str, width: u16) -> Line<'static> {
+    let max_chars = usize::from(width).saturating_sub(2);
+    let text = truncate_text(summary.trim(), max_chars.min(TOOL_TEXT_LIMIT));
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(text, Style::default().fg(palette::TEXT_MUTED)),
+    ])
 }
 
 fn render_tool_output_mode(
@@ -3137,6 +3167,8 @@ mod tests {
             spillover_path: Some(PathBuf::from(
                 "/Users/dev/.deepseek/tool_outputs/call-abc12.txt",
             )),
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(120, true, super::RenderMode::Live);
         let joined: String = lines
@@ -3165,6 +3197,8 @@ mod tests {
             output: Some("output".to_string()),
             prompts: None,
             spillover_path: Some(PathBuf::from("/tmp/spill.txt")),
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(120, true, super::RenderMode::Transcript);
         let joined: String = lines
@@ -3187,6 +3221,8 @@ mod tests {
             output: Some("contents".to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let joined: String = lines
@@ -3207,6 +3243,8 @@ mod tests {
             output: Some("output".to_string()),
             prompts: None,
             spillover_path: Some(PathBuf::from(long_path)),
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(40, true, super::RenderMode::Live);
         let annotation_line = lines
@@ -3282,6 +3320,8 @@ mod tests {
             ),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         // One header line, no details/args/output expansion.
@@ -3315,6 +3355,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         assert_eq!(lines.len(), 1);
@@ -3335,6 +3377,8 @@ mod tests {
             ),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Transcript);
         // Transcript mode emits header + name kv + (no args, output present)
@@ -3353,6 +3397,8 @@ mod tests {
             output: Some("first line\nsecond line\nthird line".to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         assert!(
@@ -3607,6 +3653,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
+                output_summary: None,
         }));
 
         let animated = cell.lines_with_options(80, TranscriptRenderOptions::default());
@@ -3822,6 +3869,7 @@ mod tests {
             duration_ms: Some(10),
             source: ExecSource::Assistant,
             interaction: None,
+                output_summary: None,
         };
         let header = &cell.lines_with_motion(80, true)[0];
         let visible: String = header
@@ -3851,6 +3899,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
+                output_summary: None,
         };
 
         let header = &cell.lines_with_motion(80, true)[0];
@@ -3875,6 +3924,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -3902,6 +3953,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -4145,6 +4198,7 @@ mod tests {
             duration_ms: Some(42),
             source: ExecSource::Assistant,
             interaction: None,
+                output_summary: None,
         };
 
         let lines = cell.lines_with_motion(80, true);
@@ -4293,10 +4347,8 @@ mod tests {
 
     #[test]
     fn tool_exec_live_caps_output_transcript_does_not() {
-        // Synthesize an exec output that comfortably exceeds the live cap
-        // (TOOL_OUTPUT_LINE_LIMIT = 6). The live view should hit the cap
-        // and emit a "+N more lines; press v for details" affordance; the
-        // transcript view should emit every wrapped line uncapped.
+        // Live mode shows a one-line summary + "Enter to expand" affordance.
+        // Transcript mode emits the full output uncapped.
         let total_output_lines = 30usize;
         let output = (0..total_output_lines)
             .map(|i| format!("output line {i:02}"))
@@ -4311,6 +4363,7 @@ mod tests {
             duration_ms: Some(120),
             source: ExecSource::Assistant,
             interaction: None,
+            output_summary: None,
         }));
 
         let live = cell.lines_with_options(
@@ -4332,15 +4385,13 @@ mod tests {
             transcript.len()
         );
         assert!(
-            live_text.contains("Alt+V for details"),
-            "live exec output must surface the pager affordance: {live_text}"
+            live_text.contains("Enter to expand tool output"),
+            "live exec output must surface the expand affordance: {live_text}"
         );
         assert!(
-            !transcript_text.contains("Alt+V for details"),
-            "transcript exec output must not include the pager affordance"
+            !transcript_text.contains("Enter to expand tool output"),
+            "transcript exec output must not include the expand affordance"
         );
-        // First line is always emitted on both surfaces.
-        assert!(live_text.contains("output line 00"));
         assert!(transcript_text.contains("output line 00"));
         // The middle should only appear in the transcript, since the live
         // view truncates the head/tail around the cap.
@@ -4370,6 +4421,8 @@ mod tests {
                 "Diff this commit against main".to_string(),
             ]),
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         }));
         let text = lines_text(&cell.lines(80));
 
@@ -4395,6 +4448,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         }));
         let text = lines_text(&cell.lines(80));
         assert!(text.contains("query: foo"));
@@ -4418,6 +4473,8 @@ mod tests {
             output: Some(diff_stat.to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         }));
 
         let transcript_text = lines_text(&cell.transcript_lines(80));
@@ -4468,6 +4525,8 @@ mod tests {
             output: Some(output),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         }));
 
         let live = cell.lines_with_options(80, TranscriptRenderOptions::default());
@@ -4481,17 +4540,15 @@ mod tests {
         );
         let live_text = lines_text(&live);
         assert!(
-            live_text.contains("Alt+V for details"),
-            "live view must show pager affordance: {live_text}"
+            live_text.contains("Enter to expand"),
+            "live view must show expand affordance: {live_text}"
         );
-        // First line shows up in both; later rows only in transcript.
-        assert!(live_text.contains("row 00"));
         let transcript_text = lines_text(&transcript);
         assert!(transcript_text.contains("row 29"));
     }
 
     #[test]
-    fn generic_tool_output_live_keeps_tail_and_omitted_count() {
+    fn generic_tool_output_live_shows_one_line_summary_with_expand_affordance() {
         let output = (0..24usize)
             .map(|i| format!("line {i:02}"))
             .collect::<Vec<_>>()
@@ -4503,22 +4560,24 @@ mod tests {
             output: Some(output),
             prompts: None,
             spillover_path: None,
+            output_summary: Some("24 lines of shell output".to_string()),
+            is_diff: false,
         }));
 
         let live_text =
             lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
-        assert!(live_text.contains("line 00"));
-        assert!(live_text.contains("line 23"));
-        assert!(live_text.contains("lines omitted; Alt+V for details"));
+        // Live mode: one-line summary + expand affordance, NOT full multi-line output.
+        assert!(live_text.contains("Enter to expand tool output"),
+            "live view must show expand affordance: {live_text}");
         assert!(
-            !live_text.contains("line 12"),
-            "middle plain output should stay omitted in live view: {live_text}"
+            live_text.contains("24 lines of shell output"),
+            "live summary must show the pre-computed output summary: {live_text}"
         );
     }
 
     #[test]
-    fn tool_output_live_preserves_error_and_path_lines_from_middle() {
+    fn tool_output_live_preserves_summary_with_expand_affordance() {
         let output = [
             "start",
             "still starting",
@@ -4538,15 +4597,21 @@ mod tests {
             output: Some(output),
             prompts: None,
             spillover_path: None,
+            output_summary: Some("Error: failed to read config".to_string()),
+            is_diff: false,
         }));
 
         let live_text =
             lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
-        assert!(live_text.contains("fatal: failed to read /tmp/deepseek/config.toml"));
-        assert!(live_text.contains("https://example.test/build/log"));
-        assert!(live_text.contains("final line"));
-        assert!(live_text.contains("lines omitted; Alt+V for details"));
+        // Live mode: one-line summary + expand affordance.
+        assert!(live_text.contains("Enter to expand tool output"),
+            "live view must show expand affordance: {live_text}");
+        // The pre-computed summary captures the first meaningful content.
+        assert!(
+            live_text.contains("Error:") || live_text.contains("fatal:"),
+            "live summary should capture error text: {live_text}"
+        );
     }
 
     // === ErrorEnvelope severity → cell color tests (#66) ===
