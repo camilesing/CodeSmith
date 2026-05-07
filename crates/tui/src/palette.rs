@@ -19,10 +19,10 @@ pub const LIGHT_REASONING_RGB: (u8, u8, u8) = (254, 243, 199); // #FEF3C7
 pub const LIGHT_SUCCESS_RGB: (u8, u8, u8) = (220, 252, 231); // #DCFCE7
 pub const LIGHT_ERROR_RGB: (u8, u8, u8) = (254, 226, 226); // #FEE2E2
 pub const LIGHT_TEXT_BODY_RGB: (u8, u8, u8) = (15, 23, 42); // #0F172A
-pub const LIGHT_TEXT_MUTED_RGB: (u8, u8, u8) = (71, 85, 105); // #475569
-pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (100, 116, 139); // #64748B
-pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (51, 65, 85); // #334155
-pub const LIGHT_BORDER_RGB: (u8, u8, u8) = (148, 163, 184); // #94A3B8
+pub const LIGHT_TEXT_MUTED_RGB: (u8, u8, u8) = (51, 65, 85); // #334155
+pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (71, 85, 105); // #475569
+pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (30, 41, 59); // #1E293B
+pub const LIGHT_BORDER_RGB: (u8, u8, u8) = (71, 85, 105); // #475569
 pub const LIGHT_SELECTION_RGB: (u8, u8, u8) = (219, 234, 254); // #DBEAFE
 
 // New semantic colors
@@ -136,6 +136,7 @@ pub const SURFACE_PANEL: Color = Color::Rgb(21, 33, 52); // #152134
 #[allow(dead_code)]
 pub const SURFACE_ELEVATED: Color = Color::Rgb(28, 42, 64); // #1C2A40
 pub const SURFACE_REASONING: Color = Color::Rgb(54, 44, 26); // #362C1A
+pub const SURFACE_REASONING_TINT: Color = Color::Rgb(16, 24, 37); // #101825
 #[allow(dead_code)]
 pub const SURFACE_REASONING_ACTIVE: Color = Color::Rgb(68, 53, 28); // #44351C
 #[allow(dead_code)]
@@ -369,7 +370,10 @@ pub fn adapt_bg_for_palette_mode(color: Color, mode: PaletteMode) -> Color {
         LIGHT_PANEL
     } else if color == SURFACE_ELEVATED || color == SURFACE_TOOL_ACTIVE {
         LIGHT_ELEVATED
-    } else if color == SURFACE_REASONING || color == SURFACE_REASONING_ACTIVE {
+    } else if color == SURFACE_REASONING
+        || color == SURFACE_REASONING_TINT
+        || color == SURFACE_REASONING_ACTIVE
+    {
         LIGHT_REASONING
     } else if color == SURFACE_SUCCESS {
         LIGHT_SUCCESS
@@ -477,6 +481,7 @@ pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
 /// Mix two RGB colors at `alpha` (0.0 = `bg`, 1.0 = `fg`). Anything that's not
 /// RGB falls back to `fg` — there's no meaningful alpha blend on a named
 /// palette entry.
+#[allow(dead_code)]
 #[must_use]
 pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
     let alpha = alpha.clamp(0.0, 1.0);
@@ -501,10 +506,7 @@ pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
 pub fn reasoning_surface_tint(depth: ColorDepth) -> Option<Color> {
     match depth {
         ColorDepth::Ansi16 => None,
-        _ => Some(adapt_bg(
-            blend(SURFACE_REASONING, DEEPSEEK_INK, 0.12),
-            depth,
-        )),
+        _ => Some(adapt_bg(SURFACE_REASONING_TINT, depth)),
     }
 }
 
@@ -646,11 +648,12 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        DEEPSEEK_SLATE, LIGHT_PANEL, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
-        LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
-        TEXT_TOOL_OUTPUT, UI_THEME, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
-        adapt_fg_for_palette_mode, blend, nearest_ansi16, normalize_hex_rgb_color,
-        parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint, rgb_to_ansi256,
+        DEEPSEEK_SLATE, LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY,
+        LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, SURFACE_REASONING_TINT,
+        TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, UI_THEME, adapt_bg,
+        adapt_bg_for_palette_mode, adapt_color, adapt_fg_for_palette_mode, blend, nearest_ansi16,
+        normalize_hex_rgb_color, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
+        rgb_to_ansi256,
     };
     use ratatui::style::Color;
 
@@ -785,6 +788,25 @@ mod tests {
             reasoning_surface_tint(ColorDepth::Ansi256),
             Some(Color::Indexed(_))
         ));
+    }
+
+    #[test]
+    fn light_palette_maps_reasoning_tint_to_light_surface() {
+        assert_eq!(
+            blend(SURFACE_REASONING, DEEPSEEK_INK, 0.12),
+            SURFACE_REASONING_TINT
+        );
+        assert_eq!(
+            adapt_bg_for_palette_mode(SURFACE_REASONING_TINT, PaletteMode::Light),
+            LIGHT_REASONING
+        );
+        assert_eq!(
+            adapt_bg_for_palette_mode(
+                reasoning_surface_tint(ColorDepth::TrueColor).expect("truecolor tint"),
+                PaletteMode::Light,
+            ),
+            LIGHT_REASONING
+        );
     }
 
     #[test]

@@ -247,8 +247,8 @@ A focused follow-up release for TUI/runtime/install polish.
   are recoverable at postinstall time, while checksum, platform, glibc, and
   runtime failures remain fatal.
 - **Plus**: FreeBSD secrets-crate compile fallback, Docker Buildx cache-race
-  fix, softer long-session text colors, Windows sandbox guarantee cleanup, and
-  rustup mirror/install troubleshooting updates.
+  fix, readable light-theme toggles, softer long-session text colors, Windows
+  sandbox guarantee cleanup, and rustup mirror/install troubleshooting updates.
 
 ---
 

@@ -1519,7 +1519,7 @@ async fn run_event_loop(
                 reset_terminal_viewport(terminal)?;
                 force_terminal_repaint = false;
             }
-            terminal.draw(|f| render(f, app))?; // app is &mut
+            draw_app_frame(terminal, app)?;
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
         }
@@ -1658,7 +1658,7 @@ async fn run_event_loop(
                 // any other events can interleave. Without this, the next
                 // iteration's draw can race against fast follow-up input and
                 // leave the user staring at a blank/partial frame.
-                terminal.draw(|f| render(f, app))?;
+                draw_app_frame(terminal, app)?;
                 {
                     let backend = terminal.backend_mut();
                     backend.clear_forced_size();
@@ -5297,7 +5297,7 @@ fn render(f: &mut Frame, app: &mut App) {
 
                 // Render the file-tree pane.
                 if let Some(ref mut state) = app.file_tree {
-                    super::file_tree::render_file_tree(f, tree_area, state);
+                    super::file_tree::render_file_tree(f, tree_area, state, app.ui_theme.mode);
                 }
 
                 remaining
@@ -5370,6 +5370,12 @@ fn render(f: &mut Frame, app: &mut App) {
         let buf = f.buffer_mut();
         app.view_stack.render(size, buf);
     }
+}
+
+fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
+    terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
+    terminal.draw(|f| render(f, app))?;
+    Ok(())
 }
 
 /// Pull the latest snapshot of cells / revisions / render options into the

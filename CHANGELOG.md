@@ -39,8 +39,9 @@ Feishu/Lark/mobile companion work remain out of scope for this release.
   sharing to avoid the `.cargo-ok File exists` unpack race in release checks.
 - **Long-session palette is easier to read** (#1070, #936 partial) - default
   body text is slightly softer, reasoning/thinking text uses a warmer accent,
-  and the light-theme adaptation keeps those contrasts coherent. Thanks
-  @bevis-wong and @oooyuy92 for the readability reports.
+  and `/theme` now updates the terminal color adapter so light mode keeps those
+  contrasts coherent after an in-session toggle. Thanks @bevis-wong and
+  @oooyuy92 for the readability reports.
 - **Install docs add a second rustup mirror fallback** (#1011) - `rsproxy.cn`
   is documented as an alternate rustup mirror, and old Debian/Ubuntu Cargo
   `edition2024` failures now point users to rustup stable. Thanks @wuwuzhijing.
@@ -54,6 +55,9 @@ Feishu/Lark/mobile companion work remain out of scope for this release.
   scroll margins/origin mode before key repaints after resume, resize, and turn
   completion, preventing alt-screen content from drifting downward and leaving
   blank rows at the top.
+- **Light theme reasoning blocks stay light** (#1070, #936 partial) -
+  thinking/reasoning background tints now map to the light reasoning surface
+  instead of keeping the dark-mode tint after `/theme light`.
 - **FreeBSD can compile the secrets crate** (#1089) - platforms without a native
   `keyring` dependency now fail the OS-keyring probe cleanly and fall back to
   the file-backed secret store instead of referencing a missing crate. Thanks
