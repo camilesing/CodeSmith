@@ -2467,6 +2467,7 @@ impl App {
 
         self.viewport.pending_scroll_delta = 0;
         self.viewport.transcript_selection.clear();
+        self.viewport.transcript_scrollbar_dragging = false;
 
         self.viewport.last_transcript_area = None;
         self.viewport.last_transcript_top = 0;
