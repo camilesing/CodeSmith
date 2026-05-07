@@ -55,6 +55,10 @@ Feishu/Lark/mobile companion work remain out of scope for this release.
   scroll margins/origin mode before key repaints after resume, resize, and turn
   completion, preventing alt-screen content from drifting downward and leaving
   blank rows at the top.
+- **Interactive subprocesses wait for terminal release** (#1085) - shell/editor
+  handoff now waits until the UI has actually left alt-screen/raw mode before
+  launching the child process, preventing the TUI from repainting into host
+  scrollback after interactive tool use.
 - **Light theme reasoning blocks stay light** (#1070, #936 partial) -
   thinking/reasoning background tints now map to the light reasoning surface
   instead of keeping the dark-mode tint after `/theme light`.

@@ -1118,7 +1118,7 @@ async fn run_event_loop(
                             "Capacity memory persist failed ({action}): {error}"
                         ));
                     }
-                    EngineEvent::PauseEvents => {
+                    EngineEvent::PauseEvents { ack } => {
                         if !event_broker.is_paused() {
                             pause_terminal(
                                 terminal,
@@ -1128,6 +1128,9 @@ async fn run_event_loop(
                             )?;
                             event_broker.pause_events();
                             terminal_paused_at = Some(Instant::now());
+                        }
+                        if let Some(ack) = ack {
+                            ack.notify_one();
                         }
                     }
                     EngineEvent::ResumeEvents => {
