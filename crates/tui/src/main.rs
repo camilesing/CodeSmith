@@ -769,16 +769,18 @@ async fn main() -> Result<()> {
         return run_one_shot(&config, &model, &prompt).await;
     }
 
-    // Handle session resume
+    // Handle session resume. Plain `deepseek` starts fresh: interrupted
+    // snapshots are preserved for explicit resume, but never auto-attached.
     let resume_session_id = if cli.continue_session {
         let workspace = resolve_workspace(&cli);
-        latest_session_id_for_workspace(&workspace).ok().flatten()
+        recover_interrupted_checkpoint_for_resume(&workspace)
+            .or_else(|| latest_session_id_for_workspace(&workspace).ok().flatten())
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
     } else if !cli.fresh {
-        // Check for crash-recovery checkpoint (unless --fresh was passed).
         let workspace = resolve_workspace(&cli);
-        try_recover_checkpoint(&workspace)
+        preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
+        None
     } else {
         None
     };
@@ -3683,27 +3685,12 @@ fn default_mouse_capture_enabled(terminal_emulator: Option<&str>) -> bool {
     true
 }
 
-/// Check for a crash-recovery checkpoint and return the session ID if
-/// recovery is possible *and* the checkpoint belongs to the current
-/// workspace.
-///
-/// The checkpoint must exist and its file mtime must be within 24 hours.
-/// **The checkpoint's workspace must also match the resolved launch workspace
-/// after canonicalisation.** If the workspace doesn't match, the
-/// checkpoint is persisted as a regular session (so the user can find it
-/// via `deepseek sessions` / `deepseek resume <id>`) and cleared, and the
-/// new launch starts fresh — silently importing a session from another
-/// project would leak api_messages, working_set entries, and possibly
-/// secrets across directories (see v0.8.12 cross-workspace bleed report).
-///
-/// On a successful match the checkpoint is persisted as a regular session,
-/// cleared, and a notice is printed to stderr. Returns `None` if there is
-/// nothing to recover or the workspace doesn't match.
-fn try_recover_checkpoint(launch_workspace: &Path) -> Option<String> {
-    let manager = session_manager::SessionManager::default_location().ok()?;
+/// Load a recent crash-recovery checkpoint, pruning stale checkpoints first.
+fn load_recent_checkpoint(
+    manager: &session_manager::SessionManager,
+) -> Option<(session_manager::SavedSession, std::time::Duration)> {
     let session = manager.load_checkpoint().ok().flatten()?;
 
-    // Verify the checkpoint file is recent (within 24 hours).
     let home = dirs::home_dir()?;
     let checkpoint_path = home
         .join(".deepseek")
@@ -3714,10 +3701,35 @@ fn try_recover_checkpoint(launch_workspace: &Path) -> Option<String> {
     let mtime = metadata.modified().ok()?;
     let age = std::time::SystemTime::now().duration_since(mtime).ok()?;
     if age > std::time::Duration::from_secs(24 * 3600) {
-        // Stale checkpoint — clean it up.
         let _ = manager.clear_checkpoint();
         return None;
     }
+
+    Some((session, age))
+}
+
+fn checkpoint_age_label(age: std::time::Duration) -> String {
+    if age.as_secs() < 60 {
+        format!("{}s ago", age.as_secs())
+    } else if age.as_secs() < 3600 {
+        format!("{}m ago", age.as_secs() / 60)
+    } else {
+        format!("{}h ago", age.as_secs() / 3600)
+    }
+}
+
+/// Check for a crash-recovery checkpoint and return the session ID if explicit
+/// recovery was requested *and* the checkpoint belongs to the current
+/// workspace.
+///
+/// The checkpoint must exist and its file mtime must be within 24 hours.
+/// **The checkpoint's workspace must also match the resolved launch workspace
+/// after canonicalisation.** If the workspace doesn't match, the checkpoint is
+/// persisted as a regular session (so the user can find it via
+/// `deepseek sessions` / `deepseek resume <id>`) and cleared, but not loaded.
+fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<String> {
+    let manager = session_manager::SessionManager::default_location().ok()?;
+    let (session, age) = load_recent_checkpoint(&manager)?;
 
     // Refuse to silently restore a session from another workspace. Compare
     // against the resolved launch workspace, not the shell cwd, so callers
@@ -3758,17 +3770,48 @@ fn try_recover_checkpoint(launch_workspace: &Path) -> Option<String> {
     // Clear the checkpoint now that it has been recovered.
     let _ = manager.clear_checkpoint();
 
-    // Format age for the notice.
-    let age_str = if age.as_secs() < 60 {
-        format!("{}s ago", age.as_secs())
-    } else if age.as_secs() < 3600 {
-        format!("{}m ago", age.as_secs() / 60)
-    } else {
-        format!("{}h ago", age.as_secs() / 3600)
-    };
+    let age_str = checkpoint_age_label(age);
     eprintln!("Recovered interrupted session ({age_str}). Use --fresh to start fresh.",);
 
     Some(session_id)
+}
+
+/// Preserve an interrupted checkpoint on a normal fresh launch without
+/// attaching it to the new TUI instance. This keeps "open another deepseek in
+/// the same folder" from re-entering the previous in-flight session while still
+/// leaving an explicit resume path.
+fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) {
+    let Some(manager) = session_manager::SessionManager::default_location().ok() else {
+        return;
+    };
+    let Some((session, age)) = load_recent_checkpoint(&manager) else {
+        return;
+    };
+
+    let session_id = session.metadata.id.clone();
+    let session_workspace = session.metadata.workspace.clone();
+    let _ = manager.save_session(&session);
+    let _ = manager.clear_checkpoint();
+
+    let age_str = checkpoint_age_label(age);
+    let short_id = session_id.chars().take(8).collect::<String>();
+    if session_manager::workspace_scope_matches(&session_workspace, launch_workspace) {
+        eprintln!(
+            "Found an in-flight session snapshot ({age_str}, {short_id}…). \
+             Starting a new session. Run `deepseek resume {session_id}` or \
+             `deepseek --continue` to resume it."
+        );
+    } else {
+        eprintln!(
+            "Note: an interrupted session ({short_id}…) from another workspace ({}) \
+             is available. Run `deepseek resume {}` from there to recover it, or \
+             use `deepseek sessions` to list all saved sessions. Starting fresh \
+             in {}.",
+            session_workspace.display(),
+            session_id,
+            launch_workspace.display(),
+        );
+    }
 }
 
 /// Load project-level config from `$WORKSPACE/.deepseek/config.toml` and
@@ -5271,6 +5314,97 @@ mod setup_helper_tests {
         // Should print and return Ok without error.
         run_setup_clean(&dir, true).unwrap();
         assert!(!dir.exists());
+    }
+
+    fn with_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
+        let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+        }
+        let result = f();
+        unsafe {
+            match prev_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn plain_launch_preserves_checkpoint_but_starts_fresh() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        with_home(tmp.path(), || {
+            let manager = SessionManager::default_location().expect("manager");
+            let messages = vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "in flight".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
+            let session_id = session.metadata.id.clone();
+            manager.save_checkpoint(&session).expect("save checkpoint");
+
+            preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
+
+            assert!(
+                manager
+                    .load_checkpoint()
+                    .expect("load checkpoint")
+                    .is_none(),
+                "normal launch should clear latest checkpoint after preserving it"
+            );
+            assert!(
+                manager.load_session(&session_id).is_ok(),
+                "normal launch should keep an explicit resume target"
+            );
+        });
+    }
+
+    #[test]
+    fn continue_recovers_same_workspace_checkpoint() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        with_home(tmp.path(), || {
+            let manager = SessionManager::default_location().expect("manager");
+            let messages = vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "continue me".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
+            let session_id = session.metadata.id.clone();
+            manager.save_checkpoint(&session).expect("save checkpoint");
+
+            let recovered = recover_interrupted_checkpoint_for_resume(&workspace);
+
+            assert_eq!(recovered.as_deref(), Some(session_id.as_str()));
+            assert!(
+                manager
+                    .load_checkpoint()
+                    .expect("load checkpoint")
+                    .is_none(),
+                "--continue should consume the checkpoint"
+            );
+            assert!(manager.load_session(&session_id).is_ok());
+        });
     }
 
     #[test]
