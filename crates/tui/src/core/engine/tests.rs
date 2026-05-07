@@ -501,21 +501,69 @@ fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
         "Yolo mode must use DangerFullAccess (no sandbox); got {yolo_policy:?}",
     );
 
-    // Plan mode can still expose shell tools for local read-only inspection,
-    // but it keeps outbound network blocked and attaches an explicit hint so
-    // network command failures are not mistaken for DNS/proxy issues.
+    // Plan mode (#1077): the sandbox must actually deny workspace writes.
+    // The previous WorkspaceWrite-with-empty-network policy whitelisted the
+    // workspace as writable, so `python -c "open('f','w').write('x')"`
+    // mutated files inside the workspace despite Plan-mode's intent. Lock
+    // it to ReadOnly: no writes anywhere, no network. The shell tool stays
+    // exposed for read-only inspection (`ls`, `git log`, `grep`, …) and
+    // the per-platform sandbox enforces the rest.
     let plan_ctx = engine.build_tool_context(AppMode::Plan, false);
     let plan_policy = plan_ctx
         .elevated_sandbox_policy
         .as_ref()
         .expect("Plan mode should make the shell sandbox policy explicit");
+    assert!(
+        matches!(plan_policy, crate::sandbox::SandboxPolicy::ReadOnly),
+        "Plan mode must use ReadOnly sandbox to deny workspace writes (#1077); got {plan_policy:?}",
+    );
     assert!(!plan_policy.has_network_access());
+    assert!(!plan_policy.has_full_disk_write_access());
+    assert!(
+        plan_policy
+            .get_writable_roots(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .is_empty(),
+        "ReadOnly policy must enumerate zero writable roots; got {plan_policy:?}",
+    );
     assert!(
         plan_ctx
             .shell_network_denied_hint
             .as_deref()
-            .is_some_and(|hint| hint.contains("Plan mode")),
+            .is_some_and(|hint| hint.contains("Plan mode") && hint.contains("read-only")),
     );
+}
+
+#[test]
+fn sandbox_policy_for_mode_returns_correct_policy_per_mode() {
+    use super::tool_setup::sandbox_policy_for_mode;
+    use crate::sandbox::SandboxPolicy;
+
+    let workspace = PathBuf::from("/tmp/example-workspace");
+
+    // Plan: ReadOnly. The whole point of #1077.
+    assert!(matches!(
+        sandbox_policy_for_mode(AppMode::Plan, &workspace),
+        SandboxPolicy::ReadOnly
+    ));
+
+    // Agent: WorkspaceWrite with workspace as writable root, network on.
+    match sandbox_policy_for_mode(AppMode::Agent, &workspace) {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access,
+            ..
+        } => {
+            assert_eq!(writable_roots, vec![workspace.clone()]);
+            assert!(network_access, "Agent mode must allow shell network access");
+        }
+        other => panic!("Agent mode should be WorkspaceWrite; got {other:?}"),
+    }
+
+    // YOLO: DangerFullAccess.
+    assert!(matches!(
+        sandbox_policy_for_mode(AppMode::Yolo, &workspace),
+        SandboxPolicy::DangerFullAccess
+    ));
 }
 
 #[tokio::test]

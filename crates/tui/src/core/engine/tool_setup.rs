@@ -2,7 +2,35 @@
 //!
 //! This keeps mode/feature-specific registry construction out of the send path.
 
+use std::path::Path;
+
 use super::*;
+use crate::sandbox::SandboxPolicy;
+
+/// Pick the sandbox policy that gates shell commands for a given UI mode.
+///
+/// - **Plan** (#1077): `ReadOnly` — no writes, no network. The previous
+///   `WorkspaceWrite` policy let `python -c "open('f','w').write('x')"` mutate
+///   files inside the workspace because it whitelisted the workspace as
+///   writable. Plan mode is investigation only; if the user wants to change
+///   files they should switch to Agent.
+/// - **Agent**: `WorkspaceWrite` with workspace as writable root and network
+///   on. Approval flow gates risky individual commands; the sandbox handles
+///   the rest. Network is allowed because cargo / npm / curl-style commands
+///   are normal during agent work and DNS-deny breaks them silently.
+/// - **YOLO**: `DangerFullAccess` — explicit no-guardrails contract.
+pub(crate) fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> SandboxPolicy {
+    match mode {
+        AppMode::Plan => SandboxPolicy::ReadOnly,
+        AppMode::Agent => SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![workspace.to_path_buf()],
+            network_access: true,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        },
+        AppMode::Yolo => SandboxPolicy::DangerFullAccess,
+    }
+}
 
 impl Engine {
     pub(super) fn build_turn_tool_registry_builder(

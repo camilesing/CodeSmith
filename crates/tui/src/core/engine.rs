@@ -1500,48 +1500,14 @@ impl Engine {
             ctx = ctx.with_sandbox_backend(std::sync::Arc::clone(backend));
         }
 
-        match mode {
-            // Plan mode is read-only investigation. Shell tools can still be
-            // available for read-only local inspection, but outbound network
-            // remains sandbox-blocked; attach an explicit hint so network
-            // command failures do not look like DNS/proxy problems.
-            AppMode::Plan => ctx
-                .with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
-                    writable_roots: vec![self.session.workspace.clone()],
-                    network_access: false,
-                    exclude_tmpdir: false,
-                    exclude_slash_tmp: false,
-                })
-                .with_shell_network_denied_hint(
-                    "Shell command blocked: Plan mode runs shell commands in a network-restricted sandbox. Use fetch_url or code_execution for network access, or switch to Agent mode (`/agent`) before retrying shell network commands.",
-                ),
-            // Agent registers the shell tool and runs each command through
-            // the per-mode sandbox + per-tool approval flow. The sandbox
-            // default would deny all outbound network — including DNS —
-            // which breaks ordinary developer commands (cargo fetch, npm
-            // install, curl, yt-dlp, …) without buying the user any safety
-            // the approval flow doesn't already provide. Elevate to
-            // workspace-write + network. (#273)
-            AppMode::Agent => {
-                ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
-                    writable_roots: vec![self.session.workspace.clone()],
-                    network_access: true,
-                    exclude_tmpdir: false,
-                    exclude_slash_tmp: false,
-                })
-            }
-            // YOLO is the explicit "no guardrails" mode — auto-approve all
-            // tools, trust mode on, no sandbox. Workspace-write was still
-            // intercepting commands that wanted to write outside the
-            // workspace (rare but legitimate: pipx install, npm install
-            // -g, brew, package-manager state under ~/.cache, sub-agent
-            // workspaces, …) which forced approval round-trips and
-            // contradicts the YOLO contract. The user opted into YOLO
-            // deliberately; trust them.
-            AppMode::Yolo => {
-                ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::DangerFullAccess)
-            }
+        let policy = sandbox_policy_for_mode(mode, &self.session.workspace);
+        let mut ctx = ctx.with_elevated_sandbox_policy(policy);
+        if matches!(mode, AppMode::Plan) {
+            ctx = ctx.with_shell_network_denied_hint(
+                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/agent`) for any command that creates or modifies files, or that needs network access.",
+            );
         }
+        ctx
     }
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
@@ -2075,6 +2041,7 @@ use self::tool_catalog::{
 #[cfg(test)]
 use self::tool_catalog::{TOOL_SEARCH_BM25_NAME, should_default_defer_tool};
 use self::tool_execution::emit_tool_audit;
+use self::tool_setup::sandbox_policy_for_mode;
 
 #[cfg(test)]
 mod tests;
