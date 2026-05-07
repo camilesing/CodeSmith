@@ -56,6 +56,31 @@ pub enum OnboardingState {
     None,
 }
 
+pub(crate) fn resolve_skills_dir(
+    workspace: &Path,
+    global_skills_dir: &Path,
+    config: &Config,
+) -> PathBuf {
+    let agents_skills_dir = workspace.join(".agents").join("skills");
+    if agents_skills_dir.exists() {
+        return agents_skills_dir;
+    }
+
+    let local_skills_dir = workspace.join("skills");
+    if local_skills_dir.exists() {
+        return local_skills_dir;
+    }
+
+    if config.skills_dir.is_none()
+        && let Some(global_agents) = crate::skills::agents_global_skills_dir()
+        && global_agents.exists()
+    {
+        return global_agents;
+    }
+
+    global_skills_dir.to_path_buf()
+}
+
 fn initial_onboarding_state(
     skip_onboarding: bool,
     was_onboarded: bool,
@@ -1231,21 +1256,7 @@ impl App {
         // Initialize plan state
         let plan_state = new_shared_plan_state();
 
-        let agents_skills_dir = workspace.join(".agents").join("skills");
-        let local_skills_dir = workspace.join("skills");
-        let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
-        let skills_dir = if agents_skills_dir.exists() {
-            agents_skills_dir
-        } else if local_skills_dir.exists() {
-            local_skills_dir
-        } else if config.skills_dir.is_none()
-            && let Some(global_agents) = agents_global_skills_dir
-            && global_agents.exists()
-        {
-            global_agents
-        } else {
-            global_skills_dir
-        };
+        let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
         let cached_skills = Self::discover_cached_skills(&skills_dir);
 
         let input_history = crate::composer_history::load_history();
@@ -3793,6 +3804,10 @@ pub enum AppAction {
     SwitchProfile {
         /// Profile name to load.
         profile: String,
+    },
+    /// Switch the workspace used by tools, hooks, tasks, and session metadata.
+    SwitchWorkspace {
+        workspace: PathBuf,
     },
     /// Export and share the current session as a web URL.
     ShareSession {

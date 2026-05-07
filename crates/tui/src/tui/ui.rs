@@ -4556,6 +4556,9 @@ async fn apply_command_result(
             AppAction::Mcp(action) => {
                 handle_mcp_ui_action(app, config, action).await;
             }
+            AppAction::SwitchWorkspace { workspace } => {
+                switch_workspace(app, engine_handle, config, workspace).await;
+            }
             AppAction::SwitchProfile { profile } => {
                 app.config_profile = Some(profile.clone());
                 match Config::load(app.config_path.clone(), Some(&profile)) {
@@ -4621,6 +4624,61 @@ async fn apply_command_result(
     }
 
     Ok(false)
+}
+
+async fn switch_workspace(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &Config,
+    workspace: PathBuf,
+) {
+    if app.is_loading {
+        app.status_message =
+            Some("Cannot switch workspace while a request is running.".to_string());
+        app.add_message(HistoryCell::System {
+            content: "Cannot switch workspace while a request is running.".to_string(),
+        });
+        return;
+    }
+
+    if app.workspace == workspace {
+        app.status_message = Some(format!("Workspace unchanged: {}", workspace.display()));
+        return;
+    }
+
+    app.workspace = workspace.clone();
+    app.hooks = HookExecutor::new(config.hooks_config(), workspace.clone());
+    app.skills_dir = crate::tui::app::resolve_skills_dir(&workspace, &config.skills_dir(), config);
+    app.refresh_skill_cache();
+    app.workspace_context = None;
+    if let Ok(mut cell) = app.workspace_context_cell.lock() {
+        *cell = None;
+    }
+    app.workspace_context_refreshed_at = None;
+    app.file_tree = None;
+
+    let shell_manager = crate::tools::shell::new_shared_shell_manager(workspace.clone());
+    app.runtime_services.shell_manager = Some(shell_manager);
+    app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
+
+    let _ = engine_handle.send(Op::Shutdown).await;
+    let engine_config = build_engine_config(app, config);
+    *engine_handle = spawn_engine(engine_config, config);
+    if !app.api_messages.is_empty() {
+        let _ = engine_handle
+            .send(Op::SyncSession {
+                messages: app.api_messages.clone(),
+                system_prompt: app.system_prompt.clone(),
+                model: app.model.clone(),
+                workspace: workspace.clone(),
+            })
+            .await;
+    }
+
+    app.add_message(HistoryCell::System {
+        content: format!("Switched workspace to {}", workspace.display()),
+    });
+    app.status_message = Some(format!("Workspace: {}", workspace.display()));
 }
 
 async fn handle_mcp_ui_action(

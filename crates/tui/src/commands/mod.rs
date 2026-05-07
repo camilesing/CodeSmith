@@ -214,6 +214,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdHomeDescription,
     },
     CommandInfo {
+        name: "workspace",
+        aliases: &["cwd"],
+        usage: "/workspace [path]",
+        description_id: MessageId::CmdWorkspaceDescription,
+    },
+    CommandInfo {
         name: "note",
         aliases: &[],
         usage: "/note <text>",
@@ -509,6 +515,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "subagents" | "agents" => core::subagents(app),
         "links" | "dashboard" | "api" => core::deepseek_links(app),
         "home" | "stats" | "overview" => core::home_dashboard(app),
+        "workspace" | "cwd" => core::workspace_switch(app, arg),
         "note" => note::note(app, arg),
         "memory" => memory::memory(app, arg),
         "attach" | "image" | "media" => attachment::attach(app, arg),
@@ -822,6 +829,7 @@ mod tests {
     use crate::config::Config;
     use crate::tui::app::{App, AppAction, TuiOptions};
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     fn create_test_app() -> App {
         let options = TuiOptions {
@@ -924,6 +932,17 @@ mod tests {
             assert!(msg.contains("https://platform.deepseek.com"));
             assert!(result.action.is_none());
         }
+    }
+
+    #[test]
+    fn execute_workspace_alias_switches_workspace() {
+        let dir = tempdir().expect("temp dir");
+        let mut app = create_test_app();
+        let result = execute(&format!("/cwd {}", dir.path().display()), &mut app);
+        assert!(matches!(
+            result.action,
+            Some(AppAction::SwitchWorkspace { workspace }) if workspace == dir.path().canonicalize().unwrap()
+        ));
     }
 
     #[test]
