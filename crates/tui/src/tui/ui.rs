@@ -1,7 +1,7 @@
 //! TUI event loop and rendering logic for `DeepSeek` CLI.
 
 use std::collections::HashSet;
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -134,6 +134,7 @@ const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
+const TERMINAL_ORIGIN_RESET: &[u8] = b"\x1b[r\x1b[?6l\x1b[H\x1b[2J";
 
 /// Run the interactive TUI event loop.
 ///
@@ -641,6 +642,7 @@ async fn run_event_loop(
     // for terminal-native text selection.
     let mut shift_bypass_active = false;
     let mut terminal_paused_at: Option<Instant> = None;
+    let mut force_terminal_repaint = false;
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -870,6 +872,7 @@ async fn run_event_loop(
                         status,
                         error,
                     } => {
+                        force_terminal_repaint = true;
                         // Finalize any in-flight tool group. Cancellation
                         // marks still-running entries as Failed so the user
                         // sees they were interrupted rather than the spinner
@@ -1471,6 +1474,7 @@ async fn run_event_loop(
             terminal_paused_at = None;
             app.status_message = Some("Terminal controls restored".to_string());
             app.needs_redraw = true;
+            force_terminal_repaint = true;
         }
 
         let now = Instant::now();
@@ -1511,6 +1515,10 @@ async fn run_event_loop(
             None
         };
         if app.needs_redraw && draw_wait.is_none() {
+            if force_terminal_repaint {
+                reset_terminal_viewport(terminal)?;
+                force_terminal_repaint = false;
+            }
             terminal.draw(|f| render(f, app))?; // app is &mut
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
@@ -1630,7 +1638,7 @@ async fn run_event_loop(
                     );
                 }
 
-                terminal.clear()?;
+                reset_terminal_viewport(terminal)?;
                 app.handle_resize(final_w, final_h);
                 // #macos-resize: some terminals (macOS Terminal.app, Windows
                 // ConHost) briefly report stale dimensions via
@@ -6208,6 +6216,17 @@ fn resume_terminal(
     if use_bracketed_paste {
         execute!(terminal.backend_mut(), EnableBracketedPaste)?;
     }
+    reset_terminal_viewport(terminal)?;
+    Ok(())
+}
+
+fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
+    // Reset scroll margins and origin mode before clearing. Some interactive
+    // child processes leave DECSTBM/DECOM behind; if ratatui's diff renderer
+    // then writes "row 0", terminals can place it relative to the leaked
+    // scroll region and the whole viewport appears shifted down.
+    terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
+    terminal.backend_mut().flush()?;
     terminal.clear()?;
     Ok(())
 }
