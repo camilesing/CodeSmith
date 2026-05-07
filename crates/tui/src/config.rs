@@ -289,6 +289,27 @@ pub struct TuiConfig {
     /// label and ignore the escape. Defaults to `true`; set `false` for
     /// terminals that misrender the sequence.
     pub osc8_links: Option<bool>,
+    /// High-level notification trigger condition. When set, overrides the
+    /// `[notifications].threshold_secs` gate from the lower-level
+    /// `[notifications]` block:
+    ///
+    /// - `Always` — fire a turn-completion notification on every successful
+    ///   turn regardless of duration. The configured `[notifications].method`
+    ///   and `include_summary` flag are still respected.
+    /// - `Never` — suppress all turn-completion notifications.
+    /// - Unset (default) — fall back to the `[notifications]` defaults.
+    pub notification_condition: Option<NotificationCondition>,
+}
+
+/// High-level notification trigger override. See
+/// [`TuiConfig::notification_condition`].
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationCondition {
+    /// Notify on every successful turn (no duration threshold).
+    Always,
+    /// Suppress notifications entirely.
+    Never,
 }
 
 /// Notification delivery method (mirrors `tui::notifications::Method`).

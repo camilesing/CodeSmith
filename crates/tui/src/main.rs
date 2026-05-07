@@ -4348,6 +4348,7 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                notification_condition: None,
             }),
             ..Config::default()
         };
@@ -4373,6 +4374,7 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                notification_condition: None,
             }),
             ..Config::default()
         };
@@ -4446,6 +4448,7 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                notification_condition: None,
             }),
             ..Config::default()
         };

@@ -662,6 +662,7 @@ fn terminal_probe_timeout_uses_tui_config_and_clamps() {
             terminal_probe_timeout_ms: Some(750),
             status_items: None,
             osc8_links: None,
+            notification_condition: None,
         }),
         ..Config::default()
     };
@@ -3389,4 +3390,124 @@ fn scroll_with_arrows_returns_false_when_input_has_text() {
         !super::should_scroll_with_arrows(&app),
         "text in composer: Up/Down should navigate history"
     );
+}
+
+#[test]
+fn notification_settings_tui_always_keeps_configured_method_no_threshold() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Always),
+            ..Default::default()
+        }),
+        notifications: Some(crate::config::NotificationsConfig {
+            method: crate::config::NotificationMethod::Bel,
+            threshold_secs: 120,
+            include_summary: true,
+        }),
+        ..Config::default()
+    };
+
+    let (method, threshold, include_summary) =
+        super::notification_settings(&config).expect("notification should be enabled");
+    assert_eq!(method, crate::tui::notifications::Method::Bel);
+    assert_eq!(threshold, Duration::ZERO);
+    assert!(include_summary);
+}
+
+#[test]
+fn notification_settings_tui_never_disables_notifications() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Never),
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+
+    assert!(super::notification_settings(&config).is_none());
+}
+
+#[test]
+fn notification_settings_no_tui_override_uses_notifications_block() {
+    let config = Config {
+        notifications: Some(crate::config::NotificationsConfig {
+            method: crate::config::NotificationMethod::Osc9,
+            threshold_secs: 45,
+            include_summary: false,
+        }),
+        ..Config::default()
+    };
+
+    let (method, threshold, include_summary) =
+        super::notification_settings(&config).expect("notification should be enabled");
+    assert_eq!(method, crate::tui::notifications::Method::Osc9);
+    assert_eq!(threshold, Duration::from_secs(45));
+    assert!(!include_summary);
+}
+
+#[test]
+fn completed_turn_notification_uses_streaming_text() {
+    let app = create_test_app();
+    let msg = super::completed_turn_notification_message(
+        &app,
+        "Hello there.\n\nWhat's next?",
+        false,
+        Duration::from_secs(12),
+        None,
+    );
+    assert_eq!(msg, "Hello there.\nWhat's next?");
+}
+
+#[test]
+fn completed_turn_notification_falls_back_to_latest_assistant_message() {
+    let mut app = create_test_app();
+    app.api_messages.push(crate::models::Message {
+        role: "assistant".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "Earlier turn".to_string(),
+            cache_control: None,
+        }],
+    });
+    app.api_messages.push(crate::models::Message {
+        role: "user".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "next".to_string(),
+            cache_control: None,
+        }],
+    });
+    app.api_messages.push(crate::models::Message {
+        role: "assistant".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "Latest reply".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let msg =
+        super::completed_turn_notification_message(&app, "", false, Duration::from_secs(75), None);
+    assert_eq!(msg, "Latest reply");
+}
+
+#[test]
+fn completed_turn_notification_falls_back_to_default_when_empty() {
+    let app = create_test_app();
+    let msg =
+        super::completed_turn_notification_message(&app, "", false, Duration::from_secs(5), None);
+    assert_eq!(msg, "deepseek: turn complete");
+}
+
+#[test]
+fn completed_turn_notification_truncates_long_text() {
+    let app = create_test_app();
+    let long = "a".repeat(500);
+    let msg = super::completed_turn_notification_message(
+        &app,
+        &long,
+        false,
+        Duration::from_secs(5),
+        None,
+    );
+    assert!(msg.ends_with("..."));
+    // 360-char body + 3-char ellipsis
+    assert_eq!(msg.chars().count(), 363);
 }
