@@ -213,6 +213,7 @@ deepseek pr <N>                                # 获取 PR 并预填审查提示
 deepseek mcp list                              # 列出已配置 MCP 服务器
 deepseek mcp validate                          # 校验 MCP 配置和连接
 deepseek mcp-server                            # 启动 dispatcher MCP stdio 服务器
+deepseek update                                # 检查并应用二进制更新
 ```
 
 ### 常用快捷键
