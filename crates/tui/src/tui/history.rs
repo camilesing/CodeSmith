@@ -2704,7 +2704,7 @@ fn error_body_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
 }
 
 fn thinking_style() -> Style {
-    Style::default().fg(palette::TEXT_TOOL_OUTPUT)
+    Style::default().fg(palette::TEXT_REASONING)
 }
 
 fn render_tool_header(

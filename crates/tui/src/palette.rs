@@ -107,12 +107,13 @@ pub const LIGHT_SELECTION_BG: Color = Color::Rgb(
     LIGHT_SELECTION_RGB.2,
 );
 
-pub const TEXT_BODY: Color = Color::White;
-pub const TEXT_SECONDARY: Color = Color::Rgb(192, 192, 192); // #C0C0C0
-pub const TEXT_HINT: Color = Color::Rgb(160, 160, 160); // #A0A0A0
+pub const TEXT_BODY: Color = Color::Rgb(226, 232, 240); // #E2E8F0
+pub const TEXT_SECONDARY: Color = Color::Rgb(177, 190, 207); // #B1BECF
+pub const TEXT_HINT: Color = Color::Rgb(135, 151, 171); // #8797AB
 pub const TEXT_ACCENT: Color = DEEPSEEK_SKY;
 pub const SELECTION_TEXT: Color = Color::White;
-pub const TEXT_SOFT: Color = Color::Rgb(214, 223, 235); // #D6DFEB
+pub const TEXT_SOFT: Color = Color::Rgb(217, 226, 238); // #D9E2EE
+pub const TEXT_REASONING: Color = Color::Rgb(211, 170, 112); // #D3AA70
 
 // Compatibility aliases for existing call sites.
 pub const TEXT_PRIMARY: Color = TEXT_BODY;
@@ -148,10 +149,10 @@ pub const SURFACE_ERROR: Color = Color::Rgb(63, 27, 36); // #3F1B24
 pub const DIFF_ADDED_BG: Color = Color::Rgb(18, 52, 38); // #123426 dark green tint
 pub const DIFF_DELETED_BG: Color = Color::Rgb(52, 22, 28); // #34161C dark red tint
 pub const DIFF_ADDED: Color = Color::Rgb(87, 199, 133); // #57C785
-pub const ACCENT_REASONING_LIVE: Color = Color::Rgb(146, 198, 248); // #92C6F8
+pub const ACCENT_REASONING_LIVE: Color = Color::Rgb(224, 153, 72); // #E09948
 pub const ACCENT_TOOL_LIVE: Color = Color::Rgb(133, 184, 234); // #85B8EA
 pub const ACCENT_TOOL_ISSUE: Color = Color::Rgb(192, 143, 153); // #C08F99
-pub const TEXT_TOOL_OUTPUT: Color = Color::Rgb(205, 216, 228); // #CDD8E4
+pub const TEXT_TOOL_OUTPUT: Color = Color::Rgb(191, 205, 220); // #BFCEDC
 
 // Legacy status colors - keep for backward compatibility
 pub const STATUS_SUCCESS: Color = DEEPSEEK_SKY;
@@ -341,7 +342,7 @@ pub fn adapt_fg_for_palette_mode(color: Color, _bg: Color, mode: PaletteMode) ->
         LIGHT_BORDER
     } else if color == TEXT_ACCENT || color == DEEPSEEK_SKY || color == ACCENT_TOOL_LIVE {
         DEEPSEEK_BLUE
-    } else if color == ACCENT_REASONING_LIVE {
+    } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
         Color::Rgb(146, 64, 14)
     } else if color == ACCENT_TOOL_ISSUE {
         Color::Rgb(159, 18, 57)
@@ -646,10 +647,10 @@ mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
         DEEPSEEK_SLATE, LIGHT_PANEL, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
-        LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, TEXT_HINT, UI_THEME, adapt_bg,
-        adapt_bg_for_palette_mode, adapt_color, adapt_fg_for_palette_mode, blend, nearest_ansi16,
-        normalize_hex_rgb_color, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
-        rgb_to_ansi256,
+        LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
+        TEXT_TOOL_OUTPUT, UI_THEME, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
+        adapt_fg_for_palette_mode, blend, nearest_ansi16, normalize_hex_rgb_color,
+        parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint, rgb_to_ansi256,
     };
     use ratatui::style::Color;
 
@@ -673,6 +674,15 @@ mod tests {
         assert_eq!(theme, LIGHT_UI_THEME);
         assert_eq!(theme.surface_bg, LIGHT_SURFACE);
         assert_eq!(theme.text_body, LIGHT_TEXT_BODY);
+    }
+
+    #[test]
+    fn dark_palette_uses_soft_body_text_and_warm_reasoning() {
+        assert_eq!(TEXT_BODY, Color::Rgb(226, 232, 240));
+        assert_eq!(TEXT_REASONING, Color::Rgb(211, 170, 112));
+        assert_eq!(ACCENT_REASONING_LIVE, Color::Rgb(224, 153, 72));
+        assert_ne!(TEXT_REASONING, TEXT_TOOL_OUTPUT);
+        assert_ne!(TEXT_BODY, Color::White);
     }
 
     #[test]
