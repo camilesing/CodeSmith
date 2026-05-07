@@ -186,18 +186,24 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## v0.8.13 新功能
+## v0.8.17 新功能
 
-稳定性发布：聚焦 DeepSeek V4 运行时可靠性、工具调用恢复和 TUI 状态准确性。[完整更新日志](CHANGELOG.md)。
+几乎全部由社区贡献构成的可靠性版本。[完整更新日志](CHANGELOG.md)。
 
-- **无需 LLM 的压缩预剪枝** —— 付费摘要前先机械压缩旧的大型工具结果；重复读取只保留最新完整内容
-- **重复工具调用防循环** —— 同一轮内第三次完全相同的 `(tool, args)` 会变成纠正性工具结果，而不是继续卡住重试
-- **V4 缓存命中率状态栏** —— 状态栏现在识别 `usage.prompt_tokens_details.cached_tokens`
-- **工具调用恢复** —— 无效 JSON 参数、幻觉工具名和严格 schema 问题会在分发前修复或清理
-- **区分大小写的模型 ID** —— 第三方 provider 的模型名保留用户输入大小写，同时继续规范化紧凑 DeepSeek 别名
-- **忙碌状态修复** —— 如果 turn 开始前分发失败，会清除 `working...`，避免后续输入一直进入 pending
-- **不会弹出 Keychain 的 doctor 密钥检查** —— 诊断流程不再读取 OS keyring
-- **macOS Terminal 颜色兼容** —— `xterm-256color` 会使用 256 色索引，避免鲸蓝主题被渲染成绿色/青色块
+- **Plan 模式沙箱改为只读** —— Plan 模式下的 shell 命令不再能写入工作区，
+  关闭了 `python -c "open('f','w')"` 可在探索阶段篡改文件的安全缺口。
+- **粘贴不再自动提交** —— 粘贴带末尾换行的多行文本会留在输入框，不再立即发送。
+- **斜杠菜单覆盖所有技能** —— `/skills`、`/skill` 和斜杠自动补全现在同时显示
+  项目本地和全局技能，与系统提示块保持同步。
+- **`deepseek-cn` 预设使用官方域名** —— 默认指向 `https://api.deepseek.com`，
+  同时仍兼容旧配置中的拼写错误域名。
+- **流式思考块正确终结** —— 流错误和重启不再导致部分推理内容丢失在对话记录中。
+- **NVIDIA NIM provider 优先使用自己的 API key** —— 即使存在旧的根 DeepSeek
+  key，也能避免 401 错误。
+- **此外**：`/theme` 命令支持深色/浅色主题切换、Windows UTF-8 shell 输出、
+  ~30 GB 快照孤儿文件清理、OpenRouter 模型 ID 保留、KV 前缀缓存稳定化、
+  压缩网关后的 SSE 解压、npm 镜像逃生路径指引，以及用于回归测试的 PTY
+  TUI QA 框架。
 
 ---
 
@@ -380,14 +386,14 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **[toi500](https://github.com/toi500)** — Windows 粘贴修复报告
 - **[xsstomy](https://github.com/xsstomy)** — 终端启动重绘报告
 - **[melody0709](https://github.com/melody0709)** — 斜杠前缀回车激活报告
-- **[lloydzhou](https://github.com/lloydzhou)** 和 **[jeoor](https://github.com/jeoor)** — 压缩成本报告；lloydzhou 还贡献了确定性的环境上下文注入 (#813, #922)
+- **[lloydzhou](https://github.com/lloydzhou)** 和 **[jeoor](https://github.com/jeoor)** — 压缩成本报告；lloydzhou 还贡献了确定性的环境上下文注入 (#813, #922) 和 KV 前缀缓存稳定化 (#1080)
 - **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README 清晰化改进 (#685)
 - **[woyxiang](https://github.com/woyxiang)** — Windows 安装文档 (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — 价格/折扣信息更新 (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — 模型 ID 大小写兼容性报告 (#729)
 - **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — `working...` 卡死状态 Bug 报告和 Windows 剪贴板兜底修复 (#738, #850)
-- **[reidliu41](https://github.com/reidliu41)** — 退出后的恢复提示、工作区信任持久化，以及 Ollama provider 支持 (#863, #870, #921)
+- **[reidliu41](https://github.com/reidliu41)** — 退出后的恢复提示、工作区信任持久化、Ollama provider 支持，以及思考块流式终结修复 (#863, #870, #921, #1078)
 - **[xieshutao](https://github.com/xieshutao)** — 纯 Markdown skill 兜底解析 (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper 的 `--version` 兜底 (#885)
 - **[y0sif](https://github.com/y0sif)** — 直接子智能体完成后唤醒父级 turn loop (#901)
@@ -395,7 +401,7 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — shell 命令空字节安全加固 (#706, #918)
 - **macworkers** — fork 完成后显示新 session id (#600, #919)
 - **zero** 和 **[zerx-lab](https://github.com/zerx-lab)** — 通知条件配置和更完整的 OSC 9 通知正文 (#820, #920)
-- **[chnjames](https://github.com/chnjames)** — @mention 补全缓存和配置恢复优化 (#849, #927)
+- **[chnjames](https://github.com/chnjames)** — @mention 补全缓存、配置恢复优化，以及 Windows UTF-8 shell 输出修复 (#849, #927, #982, #1018)
 - **[angziii](https://github.com/angziii)** — 配置安全、异步清理、Docker 加固和命令安全修复 (#822, #824, #827, #831, #833, #835, #837)
 - **[elowen53](https://github.com/elowen53)** — UTF-8 解码和确定性测试覆盖 (#825, #840)
 - **[wdw8276](https://github.com/wdw8276)** — 用于自定义 session 标题的 `/rename` 命令 (#836)
@@ -404,6 +410,15 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **Hafeez Pizofreude** — `fetch_url` 的 SSRF 保护和 Star History 图表
 - **Unic (YuniqueUnic)** — 基于 schema 的配置 UI（TUI + web）
 - **Jason** — SSRF 安全加固
+- **[axobase001](https://github.com/axobase001)** — 快照孤儿文件清理、npm 安装守卫、会话遥测修复、模型作用域缓存清理、符号链接技能支持，以及 npm 镜像逃生路径指引 (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
+- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` 深色/浅色主题切换命令和 SSE gzip/brotli 解压支持 (#1057, #1061)
+- **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan 模式只读沙箱安全修复 (#1077)
+- **[bevis-wong](https://github.com/bevis-wong)** — 粘贴-回车自动提交问题的精确复现 (#1073)
+- **[Duducoco](https://github.com/Duducoco)** 和 **[AlphaGogoo](https://github.com/AlphaGogoo)** — 技能斜杠菜单和 `/skills` 覆盖范围修复 (#1068, #1083)
+- **[ArronAI007](https://github.com/ArronAI007)** — macOS Terminal.app 和 ConHost 窗口大小调整残留修复 (#993)
+- **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter 和自定义端点模型 ID 保留 (#1066)
+- **[Jefsky](https://github.com/Jefsky)** — `deepseek-cn` 官方端点默认值 (#1079, #1084)
+- **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API key 优先级诊断 (#1081)
 
 ---
 

@@ -219,28 +219,31 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.16
+## What's New In v0.8.17
 
-A focused hotfix for RLM, sub-agent visibility, and terminal ownership on top
-of v0.8.15.
+A focused reliability release built almost entirely from community contributions.
 [Full changelog](CHANGELOG.md).
 
-- **RLM no longer has the old 180s wall-clock timeout** — long-input REPL work
-  can keep running while it is still making progress.
-- **RLM reports what happened** — output now includes input size, iteration
-  count, elapsed time, sub-LLM RPC count, and termination state.
-- **RLM chunking is safer for exact answers** — prompts require deterministic
-  Python for counts/aggregation and coverage reporting for whole-input chunks.
-- **Sub-agent visibility is more truthful** — `/subagents`, the transcript, and
-  the right rail include live progress and fanout workers instead of showing
-  false `No agents` or `No active tasks` states.
-- **Sub-agent cards are quieter** — internal scheduler lines are hidden while
-  useful tool activity remains visible.
-- **Sub-agent completion events stay internal** — the parent agent integrates
-  child results without explaining raw sentinel XML back to the user.
-- **Terminal ownership is hardened** — background sub-agents cannot take over
-  the parent terminal, and the TUI restores alternate-screen mode after
-  delegated work drains.
+- **Plan-mode sandbox is now read-only** — shell commands in Plan mode can no
+  longer write to the workspace, closing a safety gap where `python -c
+  "open('f','w')"` could mutate files during investigation.
+- **Paste-Enter no longer auto-submits** — pasting multi-line text with a
+  trailing newline stays in the composer instead of firing immediately.
+- **Slash menu covers all skills** — `/skills`, `/skill`, and the slash
+  autocomplete now show both project-local and global skills in sync with the
+  system-prompt block.
+- **`deepseek-cn` preset uses the official host** — defaults to
+  `https://api.deepseek.com` while still recognising legacy configs with the
+  old typo host.
+- **Streaming thinking blocks finalize cleanly** — stream errors and restarts
+  no longer leave partial reasoning orphaned in the transcript.
+- **NVIDIA NIM provider prefers its own API key** — even when a legacy root
+  DeepSeek key is present, avoiding 401s.
+- **Plus**: `/theme` command for dark/light toggle, Windows UTF-8 shell output,
+  ~30 GB snapshot-orphan cleanup, OpenRouter model-ID preservation, KV
+  prefix-cache stabilisation, SSE decompression behind compressing gateways,
+  npm mirror-escape-hatch guidance, and a PTY-driven TUI QA harness for
+  regression testing.
 
 ---
 
@@ -429,14 +432,14 @@ This project ships with help from a growing community of contributors:
 - **[toi500](https://github.com/toi500)** — Windows paste fix report
 - **[xsstomy](https://github.com/xsstomy)** — Terminal startup repaint report
 - **[melody0709](https://github.com/melody0709)** — Slash-prefix Enter activation report
-- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports; lloydzhou also contributed deterministic environment context (#813, #922)
+- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports; lloydzhou also contributed deterministic environment context (#813, #922) and KV prefix-cache stabilisation (#1080)
 - **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README clarity pass (#685)
 - **[woyxiang](https://github.com/woyxiang)** — Windows install documentation (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — model ID case-sensitivity compatibility report (#729)
 - **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report and Windows clipboard fallback (#738, #850)
-- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, and Ollama provider support (#863, #870, #921)
+- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, Ollama provider support, and thinking-block stream finalization (#863, #870, #921, #1078)
 - **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
 - **[y0sif](https://github.com/y0sif)** — parent turn-loop wakeup after direct child sub-agent completion (#901)
@@ -444,7 +447,7 @@ This project ships with help from a growing community of contributors:
 - **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — command-safety null-byte hardening (#706, #918)
 - **macworkers** — fork confirmation with the new session id (#600, #919)
 - **zero** and **[zerx-lab](https://github.com/zerx-lab)** — notification condition config and richer OSC 9 notification body (#820, #920)
-- **[chnjames](https://github.com/chnjames)** — cached @mention completions and config recovery polish (#849, #927)
+- **[chnjames](https://github.com/chnjames)** — cached @mention completions, config recovery polish, and Windows UTF-8 shell output (#849, #927, #982, #1018)
 - **[angziii](https://github.com/angziii)** — config safety, async cleanup, Docker hardening, and command-safety fixes (#822, #824, #827, #831, #833, #835, #837)
 - **[elowen53](https://github.com/elowen53)** — UTF-8 decoding and deterministic test coverage (#825, #840)
 - **[wdw8276](https://github.com/wdw8276)** — `/rename` command for custom session titles (#836)
@@ -453,6 +456,15 @@ This project ships with help from a growing community of contributors:
 - **Hafeez Pizofreude** — SSRF protection in `fetch_url` and Star History chart
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
+- **[axobase001](https://github.com/axobase001)** — snapshot orphan cleanup, npm install guards, session telemetry fixes, model-scope cache clear, symlinked skill support, and npm mirror-escape-hatch guidance (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
+- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command for dark/light toggle and SSE gzip/brotli decompression (#1057, #1061)
+- **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan-mode read-only sandbox safety fix (#1077)
+- **[bevis-wong](https://github.com/bevis-wong)** — precise paste-Enter auto-submit reproducer (#1073)
+- **[Duducoco](https://github.com/Duducoco)** and **[AlphaGogoo](https://github.com/AlphaGogoo)** — skills slash-menu and `/skills` coverage fix (#1068, #1083)
+- **[ArronAI007](https://github.com/ArronAI007)** — window-resize artifact fix for macOS Terminal.app and ConHost (#993)
+- **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter and custom-endpoint model-ID preservation (#1066)
+- **[Jefsky](https://github.com/Jefsky)** — `deepseek-cn` official endpoint default (#1079, #1084)
+- **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API-key preference diagnosis (#1081)
 
 ---
 
