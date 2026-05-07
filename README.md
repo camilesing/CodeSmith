@@ -274,6 +274,15 @@ deepseek mcp-server                              # run dispatcher MCP stdio serv
 deepseek update                                  # check for and apply binary updates
 ```
 
+Docker images are published to GHCR for release builds:
+
+```bash
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v ~/.deepseek:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek-tui:latest
+```
+
 ### Zed / ACP
 
 DeepSeek can run as a custom Agent Client Protocol server for editors that

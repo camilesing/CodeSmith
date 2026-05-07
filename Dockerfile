@@ -18,6 +18,7 @@ ARG RUST_VERSION=1.88
 # ── Stage 1: Build ────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS builder
 ARG TARGETPLATFORM
+ARG TARGETARCH
 ARG BUILDPLATFORM
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,8 +41,9 @@ COPY . .
 
 # Build both binaries for the target platform.  --locked ensures
 # reproducible builds from the committed lockfile.
-RUN --mount=type=cache,target=/build/target \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=deepseek-tui-target-${TARGETARCH},target=/build/target,sharing=locked \
+    --mount=type=cache,id=deepseek-tui-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=deepseek-tui-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
     cargo build --release --locked --target "$(cat /rust-target)" \
     && mkdir -p /out \
     && cp target/$(cat /rust-target)/release/deepseek /out/ \

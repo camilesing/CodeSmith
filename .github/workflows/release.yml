@@ -139,10 +139,6 @@ jobs:
   docker:
     needs: build
     if: ${{ !cancelled() && needs.build.result == 'success' }}
-    # Docker/GHCR is experimental and not a supported release channel yet.
-    # Keep binary GitHub Releases publishable while the arm64 image build path
-    # is hardened separately.
-    continue-on-error: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -159,17 +155,24 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository }}
+            ${{ steps.image.outputs.name }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern=v{{major}}
             type=ref,event=tag
+            type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=v${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -182,8 +185,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   release:
-    needs: build
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    needs: [build, docker]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.docker.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -205,8 +208,18 @@ jobs:
             printf '%s  %s\n' "${hash}" "${base}" >> "${manifest}"
           done < <(find artifacts -type f ! -path 'artifacts/checksums/*' -print0 | sort -z)
           cat "${manifest}"
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
       - uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
           files: artifacts/*/*
           prerelease: false
           body: |
@@ -219,6 +232,17 @@ jobs:
             ```
 
             The wrapper downloads both binaries from this Release and places them in the same directory.
+
+            ### Docker / GHCR
+
+            ```bash
+            docker run --rm -it \
+              -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+              -v ~/.deepseek:/home/deepseek/.deepseek \
+              ghcr.io/hmbown/deepseek-tui:${{ steps.release_tag.outputs.tag }}
+            ```
+
+            The image ships the `deepseek` dispatcher and `deepseek-tui` runtime. The `latest` tag is also updated on release.
 
             ### Cargo (Linux / macOS)
 

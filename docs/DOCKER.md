@@ -1,11 +1,33 @@
 # Docker
 
-Docker support is currently a local-build/devcontainer path, not a supported
-release channel. The release workflow may try an experimental GHCR publish, but
-no public `ghcr.io/hmbown/deepseek-tui` image should be treated as available
-until this page says so.
+DeepSeek-TUI publishes a multi-arch Linux image to GitHub Container Registry
+for each release.
 
-## Local quick start
+```bash
+docker pull ghcr.io/hmbown/deepseek-tui:latest
+```
+
+## Quick start
+
+Run the published image with your existing config directory mounted:
+
+```bash
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v ~/.deepseek:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek-tui:latest
+```
+
+Use a pinned release tag for reproducible installs:
+
+```bash
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v ~/.deepseek:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek-tui:v0.8.18
+```
+
+## Local build
 
 Build the image locally from a checkout:
 
@@ -22,7 +44,8 @@ docker run --rm -it \
   deepseek-tui
 ```
 
-Docker Hub publishing is not configured.
+Docker Hub publishing is not configured; GHCR is the supported prebuilt image
+registry.
 
 ## Environment variables
 
@@ -50,7 +73,7 @@ When stdin is not a TTY, `deepseek` drops to the dispatcher's one-shot mode
 
 ```bash
 echo "Explain the Cargo.toml in structured English." | \
-  docker run --rm -i -e DEEPSEEK_API_KEY deepseek-tui
+  docker run --rm -i -e DEEPSEEK_API_KEY ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 ## Building locally
@@ -73,6 +96,5 @@ ready-to-use development environment.
 
 ## Release status
 
-Docker image publishing is experimental and non-blocking for releases. The
-supported distribution channels are npm, Cargo, Homebrew, GitHub Release
-assets, and Scoop's independently maintained main-bucket manifest.
+Docker image publishing is part of the release gate. The image is published to
+GHCR for `linux/amd64` and `linux/arm64` with semver tags plus `latest`.
