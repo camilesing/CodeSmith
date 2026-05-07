@@ -383,6 +383,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 rustup default stable
 cargo install deepseek-tui-cli --locked
+cargo install deepseek-tui     --locked
 ```
 
 Afterward, `which cargo` should point to `~/.cargo/bin/cargo`, not
