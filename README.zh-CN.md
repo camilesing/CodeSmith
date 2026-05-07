@@ -26,6 +26,12 @@ brew install deepseek-tui
 # 4. 直接下载 —— 无需任何工具链。
 #    https://github.com/Hmbown/DeepSeek-TUI/releases
 #    覆盖 Linux x64/ARM64、macOS x64/ARM64、Windows x64
+
+# 5. Docker —— 预构建发布镜像。
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY \
+  -v "$PWD:/workspace" \
+  ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 > 中国大陆访问较慢时，npm 可加 `--registry=https://registry.npmmirror.com`，
@@ -186,24 +192,23 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## v0.8.17 新功能
+## v0.8.18 新功能
 
-几乎全部由社区贡献构成的可靠性版本。[完整更新日志](CHANGELOG.md)。
+面向 TUI、运行时和安装体验的跟进版本。[完整更新日志](CHANGELOG.md)。
 
-- **Plan 模式沙箱改为只读** —— Plan 模式下的 shell 命令不再能写入工作区，
-  关闭了 `python -c "open('f','w')"` 可在探索阶段篡改文件的安全缺口。
-- **粘贴不再自动提交** —— 粘贴带末尾换行的多行文本会留在输入框，不再立即发送。
-- **斜杠菜单覆盖所有技能** —— `/skills`、`/skill` 和斜杠自动补全现在同时显示
-  项目本地和全局技能，与系统提示块保持同步。
-- **`deepseek-cn` 预设使用官方域名** —— 默认指向 `https://api.deepseek.com`，
-  同时仍兼容旧配置中的拼写错误域名。
-- **流式思考块正确终结** —— 流错误和重启不再导致部分推理内容丢失在对话记录中。
-- **NVIDIA NIM provider 优先使用自己的 API key** —— 即使存在旧的根 DeepSeek
-  key，也能避免 401 错误。
-- **此外**：`/theme` 命令支持深色/浅色主题切换、Windows UTF-8 shell 输出、
-  ~30 GB 快照孤儿文件清理、OpenRouter 模型 ID 保留、KV 前缀缓存稳定化、
-  压缩网关后的 SSE 解压、npm 镜像逃生路径指引，以及用于回归测试的 PTY
-  TUI QA 框架。
+- **直接运行 `deepseek` 会启动新会话** —— 同一目录开第二个终端时，不再静默进入
+  同一个中断检查点；需要恢复时请显式使用 `deepseek --continue`。
+- **Docker 成为受支持安装方式** —— 发布流程会推送
+  `ghcr.io/hmbown/deepseek-tui`，包含 `latest`、语义版本和 `vX.Y.Z` 标签。
+- **中文危险审批弹窗本地化** —— zh-Hans 文案会明确保留破坏性风险提示，
+  英文默认行为不变。
+- **对话滚动条支持拖拽** —— 开启鼠标捕获后，可直接拖拽 transcript 滚动条。
+- **修复终端视口漂移** —— 关键重绘前会重置滚动边界和 origin mode，并加入 PTY
+  回归测试覆盖顶部空行问题。
+- **npm 安装更稳健** —— postinstall 阶段的临时下载失败可恢复；校验和、平台、
+  glibc 和运行时错误仍然保持失败。
+- **此外**：FreeBSD secrets crate 编译回退、Docker Buildx cache 竞争修复、
+  长会话文本配色微调、Windows 沙箱保证说明收紧，以及 rustup 镜像安装排障更新。
 
 ---
 
