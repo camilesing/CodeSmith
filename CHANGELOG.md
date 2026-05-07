@@ -5,6 +5,106 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.17] - 2026-05-07
+
+A focused reliability release built almost entirely from community contributions.
+Fixes Plan-mode safety, paste-Enter auto-submit, slash-menu skills coverage, the
+`deepseek-cn` endpoint preset, and a handful of platform / streaming /
+gateway-compatibility issues. Also lands a small PTY-driven QA harness so the
+next round of TUI fixes can be verified against real terminal behaviour.
+
+### Added
+- **`/theme` command** (#1057) — toggle between dark and light themes inline,
+  without round-tripping through `/config`. Thanks @MengZ-super.
+- **PTY/frame-capture TUI QA harness** — new
+  `crates/tui/tests/support/qa_harness/` lets integration tests spawn
+  `deepseek-tui` in a real pseudo-terminal, send scripted keys / paste /
+  resize, and assert on the parsed terminal frame plus the workspace
+  filesystem. Initial scenarios cover boot smoke and the #1073 paste regression.
+  Adding-a-scenario walkthrough lives in `crates/tui/tests/support/qa_harness/README.md`.
+
+### Changed
+- **`deepseek-cn` provider preset now defaults to the official
+  `https://api.deepseek.com` host** (#1079, #1084) — matches
+  [api-docs.deepseek.com](https://api-docs.deepseek.com/). The legacy typo
+  host `api.deepseeki.com` is still recognized in URL heuristics and chat-client
+  normalization so existing user configs keep working. Thanks @Jefsky.
+- **Plan mode runs shell commands in a read-only sandbox** (#1077) — was
+  `WorkspaceWrite` with the workspace as a writable root, which let
+  `python -c "open('f','w').write('x')"` mutate files inside the workspace.
+  Now `SandboxPolicy::ReadOnly`: no writes anywhere on the filesystem, no
+  network. Read-only inspection commands (`ls`, `git log`, `grep`,
+  `cargo metadata`, …) keep working through the per-platform sandbox; for
+  anything that creates or modifies files, switch to Agent mode (`/agent`).
+  Thanks @DI-HUO-MING-YI.
+
+### Fixed
+- **Pasting multi-line text with a trailing newline no longer auto-submits**
+  (#1073) — the composer's Enter handler now consults the paste-burst
+  suppression state and either appends `\n` to the in-flight burst buffer or
+  inserts it into the composer text directly, instead of falling through to
+  `submit_input()`. Reproduced from the original Windows / PowerShell
+  symptom; fix covers both the bracketed-paste and rapid-keystroke detection
+  paths. Thanks @bevis-wong for the precise reproducer.
+- **Slash menu, `/skills`, and `/skill <name>` show project-local AND global
+  skills** (#1068, #1083) — switched the cache to `discover_in_workspace`, so
+  the UI surfaces stay in sync with the system-prompt skills block. Bonus
+  fix: `SKILL.md` frontmatter values are now stripped of surrounding YAML
+  quotes, so `name: "hud"` registers as `hud` and matches prefix lookup.
+  Thanks @AlphaGogoo / @Duducoco.
+- **Windows shell output is decoded as UTF-8 even on non-UTF-8 system code
+  pages** (#982, #1018) — Windows shell commands are now wrapped with
+  `chcp 65001 >NUL & ` so subprocesses output UTF-8 instead of GBK / other
+  ANSI code pages. `display_command` strips the prefix so transcripts and
+  approval prompts stay clean. Thanks @chnjames.
+- **Stale snapshot `tmp_pack_*` files are cleaned up on startup** (#975,
+  #1055) — interrupted side-repo git pack operations no longer leak orphaned
+  temp files; `prune_unreachable_objects` runs during the regular prune
+  cycle to drop loose objects from rolled-back snapshots. Closes the
+  ~30 GB+ disk-usage report. Thanks @axobase001.
+- **Window-resize artifacts on macOS Terminal.app and Windows ConHost are
+  gone** (#993) — forces the resize-event size during the post-resize draw
+  so ratatui's internal `autoresize()` cannot shrink the viewport back to a
+  stale dimension and leave the newly-expanded area filled with stale
+  content. Same class as #582 for additional emulator families. Thanks
+  @ArronAI007.
+- **Streaming thinking blocks finalize cleanly on stream errors and
+  restarts** (#861 partial, #1078) — the engine-error handler now drains
+  the in-flight thinking block into the transcript instead of leaving the
+  partial reasoning orphaned in `StreamingState`. Refactor extracts the
+  thinking lifecycle into named helpers (`start_streaming_thinking_block`,
+  `finalize_current_streaming_thinking`, `stash_reasoning_buffer_into_last_reasoning`).
+  Thanks @reidliu41.
+- **OpenRouter and other custom-endpoint providers preserve explicit model
+  IDs** (#1066) — when a provider has an explicit model AND a custom
+  `base_url` (different from the provider default), the model name is no
+  longer rewritten by provider-specific normalization. Lets OpenAI-compatible
+  gateways accept bare IDs like `deepseek/deepseek-v4-pro`,
+  `accounts/fireworks/models/...`, or `glm-5`. Thanks @THINKER-ONLY.
+- **Auto-generated `.deepseek/instructions.md` stabilizes the KV prefix
+  cache** (#1080) — replaces the per-turn filesystem-scan fallback in
+  `prompts.rs` with a real on-disk artifact when no context file exists, so
+  the system prompt's prefix stays byte-stable across turns and prefix-cache
+  hit-rate improves. The auto-generated file is plainly labelled and the
+  user can edit or delete it freely. Thanks @lloydzhou.
+- **SSE responses behind compressing gateways decode correctly** (#1061) —
+  enables reqwest's `gzip` and `brotli` features so streams through proxies
+  that compress the response come through clean instead of as protocol
+  corruption. Quiets one of the failure modes behind some "stuck working"
+  reports. Thanks @MengZ-super.
+
+### Notes for contributors
+
+This release shifts the project's PR-handling philosophy: every contribution
+has value somewhere; the maintainer's job is to find it, use it, and credit
+the contributor — never to close a PR with nothing taken. If a PR is too
+large or scope-mixed to merge whole, useful commits / files / ideas are
+harvested directly rather than asking the contributor to split it. Trust
+boundary on credentials, sandbox, providers, publishing, telemetry,
+sponsorship, branding, and global prompts still requires explicit
+maintainer sign-off, but the burden of getting there is on us. See
+`AGENTS.md` for the full text.
+
 ## [0.8.16] - 2026-05-07
 
 A focused hotfix for v0.8.15 regressions in RLM, sub-agent visibility, and
