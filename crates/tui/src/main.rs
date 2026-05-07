@@ -1684,6 +1684,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("  · provider: {}", api_target.provider);
     println!("  · base_url: {}", api_target.base_url);
     println!("  · model: {}", api_target.model);
+    let capability = crate::config::provider_capability(config.api_provider(), &api_target.model);
+    if let Some(alias) = capability.alias_deprecation.as_ref() {
+        println!(
+            "  ! model alias {} retires {}; switch to {}",
+            alias.alias, alias.retirement_date, alias.replacement
+        );
+    }
     if has_api_key {
         print!("  {} Testing connection...", "·".dimmed());
         use std::io::Write;
@@ -2314,6 +2321,7 @@ fn provider_capability_report(config: &Config) -> serde_json::Value {
         "thinking_supported": cap.thinking_supported,
         "cache_telemetry_supported": cap.cache_telemetry_supported,
         "request_payload_mode": serde_json::to_value(cap.request_payload_mode).unwrap_or_default(),
+        "alias_deprecation": cap.alias_deprecation,
     })
 }
 
@@ -4288,6 +4296,41 @@ mod doctor_endpoint_tests {
         assert_eq!(target.provider, "deepseek-cn");
         assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
         assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
+    }
+
+    #[test]
+    fn provider_capability_report_exposes_alias_deprecation_for_deepseek_chat() {
+        let config = Config {
+            default_text_model: Some("deepseek-chat".to_string()),
+            ..Default::default()
+        };
+
+        let report = provider_capability_report(&config);
+
+        assert_eq!(report["resolved_model"], "deepseek-chat");
+        assert_eq!(report["context_window"], 1_000_000);
+        assert_eq!(report["thinking_supported"], true);
+        assert_eq!(
+            report["alias_deprecation"]["replacement"],
+            "deepseek-v4-flash"
+        );
+        assert_eq!(
+            report["alias_deprecation"]["retirement_utc"],
+            "2026-07-24T15:59:00Z"
+        );
+    }
+
+    #[test]
+    fn provider_capability_report_leaves_canonical_flash_alias_metadata_null() {
+        let config = Config {
+            default_text_model: Some("deepseek-v4-flash".to_string()),
+            ..Default::default()
+        };
+
+        let report = provider_capability_report(&config);
+
+        assert_eq!(report["resolved_model"], "deepseek-v4-flash");
+        assert!(report["alias_deprecation"].is_null());
     }
 
     #[test]

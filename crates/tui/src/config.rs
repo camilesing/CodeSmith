@@ -160,6 +160,23 @@ pub struct ProviderCapability {
     pub cache_telemetry_supported: bool,
     /// Which request-payload dialect the provider uses.
     pub request_payload_mode: RequestPayloadMode,
+    /// Deprecation metadata for compatibility aliases that are still accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias_deprecation: Option<ModelAliasDeprecation>,
+}
+
+pub const DEEPSEEK_ALIAS_RETIREMENT_DATE: &str = "2026-07-24";
+pub const DEEPSEEK_ALIAS_RETIREMENT_UTC: &str = "2026-07-24T15:59:00Z";
+pub const DEEPSEEK_ALIAS_REPLACEMENT: &str = "deepseek-v4-flash";
+
+/// Upstream retirement metadata for a model alias that remains compatible.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ModelAliasDeprecation {
+    pub alias: String,
+    pub replacement: String,
+    pub retirement_date: String,
+    pub retirement_utc: String,
+    pub notice: String,
 }
 
 /// Which request-payload dialect the provider speaks.
@@ -185,14 +202,21 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             thinking_supported: false,
             cache_telemetry_supported: false,
             request_payload_mode: RequestPayloadMode::ChatCompletions,
+            alias_deprecation: None,
         };
     }
 
     let model_lower = resolved_model.to_ascii_lowercase();
+    let alias_deprecation = if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+        deepseek_alias_deprecation(&model_lower)
+    } else {
+        None
+    };
     let is_v4_pro = model_lower.contains("v4-pro") || model_lower == "deepseek-v4pro";
     let is_v4_flash = model_lower.contains("v4-flash")
         || model_lower == "deepseek-v4flash"
-        || model_lower == "deepseek-v4";
+        || model_lower == "deepseek-v4"
+        || alias_deprecation.is_some();
 
     // Context window: V4-class models get 1M, everything else falls through
     // to the model's own lookup or a default.
@@ -232,6 +256,22 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         thinking_supported,
         cache_telemetry_supported,
         request_payload_mode,
+        alias_deprecation,
+    }
+}
+
+fn deepseek_alias_deprecation(model_lower: &str) -> Option<ModelAliasDeprecation> {
+    match model_lower {
+        "deepseek-chat" | "deepseek-reasoner" => Some(ModelAliasDeprecation {
+            alias: model_lower.to_string(),
+            replacement: DEEPSEEK_ALIAS_REPLACEMENT.to_string(),
+            retirement_date: DEEPSEEK_ALIAS_RETIREMENT_DATE.to_string(),
+            retirement_utc: DEEPSEEK_ALIAS_RETIREMENT_UTC.to_string(),
+            notice: format!(
+                "{model_lower} is a compatibility alias for {DEEPSEEK_ALIAS_REPLACEMENT} and is scheduled to retire on {DEEPSEEK_ALIAS_RETIREMENT_DATE}."
+            ),
+        }),
+        _ => None,
     }
 }
 
@@ -4797,6 +4837,52 @@ model = "deepseek-v4-pro"
         assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_deepseek_chat_alias_has_v4_flash_caps_and_metadata() {
+        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-chat");
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 384_000);
+        assert!(cap.thinking_supported);
+        assert!(cap.cache_telemetry_supported);
+
+        let deprecation = cap
+            .alias_deprecation
+            .as_ref()
+            .expect("alias deprecation metadata");
+        assert_eq!(deprecation.alias, "deepseek-chat");
+        assert_eq!(deprecation.replacement, "deepseek-v4-flash");
+        assert_eq!(deprecation.retirement_date, "2026-07-24");
+        assert_eq!(deprecation.retirement_utc, "2026-07-24T15:59:00Z");
+    }
+
+    #[test]
+    fn provider_capability_deepseek_reasoner_alias_has_v4_flash_caps_and_metadata() {
+        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-reasoner");
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 384_000);
+        assert!(cap.thinking_supported);
+        assert!(cap.cache_telemetry_supported);
+
+        let deprecation = cap
+            .alias_deprecation
+            .as_ref()
+            .expect("alias deprecation metadata");
+        assert_eq!(deprecation.alias, "deepseek-reasoner");
+        assert_eq!(deprecation.replacement, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn provider_capability_deepseek_v4_flash_has_no_alias_deprecation() {
+        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-v4-flash");
+        assert!(cap.alias_deprecation.is_none());
     }
 
     #[test]
