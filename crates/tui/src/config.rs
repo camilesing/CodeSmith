@@ -37,6 +37,8 @@ pub const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
 pub const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
+pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
+pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
@@ -59,6 +61,7 @@ pub enum ApiProvider {
     Fireworks,
     Sglang,
     Vllm,
+    Ollama,
 }
 
 impl ApiProvider {
@@ -75,6 +78,7 @@ impl ApiProvider {
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
+            "ollama" | "ollama-local" => Some(Self::Ollama),
             _ => None,
         }
     }
@@ -90,6 +94,7 @@ impl ApiProvider {
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
+            Self::Ollama => "ollama",
         }
     }
 
@@ -105,6 +110,7 @@ impl ApiProvider {
             Self::Fireworks => "Fireworks AI",
             Self::Sglang => "SGLang",
             Self::Vllm => "vLLM",
+            Self::Ollama => "Ollama",
         }
     }
 
@@ -120,6 +126,7 @@ impl ApiProvider {
             Self::Fireworks,
             Self::Sglang,
             Self::Vllm,
+            Self::Ollama,
         ]
     }
 }
@@ -165,6 +172,18 @@ pub enum RequestPayloadMode {
 /// in the API payload (after normalization / provider-specific mapping).
 #[must_use]
 pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> ProviderCapability {
+    if matches!(provider, ApiProvider::Ollama) {
+        return ProviderCapability {
+            provider,
+            resolved_model: resolved_model.to_string(),
+            context_window: 8192,
+            max_output: 4096,
+            thinking_supported: false,
+            cache_telemetry_supported: false,
+            request_payload_mode: RequestPayloadMode::ChatCompletions,
+        };
+    }
+
     let model_lower = resolved_model.to_ascii_lowercase();
     let is_v4_pro = model_lower.contains("v4-pro") || model_lower == "deepseek-v4pro";
     let is_v4_flash = model_lower.contains("v4-flash")
@@ -940,6 +959,8 @@ pub struct ProvidersConfig {
     pub sglang: ProviderConfig,
     #[serde(default)]
     pub vllm: ProviderConfig,
+    #[serde(default)]
+    pub ollama: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -999,7 +1020,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, sglang, or vllm."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, sglang, vllm, or ollama."
             );
         }
         if let Some(ref key) = self.api_key
@@ -1016,6 +1037,7 @@ impl Config {
         }
         if let Some(model) = self.default_text_model.as_deref()
             && !model.trim().eq_ignore_ascii_case("auto")
+            && !matches!(self.api_provider(), ApiProvider::Ollama)
             && normalize_model_name(model).is_none()
         {
             anyhow::bail!(
@@ -1118,6 +1140,7 @@ impl Config {
             ApiProvider::Fireworks => &providers.fireworks,
             ApiProvider::Sglang => &providers.sglang,
             ApiProvider::Vllm => &providers.vllm,
+            ApiProvider::Ollama => &providers.ollama,
         })
     }
 
@@ -1144,9 +1167,18 @@ impl Config {
         if let Some(model) = self
             .provider_config()
             .and_then(|provider| provider.model.as_deref())
-            && let Some(normalized) = normalize_model_for_provider(provider, model)
         {
-            return normalized;
+            if matches!(provider, ApiProvider::Ollama) {
+                return model.trim().to_string();
+            }
+            if let Some(normalized) = normalize_model_for_provider(provider, model) {
+                return normalized;
+            }
+        }
+        if let Some(model) = self.default_text_model.as_deref()
+            && matches!(provider, ApiProvider::Ollama)
+        {
+            return model.trim().to_string();
         }
         if let Some(model) = self.default_text_model.as_deref()
             && model.trim().eq_ignore_ascii_case("auto")
@@ -1167,6 +1199,7 @@ impl Config {
             ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
             ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
             ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
+            ApiProvider::Ollama => DEFAULT_OLLAMA_MODEL,
         }
         .to_string()
     }
@@ -1193,7 +1226,8 @@ impl Config {
             | ApiProvider::Novita
             | ApiProvider::Fireworks
             | ApiProvider::Sglang
-            | ApiProvider::Vllm => None,
+            | ApiProvider::Vllm
+            | ApiProvider::Ollama => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
@@ -1205,6 +1239,7 @@ impl Config {
                 ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
                 ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
                 ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
+                ApiProvider::Ollama => DEFAULT_OLLAMA_BASE_URL,
             }
             .to_string()
         });
@@ -1229,6 +1264,7 @@ impl Config {
             ApiProvider::Fireworks => "fireworks",
             ApiProvider::Sglang => "sglang",
             ApiProvider::Vllm => "vllm",
+            ApiProvider::Ollama => "ollama",
         };
 
         // 0. Explicit in-memory override (set by onboarding / provider
@@ -1289,10 +1325,9 @@ impl Config {
                 "Fireworks AI API key not found. Run 'deepseek auth set --provider fireworks', \
                  set FIREWORKS_API_KEY, or add [providers.fireworks] api_key in ~/.deepseek/config.toml."
             ),
-            // Self-hosted SGLang deployments commonly run without auth on
-            // localhost. Return an empty key and let the client omit the
-            // Authorization header.
-            ApiProvider::Sglang | ApiProvider::Vllm => Ok(String::new()),
+            // Self-hosted deployments commonly run without auth on localhost.
+            // Return an empty key and let the client omit the Authorization header.
+            ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama => Ok(String::new()),
         }
     }
 
@@ -1842,10 +1877,21 @@ fn apply_env_overrides(config: &mut Config) {
             ApiProvider::Fireworks => &mut providers.fireworks,
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
+            ApiProvider::Ollama => &mut providers.ollama,
         };
         let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
         provider_headers.extend(headers);
         entry.http_headers = Some(provider_headers);
+    }
+    if matches!(config.api_provider(), ApiProvider::Ollama)
+        && let Ok(value) = std::env::var("OLLAMA_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .ollama
+            .base_url = Some(value);
     }
     if matches!(config.api_provider(), ApiProvider::Sglang)
         && let Ok(value) = std::env::var("SGLANG_MODEL")
@@ -1854,6 +1900,11 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if matches!(config.api_provider(), ApiProvider::Vllm)
         && let Ok(value) = std::env::var("VLLM_MODEL")
+    {
+        config.default_text_model = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::Ollama)
+        && let Ok(value) = std::env::var("OLLAMA_MODEL")
     {
         config.default_text_model = Some(value);
     }
@@ -2035,6 +2086,7 @@ fn apply_env_overrides(config: &mut Config) {
 
 fn normalize_model_config(config: &mut Config) {
     if let Some(model) = config.default_text_model.as_deref()
+        && !matches!(config.api_provider(), ApiProvider::Ollama)
         && let Some(normalized) = normalize_model_for_provider(config.api_provider(), model)
     {
         config.default_text_model = Some(normalized);
@@ -2085,6 +2137,9 @@ fn normalize_model_config(config: &mut Config) {
 }
 
 fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
+    if matches!(provider, ApiProvider::Ollama) {
+        return None;
+    }
     normalize_model_name(model).map(|normalized| model_for_provider(provider, normalized))
 }
 
@@ -2274,6 +2329,7 @@ fn merge_providers(
             fireworks: merge_provider_config(base.fireworks, override_cfg.fireworks),
             sglang: merge_provider_config(base.sglang, override_cfg.sglang),
             vllm: merge_provider_config(base.vllm, override_cfg.vllm),
+            ollama: merge_provider_config(base.ollama, override_cfg.ollama),
         }),
     }
 }
@@ -2692,6 +2748,7 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
         }
         ApiProvider::Sglang => std::env::var("SGLANG_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::Vllm => std::env::var("VLLM_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::Ollama => std::env::var("OLLAMA_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
     }
 }
 
@@ -2713,6 +2770,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Fireworks => "FIREWORKS_API_KEY",
         ApiProvider::Sglang => "SGLANG_API_KEY",
         ApiProvider::Vllm => "VLLM_API_KEY",
+        ApiProvider::Ollama => "OLLAMA_API_KEY",
     };
     if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
         return true;
@@ -2723,8 +2781,11 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         return true;
     }
 
-    // SGLang is self-hosted and typically runs without authentication.
-    if matches!(provider, ApiProvider::Sglang | ApiProvider::Vllm) {
+    // Self-hosted providers typically run without authentication.
+    if matches!(
+        provider,
+        ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama
+    ) {
         return true;
     }
 
@@ -2776,6 +2837,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Fireworks => "providers.fireworks",
         ApiProvider::Sglang => "providers.sglang",
         ApiProvider::Vllm => "providers.vllm",
+        ApiProvider::Ollama => "providers.ollama",
     };
 
     // Parse existing TOML (or start fresh) so we can edit the right table
@@ -2808,6 +2870,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Fireworks => "fireworks",
         ApiProvider::Sglang => "sglang",
         ApiProvider::Vllm => "vllm",
+        ApiProvider::Ollama => "ollama",
     };
     let entry = providers
         .entry(key_inside.to_string())
@@ -2927,6 +2990,9 @@ mod tests {
         vllm_api_key: Option<OsString>,
         vllm_base_url: Option<OsString>,
         vllm_model: Option<OsString>,
+        ollama_api_key: Option<OsString>,
+        ollama_base_url: Option<OsString>,
+        ollama_model: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -2961,6 +3027,9 @@ mod tests {
             let vllm_api_key_prev = env::var_os("VLLM_API_KEY");
             let vllm_base_url_prev = env::var_os("VLLM_BASE_URL");
             let vllm_model_prev = env::var_os("VLLM_MODEL");
+            let ollama_api_key_prev = env::var_os("OLLAMA_API_KEY");
+            let ollama_base_url_prev = env::var_os("OLLAMA_BASE_URL");
+            let ollama_model_prev = env::var_os("OLLAMA_MODEL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
@@ -2990,6 +3059,9 @@ mod tests {
                 env::remove_var("VLLM_API_KEY");
                 env::remove_var("VLLM_BASE_URL");
                 env::remove_var("VLLM_MODEL");
+                env::remove_var("OLLAMA_API_KEY");
+                env::remove_var("OLLAMA_BASE_URL");
+                env::remove_var("OLLAMA_MODEL");
             }
             Self {
                 home: home_prev,
@@ -3019,6 +3091,9 @@ mod tests {
                 vllm_api_key: vllm_api_key_prev,
                 vllm_base_url: vllm_base_url_prev,
                 vllm_model: vllm_model_prev,
+                ollama_api_key: ollama_api_key_prev,
+                ollama_base_url: ollama_base_url_prev,
+                ollama_model: ollama_model_prev,
             }
         }
     }
@@ -3057,6 +3132,9 @@ mod tests {
                 Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
                 Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
                 Self::restore_var("VLLM_MODEL", self.vllm_model.take());
+                Self::restore_var("OLLAMA_API_KEY", self.ollama_api_key.take());
+                Self::restore_var("OLLAMA_BASE_URL", self.ollama_base_url.take());
+                Self::restore_var("OLLAMA_MODEL", self.ollama_model.take());
             }
         }
     }
@@ -4222,6 +4300,97 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
     }
 
     #[test]
+    fn ollama_provider_uses_local_defaults_without_api_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-ollama-defaults-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            provider: Some("ollama".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::Ollama);
+        assert_eq!(config.default_model(), DEFAULT_OLLAMA_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_OLLAMA_BASE_URL);
+        assert_eq!(config.deepseek_api_key()?, "");
+        assert!(has_api_key_for(&config, ApiProvider::Ollama));
+        Ok(())
+    }
+
+    #[test]
+    fn ollama_model_is_passed_through_verbatim() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-ollama-model-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"provider = "ollama"
+
+[providers.ollama]
+base_url = "http://127.0.0.1:11434/v1"
+model = "qwen2.5-coder:7b"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Ollama);
+        assert_eq!(config.default_model(), "qwen2.5-coder:7b");
+        assert_eq!(config.deepseek_base_url(), "http://127.0.0.1:11434/v1");
+        Ok(())
+    }
+
+    #[test]
+    fn ollama_env_overrides_base_url_and_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-ollama-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "ollama-local");
+            env::set_var("OLLAMA_BASE_URL", "http://ollama.example/v1");
+            env::set_var("OLLAMA_MODEL", "deepseek-coder-v2:16b");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Ollama);
+        assert_eq!(config.deepseek_base_url(), "http://ollama.example/v1");
+        assert_eq!(config.default_model(), "deepseek-coder-v2:16b");
+        Ok(())
+    }
+
+    #[test]
     fn openrouter_env_api_key_resolves_via_deepseek_api_key() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -4683,6 +4852,19 @@ model = "deepseek-v4-pro"
         assert_eq!(cap.max_output, 262_144);
         assert!(cap.thinking_supported);
         assert!(!cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_ollama_is_openai_compatible_without_thinking() {
+        let cap = provider_capability(ApiProvider::Ollama, "deepseek-v3.1:671b");
+        assert_eq!(cap.context_window, 8192);
+        assert_eq!(cap.max_output, 4096);
+        assert!(!cap.thinking_supported);
+        assert!(!cap.cache_telemetry_supported);
+        assert_eq!(
+            cap.request_payload_mode,
+            RequestPayloadMode::ChatCompletions
+        );
     }
 
     #[test]
