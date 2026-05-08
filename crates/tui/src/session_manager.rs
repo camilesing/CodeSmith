@@ -96,16 +96,24 @@ pub struct SessionMetadata {
     /// Optional mode label (agent/plan/etc.)
     #[serde(default)]
     pub mode: Option<String>,
-    /// Accumulated parent-turn session cost in USD (for persisted billing).
+    /// Accumulated cost data for persisted billing and high-water mark.
+    #[serde(default)]
+    pub cost: SessionCostSnapshot,
+}
+
+/// Cost and high-water-mark fields persisted with each session.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct SessionCostSnapshot {
+    /// Accumulated parent-turn session cost in USD.
     #[serde(default)]
     pub session_cost_usd: f64,
-    /// Accumulated parent-turn session cost in CNY (for persisted billing).
+    /// Accumulated parent-turn session cost in CNY.
     #[serde(default)]
     pub session_cost_cny: f64,
-    /// Accumulated sub-agent/background LLM cost in USD (for persisted billing).
+    /// Accumulated sub-agent/background LLM cost in USD.
     #[serde(default)]
     pub subagent_cost_usd: f64,
-    /// Accumulated sub-agent/background LLM cost in CNY (for persisted billing).
+    /// Accumulated sub-agent/background LLM cost in CNY.
     #[serde(default)]
     pub subagent_cost_cny: f64,
     /// Max-ever displayed session+subagent cost in USD (preserves #244
@@ -120,12 +128,7 @@ pub struct SessionMetadata {
 impl SessionMetadata {
     /// Copy cost fields from another metadata (used when forking a session).
     pub fn copy_cost_from(&mut self, other: &SessionMetadata) {
-        self.session_cost_usd = other.session_cost_usd;
-        self.session_cost_cny = other.session_cost_cny;
-        self.subagent_cost_usd = other.subagent_cost_usd;
-        self.subagent_cost_cny = other.subagent_cost_cny;
-        self.displayed_cost_high_water_usd = other.displayed_cost_high_water_usd;
-        self.displayed_cost_high_water_cny = other.displayed_cost_high_water_cny;
+        self.cost = other.cost;
     }
 }
 
@@ -611,12 +614,7 @@ pub fn create_saved_session_with_mode(
             model: model.to_string(),
             workspace: workspace.to_path_buf(),
             mode: mode.map(str::to_string),
-            session_cost_usd: 0.0,
-            session_cost_cny: 0.0,
-            subagent_cost_usd: 0.0,
-            subagent_cost_cny: 0.0,
-            displayed_cost_high_water_usd: 0.0,
-            displayed_cost_high_water_cny: 0.0,
+            cost: SessionCostSnapshot::default(),
         },
         messages: capped_messages,
         system_prompt: merge_truncation_note(
@@ -884,12 +882,7 @@ mod tests {
                 model: "deepseek-v4-flash".to_string(),
                 workspace: workspace.to_path_buf(),
                 mode: None,
-                session_cost_usd: 0.0,
-                session_cost_cny: 0.0,
-                subagent_cost_usd: 0.0,
-                subagent_cost_cny: 0.0,
-                displayed_cost_high_water_usd: 0.0,
-                displayed_cost_high_water_cny: 0.0,
+                cost: SessionCostSnapshot::default(),
             },
             system_prompt: None,
             context_references: Vec::new(),
@@ -916,12 +909,7 @@ mod tests {
                 model: "deepseek-v4-pro".to_string(),
                 workspace: workspace.to_path_buf(),
                 mode: Some("yolo".to_string()),
-                session_cost_usd: 0.0,
-                session_cost_cny: 0.0,
-                subagent_cost_usd: 0.0,
-                subagent_cost_cny: 0.0,
-                displayed_cost_high_water_usd: 0.0,
-                displayed_cost_high_water_cny: 0.0,
+                cost: SessionCostSnapshot::default(),
             },
             system_prompt: None,
             context_references: Vec::new(),

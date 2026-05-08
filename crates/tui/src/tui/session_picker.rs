@@ -15,7 +15,9 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
-use crate::session_manager::{SavedSession, SessionManager, SessionMetadata};
+use crate::session_manager::{
+    SavedSession, SessionCostSnapshot, SessionManager, SessionMetadata,
+};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
 fn modal_block(title: &str) -> Block<'static> {
@@ -611,12 +613,7 @@ mod tests {
             model: "deepseek-v4-pro".to_string(),
             workspace: std::path::PathBuf::from("/tmp"),
             mode: Some("agent".to_string()),
-            session_cost_usd: 0.0,
-            session_cost_cny: 0.0,
-            subagent_cost_usd: 0.0,
-            subagent_cost_cny: 0.0,
-            displayed_cost_high_water_usd: 0.0,
-            displayed_cost_high_water_cny: 0.0,
+            cost: SessionCostSnapshot::default(),
         }
     }
 

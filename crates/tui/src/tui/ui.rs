@@ -6063,10 +6063,10 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    app.session.session_cost = session.metadata.session_cost_usd;
-    app.session.session_cost_cny = session.metadata.session_cost_cny;
-    app.session.subagent_cost = session.metadata.subagent_cost_usd;
-    app.session.subagent_cost_cny = session.metadata.subagent_cost_cny;
+    app.session.session_cost = session.metadata.cost.session_cost_usd;
+    app.session.session_cost_cny = session.metadata.cost.session_cost_cny;
+    app.session.subagent_cost = session.metadata.cost.subagent_cost_usd;
+    app.session.subagent_cost_cny = session.metadata.cost.subagent_cost_cny;
     app.session.subagent_cost_event_seqs.clear();
     // Restore the high-water marks from persisted metadata so the
     // monotonic cost guarantee (#244) survives session restarts.
@@ -6076,9 +6076,9 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     let total_restored_usd = app.session.session_cost + app.session.subagent_cost;
     let total_restored_cny = app.session.session_cost_cny + app.session.subagent_cost_cny;
     app.session.displayed_cost_high_water =
-        session.metadata.displayed_cost_high_water_usd.max(total_restored_usd);
+        session.metadata.cost.displayed_cost_high_water_usd.max(total_restored_usd);
     app.session.displayed_cost_high_water_cny =
-        session.metadata.displayed_cost_high_water_cny.max(total_restored_cny);
+        session.metadata.cost.displayed_cost_high_water_cny.max(total_restored_cny);
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;

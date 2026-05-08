@@ -1651,12 +1651,13 @@ impl App {
     /// Copy current session/subagent cost accumulators into session metadata
     /// for persistence.
     pub fn sync_cost_to_metadata(&self, metadata: &mut crate::session_manager::SessionMetadata) {
-        metadata.session_cost_usd = self.session.session_cost;
-        metadata.session_cost_cny = self.session.session_cost_cny;
-        metadata.subagent_cost_usd = self.session.subagent_cost;
-        metadata.subagent_cost_cny = self.session.subagent_cost_cny;
-        metadata.displayed_cost_high_water_usd = self.session.displayed_cost_high_water;
-        metadata.displayed_cost_high_water_cny = self.session.displayed_cost_high_water_cny;
+        metadata.cost.session_cost_usd = self.session.session_cost;
+        metadata.cost.session_cost_cny = self.session.session_cost_cny;
+        metadata.cost.subagent_cost_usd = self.session.subagent_cost;
+        metadata.cost.subagent_cost_cny = self.session.subagent_cost_cny;
+        metadata.cost.displayed_cost_high_water_usd = self.session.displayed_cost_high_water;
+        metadata.cost.displayed_cost_high_water_cny =
+            self.session.displayed_cost_high_water_cny;
     }
 
     /// Recompute the displayed cost high-water mark. Called any time a cost
