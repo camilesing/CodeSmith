@@ -648,10 +648,6 @@ impl DeepSeekClient {
                     if status.is_success() {
                         return Ok(response);
                     }
-                    let retryable = status.as_u16() == 429 || status.is_server_error();
-                    if !retryable {
-                        return Ok(response);
-                    }
                     let retry_after = extract_retry_after(response.headers());
                     let body = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
                     Err(LlmError::from_http_response_with_retry_after(
