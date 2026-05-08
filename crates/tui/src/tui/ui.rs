@@ -3001,6 +3001,10 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             app.system_prompt.as_ref(),
         );
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
+        updated.metadata.session_cost_usd = app.session.session_cost;
+        updated.metadata.session_cost_cny = app.session.session_cost_cny;
+        updated.metadata.subagent_cost_usd = app.session.subagent_cost;
+        updated.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
         updated.context_references = app.session_context_references.clone();
         updated
     } else {
@@ -3012,6 +3016,10 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             app.system_prompt.as_ref(),
             Some(app.mode.as_setting()),
         );
+        session.metadata.session_cost_usd = app.session.session_cost;
+        session.metadata.session_cost_cny = app.session.session_cost_cny;
+        session.metadata.subagent_cost_usd = app.session.subagent_cost;
+        session.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
         session.context_references = app.session_context_references.clone();
         session
     }
@@ -5365,7 +5373,7 @@ fn render(f: &mut Frame, app: &mut App) {
         .with_usage(
             app.session.total_conversation_tokens,
             sanitized_context_window,
-            app.session.session_cost,
+            app.displayed_session_cost_for_currency(app.cost_currency),
             sanitized_prompt_tokens,
         )
         .with_reasoning_effort(Some(&effort_label))
@@ -6061,13 +6069,17 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    app.session.session_cost = 0.0;
-    app.session.session_cost_cny = 0.0;
-    app.session.subagent_cost = 0.0;
-    app.session.subagent_cost_cny = 0.0;
+    app.session.session_cost = session.metadata.session_cost_usd;
+    app.session.session_cost_cny = session.metadata.session_cost_cny;
+    app.session.subagent_cost = session.metadata.subagent_cost_usd;
+    app.session.subagent_cost_cny = session.metadata.subagent_cost_cny;
     app.session.subagent_cost_event_seqs.clear();
-    app.session.displayed_cost_high_water = 0.0;
-    app.session.displayed_cost_high_water_cny = 0.0;
+    // Set high-water marks to the restored totals so the footer never
+    // reverses when reconciliation events fire on a resumed session.
+    let total_restored_usd = app.session.session_cost + app.session.subagent_cost;
+    let total_restored_cny = app.session.session_cost_cny + app.session.subagent_cost_cny;
+    app.session.displayed_cost_high_water = total_restored_usd;
+    app.session.displayed_cost_high_water_cny = total_restored_cny;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;

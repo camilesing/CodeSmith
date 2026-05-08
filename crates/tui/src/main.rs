@@ -2790,13 +2790,17 @@ fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Res
         .system_prompt
         .as_ref()
         .map(|text| SystemPrompt::Text(text.clone()));
-    let forked = create_saved_session(
+    let mut forked = create_saved_session(
         &saved.messages,
         &saved.metadata.model,
         &saved.metadata.workspace,
         saved.metadata.total_tokens,
         system_prompt.as_ref(),
     );
+    forked.metadata.session_cost_usd = saved.metadata.session_cost_usd;
+    forked.metadata.session_cost_cny = saved.metadata.session_cost_cny;
+    forked.metadata.subagent_cost_usd = saved.metadata.subagent_cost_usd;
+    forked.metadata.subagent_cost_cny = saved.metadata.subagent_cost_cny;
     manager.save_session(&forked)?;
 
     let source_title = saved.metadata.title.trim();
