@@ -225,12 +225,15 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.19
+## What's New In v0.8.20
 
-A hotfix release for DeepSeek endpoint defaults, plus the v0.8.18
-TUI/runtime/install polish.
+A hotfix release for Chinese reasoning language, DeepSeek endpoint defaults,
+and the v0.8.18 TUI/runtime/install polish.
 [Full changelog](CHANGELOG.md).
 
+- **Chinese reasoning stays Chinese** - when the latest user message is in
+  Simplified Chinese, V4 `reasoning_content` and the final reply are prompted
+  to stay in Simplified Chinese even on an English system locale.
 - **DeepSeek beta endpoint stays default worldwide** - Chinese locales and
   legacy `deepseek-cn` configs now use `https://api.deepseek.com/beta`, so
   strict tool mode and other beta-gated features remain available.
@@ -371,7 +374,7 @@ Key environment variables:
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
 | `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
 
-Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG` to choose UI chrome and the default natural language sent to V4 models. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
+Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG` to choose UI chrome and the fallback language sent to V4 models. The latest user message still wins for natural-language reasoning and replies, so Chinese user turns stay Chinese even on an English system locale. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
 
 ---
 

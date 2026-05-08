@@ -288,8 +288,10 @@ Common settings keys:
 - `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`; default `auto`): UI chrome
   locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
   missing locales fall back to English. The runtime also exposes the resolved
-  locale in the system prompt so V4 models use it as the default natural
-  language for reasoning and replies.
+  locale in the system prompt as the fallback natural language for V4 reasoning
+  and replies when the latest user message is ambiguous. Clear user language
+  still takes priority; Chinese turns should produce Chinese `reasoning_content`
+  and Chinese final replies even when the resolved locale is English.
 - `background_color` (`#RRGGBB`, `RRGGBB`, or `default`): optional main TUI
   background color applied to the root, header, transcript, and footer
   surfaces while preserving panel contrast.
