@@ -835,7 +835,8 @@ impl ConfigToml {
     ///
     /// This method keeps library callers prompt-free: CLI flag → config file
     /// → environment. Call `resolve_runtime_options_with_secrets` when a
-    /// user-facing dispatcher should recover OS-keyring credentials.
+    /// user-facing dispatcher should recover credentials from the configured
+    /// secret store.
     #[must_use]
     pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
         let no_keyring = Secrets::new(std::sync::Arc::new(
@@ -846,7 +847,7 @@ impl ConfigToml {
 
     /// Resolve runtime options using an explicit secrets façade.
     ///
-    /// API-key precedence is **CLI flag → config-file → keyring → environment**.
+    /// API-key precedence is **CLI flag → config-file → secret store → environment**.
     #[must_use]
     pub fn resolve_runtime_options_with_secrets(
         &self,
@@ -869,8 +870,8 @@ impl ConfigToml {
         // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
         // This makes `deepseek auth set` a reliable fix even when the user's
         // shell still exports an old key. When the file is empty, the injected
-        // secrets façade recovers older OS-keyring credentials before falling
-        // back to ambient env.
+        // secrets façade recovers configured secret-store credentials before
+        // falling back to ambient env.
         let from_file = provider_cfg.api_key.clone().or(root_deepseek_api_key);
         let (api_key, api_key_source) = if let Some(value) = cli.api_key.clone() {
             (Some(value), Some(RuntimeApiKeySource::Cli))
