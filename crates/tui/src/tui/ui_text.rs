@@ -6,14 +6,6 @@ use unicode_width::UnicodeWidthChar;
 use crate::tui::history::HistoryCell;
 use crate::tui::osc8;
 
-/// Tool-card left-rail decoration glyphs emitted by
-/// `crate::tui::transcript::line_with_group_rail` as the leading span of a
-/// rendered tool-card line. They are visual-only and must not leak into
-/// copied text (#1163).
-const TOOL_CARD_RAIL_PREFIXES: &[&str] = &["\u{256D} ", "\u{2502} ", "\u{2570} "];
-/// Display width of any rail prefix (one box-drawing glyph + one space).
-const TOOL_CARD_RAIL_PREFIX_WIDTH: usize = 2;
-
 pub(super) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
     cell.transcript_lines(width)
         .into_iter()
@@ -28,26 +20,14 @@ fn line_to_string(line: Line<'static>) -> String {
     out
 }
 
-/// Strip a leading tool-card rail glyph span (`╭ `, `│ `, `╰ `) and OSC-8
-/// link wrappers from a rendered transcript line so the decoration does
-/// not leak into copied text. Returns `(plain_text, rail_prefix_width)`
-/// where `rail_prefix_width` is `0` for non-tool-card lines and `2` when
-/// the rail prefix was stripped. Callers subtract `rail_prefix_width`
-/// from the recorded selection columns to keep the visible selection
-/// rect aligned with the returned plain text.
-pub(super) fn line_to_plain_for_copy(line: &Line<'static>) -> (String, usize) {
-    let mut spans = line.spans.iter();
-    if let Some(first) = line.spans.first()
-        && TOOL_CARD_RAIL_PREFIXES.contains(&first.content.as_ref())
-    {
-        spans.next();
-        let mut out = String::new();
-        append_spans_plain(spans, &mut out);
-        return (out, TOOL_CARD_RAIL_PREFIX_WIDTH);
-    }
+/// Convert a rendered transcript line to plain text, stripping OSC-8 link
+/// escape sequences. The caller is responsible for shifting selection columns
+/// to account for any visual-only rail prefix (see
+/// `TranscriptViewCache::rail_prefix_width`).
+pub(super) fn line_to_plain(line: &Line<'static>) -> String {
     let mut out = String::new();
-    append_spans_plain(spans, &mut out);
-    (out, 0)
+    append_spans_plain(line.spans.iter(), &mut out);
+    out
 }
 
 fn append_spans_plain<'a, I>(spans: I, out: &mut String)
@@ -103,9 +83,7 @@ mod tests {
     use ratatui::text::Span;
 
     #[test]
-    fn line_to_plain_for_copy_strips_osc_8_wrapper() {
-        // A span carrying an OSC 8-wrapped URL must not leak the escape into
-        // selection / clipboard output. The visible label survives.
+    fn line_to_plain_strips_osc_8_wrapper() {
         let wrapped = format!(
             "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
             "https://example.com", "https://example.com"
@@ -115,44 +93,46 @@ mod tests {
             Span::raw(wrapped),
             Span::raw(" for details"),
         ]);
-        let (text, rail_width) = line_to_plain_for_copy(&line);
+        let text = line_to_plain(&line);
         assert_eq!(text, "see https://example.com for details");
-        assert_eq!(rail_width, 0);
     }
 
     #[test]
-    fn line_to_plain_for_copy_passes_through_plain_spans() {
+    fn line_to_plain_passes_through_plain_spans() {
         let line = Line::from(vec![Span::raw("plain "), Span::raw("text")]);
-        let (text, rail_width) = line_to_plain_for_copy(&line);
+        let text = line_to_plain(&line);
         assert_eq!(text, "plain text");
-        assert_eq!(rail_width, 0);
     }
 
     #[test]
-    fn line_to_plain_for_copy_strips_tool_card_rail_prefix() {
-        let line = Line::from(vec![Span::raw("\u{2502} "), Span::raw("body content")]);
-        let (text, rail_width) = line_to_plain_for_copy(&line);
-        assert_eq!(text, "body content");
-        assert_eq!(rail_width, 2);
+    fn line_to_plain_includes_all_spans() {
+        // Visual-only rail spans are stripped by the caller using
+        // TranscriptViewCache::rail_prefix_width — line_to_plain itself
+        // is a faithful span-to-string pass-through.
+        let line = Line::from(vec![Span::raw("\u{2502} "), Span::raw("tool output")]);
+        let text = line_to_plain(&line);
+        assert_eq!(text, "\u{2502} tool output");
     }
 
     #[test]
-    fn line_to_plain_for_copy_strips_top_and_bottom_rails() {
-        for glyph in ["\u{256D} ", "\u{2570} "] {
-            let line = Line::from(vec![Span::raw(glyph), Span::raw("x")]);
-            let (text, rail_width) = line_to_plain_for_copy(&line);
-            assert_eq!(text, "x");
-            assert_eq!(rail_width, 2);
-        }
+    fn slice_text_respects_column_bounds() {
+        let text = "hello world";
+        assert_eq!(slice_text(text, 0, 5), "hello");
+        assert_eq!(slice_text(text, 6, 11), "world");
+        assert_eq!(slice_text(text, 0, 0), "");
+        assert_eq!(slice_text(text, 0, 100), text);
     }
 
     #[test]
-    fn line_to_plain_for_copy_keeps_user_typed_pipe_when_no_rail() {
-        // A normal line whose plain text starts with `│ literal` (single
-        // span, not a rail prefix span) must round-trip verbatim.
-        let line = Line::from(vec![Span::raw("\u{2502} literal pipe at start")]);
-        let (text, rail_width) = line_to_plain_for_copy(&line);
-        assert_eq!(text, "\u{2502} literal pipe at start");
-        assert_eq!(rail_width, 0);
+    fn slice_text_handles_multibyte_characters() {
+        let text = "a─b"; // U+2500 is 1 display column on supported terminals
+        assert_eq!(slice_text(text, 1, 2), "─");
+        assert_eq!(slice_text(text, 0, 3), text);
+    }
+
+    #[test]
+    fn slice_text_truncates_at_end() {
+        let text = "ab";
+        assert_eq!(slice_text(text, 1, 5), "b");
     }
 }

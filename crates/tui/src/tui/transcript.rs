@@ -73,6 +73,11 @@ pub struct TranscriptViewCache {
     lines: Vec<Line<'static>>,
     /// Per-line metadata aligned with `lines`.
     line_meta: Vec<TranscriptLineMeta>,
+    /// Per-line rail-prefix display-column count (`0` or `2`), aligned with
+    /// `lines`. Populated during flatten so that selection-to-text can shift
+    /// columns past visual-only decoration glyphs without guessing which
+    /// spans are decorative (#1163).
+    rail_prefix_widths: Vec<usize>,
 }
 
 impl TranscriptViewCache {
@@ -85,6 +90,7 @@ impl TranscriptViewCache {
             per_cell: Vec::new(),
             lines: Vec::new(),
             line_meta: Vec::new(),
+            rail_prefix_widths: Vec::new(),
         }
     }
 
@@ -219,6 +225,7 @@ impl TranscriptViewCache {
     fn flatten(&mut self, spacing: TranscriptSpacing) {
         self.lines.clear();
         self.line_meta.clear();
+        self.rail_prefix_widths.clear();
         self.append_flattened_cells(spacing, 0);
     }
 
@@ -243,6 +250,7 @@ impl TranscriptViewCache {
             .unwrap_or(self.lines.len());
         self.lines.truncate(truncate_at);
         self.line_meta.truncate(truncate_at);
+        self.rail_prefix_widths.truncate(truncate_at);
         self.append_flattened_cells(spacing, first_cell);
     }
 
@@ -256,7 +264,7 @@ impl TranscriptViewCache {
             // Deref is zero-cost and gives us &[Line].
             let rendered_line_count = cached.lines.len();
             for (line_in_cell, line) in cached.lines.iter().enumerate() {
-                self.lines.push(line_with_group_rail(
+                let final_line = line_with_group_rail(
                     line,
                     tool_group_rail(
                         self.per_cell.as_slice(),
@@ -265,7 +273,10 @@ impl TranscriptViewCache {
                         rendered_line_count,
                     ),
                     usize::from(self.width),
-                ));
+                );
+                self.rail_prefix_widths
+                    .push(compute_rail_prefix_width(&final_line));
+                self.lines.push(final_line);
                 self.line_meta.push(TranscriptLineMeta::CellLine {
                     cell_index,
                     line_in_cell,
@@ -277,6 +288,7 @@ impl TranscriptViewCache {
                 for _ in 0..spacer_rows {
                     self.lines.push(Line::from(""));
                     self.line_meta.push(TranscriptLineMeta::Spacer);
+                    self.rail_prefix_widths.push(0);
                 }
             }
         }
@@ -298,6 +310,18 @@ impl TranscriptViewCache {
     #[must_use]
     pub fn total_lines(&self) -> usize {
         self.lines.len()
+    }
+
+    /// Return the rail-prefix display-column count for the line at
+    /// `line_index`. Callers use this to shift selection coordinates past
+    /// visual-only decoration glyphs without guessing which spans are
+    /// decorative (#1163).
+    #[must_use]
+    pub fn rail_prefix_width(&self, line_index: usize) -> usize {
+        self.rail_prefix_widths
+            .get(line_index)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -389,6 +413,75 @@ fn line_with_group_rail(
     spans.extend(rendered.spans);
     rendered.spans = truncate_spans_to_width(spans, max_width);
     rendered
+}
+
+/// Return the display-column count of consecutive visual-only decorative
+/// spans at the start of a rendered transcript line. Iterates through
+/// leading spans matching either of two patterns:
+///
+/// * Pattern A — span is `"<glyph>[<glyph>…]<space>"` where every character
+///   except the trailing space is a rail-drawing character (e.g. `▏ `,
+///   `▶ `, `⋮⋮ `). The entire span width is accumulated.
+/// * Pattern B — span is `"<glyph>"` (1 drawing char) followed by a lone
+///   space span `" "` (e.g. `●` then ` `, `▎` then ` `).
+///
+/// Stops at the first non-matching span. Every decorated glyph used by the
+/// TUI is a single display-column character, so char-count = display width.
+///
+/// Returns `0` for lines whose first span is not a decorative prefix.
+fn compute_rail_prefix_width(line: &Line<'static>) -> usize {
+    let spans = line.spans.as_slice();
+    let mut total = 0;
+    let mut i = 0;
+
+    while i < spans.len() {
+        let content = spans[i].content.as_ref();
+        let n_chars = content.chars().count();
+
+        // Pattern A — span "<glyph>[<glyph>…]<space>" (≥ 2 chars, trailing
+        // space, all preceding chars are drawing chars).
+        if n_chars >= 2
+            && content.ends_with(' ')
+            && content
+                .chars()
+                .take(n_chars.saturating_sub(1))
+                .all(is_rail_drawing_char)
+        {
+            total += n_chars;
+            i += 1;
+            continue;
+        }
+
+        // Pattern B — span "<glyph>" (1 drawing char) + next span " ".
+        if n_chars == 1
+            && content.chars().next().is_some_and(is_rail_drawing_char)
+            && spans.get(i + 1).is_some_and(|s| s.content.as_ref() == " ")
+        {
+            total += 2;
+            i += 2;
+            continue;
+        }
+
+        break;
+    }
+
+    total
+}
+
+/// Characters that serve as decoration glyphs in the TUI left-rail and
+/// tool-header prefix system. All are single display-column characters.
+fn is_rail_drawing_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{2500}'..='\u{257F}'   // Box Drawing (╭ ╮ ╰ ╯ │ ╎ …)
+        | '\u{2580}'..='\u{259F}' // Block Elements (▏ ▎ ▍ ▌ …)
+        | '\u{25A0}'..='\u{25FF}' // Geometric Shapes (● ▶ ▷ ◆ ◐ …)
+        | '\u{2022}'              // • bullet (tool status / generic tool)
+        | '\u{2026}'              // … ellipsis (reasoning opener)
+        | '\u{00B7}'              // · middle dot (tool running symbol)
+        | '\u{2315}'              // ⌕ telephone recorder (find/search tool)
+        | '\u{22EE}'              // ⋮ vertical ellipsis (fanout/rlm tool)
+    )
 }
 
 fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
