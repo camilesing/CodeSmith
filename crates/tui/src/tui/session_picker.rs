@@ -615,6 +615,8 @@ mod tests {
             session_cost_cny: 0.0,
             subagent_cost_usd: 0.0,
             subagent_cost_cny: 0.0,
+            displayed_cost_high_water_usd: 0.0,
+            displayed_cost_high_water_cny: 0.0,
         }
     }
 

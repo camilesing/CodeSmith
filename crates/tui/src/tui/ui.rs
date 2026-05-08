@@ -6068,12 +6068,17 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.session.subagent_cost = session.metadata.subagent_cost_usd;
     app.session.subagent_cost_cny = session.metadata.subagent_cost_cny;
     app.session.subagent_cost_event_seqs.clear();
-    // Set high-water marks to the restored totals so the footer never
-    // reverses when reconciliation events fire on a resumed session.
+    // Restore the high-water marks from persisted metadata so the
+    // monotonic cost guarantee (#244) survives session restarts.
+    // Take the max with the current totals — old sessions without
+    // persisted high-water fields deserialise to 0.0 and fall back to
+    // the restored total with no regression.
     let total_restored_usd = app.session.session_cost + app.session.subagent_cost;
     let total_restored_cny = app.session.session_cost_cny + app.session.subagent_cost_cny;
-    app.session.displayed_cost_high_water = total_restored_usd;
-    app.session.displayed_cost_high_water_cny = total_restored_cny;
+    app.session.displayed_cost_high_water =
+        session.metadata.displayed_cost_high_water_usd.max(total_restored_usd);
+    app.session.displayed_cost_high_water_cny =
+        session.metadata.displayed_cost_high_water_cny.max(total_restored_cny);
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;

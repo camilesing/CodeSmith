@@ -108,6 +108,13 @@ pub struct SessionMetadata {
     /// Accumulated sub-agent/background LLM cost in CNY (for persisted billing).
     #[serde(default)]
     pub subagent_cost_cny: f64,
+    /// Max-ever displayed session+subagent cost in USD (preserves #244
+    /// monotonic guarantee across session restarts).
+    #[serde(default)]
+    pub displayed_cost_high_water_usd: f64,
+    /// Max-ever displayed session+subagent cost in CNY.
+    #[serde(default)]
+    pub displayed_cost_high_water_cny: f64,
 }
 
 impl SessionMetadata {
@@ -117,6 +124,8 @@ impl SessionMetadata {
         self.session_cost_cny = other.session_cost_cny;
         self.subagent_cost_usd = other.subagent_cost_usd;
         self.subagent_cost_cny = other.subagent_cost_cny;
+        self.displayed_cost_high_water_usd = other.displayed_cost_high_water_usd;
+        self.displayed_cost_high_water_cny = other.displayed_cost_high_water_cny;
     }
 }
 
@@ -606,6 +615,8 @@ pub fn create_saved_session_with_mode(
             session_cost_cny: 0.0,
             subagent_cost_usd: 0.0,
             subagent_cost_cny: 0.0,
+            displayed_cost_high_water_usd: 0.0,
+            displayed_cost_high_water_cny: 0.0,
         },
         messages: capped_messages,
         system_prompt: merge_truncation_note(
@@ -877,6 +888,8 @@ mod tests {
                 session_cost_cny: 0.0,
                 subagent_cost_usd: 0.0,
                 subagent_cost_cny: 0.0,
+                displayed_cost_high_water_usd: 0.0,
+                displayed_cost_high_water_cny: 0.0,
             },
             system_prompt: None,
             context_references: Vec::new(),
@@ -907,6 +920,8 @@ mod tests {
                 session_cost_cny: 0.0,
                 subagent_cost_usd: 0.0,
                 subagent_cost_cny: 0.0,
+                displayed_cost_high_water_usd: 0.0,
+                displayed_cost_high_water_cny: 0.0,
             },
             system_prompt: None,
             context_references: Vec::new(),
