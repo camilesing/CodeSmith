@@ -3001,10 +3001,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             app.system_prompt.as_ref(),
         );
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
-        updated.metadata.session_cost_usd = app.session.session_cost;
-        updated.metadata.session_cost_cny = app.session.session_cost_cny;
-        updated.metadata.subagent_cost_usd = app.session.subagent_cost;
-        updated.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
+        app.sync_cost_to_metadata(&mut updated.metadata);
         updated.context_references = app.session_context_references.clone();
         updated
     } else {
@@ -3016,10 +3013,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             app.system_prompt.as_ref(),
             Some(app.mode.as_setting()),
         );
-        session.metadata.session_cost_usd = app.session.session_cost;
-        session.metadata.session_cost_cny = app.session.session_cost_cny;
-        session.metadata.subagent_cost_usd = app.session.subagent_cost;
-        session.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
+        app.sync_cost_to_metadata(&mut session.metadata);
         session.context_references = app.session_context_references.clone();
         session
     }
@@ -5373,7 +5367,7 @@ fn render(f: &mut Frame, app: &mut App) {
         .with_usage(
             app.session.total_conversation_tokens,
             sanitized_context_window,
-            app.displayed_session_cost_for_currency(app.cost_currency),
+            app.session.session_cost,
             sanitized_prompt_tokens,
         )
         .with_reasoning_effort(Some(&effort_label))

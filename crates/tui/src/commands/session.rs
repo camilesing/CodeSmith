@@ -28,10 +28,7 @@ pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
         app.system_prompt.as_ref(),
         Some(app.mode.label()),
     );
-    session.metadata.session_cost_usd = app.session.session_cost;
-    session.metadata.session_cost_cny = app.session.session_cost_cny;
-    session.metadata.subagent_cost_usd = app.session.subagent_cost;
-    session.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
+    app.sync_cost_to_metadata(&mut session.metadata);
 
     let sessions_dir = save_path
         .parent()
