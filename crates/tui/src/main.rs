@@ -5465,6 +5465,7 @@ mod setup_helper_tests {
             "RUST_LOG",
             "DEEPSEEK_APPROVAL_POLICY",
             "DEEPSEEK_SANDBOX_MODE",
+            "DEEPSEEK_YOLO",
         ] {
             assert!(
                 keys.contains(required),

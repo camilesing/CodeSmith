@@ -950,6 +950,9 @@ impl ConfigToml {
             .clone()
             .or_else(|| env.sandbox_mode.clone())
             .or_else(|| self.sandbox_mode.clone());
+        let yolo = cli
+            .yolo
+            .or(env.yolo);
 
         ResolvedRuntimeOptions {
             provider,
@@ -963,6 +966,7 @@ impl ConfigToml {
             telemetry,
             approval_policy,
             sandbox_mode,
+            yolo,
             http_headers,
         }
     }
@@ -1099,6 +1103,7 @@ pub struct CliRuntimeOverrides {
     pub telemetry: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub yolo: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1134,6 +1139,7 @@ pub struct ResolvedRuntimeOptions {
     pub telemetry: bool,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub yolo: Option<bool>,
     pub http_headers: BTreeMap<String, String>,
 }
 
@@ -1317,6 +1323,7 @@ struct EnvRuntimeOverrides {
     telemetry: Option<bool>,
     approval_policy: Option<String>,
     sandbox_mode: Option<String>,
+    yolo: Option<bool>,
     http_headers: Option<BTreeMap<String, String>>,
     deepseek_base_url: Option<String>,
     nvidia_base_url: Option<String>,
@@ -1344,6 +1351,9 @@ impl EnvRuntimeOverrides {
                 .and_then(|v| parse_bool(&v).ok()),
             approval_policy: std::env::var("DEEPSEEK_APPROVAL_POLICY").ok(),
             sandbox_mode: std::env::var("DEEPSEEK_SANDBOX_MODE").ok(),
+            yolo: std::env::var("DEEPSEEK_YOLO")
+                .ok()
+                .and_then(|v| parse_bool(&v).ok()),
             http_headers: std::env::var("DEEPSEEK_HTTP_HEADERS")
                 .ok()
                 .and_then(|value| parse_http_headers(&value).ok())
