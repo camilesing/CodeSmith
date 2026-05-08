@@ -671,9 +671,9 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     )));
 
     // ── Session cost ─────────────────────────────────────────────
-    let total_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     let session_cost = app.session_cost_for_currency(app.cost_currency);
     let agent_cost = app.subagent_cost_for_currency(app.cost_currency);
+    let total_cost = session_cost + agent_cost;
     lines.push(Line::from(Span::styled(
         format!(
             "cost: {} (session {} + agents {})",
