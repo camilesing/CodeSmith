@@ -125,6 +125,7 @@ const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
 const UI_ACTIVE_POLL_MS: u64 = 24;
 const WEB_CONFIG_POLL_MS: u64 = 16;
+const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // Forced repaint cadence while a turn is live (model loading, compacting,
 // sub-agents running). Drives the footer water-spout animation as well as
 // the per-tool spinner pulse — keep this fast enough that the spout reads as
@@ -848,6 +849,7 @@ async fn run_event_loop(
                     EngineEvent::TurnStarted { turn_id } => {
                         app.is_loading = true;
                         app.offline_mode = false;
+                        app.dispatch_started_at = None;
                         current_streaming_text.clear();
                         app.streaming_state.reset();
                         app.streaming_message_index = None;
@@ -887,6 +889,7 @@ async fn run_event_loop(
                             app.flush_active_cell();
                         }
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.offline_mode = false;
                         app.streaming_state.reset();
                         // Capture elapsed before clearing turn_started_at so
@@ -1443,6 +1446,9 @@ async fn run_event_loop(
         }
 
         let has_running_agents = running_agent_count(app) > 0;
+        if reconcile_turn_liveness(app, Instant::now(), has_running_agents) {
+            app.needs_redraw = true;
+        }
         if (app.is_loading || has_running_agents || app.is_compacting)
             && last_status_frame.elapsed()
                 >= Duration::from_millis(status_animation_interval_ms(app))
@@ -2239,6 +2245,7 @@ async fn run_event_loop(
                     if app.is_loading {
                         engine_handle.cancel();
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.streaming_state.reset();
                         // Optimistically clear the turn-in-progress flag so
                         // the footer wave animation halts immediately —
@@ -2291,6 +2298,7 @@ async fn run_event_loop(
                         app.backtrack.reset();
                         engine_handle.cancel();
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.streaming_state.reset();
                         // Optimistically halt the wave + working label —
                         // engine's TurnComplete will resync with the real
@@ -3023,6 +3031,46 @@ fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
     }
 }
 
+fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool) -> bool {
+    if app.is_loading
+        && app.runtime_turn_status.is_none()
+        && !has_running_agents
+        && !app.is_compacting
+        && app.dispatch_started_at.is_some_and(|started| {
+            now.saturating_duration_since(started) > DISPATCH_WATCHDOG_TIMEOUT
+        })
+    {
+        app.is_loading = false;
+        app.dispatch_started_at = None;
+        app.push_status_toast(
+            "Turn dispatch timed out; the engine may have stopped. Please try again.",
+            StatusToastLevel::Error,
+            None,
+        );
+        return true;
+    }
+
+    if app.is_loading
+        && matches!(
+            app.runtime_turn_status.as_deref(),
+            Some("completed" | "interrupted" | "failed")
+        )
+        && !has_running_agents
+        && !app.is_compacting
+    {
+        app.is_loading = false;
+        app.dispatch_started_at = None;
+        app.push_status_toast(
+            "Recovered from an inconsistent busy state.",
+            StatusToastLevel::Warning,
+            None,
+        );
+        return true;
+    }
+
+    false
+}
+
 /// Translate an `EngineEvent::Error` into UI state updates.
 ///
 /// The engine's `recoverable` flag (mirrored on `ErrorEnvelope`) decides
@@ -3064,6 +3112,7 @@ pub(crate) fn apply_engine_error_to_app(
         severity,
     });
     app.is_loading = false;
+    app.dispatch_started_at = None;
     if matches!(
         envelope.category,
         crate::error_taxonomy::ErrorCategory::Authentication
@@ -3663,8 +3712,11 @@ async fn dispatch_user_message(
     }
 
     // Set immediately to prevent double-dispatch before TurnStarted event arrives.
+    let dispatch_started_at = Instant::now();
     app.is_loading = true;
-    app.last_send_at = Some(Instant::now());
+    app.dispatch_started_at = Some(dispatch_started_at);
+    app.runtime_turn_status = None;
+    app.last_send_at = Some(dispatch_started_at);
 
     let cwd = std::env::current_dir().ok();
     let references = crate::tui::file_mention::context_references_from_input(
@@ -3781,6 +3833,7 @@ async fn dispatch_user_message(
         .await
     {
         app.is_loading = false;
+        app.dispatch_started_at = None;
         app.last_send_at = None;
         return Err(err);
     }
@@ -5784,6 +5837,7 @@ async fn handle_view_events(
                 app.backtrack.reset();
                 engine_handle.cancel();
                 app.is_loading = false;
+                app.dispatch_started_at = None;
                 app.streaming_state.reset();
                 app.runtime_turn_status = None;
                 app.finalize_active_cell_as_interrupted();
