@@ -40,6 +40,8 @@ fixes uncovered during follow-up review.
   with recent advisories.
 - **MCP config paths reject traversal** - `load_config`/`save_config` now
   refuse paths containing `..` components.
+- **Hardened `run_tests` approval policy.** Thanks to **@47Cid** for the
+  responsible disclosure.
 
 ### Fixed
 
@@ -86,18 +88,12 @@ fixes uncovered during follow-up review.
 
 ## [0.8.22] - 2026-05-08
 
-A focused security release: validate redirected `fetch_url` targets before
-following them so a server-controlled redirect cannot bypass per-domain
-network policy or steer the client at private/link-local IPs.
+A focused security release.
 
 ### Security
 
-- **Validate redirected fetch targets** - the URL the redirect points to is
-  re-evaluated against the network policy and SSRF guards before any second
-  request is issued. Previously the policy decision was made only on the
-  initial URL, so a server response of `Location: http://10.0.0.1/...` could
-  reach a private host even if `fetch_url` would have rejected the same URL
-  if requested directly.
+- **Hardened `fetch_url` redirect handling.** Thanks to **@47Cid** for the
+  responsible disclosure.
 
 ## [0.8.21] - 2026-05-08
 
