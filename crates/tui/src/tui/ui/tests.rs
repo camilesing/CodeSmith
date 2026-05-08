@@ -221,7 +221,7 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         column: 6,
     });
 
-    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n▏ gam"));
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\ngam"));
 }
 
 #[test]
@@ -275,10 +275,10 @@ fn selection_to_text_copies_rendered_transcript_block() {
 
     let selected = selection_to_text(&app).expect("selection text");
     assert!(selected.contains("Note copy system"), "{selected:?}");
-    assert!(selected.contains("▎ copy user"), "{selected:?}");
+    assert!(selected.contains("copy user"), "{selected:?}");
     assert!(selected.contains("copy thinking"), "{selected:?}");
     assert!(selected.contains("tool output line"), "{selected:?}");
-    assert!(selected.contains("● copy assistant"), "{selected:?}");
+    assert!(selected.contains("copy assistant"), "{selected:?}");
     // #1163: tool-card middle lines are rendered with a `│ ` left rail
     // glyph, but that decoration must not leak into copied text. Assert
     // no isolated rail glyph survives at the start of any line.

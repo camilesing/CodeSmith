@@ -84,9 +84,7 @@ use crate::tui::tool_routing::exploring_label;
 use crate::tui::tool_routing::{
     handle_tool_call_complete, handle_tool_call_started, maybe_add_patch_preview,
 };
-use crate::tui::ui_text::{
-    history_cell_to_text, line_to_plain_for_copy, slice_text, text_display_width,
-};
+use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_display_width};
 use crate::tui::user_input::UserInputView;
 use crate::tui::views::subagent_view_agents;
 
@@ -8096,8 +8094,23 @@ fn selection_to_text(app: &App) -> Option<String> {
     let mut selected_lines = Vec::new();
     #[allow(clippy::needless_range_loop)]
     for line_index in start_index..=end_index {
-        let (line_text, rail_width) = line_to_plain_for_copy(&lines[line_index]);
+        // Rail-prefix decorations are stored as cache metadata rather than
+        // detected from glyphs, so new decoration types are covered without
+        // changes to the copy path (#1163).
+        let rail_width = app.viewport.transcript_cache.rail_prefix_width(line_index);
+        // Convert the rendered line to plain text (strips OSC-8), then
+        // slice off the rail prefix so subsequent column offsets operate
+        // on content-only text.
+        let full_text = line_to_plain(&lines[line_index]);
+        let line_text = if rail_width > 0 {
+            slice_text(&full_text, rail_width, text_display_width(&full_text))
+        } else {
+            full_text
+        };
         let line_width = text_display_width(&line_text);
+        // Selection coordinates are recorded in rendered-column space, which
+        // includes the visual rail prefix. Add rail_width back so the column
+        // window maps correctly into the rail-stripped text.
         let (raw_col_start, raw_col_end) = if start_index == end_index {
             (start.column, end.column)
         } else if line_index == start_index {
@@ -8108,10 +8121,6 @@ fn selection_to_text(app: &App) -> Option<String> {
             (0, line_width.saturating_add(rail_width))
         };
 
-        // The recorded selection columns include the rail prefix because
-        // selection coordinates are taken from the rendered viewport. Shift
-        // them left by the rail width and clamp to the rail-stripped line so
-        // a click that lands on the rail glyph itself collapses to column 0.
         let col_start = raw_col_start.saturating_sub(rail_width).min(line_width);
         let col_end = raw_col_end.saturating_sub(rail_width).min(line_width);
 
