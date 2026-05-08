@@ -346,8 +346,11 @@ fn jump_to_latest_button_click_scrolls_to_tail() {
     assert!(!app.viewport.transcript_selection.dragging);
 }
 
+/// Clicking the transcript scrollbar gutter starts a scrollbar drag (not
+/// text selection) so the visible thumb remains interactive for users who
+/// prefer mouse-based navigation.
 #[test]
-fn transcript_scrollbar_gutter_is_not_draggable() {
+fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
     let mut app = create_test_app();
     app.history = vec![HistoryCell::Assistant {
         content: "alpha beta".to_string(),
@@ -371,6 +374,8 @@ fn transcript_scrollbar_gutter_is_not_draggable() {
     app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
     app.user_scrolled_during_stream = false;
 
+    // Left-down on the scrollbar gutter (column == right edge) starts a
+    // scrollbar drag, not a transcript selection.
     let events = handle_mouse_event(
         &mut app,
         MouseEvent {
@@ -382,10 +387,17 @@ fn transcript_scrollbar_gutter_is_not_draggable() {
     );
 
     assert!(events.is_empty());
-    assert!(app.viewport.transcript_selection.dragging);
-    assert!(app.viewport.transcript_scroll.is_at_tail());
-    assert!(!app.user_scrolled_during_stream);
+    assert!(
+        app.viewport.transcript_scrollbar_dragging,
+        "gutter click should start scrollbar drag"
+    );
+    assert!(
+        !app.viewport.transcript_selection.dragging,
+        "gutter click should NOT start text selection"
+    );
 
+    // Drag moves the viewport (no assertion on exact scroll position — the
+    // mapping depends on area geometry).
     handle_mouse_event(
         &mut app,
         MouseEvent {
@@ -395,11 +407,9 @@ fn transcript_scrollbar_gutter_is_not_draggable() {
             modifiers: KeyModifiers::NONE,
         },
     );
+    assert!(app.viewport.transcript_scrollbar_dragging);
 
-    assert!(app.viewport.transcript_scroll.is_at_tail());
-    assert!(!app.user_scrolled_during_stream);
-    assert!(app.viewport.transcript_selection.dragging);
-
+    // Left-up ends the scrollbar drag.
     handle_mouse_event(
         &mut app,
         MouseEvent {
@@ -410,7 +420,7 @@ fn transcript_scrollbar_gutter_is_not_draggable() {
         },
     );
 
-    assert!(!app.viewport.transcript_selection.dragging);
+    assert!(!app.viewport.transcript_scrollbar_dragging);
 }
 
 #[test]
