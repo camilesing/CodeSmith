@@ -314,7 +314,13 @@ fn render_wrapped_line(
     let prefix = if indent_code { "  " } else { "" };
     let prefix_width = prefix.width();
     let available = width.saturating_sub(prefix_width).max(1);
-    let wrapped = wrap_text(line, available);
+    // Code blocks must preserve leading whitespace (indentation is semantic).
+    // Use hard character-width wrapping instead of word-wrap.
+    let wrapped = if indent_code {
+        wrap_code_line(line, available)
+    } else {
+        wrap_text(line, available)
+    };
     let mut out = Vec::new();
 
     for (idx, chunk) in wrapped.into_iter().enumerate() {
@@ -722,6 +728,48 @@ fn link_style() -> Style {
         .add_modifier(Modifier::UNDERLINED)
 }
 
+/// Hard-wrap a code line at `width` display columns, preserving all
+/// whitespace (including leading indentation). Unlike [`wrap_text`], this
+/// does not split on word boundaries — code indentation is semantic.
+/// Display-column width of a single character for the purposes of terminal
+/// line-wrap calculations.
+///
+/// `UnicodeWidthChar::width` returns `None` for control characters, which
+/// includes `\t`. A tab advances to the next 8-column tab stop, so we model
+/// it as 8 columns here (a safe over-estimate that avoids terminal overflow).
+/// Other control characters are counted as 1 column.
+fn char_display_width(ch: char, col: usize) -> usize {
+    match ch {
+        '\t' => 8 - (col % 8), // advance to next 8-column tab stop
+        _ => ch.width().unwrap_or(1),
+    }
+}
+
+/// Hard-wrap a code line at `width` display columns, preserving all
+/// whitespace (including leading indentation). Unlike [`wrap_text`], this
+/// does not split on word boundaries — code indentation is semantic.
+fn wrap_code_line(line: &str, width: usize) -> Vec<String> {
+    if width == 0 || line.is_empty() {
+        return vec![line.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for ch in line.chars() {
+        let ch_width = char_display_width(ch, current_width);
+        if current_width + ch_width > width && !current.is_empty() {
+            chunks.push(current);
+            current = String::new();
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width += ch_width;
+    }
+    chunks.push(current);
+    chunks
+}
+
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
@@ -843,6 +891,77 @@ mod tests {
             })
             .collect();
         assert_eq!(code_lines, vec!["code line one", "code line two"]);
+    }
+
+    #[test]
+    fn code_block_indentation_is_preserved_in_render() {
+        // Leading whitespace in code blocks is semantic — indented lines must
+        // not be stripped to column zero when rendered.
+        let md = "```\nfn main() {\n    println!(\"hi\");\n}\n```\n";
+        let lines = render_markdown(md, 80, Style::default());
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        // The indented line must start with spaces (the 2-space code prefix
+        // plus the 4-space source indentation).
+        let indented = text
+            .iter()
+            .find(|t| t.contains("println"))
+            .expect("should find println line");
+        assert!(
+            indented.starts_with("      "),
+            "expected 6+ leading spaces (2 block prefix + 4 indent), got: {indented:?}"
+        );
+    }
+
+    #[test]
+    fn wrap_code_line_preserves_leading_whitespace() {
+        // A short line must not be modified.
+        assert_eq!(wrap_code_line("    let x = 1;", 80), vec!["    let x = 1;"]);
+
+        // A line that exceeds the width must be hard-wrapped, keeping the
+        // leading whitespace on the first chunk.
+        let chunks = wrap_code_line("    abcdefgh", 8);
+        assert_eq!(chunks[0], "    abcd", "first chunk keeps leading spaces");
+        assert_eq!(chunks[1], "efgh");
+
+        // Empty line produces one empty chunk.
+        assert_eq!(wrap_code_line("", 80), vec![""]);
+    }
+
+    #[test]
+    fn wrap_code_line_tab_counts_toward_width() {
+        // tab (8 cols) + "xy" (2 cols) = 10 ≤ 10 — fits on one line.
+        let chunks = wrap_code_line("\txy", 10);
+        assert_eq!(chunks, vec!["\txy"], "tab + 2 chars fits in width 10");
+
+        // tab (8 cols) + "x" (1 col) = 9 ≤ 9 — "x" fits; "y" overflows.
+        let chunks = wrap_code_line("\txy", 9);
+        assert_eq!(chunks[0], "\tx", "tab + first char fits exactly");
+        assert_eq!(chunks[1], "y", "second char wraps");
+
+        // tab alone (8 cols) fits in width 8; the next "x" overflows.
+        let chunks = wrap_code_line("\tx", 8);
+        assert_eq!(chunks[0], "\t");
+        assert_eq!(chunks[1], "x");
+    }
+
+    #[test]
+    fn char_display_width_tab_uses_tab_stop() {
+        // At column 0 a tab fills to column 8.
+        assert_eq!(char_display_width('\t', 0), 8);
+        // At column 4 a tab fills to column 8 (4 remaining).
+        assert_eq!(char_display_width('\t', 4), 4);
+        // At column 8 a tab fills to the next stop at 16 (8 columns).
+        assert_eq!(char_display_width('\t', 8), 8);
+        // Regular ASCII is 1.
+        assert_eq!(char_display_width('a', 0), 1);
     }
 
     #[test]
