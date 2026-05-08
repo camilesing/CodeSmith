@@ -2677,8 +2677,14 @@ async fn run_event_loop(
                     app.delete_char_forward();
                 }
                 KeyCode::Delete => {}
+                KeyCode::Left if is_word_cursor_modifier(key.modifiers) => {
+                    app.move_cursor_word_backward();
+                }
                 KeyCode::Left => {
                     app.move_cursor_left();
+                }
+                KeyCode::Right if is_word_cursor_modifier(key.modifiers) => {
+                    app.move_cursor_word_forward();
                 }
                 KeyCode::Right => {
                     app.move_cursor_right();
@@ -2746,22 +2752,12 @@ async fn run_event_loop(
                     app.needs_redraw = true;
                 }
                 KeyCode::Up => {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.history_up();
-                    } else if should_scroll_with_arrows(app) {
-                        app.scroll_up(1);
-                    } else {
-                        app.history_up();
-                    }
+                    let _ =
+                        handle_composer_history_arrow(app, key, slash_menu_open, mention_menu_open);
                 }
                 KeyCode::Down => {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.history_down();
-                    } else if should_scroll_with_arrows(app) {
-                        app.scroll_down(1);
-                    } else {
-                        app.history_down();
-                    }
+                    let _ =
+                        handle_composer_history_arrow(app, key, slash_menu_open, mention_menu_open);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.clear_input_recoverable();
@@ -3442,6 +3438,36 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
     } else {
         EscapeAction::Noop
     }
+}
+
+fn handle_composer_history_arrow(
+    app: &mut App,
+    key: KeyEvent,
+    slash_menu_open: bool,
+    mention_menu_open: bool,
+) -> bool {
+    if slash_menu_open || mention_menu_open {
+        return false;
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER) {
+        return false;
+    }
+
+    match key.code {
+        KeyCode::Up => {
+            app.history_up();
+            true
+        }
+        KeyCode::Down => {
+            app.history_down();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn is_word_cursor_modifier(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT)
 }
 
 fn is_composer_newline_key(key: KeyEvent) -> bool {
@@ -8170,14 +8196,6 @@ fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
         && key.modifiers.contains(KeyModifiers::CONTROL)
         && !key.modifiers.contains(KeyModifiers::ALT)
         && !key.modifiers.contains(KeyModifiers::SUPER)
-}
-
-fn should_scroll_with_arrows(app: &App) -> bool {
-    // When the composer is empty (or only whitespace), Up/Down arrows
-    // scroll the transcript. When the composer has text, they navigate
-    // composer history so the user can recall previous prompts.
-    // Cmd+Up / Alt+Up always scroll regardless, handled upstream.
-    app.input.trim().is_empty()
 }
 
 fn extract_reasoning_header(text: &str) -> Option<String> {

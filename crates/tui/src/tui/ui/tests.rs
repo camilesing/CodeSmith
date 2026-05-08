@@ -80,6 +80,17 @@ fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
 }
 
 #[test]
+fn word_cursor_modifier_accepts_control_and_alt() {
+    assert!(is_word_cursor_modifier(KeyModifiers::CONTROL));
+    assert!(is_word_cursor_modifier(KeyModifiers::ALT));
+    assert!(is_word_cursor_modifier(
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT
+    ));
+    assert!(!is_word_cursor_modifier(KeyModifiers::NONE));
+    assert!(!is_word_cursor_modifier(KeyModifiers::SHIFT));
+}
+
+#[test]
 fn selection_point_from_position_ignores_top_padding() {
     let area = Rect {
         x: 10,
@@ -1686,6 +1697,24 @@ fn test_esc_closes_slash_menu_before_other_actions() {
     ));
 
     assert_eq!(next_escape_action(&app, true), EscapeAction::CloseSlashMenu);
+}
+
+#[test]
+fn history_arrow_does_not_steal_open_menus() {
+    let mut app = create_test_app();
+    app.input_history.push("previous prompt".to_string());
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+
+    assert!(!handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        true,
+        false,
+    ));
+
+    assert_eq!(app.input, "/");
+    assert!(app.history_index.is_none());
 }
 
 #[test]
@@ -3795,35 +3824,55 @@ fn checklist_write_renders_dedicated_card() {
     );
 }
 
-// ---- scroll_with_arrows ----
+// ---- composer arrow history ----
 
 #[test]
-fn scroll_with_arrows_returns_true_when_input_empty() {
-    let app = create_test_app();
-    assert!(
-        super::should_scroll_with_arrows(&app),
-        "empty composer: Up/Down should scroll transcript"
-    );
+fn history_arrow_handles_empty_input() {
+    let mut app = create_test_app();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
-fn scroll_with_arrows_returns_true_when_input_only_whitespace() {
+fn history_arrow_handles_whitespace_input() {
     let mut app = create_test_app();
     app.input = "   ".to_string();
-    assert!(
-        super::should_scroll_with_arrows(&app),
-        "whitespace-only composer: Up/Down should scroll transcript"
-    );
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
-fn scroll_with_arrows_returns_false_when_input_has_text() {
+fn history_arrow_handles_nonempty_input() {
     let mut app = create_test_app();
     app.input = "hello".to_string();
-    assert!(
-        !super::should_scroll_with_arrows(&app),
-        "text in composer: Up/Down should navigate history"
-    );
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
