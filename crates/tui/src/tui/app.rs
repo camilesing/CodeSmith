@@ -35,7 +35,7 @@ use crate::tui::file_mention::ContextReference;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
 use crate::tui::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
-use crate::tui::selection::TranscriptSelection;
+use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
@@ -575,6 +575,8 @@ pub struct ViewportState {
     pub mouse_scroll: MouseScrollState,
     pub transcript_cache: TranscriptViewCache,
     pub transcript_selection: TranscriptSelection,
+    pub selection_autoscroll: Option<SelectionAutoscroll>,
+    pub transcript_scrollbar_dragging: bool,
     pub last_transcript_area: Option<Rect>,
     pub last_transcript_top: usize,
     pub last_transcript_visible: usize,
@@ -591,6 +593,8 @@ impl Default for ViewportState {
             mouse_scroll: MouseScrollState::new(),
             transcript_cache: TranscriptViewCache::new(),
             transcript_selection: TranscriptSelection::default(),
+            selection_autoscroll: None,
+            transcript_scrollbar_dragging: false,
             last_transcript_area: None,
             last_transcript_top: 0,
             last_transcript_visible: 0,
