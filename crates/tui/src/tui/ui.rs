@@ -3513,15 +3513,15 @@ fn handle_composer_history_arrow(
         return false;
     }
 
-    // When the composer is empty, plain Up/Down scroll the transcript so
-    // terminals that map trackpad gestures to arrow keys can still scroll
-    // the history area.  When the composer has text, they navigate input
-    // history so the user can recall previous prompts.
-    let composer_empty = app.input.trim().is_empty();
+    // When `composer_arrows_scroll` is enabled and the composer is empty,
+    // plain Up/Down scroll the transcript.  This helps terminals that map
+    // trackpad gestures to arrow keys.  Otherwise arrows always navigate
+    // input history regardless of composer state (#1117).
+    let scroll_on_empty = app.composer_arrows_scroll && app.input.trim().is_empty();
 
     match key.code {
         KeyCode::Up => {
-            if composer_empty {
+            if scroll_on_empty {
                 app.scroll_up(1);
             } else {
                 app.history_up();
@@ -3529,7 +3529,7 @@ fn handle_composer_history_arrow(
             true
         }
         KeyCode::Down => {
-            if composer_empty {
+            if scroll_on_empty {
                 app.scroll_down(1);
             } else {
                 app.history_down();

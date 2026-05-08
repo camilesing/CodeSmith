@@ -714,6 +714,9 @@ pub struct App {
     pub use_memory: bool,
     pub use_alt_screen: bool,
     pub use_mouse_capture: bool,
+    /// When true, plain Up/Down on an empty composer scroll the transcript
+    /// instead of navigating input history (#1117 opt-in).
+    pub composer_arrows_scroll: bool,
     pub use_bracketed_paste: bool,
     pub use_paste_burst_detection: bool,
     #[allow(dead_code)]
@@ -1429,6 +1432,11 @@ impl App {
             collapsed_cell_map: Vec::new(),
             edit_in_progress: false,
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
+            composer_arrows_scroll: config
+                .tui
+                .as_ref()
+                .and_then(|tui| tui.composer_arrows_scroll)
+                .unwrap_or(false),
         }
     }
 
