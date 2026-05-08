@@ -122,6 +122,52 @@ pub struct SessionMetadata {
     /// Optional mode label (agent/plan/etc.)
     #[serde(default)]
     pub mode: Option<String>,
+    /// Accumulated cost data for persisted billing and high-water mark.
+    #[serde(default)]
+    pub cost: SessionCostSnapshot,
+}
+
+/// Cost and high-water-mark fields persisted with each session.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct SessionCostSnapshot {
+    /// Accumulated parent-turn session cost in USD.
+    #[serde(default)]
+    pub session_cost_usd: f64,
+    /// Accumulated parent-turn session cost in CNY.
+    #[serde(default)]
+    pub session_cost_cny: f64,
+    /// Accumulated sub-agent/background LLM cost in USD.
+    #[serde(default)]
+    pub subagent_cost_usd: f64,
+    /// Accumulated sub-agent/background LLM cost in CNY.
+    #[serde(default)]
+    pub subagent_cost_cny: f64,
+    /// Max-ever displayed session+subagent cost in USD (preserves #244
+    /// monotonic guarantee across session restarts).
+    #[serde(default)]
+    pub displayed_cost_high_water_usd: f64,
+    /// Max-ever displayed session+subagent cost in CNY.
+    #[serde(default)]
+    pub displayed_cost_high_water_cny: f64,
+}
+
+impl SessionCostSnapshot {
+    /// Session + subagent cost in USD.
+    pub fn total_usd(&self) -> f64 {
+        self.session_cost_usd + self.subagent_cost_usd
+    }
+
+    /// Session + subagent cost in CNY.
+    pub fn total_cny(&self) -> f64 {
+        self.session_cost_cny + self.subagent_cost_cny
+    }
+}
+
+impl SessionMetadata {
+    /// Copy cost fields from another metadata (used when forking a session).
+    pub fn copy_cost_from(&mut self, other: &SessionMetadata) {
+        self.cost = other.cost;
+    }
 }
 
 /// A saved session containing full conversation history
