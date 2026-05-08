@@ -26,6 +26,7 @@ mod session;
 pub mod share;
 mod skills;
 mod stash;
+mod status;
 mod task;
 mod user_commands;
 
@@ -427,8 +428,14 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdSettingsDescription,
     },
     CommandInfo {
+        name: "status",
+        aliases: &[],
+        usage: "/status",
+        description_id: MessageId::CmdStatusDescription,
+    },
+    CommandInfo {
         name: "statusline",
-        aliases: &["status"],
+        aliases: &[],
         usage: "/statusline",
         description_id: MessageId::CmdStatuslineDescription,
     },
@@ -537,7 +544,8 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Config commands
         "config" => config::config_command(app, arg),
         "settings" => config::show_settings(app),
-        "statusline" | "status" => config::status_line(app),
+        "status" => status::status(app),
+        "statusline" => config::status_line(app),
         "yolo" => config::yolo(app),
         "agent" => config::agent_mode(app),
         "plan" => config::plan_mode(app),
