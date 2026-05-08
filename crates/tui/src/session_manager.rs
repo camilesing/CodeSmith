@@ -110,6 +110,16 @@ pub struct SessionMetadata {
     pub subagent_cost_cny: f64,
 }
 
+impl SessionMetadata {
+    /// Copy cost fields from another metadata (used when forking a session).
+    pub fn copy_cost_from(&mut self, other: &SessionMetadata) {
+        self.session_cost_usd = other.session_cost_usd;
+        self.session_cost_cny = other.session_cost_cny;
+        self.subagent_cost_usd = other.subagent_cost_usd;
+        self.subagent_cost_cny = other.subagent_cost_cny;
+    }
+}
+
 /// A saved session containing full conversation history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedSession {
