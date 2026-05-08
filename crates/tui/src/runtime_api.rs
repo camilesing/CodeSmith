@@ -76,6 +76,8 @@ pub struct RuntimeApiOptions {
     /// Optional bearer token required for `/v1/*` routes. If omitted here,
     /// `run_http_server` also checks `DEEPSEEK_RUNTIME_TOKEN`.
     pub auth_token: Option<String>,
+    /// Allow `/v1/*` routes without auth when no token is configured.
+    pub insecure_no_auth: bool,
 }
 
 impl Default for RuntimeApiOptions {
@@ -86,8 +88,53 @@ impl Default for RuntimeApiOptions {
             workers: 2,
             cors_origins: Vec::new(),
             auth_token: None,
+            insecure_no_auth: false,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedRuntimeAuth {
+    token: Option<String>,
+    generated: bool,
+}
+
+fn resolve_runtime_auth(
+    cli_token: Option<String>,
+    env_token: Option<String>,
+    insecure_no_auth: bool,
+) -> ResolvedRuntimeAuth {
+    if let Some(token) = first_nonblank_token(cli_token).or_else(|| first_nonblank_token(env_token))
+    {
+        return ResolvedRuntimeAuth {
+            token: Some(token),
+            generated: false,
+        };
+    }
+    if insecure_no_auth {
+        return ResolvedRuntimeAuth {
+            token: None,
+            generated: false,
+        };
+    }
+    ResolvedRuntimeAuth {
+        token: Some(generate_runtime_token()),
+        generated: true,
+    }
+}
+
+fn first_nonblank_token(token: Option<String>) -> Option<String> {
+    token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+fn generate_runtime_token() -> String {
+    format!(
+        "dst_{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,11 +395,12 @@ pub async fn run_http_server(
             .map(|h| h.join(".deepseek").join("sessions"))
             .unwrap_or_else(|| PathBuf::from(".deepseek").join("sessions"))
     });
-    let runtime_token = options
-        .auth_token
-        .clone()
-        .or_else(|| std::env::var("DEEPSEEK_RUNTIME_TOKEN").ok())
-        .filter(|token| !token.trim().is_empty());
+    let resolved_auth = resolve_runtime_auth(
+        options.auth_token.clone(),
+        std::env::var("DEEPSEEK_RUNTIME_TOKEN").ok(),
+        options.insecure_no_auth,
+    );
+    let runtime_token = resolved_auth.token.clone();
     let auth_enabled = runtime_token.is_some();
     let skill_state = SkillStateStore::load_default().unwrap_or_else(|err| {
         tracing::warn!(
@@ -370,7 +418,7 @@ pub async fn run_http_server(
         sessions_dir,
         mcp_config_path: config.mcp_config_path(),
         automations,
-        runtime_token,
+        runtime_token: runtime_token.clone(),
         skill_state: Arc::new(Mutex::new(skill_state)),
         auth_required: auth_enabled,
         bind_host: options.host.clone(),
@@ -386,6 +434,17 @@ pub async fn run_http_server(
         .with_context(|| format!("Failed to bind {addr}"))?;
 
     println!("Runtime API listening on http://{addr}");
+    if resolved_auth.generated {
+        if let Some(token) = runtime_token.as_deref() {
+            println!("Runtime API auth: generated bearer token for this process.");
+            println!("  Authorization: Bearer {token}");
+            println!("  Set DEEPSEEK_RUNTIME_TOKEN or pass --auth-token for a stable token.");
+        }
+    } else if auth_enabled {
+        println!("Runtime API auth: bearer token required for /v1/* routes.");
+    } else {
+        println!("Runtime API auth: disabled by explicit insecure mode.");
+    }
     let is_loopback = options.host == "127.0.0.1" || options.host == "::1";
     if is_loopback {
         println!("Security: this server is local-first. Do not expose it to untrusted networks.");
@@ -396,7 +455,7 @@ pub async fn run_http_server(
         );
         if !auth_enabled {
             println!(
-                "  WARNING: --auth-token (or DEEPSEEK_RUNTIME_TOKEN) is unset. Anyone on the network can call /v1/* without authentication."
+                "  WARNING: auth is disabled. Anyone on the network can call /v1/* without authentication."
             );
         }
         println!(
@@ -405,9 +464,6 @@ pub async fn run_http_server(
             port = options.port,
             auth = auth_enabled,
         );
-    }
-    if auth_enabled {
-        println!("Runtime API auth: bearer token required for /v1/* routes.");
     }
     let serve_result = axum::serve(listener, app)
         .await
@@ -1836,6 +1892,50 @@ mod tests {
                 error: None,
             }
         }
+    }
+
+    #[test]
+    fn runtime_auth_generates_token_by_default() {
+        let auth = resolve_runtime_auth(None, None, false);
+        assert!(auth.generated);
+        let token = auth.token.expect("generated token");
+        assert!(token.starts_with("dst_"));
+        assert!(token.len() > 32);
+    }
+
+    #[test]
+    fn runtime_auth_requires_explicit_insecure_for_no_token() {
+        let auth = resolve_runtime_auth(None, None, true);
+        assert_eq!(
+            auth,
+            ResolvedRuntimeAuth {
+                token: None,
+                generated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_auth_prefers_cli_token_over_env_token() {
+        let auth = resolve_runtime_auth(
+            Some(" cli-token ".to_string()),
+            Some("env-token".to_string()),
+            false,
+        );
+        assert_eq!(
+            auth,
+            ResolvedRuntimeAuth {
+                token: Some("cli-token".to_string()),
+                generated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_auth_ignores_blank_configured_tokens() {
+        let auth = resolve_runtime_auth(Some(" ".to_string()), Some("\t".to_string()), false);
+        assert!(auth.generated);
+        assert!(auth.token.is_some());
     }
 
     async fn spawn_test_server_with_root(

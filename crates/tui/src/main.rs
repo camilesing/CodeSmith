@@ -438,6 +438,9 @@ struct ServeArgs {
     /// `DEEPSEEK_RUNTIME_TOKEN` when omitted.
     #[arg(long = "auth-token", value_name = "TOKEN")]
     auth_token: Option<String>,
+    /// Disable runtime API auth when no token is configured. Only use on a trusted loopback.
+    #[arg(long = "insecure")]
+    insecure_no_auth: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -749,6 +752,7 @@ async fn main() -> Result<()> {
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
                             auth_token: args.auth_token,
+                            insecure_no_auth: args.insecure_no_auth,
                         },
                     )
                     .await
