@@ -34,6 +34,7 @@ pub enum ModalKind {
     ModePicker,
     FilePicker,
     StatusPicker,
+    FeedbackPicker,
     ContextMenu,
     ShellControl,
 }
