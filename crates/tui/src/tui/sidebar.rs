@@ -678,9 +678,10 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     // Only show the additive breakdown when it matches the displayed
     // total; when the high-water mark is in effect (post-reconciliation),
     // the breakdown would not sum to the displayed value (#244).
-    // Epsilon must be large enough that floating-point accumulation
+    // Tolerance must be large enough that floating-point accumulation
     // across many turns doesn't prematurely hide the breakdown.
-    let cost_line = if (displayed_total - real_total).abs() < 1e-6 {
+    const COST_EQ_TOLERANCE: f64 = 1e-6;
+    let cost_line = if (displayed_total - real_total).abs() < COST_EQ_TOLERANCE {
         format!(
             "cost: {} (session {} + agents {})",
             app.format_cost_amount(displayed_total),
