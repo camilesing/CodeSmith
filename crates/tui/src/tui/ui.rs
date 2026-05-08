@@ -6073,8 +6073,8 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     // Take the max with the current totals — old sessions without
     // persisted high-water fields deserialise to 0.0 and fall back to
     // the restored total with no regression.
-    let total_restored_usd = app.session.session_cost + app.session.subagent_cost;
-    let total_restored_cny = app.session.session_cost_cny + app.session.subagent_cost_cny;
+    let total_restored_usd = session.metadata.cost.total_usd();
+    let total_restored_cny = session.metadata.cost.total_cny();
     app.session.displayed_cost_high_water =
         session.metadata.cost.displayed_cost_high_water_usd.max(total_restored_usd);
     app.session.displayed_cost_high_water_cny =

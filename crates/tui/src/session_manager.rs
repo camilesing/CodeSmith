@@ -125,6 +125,18 @@ pub struct SessionCostSnapshot {
     pub displayed_cost_high_water_cny: f64,
 }
 
+impl SessionCostSnapshot {
+    /// Session + subagent cost in USD.
+    pub fn total_usd(&self) -> f64 {
+        self.session_cost_usd + self.subagent_cost_usd
+    }
+
+    /// Session + subagent cost in CNY.
+    pub fn total_cny(&self) -> f64 {
+        self.session_cost_cny + self.subagent_cost_cny
+    }
+}
+
 impl SessionMetadata {
     /// Copy cost fields from another metadata (used when forking a session).
     pub fn copy_cost_from(&mut self, other: &SessionMetadata) {

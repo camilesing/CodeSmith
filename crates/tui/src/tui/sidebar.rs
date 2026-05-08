@@ -26,6 +26,11 @@ use super::history::{HistoryCell, ToolCell, ToolStatus};
 use super::subagent_routing::active_fanout_counts;
 use super::ui::truncate_line_to_width;
 
+/// Tolerance for floating-point cost comparison in the sidebar breakdown.
+/// Must be large enough that accumulated f64 error across hundreds of turns
+/// does not prematurely hide the session+agents breakdown.
+const COST_EQ_TOLERANCE: f64 = 1e-6;
+
 pub fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     if area.width < 24 || area.height < 8 {
         // Paint a styled block over the area so stale cells from a previous
@@ -678,9 +683,6 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     // Only show the additive breakdown when it matches the displayed
     // total; when the high-water mark is in effect (post-reconciliation),
     // the breakdown would not sum to the displayed value (#244).
-    // Tolerance must be large enough that floating-point accumulation
-    // across many turns doesn't prematurely hide the breakdown.
-    const COST_EQ_TOLERANCE: f64 = 1e-6;
     let cost_line = if (displayed_total - real_total).abs() < COST_EQ_TOLERANCE {
         format!(
             "cost: {} (session {} + agents {})",
