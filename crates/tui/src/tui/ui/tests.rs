@@ -1259,6 +1259,7 @@ fn terminal_probe_timeout_uses_tui_config_and_clamps() {
             status_items: None,
             osc8_links: None,
             notification_condition: None,
+            composer_arrows_scroll: None,
         }),
         ..Config::default()
     };
@@ -4385,13 +4386,13 @@ fn history_arrow_handles_empty_input() {
     let mut app = create_test_app();
     app.input_history.push("previous prompt".to_string());
 
+    // Default: empty composer Up navigates input history (#1117).
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
         false,
         false,
     ));
-
     assert_eq!(app.input, "previous prompt");
 }
 
@@ -4408,7 +4409,6 @@ fn history_arrow_handles_whitespace_input() {
         false,
         false,
     ));
-
     assert_eq!(app.input, "previous prompt");
 }
 
@@ -4426,6 +4426,54 @@ fn history_arrow_handles_nonempty_input() {
         false,
     ));
 
+    assert_eq!(app.input, "previous prompt");
+}
+
+#[test]
+fn composer_arrows_scroll_empty_up() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = true;
+
+    // Opt-in: empty composer Up scrolls transcript.
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+    assert_eq!(app.viewport.pending_scroll_delta, -1);
+    assert!(app.input.is_empty());
+}
+
+#[test]
+fn composer_arrows_scroll_empty_down() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = true;
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+    assert_eq!(app.viewport.pending_scroll_delta, 1);
+}
+
+#[test]
+fn composer_arrows_scroll_nonempty_still_navigates_history() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = true;
+    app.input = "hello".to_string();
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    // Even with the option on, non-empty composer still navigates history.
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
     assert_eq!(app.input, "previous prompt");
 }
 
