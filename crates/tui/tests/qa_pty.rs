@@ -23,6 +23,21 @@ const KEY_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn boot_minimal() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
     let ws = make_sealed_workspace()?;
+    spawn_minimal(ws)
+}
+
+fn boot_minimal_without_retry() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
+    let ws = make_sealed_workspace()?;
+    std::fs::write(
+        ws.home().join(".deepseek").join("config.toml"),
+        "[retry]\nenabled = false\n",
+    )?;
+    spawn_minimal(ws)
+}
+
+fn spawn_minimal(
+    ws: qa_harness::harness::SealedWorkspace,
+) -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
     let h = Harness::builder(Harness::cargo_bin("deepseek-tui"))
         .cwd(ws.workspace())
         .seal_home(ws.home())
@@ -55,6 +70,26 @@ fn write_skill(root: std::path::PathBuf, name: &str, description: &str) -> anyho
     Ok(())
 }
 
+fn first_non_blank_row(frame: &qa_harness::Frame) -> Option<u16> {
+    (0..frame.rows()).find(|&row| !frame.row(row).trim().is_empty())
+}
+
+fn assert_viewport_starts_at_top(frame: &qa_harness::Frame) {
+    let dump = frame.debug_dump();
+    let first_row = first_non_blank_row(frame).expect("expected visible frame text");
+    assert_eq!(
+        first_row, 0,
+        "viewport content drifted below row 0:\n{dump}"
+    );
+    assert!(
+        frame.row(0).contains("Plan")
+            || frame.row(0).contains("Agent")
+            || frame.row(0).contains("Yolo")
+            || frame.row(0).contains("DeepSeek"),
+        "expected header content on row 0:\n{dump}"
+    );
+}
+
 /// Smoke: the binary boots into an alt-screen, paints a composer, and the
 /// header shows the project label. If this fails, the harness itself is
 /// broken before we worry about any scenario.
@@ -71,6 +106,32 @@ fn smoke_boot_paints_composer() -> anyhow::Result<()> {
         "expected non-empty frame after boot:\n{}",
         f.debug_dump()
     );
+
+    let _ = h.shutdown();
+    Ok(())
+}
+
+/// Regression for #1085: after a turn exits through the error path, terminal
+/// origin/scroll-region state must not leave blank rows above the TUI.
+#[test]
+fn viewport_origin_stays_row_zero_after_failed_turn() -> anyhow::Result<()> {
+    let (_ws, mut h) = boot_minimal_without_retry()?;
+    h.wait_for_text("Composer", BOOT_TIMEOUT)?;
+    assert_viewport_starts_at_top(h.frame());
+
+    h.send(keys::key::text("trigger a failed turn"))?;
+    h.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
+    h.send(keys::key::enter())?;
+    h.wait_for(
+        |frame| {
+            frame.contains("Turn failed")
+                || frame.contains("Connection refused")
+                || frame.contains("error")
+        },
+        Duration::from_secs(15),
+    )?;
+    h.wait_for_idle(Duration::from_millis(300), Duration::from_secs(3))?;
+    assert_viewport_starts_at_top(h.frame());
 
     let _ = h.shutdown();
     Ok(())

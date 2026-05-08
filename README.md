@@ -28,6 +28,12 @@ brew install deepseek-tui
 # 4. Direct download — no package manager or toolchain.
 #    https://github.com/Hmbown/DeepSeek-TUI/releases
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
+
+# 5. Docker — prebuilt release image.
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY \
+  -v "$PWD:/workspace" \
+  ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 > In mainland China, speed up the npm path with
@@ -219,31 +225,30 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.17
+## What's New In v0.8.18
 
-A focused reliability release built almost entirely from community contributions.
+A focused follow-up release for TUI/runtime/install polish.
 [Full changelog](CHANGELOG.md).
 
-- **Plan-mode sandbox is now read-only** — shell commands in Plan mode can no
-  longer write to the workspace, closing a safety gap where `python -c
-  "open('f','w')"` could mutate files during investigation.
-- **Paste-Enter no longer auto-submits** — pasting multi-line text with a
-  trailing newline stays in the composer instead of firing immediately.
-- **Slash menu covers all skills** — `/skills`, `/skill`, and the slash
-  autocomplete now show both project-local and global skills in sync with the
-  system-prompt block.
-- **`deepseek-cn` preset uses the official host** — defaults to
-  `https://api.deepseek.com` while still recognising legacy configs with the
-  old typo host.
-- **Streaming thinking blocks finalize cleanly** — stream errors and restarts
-  no longer leave partial reasoning orphaned in the transcript.
-- **NVIDIA NIM provider prefers its own API key** — even when a legacy root
-  DeepSeek key is present, avoiding 401s.
-- **Plus**: `/theme` command for dark/light toggle, Windows UTF-8 shell output,
-  ~30 GB snapshot-orphan cleanup, OpenRouter model-ID preservation, KV
-  prefix-cache stabilisation, SSE decompression behind compressing gateways,
-  npm mirror-escape-hatch guidance, and a PTY-driven TUI QA harness for
-  regression testing.
+- **Plain `deepseek` starts fresh** - opening a second terminal in the same
+  folder now creates a new session instead of silently re-entering the same
+  interrupted checkpoint. Use `deepseek --continue` when you want recovery.
+- **Docker is a supported install path** - release builds publish
+  `ghcr.io/hmbown/deepseek-tui` images with `latest`, semver, and `vX.Y.Z`
+  tags; Docker publishing is part of the release gate.
+- **Chinese destructive approval dialogs are localized** - zh-Hans approval
+  copy keeps explicit destructive-risk wording while English defaults stay
+  unchanged.
+- **Transcript scrollbar dragging** - with mouse capture enabled, drag the
+  transcript scrollbar thumb to move through long sessions.
+- **Viewport drift fix** - terminal scroll margins and origin mode are reset
+  before key repaints, with a PTY regression for the blank-top-rows bug.
+- **npm installs are more resilient** - transient release-download failures
+  are recoverable at postinstall time, while checksum, platform, glibc, and
+  runtime failures remain fatal.
+- **Plus**: FreeBSD secrets-crate compile fallback, Docker Buildx cache-race
+  fix, readable light-theme toggles, softer long-session text colors, Windows
+  sandbox guarantee cleanup, and rustup mirror/install troubleshooting updates.
 
 ---
 
@@ -272,6 +277,15 @@ deepseek mcp list                                # list configured MCP servers
 deepseek mcp validate                            # validate MCP config/connectivity
 deepseek mcp-server                              # run dispatcher MCP stdio server
 deepseek update                                  # check for and apply binary updates
+```
+
+Docker images are published to GHCR for release builds:
+
+```bash
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v ~/.deepseek:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 ### Zed / ACP

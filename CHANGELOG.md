@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.18] - 2026-05-07
+
+This is the v0.8.17 follow-up release: a tighter TUI/runtime/install pass with
+safer session startup semantics, Docker images promoted to a supported install
+path, and several community PRs harvested into the release branch. VS Code and
+Feishu/Lark/mobile companion work remain out of scope for this release.
+
+### Added
+- **Prebuilt Docker images on GHCR** - release builds now publish
+  `ghcr.io/hmbown/deepseek-tui` with `latest`, semver, and `vX.Y.Z` tags, and
+  the GitHub release notes include a Docker install snippet. Docker publishing
+  is now a release gate rather than a best-effort check.
+- **Draggable transcript scrollbar** (#1075, #1076) - when mouse capture is
+  enabled, drag the transcript scrollbar thumb to move through long sessions.
+  The implementation also clears stale drag state on resize and new left-clicks.
+  Thanks @Oliver-ZPLiu.
+- **PTY regression for viewport drift** (#1085) - the QA harness now covers the
+  blank-top-rows failure after a failed/long turn so future layout changes catch
+  terminal viewport drift.
+
+### Changed
+- **Plain `deepseek` starts a fresh session** - opening a second `deepseek` in
+  the same folder no longer silently attaches to the same in-flight checkpoint.
+  Crash/interrupted checkpoints are preserved as saved sessions and recovered
+  explicitly through `deepseek --continue`.
+- **npm postinstall is recoverable for transient download failures** (#1059) -
+  install-time GitHub download/extract failures are non-blocking and documented,
+  while unsupported platforms, checksum mismatches, glibc preflight failures,
+  and runtime wrapper failures remain fatal. Thanks @Fire-dtx.
+- **Docker Buildx cargo caches are platform-isolated and locked** - registry,
+  git, and target caches now use platform-specific cache IDs plus locked
+  sharing to avoid the `.cargo-ok File exists` unpack race in release checks.
+- **Long-session palette is easier to read** (#1070, #936 partial) - default
+  body text is slightly softer, reasoning/thinking text uses a warmer accent,
+  and `/theme` now updates the terminal color adapter so light mode keeps those
+  contrasts coherent after an in-session toggle. Thanks @bevis-wong and
+  @oooyuy92 for the readability reports.
+- **Install docs add a second rustup mirror fallback** (#1011) - `rsproxy.cn`
+  is documented as an alternate rustup mirror, and old Debian/Ubuntu Cargo
+  `edition2024` failures now point users to rustup stable. Thanks @wuwuzhijing.
+
+### Fixed
+- **Chinese destructive approval dialogs keep explicit risk wording** (#1087,
+  #1091) - zh-Hans destructive approval copy now localizes the operation label,
+  title, prompt, and destructive-risk warning without changing English default
+  behavior. Thanks @qinxianyuzou and @axobase001.
+- **Terminal viewport is reset before repaint** (#1085) - the TUI now clears
+  scroll margins/origin mode before key repaints after resume, resize, and turn
+  completion, preventing alt-screen content from drifting downward and leaving
+  blank rows at the top.
+- **Interactive subprocesses wait for terminal release** (#1085) - shell/editor
+  handoff now waits until the UI has actually left alt-screen/raw mode before
+  launching the child process, preventing the TUI from repainting into host
+  scrollback after interactive tool use.
+- **Light theme reasoning blocks stay light** (#1070, #936 partial) -
+  thinking/reasoning background tints now map to the light reasoning surface
+  instead of keeping the dark-mode tint after `/theme light`.
+- **FreeBSD can compile the secrets crate** (#1089) - platforms without a native
+  `keyring` dependency now fail the OS-keyring probe cleanly and fall back to
+  the file-backed secret store instead of referencing a missing crate. Thanks
+  @avysk for the FreeBSD report.
+- **Windows sandbox docs no longer overstate guarantees** (#1015, #1058) - the
+  docs and code comments now describe the future Windows helper as
+  process-tree containment only until filesystem, network, registry, or
+  AppContainer isolation is actually implemented. Thanks @axobase001.
+
 ## [0.8.17] - 2026-05-07
 
 A focused reliability release built almost entirely from community contributions.

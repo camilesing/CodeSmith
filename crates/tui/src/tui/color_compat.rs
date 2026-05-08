@@ -45,6 +45,10 @@ impl<W: Write> ColorCompatBackend<W> {
     pub(crate) fn clear_forced_size(&mut self) {
         self.forced_size = None;
     }
+
+    pub(crate) fn set_palette_mode(&mut self, palette_mode: PaletteMode) {
+        self.palette_mode = palette_mode;
+    }
 }
 
 impl<W: Write> Write for ColorCompatBackend<W> {
@@ -199,5 +203,15 @@ mod tests {
 
         assert_eq!(cell.fg, palette::LIGHT_TEXT_BODY);
         assert_eq!(cell.bg, palette::LIGHT_SURFACE);
+    }
+
+    #[test]
+    fn backend_palette_mode_can_follow_runtime_theme_changes() {
+        let writer = SharedWriter::default();
+        let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor, PaletteMode::Dark);
+
+        assert_eq!(backend.palette_mode, PaletteMode::Dark);
+        backend.set_palette_mode(PaletteMode::Light);
+        assert_eq!(backend.palette_mode, PaletteMode::Light);
     }
 }

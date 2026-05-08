@@ -303,6 +303,95 @@ fn jump_to_latest_button_click_scrolls_to_tail() {
 }
 
 #[test]
+fn transcript_scrollbar_drag_maps_mouse_row_to_scroll_position() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 2,
+        y: 5,
+        width: 20,
+        height: 10,
+    });
+    app.viewport.last_transcript_visible = 10;
+    app.viewport.last_transcript_total = 110;
+    app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 21,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert!(app.viewport.transcript_scrollbar_dragging);
+    assert!(!app.viewport.transcript_selection.dragging);
+    assert!(!app.viewport.transcript_scroll.is_at_tail());
+    let (_, top) = app.viewport.transcript_scroll.resolve_top(&[], 100);
+    assert_eq!(top, 0);
+    assert!(app.user_scrolled_during_stream);
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 21,
+            row: 14,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(app.viewport.transcript_scroll.is_at_tail());
+    assert!(!app.user_scrolled_during_stream);
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 21,
+            row: 14,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(!app.viewport.transcript_scrollbar_dragging);
+}
+
+#[test]
+fn new_left_down_clears_stale_transcript_scrollbar_drag() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 2,
+        y: 5,
+        width: 20,
+        height: 10,
+    });
+    app.viewport.last_transcript_visible = 10;
+    app.viewport.last_transcript_total = 110;
+    app.viewport.transcript_scrollbar_dragging = true;
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert!(!app.viewport.transcript_scrollbar_dragging);
+}
+
+#[test]
 fn right_click_opens_context_menu() {
     let mut app = create_test_app();
 

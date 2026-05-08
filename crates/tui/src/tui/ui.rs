@@ -1,7 +1,7 @@
 //! TUI event loop and rendering logic for `DeepSeek` CLI.
 
 use std::collections::HashSet;
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -134,6 +134,7 @@ const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
+const TERMINAL_ORIGIN_RESET: &[u8] = b"\x1b[r\x1b[?6l\x1b[H\x1b[2J";
 
 /// Run the interactive TUI event loop.
 ///
@@ -641,6 +642,7 @@ async fn run_event_loop(
     // for terminal-native text selection.
     let mut shift_bypass_active = false;
     let mut terminal_paused_at: Option<Instant> = None;
+    let mut force_terminal_repaint = false;
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -870,6 +872,7 @@ async fn run_event_loop(
                         status,
                         error,
                     } => {
+                        force_terminal_repaint = true;
                         // Finalize any in-flight tool group. Cancellation
                         // marks still-running entries as Failed so the user
                         // sees they were interrupted rather than the spinner
@@ -1115,7 +1118,7 @@ async fn run_event_loop(
                             "Capacity memory persist failed ({action}): {error}"
                         ));
                     }
-                    EngineEvent::PauseEvents => {
+                    EngineEvent::PauseEvents { ack } => {
                         if !event_broker.is_paused() {
                             pause_terminal(
                                 terminal,
@@ -1125,6 +1128,9 @@ async fn run_event_loop(
                             )?;
                             event_broker.pause_events();
                             terminal_paused_at = Some(Instant::now());
+                        }
+                        if let Some(ack) = ack {
+                            ack.notify_one();
                         }
                     }
                     EngineEvent::ResumeEvents => {
@@ -1310,7 +1316,8 @@ async fn run_event_loop(
                                     "mode": app.mode.label(),
                                 }),
                             );
-                            app.view_stack.push(ApprovalView::new(request));
+                            app.view_stack
+                                .push(ApprovalView::new_for_locale(request, app.ui_locale));
                             app.status_message = Some(format!(
                                 "Approval required for '{tool_name}': {description}"
                             ));
@@ -1470,6 +1477,7 @@ async fn run_event_loop(
             terminal_paused_at = None;
             app.status_message = Some("Terminal controls restored".to_string());
             app.needs_redraw = true;
+            force_terminal_repaint = true;
         }
 
         let now = Instant::now();
@@ -1510,7 +1518,11 @@ async fn run_event_loop(
             None
         };
         if app.needs_redraw && draw_wait.is_none() {
-            terminal.draw(|f| render(f, app))?; // app is &mut
+            if force_terminal_repaint {
+                reset_terminal_viewport(terminal)?;
+                force_terminal_repaint = false;
+            }
+            draw_app_frame(terminal, app)?;
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
         }
@@ -1629,7 +1641,7 @@ async fn run_event_loop(
                     );
                 }
 
-                terminal.clear()?;
+                reset_terminal_viewport(terminal)?;
                 app.handle_resize(final_w, final_h);
                 // #macos-resize: some terminals (macOS Terminal.app, Windows
                 // ConHost) briefly report stale dimensions via
@@ -1649,7 +1661,7 @@ async fn run_event_loop(
                 // any other events can interleave. Without this, the next
                 // iteration's draw can race against fast follow-up input and
                 // leave the user staring at a blank/partial frame.
-                terminal.draw(|f| render(f, app))?;
+                draw_app_frame(terminal, app)?;
                 {
                     let backend = terminal.backend_mut();
                     backend.clear_forced_size();
@@ -5288,7 +5300,7 @@ fn render(f: &mut Frame, app: &mut App) {
 
                 // Render the file-tree pane.
                 if let Some(ref mut state) = app.file_tree {
-                    super::file_tree::render_file_tree(f, tree_area, state);
+                    super::file_tree::render_file_tree(f, tree_area, state, app.ui_theme.mode);
                 }
 
                 remaining
@@ -5361,6 +5373,12 @@ fn render(f: &mut Frame, app: &mut App) {
         let buf = f.buffer_mut();
         app.view_stack.render(size, buf);
     }
+}
+
+fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
+    terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
+    terminal.draw(|f| render(f, app))?;
+    Ok(())
 }
 
 /// Pull the latest snapshot of cells / revisions / render options into the
@@ -6207,6 +6225,17 @@ fn resume_terminal(
     if use_bracketed_paste {
         execute!(terminal.backend_mut(), EnableBracketedPaste)?;
     }
+    reset_terminal_viewport(terminal)?;
+    Ok(())
+}
+
+fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
+    // Reset scroll margins and origin mode before clearing. Some interactive
+    // child processes leave DECSTBM/DECOM behind; if ratatui's diff renderer
+    // then writes "row 0", terminals can place it relative to the leaked
+    // scroll region and the whole viewport appears shifted down.
+    terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
+    terminal.backend_mut().flush()?;
     terminal.clear()?;
     Ok(())
 }
@@ -7318,8 +7347,17 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            app.viewport.transcript_scrollbar_dragging = false;
+
             if mouse_hits_rect(mouse, app.viewport.jump_to_latest_button_area) {
                 app.scroll_to_bottom();
+                return Vec::new();
+            }
+
+            if mouse_hits_transcript_scrollbar(app, mouse) {
+                app.viewport.transcript_scrollbar_dragging = true;
+                app.viewport.transcript_selection.clear();
+                scroll_transcript_to_mouse_row(app, mouse.row);
                 return Vec::new();
             }
 
@@ -7342,11 +7380,20 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
+            if app.viewport.transcript_scrollbar_dragging {
+                scroll_transcript_to_mouse_row(app, mouse.row);
+                return Vec::new();
+            }
+
             if app.viewport.transcript_selection.dragging
                 && let Some(point) = selection_point_from_mouse(app, mouse)
             {
                 app.viewport.transcript_selection.head = Some(point);
             }
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_scrollbar_dragging => {
+            app.viewport.transcript_scrollbar_dragging = false;
+            app.needs_redraw = true;
         }
         MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_selection.dragging => {
             app.viewport.transcript_selection.dragging = false;
@@ -7361,6 +7408,57 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     }
 
     Vec::new()
+}
+
+fn mouse_hits_transcript_scrollbar(app: &App, mouse: MouseEvent) -> bool {
+    let Some(area) = app.viewport.last_transcript_area else {
+        return false;
+    };
+    if area.width <= 1 || app.viewport.last_transcript_total <= app.viewport.last_transcript_visible
+    {
+        return false;
+    }
+
+    let scrollbar_col = area.x.saturating_add(area.width.saturating_sub(1));
+    mouse.column == scrollbar_col
+        && mouse.row >= area.y
+        && mouse.row < area.y.saturating_add(area.height)
+}
+
+fn scroll_transcript_to_mouse_row(app: &mut App, row: u16) -> bool {
+    let Some(area) = app.viewport.last_transcript_area else {
+        return false;
+    };
+    let total = app.viewport.last_transcript_total;
+    let visible = app.viewport.last_transcript_visible;
+    if area.height == 0 || total <= visible {
+        return false;
+    }
+
+    let max_start = total.saturating_sub(visible);
+    if max_start == 0 {
+        app.scroll_to_bottom();
+        return true;
+    }
+
+    let max_row = usize::from(area.height.saturating_sub(1));
+    let relative_row = usize::from(row.saturating_sub(area.y)).min(max_row);
+    let numerator = relative_row
+        .saturating_mul(max_start)
+        .saturating_add(max_row / 2);
+    // Round to the nearest transcript offset so short thumbs still feel
+    // responsive on compact terminals.
+    let top = numerator.checked_div(max_row).unwrap_or(0);
+
+    app.viewport.transcript_scroll = if top >= max_start {
+        TranscriptScroll::to_bottom()
+    } else {
+        TranscriptScroll::at_line(top)
+    };
+    app.viewport.pending_scroll_delta = 0;
+    app.user_scrolled_during_stream = !app.viewport.transcript_scroll.is_at_tail();
+    app.needs_redraw = true;
+    true
 }
 
 fn mouse_hits_rect(mouse: MouseEvent, area: Option<Rect>) -> bool {
