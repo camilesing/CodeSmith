@@ -924,8 +924,9 @@ mod tests {
         for i in 0..30 {
             cells.push(user_cell(&format!("complex query {i} about system design")));
             cells.push(HistoryCell::Thinking {
-                content: "line A\nline B\nline C\nline D\nline E\nline F\nline G\nline H\nline I\nline J"
-                    .to_string(),
+                content:
+                    "line A\nline B\nline C\nline D\nline E\nline F\nline G\nline H\nline I\nline J"
+                        .to_string(),
                 streaming: false,
                 duration_secs: Some(3.5),
             });
