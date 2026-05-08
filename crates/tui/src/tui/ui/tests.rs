@@ -1816,6 +1816,39 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
 }
 
 #[test]
+fn slash_menu_up_wraps_from_first_to_last() {
+    let mut app = create_test_app();
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+    app.input_history.push("previous prompt".to_string());
+
+    let entries = visible_slash_menu_entries(&app, 128);
+    assert!(entries.len() > 1);
+
+    app.slash_menu_selected = 0;
+    select_previous_slash_menu_entry(&mut app, entries.len());
+
+    assert_eq!(app.slash_menu_selected, entries.len() - 1);
+    assert_eq!(app.input, "/");
+}
+
+#[test]
+fn slash_menu_down_wraps_from_last_to_first() {
+    let mut app = create_test_app();
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+
+    let entries = visible_slash_menu_entries(&app, 128);
+    assert!(entries.len() > 1);
+
+    app.slash_menu_selected = entries.len() - 1;
+    select_next_slash_menu_entry(&mut app, entries.len());
+
+    assert_eq!(app.slash_menu_selected, 0);
+    assert_eq!(app.input, "/");
+}
+
+#[test]
 fn apply_slash_menu_selection_appends_space_for_arg_commands() {
     let mut app = create_test_app();
     let entries = vec![

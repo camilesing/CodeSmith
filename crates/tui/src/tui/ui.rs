@@ -2361,12 +2361,8 @@ async fn run_event_loop(
                 {
                     app.mention_menu_selected = app.mention_menu_selected.saturating_sub(1);
                 }
-                KeyCode::Up
-                    if key.modifiers.is_empty()
-                        && slash_menu_open
-                        && app.slash_menu_selected > 0 =>
-                {
-                    app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
+                KeyCode::Up if key.modifiers.is_empty() && slash_menu_open => {
+                    select_previous_slash_menu_entry(app, slash_menu_entries.len());
                 }
                 KeyCode::Up
                     if key.modifiers.is_empty()
@@ -2409,8 +2405,7 @@ async fn run_event_loop(
                         .min(mention_menu_entries.len().saturating_sub(1));
                 }
                 KeyCode::Down if key.modifiers.is_empty() && slash_menu_open => {
-                    app.slash_menu_selected = (app.slash_menu_selected + 1)
-                        .min(slash_menu_entries.len().saturating_sub(1));
+                    select_next_slash_menu_entry(app, slash_menu_entries.len());
                 }
                 KeyCode::Down
                     if key.modifiers.is_empty()
@@ -3438,6 +3433,22 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
     } else {
         EscapeAction::Noop
     }
+}
+
+fn select_previous_slash_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
+    app.slash_menu_selected = (selected + entry_count - 1) % entry_count;
+}
+
+fn select_next_slash_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
+    app.slash_menu_selected = (selected + 1) % entry_count;
 }
 
 fn handle_composer_history_arrow(
