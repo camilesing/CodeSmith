@@ -586,7 +586,7 @@ fn apply_loaded_session_restores_dangling_user_tail_as_retry_draft() {
         "finish the Qthresh proof bundle",
     )]);
 
-    let recovered = apply_loaded_session(&mut app, &session);
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
 
     assert!(recovered);
     assert!(app.api_messages.is_empty());
@@ -637,7 +637,7 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
     let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
     session.metadata.total_tokens = 500;
 
-    let recovered = apply_loaded_session(&mut app, &session);
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
 
     assert!(!recovered);
     assert_eq!(app.session.total_tokens, 500);
@@ -655,6 +655,76 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
     assert_eq!(app.session.last_prompt_cache_miss_tokens, None);
     assert_eq!(app.session.last_reasoning_replay_tokens, None);
     assert!(app.session.turn_cache_history.is_empty());
+}
+
+#[test]
+fn apply_loaded_session_resets_workspace_runtime_state() {
+    let mut app = create_test_app();
+    let config = Config::default();
+    let old_shell_manager = app
+        .runtime_services
+        .shell_manager
+        .as_ref()
+        .expect("shell manager")
+        .clone();
+    let old_context_cell = app.workspace_context_cell.clone();
+    app.workspace_context = Some(Workspace::new(PathBuf::from(".")));
+    if let Ok(mut cell) = old_context_cell.lock() {
+        *cell = Some("old workspace context".to_string());
+    }
+    app.workspace_context_refreshed_at = Some(Instant::now());
+    app.file_tree = Some(crate::tui::file_tree::FileTreeState::new(PathBuf::from(
+        ".",
+    )));
+
+    let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
+    session.metadata.workspace = TempDir::new().expect("temp dir").path().to_path_buf();
+
+    let recovered = apply_loaded_session(&mut app, &config, &session);
+
+    assert!(!recovered);
+    assert_eq!(app.workspace, session.metadata.workspace);
+    assert!(app.workspace_context.is_none());
+    assert!(app.workspace_context_refreshed_at.is_none());
+    assert!(app.file_tree.is_none());
+    assert!(old_context_cell.lock().expect("context cell").is_none());
+    let new_shell_manager = app
+        .runtime_services
+        .shell_manager
+        .as_ref()
+        .expect("shell manager")
+        .clone();
+    assert!(!std::sync::Arc::ptr_eq(
+        &old_shell_manager,
+        &new_shell_manager
+    ));
+    assert_eq!(
+        new_shell_manager
+            .lock()
+            .expect("shell manager")
+            .default_workspace(),
+        session.metadata.workspace.as_path()
+    );
+    assert!(app.runtime_services.hook_executor.is_some());
+}
+
+#[test]
+fn apply_loaded_session_updates_current_workspace_display() {
+    let mut app = create_test_app();
+    let config = Config::default();
+    let workspace = TempDir::new().expect("temp dir");
+    let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
+    session.metadata.workspace = workspace.path().to_path_buf();
+
+    let recovered = apply_loaded_session(&mut app, &config, &session);
+    let result = commands::core::workspace_switch(&mut app, None);
+
+    assert!(!recovered);
+    assert_eq!(
+        result.message,
+        Some(format!("Current workspace: {}", workspace.path().display()))
+    );
+    assert!(result.action.is_none());
 }
 
 #[tokio::test]

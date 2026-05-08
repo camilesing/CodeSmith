@@ -584,6 +584,11 @@ impl ShellManager {
         self.sandbox_manager.is_available()
     }
 
+    #[allow(dead_code)]
+    pub fn default_workspace(&self) -> &Path {
+        &self.default_workspace
+    }
+
     /// Execute a shell command with the configured sandbox policy.
     #[allow(dead_code)]
     pub fn execute(
