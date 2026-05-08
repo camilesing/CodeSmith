@@ -3256,7 +3256,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                     println!("Connected to all configured MCP servers.");
                 } else {
                     for (name, err) in errors {
-                        eprintln!("Failed to connect {name}: {err}");
+                        eprintln!("Failed to connect {name}: {err:#}");
                     }
                 }
             }
@@ -3373,7 +3373,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
             }
             eprintln!("MCP validation failed:");
             for (name, err) in errors {
-                eprintln!("  - {name}: {err}");
+                eprintln!("  - {name}: {err:#}");
             }
             bail!("one or more MCP servers failed validation");
         }
