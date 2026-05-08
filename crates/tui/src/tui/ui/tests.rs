@@ -34,6 +34,24 @@ fn format_resume_hint_omits_missing_session_id() {
 }
 
 #[test]
+fn focus_gained_forces_terminal_viewport_recapture() {
+    assert!(terminal_event_needs_viewport_recapture(&Event::FocusGained));
+    assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));
+}
+
+#[test]
+fn terminal_origin_reset_resets_scroll_region_origin_and_clears() {
+    assert!(
+        TERMINAL_ORIGIN_RESET.starts_with(b"\x1b[r\x1b[?6l"),
+        "must reset scroll margins and origin mode before repaint"
+    );
+    assert!(
+        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H\x1b[2J"),
+        "must home the cursor and clear the viewport"
+    );
+}
+
+#[test]
 fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
     assert!(is_composer_newline_key(KeyEvent::new(
         KeyCode::Char('j'),

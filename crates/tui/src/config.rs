@@ -42,9 +42,13 @@ pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
-/// Official DeepSeek API host per <https://api-docs.deepseek.com/> (`deepseek-cn` preset defaults here).
-/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL heuristics for backward compatibility.
-pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseek.com";
+/// Legacy `deepseek-cn` provider alias.
+///
+/// DeepSeek's official API host is the same worldwide. Keep this alias for
+/// old configs, but route it through the normal beta-enabled DeepSeek default.
+/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL
+/// heuristics for backward compatibility.
+pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = DEFAULT_DEEPSEEK_BASE_URL;
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
@@ -111,7 +115,7 @@ impl ApiProvider {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Deepseek => "DeepSeek",
-            Self::DeepseekCN => "DeepSeek (中国)",
+            Self::DeepseekCN => "DeepSeek (legacy alias)",
             Self::NvidiaNim => "NVIDIA NIM",
             Self::Openai => "OpenAI-compatible",
             Self::Openrouter => "OpenRouter",
@@ -128,7 +132,6 @@ impl ApiProvider {
     pub fn all() -> &'static [Self] {
         &[
             Self::Deepseek,
-            Self::DeepseekCN,
             Self::NvidiaNim,
             Self::Openai,
             Self::Openrouter,

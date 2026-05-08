@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind, PopKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -209,6 +210,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_bracketed_paste {
         execute!(stdout, EnableBracketedPaste)?;
     }
+    // Enable focus events so the terminal reports FocusGained/FocusLost.
+    // Necessary for IME compositor re-activation on macOS when the user
+    // switches away (Cmd+Tab) and returns.
+    execute!(stdout, EnableFocusChange)?;
     // #442: opt into the Kitty keyboard protocol's escape-code
     // disambiguation so terminals that support it (Kitty, Ghostty,
     // Alacritty 0.13+, WezTerm, recent Konsole, recent xterm) report
@@ -222,18 +227,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // release events that the existing key handlers would mis-route
     // as duplicate presses. Best-effort: failure to push is logged
     // and ignored so a quirky terminal can't block startup.
-    if let Err(err) = execute!(
-        stdout,
-        crossterm::event::PushKeyboardEnhancementFlags(
-            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        )
-    ) {
-        tracing::debug!(
-            target: "kitty_keyboard",
-            ?err,
-            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
-        );
-    }
+    push_keyboard_enhancement_flags(&mut stdout);
     let color_depth = palette::ColorDepth::detect();
     let palette_mode = palette::PaletteMode::detect();
     tracing::debug!(
@@ -243,7 +237,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     );
     let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
     let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
+    reset_terminal_viewport(&mut terminal)?;
     let event_broker = EventBroker::new();
 
     // Local mutable copy so runtime config flips (e.g. `/provider` switch)
@@ -419,6 +413,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::Shutdown);
 
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -1583,6 +1578,21 @@ async fn run_event_loop(
                 continue;
             }
 
+            // Re-push keyboard enhancement flags on focus-gain and force a
+            // full viewport reset before repainting. App-switching and
+            // interactive handoffs can leave the host terminal scrolled away
+            // from row 0; treating focus as a recapture point prevents the
+            // native scrollback gutter / blank-top-row failure mode from
+            // persisting after the user returns.
+            // On macOS, switching away (Cmd+Tab) and back can reset the
+            // terminal's keyboard mode, which breaks IME compositor state.
+            // Acknowledging FocusGained and re-pushing the flags restores
+            // the IME so CJK input methods work after a focus toggle.
+            if terminal_event_needs_viewport_recapture(&evt) {
+                push_keyboard_enhancement_flags(terminal.backend_mut());
+                force_terminal_repaint = true;
+                app.needs_redraw = true;
+            }
             if let Event::Resize(width, height) = evt {
                 tracing::debug!(
                     width,
@@ -6196,6 +6206,7 @@ fn pause_terminal(
     // mode. Best-effort — terminals that didn't accept the flags
     // silently ignore the pop. Matches the shutdown and panic paths.
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -6225,6 +6236,8 @@ fn resume_terminal(
     if use_bracketed_paste {
         execute!(terminal.backend_mut(), EnableBracketedPaste)?;
     }
+    execute!(terminal.backend_mut(), EnableFocusChange)?;
+    push_keyboard_enhancement_flags(terminal.backend_mut());
     reset_terminal_viewport(terminal)?;
     Ok(())
 }
@@ -6238,6 +6251,23 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     terminal.backend_mut().flush()?;
     terminal.clear()?;
     Ok(())
+}
+
+fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
+    if let Err(err) = execute!(
+        writer,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    ) {
+        tracing::debug!(
+            target: "kitty_keyboard",
+            ?err,
+            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
+        );
+    }
+}
+
+fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
+    matches!(evt, Event::FocusGained)
 }
 
 fn status_color(level: StatusToastLevel) -> ratatui::style::Color {

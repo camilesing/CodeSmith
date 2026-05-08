@@ -2458,7 +2458,7 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
                 && !target.base_url.contains("api.deepseeki.com") =>
         {
             lines.push(
-                "If you are in mainland China, set `provider = \"deepseek-cn\"` or `base_url = \"https://api.deepseek.com\"` in ~/.deepseek/config.toml, then rerun `deepseek doctor`."
+                "If this is a custom DeepSeek-compatible endpoint, set its HTTPS base URL in ~/.deepseek/config.toml and rerun `deepseek doctor`."
                     .to_string(),
             );
         }
@@ -4419,7 +4419,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn doctor_api_target_reports_deepseek_cn_endpoint() {
+    fn doctor_api_target_routes_deepseek_cn_alias_to_beta_endpoint() {
         let config = Config {
             provider: Some("deepseek-cn".to_string()),
             ..Default::default()
@@ -4429,6 +4429,7 @@ mod doctor_endpoint_tests {
 
         assert_eq!(target.provider, "deepseek-cn");
         assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
+        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEK_BASE_URL);
         assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
     }
 
@@ -4479,7 +4480,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn strict_tool_mode_doctor_warns_for_deepseek_cn_default_endpoint() {
+    fn strict_tool_mode_doctor_accepts_deepseek_cn_alias_default_endpoint() {
         let config = Config {
             provider: Some("deepseek-cn".to_string()),
             strict_tool_mode: Some(true),
@@ -4488,12 +4489,10 @@ mod doctor_endpoint_tests {
 
         let status = doctor_strict_tool_mode_status(&config);
 
-        assert_eq!(status.status, "fallback_non_beta");
-        assert!(!status.function_strict_sent);
-        assert_eq!(
-            status.recommended_base_url.as_deref(),
-            Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL)
-        );
+        assert_eq!(status.status, "ready");
+        assert!(status.function_strict_sent);
+        assert!(status.message.contains("beta endpoint"));
+        assert!(status.recommended_base_url.is_none());
     }
 
     #[test]
@@ -4547,13 +4546,14 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn timeout_recovery_points_global_deepseek_users_to_cn_endpoint() {
+    fn timeout_recovery_keeps_default_deepseek_users_on_default_endpoint() {
         let config = Config::default();
 
         let text = doctor_timeout_recovery_lines(&config).join("\n");
 
         assert!(text.contains("api.deepseek.com"));
-        assert!(text.contains("provider = \"deepseek-cn\""));
+        assert!(text.contains("custom DeepSeek-compatible endpoint"));
+        assert!(!text.contains("provider = \"deepseek-cn\""));
         assert!(text.contains("deepseek doctor --json"));
     }
 

@@ -246,6 +246,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: deepseek*
       - name: List artifacts
         run: find artifacts -type f
       - name: Generate checksum manifest
