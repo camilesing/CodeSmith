@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
+use crate::child_env;
 use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 use crate::utils::write_atomic;
 
@@ -666,9 +667,7 @@ impl McpConnection {
                 .stderr(std::process::Stdio::null())
                 .kill_on_drop(true);
 
-            for (key, value) in &config.env {
-                cmd.env(key, value);
-            }
+            child_env::apply_to_tokio_command(&mut cmd, child_env::string_map_env(&config.env));
 
             let mut child = cmd.spawn().with_context(|| {
                 let env_keys: Vec<&str> = config.env.keys().map(String::as_str).collect();

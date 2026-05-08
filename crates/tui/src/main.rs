@@ -16,6 +16,7 @@ mod acp_server;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
+mod child_env;
 mod client;
 mod command_safety;
 mod commands;
@@ -3548,9 +3549,7 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
         .current_dir(&exec_env.cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in &exec_env.env {
-        cmd.env(key, value);
-    }
+    child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
     let mut child = cmd
         .spawn()

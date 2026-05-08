@@ -2,7 +2,13 @@ use super::*;
 
 use crate::tools::spec::ToolContext;
 use serde_json::{Value, json};
+use std::sync::{Mutex, OnceLock};
 use tempfile::tempdir;
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn echo_command(message: &str) -> String {
     format!("echo {message}")
@@ -80,6 +86,49 @@ fn failed_network_shell_result(stdout: &str, stderr: &str) -> ShellResult {
         sandbox_type: Some("seatbelt".to_string()),
         sandbox_denied: false,
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn shell_execution_scrubs_parent_env_and_keeps_explicit_env() {
+    let _guard = env_lock().lock().expect("env lock");
+    let previous = std::env::var_os("DEEPSEEK_CHILD_ENV_SHELL_SECRET");
+    unsafe {
+        std::env::set_var("DEEPSEEK_CHILD_ENV_SHELL_SECRET", "parent-secret");
+    }
+
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+    let mut extra = std::collections::HashMap::new();
+    extra.insert(
+        "DEEPSEEK_CHILD_ENV_EXPLICIT".to_string(),
+        "explicit-value".to_string(),
+    );
+
+    let result = manager
+        .execute_with_options_env(
+            "printf '%s\\n%s\\n' \"${DEEPSEEK_CHILD_ENV_SHELL_SECRET-unset}\" \"${DEEPSEEK_CHILD_ENV_EXPLICIT-unset}\"",
+            None,
+            5000,
+            false,
+            None,
+            false,
+            None,
+            extra,
+        )
+        .expect("execute");
+
+    match previous {
+        Some(value) => unsafe {
+            std::env::set_var("DEEPSEEK_CHILD_ENV_SHELL_SECRET", value);
+        },
+        None => unsafe {
+            std::env::remove_var("DEEPSEEK_CHILD_ENV_SHELL_SECRET");
+        },
+    }
+
+    assert_eq!(result.status, ShellStatus::Completed);
+    assert_eq!(result.stdout, "unset\nexplicit-value\n");
 }
 
 #[test]
