@@ -3792,6 +3792,13 @@ pub enum AppAction {
     OpenProviderPicker,
     /// Open the `/statusline` multi-select picker for footer items.
     OpenStatusPicker,
+    /// Open the `/feedback` picker for GitHub issue/security destinations.
+    OpenFeedbackPicker,
+    /// Open an external URL in the system browser.
+    OpenExternalUrl {
+        url: String,
+        label: String,
+    },
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
     /// Run a Recursive Language Model (RLM) turn — Algorithm 1 from

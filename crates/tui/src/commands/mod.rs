@@ -9,6 +9,7 @@ mod config;
 mod core;
 mod cycle;
 mod debug;
+mod feedback;
 mod goal;
 mod hooks;
 mod init;
@@ -206,6 +207,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &["dashboard", "api"],
         usage: "/links",
         description_id: MessageId::CmdLinksDescription,
+    },
+    CommandInfo {
+        name: "feedback",
+        aliases: &[],
+        usage: "/feedback [bug|feature|security]",
+        description_id: MessageId::CmdFeedbackDescription,
     },
     CommandInfo {
         name: "home",
@@ -514,6 +521,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "hooks" | "hook" => hooks::hooks(app, arg),
         "subagents" | "agents" => core::subagents(app),
         "links" | "dashboard" | "api" => core::deepseek_links(app),
+        "feedback" => feedback::feedback(app, arg),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
         "memory" => memory::memory(app, arg),

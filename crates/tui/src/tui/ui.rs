@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -4651,6 +4651,24 @@ async fn apply_command_result(
                         ));
                 }
             }
+            AppAction::OpenFeedbackPicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::FeedbackPicker) {
+                    app.view_stack
+                        .push(crate::tui::feedback_picker::FeedbackPickerView::new());
+                }
+            }
+            AppAction::OpenExternalUrl { url, label } => match open_external_url(&url) {
+                Ok(()) => {
+                    app.status_message = Some(format!("Opened {label} in your browser"));
+                }
+                Err(err) => {
+                    app.add_message(HistoryCell::System {
+                        content: format!(
+                            "Could not open {label} automatically: {err}\n\nThe URL is printed above."
+                        ),
+                    });
+                }
+            },
             AppAction::OpenContextInspector => {
                 open_context_inspector(app);
             }
@@ -4788,6 +4806,43 @@ async fn apply_command_result(
     }
 
     Ok(false)
+}
+
+fn open_external_url(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return Err(anyhow::anyhow!(
+        "browser opening is unsupported on this platform"
+    ));
+
+    let status = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| anyhow::anyhow!("failed to launch browser command: {err}"))?;
+    if !status.success() {
+        return Err(anyhow::anyhow!(
+            "browser command exited with status {status}"
+        ));
+    }
+    Ok(())
 }
 
 async fn handle_mcp_ui_action(
