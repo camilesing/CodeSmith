@@ -3692,11 +3692,20 @@ impl App {
     }
 
     pub fn clear_todos(&mut self) -> bool {
+        // Clear the todo list (the sidebar checklist). Uses try_lock so the
+        // UI thread doesn't block if the engine briefly holds the mutex
+        // during tool execution; the caller can retry or show a busy message.
+        let todos_cleared = if let Ok(mut todos) = self.todos.try_lock() {
+            todos.clear();
+            true
+        } else {
+            false
+        };
+        // Also clear the plan state — /clear means a full reset.
         if let Ok(mut plan) = self.plan_state.try_lock() {
             *plan = crate::tools::plan::PlanState::default();
-            return true;
         }
-        false
+        todos_cleared
     }
 
     pub fn update_model_compaction_budget(&mut self) {
