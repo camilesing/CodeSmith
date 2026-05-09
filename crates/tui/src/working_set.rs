@@ -138,6 +138,20 @@ impl Workspace {
                 }
             }
         }
+
+        // Beyond the curated dot-dir whitelist above, also index any explicit
+        // hidden/ignored path the user might `@`-mention (e.g. a project's
+        // own `.generated/specs/`). `local_reference_paths` walks with
+        // gitignore disabled but still honors `.deepseekignore`.
+        for path in local_reference_paths(&self.root, LOCAL_REFERENCE_SCAN_LIMIT) {
+            let Some(name) = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+            else {
+                continue;
+            };
+            index.entry(name).or_default().push(path);
+        }
         index
     }
 
@@ -183,8 +197,26 @@ impl Workspace {
                 &mut substring_hits,
                 &mut seen,
             );
+            add_local_reference_completions(
+                cwd,
+                cwd,
+                &needle,
+                limit,
+                &mut prefix_hits,
+                &mut substring_hits,
+                &mut seen,
+            );
         }
         walk_for_completions(
+            &self.root,
+            &self.root,
+            &needle,
+            limit,
+            &mut prefix_hits,
+            &mut substring_hits,
+            &mut seen,
+        );
+        add_local_reference_completions(
             &self.root,
             &self.root,
             &needle,
@@ -368,6 +400,101 @@ fn walk_for_completions(
         seen,
         Some(COMPLETIONS_WALK_DEPTH),
     );
+}
+
+const LOCAL_REFERENCE_SCAN_LIMIT: usize = 4096;
+
+#[allow(clippy::too_many_arguments)]
+fn add_local_reference_completions(
+    root: &Path,
+    display_root: &Path,
+    needle: &str,
+    limit: usize,
+    prefix_hits: &mut Vec<String>,
+    substring_hits: &mut Vec<String>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    if !should_try_local_reference_completion(needle) {
+        return;
+    }
+
+    for path in local_reference_paths(root, LOCAL_REFERENCE_SCAN_LIMIT) {
+        if prefix_hits.len() + substring_hits.len() >= limit {
+            break;
+        }
+        let Ok(rel) = path.strip_prefix(display_root) else {
+            continue;
+        };
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if rel_str.is_empty() || !seen.insert(path.clone()) {
+            continue;
+        }
+        let lower = rel_str.to_lowercase();
+        if needle.is_empty() || lower.starts_with(needle) {
+            prefix_hits.push(rel_str);
+        } else if lower.contains(needle) {
+            substring_hits.push(rel_str);
+        }
+    }
+}
+
+fn should_try_local_reference_completion(needle: &str) -> bool {
+    !needle.is_empty() && (needle.starts_with('.') || needle.contains('/') || needle.contains('\\'))
+}
+
+fn local_reference_paths(root: &Path, limit: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_local_reference_paths(root, 0, limit, &mut out);
+    out
+}
+
+fn collect_local_reference_paths(root: &Path, depth: usize, limit: usize, out: &mut Vec<PathBuf>) {
+    if depth > COMPLETIONS_WALK_DEPTH || out.len() >= limit {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        if out.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if should_skip_local_reference_dir(&path) {
+                continue;
+            }
+            out.push(path.clone());
+            collect_local_reference_paths(&path, depth + 1, limit, out);
+        } else if file_type.is_file() {
+            out.push(path);
+        }
+    }
+}
+
+fn should_skip_local_reference_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".git"
+            | "target"
+            | "node_modules"
+            | ".venv"
+            | "venv"
+            | "env"
+            | "dist"
+            | "build"
+            | "__pycache__"
+            | ".ruff_cache"
+    )
 }
 
 impl Clone for Workspace {
@@ -1316,6 +1443,50 @@ mod tests {
             entries.iter().any(|e| e == "alphabeta.txt"),
             "expected cwd entry alphabeta.txt; got: {entries:?}",
         );
+    }
+
+    #[test]
+    fn workspace_completions_surface_explicit_hidden_and_ignored_paths() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), ".deepseek/\n.generated/\n").unwrap();
+        let deepseek_commands = tmp.path().join(".deepseek").join("commands");
+        let generated_specs = tmp.path().join(".generated").join("specs");
+        std::fs::create_dir_all(&deepseek_commands).unwrap();
+        std::fs::create_dir_all(&generated_specs).unwrap();
+        std::fs::write(deepseek_commands.join("start-task.md"), "start").unwrap();
+        std::fs::write(generated_specs.join("device-layout.md"), "layout").unwrap();
+
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()));
+
+        let start_entries = ws.completions(".deepseek/commands", 16);
+        assert!(
+            start_entries
+                .iter()
+                .any(|e| e == ".deepseek/commands/start-task.md"),
+            "expected explicitly addressed hidden command file in completions: {start_entries:?}",
+        );
+
+        let generated_entries = ws.completions(".generated/specs", 16);
+        assert!(
+            generated_entries
+                .iter()
+                .any(|e| e == ".generated/specs/device-layout.md"),
+            "expected explicitly addressed ignored user folder in completions: {generated_entries:?}",
+        );
+    }
+
+    #[test]
+    fn fuzzy_index_resolves_hidden_and_ignored_files() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), ".generated/\n").unwrap();
+        let generated_specs = tmp.path().join(".generated").join("specs");
+        std::fs::create_dir_all(&generated_specs).unwrap();
+        std::fs::write(generated_specs.join("device-layout.md"), "layout").unwrap();
+
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
+        let resolved = ws.resolve("device-layout.md").unwrap();
+
+        assert!(resolved.ends_with(".generated/specs/device-layout.md"));
     }
 
     #[test]
