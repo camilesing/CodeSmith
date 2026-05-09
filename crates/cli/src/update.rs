@@ -7,12 +7,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use std::io::Write;
 
 const CHECKSUM_MANIFEST_ASSET: &str = "deepseek-artifacts-sha256.txt";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Hmbown/DeepSeek-TUI/releases/latest";
+const UPDATE_USER_AGENT: &str = "deepseek-tui-updater";
 
 /// Run the self-update workflow.
 pub fn run_update() -> Result<()> {
@@ -195,50 +196,34 @@ struct Asset {
     browser_download_url: String,
 }
 
-/// Per-OS extra arguments to pass to every `curl` invocation issued from
-/// `deepseek update`. On Windows the system curl is built against Schannel,
-/// which performs mandatory certificate-revocation checks; if the user's
-/// network can't reach the OCSP/CRL responders (corporate firewalls,
-/// captive portals, IPv6 hiccups, some ISPs) the TLS handshake fails with
-/// `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)` and `deepseek update` cannot
-/// proceed. `--ssl-no-revoke` tells Schannel to skip the revocation check
-/// for these one-shot HTTPS GETs against `api.github.com` /
-/// `objects.githubusercontent.com`. Other backends (OpenSSL/LibreSSL) accept
-/// the flag silently as a no-op, so we leave the helper a pure function over
-/// `os` and only consult `std::env::consts::OS` at call sites.
-pub(crate) fn extra_curl_args_for_os(os: &str) -> &'static [&'static str] {
-    match os {
-        "windows" => &["--ssl-no-revoke"],
-        _ => &[],
-    }
-}
-
-fn current_extra_curl_args() -> &'static [&'static str] {
-    extra_curl_args_for_os(std::env::consts::OS)
+fn update_http_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(UPDATE_USER_AGENT)
+        .build()
+        .context("failed to build update HTTP client")
 }
 
 /// Fetch the latest release metadata from GitHub.
 fn fetch_latest_release() -> Result<Release> {
-    let url = "https://api.github.com/repos/Hmbown/DeepSeek-TUI/releases/latest";
-    let output = Command::new("curl")
-        .args(current_extra_curl_args())
-        .args([
-            "-sSfL",
-            "-H",
-            "Accept: application/vnd.github+json",
-            "-H",
-            "User-Agent: deepseek-tui-updater",
-            url,
-        ])
-        .output()
-        .context("failed to run curl to fetch release info")?;
+    fetch_latest_release_from_url(LATEST_RELEASE_URL)
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("curl failed: {stderr}");
+fn fetch_latest_release_from_url(url: &str) -> Result<Release> {
+    let client = update_http_client()?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .with_context(|| format!("failed to fetch release info from {url}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .with_context(|| format!("failed to read release response from {url}"))?;
+
+    if !status.is_success() {
+        bail!("GitHub release request failed with HTTP {status}: {body}");
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
     let release: Release = serde_json::from_str(&body).with_context(|| {
         format!("failed to parse release JSON from GitHub API. Response: {body}")
     })?;
@@ -246,20 +231,24 @@ fn fetch_latest_release() -> Result<Release> {
     Ok(release)
 }
 
-/// Download a URL to bytes using curl.
+/// Download a URL to bytes.
 fn download_url(url: &str) -> Result<Vec<u8>> {
-    let output = Command::new("curl")
-        .args(current_extra_curl_args())
-        .args(["-sSfL", url])
-        .output()
+    let client = update_http_client()?;
+    let response = client
+        .get(url)
+        .send()
         .with_context(|| format!("failed to download {url}"))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .with_context(|| format!("failed to read response body from {url}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("curl download failed: {stderr}");
+    if !status.is_success() {
+        let body = String::from_utf8_lossy(&bytes);
+        bail!("download failed with HTTP {status}: {body}");
     }
 
-    Ok(output.stdout)
+    Ok(bytes.to_vec())
 }
 
 /// Compute the SHA256 hex digest of data.
@@ -359,35 +348,10 @@ fn backup_path_for(target: &Path) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Windows curl is built against Schannel and performs mandatory
-    /// certificate-revocation checks. Networks that can't reach OCSP/CRL
-    /// responders trip `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)`. Verify
-    /// we pass `--ssl-no-revoke` so `deepseek update` works in those
-    /// environments.
-    #[test]
-    fn windows_curl_extras_disable_certificate_revocation_check() {
-        let args = extra_curl_args_for_os("windows");
-        assert!(
-            args.contains(&"--ssl-no-revoke"),
-            "Windows curl invocations must include --ssl-no-revoke; got {args:?}"
-        );
-    }
-
-    /// Other OS curl backends (OpenSSL/LibreSSL on macOS/Linux/BSD) do
-    /// not need the Schannel-specific revocation override. Asserting an
-    /// empty extras list pins the behavior — adding new flags should be
-    /// a deliberate change with its own test.
-    #[test]
-    fn non_windows_curl_extras_are_empty() {
-        for os in ["linux", "macos", "freebsd", "openbsd", "netbsd"] {
-            assert!(
-                extra_curl_args_for_os(os).is_empty(),
-                "expected no curl extras for {os}, got {:?}",
-                extra_curl_args_for_os(os)
-            );
-        }
-    }
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
 
     /// Verify the arch mapping used when constructing asset names.
     /// The mapping must use release-asset naming (arm64/x64), not Rust
@@ -613,5 +577,94 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *deepseek-wind
             release_asset_stem_for(Path::new("/usr/local/bin/deepseek-tui"), "macos", "aarch64");
         let asset = select_platform_asset(&release, &stem).expect("TUI platform asset");
         assert_eq!(asset.name, "deepseek-tui-macos-arm64");
+    }
+
+    fn serve_http_once(
+        status: &'static str,
+        content_type: &'static str,
+        body: &'static [u8],
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("test server addr");
+        let (request_tx, request_rx) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept test request");
+            let mut buf = [0_u8; 4096];
+            let n = stream.read(&mut buf).expect("read test request");
+            request_tx
+                .send(String::from_utf8_lossy(&buf[..n]).to_string())
+                .expect("send captured request");
+
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("write test response headers");
+            stream.write_all(body).expect("write test response body");
+        });
+
+        (format!("http://{addr}/release"), request_rx, handle)
+    }
+
+    #[test]
+    fn fetch_latest_release_from_url_reads_mocked_release_json() {
+        let body = br#"{
+          "tag_name": "v9.9.9",
+          "assets": [
+            { "name": "deepseek-linux-x64", "browser_download_url": "http://example.invalid/deepseek-linux-x64" },
+            { "name": "deepseek-artifacts-sha256.txt", "browser_download_url": "http://example.invalid/deepseek-artifacts-sha256.txt" }
+          ]
+        }"#;
+        let (url, request_rx, handle) = serve_http_once("200 OK", "application/json", body);
+        let release = fetch_latest_release_from_url(&url).expect("release JSON should parse");
+
+        assert_eq!(release.tag_name, "v9.9.9");
+        assert_eq!(release.assets.len(), 2);
+
+        let request = request_rx.recv().expect("captured request");
+        let request_lower = request.to_ascii_lowercase();
+        assert!(request.starts_with("GET /release "), "got {request:?}");
+        assert!(
+            request_lower.contains("accept: application/vnd.github+json"),
+            "got {request:?}"
+        );
+        assert!(
+            request_lower.contains("user-agent: deepseek-tui-updater"),
+            "got {request:?}"
+        );
+        handle.join().expect("test server thread");
+    }
+
+    #[test]
+    fn fetch_latest_release_from_url_reports_http_errors() {
+        let (url, _request_rx, handle) =
+            serve_http_once("500 Internal Server Error", "text/plain", b"server broke");
+        let err = fetch_latest_release_from_url(&url).expect_err("HTTP 500 should fail");
+
+        assert!(
+            err.to_string().contains("HTTP 500"),
+            "unexpected error: {err:#}"
+        );
+        handle.join().expect("test server thread");
+    }
+
+    #[test]
+    fn download_url_reads_binary_body_with_updater_user_agent() {
+        let (url, request_rx, handle) =
+            serve_http_once("200 OK", "application/octet-stream", b"\0binary bytes");
+        let bytes = download_url(&url).expect("binary download should succeed");
+
+        assert_eq!(bytes, b"\0binary bytes");
+
+        let request = request_rx.recv().expect("captured request");
+        let request_lower = request.to_ascii_lowercase();
+        assert!(request.starts_with("GET /release "), "got {request:?}");
+        assert!(
+            request_lower.contains("user-agent: deepseek-tui-updater"),
+            "got {request:?}"
+        );
+        handle.join().expect("test server thread");
     }
 }
