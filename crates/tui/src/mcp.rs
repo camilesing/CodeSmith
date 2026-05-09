@@ -528,10 +528,8 @@ impl SseTransport {
                     "endpoint" => {
                         let _ = tx.send(SseInbound::Endpoint(data));
                     }
-                    "message" => {
-                        if !data.trim().is_empty() {
-                            let _ = tx.send(SseInbound::Message(data.into_bytes()));
-                        }
+                    "message" if !data.trim().is_empty() => {
+                        let _ = tx.send(SseInbound::Message(data.into_bytes()));
                     }
                     _ => {}
                 }
