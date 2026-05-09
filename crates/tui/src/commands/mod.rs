@@ -488,7 +488,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "cache",
         aliases: &[],
-        usage: "/cache [count]",
+        usage: "/cache [count|inspect|warmup]",
         description_id: MessageId::CmdCacheDescription,
     },
 ];
@@ -719,7 +719,13 @@ pub fn get_command_info(name: &str) -> Option<&'static CommandInfo> {
 
 /// Get all command names matching a prefix, including both built-in
 /// static commands and user-defined commands, formatted as `/name`.
-pub fn all_command_names_matching(prefix: &str) -> Vec<String> {
+///
+/// `workspace` is used to also scan workspace-local command directories;
+/// pass `None` when no workspace context is available.
+pub fn all_command_names_matching(
+    prefix: &str,
+    workspace: Option<&std::path::Path>,
+) -> Vec<String> {
     let prefix = prefix.strip_prefix('/').unwrap_or(prefix).to_lowercase();
     let mut result: Vec<String> = COMMANDS
         .iter()
@@ -730,7 +736,7 @@ pub fn all_command_names_matching(prefix: &str) -> Vec<String> {
         .collect();
 
     // Add user-defined commands
-    result.extend(user_commands::user_commands_matching(&prefix));
+    result.extend(user_commands::user_commands_matching(&prefix, workspace));
 
     result.sort();
     result.dedup();
@@ -919,6 +925,25 @@ mod tests {
             result.action,
             Some(AppAction::OpenContextInspector)
         ));
+    }
+
+    #[test]
+    fn cache_inspect_dispatches_through_cache_command() {
+        let mut app = create_test_app();
+        let result = execute("/cache inspect", &mut app);
+        let msg = result.message.expect("cache inspect should return text");
+        assert!(msg.contains("Cache Inspect"));
+        assert!(msg.contains("Base static prefix hash:"));
+        assert!(msg.contains("Full request prefix hash:"));
+        assert!(result.action.is_none());
+    }
+
+    #[test]
+    fn cache_warmup_dispatches_action() {
+        let mut app = create_test_app();
+        let result = execute("/cache warmup", &mut app);
+        assert!(result.message.is_none());
+        assert!(matches!(result.action, Some(AppAction::CacheWarmup)));
     }
 
     #[test]
