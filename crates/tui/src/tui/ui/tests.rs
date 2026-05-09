@@ -1687,11 +1687,13 @@ fn apply_slash_menu_selection_appends_space_for_arg_commands() {
             name: "/model".to_string(),
             description: String::new(),
             is_skill: false,
+            alias_hint: None,
         },
         crate::tui::widgets::SlashMenuEntry {
             name: "/settings".to_string(),
             description: String::new(),
             is_skill: false,
+            alias_hint: None,
         },
     ];
     app.slash_menu_selected = 0;
@@ -1706,6 +1708,7 @@ fn apply_slash_menu_selection_uses_skill_command_form() {
         name: "/skill search-files".to_string(),
         description: "Search files".to_string(),
         is_skill: true,
+        alias_hint: None,
     }];
 
     assert!(apply_slash_menu_selection(&mut app, &entries, true));

@@ -448,7 +448,7 @@ fn handle_command_deepseek(
     }
 
     match trimmed {
-        "/help" => {
+        "/help" | "/?" | "/bangzhu" | "/帮助" => {
             print_help();
         }
         "/history" => {
@@ -488,7 +488,7 @@ fn handle_command_official(
     }
 
     match trimmed {
-        "/help" => {
+        "/help" | "/?" | "/bangzhu" | "/帮助" => {
             print_help();
         }
         "/history" => {
@@ -668,6 +668,9 @@ fn create_editor() -> Result<Editor<CommandCompleter, DefaultHistory>> {
     let helper = CommandCompleter {
         commands: vec![
             "/help".to_string(),
+            "/?".to_string(),
+            "/bangzhu".to_string(),
+            "/帮助".to_string(),
             "/clear".to_string(),
             "/history".to_string(),
             "/stats".to_string(),
