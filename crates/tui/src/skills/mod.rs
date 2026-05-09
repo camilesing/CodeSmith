@@ -103,7 +103,10 @@ impl SkillRegistry {
     #[must_use]
     pub fn discover(dir: &Path) -> Self {
         let mut registry = Self::default();
-        if !dir.exists() {
+        let Ok(canonical_dir) = fs::canonicalize(dir) else {
+            return registry;
+        };
+        if !canonical_dir.is_dir() {
             return registry;
         }
 
@@ -248,7 +251,17 @@ impl SkillRegistry {
                     continue;
                 }
                 if let Some((key, value)) = line.split_once(':') {
-                    metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+                    let value = value.trim();
+                    let unquoted = if (value.starts_with('"')
+                        && value.ends_with('"')
+                        && value.len() >= 2)
+                        || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
+                    {
+                        &value[1..value.len() - 1]
+                    } else {
+                        value
+                    };
+                    metadata.insert(key.trim().to_ascii_lowercase(), unquoted.to_string());
                 }
             }
 
@@ -393,8 +406,12 @@ pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
 
 fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    let mut seen = HashSet::new();
     for path in candidates {
-        if path.is_dir() && !out.iter().any(|p: &PathBuf| p == &path) {
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if canonical_path.is_dir() && seen.insert(canonical_path) {
             out.push(path);
         }
     }
@@ -413,6 +430,31 @@ fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<Pat
 pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
     let mut merged = SkillRegistry::default();
     for dir in skills_directories(workspace) {
+        let registry = SkillRegistry::discover(&dir);
+        for skill in registry.skills {
+            if !merged.skills.iter().any(|s| s.name == skill.name) {
+                merged.skills.push(skill);
+            }
+        }
+        for warning in registry.warnings {
+            merged.warnings.push(warning);
+        }
+    }
+    merged
+}
+
+/// Discover skills from the workspace search set plus the configured install
+/// directory. Workspace/global directories keep their normal precedence; a
+/// custom configured directory is appended when it is outside that set.
+#[must_use]
+pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> SkillRegistry {
+    let mut dirs = skills_directories(workspace);
+    if skills_dir.is_dir() && !dirs.iter().any(|p| p == skills_dir) {
+        dirs.push(skills_dir.to_path_buf());
+    }
+
+    let mut merged = SkillRegistry::default();
+    for dir in dirs {
         let registry = SkillRegistry::discover(&dir);
         for skill in registry.skills {
             if !merged.skills.iter().any(|s| s.name == skill.name) {

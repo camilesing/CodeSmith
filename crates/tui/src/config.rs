@@ -42,7 +42,13 @@ pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
-pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
+/// Legacy `deepseek-cn` provider alias.
+///
+/// DeepSeek's official API host is the same worldwide. Keep this alias for
+/// old configs, but route it through the normal beta-enabled DeepSeek default.
+/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL
+/// heuristics for backward compatibility.
+pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = DEFAULT_DEEPSEEK_BASE_URL;
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
@@ -109,7 +115,7 @@ impl ApiProvider {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Deepseek => "DeepSeek",
-            Self::DeepseekCN => "DeepSeek (中国)",
+            Self::DeepseekCN => "DeepSeek (legacy alias)",
             Self::NvidiaNim => "NVIDIA NIM",
             Self::Openai => "OpenAI-compatible",
             Self::Openrouter => "OpenRouter",
@@ -126,7 +132,6 @@ impl ApiProvider {
     pub fn all() -> &'static [Self] {
         &[
             Self::Deepseek,
-            Self::DeepseekCN,
             Self::NvidiaNim,
             Self::Openai,
             Self::Openrouter,
@@ -521,7 +526,7 @@ pub enum StatusItem {
     Cache,
     /// Context-window utilisation percent ("48%").
     ContextPercent,
-    /// Current git branch name (placeholder until wired).
+    /// Current git branch name.
     GitBranch,
     /// Elapsed time of the most recent tool call (placeholder until wired).
     LastToolElapsed,
@@ -599,7 +604,7 @@ impl StatusItem {
             StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
             StatusItem::Cache => "% of prompt served from cache",
             StatusItem::ContextPercent => "tokens used / model context window",
-            StatusItem::GitBranch => "current branch (placeholder)",
+            StatusItem::GitBranch => "current workspace branch",
             StatusItem::LastToolElapsed => "ms of the most recent tool call (placeholder)",
             StatusItem::RateLimit => "remaining requests in the budget (placeholder)",
         }
@@ -685,6 +690,10 @@ pub struct ContextConfig {
     /// v0.7.5 audits V4 prefix-cache behavior.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Include a deterministic project context pack in the stable prompt
+    /// prefix. Default: true; set `[context] project_pack = false` to disable.
+    #[serde(default)]
+    pub project_pack: Option<bool>,
     /// Verbatim window: last N turns never summarized. Default: 16.
     #[serde(default)]
     pub verbatim_window_turns: Option<usize>,
@@ -917,6 +926,10 @@ pub struct NetworkPolicyToml {
     /// Hosts that are always denied. Deny entries win over allow entries.
     #[serde(default)]
     pub deny: Vec<String>,
+    /// Hostnames whose DNS may resolve to fake-IP/private proxy ranges in an
+    /// explicitly trusted proxy setup. Literal IP URLs remain blocked.
+    #[serde(default)]
+    pub proxy: Vec<String>,
     /// Whether to record one audit-log line per outbound network call.
     #[serde(default = "default_network_audit")]
     pub audit: bool,
@@ -936,6 +949,7 @@ impl Default for NetworkPolicyToml {
             default: default_network_decision(),
             allow: Vec::new(),
             deny: Vec::new(),
+            proxy: Vec::new(),
             audit: default_network_audit(),
         }
     }
@@ -950,6 +964,7 @@ impl NetworkPolicyToml {
             default: crate::network_policy::Decision::parse(&self.default).into(),
             allow: self.allow,
             deny: self.deny,
+            proxy: self.proxy,
             audit: self.audit,
         }
     }
@@ -1106,6 +1121,7 @@ impl Config {
         if let Some(model) = self.default_text_model.as_deref()
             && !model.trim().eq_ignore_ascii_case("auto")
             && !provider_passes_model_through(self.api_provider())
+            && !self.active_provider_preserves_custom_base_url_model()
             && normalize_model_name(model).is_none()
         {
             anyhow::bail!(
@@ -1237,7 +1253,9 @@ impl Config {
             .provider_config()
             .and_then(|provider| provider.model.as_deref())
         {
-            if provider_passes_model_through(provider) {
+            if provider_passes_model_through(provider)
+                || self.active_provider_preserves_custom_base_url_model()
+            {
                 return model.trim().to_string();
             }
             if let Some(normalized) = normalize_model_for_provider(provider, model) {
@@ -1245,7 +1263,8 @@ impl Config {
             }
         }
         if let Some(model) = self.default_text_model.as_deref()
-            && provider_passes_model_through(provider)
+            && (provider_passes_model_through(provider)
+                || self.active_provider_preserves_custom_base_url_model())
         {
             return model.trim().to_string();
         }
@@ -1318,6 +1337,11 @@ impl Config {
         normalize_base_url(&base)
     }
 
+    fn active_provider_preserves_custom_base_url_model(&self) -> bool {
+        let provider = self.api_provider();
+        provider_preserves_custom_base_url_model(provider, &self.deepseek_base_url())
+    }
+
     /// Read the API key.
     ///
     /// Precedence: **explicit in-memory override → provider/root config
@@ -1340,9 +1364,11 @@ impl Config {
             ApiProvider::Ollama => "ollama",
         };
 
-        // 0. Explicit in-memory override (set by onboarding / provider
-        //    picker). Wins so a freshly-entered key takes effect immediately.
-        if let Some(configured) = self.api_key.as_ref()
+        // 0. DeepSeek compatibility slot. The legacy top-level `api_key`
+        // belongs to DeepSeek only; provider-specific keys below must win for
+        // NIM/OpenRouter/etc. so a stale DeepSeek key is not sent elsewhere.
+        if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+            && let Some(configured) = self.api_key.as_ref()
             && !configured.trim().is_empty()
             && configured != API_KEYRING_SENTINEL
         {
@@ -1475,6 +1501,11 @@ impl Config {
             .as_ref()
             .and_then(|m| m.enabled)
             .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn project_context_pack_enabled(&self) -> bool {
+        self.context.project_pack.unwrap_or(true)
     }
 
     /// Return whether shell execution is allowed.
@@ -2192,6 +2223,7 @@ fn apply_env_overrides(config: &mut Config) {
 fn normalize_model_config(config: &mut Config) {
     if let Some(model) = config.default_text_model.as_deref()
         && !provider_passes_model_through(config.api_provider())
+        && !config.active_provider_preserves_custom_base_url_model()
         && let Some(normalized) = normalize_model_for_provider(config.api_provider(), model)
     {
         config.default_text_model = Some(normalized);
@@ -2199,41 +2231,49 @@ fn normalize_model_config(config: &mut Config) {
 
     if let Some(providers) = config.providers.as_mut() {
         if let Some(model) = providers.deepseek.model.as_deref()
+            && !provider_entry_uses_custom_base_url(ApiProvider::Deepseek, &providers.deepseek)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::Deepseek, model)
         {
             providers.deepseek.model = Some(normalized);
         }
         if let Some(model) = providers.deepseek_cn.model.as_deref()
+            && !provider_entry_uses_custom_base_url(ApiProvider::DeepseekCN, &providers.deepseek_cn)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::DeepseekCN, model)
         {
             providers.deepseek_cn.model = Some(normalized);
         }
         if let Some(model) = providers.nvidia_nim.model.as_deref()
+            && !provider_entry_uses_custom_base_url(ApiProvider::NvidiaNim, &providers.nvidia_nim)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::NvidiaNim, model)
         {
             providers.nvidia_nim.model = Some(normalized);
         }
         if let Some(model) = providers.openrouter.model.as_deref()
+            && !provider_entry_uses_custom_base_url(ApiProvider::Openrouter, &providers.openrouter)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::Openrouter, model)
         {
             providers.openrouter.model = Some(normalized);
         }
         if let Some(model) = providers.novita.model.as_deref()
+            && !provider_entry_uses_custom_base_url(ApiProvider::Novita, &providers.novita)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::Novita, model)
         {
             providers.novita.model = Some(normalized);
         }
         if let Some(model) = providers.fireworks.model.as_deref()
+            && !provider_entry_uses_custom_base_url(ApiProvider::Fireworks, &providers.fireworks)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::Fireworks, model)
         {
             providers.fireworks.model = Some(normalized);
         }
         if let Some(model) = providers.sglang.model.as_deref()
+            && !provider_entry_uses_custom_base_url(ApiProvider::Sglang, &providers.sglang)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::Sglang, model)
         {
             providers.sglang.model = Some(normalized);
         }
         if let Some(model) = providers.vllm.model.as_deref()
+            && !provider_entry_uses_custom_base_url(ApiProvider::Vllm, &providers.vllm)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::Vllm, model)
         {
             providers.vllm.model = Some(normalized);
@@ -2250,6 +2290,37 @@ fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<St
 
 fn provider_passes_model_through(provider: ApiProvider) -> bool {
     matches!(provider, ApiProvider::Openai | ApiProvider::Ollama)
+}
+
+fn provider_entry_uses_custom_base_url(provider: ApiProvider, entry: &ProviderConfig) -> bool {
+    entry
+        .base_url
+        .as_deref()
+        .is_some_and(|base_url| provider_preserves_custom_base_url_model(provider, base_url))
+}
+
+fn default_base_url_for_provider(provider: ApiProvider) -> &'static str {
+    match provider {
+        ApiProvider::Deepseek => DEFAULT_DEEPSEEK_BASE_URL,
+        ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
+        ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
+        ApiProvider::Openai => DEFAULT_OPENAI_BASE_URL,
+        ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
+        ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
+        ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
+        ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
+        ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
+        ApiProvider::Ollama => DEFAULT_OLLAMA_BASE_URL,
+    }
+}
+
+fn base_url_is_custom_for_provider(provider: ApiProvider, base_url: &str) -> bool {
+    normalize_base_url(base_url) != normalize_base_url(default_base_url_for_provider(provider))
+}
+
+fn provider_preserves_custom_base_url_model(provider: ApiProvider, base_url: &str) -> bool {
+    matches!(provider, ApiProvider::Openrouter)
+        && base_url_is_custom_for_provider(provider, base_url)
 }
 
 fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
@@ -2382,6 +2453,10 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {
             enabled: override_cfg.context.enabled.or(base.context.enabled),
+            project_pack: override_cfg
+                .context
+                .project_pack
+                .or(base.context.project_pack),
             verbatim_window_turns: override_cfg
                 .context
                 .verbatim_window_turns
@@ -3076,6 +3151,23 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {
+        let policy: NetworkPolicyToml = toml::from_str(
+            r#"
+            default = "allow"
+            proxy = ["github.com", ".githubusercontent.com"]
+            "#,
+        )
+        .expect("network policy toml");
+
+        let runtime = policy.into_runtime();
+
+        assert_eq!(runtime.proxy, ["github.com", ".githubusercontent.com"]);
+        assert!(runtime.trusts_proxy_fakeip_host("github.com"));
+        assert!(runtime.trusts_proxy_fakeip_host("raw.githubusercontent.com"));
+    }
 
     struct EnvGuard {
         home: Option<OsString>,
@@ -4026,6 +4118,15 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
+    fn project_context_pack_defaults_on_and_can_be_disabled() {
+        let mut config = Config::default();
+        assert!(config.project_context_pack_enabled());
+
+        config.context.project_pack = Some(false);
+        assert!(!config.project_context_pack_enabled());
+    }
+
+    #[test]
     fn validate_accepts_future_deepseek_model_id() -> Result<()> {
         let config = Config {
             default_text_model: Some("deepseek-v4".to_string()),
@@ -4776,6 +4877,42 @@ base_url = "https://or-table.example/v1"
     }
 
     #[test]
+    fn openrouter_custom_base_url_preserves_provider_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-or-custom-model-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"provider = "openrouter"
+
+[providers.openrouter]
+api_key = "or-table-key"
+base_url = "https://gateway.example.com/v1"
+model = "DeepSeek-V4-Pro"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Openrouter);
+        assert_eq!(config.deepseek_api_key()?, "or-table-key");
+        assert_eq!(config.deepseek_base_url(), "https://gateway.example.com/v1");
+        assert_eq!(config.default_model(), "DeepSeek-V4-Pro");
+        Ok(())
+    }
+
+    #[test]
     fn novita_reads_provider_table_from_config_file() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -5023,6 +5160,41 @@ model = "deepseek-v4-pro"
         assert_eq!(config.deepseek_api_key()?, "nim-table-key");
         assert_eq!(config.deepseek_base_url(), "https://nim-table.example/v1");
         assert_eq!(config.default_model(), DEFAULT_NVIDIA_NIM_MODEL);
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_provider_table_key_overrides_root_deepseek_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-nim-root-key-precedence-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"api_key = "deepseek-root-key"
+provider = "nvidia-nim"
+
+[providers.nvidia_nim]
+api_key = "nim-table-key"
+base_url = "https://integrate.api.nvidia.com/v1"
+model = "deepseek-ai/deepseek-v4-pro"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
+        assert_eq!(config.deepseek_api_key()?, "nim-table-key");
         Ok(())
     }
 

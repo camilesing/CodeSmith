@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::client::PromptInspection;
 use crate::compaction::CompactionConfig;
 use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
@@ -38,7 +39,6 @@ use crate::tui::selection::TranscriptSelection;
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
-use crate::utils::is_chinese_system_locale;
 
 // === Types ===
 
@@ -627,6 +627,7 @@ pub struct SessionState {
     pub total_tokens: u32,
     pub total_conversation_tokens: u32,
     pub turn_cache_history: VecDeque<TurnCacheRecord>,
+    pub last_cache_inspection: Option<PromptInspection>,
 }
 
 impl Default for SessionState {
@@ -647,6 +648,7 @@ impl Default for SessionState {
             total_tokens: 0,
             total_conversation_tokens: 0,
             turn_cache_history: VecDeque::new(),
+            last_cache_inspection: None,
         }
     }
 }
@@ -725,6 +727,7 @@ pub struct App {
     #[allow(dead_code)]
     pub fancy_animations: bool,
     pub show_thinking: bool,
+    pub verbose_transcript: bool,
     pub show_tool_details: bool,
     pub ui_locale: Locale,
     pub cost_currency: CostCurrency,
@@ -910,6 +913,8 @@ pub struct App {
     pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
     pub runtime_turn_status: Option<String>,
+    /// When the UI accepted a user message but has not observed `TurnStarted` yet.
+    pub dispatch_started_at: Option<Instant>,
 
     /// Cached git context snapshot for the footer.
     pub workspace_context: Option<String>,
@@ -1118,19 +1123,7 @@ impl App {
             initial_input,
         } = options;
 
-        // If no provider is explicitly configured AND the system locale
-        // indicates Chinese (zh-*), suggest DeepseekCN (api.deepseeki.com)
-        // as the appropriate default.
-        let provider = if config.provider.is_none() && is_chinese_system_locale() {
-            let cn_base_url = crate::config::DEFAULT_DEEPSEEKCN_BASE_URL.to_string();
-            // Store the suggested base URL in config so the first API call
-            // uses the CN endpoint. We mutate a clone to avoid writing.
-            let mut config = config.clone();
-            config.base_url = Some(cn_base_url);
-            config.api_provider()
-        } else {
-            config.api_provider()
-        };
+        let provider = config.api_provider();
 
         // Check if API key exists
         let needs_api_key = !has_api_key(config);
@@ -1246,7 +1239,7 @@ impl App {
         } else {
             global_skills_dir
         };
-        let cached_skills = Self::discover_cached_skills(&skills_dir);
+        let cached_skills = Self::discover_cached_skills(&workspace);
 
         let input_history = crate::composer_history::load_history();
         let (initial_input_text, initial_input_cursor) = match initial_input {
@@ -1319,6 +1312,7 @@ impl App {
             low_motion,
             fancy_animations,
             show_thinking,
+            verbose_transcript: false,
             show_tool_details,
             ui_locale,
             cost_currency,
@@ -1419,6 +1413,7 @@ impl App {
             cumulative_turn_duration: std::time::Duration::ZERO,
             runtime_turn_id: None,
             runtime_turn_status: None,
+            dispatch_started_at: None,
             workspace_context: None,
             workspace_context_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             workspace_context_refreshed_at: None,
@@ -1440,8 +1435,8 @@ impl App {
         }
     }
 
-    fn discover_cached_skills(skills_dir: &std::path::Path) -> Vec<(String, String)> {
-        crate::skills::SkillRegistry::discover(skills_dir)
+    fn discover_cached_skills(workspace: &std::path::Path) -> Vec<(String, String)> {
+        crate::skills::discover_in_workspace(workspace)
             .list()
             .iter()
             .map(|s| (s.name.clone(), s.description.clone()))
@@ -1449,7 +1444,7 @@ impl App {
     }
 
     pub fn refresh_skill_cache(&mut self) {
-        self.cached_skills = Self::discover_cached_skills(&self.skills_dir);
+        self.cached_skills = Self::discover_cached_skills(&self.workspace);
     }
 
     pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
@@ -2448,6 +2443,7 @@ impl App {
     pub fn transcript_render_options(&self) -> TranscriptRenderOptions {
         TranscriptRenderOptions {
             show_thinking: self.show_thinking,
+            verbose: self.verbose_transcript,
             show_tool_details: self.show_tool_details,
             calm_mode: self.calm_mode,
             low_motion: self.low_motion,
@@ -2975,34 +2971,9 @@ impl App {
         self.needs_redraw = true;
     }
 
-    // === Vim composer mode helpers ===
-
-    /// Move the cursor to the start of the current logical line (vim `0`).
-    pub fn vim_move_line_start(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        // Walk backward until we find a newline or the start of the string.
-        let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
-        self.cursor_position = char_count(&text[..line_start_byte]);
-        self.needs_redraw = true;
-    }
-
-    /// Move the cursor to the end of the current logical line (vim `$`).
-    pub fn vim_move_line_end(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        // Walk forward to the next newline or end-of-string.
-        let line_end_char = text[cursor_byte..].find('\n').map_or_else(
-            || char_count(&text),
-            |rel| char_count(&text[..cursor_byte + rel]),
-        );
-        self.cursor_position = line_end_char;
-        self.needs_redraw = true;
-    }
-
-    /// Move forward one word (vim `w`).  Skips over the current word then any
-    /// trailing whitespace to land on the first character of the next word.
-    pub fn vim_move_word_forward(&mut self) {
+    /// Move forward one word. Skips over the current word then any trailing
+    /// whitespace to land on the first character of the next word.
+    pub fn move_cursor_word_forward(&mut self) {
         let text = self.input.clone();
         let total = char_count(&text);
         let mut pos = self.cursor_position;
@@ -3031,9 +3002,9 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Move backward one word (vim `b`).  Skips leading whitespace then the
-    /// preceding word to land on its first character.
-    pub fn vim_move_word_backward(&mut self) {
+    /// Move backward one word. Skips leading whitespace then the preceding
+    /// word to land on its first character.
+    pub fn move_cursor_word_backward(&mut self) {
         let text = self.input.clone();
         let mut pos = self.cursor_position;
         if pos == 0 {
@@ -3061,6 +3032,43 @@ impl App {
         }
         self.cursor_position = pos;
         self.needs_redraw = true;
+    }
+
+    // === Vim composer mode helpers ===
+
+    /// Move the cursor to the start of the current logical line (vim `0`).
+    pub fn vim_move_line_start(&mut self) {
+        let text = self.input.clone();
+        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
+        // Walk backward until we find a newline or the start of the string.
+        let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
+        self.cursor_position = char_count(&text[..line_start_byte]);
+        self.needs_redraw = true;
+    }
+
+    /// Move the cursor to the end of the current logical line (vim `$`).
+    pub fn vim_move_line_end(&mut self) {
+        let text = self.input.clone();
+        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
+        // Walk forward to the next newline or end-of-string.
+        let line_end_char = text[cursor_byte..].find('\n').map_or_else(
+            || char_count(&text),
+            |rel| char_count(&text[..cursor_byte + rel]),
+        );
+        self.cursor_position = line_end_char;
+        self.needs_redraw = true;
+    }
+
+    /// Move forward one word (vim `w`).  Skips over the current word then any
+    /// trailing whitespace to land on the first character of the next word.
+    pub fn vim_move_word_forward(&mut self) {
+        self.move_cursor_word_forward();
+    }
+
+    /// Move backward one word (vim `b`).  Skips leading whitespace then the
+    /// preceding word to land on its first character.
+    pub fn vim_move_word_backward(&mut self) {
+        self.move_cursor_word_backward();
     }
 
     /// Delete the character under the cursor (vim `x`).
@@ -3438,6 +3446,44 @@ impl App {
         Some(input)
     }
 
+    /// Composer-Enter dispatch. Returns `Some(input)` when the press should
+    /// fire a submit; `None` when Enter was absorbed (paste-burst Enter
+    /// suppression — see #1073).
+    ///
+    /// Two suppression cases are handled here. Both are silent: nothing
+    /// visible happens beyond the text gaining a newline.
+    ///
+    /// 1. **Burst active.** A paste burst is currently being assembled in
+    ///    `paste_burst.buffer`. The Enter is part of the paste content;
+    ///    append `\n` to the buffer so the next flush includes it, do not
+    ///    submit, and extend the suppression window so a follow-on Enter
+    ///    (i.e. the *next* line of a multi-line paste) is also absorbed.
+    /// 2. **Window open after flush.** A burst just flushed into
+    ///    `self.input`, but the suppression window is still alive. The
+    ///    Enter is the trailing newline of that paste, not a submit gesture
+    ///    by the user. Insert `\n` directly into the composer text and
+    ///    re-arm the window.
+    ///
+    /// Outside both cases the call falls through to [`Self::submit_input`]
+    /// unchanged so normal Enter-to-send behaviour is preserved.
+    pub fn handle_composer_enter(&mut self) -> Option<String> {
+        if self.use_paste_burst_detection {
+            let now = Instant::now();
+            if self
+                .paste_burst
+                .newline_should_insert_instead_of_submit(now)
+            {
+                if !self.paste_burst.append_newline_if_active(now) {
+                    self.insert_char('\n');
+                    self.paste_burst.extend_window(now);
+                }
+                self.needs_redraw = true;
+                return None;
+            }
+        }
+        self.submit_input()
+    }
+
     /// When the composer input exceeds [`MAX_SUBMITTED_INPUT_CHARS`], write
     /// the full content to a timestamped paste file under
     /// `.deepseek/pastes/` and replace `self.input` with an `@`-mention
@@ -3649,11 +3695,20 @@ impl App {
     }
 
     pub fn clear_todos(&mut self) -> bool {
+        // Clear the todo list (the sidebar checklist). Uses try_lock so the
+        // UI thread doesn't block if the engine briefly holds the mutex
+        // during tool execution; the caller can retry or show a busy message.
+        let todos_cleared = if let Ok(mut todos) = self.todos.try_lock() {
+            todos.clear();
+            true
+        } else {
+            false
+        };
+        // Also clear the plan state — /clear means a full reset.
         if let Ok(mut plan) = self.plan_state.try_lock() {
             *plan = crate::tools::plan::PlanState::default();
-            return true;
         }
-        false
+        todos_cleared
     }
 
     pub fn update_model_compaction_budget(&mut self) {
@@ -3766,6 +3821,7 @@ pub enum AppAction {
     },
     ListSubAgents,
     FetchModels,
+    CacheWarmup,
     /// Switch the active LLM backend (DeepSeek vs NVIDIA NIM) without
     /// restarting the process. The runtime rebuilds its API client from
     /// the updated config. `model` overrides the post-switch model
@@ -3916,6 +3972,40 @@ mod tests {
         assert!(app.cached_skills.iter().any(|(name, description)| {
             name == "local-skill" && description == "Local workspace skill"
         }));
+    }
+
+    #[test]
+    fn cached_skills_merges_across_candidate_directories() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+
+        // Higher-precedence directory contains a stale empty dir for `foo`
+        // (no SKILL.md). This used to shadow the real definition further
+        // down the candidate list when the cache only scanned a single dir.
+        std::fs::create_dir_all(workspace.join(".agents").join("skills").join("foo"))
+            .expect("stale empty dir");
+
+        // Lower-precedence directory has the real skill.
+        let real_dir = workspace.join(".claude").join("skills").join("foo");
+        std::fs::create_dir_all(&real_dir).expect("real skill dir");
+        std::fs::write(
+            real_dir.join("SKILL.md"),
+            "---\nname: foo\ndescription: Real foo skill\n---\nbody\n",
+        )
+        .expect("skill file");
+
+        let mut options = test_options(false);
+        options.workspace = workspace.clone();
+        options.skills_dir = tmp.path().join("global-skills");
+        let app = App::new(options, &Config::default());
+
+        assert!(
+            app.cached_skills
+                .iter()
+                .any(|(name, description)| name == "foo" && description == "Real foo skill"),
+            "cached_skills should fall through to lower-precedence dir when higher-precedence one has an empty stub: {:?}",
+            app.cached_skills,
+        );
     }
 
     #[test]
@@ -4235,6 +4325,22 @@ mod tests {
     }
 
     #[test]
+    fn word_cursor_helpers_move_by_whitespace_delimited_words() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "alpha beta  gamma".to_string();
+        app.cursor_position = 0;
+
+        app.move_cursor_word_forward();
+        assert_eq!(app.cursor_position, "alpha ".chars().count());
+
+        app.move_cursor_word_forward();
+        assert_eq!(app.cursor_position, "alpha beta  ".chars().count());
+
+        app.move_cursor_word_backward();
+        assert_eq!(app.cursor_position, "alpha ".chars().count());
+    }
+
+    #[test]
     fn editing_history_entry_leaves_navigation_mode() {
         let mut app = App::new(test_options(false), &Config::default());
         app.input_history.push("previous prompt".to_string());
@@ -4350,6 +4456,104 @@ mod tests {
         assert_eq!(app.input, "xa\nbc");
         assert_eq!(app.cursor_position, "xa\nbc".chars().count());
         assert!(!app.paste_burst.is_active());
+    }
+
+    #[test]
+    fn enter_during_active_paste_burst_appends_newline_to_buffer_not_submit() {
+        // #1073: when chars are still being assembled into a paste burst and
+        // an Enter arrives (the trailing newline of the paste), the Enter
+        // must be absorbed into the burst buffer — not fired as a submit.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = true;
+        let now = Instant::now();
+        app.paste_burst.append_char_to_buffer('h', now);
+        app.paste_burst.append_char_to_buffer('i', now);
+        assert!(app.paste_burst.is_active());
+        assert!(app.input.is_empty());
+
+        let result = app.handle_composer_enter();
+
+        assert!(
+            result.is_none(),
+            "Enter during active paste burst must not submit"
+        );
+        let flushed = app.paste_burst.flush_before_modified_input();
+        assert_eq!(
+            flushed.as_deref(),
+            Some("hi\n"),
+            "newline must land in the burst buffer so the next flush carries it"
+        );
+    }
+
+    #[test]
+    fn enter_inside_paste_burst_window_after_flush_inserts_newline_not_submit() {
+        // #1073: after a burst has flushed (text now in `input`), the
+        // suppression window stays open for ~120ms. An Enter arriving in
+        // that window is the trailing newline of the paste, not a user
+        // submit — insert it as a literal newline into the composer.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = true;
+        app.input = "hello".to_string();
+        app.cursor_position = "hello".chars().count();
+        let now = Instant::now();
+        app.paste_burst.extend_window(now);
+        assert!(!app.paste_burst.is_active());
+        assert!(
+            app.paste_burst.newline_should_insert_instead_of_submit(now),
+            "suppression window should be open"
+        );
+
+        let result = app.handle_composer_enter();
+
+        assert!(
+            result.is_none(),
+            "Enter inside post-flush suppression window must not submit"
+        );
+        assert_eq!(
+            app.input, "hello\n",
+            "newline must be inserted into the composer instead of firing a submit"
+        );
+    }
+
+    #[test]
+    fn enter_outside_any_paste_burst_window_submits_normally() {
+        // Regression guard: the suppression must not trip when the user
+        // actually wants to submit.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = true;
+        app.input = "hello world".to_string();
+        app.cursor_position = "hello world".chars().count();
+
+        let result = app.handle_composer_enter();
+
+        assert_eq!(
+            result.as_deref(),
+            Some("hello world"),
+            "Enter outside any paste burst window must submit normally"
+        );
+        assert!(
+            app.input.is_empty(),
+            "submit_input should clear the composer"
+        );
+    }
+
+    #[test]
+    fn enter_with_paste_burst_detection_disabled_submits_normally() {
+        // When the user has explicitly turned off paste-burst detection
+        // (`bracketed_paste = false` is independent, this is the
+        // `paste_burst_detection` setting), the suppression must be
+        // skipped — otherwise turning it off would not actually turn it
+        // off.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = false;
+        app.input = "ship it".to_string();
+        app.cursor_position = "ship it".chars().count();
+        let now = Instant::now();
+        app.paste_burst.extend_window(now);
+
+        let result = app.handle_composer_enter();
+
+        assert_eq!(result.as_deref(), Some("ship it"));
     }
 
     #[test]

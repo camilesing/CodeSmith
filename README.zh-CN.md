@@ -26,6 +26,12 @@ brew install deepseek-tui
 # 4. 直接下载 —— 无需任何工具链。
 #    https://github.com/Hmbown/DeepSeek-TUI/releases
 #    覆盖 Linux x64/ARM64、macOS x64/ARM64、Windows x64
+
+# 5. Docker —— 预构建发布镜像。
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY \
+  -v "$PWD:/workspace" \
+  ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 > 中国大陆访问较慢时，npm 可加 `--registry=https://registry.npmmirror.com`，
@@ -186,18 +192,36 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## v0.8.13 新功能
+## v0.8.24 新功能
 
-稳定性发布：聚焦 DeepSeek V4 运行时可靠性、工具调用恢复和 TUI 状态准确性。[完整更新日志](CHANGELOG.md)。
+承接 v0.8.23 安全发布之后的社区 bug 修复版本。[完整更新日志](CHANGELOG.md)。
 
-- **无需 LLM 的压缩预剪枝** —— 付费摘要前先机械压缩旧的大型工具结果；重复读取只保留最新完整内容
-- **重复工具调用防循环** —— 同一轮内第三次完全相同的 `(tool, args)` 会变成纠正性工具结果，而不是继续卡住重试
-- **V4 缓存命中率状态栏** —— 状态栏现在识别 `usage.prompt_tokens_details.cached_tokens`
-- **工具调用恢复** —— 无效 JSON 参数、幻觉工具名和严格 schema 问题会在分发前修复或清理
-- **区分大小写的模型 ID** —— 第三方 provider 的模型名保留用户输入大小写，同时继续规范化紧凑 DeepSeek 别名
-- **忙碌状态修复** —— 如果 turn 开始前分发失败，会清除 `working...`，避免后续输入一直进入 pending
-- **不会弹出 Keychain 的 doctor 密钥检查** —— 诊断流程不再读取 OS keyring
-- **macOS Terminal 颜色兼容** —— `xterm-256color` 会使用 256 色索引，避免鲸蓝主题被渲染成绿色/青色块
+- **缓存感知的 prompt 诊断和载荷优化** (#1196，感谢 **wplll**) — 新增
+  `/cache inspect` 和 `/cache warmup` 命令，对系统 prompt 进行分层（static /
+  history / dynamic）并展示每层的 SHA-256 哈希；线材有效载荷去重重复工具输出；
+  页脚展示来自 DeepSeek API 响应的缓存命中率。新增**项目上下文包**默认注入到
+  稳定前缀以提高缓存命中率；如需保持 prompt 简洁，可在配置中设置
+  `[context] project_pack = false` 关闭。
+- **工作区本地的斜杠命令** (#1259) — 在任意项目中放置
+  `.deepseek/commands/foo.md`，`/foo` 即可在该项目中可用。同时扫描
+  `.cursor/commands/` 和 `.claude/commands/`。项目本地按名称覆盖全局。
+- **`@` 提示补全可发现 AI 工具点目录** — 即使
+  `.deepseek/`、`.cursor/`、`.claude/`、`.agents/` 在 `.gitignore` 中，
+  这些目录下的文件也能通过 `@` 补全发现。
+- **MCP 分页发现** (#1250，感谢 **Liu-Vince**) — 对 `tools/list` 进行分页的
+  MCP 服务器（如 gbrain 每页 5 个）现在通过 `nextCursor` 完整发现所有工具。
+- **快照磁盘容量上限** (#1112) — 快照副本仓库现在强制 500 MB 上限，
+  超出时按时间从旧到新清理。可防止报告中 1.2 TB 快照失控。感谢
+  **@Giggitycountless** 的 PR #1131 提案。
+- **`/clear` 现在重置 Todos 侧边栏** (#1258) — 以前只清空 Plan 面板。
+- **鼠标滚轮在焦点切换后仍可用** — 在 `FocusGained` 时重新启用
+  `EnableMouseCapture`，使 Cmd+Tab 或截屏后滚轮滚动仍正常工作。
+- **i18n：英文提问得到英文回复** (#1118) — 项目中的中文文件名不再使模型偏向
+  中文回复。
+- **此外**：语言指令加强、MCP 错误信息更清晰（来自 PR #1196），及若干打磨。
+
+⚠️ **已知问题**：v0.8.22+ 在 Windows 10 conhost 上存在闪烁回归（#1260），
+跟踪到 v0.8.25 修复。如受影响，v0.8.20 工作正常。
 
 ---
 
@@ -277,7 +301,7 @@ deepseek update                                # 检查并应用二进制更新
 | `NO_ANIMATIONS=1` | 启动时强制无障碍模式 |
 | `SSL_CERT_FILE` | 企业代理的自定义 CA 包 |
 
-UI 语言与模型输出语言相互独立——在 `config.toml` 中设置 `locale`、使用 `/config locale zh-Hans`、或依赖 `LC_ALL`/`LANG`。详见 [docs/LOCALIZATION.md](docs/LOCALIZATION.md) 和 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
+`locale` 会控制界面语言，并作为模型自然语言的兜底设置；最新用户消息的语言优先级更高。也就是说，即使系统 locale 是英文，用户用中文提问时，V4 的 `reasoning_content` 和最终回复也应该使用中文。可在 `config.toml` 中设置 `locale`、使用 `/config locale zh-Hans`、或依赖 `LC_ALL`/`LANG`。详见 [docs/LOCALIZATION.md](docs/LOCALIZATION.md) 和 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
 
 ### 切换为中文界面
 
@@ -380,14 +404,14 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **[toi500](https://github.com/toi500)** — Windows 粘贴修复报告
 - **[xsstomy](https://github.com/xsstomy)** — 终端启动重绘报告
 - **[melody0709](https://github.com/melody0709)** — 斜杠前缀回车激活报告
-- **[lloydzhou](https://github.com/lloydzhou)** 和 **[jeoor](https://github.com/jeoor)** — 压缩成本报告；lloydzhou 还贡献了确定性的环境上下文注入 (#813, #922)
+- **[lloydzhou](https://github.com/lloydzhou)** 和 **[jeoor](https://github.com/jeoor)** — 压缩成本报告；lloydzhou 还贡献了确定性的环境上下文注入 (#813, #922) 和 KV 前缀缓存稳定化 (#1080)
 - **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README 清晰化改进 (#685)
 - **[woyxiang](https://github.com/woyxiang)** — Windows 安装文档 (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — 价格/折扣信息更新 (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — 模型 ID 大小写兼容性报告 (#729)
 - **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — `working...` 卡死状态 Bug 报告和 Windows 剪贴板兜底修复 (#738, #850)
-- **[reidliu41](https://github.com/reidliu41)** — 退出后的恢复提示、工作区信任持久化，以及 Ollama provider 支持 (#863, #870, #921)
+- **[reidliu41](https://github.com/reidliu41)** — 退出后的恢复提示、工作区信任持久化、Ollama provider 支持，以及思考块流式终结修复 (#863, #870, #921, #1078)
 - **[xieshutao](https://github.com/xieshutao)** — 纯 Markdown skill 兜底解析 (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper 的 `--version` 兜底 (#885)
 - **[y0sif](https://github.com/y0sif)** — 直接子智能体完成后唤醒父级 turn loop (#901)
@@ -395,7 +419,7 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — shell 命令空字节安全加固 (#706, #918)
 - **macworkers** — fork 完成后显示新 session id (#600, #919)
 - **zero** 和 **[zerx-lab](https://github.com/zerx-lab)** — 通知条件配置和更完整的 OSC 9 通知正文 (#820, #920)
-- **[chnjames](https://github.com/chnjames)** — @mention 补全缓存和配置恢复优化 (#849, #927)
+- **[chnjames](https://github.com/chnjames)** — @mention 补全缓存、配置恢复优化，以及 Windows UTF-8 shell 输出修复 (#849, #927, #982, #1018)
 - **[angziii](https://github.com/angziii)** — 配置安全、异步清理、Docker 加固和命令安全修复 (#822, #824, #827, #831, #833, #835, #837)
 - **[elowen53](https://github.com/elowen53)** — UTF-8 解码和确定性测试覆盖 (#825, #840)
 - **[wdw8276](https://github.com/wdw8276)** — 用于自定义 session 标题的 `/rename` 命令 (#836)
@@ -404,6 +428,15 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **Hafeez Pizofreude** — `fetch_url` 的 SSRF 保护和 Star History 图表
 - **Unic (YuniqueUnic)** — 基于 schema 的配置 UI（TUI + web）
 - **Jason** — SSRF 安全加固
+- **[axobase001](https://github.com/axobase001)** — 快照孤儿文件清理、npm 安装守卫、会话遥测修复、模型作用域缓存清理、符号链接技能支持，以及 npm 镜像逃生路径指引 (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
+- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` 深色/浅色主题切换命令和 SSE gzip/brotli 解压支持 (#1057, #1061)
+- **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan 模式只读沙箱安全修复 (#1077)
+- **[bevis-wong](https://github.com/bevis-wong)** — 粘贴-回车自动提交问题的精确复现 (#1073)
+- **[Duducoco](https://github.com/Duducoco)** 和 **[AlphaGogoo](https://github.com/AlphaGogoo)** — 技能斜杠菜单和 `/skills` 覆盖范围修复 (#1068, #1083)
+- **[ArronAI007](https://github.com/ArronAI007)** — macOS Terminal.app 和 ConHost 窗口大小调整残留修复 (#993)
+- **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter 和自定义端点模型 ID 保留 (#1066)
+- **[Jefsky](https://github.com/Jefsky)** — `deepseek-cn` 官方端点默认值 (#1079, #1084)
+- **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API key 优先级诊断 (#1081)
 
 ---
 

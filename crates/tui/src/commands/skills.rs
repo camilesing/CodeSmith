@@ -13,6 +13,10 @@ use crate::tui::history::HistoryCell;
 
 use super::CommandResult;
 
+fn discover_visible_skills(app: &App) -> SkillRegistry {
+    crate::skills::discover_for_workspace_and_dir(&app.workspace, &app.skills_dir)
+}
+
 fn render_skill_warnings(registry: &SkillRegistry) -> String {
     if registry.warnings().is_empty() {
         return String::new();
@@ -44,7 +48,7 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         }
     }
     let skills_dir = app.skills_dir.clone();
-    let registry = SkillRegistry::discover(&skills_dir);
+    let registry = discover_visible_skills(app);
     let warnings = render_skill_warnings(&registry);
 
     if registry.is_empty() {
@@ -86,8 +90,7 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
 /// Try to run a skill by exact name (used for unified slash-command namespace, #435).
 /// Returns None when no skill with that name exists, so the caller can try other sources.
 pub fn run_skill_by_name(app: &mut App, name: &str, _arg: Option<&str>) -> Option<CommandResult> {
-    let skills_dir = app.skills_dir.clone();
-    let registry = crate::skills::SkillRegistry::discover(&skills_dir);
+    let registry = discover_visible_skills(app);
     if registry.get(name).is_some() {
         Some(activate_skill(app, name))
     } else {
@@ -125,8 +128,7 @@ fn activate_skill(app: &mut App, name: &str) -> CommandResult {
     // `/skill new` is a friendly alias for `/skill skill-creator`.
     let name = if name == "new" { "skill-creator" } else { name };
 
-    let skills_dir = app.skills_dir.clone();
-    let registry = SkillRegistry::discover(&skills_dir);
+    let registry = discover_visible_skills(app);
 
     if let Some(skill) = registry.get(name) {
         let instruction = format!(
@@ -446,7 +448,53 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
+    use std::ffi::OsString;
     use tempfile::TempDir;
+
+    struct IsolatedHome {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        home_prev: Option<OsString>,
+        userprofile_prev: Option<OsString>,
+    }
+
+    impl IsolatedHome {
+        fn new(tmpdir: &TempDir) -> Self {
+            let lock = crate::test_support::lock_test_env();
+            let home = tmpdir.path().join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let home_prev = std::env::var_os("HOME");
+            let userprofile_prev = std::env::var_os("USERPROFILE");
+            // SAFETY: tests that mutate process env hold the shared test env
+            // mutex for the full lifetime of this guard.
+            unsafe {
+                std::env::set_var("HOME", &home);
+                std::env::set_var("USERPROFILE", &home);
+            }
+            Self {
+                _lock: lock,
+                home_prev,
+                userprofile_prev,
+            }
+        }
+
+        unsafe fn restore_var(key: &str, value: Option<OsString>) {
+            if let Some(value) = value {
+                unsafe { std::env::set_var(key, value) };
+            } else {
+                unsafe { std::env::remove_var(key) };
+            }
+        }
+    }
+
+    impl Drop for IsolatedHome {
+        fn drop(&mut self) {
+            // SAFETY: the shared test env mutex is still held while Drop runs.
+            unsafe {
+                Self::restore_var("HOME", self.home_prev.take());
+                Self::restore_var("USERPROFILE", self.userprofile_prev.take());
+            }
+        }
+    }
 
     fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {
         let options = TuiOptions {
@@ -484,6 +532,7 @@ mod tests {
     #[test]
     fn test_list_skills_empty_directory() {
         let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
         let mut app = create_test_app_with_tmpdir(&tmpdir);
         let result = list_skills(&mut app, None);
         assert!(result.message.is_some());
@@ -495,6 +544,7 @@ mod tests {
     #[test]
     fn test_list_skills_with_skills() {
         let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
         create_skill_dir(
             &tmpdir,
             "test-skill",
@@ -509,8 +559,38 @@ mod tests {
     }
 
     #[test]
+    fn test_list_skills_merges_workspace_and_configured_dirs() {
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        let workspace_skill_dir = tmpdir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("workspace-skill");
+        std::fs::create_dir_all(&workspace_skill_dir).unwrap();
+        std::fs::write(
+            workspace_skill_dir.join("SKILL.md"),
+            "---\nname: workspace-skill\ndescription: Workspace skill\n---\nDo workspace work",
+        )
+        .unwrap();
+        create_skill_dir(
+            &tmpdir,
+            "configured-skill",
+            "---\nname: configured-skill\ndescription: Configured skill\n---\nDo configured work",
+        );
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = list_skills(&mut app, None);
+        let msg = result.message.unwrap();
+
+        assert!(msg.contains("/workspace-skill"), "got: {msg}");
+        assert!(msg.contains("/configured-skill"), "got: {msg}");
+    }
+
+    #[test]
     fn test_skill_subcommand_dispatch_install_usage() {
         let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
         let mut app = create_test_app_with_tmpdir(&tmpdir);
         // Empty install spec → usage hint, not invalid-source error.
         let result = run_skill(&mut app, Some("install"));
@@ -521,6 +601,7 @@ mod tests {
     #[test]
     fn test_skill_subcommand_dispatch_uninstall_missing() {
         let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
         let mut app = create_test_app_with_tmpdir(&tmpdir);
         let result = run_skill(&mut app, Some("uninstall absent-skill"));
         let msg = result.message.unwrap();
@@ -530,6 +611,7 @@ mod tests {
     #[test]
     fn test_run_skill_without_name() {
         let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
         let mut app = create_test_app_with_tmpdir(&tmpdir);
         let result = run_skill(&mut app, None);
         assert!(result.message.is_some());
@@ -539,6 +621,7 @@ mod tests {
     #[test]
     fn test_run_skill_not_found() {
         let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
         let mut app = create_test_app_with_tmpdir(&tmpdir);
         let result = run_skill(&mut app, Some("nonexistent"));
         assert!(result.message.is_some());
@@ -549,6 +632,7 @@ mod tests {
     #[test]
     fn test_run_skill_activates() {
         let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
         create_skill_dir(
             &tmpdir,
             "test-skill",
