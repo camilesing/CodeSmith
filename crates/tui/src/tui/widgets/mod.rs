@@ -1953,6 +1953,7 @@ pub(crate) fn slash_completion_hints(
     limit: usize,
     cached_skills: &[(String, String)],
     locale: crate::localization::Locale,
+    workspace: Option<&std::path::Path>,
 ) -> Vec<SlashMenuEntry> {
     if !input.starts_with('/') {
         return Vec::new();
@@ -1970,7 +1971,7 @@ pub(crate) fn slash_completion_hints(
     // built-in ones from the static registry and use a generic label for
     // user-defined commands.
     if completing_skill_arg.is_none() {
-        for name in commands::all_command_names_matching(prefix) {
+        for name in commands::all_command_names_matching(prefix, workspace) {
             let command_key = name.trim_start_matches('/');
             let description = if let Some(info) = commands::get_command_info(command_key) {
                 info.description_for(locale).to_string()
@@ -2359,14 +2360,14 @@ mod tests {
 
     #[test]
     fn slash_completion_hints_include_links_and_config() {
-        let hints = slash_completion_hints("/", 128, &[], Locale::En);
+        let hints = slash_completion_hints("/", 128, &[], Locale::En, None);
         assert!(hints.iter().any(|hint| hint.name == "/config"));
         assert!(hints.iter().any(|hint| hint.name == "/links"));
     }
 
     #[test]
     fn slash_completion_hints_exclude_set_and_deepseek_commands() {
-        let hints = slash_completion_hints("/", 128, &[], Locale::En);
+        let hints = slash_completion_hints("/", 128, &[], Locale::En, None);
         assert!(!hints.iter().any(|hint| hint.name == "/set"));
         assert!(!hints.iter().any(|hint| hint.name == "/deepseek"));
     }
@@ -2377,7 +2378,7 @@ mod tests {
             ("search-files".to_string(), "Search files".to_string()),
             ("my-review".to_string(), "Review code".to_string()),
         ];
-        let hints = slash_completion_hints("/", 128, &cached_skills, Locale::En);
+        let hints = slash_completion_hints("/", 128, &cached_skills, Locale::En, None);
         assert!(
             hints
                 .iter()
@@ -2396,7 +2397,7 @@ mod tests {
             ("search-files".to_string(), "Search files".to_string()),
             ("my-review".to_string(), "Review code".to_string()),
         ];
-        let hints = slash_completion_hints("/se", 128, &cached_skills, Locale::En);
+        let hints = slash_completion_hints("/se", 128, &cached_skills, Locale::En, None);
         assert!(
             hints
                 .iter()
@@ -2411,7 +2412,7 @@ mod tests {
             ("search-files".to_string(), "Search files".to_string()),
             ("my-review".to_string(), "Review code".to_string()),
         ];
-        let hints = slash_completion_hints("/skill my", 128, &cached_skills, Locale::En);
+        let hints = slash_completion_hints("/skill my", 128, &cached_skills, Locale::En, None);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].name, "/skill my-review");
         assert!(hints[0].is_skill);
