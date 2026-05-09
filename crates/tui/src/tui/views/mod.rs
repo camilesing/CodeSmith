@@ -13,6 +13,7 @@ use crate::tui::approval::{ElevationOption, ReviewDecision};
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
 use crate::tui::widgets::agent_card::AgentLifecycle;
 
+pub mod mode_picker;
 pub mod status_picker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub enum ModalKind {
     Config,
     ModelPicker,
     ProviderPicker,
+    ModePicker,
     FilePicker,
     StatusPicker,
     ContextMenu,
@@ -149,6 +151,10 @@ pub enum ViewEvent {
     ProviderPickerApiKeySubmitted {
         provider: crate::config::ApiProvider,
         api_key: String,
+    },
+    /// Emitted by the `/mode` picker when the user chooses a mode.
+    ModeSelected {
+        mode: crate::tui::app::AppMode,
     },
     /// Emitted by the `/statusline` picker every time the user toggles an
     /// item (live preview) and once more on Enter (final). The handler

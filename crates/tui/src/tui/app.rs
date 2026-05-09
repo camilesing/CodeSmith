@@ -3822,6 +3822,8 @@ pub enum AppAction {
     /// Open the `/provider` picker modal — DeepSeek / NVIDIA NIM / OpenRouter
     /// / Novita with inline API-key prompt for un-configured providers (#52).
     OpenProviderPicker,
+    /// Open the `/mode` picker modal for Agent / Plan / YOLO.
+    OpenModePicker,
     /// Open the `/statusline` multi-select picker for footer items.
     OpenStatusPicker,
     /// Send a message to the AI (normal chat mode).

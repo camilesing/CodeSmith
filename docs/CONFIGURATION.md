@@ -307,9 +307,9 @@ Common settings keys:
   also kept locally for composer history search)
 - `default_model` (model name override)
 
-Only `agent`, `plan`, and `yolo` are visible modes in the UI. For compatibility,
-older settings files with `default_mode = "normal"` still load as `agent`, and
-the hidden `/normal` slash command switches to `Agent`.
+Only `agent`, `plan`, and `yolo` are visible modes in the UI. Switch between
+them with `/mode`. For compatibility, older settings files with
+`default_mode = "normal"` still load as `agent`.
 
 Localization scope is tracked in [LOCALIZATION.md](LOCALIZATION.md). The v0.7.6
 core pack covers high-visibility TUI chrome only; provider/tool schemas,

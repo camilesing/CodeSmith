@@ -4721,6 +4721,14 @@ async fn apply_command_result(
                         ));
                 }
             }
+            AppAction::OpenModePicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::ModePicker) {
+                    app.view_stack
+                        .push(crate::tui::views::mode_picker::ModePickerView::new(
+                            app.mode,
+                        ));
+                }
+            }
             AppAction::OpenStatusPicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::StatusPicker) {
                     app.view_stack
@@ -5880,6 +5888,10 @@ async fn handle_view_events(
             }
             ViewEvent::ProviderPickerApiKeySubmitted { provider, api_key } => {
                 apply_provider_picker_api_key(app, engine_handle, config, provider, api_key).await;
+            }
+            ViewEvent::ModeSelected { mode } => {
+                let msg = commands::switch_mode(app, mode);
+                app.add_message(HistoryCell::System { content: msg });
             }
             ViewEvent::BacktrackStep { direction } => {
                 app.backtrack.step(direction);

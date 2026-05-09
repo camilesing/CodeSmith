@@ -324,22 +324,10 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdConfigDescription,
     },
     CommandInfo {
-        name: "yolo",
+        name: "mode",
         aliases: &[],
-        usage: "/yolo",
-        description_id: MessageId::CmdYoloDescription,
-    },
-    CommandInfo {
-        name: "agent",
-        aliases: &[],
-        usage: "/agent",
-        description_id: MessageId::CmdAgentDescription,
-    },
-    CommandInfo {
-        name: "plan",
-        aliases: &[],
-        usage: "/plan",
-        description_id: MessageId::CmdPlanDescription,
+        usage: "/mode [agent|plan|yolo|1|2|3]",
+        description_id: MessageId::CmdModeDescription,
     },
     CommandInfo {
         name: "theme",
@@ -544,9 +532,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "config" => config::config_command(app, arg),
         "settings" => config::show_settings(app),
         "statusline" | "status" => config::status_line(app),
-        "yolo" => config::yolo(app),
-        "agent" => config::agent_mode(app),
-        "plan" => config::plan_mode(app),
+        "mode" => config::mode(app, arg),
         "theme" => config::theme(app),
         "verbose" => config::verbose(app, arg),
         "trust" => config::trust(app, arg),
@@ -599,7 +585,6 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "set" => CommandResult::error(
             "The /set command was retired. Use /config to edit settings and /settings to inspect current values.",
         ),
-        "normal" => config::normal_mode(app),
         "deepseek" => CommandResult::error(
             "The /deepseek command was renamed. Use /links (aliases: /dashboard, /api).",
         ),
@@ -645,6 +630,10 @@ pub fn persist_status_items(
 /// Persist a root-level string key in `config.toml`.
 pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<std::path::PathBuf> {
     config::persist_root_string_key(key, value)
+}
+
+pub fn switch_mode(app: &mut App, mode: crate::tui::app::AppMode) -> String {
+    config::switch_mode(app, mode)
 }
 
 /// Auto-select a model based on request complexity.

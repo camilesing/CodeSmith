@@ -11,6 +11,8 @@ Press `Tab` to complete composer menus, queue a draft as a next-turn follow-up
 while a turn is running, or cycle through the visible modes when the composer is
 otherwise idle: **Plan → Agent → YOLO → Plan**.
 Press `Shift+Tab` to cycle reasoning effort.
+Run `/mode` to open the mode picker, or switch directly with `/mode agent`,
+`/mode plan`, `/mode yolo`, `/mode 1`, `/mode 2`, or `/mode 3`.
 
 - **Plan**: design-first prompting. Read-only investigation tools stay available; shell and patch execution stay off. Use this when you want to think out loud and produce a plan to hand to a human (yourself later, or a reviewer).
 - **Agent**: multi-step tool use. Approvals for shell and paid tools (file writes are allowed without a prompt).
@@ -20,7 +22,6 @@ All three modes have access to the `rlm` tool. Inside its Python REPL, `llm_quer
 
 ## Compatibility Notes
 
-- `/normal` is a hidden compatibility alias that switches to `Agent`.
 - Older settings files with `default_mode = "normal"` still load as `agent`; saving rewrites the normalized value.
 
 ## Escape Key Behavior
