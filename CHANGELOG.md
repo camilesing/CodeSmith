@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.25] - Unreleased
+
+### Changed
+
+- Removed the unwired `[context.per_model]` config field; existing configs that still contain it continue to load.
+
 ## [0.8.24] - 2026-05-09
 
 A bugfix + refactor release picking up the backlog after the v0.8.23 security
