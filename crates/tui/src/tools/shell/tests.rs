@@ -2,9 +2,15 @@ use super::*;
 
 use crate::tools::spec::ToolContext;
 use serde_json::{Value, json};
-use std::sync::{Mutex, OnceLock};
 use tempfile::tempdir;
 
+// `env_lock` exists only to serialize Unix-only env-mutating tests.
+// Windows builds gate that test out, so the helper would be dead code
+// under `-Dwarnings` if the import + helper were unconditional.
+#[cfg(unix)]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(unix)]
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
