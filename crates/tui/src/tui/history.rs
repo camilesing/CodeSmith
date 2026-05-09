@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
@@ -149,6 +149,7 @@ impl SubAgentCell {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranscriptRenderOptions {
     pub show_thinking: bool,
+    pub verbose: bool,
     pub show_tool_details: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
@@ -159,6 +160,7 @@ impl Default for TranscriptRenderOptions {
     fn default() -> Self {
         Self {
             show_thinking: true,
+            verbose: false,
             show_tool_details: true,
             calm_mode: false,
             low_motion: false,
@@ -239,7 +241,7 @@ impl HistoryCell {
                 width,
                 *streaming,
                 *duration_secs,
-                !*streaming,
+                !options.verbose,
                 options.low_motion,
             ),
             HistoryCell::Tool(cell) if !options.show_tool_details => {
@@ -2081,12 +2083,18 @@ fn render_thinking(
     lines.push(Line::from(header_spans));
 
     let content_width = width.saturating_sub(3).max(1);
-    let body_text = if collapsed {
+    let body_text = if collapsed && streaming {
+        String::new()
+    } else if collapsed {
         extract_reasoning_summary(content).unwrap_or_else(|| content.trim().to_string())
     } else {
         content.to_string()
     };
-    let mut rendered = markdown_render::render_markdown(&body_text, content_width, body_style);
+    let mut rendered = if body_text.trim().is_empty() {
+        Vec::new()
+    } else {
+        markdown_render::render_markdown(&body_text, content_width, body_style)
+    };
     let mut truncated = false;
     if collapsed && rendered.len() > THINKING_SUMMARY_LINE_LIMIT {
         rendered.truncate(THINKING_SUMMARY_LINE_LIMIT);
@@ -2098,10 +2106,7 @@ fn render_thinking(
 
     if rendered.is_empty() && streaming {
         let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
-        spans.push(Span::styled(
-            "reasoning in progress...",
-            body_style.italic(),
-        ));
+        spans.push(Span::styled("thinking...", body_style.italic()));
         if !low_motion {
             spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
         }
@@ -3908,6 +3913,38 @@ mod tests {
             !visible.contains(REASONING_CURSOR),
             "low_motion must suppress the streaming cursor: {visible:?}"
         );
+    }
+
+    #[test]
+    fn streaming_thinking_live_collapses_unless_verbose() {
+        let cell = HistoryCell::Thinking {
+            content: "private step one\nprivate step two".to_string(),
+            streaming: true,
+            duration_secs: None,
+        };
+
+        let compact = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+        let compact_text = lines_text(&compact);
+        assert!(compact_text.contains("thinking..."));
+        assert!(!compact_text.contains("private step one"));
+
+        let verbose = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                verbose: true,
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+        let verbose_text = lines_text(&verbose);
+        assert!(verbose_text.contains("private step one"));
+        assert!(verbose_text.contains("private step two"));
     }
 
     // === Theme parity tests ===
