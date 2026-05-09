@@ -1658,15 +1658,27 @@ fn run_git(workspace: &std::path::Path, args: &[&str]) -> Option<String> {
 }
 
 fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
-    let workspace = fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    // Canonicalize the workspace once so the symlink-containment check below
+    // compares like-for-like. If the workspace can't be canonicalized at all
+    // (e.g. it doesn't exist on disk yet) fall back to the configured global
+    // skills dir rather than risk constructing paths from a non-existent root.
+    let canonical_workspace = match fs::canonicalize(workspace) {
+        Ok(path) => path,
+        Err(_) => return config.skills_dir(),
+    };
     for candidate in [
-        workspace.join(".agents").join("skills"),
-        workspace.join("skills"),
+        canonical_workspace.join(".agents").join("skills"),
+        canonical_workspace.join("skills"),
     ] {
-        if let Ok(candidate) = fs::canonicalize(candidate)
-            && candidate.is_dir()
+        // Re-canonicalize the candidate so a `.agents/skills` symlink to e.g.
+        // `/etc` cannot promote arbitrary filesystem locations into the
+        // skills directory. The candidate must still resolve under the
+        // canonicalized workspace root after symlink expansion.
+        if let Ok(canon) = fs::canonicalize(&candidate)
+            && canon.starts_with(&canonical_workspace)
+            && canon.is_dir()
         {
-            return candidate;
+            return canon;
         }
     }
     config.skills_dir()
@@ -3689,5 +3701,67 @@ mod tests {
 
         handle.abort();
         Ok(())
+    }
+
+    #[test]
+    fn resolve_skills_dir_finds_workspace_local_agents_skills() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let local_skills = workspace.join(".agents").join("skills");
+        fs::create_dir_all(&local_skills).expect("create skills dir");
+
+        let config = Config::default();
+        let resolved = resolve_skills_dir(&config, workspace);
+
+        let expected = fs::canonicalize(&local_skills).expect("canonical local skills");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolve_skills_dir_finds_workspace_local_skills_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let local_skills = workspace.join("skills");
+        fs::create_dir_all(&local_skills).expect("create skills dir");
+
+        let config = Config::default();
+        let resolved = resolve_skills_dir(&config, workspace);
+
+        let expected = fs::canonicalize(&local_skills).expect("canonical local skills");
+        assert_eq!(resolved, expected);
+    }
+
+    /// A `skills` symlink that points outside the workspace must NOT be
+    /// returned as the resolved skills directory. Containment check ensures
+    /// the canonicalized candidate stays under the canonicalized workspace
+    /// root, so a malicious or misconfigured symlink can't promote
+    /// `/etc` (or any other path) into the skills loader.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_skills_dir_rejects_symlink_escaping_workspace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = tmp.path().join("workspace");
+        let escape_target = tmp.path().join("escape_target");
+        fs::create_dir_all(&workspace_root).expect("create workspace");
+        fs::create_dir_all(&escape_target).expect("create escape target");
+
+        let dotagents = workspace_root.join(".agents");
+        fs::create_dir_all(&dotagents).expect("create .agents");
+        let bad_link = dotagents.join("skills");
+        std::os::unix::fs::symlink(&escape_target, &bad_link).expect("symlink");
+
+        let config = Config::default();
+        let resolved = resolve_skills_dir(&config, &workspace_root);
+
+        let canon_escape = fs::canonicalize(&escape_target).expect("canon escape");
+        assert_ne!(
+            resolved, canon_escape,
+            "symlink escaping workspace must not be resolved as skills dir"
+        );
+        assert_eq!(
+            resolved,
+            config.skills_dir(),
+            "with no valid in-workspace skills dir, resolution should fall back to config"
+        );
     }
 }
