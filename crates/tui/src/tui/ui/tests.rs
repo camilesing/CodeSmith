@@ -1032,6 +1032,7 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
         messages,
         system_prompt: None,
         context_references: Vec::new(),
+        artifacts: Vec::new(),
     }
 }
 
@@ -3097,6 +3098,86 @@ fn tool_child_usage_metadata_updates_live_cost_counter() {
     handle_tool_call_complete(&mut app, "review-usage", "review", &result);
 
     assert!(app.session.subagent_cost > 0.0);
+}
+
+#[test]
+fn spilled_tool_completion_records_session_artifact_metadata() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let spillover_path = tmp.path().join("call-big.txt");
+    let raw = "checking crate ... error[E0425]: cannot find value\n".repeat(20);
+    std::fs::write(&spillover_path, &raw).expect("write spillover");
+    let result = Ok(
+        crate::tools::spec::ToolResult::success("checking crate ...").with_metadata(
+            serde_json::json!({
+                "spillover_path": spillover_path.display().to_string(),
+                "artifact_session_id": "session-123",
+                "artifact_relative_path": "artifacts/art_call-big.txt",
+                "artifact_byte_size": raw.len() as u64,
+                "artifact_preview": "checking crate ... error[E0425]: cannot find value",
+            }),
+        ),
+    );
+    let mut app = create_test_app();
+    app.current_session_id = Some("session-123".to_string());
+
+    handle_tool_call_complete(&mut app, "call-big", "exec_shell", &result);
+
+    assert_eq!(app.session_artifacts.len(), 1);
+    let artifact = &app.session_artifacts[0];
+    assert_eq!(artifact.kind, crate::artifacts::ArtifactKind::ToolOutput);
+    assert_eq!(artifact.session_id, "session-123");
+    assert_eq!(artifact.tool_call_id, "call-big");
+    assert_eq!(artifact.tool_name, "exec_shell");
+    assert_eq!(artifact.byte_size, raw.len() as u64);
+    assert_eq!(
+        artifact.storage_path,
+        PathBuf::from("artifacts/art_call-big.txt")
+    );
+    assert!(artifact.preview.starts_with("checking crate"));
+
+    let manager =
+        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+    let snapshot = build_session_snapshot(&app, &manager);
+    assert_eq!(snapshot.artifacts, app.session_artifacts);
+}
+
+#[test]
+fn first_snapshot_preserves_current_session_id_for_artifact_ownership() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manager =
+        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+    let mut app = create_test_app();
+    app.current_session_id = Some("session-123".to_string());
+    app.api_messages.push(text_message("user", "hello"));
+
+    let snapshot = build_session_snapshot(&app, &manager);
+
+    assert_eq!(snapshot.metadata.id, "session-123");
+}
+
+#[test]
+fn apply_loaded_session_restores_artifact_registry() {
+    let mut app = create_test_app();
+    let mut session = saved_session_with_messages(vec![
+        text_message("user", "hello"),
+        text_message("assistant", "hi"),
+    ]);
+    session.artifacts.push(crate::artifacts::ArtifactRecord {
+        id: "art_call_big".to_string(),
+        kind: crate::artifacts::ArtifactKind::ToolOutput,
+        session_id: "session-123".to_string(),
+        tool_call_id: "call-big".to_string(),
+        tool_name: "exec_shell".to_string(),
+        created_at: chrono::Utc::now(),
+        byte_size: 128,
+        preview: "hello".to_string(),
+        storage_path: PathBuf::from("/tmp/tool_outputs/call-big.txt"),
+    });
+
+    let recovered = apply_loaded_session(&mut app, &session);
+
+    assert!(!recovered);
+    assert_eq!(app.session_artifacts, session.artifacts);
 }
 
 #[test]

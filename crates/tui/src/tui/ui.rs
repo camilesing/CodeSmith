@@ -48,7 +48,7 @@ use crate::palette;
 use crate::prompts;
 use crate::session_manager::{
     OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
-    create_saved_session_with_mode, update_session,
+    create_saved_session_with_id_and_mode, create_saved_session_with_mode, update_session,
 };
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus,
@@ -366,6 +366,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
                 model: app.model.clone(),
@@ -1041,11 +1042,13 @@ async fn run_event_loop(
                         app.status_message = Some(message);
                     }
                     EngineEvent::SessionUpdated {
+                        session_id,
                         messages,
                         system_prompt,
                         model,
                         workspace,
                     } => {
+                        app.current_session_id = Some(session_id);
                         app.api_messages = messages;
                         app.system_prompt = system_prompt;
                         if app.auto_model {
@@ -1846,6 +1849,7 @@ async fn run_event_loop(
                                     if !app.api_messages.is_empty() {
                                         let _ = engine_handle
                                             .send(Op::SyncSession {
+                                                session_id: app.current_session_id.clone(),
                                                 messages: app.api_messages.clone(),
                                                 system_prompt: app.system_prompt.clone(),
                                                 model: app.model.clone(),
@@ -2632,6 +2636,7 @@ async fn run_event_loop(
                                 app.edit_in_progress = false;
                                 let _ = engine_handle
                                     .send(Op::SyncSession {
+                                        session_id: app.current_session_id.clone(),
                                         messages: app.api_messages.clone(),
                                         system_prompt: app.system_prompt.clone(),
                                         model: app.model.clone(),
@@ -3061,17 +3066,31 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         );
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
         updated.context_references = app.session_context_references.clone();
+        updated.artifacts = app.session_artifacts.clone();
         updated
     } else {
-        let mut session = create_saved_session_with_mode(
-            &app.api_messages,
-            &app.model,
-            &app.workspace,
-            u64::from(app.session.total_tokens),
-            app.system_prompt.as_ref(),
-            Some(app.mode.as_setting()),
-        );
+        let mut session = if let Some(existing_id) = app.current_session_id.as_ref() {
+            create_saved_session_with_id_and_mode(
+                existing_id.clone(),
+                &app.api_messages,
+                &app.model,
+                &app.workspace,
+                u64::from(app.session.total_tokens),
+                app.system_prompt.as_ref(),
+                Some(app.mode.as_setting()),
+            )
+        } else {
+            create_saved_session_with_mode(
+                &app.api_messages,
+                &app.model,
+                &app.workspace,
+                u64::from(app.session.total_tokens),
+                app.system_prompt.as_ref(),
+                Some(app.mode.as_setting()),
+            )
+        };
         session.context_references = app.session_context_references.clone();
+        session.artifacts = app.session_artifacts.clone();
         session
     }
 }
@@ -4247,6 +4266,7 @@ async fn switch_provider(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
                 model: app.model.clone(),
@@ -4546,14 +4566,22 @@ async fn apply_command_result(
                 app.status_message = Some(format!("Session loaded from {}", path.display()));
             }
             AppAction::SyncSession {
+                session_id,
                 messages,
                 system_prompt,
                 model,
                 workspace,
             } => {
+                let mut session_id = session_id;
                 let is_full_reset = messages.is_empty() && system_prompt.is_none();
+                if is_full_reset && session_id.is_none() {
+                    let new_session_id = uuid::Uuid::new_v4().to_string();
+                    app.current_session_id = Some(new_session_id.clone());
+                    session_id = Some(new_session_id);
+                }
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        session_id,
                         messages,
                         system_prompt,
                         model,
@@ -4845,6 +4873,7 @@ async fn apply_command_result(
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
+                                    session_id: app.current_session_id.clone(),
                                     messages: app.api_messages.clone(),
                                     system_prompt: app.system_prompt.clone(),
                                     model: app.model.clone(),
@@ -5823,6 +5852,7 @@ async fn handle_view_events(
                         let recovered = apply_loaded_session(app, &session);
                         let _ = engine_handle
                             .send(Op::SyncSession {
+                                session_id: app.current_session_id.clone(),
                                 messages: app.api_messages.clone(),
                                 system_prompt: app.system_prompt.clone(),
                                 model: app.model.clone(),
@@ -5959,6 +5989,7 @@ async fn handle_view_events(
                     apply_backtrack(app, depth);
                     let _ = engine_handle
                         .send(Op::SyncSession {
+                            session_id: app.current_session_id.clone(),
                             messages: app.api_messages.clone(),
                             system_prompt: app.system_prompt.clone(),
                             model: app.model.clone(),
@@ -6220,6 +6251,7 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.session.last_reasoning_replay_tokens = None;
     app.session.turn_cache_history.clear();
     app.current_session_id = Some(session.metadata.id.clone());
+    app.session_artifacts = session.artifacts.clone();
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;
     if let Some(sp) = session.system_prompt.as_ref() {

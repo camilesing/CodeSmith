@@ -385,6 +385,66 @@ fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, Too
     }
 }
 
+fn record_spillover_artifact_if_any(
+    app: &mut App,
+    id: &str,
+    name: &str,
+    result: &Result<ToolResult, ToolError>,
+) {
+    let Ok(tool_result) = result else { return };
+    if !tool_result.success {
+        return;
+    }
+    let Some(path) = tool_result
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("spillover_path"))
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+    else {
+        return;
+    };
+    let metadata = tool_result.metadata.as_ref();
+    let session_id = metadata
+        .and_then(|metadata| metadata.get("artifact_session_id"))
+        .and_then(serde_json::Value::as_str)
+        .or(app.current_session_id.as_deref())
+        .unwrap_or("");
+    let storage_path = metadata
+        .and_then(|metadata| metadata.get("artifact_relative_path"))
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| path.clone());
+    let content_for_preview = metadata
+        .and_then(|metadata| metadata.get("artifact_preview"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&tool_result.content);
+    let byte_size = metadata
+        .and_then(|metadata| metadata.get("artifact_byte_size"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(|| {
+            std::fs::metadata(&storage_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(tool_result.content.len() as u64)
+        });
+    if app
+        .session_artifacts
+        .iter()
+        .any(|artifact| artifact.tool_call_id == id && artifact.storage_path == storage_path)
+    {
+        return;
+    }
+    app.session_artifacts
+        .push(crate::artifacts::record_tool_output_artifact_with_size(
+            session_id,
+            id,
+            name,
+            storage_path,
+            byte_size,
+            content_for_preview,
+        ));
+}
+
 pub(super) fn handle_tool_call_complete(
     app: &mut App,
     id: &str,
@@ -399,6 +459,7 @@ pub(super) fn handle_tool_call_complete(
     // spawn their own LLM calls (RLM, summarizers, retrieval helpers)
     // get accrued without needing a per-tool hook (#524).
     accrue_child_token_cost_if_any(app, result);
+    record_spillover_artifact_if_any(app, id, name, result);
 
     // Exploring entries land in the per-tool map regardless of whether they
     // live in the active cell or in finalized history; the path is the same.

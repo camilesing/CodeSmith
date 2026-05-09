@@ -1612,6 +1612,7 @@ pub fn patch_undo(app: &mut App) -> CommandResult {
     CommandResult::with_message_and_action(
         summary,
         AppAction::SyncSession {
+            session_id: app.current_session_id.clone(),
             messages: app.api_messages.clone(),
             system_prompt: app.system_prompt.clone(),
             model: app.model.clone(),

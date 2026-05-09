@@ -726,11 +726,17 @@ impl Engine {
                         .await;
                 }
                 Op::SyncSession {
+                    session_id,
                     messages,
                     system_prompt,
                     model,
                     workspace,
                 } => {
+                    if let Some(session_id) = session_id {
+                        self.session.id = session_id;
+                    } else if messages.is_empty() && system_prompt.is_none() {
+                        self.session.id = uuid::Uuid::new_v4().to_string();
+                    }
                     self.session.messages = messages;
                     self.session.compaction_summary_prompt =
                         extract_compaction_summary_prompt(system_prompt.clone());
@@ -821,6 +827,7 @@ impl Engine {
         let _ = self
             .tx_event
             .send(Event::SessionUpdated {
+                session_id: self.session.id.clone(),
                 messages: self.session.messages.clone(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
