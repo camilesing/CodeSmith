@@ -5,11 +5,14 @@
 //! platform-correct binary, verifies its SHA256 checksum, and atomically
 //! replaces the currently running binary.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use std::io::Write;
+
+const CHECKSUM_MANIFEST_ASSET: &str = "deepseek-artifacts-sha256.txt";
 
 /// Run the self-update workflow.
 pub fn run_update() -> Result<()> {
@@ -47,16 +50,18 @@ pub fn run_update() -> Result<()> {
     let bytes = download_url(&asset.browser_download_url)
         .with_context(|| format!("failed to download {}", asset.name))?;
 
-    // Step 4: Download the SHA256 checksum file if available
-    let sha_url = format!("{}.sha256", asset.browser_download_url);
-    let expected_hash = match download_url(&sha_url) {
-        Ok(sha_bytes) => {
-            let sha_text = String::from_utf8_lossy(&sha_bytes);
-            // Parse "hash  filename" format
-            sha_text.split_whitespace().next().map(|s| s.to_string())
+    // Step 4: Download the aggregated SHA256 checksum manifest if available
+    let expected_hash = match select_checksum_manifest_asset(&release) {
+        Some(checksum_asset) => {
+            println!("Downloading {}...", checksum_asset.name);
+            let checksum_bytes = download_url(&checksum_asset.browser_download_url)
+                .with_context(|| format!("failed to download {}", checksum_asset.name))?;
+            let checksum_text = std::str::from_utf8(&checksum_bytes)
+                .with_context(|| format!("{} is not valid UTF-8", checksum_asset.name))?;
+            Some(expected_sha256_from_manifest(checksum_text, &asset.name)?)
         }
-        Err(_) => {
-            println!("  (no SHA256 checksum file found; skipping verification)");
+        None => {
+            println!("  (no SHA256 checksum manifest found; skipping verification)");
             None
         }
     };
@@ -124,6 +129,56 @@ fn select_platform_asset<'a>(release: &'a Release, binary_name: &str) -> Option<
         .assets
         .iter()
         .find(|asset| asset_matches_platform(&asset.name, binary_name))
+}
+
+fn select_checksum_manifest_asset(release: &Release) -> Option<&Asset> {
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name == CHECKSUM_MANIFEST_ASSET)
+}
+
+fn parse_checksum_manifest(text: &str) -> Result<HashMap<String, String>> {
+    let mut checksums = HashMap::new();
+
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.len() < 66 {
+            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
+        }
+
+        let (hash, rest) = trimmed.split_at(64);
+        if !hash.chars().all(|ch| ch.is_ascii_hexdigit())
+            || rest.is_empty()
+            || !rest.chars().next().is_some_and(char::is_whitespace)
+        {
+            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
+        }
+
+        let mut asset_name = rest.trim_start();
+        if let Some(stripped) = asset_name.strip_prefix('*') {
+            asset_name = stripped;
+        }
+        if asset_name.is_empty() {
+            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
+        }
+
+        checksums.insert(asset_name.to_string(), hash.to_ascii_lowercase());
+    }
+
+    Ok(checksums)
+}
+
+fn expected_sha256_from_manifest(text: &str, asset_name: &str) -> Result<String> {
+    let checksums = parse_checksum_manifest(text)?;
+    checksums
+        .get(asset_name)
+        .cloned()
+        .with_context(|| format!("checksum manifest is missing {asset_name}"))
 }
 
 /// GitHub release metadata.
@@ -443,6 +498,49 @@ mod tests {
         assert_eq!(
             hash,
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn parse_checksum_manifest_accepts_sha256sum_format() {
+        let manifest = "\
+2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  deepseek-macos-arm64
+E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *deepseek-windows-x64.exe
+";
+        let checksums = parse_checksum_manifest(manifest).expect("valid manifest");
+
+        assert_eq!(
+            checksums.get("deepseek-macos-arm64").map(String::as_str),
+            Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        );
+        assert_eq!(
+            checksums
+                .get("deepseek-windows-x64.exe")
+                .map(String::as_str),
+            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        );
+    }
+
+    #[test]
+    fn parse_checksum_manifest_rejects_malformed_lines() {
+        let err = parse_checksum_manifest("not-a-hash  deepseek-macos-arm64")
+            .expect_err("invalid manifest line should fail");
+        assert!(
+            err.to_string().contains("invalid SHA256 manifest line"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn expected_sha256_from_manifest_requires_matching_asset() {
+        let manifest =
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  other-asset\n";
+        let err = expected_sha256_from_manifest(manifest, "deepseek-macos-arm64")
+            .expect_err("missing asset should fail");
+        assert!(
+            err.to_string()
+                .contains("checksum manifest is missing deepseek-macos-arm64"),
+            "unexpected error: {err:#}"
         );
     }
 
