@@ -37,6 +37,43 @@ fn focus_gained_forces_terminal_viewport_recapture() {
 }
 
 #[test]
+fn recover_terminal_modes_emits_expected_csi_sequences_with_gating() {
+    let mut all_on: Vec<u8> = Vec::new();
+    let mut all_off: Vec<u8> = Vec::new();
+    recover_terminal_modes(&mut all_on, true, true);
+    recover_terminal_modes(&mut all_off, false, false);
+    let on = String::from_utf8_lossy(&all_on);
+    let off = String::from_utf8_lossy(&all_off);
+
+    assert!(
+        on.contains("\x1b[?1004h") && off.contains("\x1b[?1004h"),
+        "EnableFocusChange must be re-armed regardless of gating"
+    );
+    assert!(
+        on.contains("\x1b[>1u") && off.contains("\x1b[>1u"),
+        "Kitty keyboard disambiguation flag must be re-pushed regardless of gating"
+    );
+
+    assert!(
+        on.contains("\x1b[?1000h"),
+        "EnableMouseCapture missing when use_mouse_capture=true"
+    );
+    assert!(
+        !off.contains("\x1b[?1000h"),
+        "EnableMouseCapture must be gated by use_mouse_capture"
+    );
+
+    assert!(
+        on.contains("\x1b[?2004h"),
+        "EnableBracketedPaste missing when use_bracketed_paste=true"
+    );
+    assert!(
+        !off.contains("\x1b[?2004h"),
+        "EnableBracketedPaste must be gated by use_bracketed_paste"
+    );
+}
+
+#[test]
 fn terminal_origin_reset_resets_scroll_region_origin_and_clears() {
     assert!(
         TERMINAL_ORIGIN_RESET.starts_with(b"\x1b[r\x1b[?6l"),
