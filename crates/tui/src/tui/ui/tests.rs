@@ -36,6 +36,11 @@ fn focus_gained_forces_terminal_viewport_recapture() {
     assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));
 }
 
+// ANSI byte sequences are only written on platforms where crossterm uses the
+// ANSI execution path. On Windows the same logical commands route through the
+// WinAPI console backend and never reach the writer, so byte-level assertions
+// here only make sense on non-Windows targets.
+#[cfg(not(windows))]
 #[test]
 fn recover_terminal_modes_emits_expected_csi_sequences_with_gating() {
     let mut all_on: Vec<u8> = Vec::new();
@@ -71,6 +76,14 @@ fn recover_terminal_modes_emits_expected_csi_sequences_with_gating() {
         !off.contains("\x1b[?2004h"),
         "EnableBracketedPaste must be gated by use_bracketed_paste"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn recover_terminal_modes_runs_without_panic_on_windows() {
+    let mut buf: Vec<u8> = Vec::new();
+    recover_terminal_modes(&mut buf, true, true);
+    recover_terminal_modes(&mut buf, false, false);
 }
 
 #[test]
