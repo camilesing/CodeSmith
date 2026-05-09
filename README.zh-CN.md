@@ -192,25 +192,24 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## v0.8.20 新功能
+## v0.8.23 新功能
 
-面向中文思考语言、端点默认值、TUI、运行时和安装体验的热修复版本。[完整更新日志](CHANGELOG.md)。
+面向安全的 v0.8.22 跟进版本：子进程环境清理、工具安全分类收紧，以及 MCP、
+密钥存储和运行时 API 的修复。[完整更新日志](CHANGELOG.md)。
 
-- **中文思考保持中文** —— 当最新用户消息是简体中文时，即使系统 locale
-  是英文，V4 的 `reasoning_content` 和最终回复也会被提示保持简体中文。
-- **直接运行 `deepseek` 会启动新会话** —— 同一目录开第二个终端时，不再静默进入
-  同一个中断检查点；需要恢复时请显式使用 `deepseek --continue`。
-- **Docker 成为受支持安装方式** —— 发布流程会推送
-  `ghcr.io/hmbown/deepseek-tui`，包含 `latest`、语义版本和 `vX.Y.Z` 标签。
-- **中文危险审批弹窗本地化** —— zh-Hans 文案会明确保留破坏性风险提示，
-  英文默认行为不变。
-- **对话滚动条支持拖拽** —— 开启鼠标捕获后，可直接拖拽 transcript 滚动条。
-- **修复终端视口漂移** —— 关键重绘前会重置滚动边界和 origin mode，并加入 PTY
-  回归测试覆盖顶部空行问题。
-- **npm 安装更稳健** —— postinstall 阶段的临时下载失败可恢复；校验和、平台、
-  glibc 和运行时错误仍然保持失败。
-- **此外**：FreeBSD secrets crate 编译回退、Docker Buildx cache 竞争修复、
-  长会话文本配色微调、Windows 沙箱保证说明收紧，以及 rustup 镜像安装排障更新。
+- **子进程环境已清理** — shell、MCP 服务器、hooks 等子进程现在从显式环境变量
+  白名单启动，不再继承所有父进程变量。`*_API_KEY`、`GITHUB_TOKEN` 等敏感信息
+  不会通过子进程泄露。
+- **macOS 钥匙串弹窗已消除** — 文件存储现在是默认的密钥后端；系统钥匙串需通过
+  `DEEPSEEK_SECRET_BACKEND=system|keyring` 主动选择加入。
+- **MCP 服务器保持正常运行** — MCP stdio 启动时保留 `npx`、`uvx`、`python -m`
+  和企业代理等所需的环境变量，同时继续清理密钥。
+- **MCP 启动错误现在可见** — 不再显示模糊的包装错误信息，而是直接展示真实的
+  操作系统错误（如 "No such file or directory"）。
+- **实时思考默认折叠** — 流式思考面板默认折叠，可通过详情切换展开。
+- **运行时 API 默认要求认证** — `deepseek serve --http` 不再接受未认证请求。
+- **此外**：加固 `run_tests` 审批策略、符号链接遍历防护、Plan 模式工具集收紧、
+  路径清理修复，以及新增 `docs/RELEASE_CHECKLIST.md`。
 
 ---
 
