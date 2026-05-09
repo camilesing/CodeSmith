@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::artifacts::ArtifactRecord;
 use crate::compaction::CompactionConfig;
 use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
@@ -792,6 +793,8 @@ pub struct App {
     pub backtrack: crate::tui::backtrack::BacktrackState,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
+    /// Metadata-only registry of large tool outputs produced in this session.
+    pub session_artifacts: Vec<ArtifactRecord>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
     /// Ordered list of footer items the user wants visible. Sourced from
@@ -1353,6 +1356,7 @@ impl App {
             view_stack: ViewStack::new(),
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             current_session_id: None,
+            session_artifacts: Vec::new(),
             trust_mode: initial_mode == AppMode::Yolo,
             status_items: config
                 .tui
@@ -1900,13 +1904,14 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Clear the history and its revision tracking. Used by /clear, session
-    /// reset, and other "wipe and reload" flows.
+    /// Clear the history and its session-scoped side indexes. Used by /clear,
+    /// session reset, and other "wipe and reload" flows.
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.history_revisions.clear();
         self.context_references_by_cell.clear();
         self.session_context_references.clear();
+        self.session_artifacts.clear();
         self.collapsed_cells.clear();
         self.collapsed_cell_map.clear();
         self.history_version = self.history_version.wrapping_add(1);
@@ -3775,6 +3780,7 @@ pub enum AppAction {
     #[allow(dead_code)] // For explicit /load command
     LoadSession(PathBuf),
     SyncSession {
+        session_id: Option<String>,
         messages: Vec<Message>,
         system_prompt: Option<SystemPrompt>,
         model: String,
@@ -4342,6 +4348,7 @@ mod tests {
     #[test]
     fn history_search_filters_matches_and_skips_duplicates() {
         let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.clear();
         app.input_history.push("alpha one".to_string());
         app.input_history.push("beta two".to_string());
         app.input_history.push("alpha one".to_string());
@@ -4359,6 +4366,7 @@ mod tests {
     #[test]
     fn history_search_matches_unicode_case_insensitively() {
         let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.clear();
         app.input_history.push("CAFÉ prompt".to_string());
 
         app.start_history_search();
@@ -4373,6 +4381,7 @@ mod tests {
     #[test]
     fn history_search_accepts_match_without_submitting() {
         let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.clear();
         app.input_history.push("older prompt".to_string());
 
         app.start_history_search();
@@ -4387,6 +4396,7 @@ mod tests {
     #[test]
     fn history_search_cancel_restores_pre_search_draft() {
         let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.clear();
         app.input = "current draft".to_string();
         app.cursor_position = 7;
         app.input_history.push("older prompt".to_string());

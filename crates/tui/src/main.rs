@@ -13,6 +13,7 @@ use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
 mod acp_server;
+mod artifacts;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
