@@ -95,6 +95,19 @@ internal fix. Big thanks to every contributor below.
   copy-out path that users on macOS / Windows / WSL expect. The footer
   hint now reads `…  / search  c copy  q/Esc close`. A status toast
   confirms success ("Pager content copied"), empty-body, or failure.
+
+### Fixed (cont.)
+
+- **Long output text overflowed the right edge** (#1344, #1351) —
+  paragraph rendering (`render_line_with_links`) and code-block
+  wrapping (`wrap_text` for `Block::Code`) were word-based: a single
+  word wider than the available column was placed alone on a line and
+  silently overflowed. Long URLs, paths, hashes, and no-whitespace CJK
+  runs all hit this. Both paths now hard-break overlong words at the
+  character level, matching the v0.8.25 fix for table cells. The
+  rendered width is capped at the budget for every line; full content
+  is preserved across wrapped segments. Snapshot-style tests pin the
+  invariant at widths 40, 60, 80, and 120.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.
