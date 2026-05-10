@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.27] - 2026-05-10
 
-A substantial polish release bundling 17 community PRs and a small
-internal fix. Big thanks to every contributor below.
+A polish release bundling 17 community PRs plus a focused user-issue
+sweep over the 24–48 hours after v0.8.26 shipped. Headline fixes:
+cross-terminal flicker on Ghostty / VSCode / Win10 conhost (most-
+reported v0.8.26 regression), long-text right-edge overflow, an
+in-app pager copy-out, context-sensitive Ctrl+C, an MCP pool that
+auto-reloads on config changes, and a model-callable `notify` tool.
+Big thanks to every contributor below.
 
 ### Added
 
