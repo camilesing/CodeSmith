@@ -5752,15 +5752,25 @@ fn draw_app_frame_inner(
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
     let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
-    if full_repaint {
-        terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
-        terminal.backend_mut().flush()?;
-        terminal.clear()?;
-    }
-    terminal.draw(|f| render(f, app))?;
+
+    // Run fallible draw operations in a closure so END_SYNC_UPDATE is
+    // always sent even if an intermediate step fails. Without this, a
+    // failing `?` would return early and leave the terminal stuck in
+    // synchronized-update mode (screen frozen).
+    let result = (|| -> Result<()> {
+        if full_repaint {
+            terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
+            terminal.backend_mut().flush()?;
+            terminal.clear()?;
+        }
+        terminal.draw(|f| render(f, app))?;
+        Ok(())
+    })();
+
+    // Always end the synchronized update, regardless of success or failure.
     let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
     let _ = terminal.backend_mut().flush();
-    Ok(())
+    result
 }
 
 fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
@@ -6669,12 +6679,18 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     // (Ghostty, VSCode, Kitty, WezTerm) defer rendering until the whole
     // frame is staged. Terminals that don't support it silently ignore.
     let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
-    terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
-    terminal.backend_mut().flush()?;
-    terminal.clear()?;
+
+    let result = (|| -> Result<()> {
+        terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
+        terminal.backend_mut().flush()?;
+        terminal.clear()?;
+        Ok(())
+    })();
+
+    // Always end the synchronized update, regardless of success or failure.
     let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
-    terminal.backend_mut().flush()?;
-    Ok(())
+    let _ = terminal.backend_mut().flush();
+    result
 }
 
 fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
