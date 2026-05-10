@@ -1040,10 +1040,12 @@ mod tests {
         home: Option<OsString>,
         userprofile: Option<OsString>,
         deepseek_config_path: Option<OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvGuard {
         fn new(home: &Path) -> Self {
+            let lock = crate::test_support::lock_test_env();
             let home_str = OsString::from(home.as_os_str());
             let config_path = home.join(".deepseek").join("config.toml");
             let config_str = OsString::from(config_path.as_os_str());
@@ -1051,7 +1053,7 @@ mod tests {
             let userprofile_prev = env::var_os("USERPROFILE");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
 
-            // Safety: test-only environment mutation guarded by a global mutex.
+            // Safety: test-only environment mutation guarded by process-wide mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
@@ -1062,6 +1064,7 @@ mod tests {
                 home: home_prev,
                 userprofile: userprofile_prev,
                 deepseek_config_path: deepseek_config_prev,
+                _lock: lock,
             }
         }
     }
@@ -1296,7 +1299,6 @@ mod tests {
 
     #[test]
     fn test_set_default_mode_normal_save_reports_normalized_value() {
-        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1322,7 +1324,6 @@ mod tests {
 
     #[test]
     fn config_command_cost_currency_save_persists_value() {
-        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1426,7 +1427,6 @@ mod tests {
 
     #[test]
     fn test_logout_clears_api_key_state() {
-        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1476,7 +1476,6 @@ mod tests {
 
     #[test]
     fn persist_status_items_writes_tui_section_to_config_toml() {
-        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1508,7 +1507,6 @@ mod tests {
 
     #[test]
     fn persist_status_items_preserves_existing_unrelated_keys() {
-        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
