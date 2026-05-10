@@ -710,9 +710,6 @@ pub struct ContextConfig {
     /// Model used for seam/briefing work. Default: "deepseek-v4-flash".
     #[serde(default)]
     pub seam_model: Option<String>,
-    /// Per-model threshold overrides.
-    #[serde(default)]
-    pub per_model: Option<HashMap<String, PerModelContextConfig>>,
 }
 
 /// Sub-agent model overrides. Keys in `models` can be role names (`worker`,
@@ -738,19 +735,6 @@ pub struct SubagentsConfig {
     /// setting. Clamped to [1, MAX_SUBAGENTS].
     #[serde(default)]
     pub max_concurrent: Option<usize>,
-}
-
-/// Per-model context tuning.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PerModelContextConfig {
-    #[serde(default)]
-    pub l1_threshold: Option<usize>,
-    #[serde(default)]
-    pub l2_threshold: Option<usize>,
-    #[serde(default)]
-    pub l3_threshold: Option<usize>,
-    #[serde(default)]
-    pub cycle_threshold: Option<usize>,
 }
 
 /// Resolved CLI configuration, including defaults and environment overrides.
@@ -2478,7 +2462,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .cycle_threshold
                 .or(base.context.cycle_threshold),
             seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
-            per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
         subagents: override_cfg.subagents.or(base.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
@@ -4198,6 +4181,25 @@ api_key = "old-openrouter-key"
 
         let merged = apply_profile(config, Some("work")).expect("profile");
         assert_eq!(merged.context.enabled, Some(true));
+    }
+
+    #[test]
+    fn removed_context_per_model_table_is_ignored_for_compatibility() -> Result<()> {
+        let parsed: ConfigFile = toml::from_str(
+            r#"
+            [context]
+            enabled = true
+
+            [context.per_model.deepseek-v4-pro]
+            l1_threshold = 111
+            l2_threshold = 222
+            l3_threshold = 333
+            cycle_threshold = 444
+            "#,
+        )?;
+
+        assert_eq!(parsed.base.context.enabled, Some(true));
+        Ok(())
     }
 
     #[test]
