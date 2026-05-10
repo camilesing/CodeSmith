@@ -148,6 +148,16 @@ type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
 // TurnComplete / focus-gain / resize. The alt-screen buffer's double-buffering
 // plus ratatui's `terminal.clear()` are sufficient to repaint cleanly.
 const TERMINAL_ORIGIN_RESET: &[u8] = b"\x1b[r\x1b[?6l\x1b[H";
+/// Begin synchronized update (DEC 2026): tell the terminal to defer
+/// rendering until END_SYNC_UPDATE is received. Best-effort —
+/// terminals that don't support this silently ignore the sequence.
+/// Reduces flicker on GPU-accelerated terminals (Ghostty, VSCode
+/// Terminal, Kitty, WezTerm) by batching ratatui's incremental
+/// diff writes into a single frame.
+const BEGIN_SYNC_UPDATE: &[u8] = b"\x1b[?2026h";
+/// End synchronized update (DEC 2026): tell the terminal to render
+/// the complete frame now.
+const END_SYNC_UPDATE: &[u8] = b"\x1b[?2026l";
 
 /// Run the interactive TUI event loop.
 ///
@@ -1566,11 +1576,8 @@ async fn run_event_loop(
             None
         };
         if app.needs_redraw && draw_wait.is_none() {
-            if force_terminal_repaint {
-                reset_terminal_viewport(terminal)?;
-                force_terminal_repaint = false;
-            }
-            draw_app_frame(terminal, app)?;
+            draw_app_frame_inner(terminal, app, force_terminal_repaint)?;
+            force_terminal_repaint = false;
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
         }
@@ -5728,10 +5735,36 @@ fn render(f: &mut Frame, app: &mut App) {
     }
 }
 
-fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
+/// Draw a complete application frame, optionally with a full viewport reset.
+///
+/// When `full_repaint` is true, the terminal scroll margins and origin mode
+/// are reset, the screen is cleared, ratatui's buffer is emptied, and then
+/// the full UI is drawn — all within a single DEC 2026 synchronized-update
+/// batch so GPU-accelerated terminals (Ghostty, VS Code, Kitty) render one
+/// complete frame instead of a blank intermediate frame followed by the UI.
+///
+/// When `full_repaint` is false, only the diff from the previous draw is
+/// written (normal incremental update path).
+fn draw_app_frame_inner(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    full_repaint: bool,
+) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
+    let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    if full_repaint {
+        terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
+        terminal.backend_mut().flush()?;
+        terminal.clear()?;
+    }
     terminal.draw(|f| render(f, app))?;
+    let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    let _ = terminal.backend_mut().flush();
     Ok(())
+}
+
+fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
+    draw_app_frame_inner(terminal, app, false)
 }
 
 /// Pull the latest snapshot of cells / revisions / render options into the
@@ -6630,9 +6663,17 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     // for why; the immediately-following ratatui `terminal.clear()` flushes a
     // single clear via the diff renderer, which the alt-screen buffer absorbs
     // without visible flicker on the affected terminals.
+    //
+    // Wrap the reset+clear sequence in DEC 2026 synchronized-output mode
+    // (`\x1b[?2026h` … `\x1b[?2026l`) so GPU-accelerated terminals
+    // (Ghostty, VSCode, Kitty, WezTerm) defer rendering until the whole
+    // frame is staged. Terminals that don't support it silently ignore.
+    let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
     terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
     terminal.backend_mut().flush()?;
     terminal.clear()?;
+    let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    terminal.backend_mut().flush()?;
     Ok(())
 }
 
