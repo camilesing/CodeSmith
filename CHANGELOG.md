@@ -8,8 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.8.28] - 2026-05-10
 
 A maintenance release bundling four streaming / approvals / cache
-bug-fix cherry-picks, three smaller community fixes, a Cmux
-notification probe, a CNB mirror workflow, and test-suite
+bug-fix cherry-picks, six smaller community fixes, a Cmux
+notification probe, GPU-terminal flicker hardening via DEC 2026
+synchronized output, VS Code low-motion auto-detection, a CNB
+mirror workflow, V4-steered tool descriptions, and test-suite
 stabilization for parallel-test environment races.
 
 ### Added
@@ -30,6 +32,25 @@ stabilization for parallel-test environment races.
   Cmux and WezTerm `LC_TERMINAL` paths; the existing
   unknown-terminal-on-Unix test now clears `LC_TERMINAL` before
   asserting fallback so it doesn't flake on CI hosts that set it.
+- **DEC 2026 synchronized output around terminal repaints** (PR
+  #1361 from **@xuezhaoyu**) — the viewport-reset path now wraps
+  `terminal.clear()` in `\x1b[?2026h` / `\x1b[?2026l` so
+  GPU-accelerated terminals (Ghostty, VSCode Terminal, Kitty,
+  WezTerm) defer rendering until the whole frame is staged,
+  eliminating mid-frame flicker on resize / focus / TurnComplete.
+  The earlier "drop destructive 2J/3J" fix from v0.8.27 stays;
+  this PR is complementary, batching the same lighter reset
+  sequence into a single synchronized frame. Terminals without
+  DEC 2026 support silently ignore the sequence.
+- **`low_motion` auto-enables under VS Code integrated terminal**
+  (PR #1365 from **@CrepuscularIRIS**) — `apply_env_overrides()`
+  now treats `TERM_PROGRAM=vscode` the same way it treats
+  `NO_ANIMATIONS=1`: force `low_motion = true` and
+  `fancy_animations = false`. The VS Code terminal compositor
+  cannot keep up with 120 fps redraws and produces rapid flicker
+  (#1356); the 30 fps low-motion cap is the right default there.
+  Env overlays always win over the disk-loaded value, matching
+  the existing precedence for `NO_ANIMATIONS`.
 
 ### Fixed
 
@@ -75,6 +96,25 @@ stabilization for parallel-test environment races.
 - **Clearer continue tip on idle prompts** (PR #1370 from
   **@nightfallsad**) — the "press Tab to continue" affordance now
   uses concrete language instead of a vague hint.
+- **Ctrl+Enter content lost when engine is idle** (#1331, PR #1347
+  from **@Oliver-ZPLiu**) — when no turn was active, `Ctrl+Enter`
+  routed the message to `rx_steer` (only monitored inside
+  `handle_deepseek_turn`), so the user saw their message in the
+  transcript via the local mirror but the LLM never received it —
+  the next regular Enter would drain it as a "stale steer". The
+  idle path now sends through the standard `handle_send_message`
+  flow so the submission reaches the engine.
+- **Explicit hidden / ignored `@`-mention completions work**
+  (#1270 follow-up) — PR #1270 from **@SamhandsomeLee** landed
+  the `add_local_reference_completions` helper and tests in
+  v0.8.27 but never wired it into `Workspace::completions()` or
+  `build_file_index`. The two regression tests were ignored with
+  a "v0.8.28 follow-up" marker. This release wires the helper
+  into both entry points so `@.deepseek/commands/start-task.md`
+  and `@.generated/specs/device-layout.md` (and the basename
+  fuzzy-resolve equivalent) now surface from gitignored
+  user-folders while `.deepseekignore` entries stay blocked.
+  Both tests un-ignored.
 
 ### Changed
 
@@ -85,6 +125,19 @@ stabilization for parallel-test environment races.
   inspect errors before retrying. Combined with the truthful-
   reporting addition from #1392, the model is less likely to claim
   unverified successes or repeat the identical failing tool call.
+- **V4-steered tool descriptions** (#711, PR #1379 from
+  **@linzhiqin2003**) — every model-visible tool description
+  (`read_file`, `write_file`, `edit_file`, `list_dir`,
+  `grep_files`, `file_search`, `web_search`, `apply_patch`,
+  `fetch_url`) now opens with a short *"use this instead of X
+  in exec_shell"* steering line, the return shape, and the
+  limits. Routes V4 toward our typed tools and away from
+  shell footguns. All description strings stay under 1024
+  chars (max: 350) with no embedded newlines so the cached
+  tool catalogue stays prefix-stable for V4's KV cache.
+  Removes the unused legacy `normal.txt` / `plan.txt` /
+  `yolo.txt` prompt templates (referenced only by their own
+  self-tests).
 
 ### Internal
 
@@ -106,6 +159,15 @@ stabilization for parallel-test environment races.
   on every run, which then contaminated parallel-running picker
   tests because Ollama is a pass-through provider that hides the
   DeepSeek model rows.
+- `settings::tests::no_animations_test_guard` and
+  `term_program_test_guard` both now return
+  `crate::test_support::lock_test_env()` instead of their own
+  module-local mutexes — folding them into the same
+  process-wide test env lock the v0.8.27 EnvGuard family was
+  migrated to. Without this, a `NO_ANIMATIONS=1` write from one
+  test family could race a `TERM_PROGRAM=iTerm.app` write from
+  the other through the shared `apply_env_overrides` path and
+  flip `low_motion` to `true` on the assertion side.
 
 ## [0.8.27] - 2026-05-10
 
