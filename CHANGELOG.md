@@ -23,6 +23,11 @@ published.
 
 ### Fixed
 
+- **Hint when root `base_url` is set with a non-DeepSeek provider
+  (#1308)** — config load now logs a warning telling the user to
+  move the URL under the matching `[providers.<name>]` table or use
+  the `*_BASE_URL` env var. Closes the silent-ignore footgun for
+  Ollama / vLLM / OpenAI-compatible setups.
 - **Insecure base-URL error message is more discoverable (#1303)** —
   the rejection now spells out which env var to set (with underscores
   visible), notes that loopback hosts are auto-allowed, and shows a

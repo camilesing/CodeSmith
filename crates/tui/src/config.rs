@@ -1078,7 +1078,58 @@ impl Config {
         apply_requirements(&mut config)?;
         normalize_model_config(&mut config);
         config.validate()?;
+        config.warn_on_misplaced_root_base_url();
         Ok(config)
+    }
+
+    /// Surface a one-line warning when the user has set the legacy root
+    /// `base_url` field but their active provider is not DeepSeek (the only
+    /// provider that actually reads that field, plus an NvidiaNim back-compat
+    /// sniff). Common confusion: users add `base_url = "..."` at the top of
+    /// `~/.deepseek/config.toml` for ollama / vllm / openai-compat servers
+    /// and wonder why it's silently ignored (#1308).
+    fn warn_on_misplaced_root_base_url(&self) {
+        let Some(root_base) = self.base_url.as_deref().map(str::trim) else {
+            return;
+        };
+        if root_base.is_empty() {
+            return;
+        }
+        let provider = self.api_provider();
+        if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+            return;
+        }
+        if matches!(provider, ApiProvider::NvidiaNim)
+            && root_base.contains("integrate.api.nvidia.com")
+        {
+            return;
+        }
+        // Only warn if the per-provider table doesn't have an explicit
+        // `base_url`, because if it does, the per-provider one wins and the
+        // root field is just dead config — no behavior surprise.
+        let has_provider_base = self
+            .provider_config_for(provider)
+            .and_then(|p| p.base_url.as_deref().map(str::trim))
+            .is_some_and(|s| !s.is_empty());
+        if has_provider_base {
+            return;
+        }
+        let table = match provider {
+            ApiProvider::Openai => "providers.openai",
+            ApiProvider::Openrouter => "providers.openrouter",
+            ApiProvider::Novita => "providers.novita",
+            ApiProvider::Fireworks => "providers.fireworks",
+            ApiProvider::Sglang => "providers.sglang",
+            ApiProvider::Vllm => "providers.vllm",
+            ApiProvider::Ollama => "providers.ollama",
+            ApiProvider::NvidiaNim => "providers.nvidia_nim",
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => return,
+        };
+        tracing::warn!(
+            "Top-level `base_url = \"{root_base}\"` is ignored for the {provider:?} provider. \
+             Move it under `[{table}]` (e.g. `[{table}]\\nbase_url = \"...\"`) \
+             or set the corresponding `*_BASE_URL` env var. (#1308)"
+        );
     }
 
     /// Validate that critical config fields are present.
