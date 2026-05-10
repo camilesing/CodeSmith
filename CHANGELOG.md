@@ -23,6 +23,11 @@ published.
 
 ### Fixed
 
+- **Provider base-URL overrides reach the active provider** — the
+  per-provider `*_BASE_URL` env vars (e.g. `OPENAI_BASE_URL`,
+  `OPENROUTER_BASE_URL`) now propagate into the active provider's
+  config entry consistently. Closes a gap where the override was
+  parsed but never applied. Thanks **@reidliu41**.
 - **WSL2 turn-start timeout** — `TurnStarted` is now emitted before the
   snapshot step so a slow snapshot on WSL2's `/mnt/*` volumes doesn't
   push past the runtime watchdog and surface a spurious "engine may
