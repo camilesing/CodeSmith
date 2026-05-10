@@ -624,15 +624,12 @@ pub(super) fn handle_tool_call_complete(
                 match result.as_ref() {
                     Ok(tool_result) => {
                         generic.output = Some(tool_result.content.clone());
-                        generic.output_summary =
-                            Some(summarize_tool_output(&tool_result.content));
-                        generic.is_diff =
-                            output_looks_like_diff(&tool_result.content);
+                        generic.output_summary = Some(summarize_tool_output(&tool_result.content));
+                        generic.is_diff = output_looks_like_diff(&tool_result.content);
                     }
                     Err(err) => {
                         generic.output = Some(err.to_string());
-                        generic.output_summary =
-                            Some(summarize_tool_output(&err.to_string()));
+                        generic.output_summary = Some(summarize_tool_output(&err.to_string()));
                         generic.is_diff = false;
                     }
                 }
@@ -715,12 +712,8 @@ fn push_orphan_tool_completion(
         .and_then(|m| m.get("spillover_path"))
         .and_then(serde_json::Value::as_str)
         .map(std::path::PathBuf::from);
-    let output_summary = output
-        .as_deref()
-        .map(|o| summarize_tool_output(o));
-    let is_diff = output
-        .as_deref()
-        .is_some_and(|o| output_looks_like_diff(o));
+    let output_summary = output.as_deref().map(|o| summarize_tool_output(o));
+    let is_diff = output.as_deref().is_some_and(|o| output_looks_like_diff(o));
     app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: name.to_string(),
         status,

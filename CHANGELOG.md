@@ -5,6 +5,96 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.27] - 2026-05-10
+
+A substantial polish release bundling 17 community PRs and a small
+internal fix. Big thanks to every contributor below.
+
+### Added
+
+- **Unified `/mode` command** (#1247) — `/mode [agent|plan|yolo|1|2|3]`
+  replaces the separate `/agent`, `/plan`, and `/yolo` commands. Running
+  `/mode` without arguments opens a picker modal. The legacy aliases
+  (`/yolo`, `/agent`, `/plan`) are kept as compatibility shorthands.
+  Thanks **@reidliu41**.
+- **`/status` runtime diagnostics** (#1223) — shows version, provider,
+  model, workspace, mode, permissions, context-window usage, cache
+  hit/miss, and session cost. Previously `/status` was an alias for
+  `/statusline` (footer config); that alias is now `/statusline` only.
+  Thanks **@reidliu41**.
+- **`/feedback` command** (#1185) — opens the matching GitHub issue
+  template (bug report, feature request) in the browser. Security
+  vulnerability reports route through the project's security policy
+  page first. Thanks **@reidliu41**.
+- **Session artifact metadata** (#1220) — large tool outputs spilled to
+  the session artifacts directory are now tracked in a durable metadata
+  index, so saved sessions retain references across save/restore cycles.
+  Thanks **@THINKER-ONLY**.
+- **Subagent results are self-reports** (#1140) — the compacted result
+  summary now notes that child-agent outputs are unverified self-reports.
+  The parent model should verify side effects with tools like `read_file`
+  or `list_dir` before claiming success. Thanks **@THINKER-ONLY**.
+- **Global AGENTS.md fallback** (#1197) — when the workspace and its
+  parents don't provide project instructions, the TUI now loads
+  `~/.deepseek/AGENTS.md` before falling back to auto-generated
+  instructions. Repo-local context still takes priority.
+  Thanks **@manaskarra**.
+- **`--yolo` forwarded from CLI to TUI** (#1233) — the `deepseek --yolo`
+  flag now propagates through the dispatcher to the TUI binary via
+  `DEEPSEEK_YOLO=true`. Previously the flag set `yolo` in the CLI
+  process but the TUI session started in its default mode.
+  Thanks **@fuleinist**.
+- **`composer_arrows_scroll` config** (#1211) — a new
+  `tui.composer_arrows_scroll` option (default `false`) makes plain
+  Up/Down arrow keys scroll the transcript when the composer is empty,
+  instead of navigating input history. Helpful for terminals that map
+  trackpad gestures to arrow keys. Thanks **@lbcheng888**.
+- **Session cost persistence** (#1192) — accumulated costs (session +
+  sub-agents, both USD and CNY) and the displayed-cost high-water mark
+  now survive session save/restore, so the monotonic cost guarantee
+  (#244) holds across restarts. Thanks **@lbcheng888**.
+- **Provider-aware model picker and provider persistence** (#1320) —
+  switching providers now persists the choice to
+  `~/.deepseek/settings.toml` so it survives restarts. The model
+  picker hides DeepSeek-specific models when a non-DeepSeek provider
+  is active. `OPENAI_MODEL` env var now overrides the per-provider
+  model rather than the global `default_text_model`. Bailian / ZhiPu
+  Coding Plan endpoints are now supported.
+  Thanks **@imkingjh999**.
+- **HTTP User-Agent header** (#1320) — all outbound API requests now
+  carry `deepseek-tui/{version}` in the User-Agent, matching the format
+  `fetch_url` already uses. Thanks **@imkingjh999**.
+
+### Fixed
+
+- **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
+  gateways return quota/rate-limit errors as HTTP 400 instead of 429.
+  These are now classified as retryable `RateLimited` errors.
+  Thanks **@dst1213**.
+- **Explicit hidden/ignored file completions** (#1270) — when the user
+  types an explicit path starting with `.` (e.g., `.deepseek/commands/`),
+  the file-completion system now surfaces hidden and gitignored entries
+  while still respecting `.deepseekignore`. Thanks **@SamhandsomeLee**.
+
+### Changed
+
+- **Windows mouse capture docs** (#1181) — the `--mouse-capture` help
+  text and the configuration docs now mention scrollbar dragging and
+  note that raw terminal selection on Windows may cross the sidebar.
+  Thanks **@Oliver-ZPLiu**.
+- **README zh-CN sync** (#1235) — the Chinese README's quickstart section
+  now shows `deepseek run pr <N>` instead of the outdated
+  `deepseek pr <N>`. Thanks **@whtis**.
+- **Tool output render perf** (#1098) — tool output summaries and the
+  "is this a diff?" check are now pre-computed once at cell creation
+  instead of re-parsed every frame. Tool output cells also got a visual
+  card-rail (`╭ │ ╰`) for clearer grouping. Thanks **@lbcheng888**.
+
+### Internal
+
+- Test coverage for approval decision branches (@tuohai666, #1316)
+- Test coverage for hook event dispatch paths (@tuohai666, #1317)
+
 ## [0.8.26] - 2026-05-09
 
 A security + polish release. Two responsibly-disclosed issues were

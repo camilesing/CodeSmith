@@ -962,9 +962,7 @@ impl ConfigToml {
             .clone()
             .or_else(|| env.sandbox_mode.clone())
             .or_else(|| self.sandbox_mode.clone());
-        let yolo = cli
-            .yolo
-            .or(env.yolo);
+        let yolo = cli.yolo.or(env.yolo);
 
         ResolvedRuntimeOptions {
             provider,

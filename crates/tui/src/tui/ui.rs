@@ -6279,10 +6279,16 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     // the restored total with no regression.
     let total_restored_usd = session.metadata.cost.total_usd();
     let total_restored_cny = session.metadata.cost.total_cny();
-    app.session.displayed_cost_high_water =
-        session.metadata.cost.displayed_cost_high_water_usd.max(total_restored_usd);
-    app.session.displayed_cost_high_water_cny =
-        session.metadata.cost.displayed_cost_high_water_cny.max(total_restored_cny);
+    app.session.displayed_cost_high_water = session
+        .metadata
+        .cost
+        .displayed_cost_high_water_usd
+        .max(total_restored_usd);
+    app.session.displayed_cost_high_water_cny = session
+        .metadata
+        .cost
+        .displayed_cost_high_water_cny
+        .max(total_restored_cny);
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;

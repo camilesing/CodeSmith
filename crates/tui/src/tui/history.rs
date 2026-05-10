@@ -2258,11 +2258,11 @@ fn wrap_card_rail(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     }
     for (i, line) in lines.iter_mut().enumerate() {
         let rail = if i == 0 {
-            "\u{256D} "  // ╭
+            "\u{256D} " // ╭
         } else if i == n - 1 {
-            "\u{2570} "  // ╰
+            "\u{2570} " // ╰
         } else {
-            "\u{2502} "  // │
+            "\u{2502} " // │
         };
         line.spans.insert(0, Span::raw(rail));
     }
@@ -3154,8 +3154,8 @@ mod tests {
             spillover_path: Some(PathBuf::from(
                 "/Users/dev/.deepseek/tool_outputs/call-abc12.txt",
             )),
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(120, true, super::RenderMode::Live);
         let joined: String = lines
@@ -3184,8 +3184,8 @@ mod tests {
             output: Some("output".to_string()),
             prompts: None,
             spillover_path: Some(PathBuf::from("/tmp/spill.txt")),
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(120, true, super::RenderMode::Transcript);
         let joined: String = lines
@@ -3208,8 +3208,8 @@ mod tests {
             output: Some("contents".to_string()),
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let joined: String = lines
@@ -3230,8 +3230,8 @@ mod tests {
             output: Some("output".to_string()),
             prompts: None,
             spillover_path: Some(PathBuf::from(long_path)),
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(40, true, super::RenderMode::Live);
         let annotation_line = lines
@@ -3342,8 +3342,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         assert_eq!(lines.len(), 1);
@@ -3364,8 +3364,8 @@ mod tests {
             ),
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Transcript);
         // Transcript mode emits header + name kv + (no args, output present)
@@ -3384,8 +3384,8 @@ mod tests {
             output: Some("first line\nsecond line\nthird line".to_string()),
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         assert!(
@@ -3640,7 +3640,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
-                output_summary: None,
+            output_summary: None,
         }));
 
         let animated = cell.lines_with_options(80, TranscriptRenderOptions::default());
@@ -3857,7 +3857,7 @@ mod tests {
             duration_ms: Some(10),
             source: ExecSource::Assistant,
             interaction: None,
-                output_summary: None,
+            output_summary: None,
         };
         let header = &cell.lines_with_motion(80, true)[0];
         let visible: String = header
@@ -3887,7 +3887,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
-                output_summary: None,
+            output_summary: None,
         };
 
         let header = &cell.lines_with_motion(80, true)[0];
@@ -3912,8 +3912,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -3941,8 +3941,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -4187,7 +4187,7 @@ mod tests {
             duration_ms: Some(42),
             source: ExecSource::Assistant,
             interaction: None,
-                output_summary: None,
+            output_summary: None,
         };
 
         let lines = cell.lines_with_motion(80, true);
@@ -4410,8 +4410,8 @@ mod tests {
                 "Diff this commit against main".to_string(),
             ]),
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         }));
         let text = lines_text(&cell.lines(80));
 
@@ -4437,8 +4437,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         }));
         let text = lines_text(&cell.lines(80));
         assert!(text.contains("query: foo"));
@@ -4462,8 +4462,8 @@ mod tests {
             output: Some(diff_stat.to_string()),
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         }));
 
         let transcript_text = lines_text(&cell.transcript_lines(80));
@@ -4514,8 +4514,8 @@ mod tests {
             output: Some(output),
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         }));
 
         let live = cell.lines_with_options(80, TranscriptRenderOptions::default());
@@ -4595,8 +4595,10 @@ mod tests {
             lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
         // Live mode: one-line summary + expand affordance.
-        assert!(live_text.contains("Alt+V for details"),
-            "live view must show expand affordance: {live_text}");
+        assert!(
+            live_text.contains("Alt+V for details"),
+            "live view must show expand affordance: {live_text}"
+        );
         // The pre-computed summary captures the first meaningful content.
         assert!(
             live_text.contains("Error:") || live_text.contains("fatal:"),

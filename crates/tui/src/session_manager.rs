@@ -683,6 +683,7 @@ pub fn create_saved_session_with_id_and_mode(
             model: model.to_string(),
             workspace: workspace.to_path_buf(),
             mode: mode.map(str::to_string),
+            cost: SessionCostSnapshot::default(),
         },
         messages: capped_messages,
         system_prompt: merge_truncation_note(

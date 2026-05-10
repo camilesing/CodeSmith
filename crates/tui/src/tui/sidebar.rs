@@ -683,13 +683,18 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     // Only show the additive breakdown when it matches the displayed
     // total; when the high-water mark is in effect (post-reconciliation),
     // the breakdown would not sum to the displayed value (#244).
-    let cost_line = if (displayed_total - real_total).abs() < COST_EQ_TOLERANCE {
+    let cost_line = if (total_cost - real_total).abs() < COST_EQ_TOLERANCE {
         format!(
             "cost: {} (session {} + agents {})",
             app.format_cost_amount(total_cost),
             app.format_cost_amount(session_cost),
             app.format_cost_amount(agent_cost)
-        ),
+        )
+    } else {
+        format!("cost: {}", app.format_cost_amount(total_cost),)
+    };
+    lines.push(Line::from(Span::styled(
+        cost_line,
         Style::default().fg(palette::TEXT_MUTED),
     )));
 

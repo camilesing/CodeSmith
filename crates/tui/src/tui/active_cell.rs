@@ -335,7 +335,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
-                output_summary: None,
+            output_summary: None,
         }))
     }
 
@@ -356,8 +356,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
-                output_summary: None,
-                is_diff: false,
+            output_summary: None,
+            is_diff: false,
         }))
     }
 
