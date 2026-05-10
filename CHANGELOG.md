@@ -84,6 +84,17 @@ internal fix. Big thanks to every contributor below.
   common failure pattern: DNS / connection refused / TLS / 4xx / 429 /
   timeout. Each hint points at the most likely cause and a concrete
   next step.
+
+### Added
+
+- **Pager copy-out** (#1354) — full-screen pagers (`Alt+V` tool details,
+  `Ctrl+O` thinking content, shell-job / task / MCP-manager pagers, and
+  the selection pager) now accept `c` or `y` to copy the entire body to
+  the system clipboard. The pager intercepts mouse capture so terminal-
+  native selection isn't available inside it; this restores the
+  copy-out path that users on macOS / Windows / WSL expect. The footer
+  hint now reads `…  / search  c copy  q/Esc close`. A status toast
+  confirms success ("Pager content copied"), empty-body, or failure.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.

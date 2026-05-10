@@ -187,6 +187,14 @@ pub enum ViewEvent {
     },
     ShellControlBackground,
     ShellControlCancel,
+    /// Emitted by the pager (`c` / `y`) to copy its body to the system
+    /// clipboard. The host handler writes via `app.clipboard` and surfaces a
+    /// status message — modal views cannot reach `app` directly. `label` is
+    /// the noun shown in the success / failure status (e.g. "Pager content").
+    CopyToClipboard {
+        text: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone)]

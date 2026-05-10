@@ -5776,6 +5776,15 @@ async fn handle_view_events(
             ViewEvent::OpenTextPager { title, content } => {
                 open_text_pager(app, title, content);
             }
+            ViewEvent::CopyToClipboard { text, label } => {
+                if text.is_empty() {
+                    app.status_message = Some(format!("{label} is empty"));
+                } else if app.clipboard.write_text(&text).is_ok() {
+                    app.status_message = Some(format!("{label} copied"));
+                } else {
+                    app.status_message = Some(format!("Copy failed ({label})"));
+                }
+            }
             ViewEvent::ApprovalDecision {
                 tool_id,
                 tool_name,
