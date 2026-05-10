@@ -23,6 +23,10 @@ published.
 
 ### Fixed
 
+- **Insecure base-URL error message is more discoverable (#1303)** —
+  the rejection now spells out which env var to set (with underscores
+  visible), notes that loopback hosts are auto-allowed, and shows a
+  one-line `DEEPSEEK_ALLOW_INSECURE_HTTP=1 deepseek` example.
 - **Workspace skills survive prompt truncation** — when the skill
   catalog needs trimming to fit the prompt budget, workspace-local
   skills now keep precedence over global ones rather than being
