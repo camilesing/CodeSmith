@@ -128,6 +128,19 @@ internal fix. Big thanks to every contributor below.
   status messages still take precedence; the hint clears as soon as
   any other update fires. Closes the loop on users who didn't know
   how to interrupt a long-running turn.
+- **Lazy auto-reload of MCP pool on config-file change** (#1267 part 2) —
+  v0.8.26 surfaced the underlying spawn errors; v0.8.27 closes the
+  loop on the second half of the report (manual `/mcp reload` after
+  `~/.deepseek/mcp.json` edits). `McpPool::get_or_connect` now does a
+  cheap `stat` + content-hash check before each connection lookup. If
+  the on-disk file's mtime moved AND its content hash changed since
+  the pool was loaded, all live connections are dropped so the next
+  `get_or_connect` reattaches under the new config. Pool-construction
+  via `McpPool::new` (tests, ad-hoc snapshots) is unaffected — only
+  pools built with `from_config_path` watch the source file. No file
+  watcher; no long-lived task. mtime-only churn (touched but
+  byte-unchanged content) does not trigger a reload, so networked
+  filesystems with coarse mtime granularity won't churn the pool.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.
