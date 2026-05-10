@@ -23,6 +23,12 @@ published.
 
 ### Fixed
 
+- Mouse capture now defaults on inside Windows Terminal (#1169). When
+  `WT_SESSION` is set, in-app text selection is enabled by default;
+  legacy conhost stays opt-in via `--mouse-capture` or `[tui]
+  mouse_capture = true` to preserve the protections from #878 / #898.
+  Selection now clamps to the transcript region instead of the
+  terminal painting native selection across the sidebar.
 - The build script now invalidates its cache on `.git/HEAD` changes, so
   the embedded short-SHA in `deepseek --version` stays current after
   commits and branch switches without needing `cargo clean`. Both
