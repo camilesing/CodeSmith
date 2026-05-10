@@ -2105,10 +2105,17 @@ fn hash_mcp_config(config: &McpConfig) -> u64 {
 }
 
 /// Best-effort fetch of the MCP config file's last-modified time. Returns
-/// `None` when the file is missing, when stat fails, or when the platform
-/// doesn't expose mtime — the lazy-reload check in `McpPool::get_or_connect`
-/// treats `None` as "skip the check this turn".
+/// `None` when the file is missing, when stat fails, when the platform
+/// doesn't expose mtime, or when the path fails the same allow-list check
+/// that `load_config` / `save_config` apply. The lazy-reload check in
+/// `McpPool::get_or_connect` treats `None` as "skip the check this turn",
+/// so a rejected path simply degrades to "no auto-reload" rather than an
+/// error path. Callers already validate via `validate_mcp_config_path` at
+/// construction time; the redundant validation here keeps this helper
+/// safe-by-construction for any future caller and ties the validation to
+/// the call site rather than relying on cross-function reasoning.
 fn mcp_config_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    validate_mcp_config_path(path).ok()?;
     fs::metadata(path).ok()?.modified().ok()
 }
 
