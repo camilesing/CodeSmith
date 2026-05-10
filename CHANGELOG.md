@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.26] - 2026-05-09
 
-A security release. Two responsibly-disclosed issues were patched. Big
+A security + polish release. Two responsibly-disclosed issues were
+patched, plus a small batch of internal release-pipeline fixes. Big
 thanks to **@JafarAkhondali** and **@47Cid** for the disclosures.
 
 ### Security
@@ -19,6 +20,18 @@ thanks to **@JafarAkhondali** and **@47Cid** for the disclosures.
 
 Both items will have full advisory text once the GHSA entries are
 published.
+
+### Fixed
+
+- The build script now invalidates its cache on `.git/HEAD` changes, so
+  the embedded short-SHA in `deepseek --version` stays current after
+  commits and branch switches without needing `cargo clean`. Both
+  regular checkouts and `git worktree` layouts are handled.
+- The release-time `changelog_entry_exists_for_current_package_version`
+  gate walks up from the crate manifest to find `CHANGELOG.md` instead
+  of assuming a fixed `../../CHANGELOG.md` layout. The workspace path
+  still resolves; running the suite from a packaged crate skips the
+  gate quietly instead of panicking.
 
 ## [0.8.25] - 2026-05-09
 
