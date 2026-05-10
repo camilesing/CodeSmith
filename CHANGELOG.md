@@ -95,6 +95,17 @@ internal fix. Big thanks to every contributor below.
   copy-out path that users on macOS / Windows / WSL expect. The footer
   hint now reads `…  / search  c copy  q/Esc close`. A status toast
   confirms success ("Pager content copied"), empty-body, or failure.
+- **`notify` tool** (#1322) — model-callable desktop notification.
+  Always-loaded (no ToolSearch round-trip). Routes through the existing
+  `tui::notifications` infrastructure: OSC 9 on iTerm2 / Ghostty /
+  WezTerm, BEL fallback on macOS / Linux, `MessageBeep` on Windows when
+  explicitly opted in. Honours the user's `[notifications].method`
+  config — when set to `off`, the tool is a silent no-op. Title and
+  body are length-capped (80 / 200 chars) on character (not byte)
+  boundaries to keep the OSC 9 escape clean and avoid mid-grapheme
+  truncation. The tool description steers the model away from chatter:
+  use only when a long-running task completes or genuinely needs the
+  user's attention.
 
 ### Fixed (cont.)
 
