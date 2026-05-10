@@ -892,3 +892,4 @@ mod tests {
                 .contains("Project Structure (Auto-generated)")
         );
     }
+}
