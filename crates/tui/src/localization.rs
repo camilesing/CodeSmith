@@ -841,7 +841,7 @@ fn english(id: MessageId) -> &'static str {
             "Activate a skill, or install/update/uninstall/trust a community skill"
         }
         MessageId::CmdSkillsDescription => {
-            "List local skills (or --remote to browse the curated registry)"
+            "List local skills (filter by `/skills <prefix>`; --remote browses the curated registry)"
         }
         MessageId::CmdStashDescription => {
             "Park or restore a composer draft (Ctrl+S to push, /stash list/pop)"
@@ -1182,7 +1182,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "スキルを有効化、またはコミュニティスキルをインストール／更新／アンインストール／信頼"
         }
         MessageId::CmdSkillsDescription => {
-            "ローカルスキルを一覧表示（--remote で精選レジストリを参照）"
+            "ローカルスキルを一覧表示（`/skills <prefix>` で絞り込み、--remote で精選レジストリを参照）"
         }
         MessageId::CmdStashDescription => {
             "コンポーザーの下書きを退避／復元（Ctrl+S で退避、/stash list|pop）"
@@ -1496,7 +1496,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSessionsDescription => "打开会话选择器",
         MessageId::CmdSettingsDescription => "显示持久化设置",
         MessageId::CmdSkillDescription => "激活技能，或安装/更新/卸载/信任社区技能",
-        MessageId::CmdSkillsDescription => "列出本地技能（或使用 --remote 浏览精选注册表）",
+        MessageId::CmdSkillsDescription => {
+            "列出本地技能（用 `/skills <prefix>` 按名称前缀过滤，--remote 浏览精选注册表）"
+        }
         MessageId::CmdStashDescription => "暂存或恢复输入草稿（Ctrl+S 暂存，/stash list|pop）",
         MessageId::CmdStatusDescription => "显示当前运行状态",
         MessageId::CmdStatuslineDescription => "配置底栏要显示哪些条目",
@@ -1808,7 +1810,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Ativar uma skill, ou instalar/atualizar/desinstalar/confiar em uma skill da comunidade"
         }
         MessageId::CmdSkillsDescription => {
-            "Listar skills locais (ou --remote para navegar pelo registro curado)"
+            "Listar skills locais (filtre com `/skills <prefixo>`; --remote navega pelo registro curado)"
         }
         MessageId::CmdStashDescription => {
             "Estacionar ou restaurar rascunho do compositor (Ctrl+S estaciona, /stash list|pop)"

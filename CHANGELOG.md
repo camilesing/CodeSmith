@@ -195,6 +195,14 @@ Big thanks to every contributor below.
   localization table, so once you pick your language the rest of
   the flow is in that language. Particularly nice for users on
   CJK input methods who want to avoid IME juggling during setup.
+- **`/skills <prefix>` filters the local skills list** (#1318) — on
+  top of the v0.8.26 inter-row spacing (#1328 from @reidliu41), the
+  list now narrows to skills whose names start with the typed
+  prefix. Case-insensitive. The header reflects matched count vs
+  registry total; an empty match set says so explicitly and points
+  back at unfiltered `/skills`. `--remote` and `sync` stay
+  reserved as subcommands; any `--`-prefixed argument is rejected
+  rather than being silently treated as a no-match prefix.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.

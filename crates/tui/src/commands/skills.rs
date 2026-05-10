@@ -35,6 +35,7 @@ fn render_skill_warnings(registry: &SkillRegistry) -> String {
 /// Pass `sync` to pull the registry index and download all skills to the
 /// local cache (`~/.deepseek/cache/skills/`).
 pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let mut prefix: Option<String> = None;
     if let Some(arg) = arg {
         let trimmed = arg.trim();
         if trimmed == "--remote" || trimmed == "remote" {
@@ -44,7 +45,15 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
             return sync_skills(app);
         }
         if !trimmed.is_empty() {
-            return CommandResult::error("Usage: /skills [--remote|sync]");
+            // Anything else is treated as a name-prefix filter (#1318).
+            // Reject obviously malformed args (whitespace inside the
+            // prefix, leading dash) so future flag additions don't
+            // collide with skill names. Skill names that start with
+            // `-` aren't allowed by the loader so this is safe.
+            if trimmed.starts_with('-') || trimmed.split_whitespace().count() > 1 {
+                return CommandResult::error("Usage: /skills [--remote|sync|<name-prefix>]");
+            }
+            prefix = Some(trimmed.to_ascii_lowercase());
         }
     }
     let skills_dir = app.skills_dir.clone();
@@ -70,9 +79,38 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         return CommandResult::message(msg);
     }
 
-    let mut output = format!("Available skills ({}):\n", registry.len());
+    let filtered: Vec<&crate::skills::Skill> = if let Some(p) = prefix.as_deref() {
+        registry
+            .list()
+            .iter()
+            .filter(|s| s.name.to_ascii_lowercase().starts_with(p))
+            .collect()
+    } else {
+        registry.list().iter().collect()
+    };
+
+    if filtered.is_empty() {
+        // The user typed a prefix that matched nothing. Surface what
+        // they typed plus the full count so they can decide whether
+        // to adjust the prefix or run `/skills` for the whole list.
+        let p = prefix.as_deref().unwrap_or("");
+        return CommandResult::message(format!(
+            "No skills match prefix `{p}` (out of {} available).\n\nRun /skills to see them all.{warnings}",
+            registry.len()
+        ));
+    }
+
+    let mut output = if let Some(p) = prefix.as_deref() {
+        format!(
+            "Available skills matching `{p}` ({} of {}):\n",
+            filtered.len(),
+            registry.len()
+        )
+    } else {
+        format!("Available skills ({}):\n", registry.len())
+    };
     output.push_str("─────────────────────────────\n");
-    for (idx, skill) in registry.list().iter().enumerate() {
+    for (idx, skill) in filtered.iter().enumerate() {
         if idx > 0 {
             output.push('\n');
         }
@@ -678,6 +716,104 @@ mod tests {
         let msg = result.message.unwrap();
         assert!(msg.contains("Available skills"));
         assert!(msg.contains("/test-skill"));
+    }
+
+    #[test]
+    fn test_list_skills_filters_by_name_prefix() {
+        // #1318: a `/skills <prefix>` argument should narrow the list to
+        // skills whose names start with the prefix. The header reflects
+        // both the matched count and the registry total so the user
+        // knows what they're looking at.
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        create_skill_dir(
+            &tmpdir,
+            "alpha-skill",
+            "---\nname: alpha-skill\ndescription: First\n---\nbody",
+        );
+        create_skill_dir(
+            &tmpdir,
+            "alphabet-helper",
+            "---\nname: alphabet-helper\ndescription: Helper\n---\nbody",
+        );
+        create_skill_dir(
+            &tmpdir,
+            "beta-skill",
+            "---\nname: beta-skill\ndescription: Second\n---\nbody",
+        );
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = list_skills(&mut app, Some("alph"));
+        let msg = result.message.expect("filter result has message");
+
+        assert!(msg.contains("/alpha-skill"));
+        assert!(msg.contains("/alphabet-helper"));
+        assert!(
+            !msg.contains("/beta-skill"),
+            "beta-skill must be filtered out"
+        );
+        assert!(
+            msg.contains("matching `alph`") && msg.contains("2 of 3"),
+            "header should show count + total, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_list_skills_filter_is_case_insensitive() {
+        // Prefix matching is case-insensitive — typing `Alph` finds
+        // `alpha-skill` the same as `alph` does.
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        create_skill_dir(
+            &tmpdir,
+            "alpha-skill",
+            "---\nname: alpha-skill\ndescription: First\n---\nbody",
+        );
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = list_skills(&mut app, Some("ALPH"));
+        let msg = result.message.expect("case-insensitive filter has message");
+        assert!(msg.contains("/alpha-skill"));
+    }
+
+    #[test]
+    fn test_list_skills_filter_with_zero_matches_says_so() {
+        // When the prefix matches nothing, the message must say so
+        // explicitly (rather than printing an empty list) and point
+        // the user back at the unfiltered command.
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        create_skill_dir(
+            &tmpdir,
+            "alpha-skill",
+            "---\nname: alpha-skill\ndescription: First\n---\nbody",
+        );
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = list_skills(&mut app, Some("nonexistent"));
+        let msg = result.message.expect("zero-match filter still has message");
+        assert!(msg.contains("No skills match prefix `nonexistent`"));
+        assert!(msg.contains("Run /skills"));
+    }
+
+    #[test]
+    fn test_list_skills_rejects_flag_like_prefix() {
+        // `--remote` and `sync` stay reserved as subcommands; any other
+        // dash-prefixed argument is rejected so we don't silently turn
+        // a future flag into a no-match filter.
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = list_skills(&mut app, Some("--bogus"));
+        assert!(
+            result.is_error,
+            "expected usage error for --bogus, got: {result:?}"
+        );
+        assert!(
+            result
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("name-prefix")),
+            "expected --bogus error message to mention name-prefix, got: {result:?}"
+        );
     }
 
     #[test]

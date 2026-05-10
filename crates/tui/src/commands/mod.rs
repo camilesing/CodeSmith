@@ -444,7 +444,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "skills",
         aliases: &[],
-        usage: "/skills [--remote|sync]",
+        usage: "/skills [--remote|sync|<prefix>]",
         description_id: MessageId::CmdSkillsDescription,
     },
     CommandInfo {
