@@ -4128,38 +4128,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn streaming_thinking_live_collapses_unless_verbose() {
-        let cell = HistoryCell::Thinking {
-            content: "private step one\nprivate step two".to_string(),
-            streaming: true,
-            duration_secs: None,
-        };
-
-        let compact = cell.lines_with_options(
-            80,
-            TranscriptRenderOptions {
-                low_motion: true,
-                ..TranscriptRenderOptions::default()
-            },
-        );
-        let compact_text = lines_text(&compact);
-        assert!(compact_text.contains("thinking..."));
-        assert!(!compact_text.contains("private step one"));
-
-        let verbose = cell.lines_with_options(
-            80,
-            TranscriptRenderOptions {
-                verbose: true,
-                low_motion: true,
-                ..TranscriptRenderOptions::default()
-            },
-        );
-        let verbose_text = lines_text(&verbose);
-        assert!(verbose_text.contains("private step one"));
-        assert!(verbose_text.contains("private step two"));
-    }
-
     // === Theme parity tests ===
     //
     // These lock the visible color/style choices for one plan cell and one

@@ -5287,6 +5287,7 @@ api_key = "novita-table-key"
         ));
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
+        unsafe { std::env::set_var("DEEPSEEK_SECRET_BACKEND", "local") };
 
         let path = save_api_key_for(ApiProvider::Openrouter, "or-saved-key")?;
         let contents = fs::read_to_string(&path)?;
@@ -5365,6 +5366,7 @@ api_key = "novita-table-key"
         ));
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
+        unsafe { std::env::set_var("DEEPSEEK_SECRET_BACKEND", "local") };
 
         let path = save_api_key_for(ApiProvider::DeepseekCN, "cn-saved-key")?;
         let contents = fs::read_to_string(&path)?;

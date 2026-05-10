@@ -193,6 +193,9 @@ v0.9.0** — out of scope for a polish release.
 Recurring request. v0.9.x territory at the earliest. Comment with
 roadmap status if not already.
 
+### #1394 Prompt-level reliability guidance
+Feature/enhancement for prompting (PR #1393). Defer to future release.
+
 ---
 
 ## Workflow
