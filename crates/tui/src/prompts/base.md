@@ -60,6 +60,10 @@ After every tool call that produces a result you'll act on, verify before procee
 
 Don't claim a change worked until you've observed evidence. Don't trust memory over live tool output.
 
+**Report outcomes faithfully.** If a tool call fails or returns no data, say so. If you did not run a verification step, say that — don't imply it succeeded. Never claim "all tests pass" when output shows failures. State what actually happened, not what you expected.
+
+When the API does not report cache usage (`prompt_cache_hit_tokens` or `prompt_cache_miss_tokens` are absent/`null`), treat cache status as **unknown** — not zero. Do not report "cache miss" or "cache hit rate 0%" for unobserved metrics.
+
 ## Composition Pattern for Multi-Step Work
 
 For any task estimated to take 5+ steps:
