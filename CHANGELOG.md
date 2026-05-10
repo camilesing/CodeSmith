@@ -77,6 +77,13 @@ internal fix. Big thanks to every contributor below.
   (`\x1b[r\x1b[?6l\x1b[H`) plus the alt-screen buffer's double-buffering
   handles viewport correctness without flicker. macOS Terminal.app /
   iTerm2 / alacritty users were already unaffected and remain so.
+- **`/skills --remote` and `/skills sync` diagnostics** (#1329) — the
+  underlying anyhow chain has always been formatted with `{err:#}`, but
+  the chain alone is often opaque (e.g. "error sending request"). The
+  error message now appends a one-line hint when the chain matches a
+  common failure pattern: DNS / connection refused / TLS / 4xx / 429 /
+  timeout. Each hint points at the most likely cause and a concrete
+  next step.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.
