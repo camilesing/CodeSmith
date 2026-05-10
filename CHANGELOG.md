@@ -23,6 +23,10 @@ published.
 
 ### Fixed
 
+- **`/init` auto-adds `.deepseek/` to `.gitignore` (#1326)** when the
+  workspace is a git repo, so workspace-local snapshots, instructions,
+  and pastes don't get accidentally committed. Idempotent on repeated
+  runs. Thanks **@Giggitycountless**.
 - **MCP tool ordering is deterministic** — discovered tools and the
   resulting API tool block are now sorted by name so the prompt
   prefix the model sees is stable across runs, regardless of
