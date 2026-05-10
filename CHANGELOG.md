@@ -23,6 +23,9 @@ published.
 
 ### Fixed
 
+- **Error cells render as plain text** so env-var names (`API_KEY_FOO`)
+  in error messages keep their underscores instead of being parsed as
+  markdown emphasis. Thanks **@douglarek**.
 - **`/clear` resets the Todos sidebar (#1258)** — previously `/clear`
   only reset the Plan panel; the Todos checklist persisted across
   clears. Thanks **@Giggitycountless**.
