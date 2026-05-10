@@ -7,8 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.28] - 2026-05-10
 
-A maintenance release with four focused bug-fix cherry-picks plus
-test-suite stabilization for parallel-test environment races.
+A maintenance release bundling four streaming / approvals / cache
+bug-fix cherry-picks, three smaller community fixes, a Cmux
+notification probe, a CNB mirror workflow, and test-suite
+stabilization for parallel-test environment races.
+
+### Added
+
+- **CNB mirror workflow** (PR #1373 from **@Anyexyz**) — a
+  GitHub Actions workflow (`sync-cnb.yml`) mirrors every push to
+  the `cnb.cool/deepseek-tui.com/DeepSeek-TUI` repository,
+  closing out the long-standing China-mirror request. Requires the
+  `CNB_GIT_TOKEN` repo secret.
+- **Cmux desktop notification support via `LC_TERMINAL`** (#1281,
+  PR #1340 from **@CrepuscularIRIS**) — Cmux sets
+  `LC_TERMINAL=Cmux` rather than `TERM_PROGRAM`, so the previous
+  notification probe fell back to `BEL` instead of using OSC 9.
+  `resolve_method()` now checks `LC_TERMINAL` as a secondary probe
+  and adds Cmux to the OSC 9 allowlist. Terminals that set
+  neither env var can still force OSC 9 via
+  `[notifications].method = "osc9"`. Two regression tests pin the
+  Cmux and WezTerm `LC_TERMINAL` paths; the existing
+  unknown-terminal-on-Unix test now clears `LC_TERMINAL` before
+  asserting fallback so it doesn't flake on CI hosts that set it.
 
 ### Fixed
 
@@ -17,9 +38,7 @@ test-suite stabilization for parallel-test environment races.
   `cache_read_input_tokens` are now `Option<u64>` instead of `u64`
   defaulting to 0. When the upstream API doesn't report cache
   hit/miss, the model sees `null` instead of misleading zeros, and
-  reasoning about cache utilization is accurate. Includes a
-  truthful-reporting addition to `prompts/base.md` so the model
-  doesn't confidently claim "0% cache hits" from absent data.
+  reasoning about cache utilization is accurate.
 - **Deny of one tool call no longer blocks all future calls of the
   same tool** (#1377, PR #1388 from **@Oliver-ZPLiu**) — denying a
   tool call now only caches the per-call `approval_key`, not the
@@ -43,10 +62,33 @@ test-suite stabilization for parallel-test environment races.
   affordance ("thinking continues; press Ctrl+O for full text")
   now fires during streaming with head lines dropped so the
   visible window tracks the live cursor at the bottom.
+- **First-turn latency bounded on large workspaces** (#697, PR #1386
+  from **@linzhiqin2003**) — the working-set file walker now caps
+  the number of entries it visits during initial indexing, so
+  starting a session in a workspace with a deep `node_modules`,
+  `target`, or `.venv` no longer stalls the first response on
+  filesystem traversal.
+- **Duplicate error toast on transcript-rendered turn errors** (PR
+  #1368 from **@douglarek**) — when a turn error is already in the
+  transcript as a system/error cell, the status-line toast is
+  suppressed so the user doesn't see the same failure twice.
+- **Clearer continue tip on idle prompts** (PR #1370 from
+  **@nightfallsad**) — the "press Tab to continue" affordance now
+  uses concrete language instead of a vague hint.
+
+### Changed
+
+- **Prompt-side reliability guidance** (PR #1393 from
+  **@Oliver-ZPLiu**) — `prompts/base.md` gains three Verification
+  Principle bullets steering the model to verify before reporting
+  complete, preserve only key facts from tool results, and
+  inspect errors before retrying. Combined with the truthful-
+  reporting addition from #1392, the model is less likely to claim
+  unverified successes or repeat the identical failing tool call.
 
 ### Internal
 
-- Test-suite parallelism stabilization (see commit
+- Test-suite parallelism stabilization (commit
   `test: stabilize parallel test execution`). Folds three local
   test-mutex implementations into the process-wide
   `test_support::lock_test_env`, eliminating a class of
@@ -57,6 +99,13 @@ test-suite stabilization for parallel-test environment races.
 - Windows `task_manager` timeout bumped 3s → 10s on four tests
   exercising durable task recovery, addressing an intermittent
   CI timeout on Windows under file-I/O load.
+- `provider_switch_clears_turn_cache_history` now isolates
+  `HOME` / `USERPROFILE` to a tempdir for its lifetime. The test
+  was silently writing `default_provider = "ollama"` to the
+  developer's real `~/Library/Application Support/deepseek/settings.toml`
+  on every run, which then contaminated parallel-running picker
+  tests because Ollama is a pass-through provider that hides the
+  DeepSeek model rows.
 
 ## [0.8.27] - 2026-05-10
 
