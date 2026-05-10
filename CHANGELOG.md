@@ -23,6 +23,8 @@ published.
 
 ### Fixed
 
+- **`/skills` listing has visual spacing** between entries so long
+  skill descriptions don't run together. Thanks **@reidliu41**.
 - **Provider base-URL overrides reach the active provider** — the
   per-provider `*_BASE_URL` env vars (e.g. `OPENAI_BASE_URL`,
   `OPENROUTER_BASE_URL`) now propagate into the active provider's
