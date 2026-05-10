@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.28] - 2026-05-10
+
+A maintenance release with four focused bug-fix cherry-picks plus
+test-suite stabilization for parallel-test environment races.
+
+### Fixed
+
+- **Cache usage shows 0 when API omits cache data** (#1391, PR #1392
+  from **@Oliver-ZPLiu**) — `SessionUsage.cache_creation_input_tokens` /
+  `cache_read_input_tokens` are now `Option<u64>` instead of `u64`
+  defaulting to 0. When the upstream API doesn't report cache
+  hit/miss, the model sees `null` instead of misleading zeros, and
+  reasoning about cache utilization is accurate. Includes a
+  truthful-reporting addition to `prompts/base.md` so the model
+  doesn't confidently claim "0% cache hits" from absent data.
+- **Deny of one tool call no longer blocks all future calls of the
+  same tool** (#1377, PR #1388 from **@Oliver-ZPLiu**) — denying a
+  tool call now only caches the per-call `approval_key`, not the
+  tool type. Subsequent invocations of the same tool prompt for
+  approval again instead of being silently auto-denied.
+- **Streaming thinking blocks no longer drop their tail on
+  MessageComplete** (#861 RC3, PR #1389 from **@linzhiqin2003**) —
+  the active streaming entry is now drained into the finalized
+  cell on `MessageComplete`, eliminating a data-loss path where
+  the last chunk(s) of a streaming "thinking" reply could be
+  discarded when `MessageComplete` arrived ahead of
+  `ThinkingComplete` in a bursty event stream. Also closes a
+  related HTTP 400 on the next turn (DeepSeek V4 requires
+  `reasoning_content` replay for assistant messages that carry
+  tool calls).
+- **Streaming thinking renders live in collapsed view** (#861 RC4,
+  #1324, PR #1390 from **@linzhiqin2003**) — collapsed thinking
+  cells now stream their content as it arrives instead of staying
+  at a static "thinking..." placeholder until streaming ends. When
+  the live body exceeds the collapsed budget, the truncation
+  affordance ("thinking continues; press Ctrl+O for full text")
+  now fires during streaming with head lines dropped so the
+  visible window tracks the live cursor at the bottom.
+
+### Internal
+
+- Test-suite parallelism stabilization (see commit
+  `test: stabilize parallel test execution`). Folds three local
+  test-mutex implementations into the process-wide
+  `test_support::lock_test_env`, eliminating a class of
+  intermittent failures (`refresh_system_prompt_is_noop_when_unchanged`,
+  `save_api_key_for_openrouter_writes_provider_table`,
+  `list_archives_sorts_by_cycle_number`) observed during the
+  v0.8.27 release cycle.
+- Windows `task_manager` timeout bumped 3s → 10s on four tests
+  exercising durable task recovery, addressing an intermittent
+  CI timeout on Windows under file-I/O load.
+
 ## [0.8.27] - 2026-05-10
 
 A polish release bundling 17 community PRs plus a focused user-issue
