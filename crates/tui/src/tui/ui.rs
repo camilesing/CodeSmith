@@ -860,6 +860,16 @@ async fn run_event_loop(
                         app.streaming_message_index = None;
                         app.streaming_thinking_active_entry = None;
                         app.turn_started_at = Some(Instant::now());
+                        // Discoverability hint for users who don't know how
+                        // to interrupt a long-running turn (#1367). Only
+                        // surface when the status_message slot is empty so
+                        // we don't trample over a real transient message
+                        // (e.g. "/queue saved", "Selection copied"); the
+                        // hint then auto-clears as soon as anything else
+                        // updates the slot.
+                        if app.status_message.is_none() {
+                            app.status_message = Some("Press Esc or Ctrl+C to cancel".to_string());
+                        }
                         app.runtime_turn_id = Some(turn_id);
                         app.runtime_turn_status = Some("in_progress".to_string());
                         app.reasoning_buffer.clear();
@@ -2257,34 +2267,38 @@ async fn run_event_loop(
                     copy_active_selection(app);
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Three behaviors layered on Ctrl+C, in priority order:
-                    //   1. While a turn is in flight, cancel it (unchanged).
-                    //   2. Otherwise, on the first press, arm a 2-second
-                    //      "press Ctrl+C again to quit" prompt and stay
-                    //      running.
-                    //   3. On the second press while still armed, exit cleanly.
-                    // The prompt expires silently after the window so a
-                    // stray Ctrl+C three seconds later re-arms instead of
-                    // accidentally exiting.
-                    if app.is_loading {
-                        engine_handle.cancel();
-                        app.is_loading = false;
-                        app.dispatch_started_at = None;
-                        app.streaming_state.reset();
-                        // Optimistically clear the turn-in-progress flag so
-                        // the footer wave animation halts immediately —
-                        // without this, the strip keeps animating until the
-                        // engine eventually emits TurnComplete (#5a). The
-                        // engine's eventual TurnComplete event will overwrite
-                        // with the real outcome ("interrupted").
-                        app.runtime_turn_status = None;
-                        app.status_message = Some("Request cancelled".to_string());
-                        app.disarm_quit();
-                    } else if app.quit_is_armed() {
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        return Ok(());
-                    } else {
-                        app.arm_quit();
+                    // Four behaviors layered on Ctrl+C in priority order — see
+                    // `CtrlCDisposition` for the unit-tested decision table.
+                    // 1. selection active → copy + clear (Windows convention,
+                    //    #1337); 2. turn in flight → cancel; 3. quit-armed →
+                    //    exit; 4. otherwise → arm the 2-second exit prompt.
+                    match ctrl_c_disposition(app) {
+                        CtrlCDisposition::CopySelection => {
+                            copy_active_selection(app);
+                            app.viewport.transcript_selection.clear();
+                        }
+                        CtrlCDisposition::CancelTurn => {
+                            engine_handle.cancel();
+                            app.is_loading = false;
+                            app.dispatch_started_at = None;
+                            app.streaming_state.reset();
+                            // Optimistically clear the turn-in-progress flag
+                            // so the footer wave animation halts immediately —
+                            // without this, the strip keeps animating until
+                            // the engine eventually emits TurnComplete (#5a).
+                            // The engine's eventual TurnComplete event will
+                            // overwrite with the real outcome ("interrupted").
+                            app.runtime_turn_status = None;
+                            app.status_message = Some("Request cancelled".to_string());
+                            app.disarm_quit();
+                        }
+                        CtrlCDisposition::ConfirmExit => {
+                            let _ = engine_handle.send(Op::Shutdown).await;
+                            return Ok(());
+                        }
+                        CtrlCDisposition::ArmExit => {
+                            app.arm_quit();
+                        }
                     }
                 }
                 KeyCode::Char('d')
@@ -8235,6 +8249,30 @@ fn selection_point_from_position(
 
 fn selection_has_content(app: &App) -> bool {
     selection_to_text(app).is_some_and(|text| !text.is_empty())
+}
+
+/// Branches taken by the Ctrl+C key handler. The order encodes priority and is
+/// the unit-tested contract for #1337 / #1367: a transcript selection always
+/// wins (so users learn that Ctrl+C copies when there's something to copy);
+/// otherwise an active turn is interrupted; otherwise the quit-arm flow runs.
+#[derive(Debug, PartialEq, Eq)]
+enum CtrlCDisposition {
+    CopySelection,
+    CancelTurn,
+    ConfirmExit,
+    ArmExit,
+}
+
+fn ctrl_c_disposition(app: &App) -> CtrlCDisposition {
+    if selection_has_content(app) {
+        CtrlCDisposition::CopySelection
+    } else if app.is_loading {
+        CtrlCDisposition::CancelTurn
+    } else if app.quit_is_armed() {
+        CtrlCDisposition::ConfirmExit
+    } else {
+        CtrlCDisposition::ArmExit
+    }
 }
 
 fn copy_active_selection(app: &mut App) {

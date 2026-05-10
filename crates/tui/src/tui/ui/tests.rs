@@ -2170,6 +2170,49 @@ fn test_ctrl_c_exits_when_not_loading() {
 }
 
 #[test]
+fn ctrl_c_disposition_idle_arms_exit_prompt() {
+    let app = create_test_app();
+    assert!(!app.is_loading);
+    assert!(!app.quit_is_armed());
+    assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::ArmExit);
+}
+
+#[test]
+fn ctrl_c_disposition_loading_cancels_turn() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::CancelTurn);
+}
+
+#[test]
+fn ctrl_c_disposition_armed_idle_confirms_exit() {
+    let mut app = create_test_app();
+    app.arm_quit();
+    assert!(app.quit_is_armed());
+    assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::ConfirmExit);
+}
+
+#[test]
+fn ctrl_c_disposition_loading_beats_armed_quit() {
+    // If a turn started while quit is armed, the user almost certainly meant
+    // "cancel the turn", not "exit". Pin that priority order.
+    let mut app = create_test_app();
+    app.arm_quit();
+    app.is_loading = true;
+    assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::CancelTurn);
+}
+
+#[test]
+fn ctrl_c_disposition_no_selection_means_no_copy() {
+    // Regression guard for #1337: with no transcript selection, Ctrl+C must
+    // NOT route to copy. (When selection is active, the copy branch wins;
+    // exercised by the integration-level mouse-drag tests in this file.)
+    let app = create_test_app();
+    assert!(!selection_has_content(&app));
+    assert_ne!(ctrl_c_disposition(&app), CtrlCDisposition::CopySelection);
+}
+
+#[test]
 fn test_ctrl_d_exits_when_input_empty() {
     let mut app = create_test_app();
     app.input.clear();

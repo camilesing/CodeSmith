@@ -108,6 +108,26 @@ internal fix. Big thanks to every contributor below.
   rendered width is capped at the budget for every line; full content
   is preserved across wrapped segments. Snapshot-style tests pin the
   invariant at widths 40, 60, 80, and 120.
+
+### Changed
+
+- **`Ctrl+C` now copies an active transcript selection** (#1337) — on
+  Windows, plain `Ctrl+C` is the OS-wide copy chord, and treating it
+  as "exit" stole work whenever a user copy-pasted from the
+  transcript. `Ctrl+C` is now a four-stage decision: 1) selection
+  active → copy + clear (matches the OS convention); 2) turn in
+  flight → cancel (unchanged); 3) quit-armed within 2s → exit cleanly
+  (unchanged); 4) idle, no selection → arm the 2-second
+  "press Ctrl+C again to quit" prompt (unchanged). The decision is
+  factored into a `CtrlCDisposition` helper with a unit-tested
+  priority table. `Cmd+C` (macOS) and `Ctrl+Shift+C` continue to copy
+  unchanged.
+- **Cancel-key discoverability hint on turn start** (#1367) — when a
+  turn begins, the status-message slot now surfaces "Press Esc or
+  Ctrl+C to cancel" if the slot is otherwise empty. Real transient
+  status messages still take precedence; the hint clears as soon as
+  any other update fires. Closes the loop on users who didn't know
+  how to interrupt a long-running turn.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.
