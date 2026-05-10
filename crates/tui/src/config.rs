@@ -1492,10 +1492,11 @@ impl Config {
         self.context.project_pack.unwrap_or(true)
     }
 
-    /// Return whether shell execution is allowed.
+    /// Return whether shell execution is allowed. Defaults to `false`: shell
+    /// access must be opted into explicitly (GHSA-72w5-pf8h-xfp4).
     #[must_use]
     pub fn allow_shell(&self) -> bool {
-        self.allow_shell.unwrap_or(true)
+        self.allow_shell.unwrap_or(false)
     }
 
     /// Return the maximum number of concurrent sub-agents.
@@ -3119,6 +3120,17 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    // GHSA-72w5-pf8h-xfp4 — regression: `allow_shell` must be opt-in.
+    #[test]
+    fn allow_shell_defaults_to_false_when_unset() {
+        let config = Config::default();
+        assert_eq!(config.allow_shell, None, "default Config has no opt-in set");
+        assert!(
+            !config.allow_shell(),
+            "Config::allow_shell() must default to false when no opt-in is recorded"
+        );
+    }
 
     #[test]
     fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {

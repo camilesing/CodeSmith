@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.26] - 2026-05-09
+
+A security release. Two responsibly-disclosed issues were patched. Big
+thanks to **@JafarAkhondali** and **@47Cid** for the disclosures.
+
+### Security
+
+- Hardened the `fetch_url` tool's network-target validation
+  (GHSA-88gh-2526-gfrr). Thanks to **@JafarAkhondali**.
+- Tightened the default privileges of sub-agents created through
+  `task_create` (GHSA-72w5-pf8h-xfp4). Thanks to **@47Cid**.
+
+Both items will have full advisory text once the GHSA entries are
+published.
+
 ## [0.8.25] - 2026-05-09
 
 A stabilization + drift-fixes release. Headline work hardens the
