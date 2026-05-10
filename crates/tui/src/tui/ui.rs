@@ -5825,12 +5825,11 @@ async fn handle_view_events(
                     }
                     ReviewDecision::Denied | ReviewDecision::Abort => {
                         // Cache the denial so the model retry-loop doesn't
-                        // re-prompt for the same command (#360). Only when
-                        // the user actively denied (not when the timeout
-                        // fired) — a timeout might mean the user stepped
-                        // away rather than refused.
+                        // re-prompt for the exact same approval_key (#360).
+                        // Only the key (per-call unique) is stored — NOT
+                        // the tool_name, which would block all future
+                        // invocations of the same tool type (#1377).
                         if !timed_out {
-                            app.approval_session_denied.insert(tool_name.clone());
                             app.approval_session_denied.insert(approval_key);
                         }
                         let _ = engine_handle.deny_tool_call(tool_id).await;
