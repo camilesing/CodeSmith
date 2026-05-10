@@ -28,9 +28,11 @@ published.
   mid-session, the transport-closed error includes the captured stderr
   tail instead of disappearing into `Stdio::null`. Useful for debugging
   Node/Python MCP servers that fail well after `initialize`.
-- Mouse capture now defaults on inside Windows Terminal (#1169). When
-  `WT_SESSION` is set, in-app text selection is enabled by default;
-  legacy conhost stays opt-in via `--mouse-capture` or `[tui]
+- Mouse capture now defaults on inside Windows Terminal (#1169, #1298,
+  #1331). When `WT_SESSION` is set, in-app text selection is enabled
+  by default and the wheel scrolls the transcript again (rather than
+  the terminal interpreting wheel events as input-history keys).
+  Legacy conhost stays opt-in via `--mouse-capture` or `[tui]
   mouse_capture = true` to preserve the protections from #878 / #898.
   Selection now clamps to the transcript region instead of the
   terminal painting native selection across the sidebar.
