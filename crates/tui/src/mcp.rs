@@ -2781,7 +2781,7 @@ mod tests {
         assert!(reloaded, "content-changed config must trigger reload");
         let names = pool.server_names();
         assert!(
-            names.iter().any(|n| *n == "new"),
+            names.contains(&"new"),
             "expected new server in pool after reload, got {names:?}"
         );
     }

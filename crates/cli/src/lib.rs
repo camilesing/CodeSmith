@@ -2516,6 +2516,7 @@ mod tests {
             telemetry: false,
             approval_policy: None,
             sandbox_mode: None,
+            yolo: None,
             http_headers: std::collections::BTreeMap::new(),
         };
 
