@@ -826,10 +826,13 @@ mod tests {
 
     /// Tests that mutate process-global `NO_ANIMATIONS` serialise
     /// through this guard so the cargo parallel runner doesn't
-    /// observe interleaved overrides.
+    /// observe interleaved overrides. Uses the process-wide test env
+    /// lock so this serializes with the TERM_PROGRAM tests too —
+    /// otherwise a `NO_ANIMATIONS=1` leak from this test family can
+    /// flip a concurrent `TERM_PROGRAM=iTerm` test's `low_motion`
+    /// assertion through the shared `apply_env_overrides` path.
     fn no_animations_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+        crate::test_support::lock_test_env()
     }
 
     #[test]
@@ -906,9 +909,13 @@ mod tests {
     }
 
     /// Serialise tests that mutate `TERM_PROGRAM` through this guard.
+    /// Uses the process-wide test env lock so this serializes not just
+    /// with itself but with every other env-mutating test in the suite
+    /// — otherwise a concurrent test that calls `Settings::default()`
+    /// can read whatever value our two `set_var`s have raced into the
+    /// env at that instant.
     fn term_program_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+        crate::test_support::lock_test_env()
     }
 
     #[test]
