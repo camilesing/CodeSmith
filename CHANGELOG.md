@@ -23,6 +23,14 @@ published.
 
 ### Fixed
 
+- **Drag-select past the viewport edge auto-scrolls (#1163, #1255,
+  #1292, #1298)** — when the mouse drag reaches the top or bottom of
+  the transcript area the viewport now scrolls to follow the
+  selection, the way text editors do. **Copy strips every visual-only
+  decoration glyph** — tool-card rails (`╭│╰`), transcript rails
+  (`▏`), reasoning rails (`╎`), tool-status symbols (`·•◦`), and
+  tool-family glyphs no longer leak into clipboard output. Thanks
+  **@Oliver-ZPLiu**.
 - MCP stdio servers no longer discard stderr. The spawn site now pipes
   stderr through a bounded ring buffer; when a server crashes
   mid-session, the transport-closed error includes the captured stderr
