@@ -155,6 +155,24 @@ impl Workspace {
                 }
             }
         }
+
+        // Beyond the curated dot-dir whitelist above, also index any explicit
+        // hidden/ignored path the user might `@`-mention (e.g. a project's
+        // own `.generated/specs/`). `local_reference_paths` walks with
+        // gitignore disabled but still honors `.deepseekignore`.
+        for path in local_reference_paths(&self.root, LOCAL_REFERENCE_SCAN_LIMIT) {
+            if total >= FILE_INDEX_MAX_ENTRIES {
+                break;
+            }
+            let Some(name) = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+            else {
+                continue;
+            };
+            index.entry(name).or_default().push(path);
+            total += 1;
+        }
         index
     }
 
@@ -200,8 +218,26 @@ impl Workspace {
                 &mut substring_hits,
                 &mut seen,
             );
+            add_local_reference_completions(
+                cwd,
+                cwd,
+                &needle,
+                limit,
+                &mut prefix_hits,
+                &mut substring_hits,
+                &mut seen,
+            );
         }
         walk_for_completions(
+            &self.root,
+            &self.root,
+            &needle,
+            limit,
+            &mut prefix_hits,
+            &mut substring_hits,
+            &mut seen,
+        );
+        add_local_reference_completions(
             &self.root,
             &self.root,
             &needle,
@@ -396,10 +432,8 @@ fn walk_for_completions(
     );
 }
 
-#[allow(dead_code)]
 const LOCAL_REFERENCE_SCAN_LIMIT: usize = 4096;
 
-#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 fn add_local_reference_completions(
     root: &Path,
@@ -434,12 +468,10 @@ fn add_local_reference_completions(
     }
 }
 
-#[allow(dead_code)]
 fn should_try_local_reference_completion(needle: &str) -> bool {
     !needle.is_empty() && (needle.starts_with('.') || needle.contains('/') || needle.contains('\\'))
 }
 
-#[allow(dead_code)]
 fn local_reference_paths(root: &Path, limit: usize) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut builder = WalkBuilder::new(root);
@@ -471,7 +503,6 @@ fn local_reference_paths(root: &Path, limit: usize) -> Vec<PathBuf> {
     out
 }
 
-#[allow(dead_code)]
 fn should_skip_local_reference_dir(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -1440,7 +1471,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "wiring incomplete — add_local_reference_completions not yet called from completions()"]
     fn workspace_completions_surface_explicit_hidden_and_ignored_paths() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join(".gitignore"), ".deepseek/\n.generated/\n").unwrap();
@@ -1483,7 +1513,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "wiring incomplete — needs add_local_reference_completions integration"]
     fn fuzzy_index_resolves_hidden_and_ignored_files_except_deepseekignored() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join(".gitignore"), ".generated/\n").unwrap();
