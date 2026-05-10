@@ -2625,15 +2625,23 @@ async fn run_event_loop(
                             } else {
                                 build_queued_message(app, input)
                             };
-                            // Force steer: bypass decide_submit_disposition.
-                            if let Err(err) =
-                                steer_user_message(app, &engine_handle, queued.clone()).await
-                            {
-                                app.queue_message(queued);
-                                app.status_message = Some(format!(
-                                    "Steer failed ({err}); queued {} message(s)",
-                                    app.queued_message_count()
-                                ));
+                            if app.is_loading {
+                                // Engine is busy — steer into the current turn.
+                                if let Err(err) =
+                                    steer_user_message(app, &engine_handle, queued.clone()).await
+                                {
+                                    app.queue_message(queued);
+                                    app.status_message = Some(format!(
+                                        "Steer failed ({err}); queued {} message(s)",
+                                        app.queued_message_count()
+                                    ));
+                                }
+                            } else {
+                                // Engine is idle — send as a regular message
+                                // so the content is not lost to rx_steer's
+                                // stale-drain in handle_send_message (#1331).
+                                submit_or_steer_message(app, config, &engine_handle, queued)
+                                    .await?;
                             }
                         }
                     }
