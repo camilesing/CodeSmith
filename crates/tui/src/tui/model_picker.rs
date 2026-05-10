@@ -402,11 +402,15 @@ mod tests {
         let mut app = App::new(options, &Config::default());
         // App::new merges in `~/.config/deepseek/settings.toml` /
         // `Application Support/deepseek/settings.toml`, which can override
-        // the model and effort with whatever the developer happens to have
-        // saved. Pin both back to known values so the picker tests below
-        // exercise the picker logic, not the user's environment.
+        // the model, effort, and provider with whatever the developer
+        // happens to have saved. Pin all three back to known values so
+        // the picker tests below exercise the picker logic, not the
+        // user's environment. In particular `api_provider` matters because
+        // pass-through providers (Ollama, OpenAI) hide the DeepSeek model
+        // rows and leave only `auto` + custom — Down has nowhere to go.
         app.model = "deepseek-v4-pro".to_string();
         app.reasoning_effort = ReasoningEffort::Max;
+        app.api_provider = crate::config::ApiProvider::Deepseek;
         (app, lock)
     }
 

@@ -1380,6 +1380,56 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
 
 #[tokio::test]
 async fn provider_switch_clears_turn_cache_history() {
+    // `switch_provider` persists the new provider to `Settings`, which
+    // writes through `dirs::data_dir()` (`~/Library/Application
+    // Support/deepseek/settings.toml` on macOS). Without redirecting
+    // HOME / USERPROFILE we would clobber the developer's real
+    // preferences and leave `default_provider = "ollama"` behind —
+    // which then leaks into any subsequent test that constructs an
+    // `App`. Hold the process-wide env lock for the duration so we
+    // serialize with other tests that mutate the same env vars.
+    // Wrap the lock inside a guard struct so clippy's
+    // `await_holding_lock` doesn't fire on the `.await` below; the
+    // pattern matches `tools::recall_archive::HomeGuard`.
+    struct HomeGuard {
+        _tmp: tempfile::TempDir,
+        prev_home: Option<std::ffi::OsString>,
+        prev_userprofile: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: still holding the process-wide env lock.
+            unsafe {
+                match self.prev_home.take() {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match self.prev_userprofile.take() {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
+                }
+            }
+        }
+    }
+    let _home = {
+        let lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        // SAFETY: serialized by the process-wide test env lock.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("USERPROFILE", tmp.path());
+        }
+        HomeGuard {
+            _tmp: tmp,
+            prev_home,
+            prev_userprofile,
+            _lock: lock,
+        }
+    };
+
     let mut app = create_test_app();
     app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
         input_tokens: 100,
