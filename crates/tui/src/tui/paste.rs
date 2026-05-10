@@ -166,6 +166,38 @@ mod tests {
     }
 
     #[test]
+    fn raw_short_cjk_multiline_paste_buffers_enter_instead_of_submitting() {
+        // #1302: pasting short CJK content like "请联网搜索：\nSTM32 …" used
+        // to silently submit the first line because the heuristic decided
+        // it wasn't paste-like (no whitespace + under 16 chars). The
+        // non-ASCII bypass now classifies it as a paste so the Enter is
+        // absorbed into the burst buffer.
+        let mut app = test_app();
+        let t0 = Instant::now();
+
+        let pasted = "请联网搜索：\nSTM32 商业应用案例";
+        for (i, ch) in pasted.chars().enumerate() {
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            let handled =
+                handle_paste_burst_key(&mut app, &key, t0 + Duration::from_millis(i as u64));
+            assert!(
+                handled,
+                "raw paste character {ch:?} must be handled by paste-burst detection"
+            );
+        }
+
+        assert!(app.flush_paste_burst_if_due(
+            t0 + Duration::from_millis(pasted.chars().count() as u64)
+                + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+        ));
+        assert_eq!(app.input, pasted);
+    }
+
+    #[test]
     fn raw_multiline_paste_buffers_enter_instead_of_submitting() {
         let mut app = test_app();
         let t0 = Instant::now();

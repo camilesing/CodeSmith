@@ -177,6 +177,15 @@ Big thanks to every contributor below.
   typing / IME commits / autocomplete bursts. Terminals that never
   deliver bracketed paste (the original target audience) are
   unaffected; the heuristic still fires there.
+- **Short CJK multi-line paste no longer auto-submits first line**
+  (#1302) — pasting `请联网搜索：\nSTM32 …` (short non-ASCII first line
+  followed by a newline) used to fail the paste-burst detection
+  heuristic because the first line had no whitespace and was under
+  the 16-char threshold; the trailing pasted newline then fell
+  through as a real Enter and submitted the first line on its own.
+  The heuristic now treats any non-ASCII run as paste-like, so the
+  Enter is absorbed into the burst buffer. Thanks **@reidliu41**
+  (PR #1342).
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.
