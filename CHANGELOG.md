@@ -23,6 +23,11 @@ published.
 
 ### Fixed
 
+- MCP stdio servers no longer discard stderr. The spawn site now pipes
+  stderr through a bounded ring buffer; when a server crashes
+  mid-session, the transport-closed error includes the captured stderr
+  tail instead of disappearing into `Stdio::null`. Useful for debugging
+  Node/Python MCP servers that fail well after `initialize`.
 - Mouse capture now defaults on inside Windows Terminal (#1169). When
   `WT_SESSION` is set, in-app text selection is enabled by default;
   legacy conhost stays opt-in via `--mouse-capture` or `[tui]
