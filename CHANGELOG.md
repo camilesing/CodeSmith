@@ -23,6 +23,10 @@ published.
 
 ### Fixed
 
+- **WSL2 turn-start timeout** — `TurnStarted` is now emitted before the
+  snapshot step so a slow snapshot on WSL2's `/mnt/*` volumes doesn't
+  push past the runtime watchdog and surface a spurious "engine may
+  have stopped" error. Thanks **@michaeltse321**.
 - **`/init` auto-adds `.deepseek/` to `.gitignore` (#1326)** when the
   workspace is a git repo, so workspace-local snapshots, instructions,
   and pastes don't get accidentally committed. Idempotent on repeated
