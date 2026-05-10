@@ -376,6 +376,36 @@ pub enum MessageId {
     HomeYoloModeCaution,
     HomePlanModeTip,
     HomePlanModeChecklistTip,
+    // Onboarding screens — language picker.
+    OnboardLanguageTitle,
+    OnboardLanguageBlurb,
+    OnboardLanguageFooter,
+    // Onboarding screens — API key entry.
+    OnboardApiKeyTitle,
+    OnboardApiKeyStep1,
+    OnboardApiKeyStep2,
+    OnboardApiKeySavedHint,
+    OnboardApiKeyFormatHint,
+    OnboardApiKeyPlaceholder,
+    OnboardApiKeyLabel,
+    OnboardApiKeyFooter,
+    // Onboarding screens — workspace trust prompt.
+    OnboardTrustTitle,
+    OnboardTrustQuestion,
+    OnboardTrustLocationPrefix,
+    OnboardTrustRiskHint,
+    OnboardTrustEffectHint,
+    OnboardTrustFooterPrefix,
+    OnboardTrustFooterMiddle,
+    OnboardTrustFooterSuffix,
+    // Onboarding screens — final tips screen.
+    OnboardTipsTitle,
+    OnboardTipsLine1,
+    OnboardTipsLine2,
+    OnboardTipsLine3,
+    OnboardTipsLine4,
+    OnboardTipsFooterEnter,
+    OnboardTipsFooterAction,
 }
 
 #[allow(dead_code)]
@@ -567,6 +597,32 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HomeYoloModeCaution,
     MessageId::HomePlanModeTip,
     MessageId::HomePlanModeChecklistTip,
+    MessageId::OnboardLanguageTitle,
+    MessageId::OnboardLanguageBlurb,
+    MessageId::OnboardLanguageFooter,
+    MessageId::OnboardApiKeyTitle,
+    MessageId::OnboardApiKeyStep1,
+    MessageId::OnboardApiKeyStep2,
+    MessageId::OnboardApiKeySavedHint,
+    MessageId::OnboardApiKeyFormatHint,
+    MessageId::OnboardApiKeyPlaceholder,
+    MessageId::OnboardApiKeyLabel,
+    MessageId::OnboardApiKeyFooter,
+    MessageId::OnboardTrustTitle,
+    MessageId::OnboardTrustQuestion,
+    MessageId::OnboardTrustLocationPrefix,
+    MessageId::OnboardTrustRiskHint,
+    MessageId::OnboardTrustEffectHint,
+    MessageId::OnboardTrustFooterPrefix,
+    MessageId::OnboardTrustFooterMiddle,
+    MessageId::OnboardTrustFooterSuffix,
+    MessageId::OnboardTipsTitle,
+    MessageId::OnboardTipsLine1,
+    MessageId::OnboardTipsLine2,
+    MessageId::OnboardTipsLine3,
+    MessageId::OnboardTipsLine4,
+    MessageId::OnboardTipsFooterEnter,
+    MessageId::OnboardTipsFooterAction,
 ];
 
 pub fn tr(locale: Locale, id: MessageId) -> &'static str {
@@ -956,6 +1012,58 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HomeYoloModeCaution => "  Be careful with destructive operations!",
         MessageId::HomePlanModeTip => "Plan mode - Design before implementing",
         MessageId::HomePlanModeChecklistTip => "  Use /mode plan to create structured checklists",
+        // Onboarding — language picker.
+        MessageId::OnboardLanguageTitle => "Choose your language",
+        MessageId::OnboardLanguageBlurb => {
+            "Pick the UI language. You can change it any time with `/settings set locale <tag>`."
+        }
+        MessageId::OnboardLanguageFooter => {
+            "Press 1-5 to choose, or Enter to keep the current setting"
+        }
+        // Onboarding — API key entry.
+        MessageId::OnboardApiKeyTitle => "Connect your DeepSeek API key",
+        MessageId::OnboardApiKeyStep1 => {
+            "Step 1.  Open https://platform.deepseek.com/api_keys and create a key."
+        }
+        MessageId::OnboardApiKeyStep2 => "Step 2.  Paste it below and press Enter.",
+        MessageId::OnboardApiKeySavedHint => {
+            "Saved to ~/.deepseek/config.toml so it works from any folder."
+        }
+        MessageId::OnboardApiKeyFormatHint => {
+            "Paste the full key exactly as issued (no spaces or newlines)."
+        }
+        MessageId::OnboardApiKeyPlaceholder => "(paste key here)",
+        MessageId::OnboardApiKeyLabel => "Key: ",
+        MessageId::OnboardApiKeyFooter => "Press Enter to save, Esc to go back.",
+        // Onboarding — workspace trust.
+        MessageId::OnboardTrustTitle => "Trust Workspace",
+        MessageId::OnboardTrustQuestion => "Do you trust the contents of this directory?",
+        MessageId::OnboardTrustLocationPrefix => "You are in ",
+        MessageId::OnboardTrustRiskHint => {
+            "Working with untrusted contents comes with higher risk of prompt injection."
+        }
+        MessageId::OnboardTrustEffectHint => {
+            "Trusting this directory records it in global config and enables trusted workspace mode."
+        }
+        MessageId::OnboardTrustFooterPrefix => "Press ",
+        MessageId::OnboardTrustFooterMiddle => " to trust and continue, ",
+        MessageId::OnboardTrustFooterSuffix => " to quit",
+        // Onboarding — final tips.
+        MessageId::OnboardTipsTitle => "Start Simple",
+        MessageId::OnboardTipsLine1 => {
+            "Write the task in plain language. Use /help or Ctrl+K when you want a command."
+        }
+        MessageId::OnboardTipsLine2 => {
+            "The bottom composer is multi-line: Enter sends, Alt+Enter or Ctrl+J adds a new line."
+        }
+        MessageId::OnboardTipsLine3 => {
+            "Switch modes only when the job changes: Plan for review-first work, Agent for execution, YOLO when you want auto-approval."
+        }
+        MessageId::OnboardTipsLine4 => {
+            "Ctrl+R resumes earlier sessions, and Esc backs out of the current draft or overlay."
+        }
+        MessageId::OnboardTipsFooterEnter => "Press Enter",
+        MessageId::OnboardTipsFooterAction => " to open the workspace",
     }
 }
 
@@ -1248,6 +1356,56 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::HomePlanModeChecklistTip => {
             "  /mode plan を使って構造化されたチェックリストを作成"
         }
+        // Onboarding — language picker.
+        MessageId::OnboardLanguageTitle => "言語を選択",
+        MessageId::OnboardLanguageBlurb => {
+            "UI 言語を選んでください。`/settings set locale <tag>` でいつでも変更できます。"
+        }
+        MessageId::OnboardLanguageFooter => "1〜5 で選択、または Enter で現在の設定を維持",
+        // Onboarding — API key entry.
+        MessageId::OnboardApiKeyTitle => "DeepSeek API キーを設定",
+        MessageId::OnboardApiKeyStep1 => {
+            "ステップ 1. https://platform.deepseek.com/api_keys を開いてキーを作成。"
+        }
+        MessageId::OnboardApiKeyStep2 => "ステップ 2. 下に貼り付けて Enter を押してください。",
+        MessageId::OnboardApiKeySavedHint => {
+            "~/.deepseek/config.toml に保存されるので、どのフォルダからでも有効になります。"
+        }
+        MessageId::OnboardApiKeyFormatHint => {
+            "発行されたキーをそのまま貼り付けてください（空白や改行を含めない）。"
+        }
+        MessageId::OnboardApiKeyPlaceholder => "（ここにキーを貼り付け）",
+        MessageId::OnboardApiKeyLabel => "キー: ",
+        MessageId::OnboardApiKeyFooter => "Enter で保存、Esc で戻る。",
+        // Onboarding — workspace trust.
+        MessageId::OnboardTrustTitle => "ワークスペースを信頼",
+        MessageId::OnboardTrustQuestion => "このディレクトリの内容を信頼しますか？",
+        MessageId::OnboardTrustLocationPrefix => "現在の場所: ",
+        MessageId::OnboardTrustRiskHint => {
+            "信頼されていない内容を扱うとプロンプトインジェクションのリスクが高くなります。"
+        }
+        MessageId::OnboardTrustEffectHint => {
+            "信頼するとグローバル設定に記録され、信頼済みワークスペースモードが有効になります。"
+        }
+        MessageId::OnboardTrustFooterPrefix => "キー ",
+        MessageId::OnboardTrustFooterMiddle => " で信頼して続行、",
+        MessageId::OnboardTrustFooterSuffix => " で終了",
+        // Onboarding — final tips.
+        MessageId::OnboardTipsTitle => "シンプルに始めよう",
+        MessageId::OnboardTipsLine1 => {
+            "タスクを自然な言葉で記入。コマンドが必要な時は /help や Ctrl+K を使ってください。"
+        }
+        MessageId::OnboardTipsLine2 => {
+            "下の入力欄は複数行対応です。Enter で送信、Alt+Enter または Ctrl+J で改行。"
+        }
+        MessageId::OnboardTipsLine3 => {
+            "用途に応じてモードを切り替え：Plan は事前レビュー、Agent は実行、YOLO は自動承認。"
+        }
+        MessageId::OnboardTipsLine4 => {
+            "Ctrl+R で過去のセッションを再開、Esc で現在の入力やオーバーレイをキャンセル。"
+        }
+        MessageId::OnboardTipsFooterEnter => "Enter を押す",
+        MessageId::OnboardTipsFooterAction => " とワークスペースが開きます",
     })
 }
 
@@ -1491,6 +1649,46 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  请小心破坏性操作！",
         MessageId::HomePlanModeTip => "Plan 模式 - 先设计再实现",
         MessageId::HomePlanModeChecklistTip => "  使用 /mode plan 创建结构化检查清单",
+        // Onboarding — language picker.
+        MessageId::OnboardLanguageTitle => "选择语言",
+        MessageId::OnboardLanguageBlurb => {
+            "选择界面语言。可随时使用 `/settings set locale <tag>` 修改。"
+        }
+        MessageId::OnboardLanguageFooter => "按 1-5 选择，或按 Enter 保留当前设置",
+        // Onboarding — API key entry.
+        MessageId::OnboardApiKeyTitle => "连接你的 DeepSeek API 密钥",
+        MessageId::OnboardApiKeyStep1 => {
+            "步骤 1.  打开 https://platform.deepseek.com/api_keys 创建一个密钥。"
+        }
+        MessageId::OnboardApiKeyStep2 => "步骤 2.  把密钥粘贴到下方并按 Enter。",
+        MessageId::OnboardApiKeySavedHint => {
+            "保存到 ~/.deepseek/config.toml，因此在任何目录下都生效。"
+        }
+        MessageId::OnboardApiKeyFormatHint => "请完整粘贴密钥（不要含空格或换行）。",
+        MessageId::OnboardApiKeyPlaceholder => "（在此粘贴密钥）",
+        MessageId::OnboardApiKeyLabel => "密钥: ",
+        MessageId::OnboardApiKeyFooter => "Enter 保存，Esc 返回。",
+        // Onboarding — workspace trust.
+        MessageId::OnboardTrustTitle => "信任工作目录",
+        MessageId::OnboardTrustQuestion => "你信任此目录中的内容吗？",
+        MessageId::OnboardTrustLocationPrefix => "当前位置：",
+        MessageId::OnboardTrustRiskHint => "处理不受信任的内容会增加提示词注入的风险。",
+        MessageId::OnboardTrustEffectHint => {
+            "信任此目录会记录在全局配置中，并启用受信任工作区模式。"
+        }
+        MessageId::OnboardTrustFooterPrefix => "按 ",
+        MessageId::OnboardTrustFooterMiddle => " 信任并继续，",
+        MessageId::OnboardTrustFooterSuffix => " 退出",
+        // Onboarding — final tips.
+        MessageId::OnboardTipsTitle => "从简开始",
+        MessageId::OnboardTipsLine1 => "用自然语言描述任务。需要命令时使用 /help 或 Ctrl+K。",
+        MessageId::OnboardTipsLine2 => "底部输入框支持多行：Enter 发送，Alt+Enter 或 Ctrl+J 换行。",
+        MessageId::OnboardTipsLine3 => {
+            "按需切换模式：Plan 适合先审后行，Agent 用于执行，YOLO 启用自动批准。"
+        }
+        MessageId::OnboardTipsLine4 => "Ctrl+R 恢复历史会话，Esc 退出当前输入或弹层。",
+        MessageId::OnboardTipsFooterEnter => "按 Enter",
+        MessageId::OnboardTipsFooterAction => " 进入工作区",
     })
 }
 
@@ -1792,6 +1990,58 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::HomePlanModeChecklistTip => {
             "  Use /mode plan para criar checklists estruturados"
         }
+        // Onboarding — language picker.
+        MessageId::OnboardLanguageTitle => "Escolha o idioma",
+        MessageId::OnboardLanguageBlurb => {
+            "Escolha o idioma da interface. Você pode mudá-lo a qualquer momento com `/settings set locale <tag>`."
+        }
+        MessageId::OnboardLanguageFooter => {
+            "Pressione 1-5 para escolher, ou Enter para manter a configuração atual"
+        }
+        // Onboarding — API key entry.
+        MessageId::OnboardApiKeyTitle => "Conecte sua chave de API DeepSeek",
+        MessageId::OnboardApiKeyStep1 => {
+            "Passo 1.  Abra https://platform.deepseek.com/api_keys e crie uma chave."
+        }
+        MessageId::OnboardApiKeyStep2 => "Passo 2.  Cole abaixo e pressione Enter.",
+        MessageId::OnboardApiKeySavedHint => {
+            "Salvo em ~/.deepseek/config.toml para funcionar em qualquer pasta."
+        }
+        MessageId::OnboardApiKeyFormatHint => {
+            "Cole a chave inteira como foi emitida (sem espaços ou quebras de linha)."
+        }
+        MessageId::OnboardApiKeyPlaceholder => "(cole a chave aqui)",
+        MessageId::OnboardApiKeyLabel => "Chave: ",
+        MessageId::OnboardApiKeyFooter => "Enter para salvar, Esc para voltar.",
+        // Onboarding — workspace trust.
+        MessageId::OnboardTrustTitle => "Confiar no diretório",
+        MessageId::OnboardTrustQuestion => "Você confia no conteúdo deste diretório?",
+        MessageId::OnboardTrustLocationPrefix => "Você está em ",
+        MessageId::OnboardTrustRiskHint => {
+            "Trabalhar com conteúdo não confiável aumenta o risco de injeção de prompt."
+        }
+        MessageId::OnboardTrustEffectHint => {
+            "Confiar neste diretório o registra na configuração global e habilita o modo workspace confiável."
+        }
+        MessageId::OnboardTrustFooterPrefix => "Pressione ",
+        MessageId::OnboardTrustFooterMiddle => " para confiar e continuar, ",
+        MessageId::OnboardTrustFooterSuffix => " para sair",
+        // Onboarding — final tips.
+        MessageId::OnboardTipsTitle => "Comece simples",
+        MessageId::OnboardTipsLine1 => {
+            "Escreva a tarefa em linguagem natural. Use /help ou Ctrl+K para comandos."
+        }
+        MessageId::OnboardTipsLine2 => {
+            "O composer inferior é multilinhas: Enter envia, Alt+Enter ou Ctrl+J adiciona uma nova linha."
+        }
+        MessageId::OnboardTipsLine3 => {
+            "Mude de modo apenas quando o trabalho mudar: Plan para revisar antes, Agent para execução, YOLO para auto-aprovação."
+        }
+        MessageId::OnboardTipsLine4 => {
+            "Ctrl+R retoma sessões anteriores, e Esc cancela o rascunho ou overlay atual."
+        }
+        MessageId::OnboardTipsFooterEnter => "Pressione Enter",
+        MessageId::OnboardTipsFooterAction => " para abrir o workspace",
     })
 }
 

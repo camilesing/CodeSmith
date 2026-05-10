@@ -186,6 +186,15 @@ Big thanks to every contributor below.
   The heuristic now treats any non-ASCII run as paste-like, so the
   Enter is absorbed into the burst buffer. Thanks **@reidliu41**
   (PR #1342).
+- **Onboarding screens render in the selected language** — when a
+  user picked 简体中文 / 日本語 / Português (Brasil) at the language
+  step, every subsequent screen (API key entry, workspace trust
+  prompt, final tips) used to remain in English. The
+  `set_locale_from_onboarding` path now drives the title, body
+  copy, hints, and footer of each onboarding screen through the
+  localization table, so once you pick your language the rest of
+  the flow is in that language. Particularly nice for users on
+  CJK input methods who want to avoid IME juggling during setup.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.
