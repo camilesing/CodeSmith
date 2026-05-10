@@ -87,20 +87,32 @@ fn recover_terminal_modes_runs_without_panic_on_windows() {
 }
 
 #[test]
-fn terminal_origin_reset_resets_scroll_region_origin_and_clears() {
+fn terminal_origin_reset_resets_scroll_region_origin_without_destructive_clear() {
     assert!(
         TERMINAL_ORIGIN_RESET.starts_with(b"\x1b[r\x1b[?6l"),
         "must reset scroll margins and origin mode before repaint"
     );
     assert!(
-        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H\x1b[2J\x1b[3J"),
-        "must home the cursor and clear the viewport"
+        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H"),
+        "must home the cursor at the end of the reset sequence"
+    );
+    // Cross-terminal flicker regression (#1119, #1352, #1356, #1363, #1366,
+    // #1260, #1295): emitting CSI 2J/3J here in addition to the
+    // immediately-following ratatui `terminal.clear()` produced a visible
+    // blank-then-repaint flicker on Ghostty / VSCode terminal / Win10 conhost
+    // every TurnComplete. The cleared back-buffer plus a single ratatui clear
+    // is sufficient on the alt-screen.
+    assert!(
+        !TERMINAL_ORIGIN_RESET
+            .windows(b"\x1b[2J".len())
+            .any(|sequence| sequence == b"\x1b[2J"),
+        "must not emit destructive CSI 2J — causes visible flicker"
     );
     assert!(
-        TERMINAL_ORIGIN_RESET
+        !TERMINAL_ORIGIN_RESET
             .windows(b"\x1b[3J".len())
             .any(|sequence| sequence == b"\x1b[3J"),
-        "must erase saved scrollback when reclaiming the viewport"
+        "must not emit destructive CSI 3J — causes visible flicker"
     );
 }
 

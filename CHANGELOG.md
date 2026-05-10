@@ -67,6 +67,16 @@ internal fix. Big thanks to every contributor below.
 
 ### Fixed
 
+- **Cross-terminal flicker on TurnComplete / focus / resize** (#1119,
+  #1260, #1295, #1352, #1356, #1363, #1366) — the viewport-reset
+  sequence emitted before each forced repaint no longer includes
+  `\x1b[2J\x1b[3J`. Combined with the immediately-following ratatui
+  `terminal.clear()`, the destructive pair produced a double-clear that
+  Ghostty, the VSCode integrated terminal, and Win10 conhost rendered
+  as a visible blank-then-repaint flicker. The lighter sequence
+  (`\x1b[r\x1b[?6l\x1b[H`) plus the alt-screen buffer's double-buffering
+  handles viewport correctness without flicker. macOS Terminal.app /
+  iTerm2 / alacritty users were already unaffected and remain so.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.
