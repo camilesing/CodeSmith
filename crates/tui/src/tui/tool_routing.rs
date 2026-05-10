@@ -712,8 +712,8 @@ fn push_orphan_tool_completion(
         .and_then(|m| m.get("spillover_path"))
         .and_then(serde_json::Value::as_str)
         .map(std::path::PathBuf::from);
-    let output_summary = output.as_deref().map(|o| summarize_tool_output(o));
-    let is_diff = output.as_deref().is_some_and(|o| output_looks_like_diff(o));
+    let output_summary = output.as_deref().map(summarize_tool_output);
+    let is_diff = output.as_deref().is_some_and(output_looks_like_diff);
     app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: name.to_string(),
         status,

@@ -165,6 +165,7 @@ impl SessionCostSnapshot {
 
 impl SessionMetadata {
     /// Copy cost fields from another metadata (used when forking a session).
+    #[allow(dead_code)]
     pub fn copy_cost_from(&mut self, other: &SessionMetadata) {
         self.cost = other.cost;
     }
@@ -952,6 +953,7 @@ mod tests {
                 model: "deepseek-v4-flash".to_string(),
                 workspace: workspace.to_path_buf(),
                 mode: None,
+                cost: SessionCostSnapshot::default(),
             },
             system_prompt: None,
             context_references: Vec::new(),
@@ -979,6 +981,7 @@ mod tests {
                 model: "deepseek-v4-pro".to_string(),
                 workspace: workspace.to_path_buf(),
                 mode: Some("yolo".to_string()),
+                cost: SessionCostSnapshot::default(),
             },
             system_prompt: None,
             context_references: Vec::new(),

@@ -1030,6 +1030,7 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
             model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("/tmp/resume-recovery"),
             mode: Some("yolo".to_string()),
+            cost: crate::session_manager::SessionCostSnapshot::default(),
         },
         messages,
         system_prompt: None,

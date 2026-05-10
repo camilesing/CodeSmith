@@ -370,8 +370,10 @@ fn walk_for_completions(
     );
 }
 
+#[allow(dead_code)]
 const LOCAL_REFERENCE_SCAN_LIMIT: usize = 4096;
 
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 fn add_local_reference_completions(
     root: &Path,
@@ -406,10 +408,12 @@ fn add_local_reference_completions(
     }
 }
 
+#[allow(dead_code)]
 fn should_try_local_reference_completion(needle: &str) -> bool {
     !needle.is_empty() && (needle.starts_with('.') || needle.contains('/') || needle.contains('\\'))
 }
 
+#[allow(dead_code)]
 fn local_reference_paths(root: &Path, limit: usize) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut builder = WalkBuilder::new(root);
@@ -441,6 +445,7 @@ fn local_reference_paths(root: &Path, limit: usize) -> Vec<PathBuf> {
     out
 }
 
+#[allow(dead_code)]
 fn should_skip_local_reference_dir(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
