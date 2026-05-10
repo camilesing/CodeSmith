@@ -725,6 +725,14 @@ pub struct App {
     pub composer_arrows_scroll: bool,
     pub use_bracketed_paste: bool,
     pub use_paste_burst_detection: bool,
+    /// Set to `true` the first time a real `Event::Paste` arrives during a
+    /// session. Once set, `handle_paste_burst_key` short-circuits — there's
+    /// no point running the rapid-keypress heuristic on a terminal that
+    /// already delivers paste-as-event correctly. Avoids paste-burst false
+    /// positives on Ghostty / iTerm2 / WezTerm / Windows Terminal where
+    /// fast typing or IME commits could otherwise be mis-classified as a
+    /// paste burst (#1322 follow-up).
+    pub bracketed_paste_seen: bool,
     #[allow(dead_code)]
     pub system_prompt: Option<SystemPrompt>,
     pub auto_compact: bool,
@@ -1336,6 +1344,7 @@ impl App {
             use_mouse_capture,
             use_bracketed_paste,
             use_paste_burst_detection,
+            bracketed_paste_seen: false,
             system_prompt: None,
             auto_compact,
             calm_mode,
@@ -2537,6 +2546,14 @@ impl App {
             self.insert_str(&normalized);
         }
         self.paste_burst.clear_after_explicit_paste();
+        // Visible-before-submit consolidation: when the post-paste input
+        // is over the cap, swap it for an @paste-…md mention immediately
+        // (instead of waiting until the user presses Enter and getting
+        // surprised by an auto-sent @mention). The same logic runs as a
+        // safety-net at submit time so any other code path that fills
+        // self.input above the cap still consolidates rather than
+        // silently truncating.
+        self.consolidate_large_input_if_oversized();
     }
 
     pub fn insert_media_attachment(&mut self, kind: &str, path: &Path, description: Option<&str>) {
@@ -3457,12 +3474,12 @@ impl App {
             self.paste_burst.clear_after_explicit_paste();
             return None;
         }
-        // When the input exceeds the safety cap, consolidate it into a
-        // workspace paste file and replace it with an @mention so the
-        // model can read the full content at turn time (#553).
-        if char_count(&self.input) > MAX_SUBMITTED_INPUT_CHARS {
-            self.consolidate_large_input();
-        }
+        // Safety net: if any earlier path filled the buffer above the
+        // safety cap without going through `insert_paste_text`, fold it
+        // into a workspace paste file now (#553). Bracketed pastes hit
+        // the consolidation in `insert_paste_text` first, so the user
+        // sees the @mention in the composer before submission.
+        self.consolidate_large_input_if_oversized();
         let input = self.input.clone();
         if !input.starts_with('/') {
             self.input_history.push(input.clone());
@@ -3519,6 +3536,17 @@ impl App {
             }
         }
         self.submit_input()
+    }
+
+    /// Public wrapper around [`Self::consolidate_large_input`] that no-ops
+    /// when the current input fits inside the safety cap. Both the paste-
+    /// insert path (visible-before-submit) and the submit-time safety net
+    /// route through here, so the cap is enforced exactly once even when
+    /// both paths fire on the same buffer.
+    fn consolidate_large_input_if_oversized(&mut self) {
+        if char_count(&self.input) > MAX_SUBMITTED_INPUT_CHARS {
+            self.consolidate_large_input();
+        }
     }
 
     /// When the composer input exceeds [`MAX_SUBMITTED_INPUT_CHARS`], write
@@ -4069,6 +4097,66 @@ mod tests {
                 .any(|(name, description)| name == "foo" && description == "Real foo skill"),
             "cached_skills should fall through to lower-precedence dir when higher-precedence one has an empty stub: {:?}",
             app.cached_skills,
+        );
+    }
+
+    #[test]
+    fn paste_consolidates_oversized_text_into_paste_file_visibly() {
+        // Visible-before-submit consolidation (paste UX): when a single
+        // bracketed paste exceeds the safety cap, the @mention must
+        // replace the input *immediately*, so the user sees what's
+        // about to be sent before pressing Enter — not as a side effect
+        // of submit.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let mut opts = test_options(false);
+        opts.workspace = tmp.path().to_path_buf();
+        let mut app = App::new(opts, &Config::default());
+        let full_content = "y".repeat(MAX_SUBMITTED_INPUT_CHARS + 256);
+
+        app.insert_paste_text(&full_content);
+
+        // Composer should now contain the @mention, not the full text.
+        assert!(
+            app.input.starts_with("@.deepseek/pastes/paste-") && app.input.ends_with(".md"),
+            "expected @mention in composer after large paste, got: {}",
+            app.input
+        );
+        // The cursor moves to the end of the @mention.
+        assert_eq!(app.cursor_position, app.input.chars().count());
+        // The paste file must exist with the full content.
+        let rel_path = &app.input[1..];
+        let abs = tmp.path().join(rel_path);
+        assert!(abs.is_file(), "paste file must exist at {abs:?}");
+        let written = std::fs::read_to_string(&abs).expect("read");
+        assert_eq!(written, full_content);
+        // A toast confirms what happened so the user isn't surprised.
+        assert!(
+            app.status_toasts
+                .iter()
+                .any(|t| t.text.contains("consolidated")),
+            "expected consolidation toast"
+        );
+    }
+
+    #[test]
+    fn paste_under_threshold_does_not_consolidate() {
+        // Negative path: a small paste must NOT spawn a paste file. The
+        // input stays inline so the user can edit it freely.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let mut opts = test_options(false);
+        opts.workspace = tmp.path().to_path_buf();
+        let mut app = App::new(opts, &Config::default());
+        let small = "hello world\nthis is fine".to_string();
+
+        app.insert_paste_text(&small);
+
+        assert_eq!(app.input, small);
+        assert!(!app.input.starts_with("@.deepseek/pastes/"));
+        // No paste file gets written for under-cap pastes.
+        let pastes_dir = tmp.path().join(".deepseek/pastes");
+        assert!(
+            !pastes_dir.exists() || std::fs::read_dir(&pastes_dir).unwrap().next().is_none(),
+            "no paste file should be written for under-cap content"
         );
     }
 

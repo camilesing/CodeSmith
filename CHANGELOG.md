@@ -157,6 +157,26 @@ Big thanks to every contributor below.
   watcher; no long-lived task. mtime-only churn (touched but
   byte-unchanged content) does not trigger a reload, so networked
   filesystems with coarse mtime granularity won't churn the pool.
+- **Paste consolidation now happens at paste time, not submit time** —
+  large bracketed pastes that exceed the 16 000-char safety cap are
+  now folded into a workspace `.deepseek/pastes/paste-…md` file and
+  swapped for an `@`-mention immediately on paste, instead of waiting
+  until the user presses Enter. The user sees the `@`-mention in the
+  composer (and the "consolidated → @mention" toast) before deciding
+  whether to send, eliminating the "I pressed Enter and an `@`-mention
+  appeared in the chat I didn't authorise" surprise. The submit-time
+  consolidation remains as a safety net for any other code path that
+  fills the buffer above the cap, so the cap is still enforced exactly
+  once.
+- **Auto-disable paste-burst once bracketed paste verified** — the
+  rapid-keystroke paste-burst heuristic (default-on for terminals
+  without bracketed paste) used to keep running on every session.
+  Once a real `Event::Paste` arrives in a session, paste-burst now
+  short-circuits — bracketed paste is verified working, and running
+  the heuristic alongside it just creates false positives on fast
+  typing / IME commits / autocomplete bursts. Terminals that never
+  deliver bracketed paste (the original target audience) are
+  unaffected; the heuristic still fires there.
 - **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
   gateways return quota/rate-limit errors as HTTP 400 instead of 429.
   These are now classified as retryable `RateLimited` errors.

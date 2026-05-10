@@ -1595,6 +1595,12 @@ async fn run_event_loop(
                     preview = %text.chars().take(80).collect::<String>(),
                     "Received bracketed paste event"
                 );
+                // Once a real bracketed-paste event has been observed in
+                // this session, the rapid-keystroke heuristic in
+                // paste_burst is redundant — disable it so fast typing /
+                // IME commits / autocomplete bursts don't get
+                // mis-classified as a paste.
+                app.bracketed_paste_seen = true;
                 if app.onboarding == OnboardingState::ApiKey {
                     // Paste into API key input
                     app.insert_api_key_str(text);
