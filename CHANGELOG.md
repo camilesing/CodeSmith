@@ -23,6 +23,11 @@ published.
 
 ### Fixed
 
+- **MCP tool ordering is deterministic** — discovered tools and the
+  resulting API tool block are now sorted by name so the prompt
+  prefix the model sees is stable across runs, regardless of
+  server-side pagination order. Improves prompt-cache hit rates with
+  multi-server MCP setups. Thanks **@hxy91819**.
 - **Error cells render as plain text** so env-var names (`API_KEY_FOO`)
   in error messages keep their underscores instead of being parsed as
   markdown emphasis. Thanks **@douglarek**.

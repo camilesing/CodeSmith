@@ -1108,6 +1108,10 @@ impl McpConnection {
                 break;
             }
         }
+        // Sort by tool name so the order the model sees doesn't depend on
+        // server-side pagination ordering — keeps the prompt prefix stable
+        // for cache-hit purposes (#1319).
+        self.tools.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(())
     }
 
@@ -1541,6 +1545,9 @@ impl McpPool {
                 tools.push((format!("mcp_{}_{}", server, tool.name), tool));
             }
         }
+        // Sort by prefixed name so iteration order across servers is
+        // deterministic for prefix-cache stability (#1319).
+        tools.sort_by(|a, b| a.0.cmp(&b.0));
         tools
     }
 
@@ -1816,6 +1823,9 @@ impl McpPool {
             });
         }
 
+        // Sort by name for prefix-cache stability — the tool block sent to
+        // the model needs to be deterministic across runs (#1319).
+        api_tools.sort_by(|a, b| a.name.cmp(&b.name));
         api_tools
     }
 
@@ -2618,6 +2628,49 @@ mod tests {
         let pool = McpPool::new(McpConfig::default());
         assert!(pool.server_names().is_empty());
         assert!(pool.all_tools().is_empty());
+    }
+
+    /// #1319: discovered tools must be sorted by name so the prompt prefix
+    /// is stable across runs (cache-hit stability), even when the server
+    /// returns them in arbitrary or paginated order.
+    #[tokio::test]
+    async fn discover_tools_sorts_by_name_for_cache_stability() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedValueTransport {
+            sent: Arc::clone(&sent),
+            responses: VecDeque::from([
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "tools": [
+                            { "name": "zeta", "inputSchema": {} },
+                            { "name": "alpha", "inputSchema": {} }
+                        ],
+                        "nextCursor": "page-2"
+                    }
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {
+                        "tools": [
+                            { "name": "mu", "inputSchema": {} },
+                            { "name": "beta", "inputSchema": {} }
+                        ]
+                    }
+                })),
+            ]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+        conn.discover_tools().await.expect("discover");
+
+        let names: Vec<&str> = conn.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alpha", "beta", "mu", "zeta"],
+            "tools must be sorted by name regardless of server order or pagination"
+        );
     }
 
     /// #1244: when an MCP stdio server fails to spawn, the underlying OS
