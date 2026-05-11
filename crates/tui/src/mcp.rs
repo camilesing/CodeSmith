@@ -1095,9 +1095,19 @@ impl McpConnection {
                 break;
             };
 
-            if let Some(tools) = result.get("tools") {
-                let page: Vec<McpTool> = serde_json::from_value(tools.clone()).unwrap_or_default();
-                self.tools.extend(page);
+            if let Some(arr) = result.get("tools").and_then(|t| t.as_array()) {
+                for item in arr {
+                    match serde_json::from_value::<McpTool>(item.clone()) {
+                        Ok(tool) => self.tools.push(tool),
+                        Err(err) => {
+                            // Skip individual malformed entries instead of
+                            // dropping the whole page (#1410). The old
+                            // `unwrap_or_default()` would silently throw
+                            // away every tool when one was misshapen.
+                            tracing::debug!(target: "mcp", ?err, "skipping malformed tool item");
+                        }
+                    }
+                }
             }
 
             cursor = result
@@ -1137,10 +1147,15 @@ impl McpConnection {
                 break;
             };
 
-            if let Some(resources) = result.get("resources") {
-                let page: Vec<McpResource> =
-                    serde_json::from_value(resources.clone()).unwrap_or_default();
-                self.resources.extend(page);
+            if let Some(arr) = result.get("resources").and_then(|r| r.as_array()) {
+                for item in arr {
+                    match serde_json::from_value::<McpResource>(item.clone()) {
+                        Ok(resource) => self.resources.push(resource),
+                        Err(err) => {
+                            tracing::debug!(target: "mcp", ?err, "skipping malformed resource item");
+                        }
+                    }
+                }
             }
 
             cursor = result
@@ -1180,10 +1195,15 @@ impl McpConnection {
                 .get("resourceTemplates")
                 .or_else(|| result.get("templates"))
                 .or_else(|| result.get("resource_templates"));
-            if let Some(templates) = templates {
-                let page: Vec<McpResourceTemplate> =
-                    serde_json::from_value(templates.clone()).unwrap_or_default();
-                self.resource_templates.extend(page);
+            if let Some(arr) = templates.and_then(|t| t.as_array()) {
+                for item in arr {
+                    match serde_json::from_value::<McpResourceTemplate>(item.clone()) {
+                        Ok(tmpl) => self.resource_templates.push(tmpl),
+                        Err(err) => {
+                            tracing::debug!(target: "mcp", ?err, "skipping malformed resource_template item");
+                        }
+                    }
+                }
             }
 
             cursor = result
@@ -1219,10 +1239,15 @@ impl McpConnection {
                 break;
             };
 
-            if let Some(prompts) = result.get("prompts") {
-                let page: Vec<McpPrompt> =
-                    serde_json::from_value(prompts.clone()).unwrap_or_default();
-                self.prompts.extend(page);
+            if let Some(arr) = result.get("prompts").and_then(|p| p.as_array()) {
+                for item in arr {
+                    match serde_json::from_value::<McpPrompt>(item.clone()) {
+                        Ok(prompt) => self.prompts.push(prompt),
+                        Err(err) => {
+                            tracing::debug!(target: "mcp", ?err, "skipping malformed prompt item");
+                        }
+                    }
+                }
             }
 
             cursor = result
