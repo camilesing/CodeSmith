@@ -17,17 +17,20 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[test]
-fn format_resume_hint_uses_canonical_resume_command() {
+fn resume_hint_uses_canonical_resume_command() {
     assert_eq!(
-        format_resume_hint(Some("019dd9d6-4f44-7c83-9863-59674a12b827")),
-        Some("To continue this session, execute deepseek run --continue".to_string())
+        resume_hint_text(),
+        "To continue this session, execute deepseek run --continue"
     );
+    assert!(should_show_resume_hint(Some(
+        "019dd9d6-4f44-7c83-9863-59674a12b827"
+    )));
 }
 
 #[test]
-fn format_resume_hint_omits_missing_session_id() {
-    assert_eq!(format_resume_hint(None), None);
-    assert_eq!(format_resume_hint(Some("   ")), None);
+fn resume_hint_omits_missing_session_id() {
+    assert!(!should_show_resume_hint(None));
+    assert!(!should_show_resume_hint(Some("   ")));
 }
 
 #[test]

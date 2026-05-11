@@ -462,9 +462,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     terminal.show_cursor()?;
     drop(terminal);
 
-    if result.is_ok()
-        && let Some(hint) = format_resume_hint(app.current_session_id.as_deref())
-    {
+    if result.is_ok() && should_show_resume_hint(app.current_session_id.as_deref()) {
         // Printed AFTER `LeaveAlternateScreen` / `drop(terminal)` above,
         // so we're back on the primary screen — this is the one
         // legitimate stdout write in the TUI module tree. The
@@ -472,19 +470,19 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         // refuse it.
         #[allow(clippy::print_stdout)]
         {
-            println!("{hint}");
+            println!("{}", resume_hint_text());
         }
     }
 
     result
 }
 
-fn format_resume_hint(session_id: Option<&str>) -> Option<String> {
-    let session_id = session_id?.trim();
-    if session_id.is_empty() {
-        return None;
-    }
-    Some("To continue this session, execute deepseek run --continue".to_string())
+fn should_show_resume_hint(session_id: Option<&str>) -> bool {
+    session_id.is_some_and(|id| !id.trim().is_empty())
+}
+
+fn resume_hint_text() -> &'static str {
+    "To continue this session, execute deepseek run --continue"
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {
