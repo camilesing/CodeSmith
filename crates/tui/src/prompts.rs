@@ -151,6 +151,51 @@ pub const BASE_PROMPT: &str = include_str!("prompts/base.md");
 /// strings for: `zh-Hans`, `ja`, `pt-BR`). Other locales fall through
 /// to `None` and get the English-only directive, which is the same
 /// behavior as before this change.
+///
+/// ## Design philosophy: why a bookend, not a full translation
+///
+/// Community feedback on the WeChat thread that prompted this work
+/// pointed out — correctly — that DeepSeek V4 is a Chinese-first
+/// multilingual model, not an English-only model with multilingual
+/// veneer. Its tokenizer is co-trained on Chinese; `你好` typically
+/// encodes to ~1 token, not 2 — the "Chinese is expensive in tokens"
+/// folk wisdom from Western-LLM commentary doesn't apply here.
+///
+/// The naïve translation of that argument would be: ship a fully
+/// translated `base.md` per locale. We deliberately stop short of
+/// that for v0.8.29. The reasons, ranked:
+///
+///   1. **Drift risk.** A 200+ line technical prompt has subtle
+///      phrasing that drives subtle behavior. Every rule change has
+///      to land in N translated copies, kept in lockstep. The class
+///      of bug that arises (Chinese users see slightly different
+///      agent behavior than English users) is hard to reproduce and
+///      hard to triage from bug reports.
+///   2. **Cache stability.** With one English `base.md` and a
+///      per-locale preamble+closer, the largest cacheable chunk
+///      (mode prompt + project context + environment) stays
+///      byte-stable within a session and across users in the same
+///      locale. A fully translated per-locale `base.md` keeps cache
+///      per-locale but doesn't share with English users.
+///   3. **Translation QA is expensive.** Each prompt-language pair
+///      needs a native speaker reviewing tone, register, and rule
+///      preservation. Getting it 95% right is bad, because the
+///      missing 5% becomes silent behavior divergence.
+///
+/// What we DO instead — the bookend pattern @MuMu described from
+/// their other project — is reinforce the locale directive in
+/// native script at BOTH ends of the prompt. The opening anchors
+/// behavior at session start; the closing reinforcement
+/// (`locale_reinforcement_closer`) sits at the maximum-recency
+/// position right before the user's next message. Empirically this
+/// is sufficient to keep `reasoning_content` in the target locale
+/// even as English code accumulates in context turn-over-turn.
+///
+/// If at some future point the bookend proves insufficient — or if
+/// the maintenance cost of per-locale `base.md` files becomes
+/// preferable to whatever's blocking it — full translation is the
+/// natural next step. The locale tags here, the test invariants,
+/// and the closer position would all carry over unchanged.
 pub(crate) fn locale_reinforcement_preamble(locale_tag: &str) -> Option<&'static str> {
     match locale_tag {
         "zh-Hans" | "zh-CN" | "zh" => Some(LOCALE_PREAMBLE_ZH_HANS),
