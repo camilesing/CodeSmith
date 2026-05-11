@@ -254,13 +254,6 @@ pub struct StreamingState {
     pub accumulated_text: String,
     /// Accumulated thinking for display
     pub accumulated_thinking: String,
-    /// Monotonic counter of characters committed across the current turn,
-    /// summed over every commit tick from every block. Used as the footer
-    /// water-spout animation's frame source so the visual cadence of the
-    /// wave matches the cadence of typed text: typewriter mode drips,
-    /// upstream mode surges, tool calls freeze the surface. Reset to 0
-    /// on [`Self::reset`] so each new turn opens with a fresh wave.
-    pub stream_commit_frame: u64,
 }
 
 impl StreamingState {
@@ -385,13 +378,6 @@ impl StreamingState {
         if let Some(Some(block)) = self.blocks.get_mut(index) {
             let now = Instant::now();
             let out = run_commit_tick(&mut block.policy, &mut block.chunker, now);
-            // Advance the shared animation frame by the character count of
-            // this tick's commit. The footer water-spout reads this so the
-            // wave moves at typing cadence (zero motion when zero chars
-            // arrive, fast surges when V4-pro bursts).
-            self.stream_commit_frame = self
-                .stream_commit_frame
-                .saturating_add(out.committed_text.chars().count() as u64);
             out.committed_text
         } else {
             String::new()
@@ -478,11 +464,6 @@ impl StreamingState {
             if !tail.is_empty() {
                 out.push_str(&tail);
             }
-            // Advance the animation frame for the final drain too, so the
-            // wave-stop matches the last typed character.
-            self.stream_commit_frame = self
-                .stream_commit_frame
-                .saturating_add(out.chars().count() as u64);
             self.check_active();
             out
         } else {
@@ -534,9 +515,6 @@ impl StreamingState {
         self.is_active = false;
         self.accumulated_text.clear();
         self.accumulated_thinking.clear();
-        // New turn → fresh animation wave. Zero is a stable frame that
-        // produces a calm wave shape, not a glitch frame.
-        self.stream_commit_frame = 0;
     }
 }
 
@@ -603,88 +581,5 @@ mod tests {
         assert_eq!(state.commit_text(0), "a");
 
         assert_eq!(state.finalize_block_text(0), "bc");
-    }
-
-    #[test]
-    fn stream_commit_frame_advances_by_character_count_on_commit() {
-        // The footer water-spout reads `stream_commit_frame` and the wave
-        // moves at that cadence. Each commit tick must advance the counter
-        // by exactly the number of characters it flushed — otherwise the
-        // wave drifts off the typing rate.
-        let mut state = StreamingState::new();
-        state.start_text(0, None);
-        assert_eq!(state.stream_commit_frame, 0);
-
-        state.push_content(0, "hello");
-        let committed = state.commit_text(0);
-        assert_eq!(committed, "hello");
-        assert_eq!(state.stream_commit_frame, 5);
-
-        // A second tick adds to the running total — never resets mid-turn.
-        state.push_content(0, " world");
-        let _ = state.commit_text(0);
-        assert_eq!(state.stream_commit_frame, 11);
-    }
-
-    #[test]
-    fn stream_commit_frame_counts_unicode_chars_not_bytes() {
-        // CJK characters take 3 bytes in UTF-8 but should advance the
-        // animation by 1 frame each (one visible glyph = one wave step),
-        // so the wave doesn't suddenly triple-speed when a Chinese turn
-        // streams.
-        let mut state = StreamingState::new();
-        state.start_text(0, None);
-        state.push_content(0, "你好");
-        let _ = state.commit_text(0);
-        assert_eq!(state.stream_commit_frame, 2);
-    }
-
-    #[test]
-    fn stream_commit_frame_advances_on_finalize() {
-        // The last partial line drained at stream end should still tick the
-        // wave so the visual "stop" matches the last character emitted.
-        let mut state = StreamingState::new();
-        state.start_text(0, None);
-        state.set_low_motion(true);
-        state.push_content(0, "abc");
-        // One char committed via the tick, the rest emerges on finalize.
-        assert_eq!(state.commit_text(0), "a");
-        assert_eq!(state.stream_commit_frame, 1);
-        assert_eq!(state.finalize_block_text(0), "bc");
-        assert_eq!(state.stream_commit_frame, 3);
-    }
-
-    #[test]
-    fn stream_commit_frame_resets_on_reset() {
-        // New turn = fresh wave. Otherwise long sessions would carry a
-        // huge u64 frame counter that — while harmless mathematically —
-        // makes the wave's starting shape unpredictable.
-        let mut state = StreamingState::new();
-        state.start_text(0, None);
-        state.push_content(0, "anything");
-        let _ = state.commit_text(0);
-        assert!(state.stream_commit_frame > 0);
-
-        state.reset();
-        assert_eq!(state.stream_commit_frame, 0);
-    }
-
-    #[test]
-    fn stream_commit_frame_freezes_when_no_text_arrives() {
-        // The "water = typing" idea relies on the counter NOT advancing
-        // during idle ticks. A commit tick with an empty queue must be
-        // a no-op for the frame counter; otherwise tool-call pauses would
-        // still show a moving wave.
-        let mut state = StreamingState::new();
-        state.start_text(0, None);
-        state.push_content(0, "hi");
-        let _ = state.commit_text(0); // drains "hi", frame = 2
-        assert_eq!(state.stream_commit_frame, 2);
-
-        // No new content pushed — running commit_text again should be a
-        // no-op for the frame counter.
-        let empty = state.commit_text(0);
-        assert!(empty.is_empty());
-        assert_eq!(state.stream_commit_frame, 2);
     }
 }

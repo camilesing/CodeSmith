@@ -6911,15 +6911,15 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame, app.ui_locale));
         props.state_color = palette::DEEPSEEK_SKY;
 
-        // Water-spout frame source: the wave moves at the same cadence as
-        // typed text. `stream_commit_frame` advances by the character count
-        // of each commit tick, so typewriter mode produces a steady drip,
-        // V4-pro bursts produce visible surges, and tool calls / planning
-        // pauses freeze the surface (informative — the wave IS the typing).
-        // `fancy_animations = false` hides the strip entirely; the textual
-        // `working...` pulse still keeps a heartbeat regardless.
+        // Water-spout frame source: wall-clock milliseconds. The sine-wave
+        // math in `footer_working_strip_glyph_at` was tuned for this cadence
+        // (`t = frame / 1000.0`, primary term × 8.0 ≈ 1.3 Hz at 1 ms ticks),
+        // so frame must advance at ~1000 units/sec to produce the intended
+        // animation feel. `fancy_animations = false` hides the strip
+        // entirely; the textual `working...` pulse still keeps a heartbeat
+        // regardless.
         if app.fancy_animations {
-            props.working_strip_frame = Some(app.streaming_state.stream_commit_frame);
+            props.working_strip_frame = Some(now_ms);
         }
     } else if props.state_label == "ready"
         && let Some(label) = selected_detail_footer_label(app)

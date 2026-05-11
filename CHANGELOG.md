@@ -7,31 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Footer water-spout strip is now synchronized with the typing cadence,
-  and `low_motion` no longer hides the whale.** Before this release, the
-  spout-strip animation in the footer was hard-gated on `!low_motion`, so
-  users who set `low_motion = true` (typewriter streaming) silently lost
-  the water-spout animation entirely — even with `fancy_animations = true`
-  the strip stayed plain whitespace. The two flags are now orthogonal:
-  `fancy_animations` alone decides whether the wave is rendered, and the
-  wave's frame source is the streaming character-commit counter — so the
-  visual cadence of the wave matches the cadence of the text on screen.
-  Typewriter mode produces a steady drip; V4-pro's warm-cache bursts
-  produce visible surges; tool calls and planning pauses freeze the
-  surface (the wave literally IS the typing, so when typing stops the
-  water stops). The textual `working...` pulse continues to tick on
-  wall-clock so a heartbeat is always visible.
-  ([`crates/tui/src/tui/streaming/mod.rs`](crates/tui/src/tui/streaming/mod.rs) `StreamingState::stream_commit_frame`;
-  [`crates/tui/src/tui/ui.rs`](crates/tui/src/tui/ui.rs) `render_footer` spout-gate;
-  regression-guarded by `stream_commit_frame_advances_by_character_count_on_commit`,
-  `stream_commit_frame_counts_unicode_chars_not_bytes`,
-  `stream_commit_frame_advances_on_finalize`,
-  `stream_commit_frame_resets_on_reset`,
-  `stream_commit_frame_freezes_when_no_text_arrives`.)
-
 ### Fixed
+
+- **`low_motion = true` no longer hides the footer water-spout** when
+  `fancy_animations = true`. The spout-strip animation in the footer was
+  hard-gated on `!low_motion`, collapsing two unrelated concerns —
+  streaming pacing and footer animation — onto one flag. The two are now
+  orthogonal: `low_motion` governs only streaming pacing (typewriter vs.
+  upstream cadence), and `fancy_animations` alone decides whether the
+  water-spout strip renders. The wave itself is unchanged from prior
+  releases (wall-clock-driven sine, same cadence as v0.8.29).
 
 - **`g` no longer hijacks the first character of a message** — pressing a
   single `g` with an empty composer used to silently arm a vim-style
