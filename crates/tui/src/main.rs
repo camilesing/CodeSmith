@@ -3648,12 +3648,14 @@ fn should_use_alt_screen(_cli: &Cli, _config: &Config) -> bool {
 fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
     let terminal_emulator = std::env::var("TERMINAL_EMULATOR").ok();
     let wt_session = std::env::var("WT_SESSION").ok().filter(|s| !s.is_empty());
+    let conemu_pid = std::env::var("ConEmuPID").ok().filter(|s| !s.is_empty());
     should_use_mouse_capture_with(
         cli,
         config,
         use_alt_screen,
         terminal_emulator.as_deref(),
         wt_session.as_deref(),
+        conemu_pid.as_deref(),
     )
 }
 
@@ -3663,6 +3665,7 @@ fn should_use_mouse_capture_with(
     use_alt_screen: bool,
     terminal_emulator: Option<&str>,
     wt_session: Option<&str>,
+    conemu_pid: Option<&str>,
 ) -> bool {
     if !use_alt_screen || cli.no_mouse_capture {
         return false;
@@ -3674,15 +3677,16 @@ fn should_use_mouse_capture_with(
         .tui
         .as_ref()
         .and_then(|tui| tui.mouse_capture)
-        .unwrap_or_else(|| default_mouse_capture_enabled(terminal_emulator, wt_session))
+        .unwrap_or_else(|| default_mouse_capture_enabled(terminal_emulator, wt_session, conemu_pid))
 }
 
 /// Whether to enable terminal mouse capture by default for this platform/host.
 ///
 /// On Windows the default depends on the host: Windows Terminal (which sets
-/// `WT_SESSION`) handles mouse-mode reporting cleanly, so default-on there
-/// gives users in-app text selection and keeps the application's selection
-/// clamped to the transcript area (#1169). Legacy conhost stays default-off
+/// `WT_SESSION`) and ConEmu/Cmder (which set `ConEmuPID`) handle mouse-mode
+/// reporting cleanly, so default-on there gives users in-app text selection
+/// and keeps the application's selection clamped to the transcript area
+/// (#1169). Legacy conhost (CMD without either env var) stays default-off
 /// because its mouse-mode reporting can leak SGR escape sequences as raw
 /// text into the composer (#878 / #898).
 ///
@@ -3693,9 +3697,10 @@ fn should_use_mouse_capture_with(
 fn default_mouse_capture_enabled(
     terminal_emulator: Option<&str>,
     wt_session: Option<&str>,
+    conemu_pid: Option<&str>,
 ) -> bool {
     if cfg!(windows) {
-        return wt_session.is_some();
+        return wt_session.is_some() || conemu_pid.is_some();
     }
     if matches!(terminal_emulator, Some(t) if t.eq_ignore_ascii_case("JetBrains-JediTerm")) {
         return false;
@@ -4661,21 +4666,21 @@ mod terminal_mode_tests {
         let config = Config::default();
 
         assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None
+            &cli, &config, true, None, None, None
         ));
     }
 
     #[test]
     #[cfg(windows)]
     fn mouse_capture_defaults_off_on_legacy_windows_console() {
-        // Legacy conhost (no `WT_SESSION`) keeps the v0.8.x default-off
-        // behavior: mouse-mode reporting on legacy console can leak SGR
-        // escapes into the composer.
+        // Legacy conhost (no `WT_SESSION` and no `ConEmuPID`) keeps the
+        // v0.8.x default-off behavior: mouse-mode reporting on legacy console
+        // can leak SGR escapes into the composer.
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
 
         assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None
+            &cli, &config, true, None, None, None
         ));
     }
 
@@ -4696,6 +4701,25 @@ mod terminal_mode_tests {
             true,
             None,
             Some("{a3a3b3a8-aa00-0000-0000-000000000000}"),
+            None,
+        ));
+    }
+
+    // ConEmu/Cmder sets `ConEmuPID` and handles VT mouse-mode reporting
+    // cleanly; default mouse capture on there so users get in-app scrolling.
+    #[test]
+    #[cfg(windows)]
+    fn mouse_capture_defaults_on_in_conemu() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        assert!(should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            None,
+            None,
+            Some("12345"),
         ));
     }
 
@@ -4705,7 +4729,7 @@ mod terminal_mode_tests {
         let config = Config::default();
 
         assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None
+            &cli, &config, true, None, None, None
         ));
     }
 
@@ -4726,7 +4750,7 @@ mod terminal_mode_tests {
         };
 
         assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None
+            &cli, &config, true, None, None, None
         ));
     }
 
@@ -4736,7 +4760,7 @@ mod terminal_mode_tests {
         let config = Config::default();
 
         assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None
+            &cli, &config, true, None, None, None
         ));
     }
 
@@ -4757,7 +4781,7 @@ mod terminal_mode_tests {
         };
 
         assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None
+            &cli, &config, true, None, None, None
         ));
     }
 
@@ -4767,7 +4791,7 @@ mod terminal_mode_tests {
         let config = Config::default();
 
         assert!(!should_use_mouse_capture_with(
-            &cli, &config, false, None, None
+            &cli, &config, false, None, None, None
         ));
     }
 
@@ -4789,6 +4813,7 @@ mod terminal_mode_tests {
             true,
             Some("JetBrains-JediTerm"),
             None,
+            None,
         ));
     }
 
@@ -4805,6 +4830,7 @@ mod terminal_mode_tests {
             true,
             Some("jetbrains-jediterm"),
             None,
+            None,
         ));
     }
 
@@ -4818,6 +4844,7 @@ mod terminal_mode_tests {
             &config,
             true,
             Some("JetBrains-JediTerm"),
+            None,
             None,
         ));
     }
@@ -4843,6 +4870,7 @@ mod terminal_mode_tests {
             &config,
             true,
             Some("JetBrains-JediTerm"),
+            None,
             None,
         ));
     }
