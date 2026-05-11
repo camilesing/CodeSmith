@@ -2391,7 +2391,9 @@ async fn run_event_loop(
                     app.mention_menu_hidden = true;
                     app.mention_menu_selected = 0;
                 }
-                KeyCode::Esc => match next_escape_action(app, slash_menu_open) {
+                KeyCode::Esc => {
+                    app.transcript_pending_g = false;
+                    match next_escape_action(app, slash_menu_open) {
                     EscapeAction::CloseSlashMenu => {
                         // A popup-style action wins over backtrack — clear
                         // any prime so a stale Primed state can't jump us
@@ -2460,7 +2462,8 @@ async fn run_event_loop(
                             }
                         }
                     }
-                },
+                }
+            },
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::SUPER) => {
                     app.scroll_up(app.viewport.last_transcript_visible.max(3));
                 }
@@ -2572,10 +2575,20 @@ async fn run_event_loop(
                 KeyCode::Char('g')
                     if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
                 {
-                    if let Some(anchor) =
-                        TranscriptScroll::anchor_for(app.viewport.transcript_cache.line_meta(), 0)
-                    {
-                        app.viewport.transcript_scroll = anchor;
+                    // Vim-style 'gg' — double-tap 'g' to jump to top.
+                    // First 'g' arms the pending flag; second executes the scroll.
+                    // This prevents a single 'g' (the first letter of a message)
+                    // from hijacking the transcript scroll.
+                    if app.transcript_pending_g {
+                        if let Some(anchor) = TranscriptScroll::anchor_for(
+                            app.viewport.transcript_cache.line_meta(),
+                            0,
+                        ) {
+                            app.viewport.transcript_scroll = anchor;
+                        }
+                        app.transcript_pending_g = false;
+                    } else {
+                        app.transcript_pending_g = true;
                     }
                 }
                 KeyCode::Char('G')
@@ -2675,6 +2688,7 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Enter => {
+                    app.transcript_pending_g = false;
                     // #573: when the user typed a slash-command prefix that
                     // the popup is matching (e.g. `/mo` → `/model`), Enter
                     // should run the *highlighted match* rather than
@@ -2986,6 +3000,11 @@ async fn run_event_loop(
                     // absorb — Visual mode not yet fully implemented
                 }
                 KeyCode::Char(c) => {
+                    // Any typed character after a pending 'g' means the user
+                    // is composing a message, not navigating — disarm the
+                    // 'gg' double-tap so the next bare 'g' on an empty
+                    // composer starts a new sequence.
+                    app.transcript_pending_g = false;
                     app.insert_char(c);
                 }
                 _ => {}
