@@ -3104,6 +3104,9 @@ mod tests {
     ///
     /// Run with: `cargo test -p deepseek-tui --release bench_transcript_scroll
     /// -- --ignored --nocapture`
+    // Perf bench prints timing rows to stdout — runs in `cargo test`,
+    // never inside the TUI alt-screen.
+    #[allow(clippy::print_stdout)]
     #[test]
     #[ignore = "perf bench; run with --release"]
     fn bench_transcript_scroll_5000_messages() {

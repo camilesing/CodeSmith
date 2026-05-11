@@ -569,7 +569,10 @@ mod tests {
         // Explicit-user-override clause keeps the prompt useful for the
         // opposite preference (#1118 commenters who want English
         // thinking for token-cost reasons).
-        for phrase in ["think in English", "\u{7528}\u{82F1}\u{6587}\u{601D}\u{8003}"] {
+        for phrase in [
+            "think in English",
+            "\u{7528}\u{82F1}\u{6587}\u{601D}\u{8003}",
+        ] {
             assert!(
                 lang.contains(phrase),
                 "expected the user-override example `{phrase}`"

@@ -226,6 +226,24 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_alt_screen {
         execute!(stdout, EnterAlternateScreen)?;
     }
+    // Initialize the file-backed TUI log and (on Unix) redirect raw stderr
+    // away from the alt-screen for the lifetime of this guard. Any
+    // `eprintln!`, panic message, or third-party stderr write that would
+    // otherwise leak into the alt-screen buffer and shift ratatui's
+    // diff-renderer view (the "scroll demon" reported in #1085) now lands
+    // in `~/.deepseek/logs/tui-YYYY-MM-DD.log` instead. The guard is held
+    // until the function returns; dropping it (after `LeaveAlternateScreen`
+    // below) restores the original stderr fd so shutdown messages reach
+    // the user's terminal. We accept the init failing (e.g., read-only
+    // `$HOME`) and continue without the redirect rather than refusing to
+    // start the TUI.
+    let _tui_log_guard = match crate::runtime_log::init() {
+        Ok(guard) => Some(guard),
+        Err(err) => {
+            tracing::warn!(target: "runtime_log", ?err, "TUI log init failed; stderr leaks may render as scroll-demon");
+            None
+        }
+    };
     // Mouse capture, bracketed paste, focus events, and the Kitty
     // keyboard-protocol escape-disambiguation flag (#442). Single source
     // of truth shared with the FocusGained recovery path and
@@ -447,7 +465,15 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if result.is_ok()
         && let Some(hint) = format_resume_hint(app.current_session_id.as_deref())
     {
-        println!("{hint}");
+        // Printed AFTER `LeaveAlternateScreen` / `drop(terminal)` above,
+        // so we're back on the primary screen — this is the one
+        // legitimate stdout write in the TUI module tree. The
+        // module-level `#![deny(clippy::print_stdout)]` would otherwise
+        // refuse it.
+        #[allow(clippy::print_stdout)]
+        {
+            println!("{hint}");
+        }
     }
 
     result

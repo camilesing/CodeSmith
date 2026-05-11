@@ -54,6 +54,7 @@ pub mod repl;
 mod retry_status;
 pub mod rlm;
 mod runtime_api;
+mod runtime_log;
 mod runtime_threads;
 mod sandbox;
 mod schema_migration;
