@@ -224,7 +224,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "note",
         aliases: &[],
-        usage: "/note <text>",
+        usage: "/note [add|list|show|edit|remove|clear|path]",
         description_id: MessageId::CmdNoteDescription,
     },
     CommandInfo {
