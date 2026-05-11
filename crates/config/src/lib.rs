@@ -2255,8 +2255,7 @@ mod tests {
             provider: ProviderKind::Fireworks,
             ..ConfigToml::default()
         };
-        config.providers.fireworks.base_url =
-            Some("https://my-gateway.example/v1".to_string());
+        config.providers.fireworks.base_url = Some("https://my-gateway.example/v1".to_string());
         config.providers.fireworks.model = Some("DeepSeek-V4-Pro".to_string());
 
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());

@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Footer water-spout strip is now synchronized with the typing cadence,
+  and `low_motion` no longer hides the whale.** Before this release, the
+  spout-strip animation in the footer was hard-gated on `!low_motion`, so
+  users who set `low_motion = true` (typewriter streaming) silently lost
+  the water-spout animation entirely — even with `fancy_animations = true`
+  the strip stayed plain whitespace. The two flags are now orthogonal:
+  `fancy_animations` alone decides whether the wave is rendered, and the
+  wave's frame source is the streaming character-commit counter — so the
+  visual cadence of the wave matches the cadence of the text on screen.
+  Typewriter mode produces a steady drip; V4-pro's warm-cache bursts
+  produce visible surges; tool calls and planning pauses freeze the
+  surface (the wave literally IS the typing, so when typing stops the
+  water stops). The textual `working...` pulse continues to tick on
+  wall-clock so a heartbeat is always visible.
+  ([`crates/tui/src/tui/streaming/mod.rs`](crates/tui/src/tui/streaming/mod.rs) `StreamingState::stream_commit_frame`;
+  [`crates/tui/src/tui/ui.rs`](crates/tui/src/tui/ui.rs) `render_footer` spout-gate;
+  regression-guarded by `stream_commit_frame_advances_by_character_count_on_commit`,
+  `stream_commit_frame_counts_unicode_chars_not_bytes`,
+  `stream_commit_frame_advances_on_finalize`,
+  `stream_commit_frame_resets_on_reset`,
+  `stream_commit_frame_freezes_when_no_text_arrives`.)
+
+### Fixed
+
+- **`g` no longer hijacks the first character of a message** — pressing a
+  single `g` with an empty composer used to silently arm a vim-style
+  jump-to-top binding, eating the keystroke; a second `g` would then jump
+  the transcript. The handler now requires a true double-tap `gg` and
+  the pending flag resets on any other key, Enter, or Escape.
+- **Custom-base-URL providers preserve the user's model name** (#857
+  class). Only OpenRouter was previously whitelisted; Sglang, Novita,
+  Fireworks, Vllm, Ollama, and NvidiaNim users hitting custom gateways
+  with a bare model name were getting HTTP 400s because the dispatcher
+  rewrote the model identifier. Now any provider with a user-set
+  `base_url` is treated as a custom endpoint and passes the model name
+  through unchanged.
+- **`exec_shell` no longer freezes the TUI when a background subprocess
+  outlives its parent shell** (#828, cherry-picked from PR #1475 by
+  **@CrepuscularIRIS / autoghclaw**). Orphaned children that kept the
+  pipe write-end open made `handle.join()` in `collect_output` block
+  indefinitely; every transcript-rendering tick that called
+  `list_jobs()` then hung the UI. The collector now kills the process
+  group before joining the reader threads, and the previously dead
+  `cleanup()` is now wired to drop completed jobs older than an hour.
+
 ## [0.8.29] - 2026-05-11
 
 A maintenance release anchored by a regression fix for the

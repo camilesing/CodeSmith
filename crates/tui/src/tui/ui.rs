@@ -2394,76 +2394,76 @@ async fn run_event_loop(
                 KeyCode::Esc => {
                     app.transcript_pending_g = false;
                     match next_escape_action(app, slash_menu_open) {
-                    EscapeAction::CloseSlashMenu => {
-                        // A popup-style action wins over backtrack — clear
-                        // any prime so a stale Primed state can't jump us
-                        // straight into Selecting on the next Esc.
-                        app.backtrack.reset();
-                        app.close_slash_menu();
-                    }
-                    EscapeAction::CancelRequest => {
-                        app.backtrack.reset();
-                        engine_handle.cancel();
-                        app.is_loading = false;
-                        app.dispatch_started_at = None;
-                        app.streaming_state.reset();
-                        // Optimistically halt the wave + working label —
-                        // engine's TurnComplete will resync with the real
-                        // outcome. Fixes #5a (wave kept animating after Esc).
-                        app.runtime_turn_status = None;
-                        // Finalize any in-flight tool entries optimistically so
-                        // the composer regains focus and the footer's "tool ...
-                        // · X active" chip clears immediately rather than
-                        // waiting for the engine's TurnComplete echo to drain.
-                        // Idempotent with the TurnComplete handler that runs
-                        // when the engine actually echoes the cancel (#243).
-                        // Background sub-agents continue running — they are
-                        // tracked via `subagent_cache` independently of the
-                        // foreground turn.
-                        app.finalize_active_cell_as_interrupted();
-                        app.finalize_streaming_assistant_as_interrupted();
-                        app.status_message = Some("Request cancelled".to_string());
-                    }
-                    EscapeAction::DiscardQueuedDraft => {
-                        app.backtrack.reset();
-                        app.queued_draft = None;
-                        app.status_message = Some("Stopped editing queued message".to_string());
-                    }
-                    EscapeAction::ClearInput => {
-                        app.backtrack.reset();
-                        app.edit_in_progress = false;
-                        app.clear_input_recoverable();
-                    }
-                    EscapeAction::Noop => {
-                        // Nothing else cares about this Esc — route it
-                        // through the backtrack state machine. While
-                        // streaming or with the live transcript already
-                        // open, fall through silently (#133 acceptance:
-                        // "during streaming Esc-Esc is a silent no-op").
-                        if app.is_loading
-                            || app.view_stack.top_kind() == Some(ModalKind::LiveTranscript)
-                        {
-                            continue;
+                        EscapeAction::CloseSlashMenu => {
+                            // A popup-style action wins over backtrack — clear
+                            // any prime so a stale Primed state can't jump us
+                            // straight into Selecting on the next Esc.
+                            app.backtrack.reset();
+                            app.close_slash_menu();
                         }
-                        let total = count_user_history_cells(app);
-                        match app.backtrack.handle_esc(total) {
-                            crate::tui::backtrack::EscEffect::None => {}
-                            crate::tui::backtrack::EscEffect::Prime => {
-                                app.status_message =
-                                    Some("Press Esc again to backtrack".to_string());
-                                app.needs_redraw = true;
+                        EscapeAction::CancelRequest => {
+                            app.backtrack.reset();
+                            engine_handle.cancel();
+                            app.is_loading = false;
+                            app.dispatch_started_at = None;
+                            app.streaming_state.reset();
+                            // Optimistically halt the wave + working label —
+                            // engine's TurnComplete will resync with the real
+                            // outcome. Fixes #5a (wave kept animating after Esc).
+                            app.runtime_turn_status = None;
+                            // Finalize any in-flight tool entries optimistically so
+                            // the composer regains focus and the footer's "tool ...
+                            // · X active" chip clears immediately rather than
+                            // waiting for the engine's TurnComplete echo to drain.
+                            // Idempotent with the TurnComplete handler that runs
+                            // when the engine actually echoes the cancel (#243).
+                            // Background sub-agents continue running — they are
+                            // tracked via `subagent_cache` independently of the
+                            // foreground turn.
+                            app.finalize_active_cell_as_interrupted();
+                            app.finalize_streaming_assistant_as_interrupted();
+                            app.status_message = Some("Request cancelled".to_string());
+                        }
+                        EscapeAction::DiscardQueuedDraft => {
+                            app.backtrack.reset();
+                            app.queued_draft = None;
+                            app.status_message = Some("Stopped editing queued message".to_string());
+                        }
+                        EscapeAction::ClearInput => {
+                            app.backtrack.reset();
+                            app.edit_in_progress = false;
+                            app.clear_input_recoverable();
+                        }
+                        EscapeAction::Noop => {
+                            // Nothing else cares about this Esc — route it
+                            // through the backtrack state machine. While
+                            // streaming or with the live transcript already
+                            // open, fall through silently (#133 acceptance:
+                            // "during streaming Esc-Esc is a silent no-op").
+                            if app.is_loading
+                                || app.view_stack.top_kind() == Some(ModalKind::LiveTranscript)
+                            {
+                                continue;
                             }
-                            crate::tui::backtrack::EscEffect::Cancel => {
-                                app.status_message = Some("Backtrack canceled".to_string());
-                                app.needs_redraw = true;
-                            }
-                            crate::tui::backtrack::EscEffect::OpenOverlay => {
-                                open_backtrack_overlay(app);
+                            let total = count_user_history_cells(app);
+                            match app.backtrack.handle_esc(total) {
+                                crate::tui::backtrack::EscEffect::None => {}
+                                crate::tui::backtrack::EscEffect::Prime => {
+                                    app.status_message =
+                                        Some("Press Esc again to backtrack".to_string());
+                                    app.needs_redraw = true;
+                                }
+                                crate::tui::backtrack::EscEffect::Cancel => {
+                                    app.status_message = Some("Backtrack canceled".to_string());
+                                    app.needs_redraw = true;
+                                }
+                                crate::tui::backtrack::EscEffect::OpenOverlay => {
+                                    open_backtrack_overlay(app);
+                                }
                             }
                         }
                     }
                 }
-            },
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::SUPER) => {
                     app.scroll_up(app.viewport.last_transcript_visible.max(3));
                 }
@@ -6892,11 +6892,11 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Animate the spacer between the left status line and the right-hand
     // chips whenever a turn is live: model loading/streaming, compacting, or
-    // sub-agents in flight. Honors the `low_motion` setting — calm terminals
-    // get the plain whitespace gap. Strip frame counter ticks every 150 ms
-    // (crest A advances every 4 ticks ≈ 600 ms, B every 6 ticks ≈ 900 ms,
-    // jitter every 17 ticks ≈ 2.5 s). Dot-pulse counter ticks every 400 ms
-    // so `working` → `working...` reads at a calm pace.
+    // sub-agents in flight. The spout strip is gated on `fancy_animations`
+    // (the "do I want a whale at all" knob); `low_motion` now governs only
+    // streaming pacing (typewriter vs upstream), not the spout. Dot-pulse
+    // counter ticks every 400 ms so `working` → `working...` reads at a
+    // calm pace regardless of motion mode.
     if footer_working_strip_active(app) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -6911,12 +6911,15 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame, app.ui_locale));
         props.state_color = palette::DEEPSEEK_SKY;
 
-        // Spout drift: only animate when low_motion is off. The textual
-        // `working...` pulse stays even in low-motion mode so the user still
-        // sees that something is happening.
-        if !app.low_motion {
-            let strip_frame = now_ms;
-            props.working_strip_frame = Some(strip_frame);
+        // Water-spout frame source: the wave moves at the same cadence as
+        // typed text. `stream_commit_frame` advances by the character count
+        // of each commit tick, so typewriter mode produces a steady drip,
+        // V4-pro bursts produce visible surges, and tool calls / planning
+        // pauses freeze the surface (informative — the wave IS the typing).
+        // `fancy_animations = false` hides the strip entirely; the textual
+        // `working...` pulse still keeps a heartbeat regardless.
+        if app.fancy_animations {
+            props.working_strip_frame = Some(app.streaming_state.stream_commit_frame);
         }
     } else if props.state_label == "ready"
         && let Some(label) = selected_detail_footer_label(app)

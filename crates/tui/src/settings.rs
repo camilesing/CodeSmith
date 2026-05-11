@@ -169,9 +169,18 @@ pub struct Settings {
     pub auto_compact: bool,
     /// Reduce status noise and collapse details more aggressively
     pub calm_mode: bool,
-    /// Reduce animation and redraw churn
+    /// Streaming pacing mode. `true` pins the chunker to one-character-per-
+    /// commit-tick (typewriter); `false` drains the upstream cadence (each
+    /// commit flushes everything queued, which matches V4-pro's burst pattern
+    /// when the prefix cache is warm). Has no effect on the footer water-spout
+    /// animation — that is gated independently by [`Self::fancy_animations`].
     pub low_motion: bool,
-    /// Enable fancy footer animations (water-spout strip, pulsing text)
+    /// Enable the footer water-spout animation strip during live turns. The
+    /// strip's wave cadence is synchronized with the character-commit rate, so
+    /// the visual flow matches whatever streaming pacing [`Self::low_motion`]
+    /// selects: typewriter mode drips, upstream mode surges, tool calls /
+    /// planning pauses freeze the surface. Set `false` to keep the gap as
+    /// plain whitespace.
     pub fancy_animations: bool,
     /// Enable terminal bracketed-paste mode. Default true. Disable if your
     /// terminal mishandles the `\e[?2004h` escape (rare; some legacy
@@ -557,10 +566,13 @@ impl Settings {
                 "Auto-compact near context limit: on/off (default on)",
             ),
             ("calm_mode", "Calmer UI defaults: on/off"),
-            ("low_motion", "Reduce animation and redraw churn: on/off"),
+            (
+                "low_motion",
+                "Streaming pacing: on = typewriter (one char/tick), off = upstream cadence",
+            ),
             (
                 "fancy_animations",
-                "Fancy footer animations (water-spout strip): on/off",
+                "Footer water-spout strip (wave synced to typing speed): on/off",
             ),
             (
                 "bracketed_paste",
