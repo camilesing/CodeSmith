@@ -5684,7 +5684,11 @@ fn render(f: &mut Frame, app: &mut App) {
             sanitized_prompt_tokens,
         )
         .with_reasoning_effort(Some(&effort_label))
-        .with_provider(provider_label);
+        .with_provider(provider_label)
+        .with_status_indicator(crate::tui::widgets::header_status_indicator_frame(
+            app.turn_started_at,
+            &app.status_indicator,
+        ));
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
         header_widget.render(chunks[0], buf);

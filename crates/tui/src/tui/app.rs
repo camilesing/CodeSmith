@@ -810,6 +810,11 @@ pub struct App {
     /// until the footer widget consumes it.
     #[allow(dead_code)]
     pub fancy_animations: bool,
+    /// Header status-indicator chip mode. One of `"whale"` (default, cycles
+    /// 🐳→🐋 frames keyed off `turn_started_at`), `"dots"` (geometric ◌
+    /// frames), or `"off"` (chip hidden entirely). Loaded from settings;
+    /// changed via `/config status_indicator <whale|dots|off>`.
+    pub status_indicator: String,
     pub show_thinking: bool,
     pub verbose_transcript: bool,
     pub show_tool_details: bool,
@@ -1233,6 +1238,7 @@ impl App {
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
         let fancy_animations = settings.fancy_animations;
+        let status_indicator = settings.status_indicator.clone();
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let ui_locale = resolve_locale(&settings.locale);
@@ -1425,6 +1431,7 @@ impl App {
             calm_mode,
             low_motion,
             fancy_animations,
+            status_indicator,
             show_thinking,
             verbose_transcript: false,
             show_tool_details,

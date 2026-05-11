@@ -141,6 +141,7 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
         "transcript_spacing" | "spacing" => {
             Some(spacing_display(app.transcript_spacing).to_string())
         }
+        "status_indicator" | "indicator" => Some(app.status_indicator.clone()),
         "cost_currency" | "currency" => Some(
             match app.cost_currency {
                 crate::pricing::CostCurrency::Usd => "usd",
@@ -398,6 +399,10 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         }
         "low_motion" | "motion" => {
             app.low_motion = settings.low_motion;
+            app.needs_redraw = true;
+        }
+        "status_indicator" | "indicator" => {
+            app.status_indicator = settings.status_indicator.clone();
             app.needs_redraw = true;
         }
         "show_thinking" | "thinking" => {

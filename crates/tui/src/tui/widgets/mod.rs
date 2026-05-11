@@ -17,7 +17,7 @@ pub mod tool_card;
 pub use footer::{
     FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_working_label,
 };
-pub use header::{HeaderData, HeaderWidget};
+pub use header::{HeaderData, HeaderWidget, header_status_indicator_frame};
 pub use renderable::Renderable;
 
 use std::time::Duration;

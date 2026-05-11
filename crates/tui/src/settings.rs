@@ -227,6 +227,15 @@ pub struct Settings {
     /// Per-provider model overrides. Key is provider name (e.g. "openai"),
     /// value is the model id. Takes precedence over `default_model`.
     pub provider_models: Option<std::collections::HashMap<String, String>>,
+    /// Header status indicator next to the effort chip. Cycles through a
+    /// per-turn animation keyed off `App::turn_started_at`:
+    /// - `"whale"` (default): historical `🐳 → 🐋` 12-frame sequence
+    ///   originally shipped in v0.3.5, removed in v0.8.x's "smoother TUI
+    ///   streaming" pass, restored in v0.8.30. Idle frame is a steady `🐳`.
+    /// - `"dots"`: the 6-frame geometric sequence (`◍ ◉ ◌ ◌ ◉ ◍`) that
+    ///   replaced the whale during the dots era.
+    /// - `"off"`: hide the indicator entirely.
+    pub status_indicator: String,
 }
 
 impl Default for Settings {
@@ -264,6 +273,7 @@ impl Default for Settings {
             default_provider: None,
             default_model: None,
             provider_models: None,
+            status_indicator: "whale".to_string(),
         }
     }
 }
@@ -304,6 +314,7 @@ impl Settings {
             s.composer_density = normalize_composer_density(&s.composer_density).to_string();
             s.transcript_spacing = normalize_transcript_spacing(&s.transcript_spacing).to_string();
             s.sidebar_focus = normalize_sidebar_focus(&s.sidebar_focus).to_string();
+            s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
             s.locale = normalize_configured_locale(&s.locale)
                 .unwrap_or("en")
                 .to_string();
@@ -425,6 +436,15 @@ impl Settings {
                 }
                 self.transcript_spacing = normalized.to_string();
             }
+            "status_indicator" | "indicator" => {
+                let normalized = normalize_status_indicator(value);
+                if !["whale", "dots", "off"].contains(&normalized) {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid status indicator '{value}'. Expected: whale, dots, off."
+                    );
+                }
+                self.status_indicator = normalized.to_string();
+            }
             "default_mode" | "mode" => {
                 let normalized = normalize_mode(value);
                 if !["agent", "plan", "yolo"].contains(&normalized) {
@@ -536,6 +556,7 @@ impl Settings {
         lines.push(format!("  composer_border:    {}", self.composer_border));
         lines.push(format!("  composer_vim_mode:  {}", self.composer_vim_mode));
         lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
+        lines.push(format!("  status_indicator:   {}", self.status_indicator));
         lines.push(format!("  default_mode:       {}", self.default_mode));
         lines.push(format!(
             "  sidebar_width:      {}%",
@@ -603,6 +624,10 @@ impl Settings {
             (
                 "transcript_spacing",
                 "Transcript spacing: compact, comfortable, spacious",
+            ),
+            (
+                "status_indicator",
+                "Header status indicator next to effort chip: whale, dots, off",
             ),
             ("default_mode", "Default mode: agent, plan, yolo"),
             ("sidebar_width", "Sidebar width percentage: 10-50"),
@@ -672,6 +697,19 @@ fn normalize_transcript_spacing(value: &str) -> &str {
         "compact" | "tight" => "compact",
         "comfortable" | "default" | "normal" => "comfortable",
         "spacious" | "loose" => "spacious",
+        _ => value,
+    }
+}
+
+/// Normalize the `status_indicator` header chip setting. Accepts the
+/// canonical names plus common aliases ("none"/"hidden" → "off",
+/// "dot" → "dots"). Unknown values fall through unchanged so the parser
+/// in `update_setting` can surface a clear error.
+fn normalize_status_indicator(value: &str) -> &str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "whale" | "🐳" | "🐋" => "whale",
+        "dots" | "dot" => "dots",
+        "off" | "none" | "hidden" | "false" => "off",
         _ => value,
     }
 }

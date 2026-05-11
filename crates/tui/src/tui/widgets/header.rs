@@ -1,5 +1,7 @@
 //! Header bar widget displaying mode, workspace/model context, and session status.
 
+use std::time::Instant;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -17,6 +19,52 @@ use super::Renderable;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const CONTEXT_SIGNAL_WIDTH: usize = 4;
+
+/// Milliseconds between status-indicator frame advances. The original
+/// `deepseek_squiggle` (v0.3.5 → v0.8.x) used 420 ms; the dot replacement
+/// used the same cadence. Keep both at 420 ms so the visual rhythm matches
+/// what long-time users remember.
+const STATUS_INDICATOR_FRAME_MS: u128 = 420;
+
+/// Whale-cycle frames: 🐳 builds up dots, then surfaces as 🐋. Restored from
+/// the original `deepseek_squiggle` in v0.8.30 (removed by commit
+/// `1a04659a9` "smoother TUI streaming"). The breaching whale is the
+/// punchline at the midpoint of each cycle.
+const STATUS_INDICATOR_WHALE_FRAMES: &[&str] = &[
+    "🐳", "🐳.", "🐳..", "🐳...", "🐳..", "🐳.", "🐋", "🐋.", "🐋..", "🐋...", "🐋..", "🐋.",
+];
+
+/// Geometric replacement frames shipped between v0.8.x and v0.8.29.
+const STATUS_INDICATOR_DOT_FRAMES: &[&str] = &["◍", "◉", "◌", "◌", "◉", "◍"];
+
+/// Resolve the current status-indicator frame to render in the header
+/// chip cluster.
+///
+/// `turn_started_at = None` (no active turn) returns the first frame so the
+/// chip is *visible* but not animating — it's a chip, not a spinner. As
+/// soon as a turn starts, the elapsed time keys the cycle.
+///
+/// `mode` accepts the canonical names `"whale"`, `"dots"`, `"off"` (any
+/// other value is treated as `"whale"` to mirror
+/// `StatusIndicatorValue::from(&str)`). `"off"` returns `None` so the
+/// caller can hide the chip outright.
+#[must_use]
+pub fn header_status_indicator_frame(
+    turn_started_at: Option<Instant>,
+    mode: &str,
+) -> Option<&'static str> {
+    let frames: &[&str] = match mode.trim().to_ascii_lowercase().as_str() {
+        "off" | "none" | "hidden" | "false" => return None,
+        "dots" | "dot" => STATUS_INDICATOR_DOT_FRAMES,
+        // "whale" + aliases + unknown → whale (intentional default).
+        _ => STATUS_INDICATOR_WHALE_FRAMES,
+    };
+    let elapsed_ms = turn_started_at
+        .map(|t| t.elapsed().as_millis())
+        .unwrap_or(0);
+    let idx = (elapsed_ms / STATUS_INDICATOR_FRAME_MS) as usize % frames.len();
+    Some(frames[idx])
+}
 
 /// Data required to render the header bar.
 pub struct HeaderData<'a> {
@@ -42,6 +90,12 @@ pub struct HeaderData<'a> {
     /// fact that requests are going somewhere other than DeepSeek's API so
     /// it's visible at a glance after a `/provider nvidia-nim`.
     pub provider_label: Option<&'a str>,
+    /// Currently-resolved status indicator glyph rendered as a chip
+    /// immediately before the reasoning-effort chip. The caller is
+    /// responsible for cycling frames (see [`header_status_indicator_frame`])
+    /// so the widget itself stays a pure pre-built render. `None` hides the
+    /// chip entirely (e.g., `status_indicator = "off"`).
+    pub status_indicator_frame: Option<&'static str>,
 }
 
 impl<'a> HeaderData<'a> {
@@ -66,6 +120,7 @@ impl<'a> HeaderData<'a> {
             last_prompt_tokens: None,
             reasoning_effort_label: None,
             provider_label: None,
+            status_indicator_frame: None,
         }
     }
 
@@ -73,6 +128,15 @@ impl<'a> HeaderData<'a> {
     #[must_use]
     pub fn with_reasoning_effort(mut self, label: Option<&'a str>) -> Self {
         self.reasoning_effort_label = label;
+        self
+    }
+
+    /// Attach the currently-resolved status indicator frame (e.g. `"🐳.."`).
+    /// Pass `None` to hide the chip. Use [`header_status_indicator_frame`]
+    /// to compute the right frame for the current turn's elapsed time.
+    #[must_use]
+    pub fn with_status_indicator(mut self, frame: Option<&'static str>) -> Self {
+        self.status_indicator_frame = frame;
         self
     }
 
@@ -217,6 +281,18 @@ impl<'a> HeaderWidget<'a> {
         )]
     }
 
+    fn status_indicator_spans(&self) -> Vec<Span<'static>> {
+        let Some(frame) = self.data.status_indicator_frame else {
+            return Vec::new();
+        };
+        // Color matches the rest of the live-status cluster (sky), keeping
+        // the chip visually grouped with `● Live` and the effort label.
+        vec![Span::styled(
+            frame.to_string(),
+            Style::default().fg(palette::DEEPSEEK_SKY),
+        )]
+    }
+
     fn provider_chip_spans(&self) -> Vec<Span<'static>> {
         let Some(label) = self.data.provider_label else {
             return Vec::new();
@@ -274,10 +350,23 @@ impl<'a> HeaderWidget<'a> {
             spans.extend(provider_spans);
         }
 
+        // Status indicator chip (whale 🐳/🐋 or dots ◌/◉ depending on
+        // `status_indicator` setting). Sits immediately before the effort
+        // chip so the layout reads e.g. `🐳..  ◆ max` — the chip cluster
+        // users associate with "where the whale used to be."
+        let indicator_spans = self.status_indicator_spans();
+        let has_indicator = !indicator_spans.is_empty();
+        if has_indicator {
+            if has_provider {
+                spans.push(Span::raw("  "));
+            }
+            spans.extend(indicator_spans);
+        }
+
         let effort_spans = self.effort_chip_spans(true);
         let has_effort = !effort_spans.is_empty();
         if has_effort {
-            if has_provider {
+            if has_provider || has_indicator {
                 spans.push(Span::raw("  "));
             }
             spans.extend(effort_spans);
@@ -713,5 +802,104 @@ mod tests {
         );
         // Sanity: no `NIM` text leaks in when provider is None.
         assert!(!rendered.contains("NIM"));
+    }
+
+    #[test]
+    fn whale_indicator_idle_frame_is_first_whale_glyph() {
+        // No active turn = no animation, just the calm 🐳 glyph sitting
+        // next to the effort chip.
+        let frame = super::header_status_indicator_frame(None, "whale");
+        assert_eq!(frame, Some("🐳"));
+    }
+
+    #[test]
+    fn whale_indicator_advances_through_frames_then_breaches() {
+        use std::thread::sleep;
+        use std::time::Duration;
+        let start = std::time::Instant::now();
+        // Frame 0 immediately.
+        assert_eq!(
+            super::header_status_indicator_frame(Some(start), "whale"),
+            Some("🐳")
+        );
+        // After ~420ms one tick has elapsed → frame 1.
+        sleep(Duration::from_millis(430));
+        assert_eq!(
+            super::header_status_indicator_frame(Some(start), "whale"),
+            Some("🐳.")
+        );
+    }
+
+    #[test]
+    fn dots_indicator_uses_geometric_frames() {
+        let frame = super::header_status_indicator_frame(None, "dots");
+        assert_eq!(frame, Some("\u{25CD}"));
+    }
+
+    #[test]
+    fn off_indicator_returns_none_so_chip_is_hidden() {
+        assert!(super::header_status_indicator_frame(None, "off").is_none());
+        // Aliases mirror the parser in Settings.
+        assert!(super::header_status_indicator_frame(None, "none").is_none());
+        assert!(super::header_status_indicator_frame(None, "hidden").is_none());
+        assert!(super::header_status_indicator_frame(None, "false").is_none());
+    }
+
+    #[test]
+    fn unknown_indicator_mode_defaults_to_whale() {
+        // We'd rather restore the whale on a typo than silently hide the
+        // chip — matches `StatusIndicatorValue::from(&str)`.
+        let frame = super::header_status_indicator_frame(None, "wahel-typo");
+        assert_eq!(frame, Some("🐳"));
+    }
+
+    #[test]
+    fn header_renders_whale_chip_next_to_effort_label() {
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Agent,
+                "deepseek-v4-pro",
+                "deepseek-tui",
+                false,
+                palette::DEEPSEEK_INK,
+            )
+            .with_reasoning_effort(Some("max"))
+            .with_status_indicator(Some("🐳")),
+            72,
+        );
+        assert!(
+            rendered.contains("🐳"),
+            "expected whale chip in header, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("max"),
+            "expected effort chip preserved, got: {rendered}"
+        );
+        // Whale appears before "max" — sanity-check ordering by index.
+        let whale_idx = rendered.find("🐳").expect("whale present");
+        let max_idx = rendered.find("max").expect("max present");
+        assert!(
+            whale_idx < max_idx,
+            "expected whale to render before effort label, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn header_hides_whale_chip_when_status_indicator_off() {
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Agent,
+                "deepseek-v4-pro",
+                "deepseek-tui",
+                false,
+                palette::DEEPSEEK_INK,
+            )
+            .with_reasoning_effort(Some("max"))
+            .with_status_indicator(None),
+            72,
+        );
+        assert!(!rendered.contains("🐳"));
+        assert!(!rendered.contains("🐋"));
+        assert!(rendered.contains("max"));
     }
 }

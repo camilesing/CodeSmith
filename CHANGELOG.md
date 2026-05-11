@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The whale is back.** Restored the `🐳 → 🐳. → 🐳.. → 🐳... → 🐋 → 🐋.
+  → 🐋.. → 🐋... → 🐋.. → 🐋. → 🐳..` cycling status indicator that
+  originally shipped in v0.3.5 and silently disappeared in commit
+  `1a04659a9` (the "smoother TUI streaming" pass, which swapped the
+  12-frame whale sequence for a 6-frame geometric `◍ ◉ ◌` ring) and then
+  was deleted outright in `f4dbf828c` (footer-polish commit). The chip
+  renders in the header status cluster, immediately before the
+  reasoning-effort chip — exactly where long-time users remember it.
+  Idle frame is a steady 🐳; the cycle advances every 420 ms keyed off
+  `App::turn_started_at`, so the breaching whale shows up halfway
+  through any active turn.
+
+  Configurable via the new `status_indicator` setting:
+  - `whale` (default) — the historical cycling whale.
+  - `dots` — the geometric `◍ ◉ ◌` frames from the dots era.
+  - `off` — hide the chip entirely.
+
+  Set via `/config status_indicator <whale|dots|off>` or in
+  `settings.toml`. Regression-guarded by
+  `whale_indicator_idle_frame_is_first_whale_glyph`,
+  `whale_indicator_advances_through_frames_then_breaches`,
+  `dots_indicator_uses_geometric_frames`,
+  `off_indicator_returns_none_so_chip_is_hidden`,
+  `unknown_indicator_mode_defaults_to_whale`,
+  `header_renders_whale_chip_next_to_effort_label`,
+  `header_hides_whale_chip_when_status_indicator_off`.
+
 ### Fixed
 
 - **`low_motion = true` no longer hides the footer water-spout** when
