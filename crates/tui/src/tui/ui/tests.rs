@@ -3949,6 +3949,42 @@ fn flush_active_cell_finalizes_unclosed_thinking_block() {
 }
 
 #[test]
+fn open_thinking_pager_finds_thinking_in_active_cell() {
+    // After ThinkingComplete fires, the finalized thinking entry stays in
+    // `app.active_cell` with `streaming = false` until the active cell is
+    // flushed to history (end-of-turn, or when an assistant text arrives).
+    // During that window the transcript still renders the
+    // "thinking collapsed; press Ctrl+O for full text" affordance from
+    // `render_thinking`, so the handler must reach across the virtual
+    // transcript — not just `app.history` — or the promise is a lie.
+    // Regression guard for the v0.8.29 affordance/handler mismatch.
+    let mut app = create_test_app();
+    let _ = ensure_streaming_thinking_active_entry(&mut app);
+    append_streaming_thinking(&mut app, 0, "deliberating");
+    let finalized = finalize_streaming_thinking_active_entry(&mut app, Some(1.2), "");
+    assert!(finalized);
+    assert!(
+        app.history.is_empty(),
+        "thinking entry stays in active_cell until flush"
+    );
+    let active = app.active_cell.as_ref().expect("active cell present");
+    assert!(matches!(
+        active.entries().first(),
+        Some(HistoryCell::Thinking {
+            streaming: false,
+            ..
+        })
+    ));
+
+    assert!(open_thinking_pager(&mut app));
+    assert_eq!(
+        app.view_stack.top_kind(),
+        Some(ModalKind::Pager),
+        "pager must open for thinking entries still in active_cell"
+    );
+}
+
+#[test]
 fn engine_error_finalizes_active_thinking_block() {
     use crate::error_taxonomy::StreamError;
 

@@ -8493,8 +8493,16 @@ fn open_pager_for_last_message(app: &mut App) -> bool {
 
 /// Open a pager showing the full thinking block. Targets the cell at the
 /// current selection if it's a Thinking cell; otherwise falls back to the
-/// most recent Thinking cell in history. Bound to Ctrl+O so users can read
-/// reasoning content that's been collapsed in calm-mode rendering.
+/// most recent Thinking cell across the virtual transcript (history +
+/// in-flight `active_cell`). Bound to Ctrl+O so users can read reasoning
+/// content that's been collapsed in calm-mode rendering.
+///
+/// The virtual-index lookup matters: after `ThinkingComplete` fires the
+/// finalized thinking entry sits in `active_cell` with `streaming = false`
+/// until the active cell flushes to history. During that window the
+/// transcript already renders the "thinking collapsed; press Ctrl+O for
+/// full text" affordance, so the handler must address active-cell entries
+/// or the affordance becomes a lie.
 fn open_thinking_pager(app: &mut App) -> bool {
     let selected_cell = app
         .viewport
@@ -8510,23 +8518,18 @@ fn open_thinking_pager(app: &mut App) -> bool {
         })
         .filter(|&idx| {
             matches!(
-                app.history.get(idx),
+                app.cell_at_virtual_index(idx),
                 Some(crate::tui::history::HistoryCell::Thinking { .. })
             )
         });
 
     let target_idx = selected_cell.or_else(|| {
-        app.history
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(idx, cell)| {
-                if matches!(cell, crate::tui::history::HistoryCell::Thinking { .. }) {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
+        (0..app.virtual_cell_count()).rev().find(|&idx| {
+            matches!(
+                app.cell_at_virtual_index(idx),
+                Some(crate::tui::history::HistoryCell::Thinking { .. })
+            )
+        })
     });
 
     let Some(idx) = target_idx else {
@@ -8534,13 +8537,18 @@ fn open_thinking_pager(app: &mut App) -> bool {
         return true;
     };
 
-    let cell = &app.history[idx];
     let width = app
         .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
-    let text = history_cell_to_text(cell, width);
+    let text = {
+        let Some(cell) = app.cell_at_virtual_index(idx) else {
+            app.status_message = Some("No thinking blocks to expand".to_string());
+            return true;
+        };
+        history_cell_to_text(cell, width)
+    };
     app.view_stack.push(PagerView::from_text(
         "Thinking",
         &text,

@@ -86,6 +86,19 @@ coverage additions.
   `reasoning_content` replay, preventing second-turn HTTP 400s
   after tool calls when users keep the onboarding default model
   alias.
+- **`Ctrl+O` expands thinking blocks still in flight.**
+  `open_thinking_pager` only searched `app.history`, but after
+  `ThinkingComplete` the finalized thinking entry sits in
+  `app.active_cell` with `streaming = false` until the active cell
+  flushes at end-of-turn. During that window the transcript still
+  rendered the "thinking collapsed; press Ctrl+O for full text"
+  affordance from `render_thinking`, so the handler surfaced
+  "No thinking blocks to expand" while the affordance pointed at
+  it. Routed through the existing `cell_at_virtual_index` /
+  `virtual_cell_count` resolver that `open_tool_details_pager`
+  already uses; selection-based and most-recent lookups both reach
+  in-flight entries now. Regression-guarded by
+  `open_thinking_pager_finds_thinking_in_active_cell`.
 - **Skill completions no longer flood the top-level slash menu**
   (#1437, PR #1442 from **@reidliu41**). Installed skills now
   complete under `/skill <name>` while the root `/` menu stays
