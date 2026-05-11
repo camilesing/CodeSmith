@@ -11,10 +11,50 @@ use crate::tui::history::{
 };
 use crate::tui::views::{ModalView, ViewAction};
 use crate::working_set::Workspace;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+struct ConfigPathEnvGuard {
+    _tmp: TempDir,
+    previous: Option<OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl ConfigPathEnvGuard {
+    fn new() -> Self {
+        let lock = crate::test_support::lock_test_env();
+        let tmp = TempDir::new().expect("config tempdir");
+        let config_path = tmp.path().join(".deepseek").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("config dir");
+        let previous = std::env::var_os("DEEPSEEK_CONFIG_PATH");
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            std::env::set_var("DEEPSEEK_CONFIG_PATH", &config_path);
+        }
+        Self {
+            _tmp: tmp,
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for ConfigPathEnvGuard {
+    fn drop(&mut self) {
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("DEEPSEEK_CONFIG_PATH", previous);
+            } else {
+                std::env::remove_var("DEEPSEEK_CONFIG_PATH");
+            }
+        }
+    }
+}
 
 #[test]
 fn resume_hint_uses_canonical_resume_command() {
@@ -1176,6 +1216,7 @@ async fn drain_web_config_events_applies_draft_without_closing_session() {
 
 #[tokio::test]
 async fn drain_web_config_events_closes_session_after_commit() {
+    let _config_env = ConfigPathEnvGuard::new();
     let mut app = create_test_app();
     let mut config = Config::default();
     let engine = mock_engine_handle();

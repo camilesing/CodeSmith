@@ -173,6 +173,10 @@ coverage additions.
   **@reidliu41**). Git-root detection ignores invalid parent `.git`
   markers, env-mutating tests share the crate-wide test lock, and
   the streamable HTTP MCP mock server stays alive for the full test.
+- **Config-mutating smoke tests now isolate `DEEPSEEK_CONFIG_PATH`.**
+  The command registry and web-config commit tests no longer rewrite
+  the developer's real `~/.deepseek/config.toml` while validating
+  release candidates locally.
 
 ## [0.8.28] - 2026-05-10
 
