@@ -939,6 +939,7 @@ fn mcp_template_json() -> Result<String> {
             required: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            headers: std::collections::HashMap::new(),
         },
     );
     serde_json::to_string_pretty(&cfg)
@@ -3327,6 +3328,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                     required: false,
                     enabled_tools: Vec::new(),
                     disabled_tools: Vec::new(),
+                    headers: std::collections::HashMap::new(),
                 },
             );
             save_mcp_config(&config_path, &cfg)?;
@@ -3412,6 +3414,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                     required: false,
                     enabled_tools: Vec::new(),
                     disabled_tools: Vec::new(),
+                    headers: std::collections::HashMap::new(),
                 },
             );
             save_mcp_config(&config_path, &cfg)?;
@@ -5185,6 +5188,7 @@ mod doctor_mcp_tests {
             required: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            headers: std::collections::HashMap::new(),
         }
     }
 

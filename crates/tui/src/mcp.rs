@@ -154,6 +154,9 @@ pub struct McpServerConfig {
     pub env: HashMap<String, String>,
     pub url: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
     pub connect_timeout: Option<u64>,
     #[serde(default)]
     pub execute_timeout: Option<u64>,
@@ -462,6 +465,7 @@ enum HttpTransportMode {
 struct StreamableHttpTransport {
     client: reqwest::Client,
     url: String,
+    headers: HashMap<String, String>,
     pending_messages: VecDeque<Vec<u8>>,
 }
 
@@ -656,6 +660,7 @@ impl HttpTransport {
     fn new(
         client: reqwest::Client,
         url: String,
+        headers: HashMap<String, String>,
         cancel_token: tokio_util::sync::CancellationToken,
         endpoint_timeout: Duration,
     ) -> Self {
@@ -663,6 +668,7 @@ impl HttpTransport {
             mode: HttpTransportMode::Streamable(StreamableHttpTransport::new(
                 client.clone(),
                 url.clone(),
+                headers,
             )),
             client,
             base_url: url,
@@ -719,20 +725,25 @@ impl McpTransport for HttpTransport {
 }
 
 impl StreamableHttpTransport {
-    fn new(client: reqwest::Client, url: String) -> Self {
+    fn new(client: reqwest::Client, url: String, headers: HashMap<String, String>) -> Self {
         Self {
             client,
             url,
             pending_messages: VecDeque::new(),
+            headers,
         }
     }
 
     async fn send(&mut self, msg: Vec<u8>) -> std::result::Result<(), StreamableSendError> {
-        let response = self
+        let mut request = self
             .client
             .post(&self.url)
             .header(ACCEPT, "application/json, text/event-stream")
-            .header(CONTENT_TYPE, "application/json")
+            .header(CONTENT_TYPE, "application/json");
+        for (key, value) in &self.headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+        let response = request
             .body(msg)
             .send()
             .await
@@ -940,6 +951,7 @@ impl McpConnection {
             Box::new(HttpTransport::new(
                 client,
                 url.clone(),
+                config.headers.clone(),
                 cancel_token.clone(),
                 Duration::from_secs(connect_timeout_secs),
             ))
@@ -2149,6 +2161,7 @@ fn mcp_template_json() -> Result<String> {
             required: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            headers: HashMap::new(),
         },
     );
     serde_json::to_string_pretty(&cfg).context("Failed to render MCP template JSON")
@@ -2200,6 +2213,7 @@ pub fn add_server_config(
             required: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            headers: HashMap::new(),
         },
     );
     save_config(path, &cfg)
@@ -2539,6 +2553,7 @@ mod tests {
             required: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            headers: HashMap::new(),
         };
 
         assert_eq!(server_with_override.effective_connect_timeout(&global), 20);
@@ -2648,6 +2663,7 @@ mod tests {
             required: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            headers: HashMap::new(),
         }
     }
 
@@ -2816,6 +2832,7 @@ mod tests {
                 required: false,
                 enabled_tools: Vec::new(),
                 disabled_tools: Vec::new(),
+                headers: HashMap::new(),
             },
         );
         assert_ne!(
@@ -3037,6 +3054,7 @@ mod tests {
             required: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            headers: HashMap::new(),
         };
 
         let conn = McpConnection::connect_with_policy(
