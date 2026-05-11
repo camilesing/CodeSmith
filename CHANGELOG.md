@@ -5,6 +5,113 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.29] - 2026-05-11
+
+A maintenance release anchored by a regression fix for the
+"scroll demon" (#1085 class, re-introduced by v0.8.27's flicker
+patch) and a wrong-project session-restore bug (#1395). Plus 12
+community PRs covering MCP transport, prompt steering, auto-routing
+language coverage, web-search SERP filtering, and broad test
+coverage additions.
+
+### Fixed
+
+- **Scroll demon — alt-screen no longer drifts under parallel
+  sub-agent load** (#1085 regression). The v0.8.27 flicker fix
+  dropped the `\x1b[2J\x1b[3J` deep-clear from the viewport-reset
+  path, which had been silently masking three `eprintln!` sites
+  inside the sub-agent and network-policy modules. Each leak
+  scrolled the alt-screen up by one row while ratatui's diff
+  renderer remained convinced its model matched reality. Three
+  layers of defence now ship together: a `tracing-subscriber`
+  writing to `~/.deepseek/logs/tui-YYYY-MM-DD.log`, an fd-level
+  `dup2` stderr redirect for the alt-screen lifetime (Unix only;
+  Windows follow-up tracked), and module-level
+  `#![deny(clippy::print_stdout, clippy::print_stderr)]` on
+  `tools/`, `core/`, `tui/`, `runtime_threads.rs`, and
+  `network_policy.rs`. The three known leak sites
+  (`subagent::persist_state_best_effort`,
+  `subagent::new_shared_subagent_manager`, `network_policy::record`)
+  now route through `tracing::warn!` with structured fields.
+- **`Ctrl+R` session-restore picker is workspace-scoped** (#1395,
+  PR #1397 from **@linzhiqin2003**). `SessionPickerView::new`
+  previously listed every saved session on disk sorted globally —
+  so opening DeepSeek-TUI in Project B and pressing `Ctrl+R` could
+  hand back Project A's last conversation. The picker now filters
+  by current workspace, with a fallback hint when no in-workspace
+  sessions exist.
+- **MCP discovery survives malformed items** (PR #1410 from
+  **@Liu-Vince**). The `tools/list`, `resources/list`,
+  `resources/templates/list`, and `prompts/list` walks previously
+  did `serde_json::from_value::<Vec<…>>(…).unwrap_or_default()`,
+  which silently discarded the entire page when any single entry
+  was misshapen. Each list now iterates per-item, skipping
+  malformed entries with a `tracing::debug!` instead of dropping
+  the rest of the catalogue. Composes with the v0.8.x pagination
+  loop landed for #1256.
+- **Web search drops spam-stuffed SERPs** (#964, PR #1396 from
+  **@linzhiqin2003**). The Bing / DDG fallback paths now filter
+  the SEO-farm domains that were poisoning quick lookups.
+- **Language directive: `reasoning_content` follows the user's
+  message language** (#1118, PR #1398 from **@linzhiqin2003**) —
+  previously the project context's inferred `lang` could override
+  the latest user message, leading to English thinking for a
+  Chinese turn.
+
+### Added
+
+- **MCP HTTP transport honors `HTTP(S)_PROXY` / `NO_PROXY`** (#1408
+  from **@hlx98007**). Reqwest 0.13 does not auto-detect proxy env
+  vars by default, so MCP HTTP connections were bypassing the
+  proxy that every other tool on the box (curl, npm, git, …) was
+  using. Connections behind corporate egress proxies and
+  China-mainland Clash / Shadowsocks tunnels now work transparently.
+  Malformed `HTTPS_PROXY` values log a `tracing::warn!` and the
+  connection proceeds without a proxy rather than failing the MCP
+  attach.
+- **Note management slash commands** (PR #1407 from
+  **@reidliu41**). `/note add`, `/note list`, and friends for
+  persistent maintainer-style notes inside the TUI, backed by
+  `~/.deepseek/notes/`.
+- **Header surfaces the runtime version chip.** A `v0.8.29` tag
+  sits in the header's right cluster after the provider / effort /
+  Live / context chips. Styled with `palette::TEXT_HINT` so it
+  reads behind the streaming indicators. Drops first under tight
+  terminal width.
+- **Global `~/.deepseek/AGENTS.md` now merges with project
+  AGENTS.md** (#1157, PR #1399 from **@linzhiqin2003**) instead of
+  being shadowed when a workspace ships its own.
+- **Auto-routing recognises CJK debug / search keywords** (PRs
+  #1401 and #1402 from **@linzhiqin2003**) — `--model auto` and
+  the reasoning-effort picker correctly route Chinese / Japanese
+  technical queries that previously fell through to the generic
+  baseline.
+
+### Security
+
+- **`sync-cnb.yml` workflow hardened** (CodeQL finding from
+  v0.8.28). Adds explicit `permissions: contents: read`
+  (least-privilege), bumps `actions/checkout` v3 → v4, and
+  narrows the trigger from `on: [push]` to `on: push.branches:
+  [main]` + `tags: ['v*']`. Feature branches no longer mirror to
+  CNB; only `main` and tagged releases do.
+
+### Internal
+
+- **+438 LOC of new test coverage** across four PRs from
+  **@linzhiqin2003**: `error_taxonomy::classify_error_message`
+  and Display impls (#1403), `parse_pages_arg` edge cases (#1404),
+  `optional_search_max_results` precedence (#1405), and
+  `sanitize_stream_chunk` control-byte filtering (#1406).
+- **`runtime_log` module** ships with a regression test pinning
+  the `HOME` / `USERPROFILE` / `dirs::home_dir()` resolution
+  order, holding the process-wide `test_support::lock_test_env()`
+  lock for env-mutation safety.
+- **Header rendering** gains two regression tests
+  (`header_renders_version_chip_when_width_allows` and
+  `narrow_header_drops_version_chip_before_dropping_mode`)
+  pinning the version chip's cascade priority.
+
 ## [0.8.28] - 2026-05-10
 
 A maintenance release bundling four streaming / approvals / cache
