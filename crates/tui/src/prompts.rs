@@ -133,6 +133,67 @@ fn load_handoff_block(workspace: &Path) -> Option<String> {
 /// "When NOT to use" guidance, sub-agent sentinel protocol.
 pub const BASE_PROMPT: &str = include_str!("prompts/base.md");
 
+/// Optional locale-native reinforcement preamble prepended to the system
+/// prompt when the user's UI locale is non-English.
+///
+/// `base.md` itself stays English (single source of truth, model is
+/// natively multilingual, prefix-cache stable across users in the same
+/// locale). For non-English locales we prepend a short locale-native
+/// passage so the model's first exposure to the prompt overrides the
+/// "match user message language" English directive with an explicit
+/// "use {locale}" instruction in the user's own writing system. Reduces
+/// the model's reliance on inferring intent from `## Environment.lang`
+/// — which previously got overpowered by overwhelmingly English task
+/// context, the symptom reported in #1118 and visible in the WeChat
+/// screenshot that prompted this change.
+///
+/// The list is intentionally short (only locales the TUI ships UI
+/// strings for: `zh-Hans`, `ja`, `pt-BR`). Other locales fall through
+/// to `None` and get the English-only directive, which is the same
+/// behavior as before this change.
+pub(crate) fn locale_reinforcement_preamble(locale_tag: &str) -> Option<&'static str> {
+    match locale_tag {
+        "zh-Hans" | "zh-CN" | "zh" => Some(LOCALE_PREAMBLE_ZH_HANS),
+        "ja" | "ja-JP" => Some(LOCALE_PREAMBLE_JA),
+        "pt-BR" | "pt" => Some(LOCALE_PREAMBLE_PT_BR),
+        _ => None,
+    }
+}
+
+const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
+你正在 DeepSeek TUI 中运行。无论任务上下文（代码、错误日志、文件名）\
+是英文，无论系统提示的其余部分是英文，你都必须用简体中文进行 \
+`reasoning_content`（内部思考）和最终回复。代码、文件路径、工具名称\
+（例如 `read_file`、`exec_shell`）、环境变量、命令行参数和 URL \
+保持原样 —— 只有自然语言散文要切换到简体中文。\n\n\
+如果用户在会话中切换到另一种语言，从下一轮开始跟随切换。\
+如果用户明确要求（例如 \"think in English\"），则覆盖此规则。";
+
+const LOCALE_PREAMBLE_JA: &str = "## 言語要件\n\n\
+DeepSeek TUI を実行しています。タスクコンテキスト（コード、エラーログ、\
+ファイル名）が英語であっても、システムプロンプトの他の部分が英語で\
+あっても、`reasoning_content`（内部思考）と最終的な返信は日本語で\
+行ってください。コード、ファイルパス、ツール名（例：`read_file`、\
+`exec_shell`）、環境変数、コマンドライン引数、URL は元のまま —— \
+自然言語の文章のみ日本語に切り替えます。\n\n\
+ユーザーがセッション中に別の言語に切り替えた場合は、次のターンから\
+それに従ってください。ユーザーが明示的に要求した場合（例：\
+\"think in English\"）はこのルールを上書きします。";
+
+const LOCALE_PREAMBLE_PT_BR: &str = "## Requisito de Idioma\n\n\
+Você está rodando dentro do DeepSeek TUI. Escreva tanto \
+`reasoning_content` (seu pensamento interno) quanto a resposta final \
+em português do Brasil, mesmo quando o contexto da tarefa (código, \
+logs de erro, nomes de arquivos) estiver em inglês e mesmo quando o \
+resto do system prompt for em inglês. Mantenha código, caminhos de \
+arquivos, nomes de ferramentas (por exemplo `read_file`, \
+`exec_shell`), variáveis de ambiente, flags de linha de comando e \
+URLs no formato original — apenas a prosa em linguagem natural muda \
+para português do Brasil.\n\n\
+Se o usuário mudar de idioma no meio da sessão, mude no próximo turno. \
+Se o usuário pedir explicitamente (por exemplo, \"think in English\"), \
+isso sobrescreve esta regra.";
+
 /// Personality overlays — voice and tone.
 pub const CALM_PERSONALITY: &str = include_str!("prompts/personalities/calm.md");
 pub const PLAYFUL_PERSONALITY: &str = include_str!("prompts/personalities/playful.md");
@@ -371,6 +432,16 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
 
+    // 0. Locale-native reinforcement preamble (#1118 follow-up). When the
+    // user's UI locale is non-English we prepend a short native-script
+    // passage so the model's first exposure to the prompt is an explicit
+    // "think and reply in {locale}" directive in the user's own writing
+    // system — defeats the "task context is English, so the model thinks
+    // in English even though `lang: zh-Hans` is set" failure mode that
+    // PR #1398 partially addressed. English (and unknown) locales get
+    // `None` and keep the previous behavior unchanged.
+    let preamble = locale_reinforcement_preamble(session_context.locale_tag);
+
     // 1–2. Mode prompt + project context.
     // `load_project_context_with_parents` auto-generates .deepseek/instructions.md
     // when no context file exists, so the fallback should always be available.
@@ -382,6 +453,10 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
         tracing::warn!("No project context available and auto-generation failed");
         mode_prompt
     };
+
+    if let Some(preamble) = preamble {
+        full_prompt = format!("{preamble}\n\n{full_prompt}");
+    }
 
     if session_context.project_context_pack_enabled
         && let Some(pack) = crate::project_context::generate_project_context_pack(workspace)
@@ -537,6 +612,124 @@ mod tests {
         assert!(block.contains(&format!("- pwd: {}", tmp.path().display())));
         assert!(block.contains("- platform:"));
         assert!(block.contains("- shell:"));
+    }
+
+    #[test]
+    fn locale_reinforcement_preamble_returns_native_script_for_supported_locales() {
+        // English (and unknown locales) get None — the existing English
+        // directive in `base.md` is sufficient.
+        assert!(locale_reinforcement_preamble("en").is_none());
+        assert!(locale_reinforcement_preamble("en-US").is_none());
+        assert!(locale_reinforcement_preamble("fr-FR").is_none());
+        assert!(locale_reinforcement_preamble("").is_none());
+
+        // zh-Hans (and the de-facto equivalents the TUI accepts) get a
+        // native-script preamble. The text must explicitly mention
+        // `reasoning_content` (the V4 knob this is meant to steer) and
+        // preserve tool-name immutability — those are the load-bearing
+        // claims behind the #1118 fix that someone could quietly
+        // delete in a future translation pass.
+        for tag in ["zh-Hans", "zh-CN", "zh"] {
+            let preamble =
+                locale_reinforcement_preamble(tag).expect("zh-Hans preamble should exist");
+            assert!(
+                preamble.contains("简体中文"),
+                "zh preamble must be in Simplified Chinese: {preamble:?}"
+            );
+            assert!(
+                preamble.contains("reasoning_content"),
+                "zh preamble must steer reasoning_content: {preamble:?}"
+            );
+            assert!(
+                preamble.contains("read_file"),
+                "zh preamble must call out tool-name immutability: {preamble:?}"
+            );
+        }
+
+        let ja = locale_reinforcement_preamble("ja").expect("ja preamble");
+        assert!(ja.contains("日本語"), "ja preamble must be in Japanese");
+        assert!(ja.contains("reasoning_content"));
+
+        let pt = locale_reinforcement_preamble("pt-BR").expect("pt-BR preamble");
+        assert!(
+            pt.contains("português do Brasil"),
+            "pt preamble must call out pt-BR explicitly"
+        );
+        assert!(pt.contains("reasoning_content"));
+    }
+
+    #[test]
+    fn system_prompt_prepends_locale_preamble_for_zh_hans() {
+        // Build the full system prompt with locale=zh-Hans and assert
+        // the native-script preamble shows up *before* the English
+        // base-prompt body. Cache stability and attention precedence
+        // both depend on this ordering.
+        let tmp = tempdir().expect("tempdir");
+        let text = match system_prompt_for_mode_with_context_skills_session_and_approval(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: None,
+                project_context_pack_enabled: false,
+                locale_tag: "zh-Hans",
+            },
+            ApprovalMode::Suggest,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        let preamble_marker = "## 语言要求";
+        let base_marker = "You are DeepSeek TUI";
+        let preamble_pos = text
+            .find(preamble_marker)
+            .expect("zh-Hans preamble should be present");
+        let base_pos = text
+            .find(base_marker)
+            .expect("base prompt should be present");
+        assert!(
+            preamble_pos < base_pos,
+            "locale preamble must precede the English base prompt (preamble={preamble_pos}, base={base_pos})",
+        );
+    }
+
+    #[test]
+    fn system_prompt_skips_locale_preamble_for_english() {
+        // English locale → no preamble injected. Asserts the
+        // "preamble is opt-in for non-English" invariant.
+        let tmp = tempdir().expect("tempdir");
+        let text = match system_prompt_for_mode_with_context_skills_session_and_approval(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: None,
+                project_context_pack_enabled: false,
+                locale_tag: "en",
+            },
+            ApprovalMode::Suggest,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert!(
+            !text.contains("语言要求"),
+            "English locale must not get a zh preamble: {text:?}"
+        );
+        assert!(
+            !text.contains("言語要件"),
+            "English locale must not get a ja preamble: {text:?}"
+        );
+        assert!(
+            !text.contains("Requisito de Idioma"),
+            "English locale must not get a pt-BR preamble: {text:?}"
+        );
     }
 
     #[test]
