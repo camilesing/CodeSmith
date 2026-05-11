@@ -316,12 +316,47 @@ impl<'a> HeaderWidget<'a> {
         spans
     }
 
+    /// Compile-time version tag (`v0.8.29`, …). Rendered in the header's
+    /// right cluster as the lowest-priority element — see `right_spans`.
+    fn version_label() -> String {
+        format!("v{}", env!("CARGO_PKG_VERSION"))
+    }
+
+    fn version_spans(prefix_existing: bool) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        if prefix_existing {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            Self::version_label(),
+            Style::default().fg(palette::TEXT_HINT),
+        ));
+        spans
+    }
+
     fn right_spans(&self, max_width: usize) -> Vec<Span<'static>> {
+        // Width-priority cascade. Each row is a candidate; we pick the
+        // first that fits. The version chip is the last thing to drop —
+        // once `status_variant(false, false, true)` no longer leaves room
+        // for `  v0.8.29`, we fall through to the same status variant
+        // without the version chip.
+        let pinned = |status: Vec<Span<'static>>| {
+            let prefix = !status.is_empty();
+            let mut combined = status;
+            combined.extend(Self::version_spans(prefix));
+            combined
+        };
+
         let candidates = [
+            pinned(self.status_variant(true, true, true)),
+            pinned(self.status_variant(false, true, true)),
+            pinned(self.status_variant(false, true, false)),
+            pinned(self.status_variant(false, false, true)),
             self.status_variant(true, true, true),
             self.status_variant(false, true, true),
             self.status_variant(false, true, false),
             self.status_variant(false, false, true),
+            Self::version_spans(false),
         ];
 
         candidates
@@ -504,6 +539,54 @@ mod tests {
         assert!(rendered.contains("deepseek-v4-pro"));
         assert!(!rendered.contains("Plan"));
         assert!(!rendered.contains("Yolo"));
+    }
+
+    #[test]
+    fn header_renders_version_chip_when_width_allows() {
+        // At a generous width the header must surface the runtime version
+        // — users repeatedly ask for it in the live UI (vs only via
+        // `deepseek --version` / `/status`).
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Agent,
+                "deepseek-v4-pro",
+                "deepseek-tui",
+                false,
+                palette::DEEPSEEK_INK,
+            ),
+            120,
+        );
+        let expected = format!("v{}", env!("CARGO_PKG_VERSION"));
+        assert!(
+            rendered.contains(&expected),
+            "expected version chip `{expected}` in header: {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn narrow_header_drops_version_chip_before_dropping_mode() {
+        // Very tight width budget — the version is among the first
+        // chips to disappear; the mode label must still render.
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Yolo,
+                "deepseek-v4-pro",
+                "deepseek-tui",
+                true,
+                palette::DEEPSEEK_INK,
+            )
+            .with_usage(1_000, Some(128_000), 0.0, Some(2_000)),
+            12,
+        );
+        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+        assert!(
+            !rendered.contains(&version),
+            "version chip should drop under width pressure: {rendered:?}",
+        );
+        assert!(
+            rendered.contains("Yolo") || rendered.contains('Y'),
+            "mode label must survive: {rendered:?}",
+        );
     }
 
     #[test]
