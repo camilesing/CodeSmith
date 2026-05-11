@@ -160,6 +160,31 @@ pub(crate) fn locale_reinforcement_preamble(locale_tag: &str) -> Option<&'static
     }
 }
 
+/// Locale-native closing reinforcement appended to the very end of the
+/// system prompt — the bookend MuMu described in the WeChat thread that
+/// prompted #1118 follow-up work.
+///
+/// The opening preamble alone is not enough: as the model accumulates
+/// English context turn-over-turn (code, error logs, search results,
+/// file listings), the recency bias of the transformer's attention
+/// drifts thinking back toward English even when the user keeps writing
+/// in their own language. A closing native-script reinforcement sits at
+/// the position closest to the user's next message — where attention
+/// weight is highest — and re-asserts the language rule right before
+/// the model generates `reasoning_content` for the turn.
+///
+/// Like the opening preamble, English (and unknown) locales return
+/// `None` and the system prompt is byte-identical to the pre-bookend
+/// behavior.
+pub(crate) fn locale_reinforcement_closer(locale_tag: &str) -> Option<&'static str> {
+    match locale_tag {
+        "zh-Hans" | "zh-CN" | "zh" => Some(LOCALE_CLOSER_ZH_HANS),
+        "ja" | "ja-JP" => Some(LOCALE_CLOSER_JA),
+        "pt-BR" | "pt" => Some(LOCALE_CLOSER_PT_BR),
+        _ => None,
+    }
+}
+
 const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
 你正在 DeepSeek TUI 中运行。无论任务上下文（代码、错误日志、文件名）\
 是英文，无论系统提示的其余部分是英文，你都必须用简体中文进行 \
@@ -193,6 +218,35 @@ para português do Brasil.\n\n\
 Se o usuário mudar de idioma no meio da sessão, mude no próximo turno. \
 Se o usuário pedir explicitamente (por exemplo, \"think in English\"), \
 isso sobrescreve esta regra.";
+
+// ── Closing bookends (appended to the very end of the system prompt) ──
+
+const LOCALE_CLOSER_ZH_HANS: &str = "## 语言再次提醒\n\n\
+**重要：你的 `reasoning_content`（内部思考）和最终回复必须保持简体中文。** \
+无论你在这次会话中读到了多少英文代码、错误日志或文档，无论项目上下文 \
+是英文，思考过程不能漂移到英文。这是会话级硬性要求 —— 用户的语言决定 \
+你的语言，与上下文中累积的英文内容无关。除非用户明确要求切换（例如 \
+\"think in English\"），否则继续用简体中文思考和回答。";
+
+const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
+**重要：`reasoning_content`（内部思考）と最終的な返信は日本語で行ってください。** \
+このセッションで読み込んだ英語のコード、エラーログ、ドキュメントの量に \
+関係なく、プロジェクトコンテキストが英語であっても、思考プロセスを \
+英語に逸らさないでください。これはセッションレベルの厳格な要件であり、 \
+ユーザーの言語があなたの言語を決定します。ユーザーが明示的に切り替えを \
+要求しない限り（例：\"think in English\"）、日本語で思考し、回答し続けて \
+ください。";
+
+const LOCALE_CLOSER_PT_BR: &str = "## Reforço de Idioma\n\n\
+**Importante: seu `reasoning_content` (pensamento interno) e a resposta \
+final devem permanecer em português do Brasil.** Independentemente de \
+quanto código em inglês, logs de erro ou documentação você ler nesta \
+sessão, e independentemente de o contexto do projeto ser em inglês, o \
+processo de pensamento não pode derivar para o inglês. Este é um \
+requisito rígido em nível de sessão — o idioma do usuário define seu \
+idioma. A menos que o usuário peça explicitamente a troca (por exemplo, \
+\"think in English\"), continue pensando e respondendo em português do \
+Brasil.";
 
 /// Personality overlays — voice and tone.
 pub const CALM_PERSONALITY: &str = include_str!("prompts/personalities/calm.md");
@@ -553,6 +607,21 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
         full_prompt = format!("{full_prompt}\n\n{handoff_block}");
     }
 
+    // 7. Locale-native closing reinforcement (#1118 follow-up #2). The
+    // opening preamble alone wasn't enough — community feedback (the
+    // WeChat thread about XML-tagged bilingual bookends) flagged that as
+    // English context accumulates turn-over-turn, the model's recency
+    // bias pulls thinking back to English. Putting the same directive at
+    // the END of the system prompt — right before the user's next
+    // message — uses recency bias *in our favor*: the model sees the
+    // native-script "keep thinking in Chinese / Japanese / Portuguese"
+    // rule immediately before it generates `reasoning_content` for the
+    // turn. English (and unknown) locales return `None` and the prompt
+    // stays byte-identical to the pre-bookend behavior.
+    if let Some(closer) = locale_reinforcement_closer(session_context.locale_tag) {
+        full_prompt = format!("{full_prompt}\n\n{closer}");
+    }
+
     SystemPrompt::Text(full_prompt)
 }
 
@@ -697,6 +766,81 @@ mod tests {
     }
 
     #[test]
+    fn locale_reinforcement_closer_returns_native_script_for_supported_locales() {
+        // English (and unknown locales) get None.
+        assert!(locale_reinforcement_closer("en").is_none());
+        assert!(locale_reinforcement_closer("fr-FR").is_none());
+        assert!(locale_reinforcement_closer("").is_none());
+
+        // Each supported locale gets a closer in its own script that
+        // explicitly tells the model "don't drift to English even as
+        // English context accumulates" — that's the load-bearing claim
+        // behind the bookend pattern.
+        let zh = locale_reinforcement_closer("zh-Hans").expect("zh closer");
+        assert!(
+            zh.contains("简体中文"),
+            "zh closer must be in Simplified Chinese"
+        );
+        assert!(
+            zh.contains("reasoning_content"),
+            "zh closer must steer reasoning_content"
+        );
+        let ja = locale_reinforcement_closer("ja").expect("ja closer");
+        assert!(ja.contains("日本語"), "ja closer must be in Japanese");
+        assert!(ja.contains("reasoning_content"));
+        let pt = locale_reinforcement_closer("pt-BR").expect("pt-BR closer");
+        assert!(pt.contains("português do Brasil"));
+        assert!(pt.contains("reasoning_content"));
+    }
+
+    #[test]
+    fn system_prompt_bookends_zh_hans_with_preamble_and_closer() {
+        // The full system prompt for zh-Hans must contain BOTH the
+        // opening preamble (`## 语言要求`) and the closing reinforcement
+        // (`## 语言再次提醒`), with the closer appearing AFTER the
+        // preamble — i.e. the prompt is "bookended" in native script,
+        // matching the empirical finding from the WeChat thread that
+        // motivated the closer.
+        let tmp = tempdir().expect("tempdir");
+        let text = match system_prompt_for_mode_with_context_skills_session_and_approval(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: None,
+                project_context_pack_enabled: false,
+                locale_tag: "zh-Hans",
+            },
+            ApprovalMode::Suggest,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        let preamble_pos = text
+            .find("## 语言要求")
+            .expect("zh-Hans preamble must be in prompt");
+        let closer_pos = text
+            .find("## 语言再次提醒")
+            .expect("zh-Hans closer must be in prompt");
+        assert!(
+            preamble_pos < closer_pos,
+            "closer must come after preamble (preamble={preamble_pos}, closer={closer_pos})",
+        );
+        // The closer must be the very last block — anything else after
+        // it defeats the recency-bias purpose. Skip the closer's own
+        // `## ` header before scanning.
+        let closer_header_end = closer_pos + "## 语言再次提醒".len();
+        let after_closer_body = &text[closer_header_end..];
+        assert!(
+            !after_closer_body.contains("\n## "),
+            "no other top-level section should follow the closer; got: {after_closer_body:?}",
+        );
+    }
+
+    #[test]
     fn system_prompt_skips_locale_preamble_for_english() {
         // English locale → no preamble injected. Asserts the
         // "preamble is opt-in for non-English" invariant.
@@ -729,6 +873,19 @@ mod tests {
         assert!(
             !text.contains("Requisito de Idioma"),
             "English locale must not get a pt-BR preamble: {text:?}"
+        );
+        // Closer too — same bookend rule.
+        assert!(
+            !text.contains("语言再次提醒"),
+            "English locale must not get a zh closer: {text:?}"
+        );
+        assert!(
+            !text.contains("言語再確認"),
+            "English locale must not get a ja closer: {text:?}"
+        );
+        assert!(
+            !text.contains("Reforço de Idioma"),
+            "English locale must not get a pt-BR closer: {text:?}"
         );
     }
 
