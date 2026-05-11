@@ -196,7 +196,7 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 维护版本，核心是修复 v0.8.27 / v0.8.28 引入的"滚动幽灵"回归
 （#1085 类问题）和 Ctrl+R 会话恢复跨项目泄漏的问题（#1395），
-外加 12 个社区 PR。[完整更新日志](CHANGELOG.md)。
+外加 16 个社区 PR。[完整更新日志](CHANGELOG.md)。
 
 - **"滚动幽灵"彻底修复**（#1085 回归）。并行子代理运行
   `exec_shell` 时，alt-screen 会被滚动出 ratatui 差分渲染器的
@@ -221,6 +221,15 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 - **MCP 发现接受不规范条目**（PR #1410，来自 **@Liu-Vince**）—
   一个错误的 tool / resource / prompt 条目不再让整页丢失；
   错误条目被跳过，目录的其余部分正常返回。
+- **MCP SSE 接受 CRLF 分隔的 endpoint 事件**（#1309，PR #1358，
+  来自 **@reidliu41**）— FastMCP / uvicorn 风格的 SSE 流不再因
+  只等待 LF 分隔符而超时。
+- **输入框会忽略泄漏的鼠标报告字节**（#1418，PR #1421，来自
+  **@reidliu41**）— 某些 SSH / IDE 终端链路把 `[<35;44;18M`
+  这类鼠标报告泄漏到 stdin 时，不再把输入区域填满。
+- **Footer 芯片会遵守可用宽度**（#1357，PR #1417，来自
+  **@Wenjunyun123**）— 窄终端下，过长的 cache / aux 芯片会先
+  收起，而不是挤压左侧状态或 composer 区域。
 - **笔记管理斜杠命令**（PR #1407，来自 **@reidliu41**）—
   `/note add`、`/note list` 等命令在 TUI 内提供持久笔记功能。
 - **全局 `~/.deepseek/AGENTS.md` 与项目 AGENTS.md 合并**
@@ -242,9 +251,9 @@ deepseek --provider ollama --model deepseek-coder:1.3b
   `parse_pages_arg`、Web 搜索优先级、`sanitize_stream_chunk`
   控制字节过滤（PR #1403–#1406，来自 **@linzhiqin2003**）。
 
-感谢本周期落地 10 个 PR 的 **@linzhiqin2003**，以及
-**@reidliu41**、**@hlx98007**、**@Liu-Vince**，和报告 #1395
-的 **@shenxiaodaosanhua**。
+感谢本周期落地 10 个 PR 的 **@linzhiqin2003**、落地 3 个 PR 的
+**@reidliu41**，以及 **@Wenjunyun123**、**@hlx98007**、
+**@Liu-Vince**，和报告 #1395 的 **@shenxiaodaosanhua**。
 
 ---
 

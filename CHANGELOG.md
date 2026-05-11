@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 A maintenance release anchored by a regression fix for the
 "scroll demon" (#1085 class, re-introduced by v0.8.27's flicker
-patch) and a wrong-project session-restore bug (#1395). Plus 12
+patch) and a wrong-project session-restore bug (#1395). Plus 16
 community PRs covering MCP transport, prompt steering, auto-routing
 language coverage, web-search SERP filtering, and broad test
 coverage additions.
@@ -49,6 +49,21 @@ coverage additions.
   malformed entries with a `tracing::debug!` instead of dropping
   the rest of the catalogue. Composes with the v0.8.x pagination
   loop landed for #1256.
+- **MCP SSE transport accepts CRLF-framed endpoint events** (#1309,
+  PR #1358 from **@reidliu41**). FastMCP / uvicorn-style SSE
+  streams using `\r\n\r\n` separators now discover the endpoint and
+  send initialization requests instead of timing out while waiting
+  for an LF-only event boundary.
+- **Composer ignores leaked SGR mouse-report bursts** (#1418,
+  PR #1421 from **@reidliu41**). Some SSH / IDE terminal chains
+  leak fragments like `[<35;44;18M` into stdin while mouse capture
+  is enabled; the composer now filters those bursts at the insertion
+  boundary without stripping ordinary coordinate-like typed text.
+- **Footer right-cluster chips can no longer crowd the left status
+  line** (#1357, PR #1417 from **@Wenjunyun123**). The footer now
+  reserves visible space for the left status before selecting cache /
+  aux chips, dropping oversized right-side chips instead of pushing
+  the row over the available terminal width.
 - **Web search drops spam-stuffed SERPs** (#964, PR #1396 from
   **@linzhiqin2003**). The Bing / DDG fallback paths now filter
   the SEO-farm domains that were poisoning quick lookups.
@@ -95,6 +110,11 @@ coverage additions.
   narrows the trigger from `on: [push]` to `on: push.branches:
   [main]` + `tags: ['v*']`. Feature branches no longer mirror to
   CNB; only `main` and tagged releases do.
+- **Post-exit resume hint avoids session-id taint.** The TUI now
+  checks whether a session exists separately from the constant
+  resume-hint text it prints after leaving the alt-screen, resolving
+  the `rust/cleartext-logging` CodeQL alert without reintroducing
+  scroll-demon stdout writes.
 
 ### Internal
 

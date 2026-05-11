@@ -228,7 +228,7 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 ## What's New In v0.8.29
 
 A maintenance release anchored by a v0.8.27 / v0.8.28 regression fix
-plus 12 community PRs. [Full changelog](CHANGELOG.md).
+plus 16 community PRs. [Full changelog](CHANGELOG.md).
 
 - **Scroll demon, gone for good** (#1085 regression). Parallel sub-
   agents running `exec_shell` would scroll the alt-screen out from
@@ -255,6 +255,15 @@ plus 12 community PRs. [Full changelog](CHANGELOG.md).
   **@Liu-Vince**) — one bad tool / resource / prompt entry no
   longer drops the whole page; the malformed entry is skipped and
   the rest of the catalogue surfaces normally.
+- **MCP SSE accepts CRLF-framed endpoint events** (#1309, PR #1358
+  from **@reidliu41**) — FastMCP / uvicorn streams no longer time
+  out waiting for LF-only event separators.
+- **Composer ignores leaked mouse-report bytes** (#1418, PR #1421
+  from **@reidliu41**) — terminal chains that leak `[<35;44;18M`
+  style mouse reports into stdin no longer fill the input area.
+- **Footer chips respect the available width** (#1357, PR #1417 from
+  **@Wenjunyun123**) — long cache / aux chips drop before crowding
+  the left status line or composer area on narrow terminals.
 - **Note management commands** (PR #1407 from **@reidliu41**) —
   `/note add`, `/note list`, and friends for persistent maintainer
   notes inside the TUI.
@@ -284,8 +293,8 @@ plus 12 community PRs. [Full changelog](CHANGELOG.md).
   from **@linzhiqin2003**).
 
 Thanks to **@linzhiqin2003** (10 landings this cycle),
-**@reidliu41**, **@hlx98007**, **@Liu-Vince**, and
-**@shenxiaodaosanhua** for the bug report.
+**@reidliu41** (3 landings), **@Wenjunyun123**, **@hlx98007**,
+**@Liu-Vince**, and **@shenxiaodaosanhua** for the bug report.
 
 ---
 
