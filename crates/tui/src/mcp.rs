@@ -934,9 +934,39 @@ impl McpConnection {
                     }
                 }
             }
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(connect_timeout_secs))
-                .build()?;
+            // Honor the standard `HTTP_PROXY` / `HTTPS_PROXY` (and their
+            // lowercase equivalents) plus `NO_PROXY` env vars when
+            // reaching MCP HTTP servers (#1408). Reqwest 0.13 does not
+            // auto-detect these by default, so users behind corporate
+            // proxies, on China-mainland connections routing through a
+            // local Clash / Shadowsocks tunnel, etc. previously had MCP
+            // HTTP traffic bypass the proxy entirely while every other
+            // tool on the box (curl, npm, …) used it.
+            let mut client_builder =
+                reqwest::Client::builder().timeout(Duration::from_secs(connect_timeout_secs));
+            let env_proxy_url = std::env::var("HTTPS_PROXY")
+                .or_else(|_| std::env::var("https_proxy"))
+                .or_else(|_| std::env::var("HTTP_PROXY"))
+                .or_else(|_| std::env::var("http_proxy"))
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            if let Some(proxy_url) = env_proxy_url {
+                match reqwest::Proxy::all(&proxy_url) {
+                    Ok(proxy) => {
+                        let proxy = proxy.no_proxy(reqwest::NoProxy::from_env());
+                        client_builder = client_builder.proxy(proxy);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "mcp",
+                            ?err,
+                            proxy = %proxy_url,
+                            "ignoring malformed HTTP(S)_PROXY env var; MCP connection will bypass proxy"
+                        );
+                    }
+                }
+            }
+            let client = client_builder.build()?;
             Box::new(HttpTransport::new(
                 client,
                 url.clone(),
