@@ -2244,7 +2244,7 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('o')
-                    if key.modifiers == KeyModifiers::CONTROL
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
                         && app.input.is_empty()
                         && open_thinking_pager(app) =>
                 {
