@@ -390,6 +390,7 @@ pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> S
     )
 }
 
+#[cfg(test)]
 pub(super) fn maybe_activate_requested_deferred_tool(
     tool_name: &str,
     catalog: &[Tool],
@@ -404,6 +405,182 @@ pub(super) fn maybe_activate_requested_deferred_tool(
     }
 
     active_tools.insert(tool_name.to_string())
+}
+
+pub(super) fn preflight_requested_deferred_tool(
+    tool_name: &str,
+    input: &serde_json::Value,
+    catalog: &[Tool],
+    active_tools: &mut HashSet<String>,
+) -> Option<ToolResult> {
+    let def = catalog.iter().find(|def| def.name == tool_name)?;
+    if !def.defer_loading.unwrap_or(false) || active_tools.contains(tool_name) {
+        return None;
+    }
+
+    active_tools.insert(tool_name.to_string());
+    Some(deferred_tool_loaded_result(def, input))
+}
+
+fn deferred_tool_loaded_result(tool: &Tool, input: &serde_json::Value) -> ToolResult {
+    let expected = schema_fields(&tool.input_schema);
+    let required = schema_required_fields(&tool.input_schema);
+    let received = received_fields(input);
+    let missing = required
+        .iter()
+        .filter(|field| !received.contains(field))
+        .cloned()
+        .collect::<Vec<_>>();
+    let unexpected = received
+        .iter()
+        .filter(|field| !expected.iter().any(|expected| &expected.name == *field))
+        .cloned()
+        .collect::<Vec<_>>();
+    let corrections = likely_field_corrections(&received, &expected, &tool.name);
+
+    let mut lines = vec![
+        format!("Tool `{}` was deferred and has now been loaded.", tool.name),
+        String::new(),
+        "The tool was not executed. Retry with the loaded schema.".to_string(),
+        String::new(),
+        "Expected fields:".to_string(),
+    ];
+    if expected.is_empty() {
+        lines.push("  (none)".to_string());
+    } else {
+        for field in &expected {
+            let required_marker = if required.contains(&field.name) {
+                " required"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "  {}: {}{}",
+                field.name, field.kind, required_marker
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.push("Received fields:".to_string());
+    if received.is_empty() {
+        lines.push("  (none)".to_string());
+    } else {
+        lines.push(format!("  {}", received.join(", ")));
+    }
+    if !missing.is_empty() {
+        lines.push(String::new());
+        lines.push("Missing required fields:".to_string());
+        lines.push(format!("  {}", missing.join(", ")));
+    }
+    if !unexpected.is_empty() {
+        lines.push(String::new());
+        lines.push("Unexpected fields:".to_string());
+        lines.push(format!("  {}", unexpected.join(", ")));
+    }
+    if !corrections.is_empty() {
+        lines.push(String::new());
+        lines.push("Likely corrections:".to_string());
+        for correction in &corrections {
+            lines.push(format!("  {correction}"));
+        }
+    }
+
+    ToolResult::success(lines.join("\n")).with_metadata(json!({
+        "deferred_tool_loaded": true,
+        "tool_name": tool.name,
+        "expected_fields": expected.iter().map(|field| field.name.clone()).collect::<Vec<_>>(),
+        "received_fields": received,
+        "missing_required_fields": missing,
+        "unexpected_fields": unexpected,
+        "likely_corrections": corrections,
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct SchemaField {
+    name: String,
+    kind: String,
+}
+
+fn schema_fields(schema: &serde_json::Value) -> Vec<SchemaField> {
+    let Some(properties) = schema.get("properties").and_then(|value| value.as_object()) else {
+        return Vec::new();
+    };
+    let mut fields = properties
+        .iter()
+        .map(|(name, spec)| SchemaField {
+            name: name.clone(),
+            kind: schema_type_label(spec),
+        })
+        .collect::<Vec<_>>();
+    fields.sort_by(|a, b| a.name.cmp(&b.name));
+    fields
+}
+
+fn schema_required_fields(schema: &serde_json::Value) -> Vec<String> {
+    let mut required = schema
+        .get("required")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    required.sort();
+    required
+}
+
+fn schema_type_label(spec: &serde_json::Value) -> String {
+    let Some(kind) = spec.get("type").and_then(|value| value.as_str()) else {
+        return "value".to_string();
+    };
+    if let Some(values) = spec.get("enum").and_then(|value| value.as_array()) {
+        let labels = values
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        if !labels.is_empty() {
+            return format!("{kind} ({})", labels.join(" | "));
+        }
+    }
+    kind.to_string()
+}
+
+fn received_fields(input: &serde_json::Value) -> Vec<String> {
+    let mut fields = input
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.keys().cloned())
+        .collect::<Vec<_>>();
+    fields.sort();
+    fields
+}
+
+fn likely_field_corrections(
+    received: &[String],
+    expected: &[SchemaField],
+    tool_name: &str,
+) -> Vec<String> {
+    let has_expected = |name: &str| expected.iter().any(|field| field.name == name);
+    let has_received = |name: &str| received.iter().any(|field| field == name);
+    let mut corrections = Vec::new();
+
+    if has_received("old_string") && has_expected("search") {
+        corrections.push("old_string -> search".to_string());
+    }
+    if has_received("new_string") && has_expected("replace") {
+        corrections.push("new_string -> replace".to_string());
+    }
+    if has_received("replacement") && has_expected("replace") {
+        corrections.push("replacement -> replace".to_string());
+    }
+    if tool_name == "checklist_update" && has_received("todos") {
+        corrections.push(
+            "Use checklist_write to replace the full list, or retry checklist_update with id and status."
+                .to_string(),
+        );
+    }
+
+    corrections
 }
 
 pub(super) fn execute_tool_search(

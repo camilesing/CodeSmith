@@ -1062,8 +1062,9 @@ impl Engine {
                     )));
                 }
 
-                if maybe_activate_requested_deferred_tool(
+                if let Some(result) = preflight_requested_deferred_tool(
                     &tool_name,
+                    &tool_input,
                     &tool_catalog,
                     &mut active_tool_names,
                 ) {
@@ -1073,6 +1074,7 @@ impl Engine {
                             "Auto-loaded deferred tool '{tool_name}' after model request."
                         )))
                         .await;
+                    guard_result = Some(result);
                 }
                 let mut tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
 
@@ -1094,8 +1096,9 @@ impl Engine {
                         tool.name = tool_name.clone();
                         // Re-run the deferred-activation check with the
                         // canonical name.
-                        if maybe_activate_requested_deferred_tool(
+                        if let Some(result) = preflight_requested_deferred_tool(
                             &tool_name,
+                            &tool_input,
                             &tool_catalog,
                             &mut active_tool_names,
                         ) {
@@ -1106,6 +1109,7 @@ impl Engine {
                                     tool_name, tool_name
                                 )))
                                 .await;
+                            guard_result = Some(result);
                         }
                     }
                 }
