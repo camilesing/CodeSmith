@@ -2055,7 +2055,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
 
 fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
     Some(match id {
-        MessageId::ComposerPlaceholder => "Escribí una tarea o usá /.",
+        MessageId::ComposerPlaceholder => "Escribe una tarea o usa /.",
         MessageId::HistorySearchPlaceholder => "Buscar en el historial de prompts...",
         MessageId::HistorySearchTitle => "Búsqueda en el historial",
         MessageId::HistoryHintMove => "Arriba/Abajo mover",
@@ -2064,7 +2064,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::HistoryNoMatches => "  Sin resultados",
         MessageId::ConfigTitle => "Configuración de la sesión",
         MessageId::ConfigModalTitle => " Config ",
-        MessageId::ConfigSearchPlaceholder => "escribí para filtrar",
+        MessageId::ConfigSearchPlaceholder => "escribe para filtrar",
         MessageId::ConfigNoSettings => "  No hay configuraciones disponibles.",
         MessageId::ConfigNoMatchesPrefix => "  Ninguna configuración coincide con ",
         MessageId::ConfigFilteredSettings => "  Configuraciones filtradas",
@@ -2079,7 +2079,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             " escribir=filtrar, Backspace=borrar, Ctrl+U/Esc=limpiar, Enter=editar "
         }
         MessageId::HelpTitle => "Ayuda",
-        MessageId::HelpFilterPlaceholder => "Escribí para filtrar",
+        MessageId::HelpFilterPlaceholder => "Escribe para filtrar",
         MessageId::HelpFilterPrefix => "Filtro: ",
         MessageId::HelpNoMatches => "  Sin resultados.",
         MessageId::HelpSlashCommands => "Comandos con barra",
@@ -2092,7 +2092,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             "Fijar un dato que sobrevive a la compactación (inyectado automáticamente en el contexto)"
         }
         MessageId::CmdAttachDescription => {
-            "Adjuntar imagen o video; usá @ruta para archivos de texto o directorios"
+            "Adjuntar imagen o video; usa @ruta para archivos de texto o directorios"
         }
         MessageId::CmdCacheDescription => {
             "Mostrar estadísticas de hit/miss del caché de prefijo DeepSeek en las últimas N rondas"
@@ -2162,7 +2162,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             "Ejecutar una revisión de código estructurada en un archivo, diff o PR"
         }
         MessageId::CmdRlmDescription => {
-            "Turno del Recursive Language Model (RLM) — guarda el prompt en un REPL Python y deja que el modelo escriba el código que lo procesa; usá `llm_query()` / `sub_rlm()` para llamadas a sub-LLMs."
+            "Turno del Recursive Language Model (RLM) — guarda el prompt en un REPL Python y deja que el modelo escriba el código que lo procesa; usa `llm_query()` / `sub_rlm()` para llamadas a sub-LLMs."
         }
         MessageId::CmdSaveDescription => "Guardar la sesión en archivo",
         MessageId::CmdSessionsDescription => "Abrir el selector de sesiones",
@@ -2171,7 +2171,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             "Activar una skill, o instalar/actualizar/desinstalar/confiar en una skill de la comunidad"
         }
         MessageId::CmdSkillsDescription => {
-            "Listar skills locales (filtrá con `/skills <prefijo>`; --remote navega el registro curado)"
+            "Listar skills locales (filtra con `/skills <prefijo>`; --remote navega el registro curado)"
         }
         MessageId::CmdStashDescription => {
             "Estacionar o restaurar borrador del compositor (Ctrl+S estaciona, /stash list|pop)"
@@ -2207,7 +2207,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCacheNoData => {
             "Historial del caché: ningún turno registrado todavía.\n\n\
              DeepSeek expone `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` en cada turno \
-             de la API donde el modelo lo soporta (familia V4). Ejecutá un turno y probá /cache de nuevo."
+             de la API donde el modelo lo soporta (familia V4). Ejecuta un turno y prueba /cache de nuevo."
         }
         MessageId::CmdCacheTotals => {
             "Σ entrada: {sum_in}   Σ hit: {sum_hit}   Σ miss: {sum_miss}   tasa promedio de hit: {avg}\n"
@@ -2228,7 +2228,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdTokensContextWithWindow => "~{used} / {window} ({percent}%)",
         MessageId::FooterAgentSingular => "1 sub-agente",
         MessageId::FooterAgentsPlural => "{count} sub-agentes",
-        MessageId::FooterPressCtrlCAgain => "Presioná Ctrl+C de nuevo para salir",
+        MessageId::FooterPressCtrlCAgain => "Presiona Ctrl+C de nuevo para salir",
         MessageId::FooterWorking => "trabajando",
         MessageId::HelpSectionActions => "Acciones",
         MessageId::HelpSectionClipboard => "Portapapeles",
@@ -2318,7 +2318,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::SettingsConfigFile => "Archivo de configuración:",
         MessageId::ClearConversation => "Conversación limpia",
         MessageId::ClearConversationBusy => {
-            "Conversación limpia (estado del plan ocupado; ejecutá /clear de nuevo si es necesario)"
+            "Conversación limpia (estado del plan ocupado; ejecuta /clear de nuevo si es necesario)"
         }
         MessageId::ModelChanged => "Modelo cambiado: {old} \u{2192} {new}",
         MessageId::LinksTitle => "Enlaces de DeepSeek:",
@@ -2348,36 +2348,36 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::HomeModeTips => "Tips de Modo",
         MessageId::HomeAgentModeTip => "Modo Agent - Usar herramientas para tareas autónomas",
         MessageId::HomeAgentModeReviewTip => {
-            "  Usá Ctrl+X para revisar en modo Plan antes de ejecutar"
+            "  Usa Ctrl+X para revisar en modo Plan antes de ejecutar"
         }
         MessageId::HomeAgentModeYoloTip => {
-            "  Escribí /mode yolo para habilitar acceso total a las herramientas"
+            "  Escribe /mode yolo para habilitar acceso total a las herramientas"
         }
         MessageId::HomeYoloModeTip => "Modo YOLO - Acceso total a herramientas, sin aprobaciones",
-        MessageId::HomeYoloModeCaution => "  ¡Tené cuidado con operaciones destructivas!",
+        MessageId::HomeYoloModeCaution => "  ¡Ten cuidado con operaciones destructivas!",
         MessageId::HomePlanModeTip => "Modo Plan - Planear antes de implementar",
         MessageId::HomePlanModeChecklistTip => {
-            "  Usá /mode plan para crear checklists estructurados"
+            "  Usa /mode plan para crear checklists estructurados"
         }
-        MessageId::OnboardLanguageTitle => "Elegí el idioma",
+        MessageId::OnboardLanguageTitle => "Elige el idioma",
         MessageId::OnboardLanguageBlurb => {
-            "Elegí el idioma de la interfaz. Podés cambiarlo en cualquier momento con `/settings set locale <etiqueta>`."
+            "Elige el idioma de la interfaz. Puedes cambiarlo en cualquier momento con `/settings set locale <etiqueta>`."
         }
         MessageId::OnboardLanguageFooter => {
-            "Presioná 1-5 para elegir, o Enter para mantener la configuración actual"
+            "Presiona 1-5 para elegir, o Enter para mantener la configuración actual"
         }
-        MessageId::OnboardApiKeyTitle => "Conectá tu clave de API DeepSeek",
+        MessageId::OnboardApiKeyTitle => "Conecta tu clave de API DeepSeek",
         MessageId::OnboardApiKeyStep1 => {
-            "Paso 1.  Abrí https://platform.deepseek.com/api_keys y creá una clave."
+            "Paso 1.  Abre https://platform.deepseek.com/api_keys y crea una clave."
         }
-        MessageId::OnboardApiKeyStep2 => "Paso 2.  Pegala abajo y presioná Enter.",
+        MessageId::OnboardApiKeyStep2 => "Paso 2.  Pégala abajo y presiona Enter.",
         MessageId::OnboardApiKeySavedHint => {
             "Guardada en ~/.deepseek/config.toml para funcionar en cualquier carpeta."
         }
         MessageId::OnboardApiKeyFormatHint => {
-            "Pegá la clave completa tal como fue emitida (sin espacios ni saltos de línea)."
+            "Pega la clave completa tal como fue emitida (sin espacios ni saltos de línea)."
         }
-        MessageId::OnboardApiKeyPlaceholder => "(pegá la clave acá)",
+        MessageId::OnboardApiKeyPlaceholder => "(pega la clave acá)",
         MessageId::OnboardApiKeyLabel => "Clave: ",
         MessageId::OnboardApiKeyFooter => "Enter para guardar, Esc para volver.",
         MessageId::OnboardTrustTitle => "Confiar en el directorio",
@@ -2389,23 +2389,23 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardTrustEffectHint => {
             "Confiar en este directorio lo registra en la configuración global y habilita el modo workspace confiable."
         }
-        MessageId::OnboardTrustFooterPrefix => "Presioná ",
+        MessageId::OnboardTrustFooterPrefix => "Presiona ",
         MessageId::OnboardTrustFooterMiddle => " para confiar y continuar, ",
         MessageId::OnboardTrustFooterSuffix => " para salir",
-        MessageId::OnboardTipsTitle => "Empezá simple",
+        MessageId::OnboardTipsTitle => "Empieza simple",
         MessageId::OnboardTipsLine1 => {
-            "Escribí la tarea en lenguaje natural. Usá /help o Ctrl+K para comandos."
+            "Escribe la tarea en lenguaje natural. Usa /help o Ctrl+K para comandos."
         }
         MessageId::OnboardTipsLine2 => {
             "El composer inferior es multilínea: Enter envía, Alt+Enter o Ctrl+J agrega una nueva línea."
         }
         MessageId::OnboardTipsLine3 => {
-            "Cambiá de modo solo cuando el trabajo cambie: Plan para revisar antes, Agent para ejecución, YOLO para auto-aprobación."
+            "Cambia de modo solo cuando el trabajo cambie: Plan para revisar antes, Agent para ejecución, YOLO para auto-aprobación."
         }
         MessageId::OnboardTipsLine4 => {
             "Ctrl+R retoma sesiones anteriores, y Esc cancela el borrador o superposición actual."
         }
-        MessageId::OnboardTipsFooterEnter => "Presioná Enter",
+        MessageId::OnboardTipsFooterEnter => "Presiona Enter",
         MessageId::OnboardTipsFooterAction => " para abrir el workspace",
     })
 }

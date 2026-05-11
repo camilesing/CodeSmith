@@ -411,7 +411,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         }
         "locale" | "language" => {
             app.ui_locale = resolve_locale(&settings.locale);
-            app.history_version = app.history_version.wrapping_add(1);
+            app.mark_history_updated();
             app.needs_redraw = true;
         }
         "background_color" | "background" | "bg" => {
