@@ -196,7 +196,7 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 维护版本，核心是修复 v0.8.27 / v0.8.28 引入的"滚动幽灵"回归
 （#1085 类问题）和 Ctrl+R 会话恢复跨项目泄漏的问题（#1395），
-外加 16 个社区 PR。[完整更新日志](CHANGELOG.md)。
+外加 20 个社区 PR。[完整更新日志](CHANGELOG.md)。
 
 - **"滚动幽灵"彻底修复**（#1085 回归）。并行子代理运行
   `exec_shell` 时，alt-screen 会被滚动出 ratatui 差分渲染器的
@@ -244,6 +244,15 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 - **Auto 路由识别 CJK 调试 / 搜索关键词**（PR #1401、#1402，
   来自 **@linzhiqin2003**）— `--model auto` 和推理强度选择器
   现在能正确路由中文 / 日文技术查询，此前会回退到通用基准。
+- **Deferred tools 首次执行前会先加载 schema**（#1419，PR #1429，
+  来自 **@SamhandsomeLee**）— `edit_file` 等延迟加载工具现在会先
+  展示期望字段并要求模型重试，而不是执行模型猜测出来的参数名。
+- **DeepSeek 公开别名会正确回放 thinking-mode 工具轮次**（PR #1428，
+  来自 **@Beltran12138**）— `deepseek-chat` 和
+  `deepseek-reasoner` 现在与显式 V4 模型 ID 一样触发
+  `reasoning_content` replay，避免工具调用后的第二轮 400。
+- **技能补全收敛到 `/skill` 下**（#1437，PR #1442，来自
+  **@reidliu41**）— 本地技能很多时不会再挤满根级 `/` 命令菜单。
 - **`sync-cnb.yml` 工作流加固** — 显式 `permissions: contents:
   read`、`actions/checkout` v3 → v4、触发器收紧到 `main` +
   `v*` 标签（不再镜像 feature 分支）。
@@ -251,9 +260,10 @@ deepseek --provider ollama --model deepseek-coder:1.3b
   `parse_pages_arg`、Web 搜索优先级、`sanitize_stream_chunk`
   控制字节过滤（PR #1403–#1406，来自 **@linzhiqin2003**）。
 
-感谢本周期落地 10 个 PR 的 **@linzhiqin2003**、落地 3 个 PR 的
-**@reidliu41**，以及 **@Wenjunyun123**、**@hlx98007**、
-**@Liu-Vince**，和报告 #1395 的 **@shenxiaodaosanhua**。
+感谢本周期落地 10 个 PR 的 **@linzhiqin2003**、落地 5 个 PR 的
+**@reidliu41**，以及 **@SamhandsomeLee**、**@Beltran12138**、
+**@Wenjunyun123**、**@hlx98007**、**@Liu-Vince**，和报告 #1395 的
+**@shenxiaodaosanhua**。
 
 ---
 

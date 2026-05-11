@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 A maintenance release anchored by a regression fix for the
 "scroll demon" (#1085 class, re-introduced by v0.8.27's flicker
-patch) and a wrong-project session-restore bug (#1395). Plus 16
+patch) and a wrong-project session-restore bug (#1395). Plus 20
 community PRs covering MCP transport, prompt steering, auto-routing
 language coverage, web-search SERP filtering, and broad test
 coverage additions.
@@ -72,6 +72,24 @@ coverage additions.
   previously the project context's inferred `lang` could override
   the latest user message, leading to English thinking for a
   Chinese turn.
+- **Deferred tools hydrate their schema before first execution**
+  (#1419, PR #1429 from **@SamhandsomeLee**). When the model asks
+  for a deferred tool such as `edit_file` before seeing its schema,
+  the engine now loads the tool, returns a non-executed hydration
+  result with the expected fields, and requires a retry instead of
+  executing guessed argument names. Common `edit_file` aliases such
+  as `old_string -> search` and `new_string -> replace` are called
+  out in the retry hint.
+- **DeepSeek public aliases replay thinking-mode tool turns**
+  (PR #1428 from **@Beltran12138**). `deepseek-chat` and
+  `deepseek-reasoner` now classify as V4 reasoning models for
+  `reasoning_content` replay, preventing second-turn HTTP 400s
+  after tool calls when users keep the onboarding default model
+  alias.
+- **Skill completions no longer flood the top-level slash menu**
+  (#1437, PR #1442 from **@reidliu41**). Installed skills now
+  complete under `/skill <name>` while the root `/` menu stays
+  focused on built-in commands.
 
 ### Added
 
@@ -131,6 +149,10 @@ coverage additions.
   (`header_renders_version_chip_when_width_allows` and
   `narrow_header_drops_version_chip_before_dropping_mode`)
   pinning the version chip's cascade priority.
+- **Workspace/session test isolation** tightened (PR #1431 from
+  **@reidliu41**). Git-root detection ignores invalid parent `.git`
+  markers, env-mutating tests share the crate-wide test lock, and
+  the streamable HTTP MCP mock server stays alive for the full test.
 
 ## [0.8.28] - 2026-05-10
 

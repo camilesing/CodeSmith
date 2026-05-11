@@ -228,7 +228,7 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 ## What's New In v0.8.29
 
 A maintenance release anchored by a v0.8.27 / v0.8.28 regression fix
-plus 16 community PRs. [Full changelog](CHANGELOG.md).
+plus 20 community PRs. [Full changelog](CHANGELOG.md).
 
 - **Scroll demon, gone for good** (#1085 regression). Parallel sub-
   agents running `exec_shell` would scroll the alt-screen out from
@@ -284,6 +284,18 @@ plus 16 community PRs. [Full changelog](CHANGELOG.md).
   reasoning-effort picker correctly route Chinese / Japanese
   technical queries instead of falling through to the generic
   baseline.
+- **Deferred tools hydrate schemas before first execution** (#1419,
+  PR #1429 from **@SamhandsomeLee**) — `edit_file` and other
+  deferred tools now load, show their expected fields, and ask the
+  model to retry instead of executing guessed argument names.
+- **DeepSeek aliases replay thinking-mode tool turns** (PR #1428
+  from **@Beltran12138**) — `deepseek-chat` and
+  `deepseek-reasoner` now get the same `reasoning_content` replay
+  treatment as explicit V4 model IDs, avoiding second-turn 400s
+  after tool calls.
+- **Skill completions stay under `/skill`** (#1437, PR #1442 from
+  **@reidliu41**) — large local skill collections no longer crowd
+  the root slash-command menu.
 - **Sync-to-CNB workflow hardened** — explicit `permissions:
   contents: read`, narrowed trigger to `main` + `v*` tags (no longer
   mirrors feature branches), `actions/checkout` bumped v3 → v4.
@@ -293,7 +305,8 @@ plus 16 community PRs. [Full changelog](CHANGELOG.md).
   from **@linzhiqin2003**).
 
 Thanks to **@linzhiqin2003** (10 landings this cycle),
-**@reidliu41** (3 landings), **@Wenjunyun123**, **@hlx98007**,
+**@reidliu41** (5 landings), **@SamhandsomeLee**,
+**@Beltran12138**, **@Wenjunyun123**, **@hlx98007**,
 **@Liu-Vince**, and **@shenxiaodaosanhua** for the bug report.
 
 ---
