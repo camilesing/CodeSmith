@@ -58,6 +58,39 @@ fn mask_url_secrets(url: &str) -> String {
     url.to_string()
 }
 
+/// Redact the `user:pass@` userinfo segment from a proxy URL so it can be
+/// safely included in `tracing::warn!` output without leaking the
+/// password into the on-disk log. URLs without userinfo are returned
+/// unchanged. Garbage input (no `://` scheme separator) is also returned
+/// unchanged — the malformed-URL warning path is the only caller, so an
+/// unparseable input is already the failure case.
+fn redact_proxy_userinfo(proxy_url: &str) -> String {
+    let Some(scheme_end) = proxy_url.find("://") else {
+        return proxy_url.to_string();
+    };
+    let after_scheme = scheme_end + 3;
+    // The userinfo segment ends at the next `@`, but only if that `@`
+    // comes before the next `/`, `?`, or `#` (otherwise the `@` is in a
+    // path / query and the URL has no userinfo at all).
+    let rest = &proxy_url[after_scheme..];
+    let at_idx = rest.find('@');
+    let path_idx = rest.find(['/', '?', '#']);
+    let userinfo_end = match (at_idx, path_idx) {
+        (Some(a), Some(p)) if a < p => Some(a),
+        (Some(a), None) => Some(a),
+        _ => None,
+    };
+    if let Some(end) = userinfo_end {
+        let mut out = String::with_capacity(proxy_url.len());
+        out.push_str(&proxy_url[..after_scheme]);
+        out.push_str("***@");
+        out.push_str(&rest[end + 1..]);
+        out
+    } else {
+        proxy_url.to_string()
+    }
+}
+
 /// Mask any obvious token-like substrings in a body excerpt before surfacing
 /// it. Conservative: replaces `Bearer <token>` and `api_key=...` shapes.
 fn redact_body_preview(body: &str) -> String {
@@ -957,10 +990,15 @@ impl McpConnection {
                         client_builder = client_builder.proxy(proxy);
                     }
                     Err(err) => {
+                        // Redact userinfo (`user:pass@host` form) before
+                        // logging so an HTTPS_PROXY that embeds credentials
+                        // (common in corporate setups) doesn't leak the
+                        // password to the on-disk `~/.deepseek/logs/`.
+                        let proxy_redacted = redact_proxy_userinfo(&proxy_url);
                         tracing::warn!(
                             target: "mcp",
                             ?err,
-                            proxy = %proxy_url,
+                            proxy = %proxy_redacted,
                             "ignoring malformed HTTP(S)_PROXY env var; MCP connection will bypass proxy"
                         );
                     }
@@ -3131,6 +3169,34 @@ mod tests {
         let redacted = redact_body_preview("Authorization: Bearer abc.def.ghi end");
         assert!(redacted.contains("Bearer ***"), "redacted: {redacted}");
         assert!(!redacted.contains("abc.def.ghi"), "leaked: {redacted}");
+    }
+
+    #[test]
+    fn redact_proxy_userinfo_strips_password() {
+        // Corporate-style proxy URL with embedded creds — the
+        // password must never reach the on-disk log file.
+        let redacted = redact_proxy_userinfo("http://alice:hunter2@proxy.example/");
+        assert_eq!(redacted, "http://***@proxy.example/");
+        assert!(!redacted.contains("hunter2"));
+        assert!(!redacted.contains("alice"));
+
+        // User only (no password) — still redacted.
+        let redacted = redact_proxy_userinfo("https://bob@proxy.example:8080");
+        assert_eq!(redacted, "https://***@proxy.example:8080");
+
+        // No userinfo segment — pass through.
+        let redacted = redact_proxy_userinfo("http://proxy.example:3128/");
+        assert_eq!(redacted, "http://proxy.example:3128/");
+
+        // `@` appears only in the path, not as userinfo separator —
+        // must not be mistaken for credentials.
+        let redacted = redact_proxy_userinfo("http://proxy.example/path@thing");
+        assert_eq!(redacted, "http://proxy.example/path@thing");
+
+        // Garbage input (no `://`) returned unchanged — the
+        // surrounding warning log is the only caller and is already
+        // handling the malformed-URL case.
+        assert_eq!(redact_proxy_userinfo("not-a-url"), "not-a-url");
     }
 
     #[test]
