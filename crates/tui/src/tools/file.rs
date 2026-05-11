@@ -26,7 +26,7 @@ impl ToolSpec for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a UTF-8 file from the workspace. Use this instead of `cat`, `head`, `tail`, or `sed -n '..p'` in `exec_shell` — it's faster, sandbox-aware, and skips the approval prompt. Plain text is returned as-is; PDFs are auto-extracted via `pdftotext` (poppler) when available. Cannot read images or non-PDF binaries."
+        "Read a UTF-8 file from the workspace. Use this instead of `cat`, `head`, `tail`, or `sed -n '..p'` in `exec_shell` — it's faster, sandbox-aware, and skips the approval prompt. Plain text is returned as-is; PDFs are auto-extracted via `pdftotext` (poppler) when available. Cannot read images or non-PDF binaries.\n\nFor large files, use `start_line` and `max_lines` to read in chunks. By default, returns at most 200 lines (~16KB). If `truncated=true` in the response, use `next_start_line` to continue reading. For PDFs, use `pages` instead — `start_line`/`max_lines` only apply to text files."
     }
 
     fn input_schema(&self) -> Value {
@@ -36,6 +36,14 @@ impl ToolSpec for ReadFileTool {
                 "path": {
                     "type": "string",
                     "description": "Path to the file (relative to workspace or absolute)"
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "Starting line number (1-based, default 1)"
+                },
+                "max_lines": {
+                    "type": "integer",
+                    "description": "Maximum lines to return (default 200, max 500)"
                 },
                 "pages": {
                     "type": "string",
@@ -55,6 +63,14 @@ impl ToolSpec for ReadFileTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        use std::cmp::min;
+
+        const DEFAULT_READ_LINES: usize = 200;
+        const HARD_MAX_READ_LINES: usize = 500;
+        const MAX_VISIBLE_BYTES: usize = 16 * 1024;
+        const SMALL_FILE_LINES: usize = 200;
+        const SMALL_FILE_BYTES: usize = 16 * 1024;
+
         let path_str = required_str(&input, "path")?;
         let file_path = context.resolve_path(path_str)?;
         let pages = optional_str(&input, "pages");
@@ -67,7 +83,99 @@ impl ToolSpec for ReadFileTool {
             ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
         })?;
 
-        Ok(ToolResult::success(contents))
+        let total_lines = contents.lines().count();
+        let total_bytes = contents.len();
+        let explicit_range = input
+            .get("start_line")
+            .or_else(|| input.get("max_lines"))
+            .is_some();
+
+        // Small file fast path: return full content unchanged (only when no explicit range).
+        if !explicit_range && total_lines <= SMALL_FILE_LINES && total_bytes <= SMALL_FILE_BYTES {
+            return Ok(ToolResult::success(contents));
+        }
+
+        // Parse start_line (1-based, default 1, must be > 0).
+        let start_line = match input.get("start_line").and_then(Value::as_u64) {
+            Some(0) => {
+                return Err(ToolError::invalid_input(
+                    "start_line must be 1-based and greater than 0".to_string(),
+                ));
+            }
+            Some(v) => v as usize,
+            None => 1,
+        };
+
+        // Parse max_lines (default 200, hard cap 500, must be > 0).
+        let max_lines = match input.get("max_lines").and_then(Value::as_u64) {
+            Some(0) => {
+                return Err(ToolError::invalid_input(
+                    "max_lines must be greater than 0".to_string(),
+                ));
+            }
+            Some(v) => min(v as usize, HARD_MAX_READ_LINES),
+            None => DEFAULT_READ_LINES,
+        };
+
+        // Build the requested line range.
+        let lines: Vec<&str> = contents.lines().collect();
+        if start_line > total_lines {
+            let output = format!(
+                "<file path=\"{path_str}\" total_lines=\"{total_lines}\" shown_lines=\"none\" truncated=\"false\">\n\
+                 \n\
+                 [NO CONTENT] start_line {start_line} is beyond total_lines {total_lines}.\n\
+                 </file>"
+            );
+            return Ok(ToolResult::success(output));
+        }
+
+        let range_start = start_line.saturating_sub(1); // convert to 0-based
+        let range_end = min(range_start + max_lines, total_lines);
+        let mut numbered = String::new();
+        for (i, line) in lines[range_start..range_end].iter().enumerate() {
+            let line_no = start_line + i;
+            numbered.push_str(&format!("{line_no:>6}│ {line}\n"));
+        }
+
+        // UTF-8-safe byte truncation of the rendered range.
+        let truncated_by_bytes = numbered.len() > MAX_VISIBLE_BYTES;
+        let shown_content = if truncated_by_bytes {
+            let mut end = MAX_VISIBLE_BYTES;
+            while end > 0 && !numbered.is_char_boundary(end) {
+                end -= 1;
+            }
+            &numbered[..end]
+        } else {
+            &numbered
+        };
+
+        let truncated_by_lines = range_end < total_lines;
+        let truncated = truncated_by_lines || truncated_by_bytes;
+
+        let mut attrs = format!(
+            "path=\"{path_str}\" total_lines=\"{total_lines}\" shown_lines=\"{}-{}\" truncated=\"{truncated}\"",
+            range_start, range_end,
+        );
+        let next_start = range_end + 1;
+        if truncated_by_lines {
+            attrs.push_str(&format!(" next_start_line=\"{next_start}\""));
+        }
+
+        let mut output = format!("<file {attrs}>\n{shown_content}");
+        if truncated_by_lines {
+            output.push_str(&format!(
+                "\n[TRUNCATED] Showing lines {}-{} of {total_lines}. To continue, call read_file with path=\"{path_str}\" start_line={next_start} max_lines={max_lines}\n",
+                range_start, range_end,
+            ));
+        }
+        if truncated_by_bytes {
+            output.push_str(
+                "\n[TRUNCATED] The selected range exceeded 16KB. Continue with a smaller max_lines value.\n",
+            );
+        }
+        output.push_str("</file>");
+
+        Ok(ToolResult::success(output))
     }
 }
 
