@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.30] - 2026-05-11
+
+A "tighten what we shipped" release. Bare single-letter keystrokes
+(`g`, `G`, `[`, `]`, `?`, `l`, `v`) no longer get eaten as transcript-
+nav shortcuts when the composer is empty — every one of them is now
+freely usable as the first character of a message. The water-spout
+animation in the footer is decoupled from `low_motion` so typewriter
+mode no longer hides the wave, and the v0.3.5-era 🐳→🐋 cycling
+indicator is back next to the effort chip after a long detour through
+geometric dots. Plus a handful of provider, shell, and config fixes
+that surfaced during v0.8.29 testing.
 
 ### Added
 
@@ -27,14 +37,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `off` — hide the chip entirely.
 
   Set via `/config status_indicator <whale|dots|off>` or in
-  `settings.toml`. Regression-guarded by
-  `whale_indicator_idle_frame_is_first_whale_glyph`,
-  `whale_indicator_advances_through_frames_then_breaches`,
-  `dots_indicator_uses_geometric_frames`,
-  `off_indicator_returns_none_so_chip_is_hidden`,
-  `unknown_indicator_mode_defaults_to_whale`,
-  `header_renders_whale_chip_next_to_effort_label`,
-  `header_hides_whale_chip_when_status_indicator_off`.
+  `settings.toml`.
+
+### Changed
+
+- **Transcript-nav single-letter shortcuts now require `Alt`.** Before
+  v0.8.30, pressing a bare `g`, `G`, `[`, `]`, `?`, `l`, or `v` with an
+  empty composer hijacked the keystroke for transcript navigation — so
+  typing "good morning" produced "ood morning" with no warning, and the
+  v0.8.29 spot-fix at `c13ddb04d` (gg double-tap) only suppressed the
+  scroll, not the lost character. The bindings are now uniformly
+  `Alt+<key>`, mirroring `Alt+R` (history search) and `Alt+V` (tool
+  details) which already followed this pattern:
+
+  | Old (bare) | New (`Alt+…`) | What it does |
+  |---|---|---|
+  | `gg` (double-tap) | `Alt+G` | scroll transcript to top |
+  | `G` or `Shift+G` | `Alt+Shift+G` | scroll transcript to bottom |
+  | `[` | `Alt+[` | jump to previous tool output |
+  | `]` | `Alt+]` | jump to next tool output |
+  | `?` | `Alt+?` | open the searchable help overlay (F1 / `Ctrl+/` also bound) |
+  | `l` | `Alt+L` | open pager for last message |
+  | `v` / `V` | `Alt+V` | open tool-details pager |
+
+  Plain letters are now always inserted into the composer as text. The
+  `App::transcript_pending_g` field from the v0.8.29 half-fix is removed;
+  the unified `alt_nav_modifiers` predicate replaces the per-key
+  `is_empty()` checks.
 
 ### Fixed
 
@@ -46,12 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upstream cadence), and `fancy_animations` alone decides whether the
   water-spout strip renders. The wave itself is unchanged from prior
   releases (wall-clock-driven sine, same cadence as v0.8.29).
-
-- **`g` no longer hijacks the first character of a message** — pressing a
-  single `g` with an empty composer used to silently arm a vim-style
-  jump-to-top binding, eating the keystroke; a second `g` would then jump
-  the transcript. The handler now requires a true double-tap `gg` and
-  the pending flag resets on any other key, Enter, or Escape.
 - **Custom-base-URL providers preserve the user's model name** (#857
   class). Only OpenRouter was previously whitelisted; Sglang, Novita,
   Fireworks, Vllm, Ollama, and NvidiaNim users hitting custom gateways
