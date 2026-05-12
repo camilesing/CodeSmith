@@ -14,6 +14,26 @@ have to work with?" — and the answer is now closer to "everything
 you'd reach for from a shell, including the document formats the
 real world uses."
 
+### Performance
+
+- **Move `instructions = [...]`, user memory, and session goal
+  below the prompt's volatile-content boundary so DeepSeek's KV
+  prefix cache survives mid-session edits** (harvested from PR
+  #1345 by **@Duducoco**). Before this change, the per-workspace
+  `instructions` block, the user memory file (`/memory`), and the
+  current session goal (`/goal`) were rendered at position 2.5
+  in the system prompt — inside the static prefix layer that the
+  cache hits. Any edit to those files (or any `# foo`
+  quick-add to memory) busted the cached prefix from that byte
+  onwards, forcing the next turn to re-tokenize the rest of the
+  static layer. Relocating them to position 6 (immediately above
+  the previous-session handoff block) means the cache hit covers
+  the entire static prefix — mode, project context, env, skills,
+  context management, compact template — regardless of how often
+  the user edits their memory file. Skills, context management,
+  and the compact template stay always-cacheable in the static
+  layer where they belong.
+
 ### Fixed
 
 - **Toast stack overlay no longer renders on top of the composer
