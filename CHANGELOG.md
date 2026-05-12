@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A "more useful tools" release in progress. v0.8.31 made the tool
+surface reliable on every host; v0.8.32 expands it. Anchor is the
+question every new contributor asks: "what does the model actually
+have to work with?" — and the answer is now closer to "everything
+you'd reach for from a shell, including the document formats the
+real world uses."
+
+### Changed
+
+- **`read_file` now extracts PDFs in pure Rust by default — no
+  Poppler install required.** Before v0.8.32 the PDF path shelled
+  out to `pdftotext` (Poppler), so first-time users on hosts without
+  it saw `read_file` return a `binary_unavailable` sentinel and had
+  to `brew install poppler` / `apt install poppler-utils` before
+  the model could open a PDF. The bundled `pdf-extract` crate
+  (which already powered URL-fetched PDFs in `web_run`) now drives
+  the local `read_file` path too. The `pages` parameter still
+  filters by 1-indexed inclusive page range; both the whole-file
+  and per-page variants run with no system dependency. Users with
+  column-heavy or complex-table PDFs (academic papers, financial
+  filings) where `pdftotext -layout` still wins can opt into the
+  external path with `prefer_external_pdftotext = true` in
+  `~/.config/deepseek/settings.toml` — when set, the previous
+  Poppler dispatch (and the `binary_unavailable` install hint when
+  the binary is missing) returns. `deepseek doctor` now reports
+  `pdftotext` as optional and explains how to opt in instead of
+  framing it as a missing dependency.
+
 ## [0.8.31] - 2026-05-12
 
 A "tools that actually work" release. `code_execution` no longer

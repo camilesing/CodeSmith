@@ -253,6 +253,17 @@ pub struct Settings {
     ///   *do* support DEC 2026; it is purely a rendering-quality knob,
     ///   not a correctness one.
     pub synchronized_output: String,
+    /// Prefer the external `pdftotext` binary (Poppler) over the bundled
+    /// pure-Rust `pdf-extract` extractor for PDF reads in `read_file`.
+    /// Pure-Rust extraction is the v0.8.32 default because it removes the
+    /// install-poppler-first hurdle most users hit, but `pdftotext -layout`
+    /// still wins for column-heavy or complex-table PDFs (academic papers
+    /// laid out in two columns, financial filings, etc.). Set to `true` to
+    /// route every PDF read through `pdftotext` instead — when the binary
+    /// is missing in that mode the tool returns the structured
+    /// `binary_unavailable` response with an install hint, matching the
+    /// pre-v0.8.32 behavior.
+    pub prefer_external_pdftotext: bool,
 }
 
 impl Default for Settings {
@@ -292,6 +303,7 @@ impl Default for Settings {
             provider_models: None,
             status_indicator: "whale".to_string(),
             synchronized_output: "auto".to_string(),
+            prefer_external_pdftotext: false,
         }
     }
 }
@@ -513,6 +525,9 @@ impl Settings {
                 }
                 self.synchronized_output = normalized.to_string();
             }
+            "prefer_external_pdftotext" | "external_pdftotext" | "pdftotext" => {
+                self.prefer_external_pdftotext = parse_bool(value)?;
+            }
             "default_mode" | "mode" => {
                 let normalized = normalize_mode(value);
                 if !["agent", "plan", "yolo"].contains(&normalized) {
@@ -629,6 +644,10 @@ impl Settings {
             "  synchronized_output: {}",
             self.synchronized_output
         ));
+        lines.push(format!(
+            "  prefer_external_pdftotext: {}",
+            self.prefer_external_pdftotext
+        ));
         lines.push(format!("  default_mode:       {}", self.default_mode));
         lines.push(format!(
             "  sidebar_width:      {}%",
@@ -704,6 +723,10 @@ impl Settings {
             (
                 "synchronized_output",
                 "DEC 2026 synchronized output: auto, on, off (set off if your terminal flickers)",
+            ),
+            (
+                "prefer_external_pdftotext",
+                "Route PDF reads through Poppler's pdftotext instead of the bundled pure-Rust extractor: on/off (default off)",
             ),
             ("default_mode", "Default mode: agent, plan, yolo"),
             ("sidebar_width", "Sidebar width percentage: 10-50"),
