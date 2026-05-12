@@ -122,16 +122,24 @@ jobs:
                 greeting="Thanks @${author}"
               fi
 
-              body_text=$(cat <<EOF
-${greeting} — your contribution landed in [\`${short_sha}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${sha}) on \`main\`:
-
-> ${subject}
-
-Closing this PR now that the code is on \`main\`. Credit lives in the commit message and (where applicable) the \`CHANGELOG.md\` entry for the next release. Apologies for not closing this at the time of the merge — the auto-close workflow is new in v0.8.31.
-
-If you want to land more work and would prefer your future PRs merge cleanly without a harvest step, the [\`CONTRIBUTING.md\`](https://github.com/${GITHUB_REPOSITORY}/blob/main/CONTRIBUTING.md) doc has a short note on what makes a contribution mergeable as-is.
-EOF
-              )
+              # NOTE: this block intentionally avoids `<<EOF` heredocs.
+              # YAML's `|` block scalar requires consistent indentation,
+              # but heredoc bodies have to start at column 0 — those two
+              # constraints can't coexist in the same file. We assemble
+              # the body with `printf` + `\n` so every line of the
+              # message lives at the same indent as the surrounding
+              # shell code.
+              commit_url="https://github.com/${GITHUB_REPOSITORY}/commit/${sha}"
+              contributing_url="https://github.com/${GITHUB_REPOSITORY}/blob/main/CONTRIBUTING.md"
+              body_text="$(printf '%s\n' \
+                "${greeting} — your contribution landed in [\`${short_sha}\`](${commit_url}) on \`main\`:" \
+                "" \
+                "> ${subject}" \
+                "" \
+                "Closing this PR now that the code is on \`main\`. Credit lives in the commit message and (where applicable) the \`CHANGELOG.md\` entry for the next release. Apologies for not closing this at the time of the merge — the auto-close workflow is new in v0.8.31." \
+                "" \
+                "If you want to land more work and would prefer your future PRs merge cleanly without a harvest step, the [\`CONTRIBUTING.md\`](${contributing_url}) doc has a short note on what makes a contribution mergeable as-is." \
+              )"
 
               echo "Closing PR #${pr} (harvested in ${short_sha})"
               if ! gh pr close "${pr}" \
