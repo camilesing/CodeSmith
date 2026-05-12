@@ -614,7 +614,7 @@ impl Renderable for ComposerWidget<'_> {
                 let mut right_spans: Vec<Span> = Vec::new();
                 if let Some(title) = self.app.session_title.as_deref() {
                     right_spans.push(Span::styled(
-                        title.to_string(),
+                        title,
                         Style::default().fg(palette::TEXT_MUTED),
                     ));
                 }

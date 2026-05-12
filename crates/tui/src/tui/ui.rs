@@ -142,6 +142,8 @@ const UI_STATUS_ANIMATION_MS: u64 = 80;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
+const TURN_META_PREFIX: &str = "<turn_meta>";
+const SESSION_TITLE_MAX_CHARS: usize = 32;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
 
@@ -6863,14 +6865,14 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
 fn derive_session_title(messages: &[Message]) -> Option<String> {
     messages.iter().find(|m| m.role == "user").and_then(|m| {
         m.content.iter().find_map(|block| match block {
-            ContentBlock::Text { text, .. } if !text.starts_with("<turn_meta>") => {
+            ContentBlock::Text { text, .. } if !text.starts_with(TURN_META_PREFIX) => {
                 let first_line = text.trim().lines().next().unwrap_or("").trim();
                 if first_line.is_empty() {
                     return None;
                 }
                 let char_count = first_line.chars().count();
-                let chars: String = first_line.chars().take(32).collect();
-                if char_count > 32 {
+                let chars: String = first_line.chars().take(SESSION_TITLE_MAX_CHARS).collect();
+                if char_count > SESSION_TITLE_MAX_CHARS {
                     Some(format!("{chars}…"))
                 } else {
                     Some(chars)
