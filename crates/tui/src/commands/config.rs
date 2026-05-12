@@ -419,7 +419,21 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.needs_redraw = true;
         }
         "background_color" | "background" | "bg" => {
-            let base_theme = crate::palette::UiTheme::detect();
+            let base_theme = crate::palette::ThemeId::from_name(&settings.theme)
+                .unwrap_or(crate::palette::ThemeId::System)
+                .ui_theme();
+            app.ui_theme = settings
+                .background_color
+                .as_deref()
+                .and_then(crate::palette::parse_hex_rgb_color)
+                .map_or(base_theme, |color| base_theme.with_background_color(color));
+            app.needs_redraw = true;
+        }
+        "theme" => {
+            let theme_id = crate::palette::ThemeId::from_name(&settings.theme)
+                .unwrap_or(crate::palette::ThemeId::System);
+            let base_theme = theme_id.ui_theme();
+            app.theme_id = theme_id;
             app.ui_theme = settings
                 .background_color
                 .as_deref()
@@ -580,22 +594,15 @@ fn mode_display_name(mode: AppMode) -> &'static str {
     }
 }
 
-/// Toggle between dark and light theme.
-pub fn theme(app: &mut App) -> CommandResult {
-    let new_theme = match app.ui_theme.mode {
-        crate::palette::PaletteMode::Dark => {
-            crate::palette::UiTheme::for_mode(crate::palette::PaletteMode::Light)
-        }
-        crate::palette::PaletteMode::Light => {
-            crate::palette::UiTheme::for_mode(crate::palette::PaletteMode::Dark)
-        }
-    };
-    app.ui_theme = new_theme;
-    let label = match new_theme.mode {
-        crate::palette::PaletteMode::Dark => "dark",
-        crate::palette::PaletteMode::Light => "light",
-    };
-    CommandResult::message(format!("Theme switched to {label}."))
+/// `/theme [name]` — with no argument, open the interactive picker (arrow
+/// keys, live preview, Enter to persist, Esc to revert). With an argument,
+/// route through `set_config_value("theme", ...)` so the apply + save flow is
+/// shared with `/config`.
+pub fn theme(app: &mut App, arg: Option<&str>) -> CommandResult {
+    match arg.map(str::trim).filter(|s| !s.is_empty()) {
+        None => CommandResult::action(AppAction::OpenThemePicker),
+        Some(name) => set_config_value(app, "theme", name, true),
+    }
 }
 
 /// Manage workspace-level trust and the per-path allowlist.

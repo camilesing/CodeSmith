@@ -672,6 +672,12 @@ mod tests {
         // file, which overrides the option above. Pin the model explicitly
         // so these tests are independent of any host-side configuration.
         app.model = "deepseek-v4-flash".to_string();
+        // Same for theme: tests below assert against the default `MODE_AGENT`
+        // / `TEXT_MUTED` constants, but a saved `theme = "tokyo-night"` in
+        // the user's settings.toml would override them through the
+        // theme-aware constructor. Pin to System (no remap) for isolation.
+        app.theme_id = crate::palette::ThemeId::System;
+        app.ui_theme = crate::palette::UiTheme::detect();
         app
     }
 

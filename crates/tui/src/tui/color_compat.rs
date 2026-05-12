@@ -14,13 +14,18 @@ use ratatui::{
     layout::{Position, Size},
 };
 
-use crate::palette::{self, ColorDepth, PaletteMode};
+use crate::palette::{self, ColorDepth, PaletteMode, ThemeId};
 
 #[derive(Debug)]
 pub(crate) struct ColorCompatBackend<W: Write> {
     inner: CrosstermBackend<W>,
     depth: ColorDepth,
     palette_mode: PaletteMode,
+    /// Currently active named theme. `System`/`Whale`/`WhaleLight` make the
+    /// theme remap a no-op (those rely on the dark/light pipeline); the
+    /// community presets (Catppuccin, Tokyo Night, Dracula, Gruvbox) trigger
+    /// a per-cell rewrite of dark-palette constants → preset slots.
+    theme_id: ThemeId,
     /// During a resize event the terminal emulator may report stale dimensions
     /// for a brief window (observed on macOS Terminal.app and Windows ConHost).
     /// Forcing the expected size prevents ratatui's internal `autoresize` from
@@ -34,6 +39,7 @@ impl<W: Write> ColorCompatBackend<W> {
             inner: CrosstermBackend::new(writer),
             depth,
             palette_mode,
+            theme_id: ThemeId::System,
             forced_size: None,
         }
     }
@@ -48,6 +54,10 @@ impl<W: Write> ColorCompatBackend<W> {
 
     pub(crate) fn set_palette_mode(&mut self, palette_mode: PaletteMode) {
         self.palette_mode = palette_mode;
+    }
+
+    pub(crate) fn set_theme(&mut self, theme_id: ThemeId) {
+        self.theme_id = theme_id;
     }
 }
 
@@ -71,7 +81,7 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
         let adapted = content
             .map(|(x, y, cell)| {
                 let mut cell = cell.clone();
-                adapt_cell_colors(&mut cell, self.depth, self.palette_mode);
+                adapt_cell_colors(&mut cell, self.depth, self.palette_mode, self.theme_id);
                 (x, y, cell)
             })
             .collect::<Vec<_>>();
@@ -123,10 +133,24 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
     }
 }
 
-fn adapt_cell_colors(cell: &mut Cell, depth: ColorDepth, palette_mode: PaletteMode) {
+fn adapt_cell_colors(
+    cell: &mut Cell,
+    depth: ColorDepth,
+    palette_mode: PaletteMode,
+    theme_id: ThemeId,
+) {
+    // Stage 1: community-theme remap (dark palette → preset slots). No-op
+    // for System / Whale / WhaleLight so legacy dark/light flows are
+    // untouched. Runs *before* the palette-mode remap so a light terminal
+    // running e.g. Catppuccin still routes the preset colors through the
+    // light adaptation below (rare combo, but the sequencing is the same).
+    cell.fg = palette::adapt_fg_for_theme(cell.fg, theme_id);
+    cell.bg = palette::adapt_bg_for_theme(cell.bg, theme_id);
+    // Stage 2: legacy dark↔light remap.
     let original_bg = cell.bg;
     cell.fg = palette::adapt_fg_for_palette_mode(cell.fg, original_bg, palette_mode);
     cell.bg = palette::adapt_bg_for_palette_mode(cell.bg, palette_mode);
+    // Stage 3: depth (truecolor / 256 / 16) downsampling.
     cell.fg = palette::adapt_color(cell.fg, depth);
     cell.bg = palette::adapt_bg(cell.bg, depth);
 }
@@ -160,7 +184,12 @@ mod tests {
         cell.set_fg(Color::Rgb(53, 120, 229));
         cell.set_bg(Color::Rgb(11, 21, 38));
 
-        adapt_cell_colors(&mut cell, ColorDepth::Ansi256, PaletteMode::Dark);
+        adapt_cell_colors(
+            &mut cell,
+            ColorDepth::Ansi256,
+            PaletteMode::Dark,
+            ThemeId::System,
+        );
 
         assert!(matches!(cell.fg, Color::Indexed(_)));
         assert!(matches!(cell.bg, Color::Indexed(_)));
@@ -172,7 +201,12 @@ mod tests {
         cell.set_fg(Color::Rgb(53, 120, 229));
         cell.set_bg(Color::Rgb(11, 21, 38));
 
-        adapt_cell_colors(&mut cell, ColorDepth::TrueColor, PaletteMode::Dark);
+        adapt_cell_colors(
+            &mut cell,
+            ColorDepth::TrueColor,
+            PaletteMode::Dark,
+            ThemeId::System,
+        );
 
         assert_eq!(cell.fg, Color::Rgb(53, 120, 229));
         assert_eq!(cell.bg, Color::Rgb(11, 21, 38));
@@ -201,7 +235,12 @@ mod tests {
         cell.set_fg(Color::White);
         cell.set_bg(Color::Rgb(11, 21, 38));
 
-        adapt_cell_colors(&mut cell, ColorDepth::TrueColor, PaletteMode::Light);
+        adapt_cell_colors(
+            &mut cell,
+            ColorDepth::TrueColor,
+            PaletteMode::Light,
+            ThemeId::WhaleLight,
+        );
 
         assert_eq!(cell.fg, palette::LIGHT_TEXT_BODY);
         assert_eq!(cell.bg, palette::LIGHT_SURFACE);

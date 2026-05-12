@@ -195,6 +195,14 @@ pub struct Settings {
     pub show_tool_details: bool,
     /// UI locale: auto, en, ja, zh-Hans, pt-BR
     pub locale: String,
+    /// Named UI theme. Accepts `"system"` (follow terminal background),
+    /// the legacy `"dark"` / `"light"` aliases, or one of the community
+    /// presets: `"catppuccin-mocha"`, `"tokyo-night"`, `"dracula"`,
+    /// `"gruvbox-dark"`. Resolved at startup via
+    /// `palette::ThemeId::from_name`; unknown values fall back to `"system"`
+    /// with a warning. The `background_color` setting still overrides the
+    /// surface color *on top of* the resolved theme.
+    pub theme: String,
     /// Optional main TUI background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
     /// Composer layout density: compact, comfortable, spacious
@@ -287,6 +295,7 @@ impl Default for Settings {
             show_thinking: true,
             show_tool_details: true,
             locale: "auto".to_string(),
+            theme: "system".to_string(),
             background_color: None,
             composer_density: "comfortable".to_string(),
             composer_border: true,
@@ -351,6 +360,19 @@ impl Settings {
                 .unwrap_or("en")
                 .to_string();
             s.background_color = normalize_optional_background_color(s.background_color.as_deref());
+            // Drop unknown theme names so a stale settings file with a typo
+            // doesn't pin the app to whatever the default happens to be.
+            // `from_name` is intentionally permissive about case + aliases.
+            if crate::palette::ThemeId::from_name(&s.theme).is_none() {
+                s.theme = "system".to_string();
+            } else {
+                s.theme = s.theme.trim().to_ascii_lowercase();
+                // Canonicalize aliases (e.g. "whale" -> "dark") so the saved
+                // form matches the picker's stored value.
+                if let Some(id) = crate::palette::ThemeId::from_name(&s.theme) {
+                    s.theme = id.name().to_string();
+                }
+            }
             s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
             s
         };
@@ -476,6 +498,14 @@ impl Settings {
             }
             "background_color" | "background" | "bg" => {
                 self.background_color = normalize_background_color_setting(value)?;
+            }
+            "theme" => {
+                let Some(id) = crate::palette::ThemeId::from_name(value) else {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark."
+                    );
+                };
+                self.theme = id.name().to_string();
             }
             "composer_density" | "composer" => {
                 let normalized = normalize_composer_density(value);
@@ -631,6 +661,7 @@ impl Settings {
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
         lines.push(format!("  locale:            {}", self.locale));
+        lines.push(format!("  theme:              {}", self.theme));
         lines.push(format!(
             "  background_color:   {}",
             self.background_color.as_deref().unwrap_or("(default)")
@@ -699,6 +730,10 @@ impl Settings {
             (
                 "locale",
                 "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR",
+            ),
+            (
+                "theme",
+                "Named UI theme: system, dark, light, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark",
             ),
             (
                 "background_color",

@@ -5270,6 +5270,19 @@ async fn apply_command_result(
                         .push(crate::tui::feedback_picker::FeedbackPickerView::new());
                 }
             }
+            AppAction::OpenThemePicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::ThemePicker) {
+                    // Capture the persisted theme name so Esc can revert
+                    // through the same ConfigUpdated channel. Falling back
+                    // to "system" when Settings::load fails matches the
+                    // app-startup default.
+                    let original = crate::settings::Settings::load()
+                        .map(|s| s.theme)
+                        .unwrap_or_else(|_| "system".to_string());
+                    app.view_stack
+                        .push(crate::tui::theme_picker::ThemePickerView::new(original));
+                }
+            }
             AppAction::OpenExternalUrl { url, label } => match open_external_url(&url) {
                 Ok(()) => {
                     app.status_message = Some(format!("Opened {label} in your browser"));
@@ -6167,6 +6180,7 @@ fn draw_app_frame_inner(
     full_repaint: bool,
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
+    terminal.backend_mut().set_theme(app.theme_id);
     // DEC 2026 wrapping is on by default but can be turned off for
     // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
     // whole viewport on every wrapped frame instead of deferring as the

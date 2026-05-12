@@ -862,6 +862,11 @@ pub struct App {
     /// Animation anchor for status-strip active sub-agent spinner.
     pub agent_activity_started_at: Option<Instant>,
     pub ui_theme: UiTheme,
+    /// Active named theme. Drives the cell-level color remap in
+    /// `tui::color_compat::ColorCompatBackend` so community presets
+    /// (Catppuccin, Tokyo Night, Dracula, Gruvbox) propagate to every
+    /// render site, not just the handful that read `app.ui_theme`.
+    pub theme_id: palette::ThemeId,
     // Onboarding
     pub onboarding: OnboardingState,
     pub onboarding_needs_api_key: bool,
@@ -1262,7 +1267,12 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
-        let mut ui_theme = palette::UiTheme::detect();
+        // Resolve the named theme from settings; unknown values were already
+        // normalised to "system" in Settings::load. The background_color
+        // setting still overlays on top.
+        let theme_id =
+            palette::ThemeId::from_name(&settings.theme).unwrap_or(palette::ThemeId::System);
+        let mut ui_theme = theme_id.ui_theme();
         if let Some(background) = settings
             .background_color
             .as_deref()
@@ -1463,6 +1473,7 @@ impl App {
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
             ui_theme,
+            theme_id,
             onboarding,
             onboarding_needs_api_key: needs_api_key,
             onboarding_workspace_trust_gate,
@@ -3995,6 +4006,8 @@ pub enum AppAction {
     OpenStatusPicker,
     /// Open the `/feedback` picker for GitHub issue/security destinations.
     OpenFeedbackPicker,
+    /// Open the `/theme` picker modal with live preview of every preset.
+    OpenThemePicker,
     /// Open an external URL in the system browser.
     OpenExternalUrl {
         url: String,
