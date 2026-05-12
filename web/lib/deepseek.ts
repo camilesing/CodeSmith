@@ -100,5 +100,20 @@ export async function curate(
   );
 
   const parsed = JSON.parse(raw) as Omit<CuratedDispatch, "generatedAt">;
-  return { ...parsed, generatedAt: new Date().toISOString() };
+  return { ...sanitizeDispatch(parsed), generatedAt: new Date().toISOString() };
+}
+
+const SAFE_HREF_RE = /^https:\/\/(?:github\.com|api\.github\.com|deepseek-tui\.com|crates\.io|www\.npmjs\.com|docs\.rs)\//;
+const FALLBACK_HREF = "https://github.com/Hmbown/deepseek-tui";
+
+function safeHref(u: unknown): string {
+  return typeof u === "string" && SAFE_HREF_RE.test(u) ? u : FALLBACK_HREF;
+}
+
+function sanitizeDispatch(d: Omit<CuratedDispatch, "generatedAt">): Omit<CuratedDispatch, "generatedAt"> {
+  return {
+    ...d,
+    highlights: (d.highlights ?? []).map((h) => ({ ...h, href: safeHref(h.href) })),
+    movers: (d.movers ?? []).map((m) => ({ ...m, href: safeHref(m.href) })),
+  };
 }

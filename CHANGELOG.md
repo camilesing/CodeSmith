@@ -153,6 +153,19 @@ real world uses."
 
 ### Added
 
+- **npm wrapper installs cleanly on OpenHarmony / HarmonyPC**
+  (#1072, harvested from PR #1499 by **@CrepuscularIRIS /
+  autoghclaw**). `os.platform()` returns `openharmony` on
+  HarmonyPC and on OpenHarmony's Linux ABI-compatible userspace,
+  but the npm wrapper's platform-asset matrix only covered
+  `linux` / `darwin` / `win32`, so `npm i -g deepseek-tui` would
+  abort with `Unsupported platform: openharmony` even though the
+  Linux x64 / arm64 binaries run unchanged on that environment.
+  Added a `PLATFORM_ALIASES` mapping that resolves `openharmony`
+  to the `linux` asset family before lookup so install succeeds
+  on those hosts. The error message for genuinely unsupported
+  platforms still reports the raw platform name (`freebsd`,
+  etc.) so OS-mismatch reports stay diagnostic.
 - **Startup empty-state shows useful context instead of
   repeating the header** (harvested from PR #1444 by
   **@reidliu41**). The center of the welcome view used to repeat
