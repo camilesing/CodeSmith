@@ -16,6 +16,18 @@ real world uses."
 
 ### Fixed
 
+- **Toast stack overlay no longer renders on top of the composer
+  input** (harvested from PR #1485 by **@MeAiRobot**). When a
+  deferred tool's schema auto-loaded after the model requested
+  it, the resulting status toast ("Auto-loaded deferred tool
+  'edit_file' after model request.") could render at
+  `footer_area.y - 1` — which on tight layouts is the bottom row
+  of the composer area, visibly overwriting the start of the
+  user's typed text. `render_toast_stack_overlay` now clamps
+  `max_above` to the gap between `composer_area.y +
+  composer_area.height` and `footer_area.y`, so when the composer
+  and footer are adjacent the overlay collapses to zero rows and
+  the toast is suppressed rather than drawn on top.
 - **`/sessions` picker highlights the selected row more strongly
   in dark terminals** (harvested from PR #1493 by **@reidliu41**).
   Previously the selection background was subtle enough to lose

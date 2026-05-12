@@ -6163,7 +6163,7 @@ fn render(f: &mut Frame, app: &mut App) {
     // Toast stack overlay (#439): when multiple status toasts are queued,
     // surface the older ones as a 1-2 line strip above the footer so a
     // burst of events isn't collapsed to a single visible message.
-    render_toast_stack_overlay(f, size, chunks[4], app);
+    render_toast_stack_overlay(f, size, chunks[3], chunks[4], app);
 
     if !app.view_stack.is_empty() {
         // The live transcript overlay snapshots the app's history + active
@@ -7267,7 +7267,13 @@ const TOAST_STACK_MAX_VISIBLE: usize = 3;
 /// toast continues to render in the footer line itself; this strip is for
 /// the older entries the user would otherwise miss when statuses arrive in
 /// bursts.
-fn render_toast_stack_overlay(f: &mut Frame, full_area: Rect, footer_area: Rect, app: &mut App) {
+fn render_toast_stack_overlay(
+    f: &mut Frame,
+    full_area: Rect,
+    composer_area: Rect,
+    footer_area: Rect,
+    app: &mut App,
+) {
     let toasts = app.active_status_toasts(TOAST_STACK_MAX_VISIBLE);
     if toasts.len() < 2 || footer_area.y == 0 {
         return;
@@ -7275,7 +7281,11 @@ fn render_toast_stack_overlay(f: &mut Frame, full_area: Rect, footer_area: Rect,
     // Drop the most recent (rendered inline by the footer), keep the rest.
     let extra = toasts.len() - 1;
     let stack_height = extra.min(TOAST_STACK_MAX_VISIBLE - 1) as u16;
-    let max_above = footer_area.y.min(full_area.height);
+    // Toast stack can only use space between composer and footer.
+    // Composer occupies rows [composer_area.y, composer_area.y + composer_area.height).
+    // Toast must start at or after row (composer_area.y + composer_area.height).
+    let composer_end = composer_area.y + composer_area.height;
+    let max_above = footer_area.y.saturating_sub(composer_end);
     if stack_height == 0 || max_above == 0 {
         return;
     }
