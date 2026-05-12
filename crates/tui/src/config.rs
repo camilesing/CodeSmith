@@ -498,6 +498,42 @@ impl SnapshotsConfig {
     }
 }
 
+/// Search provider enumeration — selects which backend `web_search` uses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchProvider {
+    /// DuckDuckGo HTML scraping with Bing fallback. No API key needed.
+    #[default]
+    #[serde(alias = "duckduckgo")]
+    DuckDuckGo,
+    /// Tavily AI Search API (https://tavily.com). Requires api_key.
+    Tavily,
+    /// Bocha AI Search API (https://bochaai.com). Requires api_key.
+    Bocha,
+}
+
+impl SearchProvider {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DuckDuckGo => "duckduckgo",
+            Self::Tavily => "tavily",
+            Self::Bocha => "bocha",
+        }
+    }
+}
+
+/// Web search provider configuration (`[search]` table in config.toml).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SearchConfig {
+    /// Search provider: `duckduckgo` | `tavily` | `bocha`. Default: `duckduckgo`.
+    #[serde(default)]
+    pub provider: Option<SearchProvider>,
+    /// API key for Tavily or Bocha. Not required for DuckDuckGo.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
 /// One configurable footer item.
 ///
 /// Order in the user's `Vec<StatusItem>` is preserved: items in the left
@@ -825,6 +861,12 @@ pub struct Config {
     /// retention when the table is absent.
     #[serde(default)]
     pub snapshots: Option<SnapshotsConfig>,
+
+    /// Web search provider configuration. When absent, defaults to DuckDuckGo
+    /// with Bing fallback. Set `provider` to `tavily` or `bocha` and provide
+    /// an `api_key` to use those services instead.
+    #[serde(default)]
+    pub search: Option<SearchConfig>,
 
     /// User-level memory file (#489). Default behaviour is **opt-in**:
     /// loading + injection happens only when `[memory] enabled = true` or
@@ -2543,6 +2585,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         network: override_cfg.network.or(base.network),
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
+        search: override_cfg.search.or(base.search),
         memory: override_cfg.memory.or(base.memory),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {

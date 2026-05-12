@@ -39,6 +39,22 @@ real world uses."
 
 ### Added
 
+- **`web_search` supports Tavily and Bocha as configurable
+  backends** (harvested from PR #1294 by **@sandofree**). DuckDuckGo
+  with Bing fallback remains the default — no API key required —
+  but users in regions where those scrapers are unreliable can now
+  set `[search] provider = "tavily" | "bocha"` plus
+  `api_key = "..."` in `config.toml` (or via the
+  `DEEPSEEK_SEARCH_PROVIDER` / `DEEPSEEK_SEARCH_API_KEY` env vars)
+  to route every `web_search` call through the chosen API. Tavily
+  is an AI-search API targeted at general use; Bocha is the
+  mainland-China-friendly equivalent. Trust-boundary pins: an
+  unset `api_key` on an opted-in provider surfaces a clear
+  `ToolError` naming the missing key rather than silently falling
+  through to a different provider, the network policy gate
+  (`[network]`) is consulted for the provider host on every call,
+  and the default path is unchanged so no install sees provider
+  behaviour change unless they explicitly opt in.
 - **`/change` slash command** displays the most recent
   CHANGELOG.md version section from inside the TUI, so users can
   see what they just upgraded into without leaving the chat

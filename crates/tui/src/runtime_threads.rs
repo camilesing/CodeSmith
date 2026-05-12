@@ -1965,6 +1965,13 @@ impl RuntimeThreadManager {
             .tag()
             .to_string(),
             workshop: self.config.workshop.clone(),
+            search_provider: self
+                .config
+                .search
+                .as_ref()
+                .and_then(|s| s.provider)
+                .unwrap_or_default(),
+            search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);
