@@ -450,6 +450,7 @@ mod tests {
         };
         let mut app = App::new(options, &Config::default());
         app.ui_locale = crate::localization::Locale::En;
+        app.cost_currency = crate::pricing::CostCurrency::Usd;
         app.api_provider = crate::config::ApiProvider::Deepseek;
         app
     }
