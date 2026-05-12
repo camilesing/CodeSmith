@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **DEC 2026 synchronized output is auto-disabled on Ptyxis** (the new
+  default terminal on Ubuntu 26.04 and an increasingly common Linux
+  TUI host). Ptyxis 50.x ships on VTE 0.84.x, which parses the
+  `\x1b[?2026h` / `\x1b[?2026l` begin/end pair but still flashes the
+  entire viewport on every wrapped frame instead of deferring
+  rendering — so a TUI that uses DEC 2026 to avoid tearing
+  experiences visible flicker on every redraw. gnome-terminal 3.58
+  on the same VTE renders cleanly, so the heuristic must stay narrow:
+  we trigger only on `TERM_PROGRAM` matching `ptyxis`
+  case-insensitively, or `PTYXIS_VERSION` set to any non-empty value.
+  Either signal flips the new `synchronized_output` setting from
+  `auto` to `off`; the renderer then skips the begin/end pair on
+  every draw, in `reset_terminal_viewport`, and in `resume_terminal`.
+  Users on Ptyxis who upgrade past the upstream fix (or who want to
+  confirm a fix landed) can override with
+  `/set synchronized_output on` or by adding
+  `synchronized_output = "on"` to `~/.config/deepseek/settings.toml`.
+
+### Added
+
+- **New `synchronized_output` setting** controls whether the renderer
+  wraps each frame in DEC mode 2026 synchronized output. Accepts
+  `auto` (default; respect the Ptyxis env opt-out), `on` (always emit
+  DEC 2026, override the heuristic), or `off` (never emit DEC 2026).
+  The cost of `off` is brief tearing on terminals that handle DEC
+  2026 cleanly; it is purely a rendering-quality knob, not a
+  correctness one. Set via `/set synchronized_output <auto|on|off>`
+  or in `~/.config/deepseek/settings.toml`.
+
 ## [0.8.30] - 2026-05-11
 
 A "tighten what we shipped" release. Bare single-letter keystrokes

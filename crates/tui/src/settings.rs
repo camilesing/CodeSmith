@@ -236,6 +236,23 @@ pub struct Settings {
     ///   replaced the whale during the dots era.
     /// - `"off"`: hide the indicator entirely.
     pub status_indicator: String,
+    /// Whether to wrap each draw in DEC mode 2026 synchronized output
+    /// (`\x1b[?2026h` … `\x1b[?2026l`). Synchronized output asks the
+    /// terminal to defer rendering until the whole frame is staged so
+    /// GPU-accelerated terminals (Ghostty, VS Code, Kitty, WezTerm)
+    /// don't flash a blank intermediate frame.
+    ///
+    /// - `"auto"` (default): emit DEC 2026 unless an environment signal
+    ///   says the active terminal mishandles it (currently Ptyxis 50.x
+    ///   on VTE 0.84.x — see [`Settings::apply_env_overrides`]).
+    /// - `"on"`: always emit DEC 2026 (override the auto opt-out).
+    /// - `"off"`: never emit DEC 2026. Use this if your terminal flashes
+    ///   the whole screen on every redraw — most often Ptyxis on
+    ///   Ubuntu 26.04 today; historically also some legacy ssh+screen
+    ///   stacks. The cost of `off` is brief tearing on terminals that
+    ///   *do* support DEC 2026; it is purely a rendering-quality knob,
+    ///   not a correctness one.
+    pub synchronized_output: String,
 }
 
 impl Default for Settings {
@@ -274,6 +291,7 @@ impl Default for Settings {
             default_model: None,
             provider_models: None,
             status_indicator: "whale".to_string(),
+            synchronized_output: "auto".to_string(),
         }
     }
 }
@@ -315,6 +333,8 @@ impl Settings {
             s.transcript_spacing = normalize_transcript_spacing(&s.transcript_spacing).to_string();
             s.sidebar_focus = normalize_sidebar_focus(&s.sidebar_focus).to_string();
             s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
+            s.synchronized_output =
+                normalize_synchronized_output(&s.synchronized_output).to_string();
             s.locale = normalize_configured_locale(&s.locale)
                 .unwrap_or("en")
                 .to_string();
@@ -348,6 +368,26 @@ impl Settings {
         ) {
             self.low_motion = true;
             self.fancy_animations = false;
+        }
+
+        // Ptyxis 50.x (the new default terminal on Ubuntu 26.04) ships with
+        // VTE 0.84.x which mishandles DEC mode 2026 synchronized output: the
+        // begin/end pair is parsed but each wrapped frame still triggers a
+        // full-viewport flash on the GPU compositor side, so any TUI that
+        // uses DEC 2026 to avoid tearing instead gets visible flicker on
+        // every redraw. gnome-terminal 3.58 on the same VTE renders cleanly,
+        // so we can't broaden the opt-out to all VTE-based terminals —
+        // only the Ptyxis-specific signals trigger it. Confirmed
+        // user-visible regression starting with Ubuntu 26.04's default
+        // terminal swap; cargo-installed binaries are not exempt because
+        // the bug is in the terminal, not the binary.
+        //
+        // Only flip `auto` to `off`; respect an explicit `"on"` so users
+        // who upgrade Ptyxis or want to confirm the fix landed upstream
+        // can override the heuristic from `~/.config/deepseek/settings.toml`
+        // or `/set synchronized_output on`.
+        if self.synchronized_output.eq_ignore_ascii_case("auto") && detected_ptyxis_terminal() {
+            self.synchronized_output = "off".to_string();
         }
     }
 
@@ -444,6 +484,15 @@ impl Settings {
                     );
                 }
                 self.status_indicator = normalized.to_string();
+            }
+            "synchronized_output" | "sync_output" | "sync" => {
+                let normalized = normalize_synchronized_output(value);
+                if !["auto", "on", "off"].contains(&normalized) {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid synchronized_output '{value}'. Expected: auto, on, off."
+                    );
+                }
+                self.synchronized_output = normalized.to_string();
             }
             "default_mode" | "mode" => {
                 let normalized = normalize_mode(value);
@@ -557,6 +606,10 @@ impl Settings {
         lines.push(format!("  composer_vim_mode:  {}", self.composer_vim_mode));
         lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
         lines.push(format!("  status_indicator:   {}", self.status_indicator));
+        lines.push(format!(
+            "  synchronized_output: {}",
+            self.synchronized_output
+        ));
         lines.push(format!("  default_mode:       {}", self.default_mode));
         lines.push(format!(
             "  sidebar_width:      {}%",
@@ -629,6 +682,10 @@ impl Settings {
                 "status_indicator",
                 "Header status indicator next to effort chip: whale, dots, off",
             ),
+            (
+                "synchronized_output",
+                "DEC 2026 synchronized output: auto, on, off (set off if your terminal flickers)",
+            ),
             ("default_mode", "Default mode: agent, plan, yolo"),
             ("sidebar_width", "Sidebar width percentage: 10-50"),
             (
@@ -649,6 +706,16 @@ impl Settings {
         self.provider_models
             .get_or_insert_with(std::collections::HashMap::new)
             .insert(provider.to_string(), model.to_string());
+    }
+
+    /// Resolved boolean for whether the renderer should wrap each frame in
+    /// DEC mode 2026 synchronized output. `auto` and `on` enable; `off`
+    /// disables. The `auto` → `off` flip for known-bad terminals happens
+    /// earlier in [`Self::apply_env_overrides`]; this method only inspects
+    /// the final state.
+    #[must_use]
+    pub fn synchronized_output_enabled(&self) -> bool {
+        !self.synchronized_output.eq_ignore_ascii_case("off")
     }
 }
 
@@ -712,6 +779,45 @@ fn normalize_status_indicator(value: &str) -> &str {
         "off" | "none" | "hidden" | "false" => "off",
         _ => value,
     }
+}
+
+/// Normalize the `synchronized_output` setting. Accepts the canonical
+/// `"auto"` / `"on"` / `"off"` plus the usual truthy/falsey spellings.
+/// Unknown values fall through unchanged so the parser in `set` can
+/// surface a clear error.
+fn normalize_synchronized_output(value: &str) -> &str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" | "default" => "auto",
+        "on" | "true" | "yes" | "1" | "enabled" => "on",
+        "off" | "false" | "no" | "0" | "disabled" => "off",
+        _ => value,
+    }
+}
+
+/// Returns `true` when the active terminal is Ptyxis (the new default
+/// terminal on Ubuntu 26.04). Used by [`Settings::apply_env_overrides`]
+/// to flip `synchronized_output` from `auto` to `off` so DEC mode 2026
+/// flicker on Ptyxis 50.x + VTE 0.84.x stops at the source.
+///
+/// We deliberately keep this narrow:
+///
+/// - `TERM_PROGRAM` matches `ptyxis` case-insensitively (the value
+///   Ptyxis sets when it forwards a process-launch context).
+/// - `PTYXIS_VERSION` is set to any non-empty value (the binary's
+///   own version probe, present whether or not `TERM_PROGRAM` made it
+///   into the child environment).
+///
+/// Either signal is sufficient. We do *not* trigger on `VTE_VERSION`
+/// alone because gnome-terminal 3.58 ships with the same VTE 0.84.x
+/// and renders cleanly — broadening the heuristic would regress every
+/// gnome-terminal user.
+pub fn detected_ptyxis_terminal() -> bool {
+    if let Ok(program) = std::env::var("TERM_PROGRAM")
+        && program.trim().to_ascii_lowercase().contains("ptyxis")
+    {
+        return true;
+    }
+    matches!(std::env::var("PTYXIS_VERSION"), Ok(v) if !v.trim().is_empty())
 }
 
 fn normalize_optional_background_color(value: Option<&str>) -> Option<String> {
@@ -1049,6 +1155,227 @@ mod tests {
             match prev {
                 Some(v) => std::env::set_var("TERM_PROGRAM", v),
                 None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // synchronized_output / Ptyxis flicker detection
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn synchronized_output_defaults_to_auto_and_resolves_to_enabled() {
+        let s = Settings::default();
+        assert_eq!(s.synchronized_output, "auto");
+        assert!(
+            s.synchronized_output_enabled(),
+            "auto must keep DEC 2026 on so terminals that support it stay tear-free"
+        );
+    }
+
+    #[test]
+    fn synchronized_output_off_disables_dec_2026() {
+        let s = Settings {
+            synchronized_output: "off".to_string(),
+            ..Settings::default()
+        };
+        assert!(!s.synchronized_output_enabled());
+    }
+
+    #[test]
+    fn synchronized_output_on_keeps_dec_2026_enabled() {
+        let s = Settings {
+            synchronized_output: "on".to_string(),
+            ..Settings::default()
+        };
+        assert!(s.synchronized_output_enabled());
+    }
+
+    #[test]
+    fn synchronized_output_set_command_accepts_aliases() {
+        let mut s = Settings::default();
+        for value in ["auto", "AUTO", "default"] {
+            s.set("synchronized_output", value).expect("valid");
+            assert_eq!(s.synchronized_output, "auto");
+        }
+        for value in ["on", "true", "yes", "1", "ENABLED"] {
+            s.set("sync_output", value).expect("valid");
+            assert_eq!(s.synchronized_output, "on");
+        }
+        for value in ["off", "false", "no", "0", "DISABLED"] {
+            s.set("sync", value).expect("valid");
+            assert_eq!(s.synchronized_output, "off");
+        }
+        let err = s
+            .set("synchronized_output", "maybe")
+            .expect_err("unknown value rejected");
+        assert!(
+            err.to_string().contains("synchronized_output"),
+            "error names the offending key: {err}"
+        );
+    }
+
+    #[test]
+    fn ptyxis_term_program_flips_synchronized_output_off() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        let prev_ptyxis = std::env::var_os("PTYXIS_VERSION");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "Ptyxis");
+            std::env::remove_var("PTYXIS_VERSION");
+        }
+        let mut s = Settings::default();
+        assert_eq!(s.synchronized_output, "auto");
+        s.apply_env_overrides();
+        assert_eq!(
+            s.synchronized_output, "off",
+            "Ptyxis 50.x mishandles DEC 2026 — auto must flip to off so VTE 0.84 stops flickering"
+        );
+        assert!(
+            !s.synchronized_output_enabled(),
+            "resolved boolean must agree with stored string"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+            match prev_ptyxis {
+                Some(v) => std::env::set_var("PTYXIS_VERSION", v),
+                None => std::env::remove_var("PTYXIS_VERSION"),
+            }
+        }
+    }
+
+    #[test]
+    fn ptyxis_version_env_alone_flips_synchronized_output_off() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        let prev_ptyxis = std::env::var_os("PTYXIS_VERSION");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::remove_var("TERM_PROGRAM");
+            std::env::set_var("PTYXIS_VERSION", "50.1");
+        }
+        let mut s = Settings::default();
+        s.apply_env_overrides();
+        assert_eq!(
+            s.synchronized_output, "off",
+            "PTYXIS_VERSION alone is sufficient — Ptyxis sets this even when TERM_PROGRAM isn't propagated"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+            match prev_ptyxis {
+                Some(v) => std::env::set_var("PTYXIS_VERSION", v),
+                None => std::env::remove_var("PTYXIS_VERSION"),
+            }
+        }
+    }
+
+    #[test]
+    fn ptyxis_does_not_override_user_explicit_on() {
+        // Users who set `synchronized_output = "on"` (e.g. to confirm a
+        // Ptyxis upgrade fixed it) must keep DEC 2026 even on Ptyxis.
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "ptyxis");
+        }
+        let mut s = Settings {
+            synchronized_output: "on".to_string(),
+            ..Settings::default()
+        };
+        s.apply_env_overrides();
+        assert_eq!(
+            s.synchronized_output, "on",
+            "explicit user override must beat the Ptyxis env heuristic"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn ptyxis_does_not_override_user_explicit_off() {
+        // A user with `synchronized_output = "off"` on a non-Ptyxis
+        // terminal stays off after env detection (no-op flip).
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "xterm-256color");
+        }
+        let mut s = Settings {
+            synchronized_output: "off".to_string(),
+            ..Settings::default()
+        };
+        s.apply_env_overrides();
+        assert_eq!(s.synchronized_output, "off");
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn non_ptyxis_term_programs_keep_synchronized_output_auto() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        let prev_ptyxis = std::env::var_os("PTYXIS_VERSION");
+        // SAFETY: clean slate so non-Ptyxis programs don't see a leaked
+        // PTYXIS_VERSION from another test.
+        unsafe {
+            std::env::remove_var("PTYXIS_VERSION");
+        }
+        for program in [
+            "iTerm.app",
+            "Apple_Terminal",
+            "WezTerm",
+            "xterm-256color",
+            "gnome-terminal-server",
+            // The Ghostty / VS Code paths force low_motion but must NOT
+            // disable DEC 2026 — they handle synchronized output cleanly.
+            "ghostty",
+            "vscode",
+        ] {
+            // SAFETY: serialised by the guard.
+            unsafe {
+                std::env::set_var("TERM_PROGRAM", program);
+            }
+            let mut s = Settings::default();
+            s.apply_env_overrides();
+            assert_eq!(
+                s.synchronized_output, "auto",
+                "TERM_PROGRAM={program:?} must not opt out of DEC 2026"
+            );
+            assert!(
+                s.synchronized_output_enabled(),
+                "resolved boolean for {program:?} must stay enabled"
+            );
+        }
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+            match prev_ptyxis {
+                Some(v) => std::env::set_var("PTYXIS_VERSION", v),
+                None => std::env::remove_var("PTYXIS_VERSION"),
             }
         }
     }

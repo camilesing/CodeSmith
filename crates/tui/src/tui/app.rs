@@ -810,6 +810,14 @@ pub struct App {
     /// until the footer widget consumes it.
     #[allow(dead_code)]
     pub fancy_animations: bool,
+    /// Whether the renderer should wrap each frame in DEC mode 2026
+    /// synchronized output. Resolved from `Settings::synchronized_output`
+    /// at construction; `auto`/`on` → `true`, `off` → `false`. The Ptyxis
+    /// auto-detect path in `Settings::apply_env_overrides` flips `auto`
+    /// to `off` before App is built, so by the time we read this flag in
+    /// the draw loop the decision is already made. See the
+    /// `Settings::synchronized_output` doc for the user-facing knob.
+    pub synchronized_output_enabled: bool,
     /// Header status-indicator chip mode. One of `"whale"` (default, cycles
     /// 🐳→🐋 frames keyed off `turn_started_at`), `"dots"` (geometric ◌
     /// frames), or `"off"` (chip hidden entirely). Loaded from settings;
@@ -1232,6 +1240,7 @@ impl App {
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
         let fancy_animations = settings.fancy_animations;
+        let synchronized_output_enabled = settings.synchronized_output_enabled();
         let status_indicator = settings.status_indicator.clone();
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
@@ -1425,6 +1434,7 @@ impl App {
             calm_mode,
             low_motion,
             fancy_animations,
+            synchronized_output_enabled,
             status_indicator,
             show_thinking,
             verbose_transcript: false,

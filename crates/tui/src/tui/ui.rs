@@ -271,7 +271,18 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     );
     let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
     let mut terminal = Terminal::new(backend)?;
-    reset_terminal_viewport(&mut terminal)?;
+    // At this point Settings hasn't loaded yet, so we can't read the
+    // user's `synchronized_output` knob. Use the same env-based Ptyxis
+    // detection that `Settings::apply_env_overrides` uses, so the
+    // startup viewport reset matches what every later draw will do on
+    // this terminal. A user who has explicitly set
+    // `synchronized_output = "on"` to override Ptyxis detection will
+    // get sync wrap from the main draw loop onward; the one-time
+    // startup viewport reset stays opt-out for them, which is the safe
+    // default because the cost is at most brief tearing on the first
+    // frame.
+    let sync_output_at_init = !crate::settings::detected_ptyxis_terminal();
+    reset_terminal_viewport(&mut terminal, sync_output_at_init)?;
     let event_broker = EventBroker::new();
 
     // Local mutable copy so runtime config flips (e.g. `/provider` switch)
@@ -1215,6 +1226,7 @@ async fn run_event_loop(
                                 app.use_alt_screen,
                                 app.use_mouse_capture,
                                 app.use_bracketed_paste,
+                                app.synchronized_output_enabled,
                             )?;
                             event_broker.resume_events();
                             terminal_paused_at = None;
@@ -1289,6 +1301,7 @@ async fn run_event_loop(
                                 app.use_alt_screen,
                                 app.use_mouse_capture,
                                 app.use_bracketed_paste,
+                                app.synchronized_output_enabled,
                             )?;
                             event_broker.resume_events();
                             terminal_paused_at = None;
@@ -1550,6 +1563,7 @@ async fn run_event_loop(
                 app.use_alt_screen,
                 app.use_mouse_capture,
                 app.use_bracketed_paste,
+                app.synchronized_output_enabled,
             )?;
             event_broker.resume_events();
             terminal_paused_at = None;
@@ -1748,7 +1762,7 @@ async fn run_event_loop(
                     );
                 }
 
-                reset_terminal_viewport(terminal)?;
+                reset_terminal_viewport(terminal, app.synchronized_output_enabled)?;
                 app.handle_resize(final_w, final_h);
                 // #macos-resize: some terminals (macOS Terminal.app, Windows
                 // ConHost) briefly report stale dimensions via
@@ -4821,6 +4835,7 @@ async fn apply_command_result(
                         app.use_alt_screen,
                         app.use_mouse_capture,
                         app.use_bracketed_paste,
+                        app.synchronized_output_enabled,
                     )?;
                     match editor_result {
                         Ok(outcome) => {
@@ -5801,7 +5816,15 @@ fn draw_app_frame_inner(
     full_repaint: bool,
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
-    let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    // DEC 2026 wrapping is on by default but can be turned off for
+    // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
+    // whole viewport on every wrapped frame instead of deferring as the
+    // standard requires). Settings::synchronized_output_enabled resolves
+    // the user's setting against the Ptyxis env auto-detect.
+    let wrap_in_sync_update = app.synchronized_output_enabled;
+    if wrap_in_sync_update {
+        let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    }
 
     // Run fallible draw operations in a closure so END_SYNC_UPDATE is
     // always sent even if an intermediate step fails. Without this, a
@@ -5818,7 +5841,9 @@ fn draw_app_frame_inner(
     })();
 
     // Always end the synchronized update, regardless of success or failure.
-    let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    if wrap_in_sync_update {
+        let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    }
     let _ = terminal.backend_mut().flush();
     result
 }
@@ -6700,6 +6725,7 @@ fn resume_terminal(
     use_alt_screen: bool,
     use_mouse_capture: bool,
     use_bracketed_paste: bool,
+    sync_output_enabled: bool,
 ) -> Result<()> {
     enable_raw_mode()?;
     if use_alt_screen {
@@ -6710,11 +6736,11 @@ fn resume_terminal(
         use_mouse_capture,
         use_bracketed_paste,
     );
-    reset_terminal_viewport(terminal)?;
+    reset_terminal_viewport(terminal, sync_output_enabled)?;
     Ok(())
 }
 
-fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
+fn reset_terminal_viewport(terminal: &mut AppTerminal, sync_output_enabled: bool) -> Result<()> {
     // Reset scroll margins and origin mode before clearing. Some interactive
     // child processes leave DECSTBM/DECOM behind; if ratatui's diff renderer
     // then writes "row 0", terminals can place it relative to the leaked
@@ -6728,7 +6754,12 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     // (`\x1b[?2026h` … `\x1b[?2026l`) so GPU-accelerated terminals
     // (Ghostty, VSCode, Kitty, WezTerm) defer rendering until the whole
     // frame is staged. Terminals that don't support it silently ignore.
-    let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    // The wrap is opt-out via `synchronized_output = "off"` for terminals
+    // that mishandle the sequence (Ptyxis 50.x on VTE 0.84.x flashes the
+    // whole viewport on each wrapped frame).
+    if sync_output_enabled {
+        let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    }
 
     let result = (|| -> Result<()> {
         terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
@@ -6738,7 +6769,9 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     })();
 
     // Always end the synchronized update, regardless of success or failure.
-    let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    if sync_output_enabled {
+        let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    }
     let _ = terminal.backend_mut().flush();
     result
 }
