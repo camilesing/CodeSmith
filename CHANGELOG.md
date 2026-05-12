@@ -16,6 +16,24 @@ real world uses."
 
 ### Fixed
 
+- **vLLM provider: `reasoning_effort = "off"` now actually
+  disables thinking on Qwen3 / DeepSeek-R1 servers, cutting
+  TTFT from ~13s to ~270ms** (harvested from PR #1480 by
+  **@h3c-hexin**). The vLLM branch of `apply_reasoning_effort`
+  was injecting `thinking: {type: "disabled"}` at the top of
+  the request body — but vLLM speaks OpenAI's chat-completions
+  protocol, not Anthropic-native fields, and silently ignored
+  the directive. The model then emitted a full hidden reasoning
+  trace into the non-standard `reasoning` field (which this
+  client doesn't surface), so users saw a multi-second freeze
+  before any content token arrived. The vLLM branch now emits
+  the OpenAI extension `chat_template_kwargs.enable_thinking`
+  (which vLLM forwards into the model's chat template — the
+  canonical way to toggle Qwen3's `<think>...</think>` mode).
+  Measurement against vLLM + Qwen3.6-35B-A3B-FP8: TTFT
+  13039ms → 274ms, total LLM call 13s → 5.7s. The `high` /
+  `max` effort levels likewise switch to the OpenAI extension.
+  No change for non-vLLM providers.
 - **`/sessions` picker no longer shows `<turn_meta>` as the
   session title** (harvested from PR #1498 by **@wdw8276**).
   `session_manager::create_saved_session_with_id_and_mode`

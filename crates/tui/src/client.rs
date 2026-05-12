@@ -888,9 +888,22 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["thinking"] = json!({ "type": "disabled" });
+            }
+            // vLLM is an OpenAI-protocol server, not an Anthropic-protocol one.
+            // For Qwen3 / DeepSeek-R1 / other reasoning models hosted via vLLM,
+            // the canonical OpenAI extension to disable thinking is
+            // `chat_template_kwargs.enable_thinking`. The old
+            // `thinking: {type: disabled}` field is Anthropic-native and
+            // silently ignored by vLLM — the model still emits a full
+            // reasoning trace into the `reasoning` field (which this client
+            // doesn't surface), causing 10+ seconds of perceived "freeze"
+            // before the first content token (PR #1480 by @h3c-hexin).
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": false,
+                });
             }
             ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
@@ -905,10 +918,15 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
+            }
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": true,
+                });
+                body["reasoning_effort"] = json!("high");
             }
             ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
@@ -924,10 +942,15 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
+            }
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": true,
+                });
+                body["reasoning_effort"] = json!("max");
             }
             ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
