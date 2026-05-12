@@ -7,12 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-A "more useful tools" release in progress. v0.8.31 made the tool
-surface reliable on every host; v0.8.32 expands it. Anchor is the
-question every new contributor asks: "what does the model actually
-have to work with?" — and the answer is now closer to "everything
-you'd reach for from a shell, including the document formats the
-real world uses."
+## [0.8.32] - 2026-05-12
+
+A "more useful tools" release. v0.8.31 made the tool surface
+reliable on every host; v0.8.32 expands it. Anchor is the question
+every new contributor asks: "what does the model actually have to
+work with?" — and the answer is now closer to "everything you'd
+reach for from a shell, including the document formats the real
+world uses." Five new tools (`pdf-extract` swap, `js_execution`,
+`pandoc_convert`, `image_ocr`, `image_analyze`), six community PR
+harvests targeting model-protocol bugs (vLLM thinking) and UX
+papercuts (Shift+Enter on Windows VSCode, mention truncation
+splitting CJK codepoints, approval modal hiding the transcript),
+and a snapshot-self-disable on workspaces over 2 GB of
+non-excluded content so first-turn `git add -A` no longer hangs
+the TUI on multi-hundred-GB project directories.
 
 ### Performance
 
