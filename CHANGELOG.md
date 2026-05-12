@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A "tools that actually work" release. `code_execution` no longer
+fails on Windows hosts where `python3` isn't on `PATH` — we probe
+for the interpreter at catalog-build time and only advertise the
+tool when one resolves, so the model never sees a runtime it can't
+actually use. The new `deepseek doctor` "Tool Dependencies" and
+"Terminal Quirks" sections surface external-binary status and
+active env-driven overrides so flicker / motion / missing-tool
+puzzles answer themselves before a bug report gets filed. Ptyxis
+50.x users on Ubuntu 26.04 get a manual `synchronized_output = off`
+knob plus auto-detection that opts them out of the DEC 2026
+synchronized-output wrap their VTE 0.84 mishandles. The CNB Cool
+mirror workflow is rewritten with concurrency and scoped pushes so
+release tags reliably reach `cnb.cool/deepseek-tui.com/DeepSeek-TUI`
+for users behind GitHub-blocking networks. Plus a new auto-close
+workflow that closes contributor PRs whose code has been harvested
+into `main`, so credit lands at the same moment the fix does.
+
 ### Fixed
 
 - **`code_execution` no longer fails with "program not found" on
