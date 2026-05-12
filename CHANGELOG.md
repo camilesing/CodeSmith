@@ -28,6 +28,16 @@ into `main`, so credit lands at the same moment the fix does.
 
 ### Fixed
 
+- **Windows `exec_shell` preserves MSVC toolchain env** (harvested
+  from PR #1487 by **@Jianfengwu2024**). When the parent shell has
+  already loaded `VsDevCmd` / `vcvars` (Developer Command Prompt,
+  the standard way to run Rust + MSVC on Windows), `exec_shell` was
+  stripping `LIB` / `LIBPATH` / `INCLUDE` and the related VS / SDK /
+  CRT root variables on its way to the child. That made
+  model-driven `cargo build` calls fail to resolve `kernel32.lib`
+  even though `link.exe` was reachable via `PATH`. The allowlist
+  in `child_env.rs` now preserves the 13 MSVC env vars so the
+  toolchain context survives the sanitisation pass.
 - **`code_execution` no longer fails with "program not found" on
   Windows** (and any other host without `python3` on `PATH`). Before
   v0.8.31 the tool hardcoded `python3` and was unconditionally
