@@ -39,6 +39,24 @@ real world uses."
 
 ### Added
 
+- **`/translate` opt-in: respond in the user's UI locale, with a
+  post-hoc fallback for English that leaks through** (harvested
+  from PR #1462 by **@YaYII**). Two-layer design: when the user
+  enables translation via the `/translate` slash command, a
+  `## Language Output Requirement` block is appended to the
+  system prompt instructing the model to reply in the resolved
+  session locale (Simplified Chinese, Traditional Chinese,
+  Japanese, or Brazilian Portuguese — code identifiers and
+  user-requested English code blocks are exempt). For replies
+  that still surface English despite the directive, a heuristic
+  in `tui::translation` (Latin-vs-CJK character ratio with
+  weighting for CJK information density) detects the leak and
+  invokes a focused per-message translation API call to render
+  the localised version before display. Both layers are off by
+  default and have no effect on installs that don't enable them.
+  Trust-boundary scope: opt-in only, system prompt addition is
+  conditional on the runtime flag, no model behaviour change for
+  English-locale users.
 - **AtlasCloud is now a first-class provider** (harvested from
   PR #1436 by **@lucaszhu-hue**). AtlasCloud hosts the V4 family
   (and other DeepSeek-compatible models) on its own endpoint at

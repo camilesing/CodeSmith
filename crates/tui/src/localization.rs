@@ -36,6 +36,7 @@ pub enum Locale {
     En,
     Ja,
     ZhHans,
+    ZhHant,
     PtBr,
 }
 
@@ -45,7 +46,18 @@ impl Locale {
             Self::En => "en",
             Self::Ja => "ja",
             Self::ZhHans => "zh-Hans",
+            Self::ZhHant => "zh-Hant",
             Self::PtBr => "pt-BR",
+        }
+    }
+
+    pub fn translation_target_name(self) -> &'static str {
+        match self {
+            Self::En => "English",
+            Self::Ja => "Japanese (日本語)",
+            Self::ZhHans => "Simplified Chinese (简体中文)",
+            Self::ZhHant => "Traditional Chinese (繁體中文)",
+            Self::PtBr => "Brazilian Portuguese (Português do Brasil)",
         }
     }
 
@@ -76,6 +88,14 @@ impl Locale {
                 fallback: "en",
                 coverage: LocaleCoverage::V076Core,
             },
+            Self::ZhHant => LocaleSpec {
+                tag: "zh-Hant",
+                display_name: "Chinese Traditional",
+                script: "Hant",
+                direction: TextDirection::Ltr,
+                fallback: "zh-Hans",
+                coverage: LocaleCoverage::V076Core,
+            },
             Self::PtBr => LocaleSpec {
                 tag: "pt-BR",
                 display_name: "Portuguese (Brazil)",
@@ -89,7 +109,7 @@ impl Locale {
 
     #[allow(dead_code)]
     pub fn shipped() -> &'static [Self] {
-        &[Self::En, Self::Ja, Self::ZhHans, Self::PtBr]
+        &[Self::En, Self::Ja, Self::ZhHans, Self::ZhHant, Self::PtBr]
     }
 }
 
@@ -271,6 +291,12 @@ pub enum MessageId {
     CmdSystemDescription,
     CmdTaskDescription,
     CmdTokensDescription,
+    CmdTranslateDescription,
+    CmdTranslateOff,
+    CmdTranslateOn,
+    TranslationInProgress,
+    TranslationComplete,
+    TranslationFailed,
     CmdTrustDescription,
     CmdLspDescription,
     CmdShareDescription,
@@ -492,6 +518,12 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSystemDescription,
     MessageId::CmdTaskDescription,
     MessageId::CmdTokensDescription,
+    MessageId::CmdTranslateDescription,
+    MessageId::CmdTranslateOff,
+    MessageId::CmdTranslateOn,
+    MessageId::TranslationInProgress,
+    MessageId::TranslationComplete,
+    MessageId::TranslationFailed,
     MessageId::CmdTrustDescription,
     MessageId::CmdLspDescription,
     MessageId::CmdShareDescription,
@@ -637,6 +669,56 @@ pub fn tr(locale: Locale, id: MessageId) -> &'static str {
     fallback_translation(translation(locale, id), id)
 }
 
+pub fn thinking_translation_placeholder(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Thinking; translating when complete...",
+        Locale::Ja => "思考中です。完了後に日本語へ翻訳します...",
+        Locale::ZhHans => "正在思考，完成后翻译为简体中文...",
+        Locale::ZhHant => "正在思考，完成後翻譯為繁體中文...",
+        Locale::PtBr => "Pensando; traduzindo ao concluir...",
+    }
+}
+
+pub fn thinking_translation_in_progress(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Translating thinking content...",
+        Locale::Ja => "思考内容を翻訳中...",
+        Locale::ZhHans => "正在翻译思考内容...",
+        Locale::ZhHant => "正在翻譯思考內容...",
+        Locale::PtBr => "Traduzindo o conteúdo de raciocínio...",
+    }
+}
+
+pub fn thinking_translation_complete(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Thinking translation complete",
+        Locale::Ja => "思考内容の翻訳が完了しました",
+        Locale::ZhHans => "思考内容翻译完成",
+        Locale::ZhHant => "思考內容翻譯完成",
+        Locale::PtBr => "Tradução do raciocínio concluída",
+    }
+}
+
+pub fn thinking_translation_failed(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Thinking translation failed",
+        Locale::Ja => "思考内容の翻訳に失敗しました",
+        Locale::ZhHans => "思考内容翻译失败",
+        Locale::ZhHant => "思考內容翻譯失敗",
+        Locale::PtBr => "Falha ao traduzir o raciocínio",
+    }
+}
+
+pub fn hidden_translation_failed(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Translation failed; original text is hidden.",
+        Locale::Ja => "翻訳に失敗しました。原文は非表示です。",
+        Locale::ZhHans => "翻译失败，原文已隐藏。",
+        Locale::ZhHant => "翻譯失敗，原文已隱藏。",
+        Locale::PtBr => "A tradução falhou; o texto original está oculto.",
+    }
+}
+
 #[allow(dead_code)]
 pub fn missing_message_ids(locale: Locale) -> Vec<MessageId> {
     ALL_MESSAGE_IDS
@@ -733,7 +815,7 @@ fn parse_locale(value: &str) -> Option<Locale> {
             || value.contains("-hk")
             || value.contains("-mo")
         {
-            return None;
+            return Some(Locale::ZhHant);
         }
         return Some(Locale::ZhHans);
     }
@@ -869,6 +951,16 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
         MessageId::CmdTokensDescription => "Show token usage for session",
+        MessageId::CmdTranslateDescription => {
+            "Toggle output translation to the current system language on/off"
+        }
+        MessageId::CmdTranslateOff => "Output translation disabled (original model output shown)",
+        MessageId::CmdTranslateOn => {
+            "Output translation enabled: model responses will be shown in your system language"
+        }
+        MessageId::TranslationInProgress => "Translating assistant output...",
+        MessageId::TranslationComplete => "Translation complete",
+        MessageId::TranslationFailed => "Translation failed",
         MessageId::CmdTrustDescription => {
             "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
@@ -1032,7 +1124,7 @@ fn english(id: MessageId) -> &'static str {
             "Pick the UI language. You can change it any time with `/settings set locale <tag>`."
         }
         MessageId::OnboardLanguageFooter => {
-            "Press 1-5 to choose, or Enter to keep the current setting"
+            "Press 1-6 to choose, or Enter to keep the current setting"
         }
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitle => "Connect your DeepSeek API key",
@@ -1086,8 +1178,21 @@ fn translation(locale: Locale, id: MessageId) -> Option<&'static str> {
         Locale::En => Some(english(id)),
         Locale::Ja => japanese(id),
         Locale::ZhHans => chinese_simplified(id),
+        Locale::ZhHant => traditional_chinese(id),
         Locale::PtBr => portuguese_brazil(id),
     }
+}
+
+fn traditional_chinese(id: MessageId) -> Option<&'static str> {
+    Some(match id {
+        MessageId::CmdTranslateDescription => "切換輸出翻譯為目前系統語言的開關狀態",
+        MessageId::CmdTranslateOff => "輸出翻譯已關閉（顯示原始模型輸出）",
+        MessageId::CmdTranslateOn => "輸出翻譯已開啟：模型回覆將以繁體中文顯示",
+        MessageId::TranslationInProgress => "正在翻譯助理輸出...",
+        MessageId::TranslationComplete => "翻譯完成",
+        MessageId::TranslationFailed => "翻譯失敗",
+        other => chinese_simplified(other)?,
+    })
 }
 
 fn japanese(id: MessageId) -> Option<&'static str> {
@@ -1218,6 +1323,14 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
         MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
+        MessageId::CmdTranslateDescription => "出力翻訳を現在のシステム言語に切り替え",
+        MessageId::CmdTranslateOff => "出力翻訳が無効になりました（元のモデル出力を表示）",
+        MessageId::CmdTranslateOn => {
+            "出力翻訳が有効になりました：モデル応答は現在のシステム言語で表示されます"
+        }
+        MessageId::TranslationInProgress => "アシスタント出力を翻訳中...",
+        MessageId::TranslationComplete => "翻訳が完了しました",
+        MessageId::TranslationFailed => "翻訳に失敗しました",
         MessageId::CmdTrustDescription => {
             "ワークスペースの信頼設定とパス別許可リストを管理（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
@@ -1383,7 +1496,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardLanguageBlurb => {
             "UI 言語を選んでください。`/settings set locale <tag>` でいつでも変更できます。"
         }
-        MessageId::OnboardLanguageFooter => "1〜5 で選択、または Enter で現在の設定を維持",
+        MessageId::OnboardLanguageFooter => "1〜6 で選択、または Enter で現在の設定を維持",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitle => "DeepSeek API キーを設定",
         MessageId::OnboardApiKeyStep1 => {
@@ -1539,6 +1652,12 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSystemDescription => "显示当前系统提示词",
         MessageId::CmdTaskDescription => "管理后台任务",
         MessageId::CmdTokensDescription => "显示本次会话的 token 用量",
+        MessageId::CmdTranslateDescription => "切换输出翻译为当前系统语言的开/关状态",
+        MessageId::CmdTranslateOff => "输出翻译已关闭（显示原始模型输出）",
+        MessageId::CmdTranslateOn => "输出翻译已开启：模型回复将以当前系统语言显示",
+        MessageId::TranslationInProgress => "正在翻译助手输出...",
+        MessageId::TranslationComplete => "翻译完成",
+        MessageId::TranslationFailed => "翻译失败",
         MessageId::CmdTrustDescription => {
             "管理工作区信任与按路径的白名单（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
@@ -1686,7 +1805,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardLanguageBlurb => {
             "选择界面语言。可随时使用 `/settings set locale <tag>` 修改。"
         }
-        MessageId::OnboardLanguageFooter => "按 1-5 选择，或按 Enter 保留当前设置",
+        MessageId::OnboardLanguageFooter => "按 1-6 选择，或按 Enter 保留当前设置",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitle => "连接你的 DeepSeek API 密钥",
         MessageId::OnboardApiKeyStep1 => {
@@ -1860,6 +1979,18 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
         MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
+        MessageId::CmdTranslateDescription => {
+            "Alternar tradução de saída para o idioma atual do sistema"
+        }
+        MessageId::CmdTranslateOff => {
+            "Tradução de saída desativada (saída original do modelo exibida)"
+        }
+        MessageId::CmdTranslateOn => {
+            "Tradução de saída ativada: as respostas serão exibidas no idioma do sistema"
+        }
+        MessageId::TranslationInProgress => "Traduzindo saída do assistente...",
+        MessageId::TranslationComplete => "Tradução concluída",
+        MessageId::TranslationFailed => "Falha na tradução",
         MessageId::CmdTrustDescription => {
             "Gerenciar a confiança do workspace e a allowlist por caminho (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
@@ -2034,7 +2165,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Escolha o idioma da interface. Você pode mudá-lo a qualquer momento com `/settings set locale <tag>`."
         }
         MessageId::OnboardLanguageFooter => {
-            "Pressione 1-5 para escolher, ou Enter para manter a configuração atual"
+            "Pressione 1-6 para escolher, ou Enter para manter a configuração atual"
         }
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitle => "Conecte sua chave de API DeepSeek",
@@ -2097,9 +2228,10 @@ mod tests {
         assert_eq!(normalize_configured_locale("auto"), Some("auto"));
         assert_eq!(normalize_configured_locale("ja_JP.UTF-8"), Some("ja"));
         assert_eq!(normalize_configured_locale("zh-CN"), Some("zh-Hans"));
+        assert_eq!(normalize_configured_locale("zh-TW"), Some("zh-Hant"));
+        assert_eq!(normalize_configured_locale("zh_HK.UTF-8"), Some("zh-Hant"));
         assert_eq!(normalize_configured_locale("pt"), Some("pt-BR"));
         assert_eq!(normalize_configured_locale("pt-PT"), Some("pt-BR"));
-        assert_eq!(normalize_configured_locale("zh-TW"), None);
     }
 
     #[test]
@@ -2113,6 +2245,12 @@ mod tests {
                 (key == "LANG").then(|| "zh_CN.UTF-8".to_string())
             }),
             Locale::ZhHans
+        );
+        assert_eq!(
+            resolve_locale_with_env("auto", |key| {
+                (key == "LANG").then(|| "zh_TW.UTF-8".to_string())
+            }),
+            Locale::ZhHant
         );
         assert_eq!(resolve_locale_with_env("auto", |_| None), Locale::En);
     }

@@ -62,6 +62,7 @@ pub fn change(app: &mut App) -> CommandResult {
         );
         let lang_name = match locale {
             Locale::ZhHans => "Simplified Chinese (中文)",
+            Locale::ZhHant => "Traditional Chinese (繁體中文)",
             Locale::Ja => "Japanese (日本語)",
             Locale::PtBr => "Brazilian Portuguese (Português)",
             // Fallback — should never reach here since we check En above.

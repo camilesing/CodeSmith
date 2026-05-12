@@ -1615,6 +1615,7 @@ impl RuntimeThreadManager {
                 allow_shell,
                 trust_mode,
                 auto_approve,
+                translation_enabled: false,
                 approval_mode: if auto_approve {
                     crate::tui::approval::ApprovalMode::Auto
                 } else {
@@ -1931,6 +1932,7 @@ impl RuntimeThreadManager {
             skills_dir: self.config.skills_dir(),
             instructions: self.config.instructions_paths(),
             project_context_pack_enabled: self.config.project_context_pack_enabled(),
+            translation_enabled: false,
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
