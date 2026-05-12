@@ -14,6 +14,24 @@ have to work with?" — and the answer is now closer to "everything
 you'd reach for from a shell, including the document formats the
 real world uses."
 
+### Fixed
+
+- **`deepseek update` now refreshes the companion TUI binary
+  alongside the dispatcher** (harvested from PR #1492 by
+  **@NorethSea**). Closes the documented two-binary footgun:
+  `~/.cargo/bin/deepseek` would update to the latest dispatcher,
+  but `~/.cargo/bin/deepseek-tui` would stay at the previously
+  installed version, so users saw the dispatcher report a new
+  release while the TUI runtime they actually interacted with
+  reported the old version. Most painful for Volta-managed npm
+  installs and any maintainer flow that calls `update` instead of
+  re-running both `cargo install --path crates/{cli,tui}`. The
+  updater now enumerates colocated binaries up front, downloads
+  and verifies every release asset before replacing anything,
+  then swaps the sibling first and the running dispatcher last so
+  a partial network failure cannot leave the launcher updated
+  while the TUI remains stale.
+
 ### Changed
 
 - **`read_file` now extracts PDFs in pure Rust by default — no
