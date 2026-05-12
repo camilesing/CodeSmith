@@ -298,6 +298,11 @@ hanging the TUI on first turn. [Full changelog](CHANGELOG.md).
   dark terminals (PR #1493 from **@reidliu41**), and no longer shows
   `<turn_meta>` as the session title (PR #1498 from **@wdw8276**).
 
+**Known issue in v0.8.32:** terminal-native text selection can still be
+blocked while the agent is thinking or streaming a response. v0.8.33 is
+planned to ship the text-selection fix alongside the sub-agent and RLM
+renovation.
+
 Thanks to **@CrepuscularIRIS** (4 landings), **@reidliu41** (2 landings),
 **@tiger-dog** (2 landings), **@Duducoco**, **@h3c-hexin**,
 **@NorethSea**, **@MeAiRobot**, **@zhuangbiaowei**, **@wdw8276**,

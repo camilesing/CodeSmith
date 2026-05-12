@@ -499,6 +499,15 @@ the TUI on multi-hundred-GB project directories.
   `pdftotext` as optional and explains how to opt in instead of
   framing it as a missing dependency.
 
+### Known issues
+
+- **Terminal-native text selection can still be blocked while the
+  agent is thinking or streaming a response.** v0.8.32 removed the
+  noisy Shift-to-bypass-mouse-capture path that caused visible
+  scroll/redraw thrash, but the replacement selection path is not
+  complete yet. v0.8.33 is planned to ship the text-selection fix
+  alongside the sub-agent and RLM renovation.
+
 ## [0.8.31] - 2026-05-12
 
 A "tools that actually work" release. `code_execution` no longer
