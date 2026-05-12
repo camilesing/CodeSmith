@@ -162,7 +162,7 @@ impl PrefixStabilityManager {
             current: Some(fp),
             last_change: None,
             change_count: 0,
-            check_count: 1,
+            check_count: 0,
         }
     }
 
@@ -180,12 +180,13 @@ impl PrefixStabilityManager {
 
     /// Explicitly pin a fingerprint, replacing any prior pinned state.
     /// Returns `true` if this is the first pin, or `false` if replacing.
+    /// Note: does NOT increment `check_count` — that counter is reserved
+    /// for `check_and_update` calls so `stability_ratio()` stays accurate.
     pub fn pin(&mut self, system_text: &str, tools: Option<&[Tool]>) -> bool {
         let fp = PrefixFingerprint::compute(system_text, tools);
         let was_unpinned = self.pinned.is_none();
         self.pinned = Some(fp.clone());
         self.current = Some(fp);
-        self.check_count += 1;
         was_unpinned
     }
 
@@ -269,9 +270,10 @@ impl PrefixStabilityManager {
     }
 
     /// Returns the prefix stability rate as a fraction (0.0 – 1.0).
-    /// 1.0 means the prefix has never changed.
+    /// 1.0 means the prefix has never changed. Returns 1.0 when no
+    /// checks have been performed (to avoid division by zero).
     pub fn stability_ratio(&self) -> f64 {
-        if self.check_count <= 1 {
+        if self.check_count == 0 {
             1.0
         } else {
             let stable_checks = self.check_count - self.change_count;
@@ -386,6 +388,7 @@ mod tests {
         let mut mgr = PrefixStabilityManager::new("system prompt", None);
         assert!(mgr.check_and_update("system prompt", None).unwrap());
         assert_eq!(mgr.change_count(), 0);
+        assert_eq!(mgr.check_count(), 1);
     }
 
     #[test]
@@ -426,16 +429,21 @@ mod tests {
         mgr.check_and_update("hello", None).unwrap();
         mgr.check_and_update("hello", None).unwrap();
         assert!((mgr.stability_ratio() - 1.0).abs() < f64::EPSILON);
+        assert_eq!(mgr.check_count(), 2);
+        assert_eq!(mgr.change_count(), 0);
     }
 
     #[test]
     fn stability_ratio_reflects_change_rate() {
         let mut mgr = PrefixStabilityManager::new("hello", None);
-        mgr.check_and_update("hello", None).unwrap();   // check 2: stable
-        let _ = mgr.check_and_update("world", None);     // check 3: changed
-        mgr.check_and_update("world", None).unwrap();    // check 4: stable
-        // 3 stable out of 4 checks = 0.75
-        assert!((mgr.stability_ratio() - 0.75).abs() < 0.01);
+        mgr.check_and_update("hello", None).unwrap();   // check 1: stable
+        let _ = mgr.check_and_update("world", None);     // check 2: changed
+        mgr.check_and_update("world", None).unwrap();    // check 3: stable
+        // 2 stable out of 3 checks = 0.666...
+        // (check_count=0 at start, so 3 checks: 3 checks - 1 change = 2 stable)
+        assert!((mgr.stability_ratio() - 2.0 / 3.0).abs() < 0.01);
+        assert_eq!(mgr.check_count(), 3);
+        assert_eq!(mgr.change_count(), 1);
     }
 
     #[test]
@@ -475,9 +483,10 @@ mod tests {
         assert!(mgr.last_change().is_none());
         assert_eq!(mgr.change_count(), 0);
         assert_eq!(mgr.check_count(), 0);
-        // First check should pin automatically.
+        // First check should pin automatically and count as a check.
         assert!(mgr.check_and_update("hello", None).unwrap());
         assert!(mgr.pinned_fingerprint().is_some());
+        assert_eq!(mgr.check_count(), 1);
     }
 
     #[test]

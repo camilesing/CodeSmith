@@ -257,7 +257,7 @@ impl Engine {
                                 description: change.description(),
                                 system_prompt_changed: change.system_changed,
                                 tools_changed: change.tools_changed,
-                                stability_pct: (pm.stability_ratio() * 100.0) as u32,
+                                stability_pct: (pm.stability_ratio() * 100.0).round() as u32,
                                 changed: true,
                             })
                             .await;
@@ -270,7 +270,7 @@ impl Engine {
                                 description: String::new(),
                                 system_prompt_changed: false,
                                 tools_changed: false,
-                                stability_pct: (pm.stability_ratio() * 100.0) as u32,
+                                stability_pct: (pm.stability_ratio() * 100.0).round() as u32,
                                 changed: false,
                             })
                             .await;
