@@ -3201,7 +3201,7 @@ fn format_prefix_stability_chip(app: &App) -> Option<(String, ratatui::style::Co
     let label = if changes == 0 {
         format!("P {}", pct)
     } else {
-        format!("P {} ({} drift)", pct, changes)
+        format!("P {} ({} change{})", pct, changes, if changes == 1 { "" } else { "s" })
     };
 
     Some((label, color))
