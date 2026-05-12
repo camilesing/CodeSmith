@@ -2068,10 +2068,11 @@ use self::streaming::{
     should_transparently_retry_stream, stream_chunk_timeout_secs,
 };
 use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
-    active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling,
-    execute_code_execution_tool, execute_tool_search, initial_active_tools, is_tool_search_tool,
-    maybe_hydrate_requested_deferred_tool, missing_tool_error_message,
+    CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME,
+    REQUEST_USER_INPUT_NAME, active_tools_for_step, build_model_tool_catalog,
+    ensure_advanced_tooling, execute_code_execution_tool, execute_tool_search,
+    initial_active_tools, is_tool_search_tool, maybe_hydrate_requested_deferred_tool,
+    missing_tool_error_message,
 };
 #[cfg(test)]
 use self::tool_catalog::{
@@ -2079,6 +2080,7 @@ use self::tool_catalog::{
 };
 use self::tool_execution::emit_tool_audit;
 use self::tool_setup::sandbox_policy_for_mode;
+use crate::tools::js_execution::execute_js_execution_tool;
 
 #[cfg(test)]
 mod tests;

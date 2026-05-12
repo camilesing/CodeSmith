@@ -19,6 +19,7 @@ pub(super) const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
 pub(super) const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
 pub(super) const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 const CODE_EXECUTION_TOOL_TYPE: &str = "code_execution_20250825";
+pub(super) use crate::tools::js_execution::JS_EXECUTION_TOOL_NAME;
 const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
 const TOOL_SEARCH_REGEX_TYPE: &str = "tool_search_tool_regex_20251119";
 pub(super) const TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
@@ -148,6 +149,18 @@ pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
             strict: None,
             cache_control: None,
         });
+    }
+
+    // js_execution mirrors code_execution: gate on Node.js being
+    // present locally so the model never sees a runtime it can't
+    // actually use. Plan mode hides shell/exec surfaces (including
+    // both interpreter tools) by construction; Agent / YOLO advertise
+    // the tool only when `resolve_node()` succeeds.
+    if mode != AppMode::Plan
+        && !catalog.iter().any(|t| t.name == JS_EXECUTION_TOOL_NAME)
+        && crate::dependencies::resolve_node().is_some()
+    {
+        catalog.push(crate::tools::js_execution::js_execution_tool_definition());
     }
 
     if !catalog.iter().any(|t| t.name == TOOL_SEARCH_REGEX_NAME) {

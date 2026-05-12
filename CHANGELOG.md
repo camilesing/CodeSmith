@@ -39,6 +39,20 @@ real world uses."
 
 ### Added
 
+- **`js_execution` tool — execute model-provided JavaScript via a
+  local Node.js runtime.** Mirrors `code_execution` (Python) so
+  the model has a single consistent surface for "run this snippet
+  locally and tell me what it printed" across both interpreters.
+  Same tempfile-spawn pattern, same 120-second timeout, same
+  stdout/stderr/return_code result shape — so prompt-cache
+  layouts that cover one tool also cover the other. Registration
+  is gated on `crate::dependencies::resolve_node()`: when Node is
+  missing the tool is simply not advertised, so the model never
+  sees a runtime it can't actually use. `deepseek doctor` reports
+  Node availability under "Tool Dependencies" with platform-aware
+  install hints (`brew install node` / `apt install nodejs` /
+  `winget install OpenJS.NodeJS`). Approval routes through the
+  same Suggest tier as `code_execution`.
 - **`/translate` opt-in: respond in the user's UI locale, with a
   post-hoc fallback for English that leaks through** (harvested
   from PR #1462 by **@YaYII**). Two-layer design: when the user

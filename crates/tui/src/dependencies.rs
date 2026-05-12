@@ -117,6 +117,33 @@ pub fn resolve_pdftotext() -> Option<String> {
         .clone()
 }
 
+/// Resolve the Node.js runtime once per process. Used by the
+/// `js_execution` tool to decide whether to advertise itself in
+/// the catalog. Unlike Python, the executable name `node` is the
+/// same across every platform we ship to — there's no `node3` or
+/// `node.exe` variant to fall through to — so this is a single
+/// probe rather than a candidate ladder.
+pub fn resolve_node() -> Option<String> {
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            if probe_executable("node") {
+                tracing::info!(
+                    target: "tool_dependencies",
+                    "Resolved Node.js runtime for js_execution",
+                );
+                Some("node".to_string())
+            } else {
+                tracing::warn!(
+                    target: "tool_dependencies",
+                    "Node.js runtime not found; js_execution tool will not be advertised",
+                );
+                None
+            }
+        })
+        .clone()
+}
+
 /// Split an interpreter spec like `"py -3"` into the program name
 /// and any initial arguments. Returns `("py", vec!["-3"])` for the
 /// example; returns `("python3", vec![])` for a bare name.

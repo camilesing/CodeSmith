@@ -2132,6 +2132,31 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         }
     }
 
+    match crate::dependencies::resolve_node() {
+        Some(_) => println!(
+            "  {} Node.js: present → js_execution tool registered",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+        ),
+        None => {
+            println!(
+                "  {} Node.js: not found (tried `node`)",
+                "✗".truecolor(red_r, red_g, red_b),
+            );
+            println!("    js_execution tool is NOT advertised to the model on this install.");
+            println!("    Install Node 18+ and ensure `node` is on PATH:");
+            match std::env::consts::OS {
+                "macos" => println!("      brew install node   (or download from nodejs.org)"),
+                "linux" => println!(
+                    "      sudo apt install nodejs    (Debian/Ubuntu) — or your distro's equivalent"
+                ),
+                "windows" => {
+                    println!("      winget install OpenJS.NodeJS   (or download from nodejs.org)")
+                }
+                other => println!("      install Node.js for {other} from nodejs.org"),
+            }
+        }
+    }
+
     // PDF reader: pure-Rust `pdf-extract` is the v0.8.32 default, so
     // `pdftotext` is no longer required for `read_file` to handle PDFs.
     // We still surface its presence (a) so users with column-heavy PDFs
