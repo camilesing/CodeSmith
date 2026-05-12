@@ -16,6 +16,13 @@ real world uses."
 
 ### Fixed
 
+- **`/sessions` picker highlights the selected row more strongly
+  in dark terminals** (harvested from PR #1493 by **@reidliu41**).
+  Previously the selection background was subtle enough to lose
+  in low-contrast dark themes; keyboard navigation up/down didn't
+  obviously change which row was active. The selected row now
+  uses a bolded label on a stronger background so the focused row
+  reads cleanly across the dark palettes the TUI ships with.
 - **TUI input no longer freezes while long-running shell jobs
   flood stdout** (#1299, harvested from PR #1494 by
   **@CrepuscularIRIS / autoghclaw**). The job-panel refresh path
