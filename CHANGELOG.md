@@ -37,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2026 cleanly; it is purely a rendering-quality knob, not a
   correctness one. Set via `/set synchronized_output <auto|on|off>`
   or in `~/.config/deepseek/settings.toml`.
+- **`read_file` accepts `start_line` and `max_lines`** for chunked,
+  bounded reads of large files (#1450, harvested from PR #1451 by
+  **@Oliver-ZPLiu**). Default window is 200 lines / ~16 KB; the hard
+  cap is 500 lines. Small files (≤ 200 lines AND ≤ 16 KB) still
+  return their contents unchanged, so existing prompts that read
+  config files / single source files see no behavior change. Large
+  files now return a `<file …>`-wrapped, line-numbered window with
+  `shown_lines`, `truncated`, and `next_start_line` attributes plus
+  a `[TRUNCATED]` continuation hint — so the model can page through
+  a 50 KB file in 16 KB slices instead of dragging the whole thing
+  into the conversation context on every turn. PDFs continue to use
+  `pages`; `start_line` / `max_lines` apply to text files only.
 
 ## [0.8.30] - 2026-05-11
 

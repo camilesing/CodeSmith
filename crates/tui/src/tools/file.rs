@@ -26,7 +26,7 @@ impl ToolSpec for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a UTF-8 file from the workspace. Use this instead of `cat`, `head`, `tail`, or `sed -n '..p'` in `exec_shell` — it's faster, sandbox-aware, and skips the approval prompt. Plain text is returned as-is; PDFs are auto-extracted via `pdftotext` (poppler) when available. Cannot read images or non-PDF binaries."
+        "Read a UTF-8 file from the workspace. Use this instead of `cat`, `head`, `tail`, or `sed -n '..p'` in `exec_shell` — it's faster, sandbox-aware, and skips the approval prompt. Plain text is returned as-is; PDFs are auto-extracted via `pdftotext` (poppler) when available. Cannot read images or non-PDF binaries.\n\nFor large files, use `start_line` and `max_lines` to read in chunks. By default, returns at most 200 lines (~16KB). If `truncated=\"true\"` in the response, use `next_start_line` to continue reading. For PDFs, use `pages` instead — `start_line`/`max_lines` only apply to text files."
     }
 
     fn input_schema(&self) -> Value {
@@ -36,6 +36,14 @@ impl ToolSpec for ReadFileTool {
                 "path": {
                     "type": "string",
                     "description": "Path to the file (relative to workspace or absolute)"
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "Starting line (1-based, default 1)"
+                },
+                "max_lines": {
+                    "type": "integer",
+                    "description": "Maximum lines to return (default 200, max 500)"
                 },
                 "pages": {
                     "type": "string",
@@ -55,6 +63,20 @@ impl ToolSpec for ReadFileTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        // Bounded output for large files. The small-file fast path keeps the
+        // historical "return contents unchanged" behavior so existing flows
+        // (small configs, single source files, etc.) don't suddenly start
+        // seeing wrapped output. Once a file is large or the caller asks
+        // for an explicit range, we switch to a numbered, line-tagged
+        // window with continuation hints so the model can page through
+        // without re-loading the entire file on every turn. Harvested
+        // from PR #1451 by @Oliver-ZPLiu, closes part of #1450.
+        const DEFAULT_READ_LINES: usize = 200;
+        const HARD_MAX_READ_LINES: usize = 500;
+        const MAX_VISIBLE_BYTES: usize = 16 * 1024;
+        const SMALL_FILE_LINES: usize = 200;
+        const SMALL_FILE_BYTES: usize = 16 * 1024;
+
         let path_str = required_str(&input, "path")?;
         let file_path = context.resolve_path(path_str)?;
         let pages = optional_str(&input, "pages");
@@ -67,7 +89,102 @@ impl ToolSpec for ReadFileTool {
             ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
         })?;
 
-        Ok(ToolResult::success(contents))
+        let total_lines = contents.lines().count();
+        let total_bytes = contents.len();
+        let explicit_range = input
+            .get("start_line")
+            .or_else(|| input.get("max_lines"))
+            .is_some();
+
+        // Small-file fast path. Only applies when the caller didn't pass an
+        // explicit range — otherwise an explicit `start_line = 5` on a
+        // tiny file would silently ignore the request.
+        if !explicit_range && total_lines <= SMALL_FILE_LINES && total_bytes <= SMALL_FILE_BYTES {
+            return Ok(ToolResult::success(contents));
+        }
+
+        let start_line = match input.get("start_line").and_then(Value::as_u64) {
+            Some(0) => {
+                return Err(ToolError::invalid_input(
+                    "start_line must be 1-based and greater than 0".to_string(),
+                ));
+            }
+            Some(v) => v as usize,
+            None => 1,
+        };
+
+        let max_lines = match input.get("max_lines").and_then(Value::as_u64) {
+            Some(0) => {
+                return Err(ToolError::invalid_input(
+                    "max_lines must be greater than 0".to_string(),
+                ));
+            }
+            Some(v) => std::cmp::min(v as usize, HARD_MAX_READ_LINES),
+            None => DEFAULT_READ_LINES,
+        };
+
+        // `start_line > total_lines` is not an error — it lets the model
+        // page past the end without raising. Returns an empty-content
+        // sentinel so subsequent reads can stop.
+        if start_line > total_lines {
+            let output = format!(
+                "<file path=\"{path_str}\" total_lines=\"{total_lines}\" shown_lines=\"none\" truncated=\"false\">\n\
+                 \n\
+                 [NO CONTENT] start_line {start_line} is beyond total_lines {total_lines}.\n\
+                 </file>"
+            );
+            return Ok(ToolResult::success(output));
+        }
+
+        let lines: Vec<&str> = contents.lines().collect();
+        let zero_based_start = start_line - 1;
+        let zero_based_end = std::cmp::min(zero_based_start + max_lines, total_lines);
+        let shown_first = start_line;
+        let shown_last = zero_based_end; // 1-based inclusive line number of the last shown line
+
+        let mut numbered = String::new();
+        for (offset, line) in lines[zero_based_start..zero_based_end].iter().enumerate() {
+            let line_no = start_line + offset;
+            numbered.push_str(&format!("{line_no:>6}│ {line}\n"));
+        }
+
+        // UTF-8-safe byte truncation of the rendered range.
+        let truncated_by_bytes = numbered.len() > MAX_VISIBLE_BYTES;
+        let shown_content = if truncated_by_bytes {
+            let mut end = MAX_VISIBLE_BYTES;
+            while end > 0 && !numbered.is_char_boundary(end) {
+                end -= 1;
+            }
+            &numbered[..end]
+        } else {
+            &numbered
+        };
+
+        let truncated_by_lines = zero_based_end < total_lines;
+        let truncated = truncated_by_lines || truncated_by_bytes;
+        let next_start = zero_based_end + 1;
+
+        let mut attrs = format!(
+            "path=\"{path_str}\" total_lines=\"{total_lines}\" shown_lines=\"{shown_first}-{shown_last}\" truncated=\"{truncated}\""
+        );
+        if truncated_by_lines {
+            attrs.push_str(&format!(" next_start_line=\"{next_start}\""));
+        }
+
+        let mut output = format!("<file {attrs}>\n{shown_content}");
+        if truncated_by_lines {
+            output.push_str(&format!(
+                "\n[TRUNCATED] Showing lines {shown_first}-{shown_last} of {total_lines}. To continue, call read_file with path=\"{path_str}\" start_line={next_start} max_lines={max_lines}\n"
+            ));
+        }
+        if truncated_by_bytes {
+            output.push_str(
+                "\n[TRUNCATED] The selected range exceeded 16KB. Continue with a smaller max_lines value.\n",
+            );
+        }
+        output.push_str("</file>");
+
+        Ok(ToolResult::success(output))
     }
 }
 
@@ -529,6 +646,157 @@ mod tests {
         let result = tool.execute(json!({"path": "nonexistent.txt"}), &ctx).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_file_small_file_returns_unwrapped_contents() {
+        // Small files (≤ 200 lines AND ≤ 16KB, no explicit range) keep
+        // the historical "return contents unchanged" behavior so
+        // existing prompts don't suddenly see <file> tags appear.
+        // Harvested from #1451 — pin the fast-path contract.
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let file = tmp.path().join("small.txt");
+        fs::write(&file, "line 1\nline 2\nline 3\n").expect("write");
+        let tool = ReadFileTool;
+        let result = tool
+            .execute(json!({ "path": "small.txt" }), &ctx)
+            .await
+            .expect("execute");
+        assert!(result.success);
+        assert_eq!(result.content, "line 1\nline 2\nline 3\n");
+        assert!(
+            !result.content.contains("<file"),
+            "small-file fast path must not wrap output"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_explicit_range_wraps_in_file_tag_with_one_based_lines() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let file = tmp.path().join("ranged.txt");
+        let body: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        fs::write(&file, &body).expect("write");
+        let tool = ReadFileTool;
+        let result = tool
+            .execute(
+                json!({ "path": "ranged.txt", "start_line": 3, "max_lines": 4 }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        assert!(result.success);
+        assert!(
+            result.content.contains("shown_lines=\"3-6\""),
+            "1-based inclusive range must be reflected in shown_lines: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("next_start_line=\"7\""),
+            "next_start_line must point one past the last shown line: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("     3│ line 3"),
+            "rendered lines must start at the requested line number"
+        );
+        assert!(
+            result.content.contains("     6│ line 6"),
+            "rendered lines must end at the last in-range line"
+        );
+        assert!(
+            !result.content.contains("     7│ line 7"),
+            "lines past max_lines must be excluded"
+        );
+        assert!(result.content.contains("truncated=\"true\""));
+    }
+
+    #[tokio::test]
+    async fn read_file_range_beyond_total_returns_no_content_sentinel() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let file = tmp.path().join("short.txt");
+        fs::write(&file, "only\nthree\nlines\n").expect("write");
+        let tool = ReadFileTool;
+        let result = tool
+            .execute(json!({ "path": "short.txt", "start_line": 99 }), &ctx)
+            .await
+            .expect("execute");
+        assert!(
+            result.success,
+            "out-of-range must not raise — it's a sentinel"
+        );
+        assert!(result.content.contains("[NO CONTENT]"));
+        assert!(result.content.contains("shown_lines=\"none\""));
+        assert!(result.content.contains("truncated=\"false\""));
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_zero_start_line_and_zero_max_lines() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        fs::write(tmp.path().join("any.txt"), "x\n").expect("write");
+        let tool = ReadFileTool;
+        let zero_start = tool
+            .execute(json!({ "path": "any.txt", "start_line": 0 }), &ctx)
+            .await;
+        assert!(zero_start.is_err(), "start_line=0 must error (1-based)");
+        let zero_max = tool
+            .execute(json!({ "path": "any.txt", "max_lines": 0 }), &ctx)
+            .await;
+        assert!(zero_max.is_err(), "max_lines=0 must error");
+    }
+
+    #[tokio::test]
+    async fn read_file_clamps_max_lines_to_hard_cap() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let file = tmp.path().join("bigish.txt");
+        let body: String = (1..=600).map(|n| format!("L{n}\n")).collect();
+        fs::write(&file, &body).expect("write");
+        let tool = ReadFileTool;
+        let result = tool
+            .execute(json!({ "path": "bigish.txt", "max_lines": 5000 }), &ctx)
+            .await
+            .expect("execute");
+        // Hard cap is 500 lines; line 500 must appear, line 501 must not.
+        assert!(
+            result.content.contains("   500│ L500"),
+            "line 500 should be in the window (max_lines clamped to 500)"
+        );
+        assert!(
+            !result.content.contains("   501│ L501"),
+            "line 501 must be outside the clamped window"
+        );
+        assert!(result.content.contains("next_start_line=\"501\""));
+        assert!(result.content.contains("truncated=\"true\""));
+    }
+
+    #[tokio::test]
+    async fn read_file_large_file_without_range_uses_default_window() {
+        // A file over 200 lines / 16KB with no explicit range still
+        // gets the default window, not the unbounded raw content —
+        // this is the entire point of the patch (token-budget control).
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let file = tmp.path().join("big.txt");
+        let body: String = (1..=250).map(|n| format!("row {n}\n")).collect();
+        fs::write(&file, &body).expect("write");
+        let tool = ReadFileTool;
+        let result = tool
+            .execute(json!({ "path": "big.txt" }), &ctx)
+            .await
+            .expect("execute");
+        assert!(result.content.contains("<file "));
+        assert!(result.content.contains("shown_lines=\"1-200\""));
+        assert!(result.content.contains("next_start_line=\"201\""));
+        assert!(result.content.contains("     1│ row 1"));
+        assert!(result.content.contains("   200│ row 200"));
+        assert!(
+            !result.content.contains("   201│ row 201"),
+            "default max_lines=200 must hold"
+        );
     }
 
     #[tokio::test]
