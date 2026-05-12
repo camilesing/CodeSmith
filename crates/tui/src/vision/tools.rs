@@ -1,6 +1,6 @@
 //! `image_analyze` tool — analyze images using a dedicated vision model.
 
-use std::path::Path;
+use std::path::{Component, Path};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -109,11 +109,12 @@ impl ToolSpec for ImageAnalyzeTool {
             .unwrap_or("Describe this image in detail.");
 
         let image_path_buf = Path::new(image_path);
-        if image_path_buf.is_absolute()
-            || image_path_buf
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
+        if image_path_buf.components().any(|c| {
+            matches!(
+                c,
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir
+            )
+        }) {
             return Err(ToolError::execution_failed(
                 "image_path must be a relative path within the workspace and cannot escape it.",
             ));
