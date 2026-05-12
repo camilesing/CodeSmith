@@ -883,12 +883,6 @@ pub struct App {
     /// Esc primes, second Esc opens the live-transcript overlay scoped to
     /// previous user messages so the user can rewind a turn.
     pub backtrack: crate::tui::backtrack::BacktrackState,
-    /// Pending 'gg' second keystroke for vim-style jump-to-top of the
-    /// transcript. Set by the first bare 'g' with an empty composer and
-    /// consumed on the second 'g' to scroll to line 0. Any other
-    /// navigation key resets it, so typing 'g' as the first character
-    /// of a message only arms this flag without scrolling.
-    pub transcript_pending_g: bool,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
     /// Metadata-only registry of large tool outputs produced in this session.
@@ -1478,7 +1472,6 @@ impl App {
             },
             view_stack: ViewStack::new(),
             backtrack: crate::tui::backtrack::BacktrackState::new(),
-            transcript_pending_g: false,
             current_session_id: None,
             session_artifacts: Vec::new(),
             trust_mode: initial_mode == AppMode::Yolo,

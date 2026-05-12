@@ -2984,17 +2984,20 @@ fn active_rlm_task_entries_surface_foreground_rlm_work() {
 }
 
 #[test]
-fn details_shortcut_modifiers_accept_plain_shift_and_alt_only() {
-    assert!(details_shortcut_modifiers(KeyModifiers::NONE));
-    assert!(details_shortcut_modifiers(KeyModifiers::SHIFT));
-    assert!(details_shortcut_modifiers(KeyModifiers::ALT));
-    assert!(details_shortcut_modifiers(
-        KeyModifiers::ALT | KeyModifiers::SHIFT
-    ));
-    assert!(!details_shortcut_modifiers(KeyModifiers::CONTROL));
-    assert!(!details_shortcut_modifiers(
+fn alt_nav_modifiers_require_alt_and_exclude_ctrl_super() {
+    // v0.8.30 — transcript-nav shortcuts (`Alt+G`, `Alt+[`, etc.) require
+    // Alt, allow Shift for capital-letter forms, and block Ctrl/Super so
+    // they don't collide with clipboard / window shortcuts. Bare and
+    // Shift-only modifiers fall through to text insertion now.
+    assert!(!alt_nav_modifiers(KeyModifiers::NONE));
+    assert!(!alt_nav_modifiers(KeyModifiers::SHIFT));
+    assert!(alt_nav_modifiers(KeyModifiers::ALT));
+    assert!(alt_nav_modifiers(KeyModifiers::ALT | KeyModifiers::SHIFT));
+    assert!(!alt_nav_modifiers(KeyModifiers::CONTROL));
+    assert!(!alt_nav_modifiers(
         KeyModifiers::ALT | KeyModifiers::CONTROL
     ));
+    assert!(!alt_nav_modifiers(KeyModifiers::ALT | KeyModifiers::SUPER));
 }
 
 #[test]

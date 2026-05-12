@@ -2230,19 +2230,17 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('l')
-                    if key.modifiers.is_empty()
+                    if alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && open_pager_for_last_message(app) =>
                 {
                     continue;
                 }
-                KeyCode::Char('v') | KeyCode::Char('V')
-                    if details_shortcut_modifiers(key.modifiers)
-                        && app.input.is_empty()
-                        && open_tool_details_pager(app) =>
-                {
-                    continue;
-                }
+                // Bare `v` / `V` no longer opens the tool-details pager — that
+                // path is owned exclusively by `Alt+V` at the lower arm, so
+                // the letter `v` is freely usable as the first character of
+                // a message. `details_shortcut_modifiers` previously allowed
+                // empty/Shift here, eating the keystroke on empty composers.
                 KeyCode::Char('o')
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && app.input.is_empty()
@@ -2392,7 +2390,6 @@ async fn run_event_loop(
                     app.mention_menu_selected = 0;
                 }
                 KeyCode::Esc => {
-                    app.transcript_pending_g = false;
                     match next_escape_action(app, slash_menu_open) {
                         EscapeAction::CloseSlashMenu => {
                             // A popup-style action wins over backtrack — clear
@@ -2572,34 +2569,35 @@ async fn run_event_loop(
                 KeyCode::BackTab => {
                     app.cycle_effort();
                 }
+                // Transcript-nav shortcuts now require Alt, leaving the bare
+                // letters free to insert as text. Before v0.8.30, bare `g`,
+                // `G`, `[`, `]`, `?`, `l`, and `v` on an empty composer were
+                // hijacked for navigation — typing "good" yielded "ood" with
+                // no whale and no warning. The Alt-prefixed shortcuts mirror
+                // the Alt+R / Alt+V / Alt+C pattern already in use. Shift is
+                // permitted so capital-letter forms (e.g. `Alt+Shift+G` for
+                // bottom) work; Ctrl/Super are blocked so the bindings don't
+                // collide with platform clipboard / window shortcuts.
                 KeyCode::Char('g')
-                    if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
+                    if alt_nav_modifiers(key.modifiers)
+                        && app.input.is_empty()
+                        && !slash_menu_open =>
                 {
-                    // Vim-style 'gg' — double-tap 'g' to jump to top.
-                    // First 'g' arms the pending flag; second executes the scroll.
-                    // This prevents a single 'g' (the first letter of a message)
-                    // from hijacking the transcript scroll.
-                    if app.transcript_pending_g {
-                        if let Some(anchor) = TranscriptScroll::anchor_for(
-                            app.viewport.transcript_cache.line_meta(),
-                            0,
-                        ) {
-                            app.viewport.transcript_scroll = anchor;
-                        }
-                        app.transcript_pending_g = false;
-                    } else {
-                        app.transcript_pending_g = true;
+                    if let Some(anchor) =
+                        TranscriptScroll::anchor_for(app.viewport.transcript_cache.line_meta(), 0)
+                    {
+                        app.viewport.transcript_scroll = anchor;
                     }
                 }
                 KeyCode::Char('G')
-                    if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+                    if alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open =>
                 {
                     app.scroll_to_bottom();
                 }
                 KeyCode::Char('[')
-                    if key.modifiers.is_empty()
+                    if alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) =>
@@ -2607,20 +2605,19 @@ async fn run_event_loop(
                     app.status_message = Some("No previous tool output".to_string());
                 }
                 KeyCode::Char(']')
-                    if key.modifiers.is_empty()
+                    if alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) =>
                 {
                     app.status_message = Some("No next tool output".to_string());
                 }
-                // `?` opens the searchable help overlay (#93). Gated on the
-                // composer being empty so typing `?` mid-question is treated
-                // as text. `Shift` is permitted because US layouts produce
-                // `?` as `Shift+/`. Help-modal toggling lives next to the
-                // F1 / Ctrl+/ branch above; here we only open.
+                // `Alt+?` opens the searchable help overlay (#93). F1 and
+                // Ctrl+/ are also bound; bare `?` is reserved as text input
+                // so users can start a message with "?" without losing the
+                // first character.
                 KeyCode::Char('?')
-                    if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+                    if alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open =>
                 {
@@ -2688,7 +2685,6 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Enter => {
-                    app.transcript_pending_g = false;
                     // #573: when the user typed a slash-command prefix that
                     // the popup is matching (e.g. `/mo` → `/model`), Enter
                     // should run the *highlighted match* rather than
@@ -3000,11 +2996,6 @@ async fn run_event_loop(
                     // absorb — Visual mode not yet fully implemented
                 }
                 KeyCode::Char(c) => {
-                    // Any typed character after a pending 'g' means the user
-                    // is composing a message, not navigating — disarm the
-                    // 'gg' double-tap so the next bare 'g' on an empty
-                    // composer starts a new sequence.
-                    app.transcript_pending_g = false;
                     app.insert_char(c);
                 }
                 _ => {}
@@ -8836,12 +8827,20 @@ fn tool_details_shortcut_label() -> &'static str {
     }
 }
 
-fn details_shortcut_modifiers(modifiers: KeyModifiers) -> bool {
-    modifiers.is_empty()
-        || modifiers == KeyModifiers::SHIFT
-        || (modifiers.contains(KeyModifiers::ALT)
-            && !modifiers.contains(KeyModifiers::CONTROL)
-            && !modifiers.contains(KeyModifiers::SUPER))
+/// Modifier predicate for the v0.8.30 family of `Alt+<letter>` transcript-
+/// nav shortcuts (`Alt+G` / `Alt+Shift+G` / `Alt+[` / `Alt+]` / `Alt+?` /
+/// `Alt+L` / `Alt+V`). Requires `Alt` and disallows `Ctrl` / `Super` so the
+/// bindings don't collide with platform clipboard / window-management
+/// shortcuts. `Shift` is permitted so the capital-letter forms work on
+/// any keyboard layout that produces them as `Alt+Shift+key`.
+///
+/// Plain `Char` events (no modifier, or modifier=`Shift` alone for the
+/// uppercase form) fall through to text insertion, which is the whole
+/// point — typing "good morning" no longer eats the first `g`.
+fn alt_nav_modifiers(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::ALT)
+        && !modifiers.contains(KeyModifiers::CONTROL)
+        && !modifiers.contains(KeyModifiers::SUPER)
 }
 
 fn is_macos_option_v_legacy_key(key: &KeyEvent) -> bool {
