@@ -462,11 +462,15 @@ enum HttpTransportMode {
     Sse(SseTransport),
 }
 
+/// `Mcp-Session-Id` header name (MCP spec § Streamable HTTP session management).
+const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
+
 struct StreamableHttpTransport {
     client: reqwest::Client,
     url: String,
     headers: HashMap<String, String>,
     pending_messages: VecDeque<Vec<u8>>,
+    session_id: Option<String>,
 }
 
 enum StreamableSendError {
@@ -731,6 +735,7 @@ impl StreamableHttpTransport {
             url,
             pending_messages: VecDeque::new(),
             headers,
+            session_id: None,
         }
     }
 
@@ -743,11 +748,24 @@ impl StreamableHttpTransport {
         for (key, value) in &self.headers {
             request = request.header(key.as_str(), value.as_str());
         }
+        if let Some(ref sid) = self.session_id {
+            request = request.header(MCP_SESSION_ID_HEADER, sid.as_str());
+        }
         let response = request
             .body(msg)
             .send()
             .await
             .map_err(|err| StreamableSendError::Other(err.into()))?;
+
+        // Persist `Mcp-Session-Id` for subsequent requests (MCP spec §
+        // Streamable HTTP session management).
+        if let Some(sid) = response
+            .headers()
+            .get(MCP_SESSION_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+        {
+            self.session_id = Some(sid.to_string());
+        }
 
         let status = response.status();
         if status == StatusCode::ACCEPTED || status == StatusCode::NO_CONTENT {
