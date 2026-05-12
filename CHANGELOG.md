@@ -59,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a 50 KB file in 16 KB slices instead of dragging the whole thing
   into the conversation context on every turn. PDFs continue to use
   `pages`; `start_line` / `max_lines` apply to text files only.
+- **`web/` dependency security updates.** Bumps:
+  - `next` 15.5.16 → 15.5.18 (GHSA-26hh-7cqf-hhc6 — App Router
+    middleware/proxy bypass via segment-prefetch routes; high
+    severity).
+  - `mermaid` 11.14.0 → 11.15.0 (GHSA family: Gantt-chart infinite-
+    loop DoS, `classDef` HTML injection, `classDefs` /
+    configuration CSS injection; all medium severity).
+  - `eslint-config-next` 15.5.16 → 15.5.18 (matches Next.js).
+  `npm run build` confirmed clean on the bumped lockfile. None of
+  these affect the Rust TUI binary; the bumps are for the
+  separately-deployed `deepseek-tui.com` site.
 - **MCP HTTP servers accept custom headers** for authentication
   (#1454, harvested from PR #1456 by **@Oliver-ZPLiu**). Mirrors the
   `headers` field that Claude Code, Codex, and OpenCode already
