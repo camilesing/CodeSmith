@@ -845,7 +845,7 @@ impl Engine {
                         let mgr = self.subagent_manager.read().await;
                         mgr.running_count()
                     };
-                    if running > 0 {
+                    if should_hold_turn_for_subagents(completions.len(), running) {
                         let _ = self
                             .tx_event
                             .send(Event::status(format!(
@@ -1874,6 +1874,10 @@ XML unless the user explicitly asks to debug sub-agent internals.\n\n\
     }
 }
 
+fn should_hold_turn_for_subagents(queued_completions: usize, running_children: usize) -> bool {
+    queued_completions > 0 || running_children > 0
+}
+
 /// Resolve an `"auto"` reasoning-effort tier to a concrete value.
 ///
 /// When the configured effort is `"auto"`, inspects the last user message
@@ -1947,6 +1951,13 @@ mod tests {
         assert!(text.contains("Do not tell the user they pasted sentinels"));
         assert!(text.contains("<deepseek:subagent.done>"));
         assert!(text.contains("Build passed"));
+    }
+
+    #[test]
+    fn turn_holds_open_for_running_or_completed_subagents() {
+        assert!(should_hold_turn_for_subagents(1, 0));
+        assert!(should_hold_turn_for_subagents(0, 1));
+        assert!(!should_hold_turn_for_subagents(0, 0));
     }
 
     #[test]

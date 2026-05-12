@@ -210,6 +210,40 @@ impl Default for EngineConfig {
     }
 }
 
+/// Reason the active turn was cancelled. The token from `tokio_util`
+/// does not carry a cause, so the engine keeps a sibling latch for
+/// approval and user-input waits that need to explain cancellation.
+///
+/// `External`, `Preempted`, and `Internal` are reserved for the
+/// remaining direct cancellation paths tracked in #1541.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum CancelReason {
+    /// User-initiated cancel (Esc, `/cancel`, click cancel on modal).
+    User,
+    /// External / runtime-API cancel (HTTP `DELETE /v1/threads/...`,
+    /// task manager stop, parent agent cancel).
+    External,
+    /// Cancel triggered when a new turn starts before the previous one
+    /// finished — e.g. plain Enter while busy after the queueing path
+    /// pre-empts the running turn.
+    Preempted,
+    /// Engine internals tore down the turn (drop, channel close,
+    /// shutdown). Rare — surfaced as an internal error.
+    Internal,
+}
+
+impl CancelReason {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::User => "user cancelled the request",
+            Self::External => "request cancelled by external caller",
+            Self::Preempted => "request was preempted by a new turn",
+            Self::Internal => "engine torn down before approval resolved",
+        }
+    }
+}
+
 /// Handle to communicate with the engine
 #[derive(Clone)]
 pub struct EngineHandle {
@@ -219,6 +253,10 @@ pub struct EngineHandle {
     pub rx_event: Arc<RwLock<mpsc::Receiver<Event>>>,
     /// Shared pointer to the cancellation token for the current request.
     cancel_token: Arc<StdMutex<CancellationToken>>,
+    /// Latched reason for the most recent cancellation. Read by the
+    /// approval / user-input handlers to enrich their error strings.
+    /// Cleared by the engine when a fresh turn starts.
+    cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
     /// Send approval decisions to the engine
     tx_approval: mpsc::Sender<ApprovalDecision>,
     /// Send user input responses to the engine
@@ -234,8 +272,20 @@ impl EngineHandle {
         Ok(())
     }
 
-    /// Cancel the current request
+    /// Cancel the current request (user-initiated path — keeps the
+    /// public `cancel()` signature stable). Equivalent to
+    /// `cancel_with_reason(CancelReason::User)`.
     pub fn cancel(&self) {
+        self.cancel_with_reason(CancelReason::User);
+    }
+
+    /// Cancel the current request and latch the reason so downstream
+    /// "request cancelled" error messages can name a cause.
+    pub fn cancel_with_reason(&self, reason: CancelReason) {
+        match self.cancel_reason.lock() {
+            Ok(mut slot) => *slot = Some(reason),
+            Err(poisoned) => *poisoned.into_inner() = Some(reason),
+        }
         match self.cancel_token.lock() {
             Ok(token) => token.cancel(),
             Err(poisoned) => poisoned.into_inner().cancel(),
@@ -340,6 +390,11 @@ pub struct Engine {
     pub(super) rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
     cancel_token: CancellationToken,
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
+    /// Latched reason for the current cancellation, mirrored to
+    /// `EngineHandle::cancel_reason`. Read by `approval.rs` when
+    /// surfacing the "Request cancelled while awaiting …" error so the
+    /// user-facing message names a cause.
+    pub(super) cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
     tool_exec_lock: Arc<RwLock<()>>,
     capacity_controller: CapacityController,
     /// Append-only layered context manager (#159). Opt-in for v0.7.5 while
@@ -378,6 +433,13 @@ impl Engine {
             Err(poisoned) => {
                 *poisoned.into_inner() = token;
             }
+        }
+        // Fresh turn → clear any latched cancellation reason from the
+        // previous turn so a downstream "request cancelled" message
+        // doesn't inherit a stale cause.
+        match self.cancel_reason.lock() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
         }
     }
 
@@ -431,6 +493,7 @@ impl Engine {
         let (tx_subagent_completion, rx_subagent_completion) = mpsc::unbounded_channel();
         let cancel_token = CancellationToken::new();
         let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
+        let cancel_reason: Arc<StdMutex<Option<CancelReason>>> = Arc::new(StdMutex::new(None));
         let tool_exec_lock = Arc::new(RwLock::new(()));
 
         // Create clients for both providers
@@ -565,6 +628,7 @@ impl Engine {
             rx_subagent_completion,
             cancel_token: cancel_token.clone(),
             shared_cancel_token: shared_cancel_token.clone(),
+            cancel_reason: cancel_reason.clone(),
             tool_exec_lock,
             capacity_controller,
             seam_manager,
@@ -581,6 +645,7 @@ impl Engine {
             tx_op,
             rx_event: Arc::new(RwLock::new(rx_event)),
             cancel_token: shared_cancel_token,
+            cancel_reason,
             tx_approval,
             tx_user_input,
             tx_steer,
@@ -2022,10 +2087,12 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
     let (tx_steer, rx_steer) = mpsc::channel(64);
     let cancel_token = CancellationToken::new();
     let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
+    let cancel_reason: Arc<StdMutex<Option<CancelReason>>> = Arc::new(StdMutex::new(None));
     let handle = EngineHandle {
         tx_op,
         rx_event: Arc::new(RwLock::new(rx_event)),
         cancel_token: shared_cancel_token,
+        cancel_reason,
         tx_approval,
         tx_user_input,
         tx_steer,
