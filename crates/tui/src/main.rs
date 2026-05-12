@@ -52,6 +52,7 @@ mod project_context;
 mod project_doc;
 mod prompts;
 pub mod repl;
+mod prefix_cache;
 mod retry_status;
 pub mod rlm;
 mod runtime_api;

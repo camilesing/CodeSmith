@@ -453,6 +453,16 @@ impl Engine {
         session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
         session.system_prompt = stable_prompt;
 
+        // Initialize prefix-cache stability monitor.
+        // Pins the initial fingerprint (system prompt + tool spec names)
+        // so subsequent turns can detect cache-invalidating drift.
+        let _ = session.prefix_stability.get_or_insert_with(|| {
+            // Use the tool registry's spec names for fingerprinting.
+            // At this point tool spec builders may not be registered yet,
+            // so we start with None — fingerprint will pin on first request.
+            crate::prefix_cache::PrefixStabilityManager::new_unpinned()
+        });
+
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
         let shell_manager = config
