@@ -34,6 +34,23 @@ real world uses."
   and the compact template stay always-cacheable in the static
   layer where they belong.
 
+### Removed
+
+- **Shift-to-bypass-mouse-capture is gone.** The #376 escape-hatch
+  feature (hold Shift while moving the mouse → temporarily disable
+  alt-screen mouse capture so terminal-native text selection works,
+  then re-enable on release) was causing visible scroll/redraw
+  thrash: every Shift transition flipped the mouse-capture mode AND
+  pushed a status toast ("Native selection — release Shift to
+  return" / "Mouse capture restored"). On modern terminals that
+  honor `xterm-modifyOtherKeys` the toast cycle fired on stray
+  Shift events and produced what users described as a "scroll
+  demon." Removing the bypass path entirely: text selection in
+  alt-screen sessions now goes through the same path as any other
+  TUI (your terminal's modifier-bypass — typically Option/Alt on
+  macOS, Shift in some Linux terminals — still works at the
+  terminal level, this just stops us from second-guessing it).
+
 ### Fixed
 
 - **Snapshots no longer try to index a multi-hundred-GB workspace

@@ -733,9 +733,6 @@ async fn run_event_loop(
     // codex's frame coalescing that maps cleanly onto our poll-based loop.
     let mut frame_rate_limiter = crate::tui::frame_rate_limiter::FrameRateLimiter::default();
     let mut web_config_session: Option<WebConfigSession> = None;
-    // #376: native-copy escape — hold Shift to bypass alt-screen mouse capture
-    // for terminal-native text selection.
-    let mut shift_bypass_active = false;
     let mut terminal_paused_at: Option<Instant> = None;
     let mut force_terminal_repaint = false;
 
@@ -2023,33 +2020,6 @@ async fn run_event_loop(
             if app.use_mouse_capture
                 && let Event::Mouse(mouse) = evt
             {
-                // #376: hold Shift to bypass alt-screen mouse capture for
-                // terminal-native text selection. While bypass is active,
-                // mouse events pass through to the terminal instead of
-                // being consumed by the TUI.
-                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
-                    if !shift_bypass_active {
-                        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
-                        shift_bypass_active = true;
-                        app.push_status_toast(
-                            "Native selection \u{2014} release Shift to return",
-                            StatusToastLevel::Info,
-                            Some(3_000),
-                        );
-                    }
-                    // Let the terminal handle this mouse event natively.
-                    continue;
-                }
-                if shift_bypass_active {
-                    let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
-                    shift_bypass_active = false;
-                    app.push_status_toast(
-                        "Mouse capture restored",
-                        StatusToastLevel::Info,
-                        Some(2_000),
-                    );
-                }
-
                 let events = handle_mouse_event(app, mouse);
                 if handle_view_events(
                     terminal,
