@@ -837,7 +837,7 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Vllm => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -855,7 +855,7 @@ pub(super) fn apply_reasoning_effort(
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -874,7 +874,7 @@ pub(super) fn apply_reasoning_effort(
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,

@@ -39,6 +39,21 @@ real world uses."
 
 ### Added
 
+- **AtlasCloud is now a first-class provider** (harvested from
+  PR #1436 by **@lucaszhu-hue**). AtlasCloud hosts the V4 family
+  (and other DeepSeek-compatible models) on its own endpoint at
+  `https://api.atlascloud.ai/v1`, and several contributors had
+  been running it through the OpenAI-compatible passthrough with
+  manual `base_url` / model overrides. Selecting
+  `provider = "atlascloud"` in `~/.deepseek/config.toml` (or via
+  `DEEPSEEK_PROVIDER=atlascloud`) now wires up the documented
+  defaults, a `[providers.atlascloud]` config block for per-user
+  api_key / base_url / model / http_headers overrides, the
+  `ATLASCLOUD_API_KEY` env var path, and the
+  provider-picker / `/provider` slash command entries — same
+  shape as the existing NVIDIA NIM / Fireworks / OpenAI provider
+  rows. Default remains DeepSeek; nothing changes for installs
+  that don't opt in.
 - **`web_search` supports Tavily and Bocha as configurable
   backends** (harvested from PR #1294 by **@sandofree**). DuckDuckGo
   with Bing fallback remains the default — no API key required —
