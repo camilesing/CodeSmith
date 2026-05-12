@@ -132,6 +132,10 @@ pub struct EngineConfig {
     pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
     /// Whether to take side-git workspace snapshots before/after each turn.
     pub snapshots_enabled: bool,
+    /// Maximum workspace size (in bytes) before snapshots self-disable on
+    /// first init. `0` disables the cap. Resolved from
+    /// `[snapshots] max_workspace_gb` × 1 GB at engine construction.
+    pub snapshots_max_workspace_bytes: u64,
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
     pub lsp_config: Option<crate::lsp::LspConfig>,
@@ -188,6 +192,8 @@ impl Default for EngineConfig {
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,
+            snapshots_max_workspace_bytes:
+                crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT,
             lsp_config: None,
             runtime_services: RuntimeToolServices::default(),
             subagent_model_overrides: HashMap::new(),
@@ -936,8 +942,11 @@ impl Engine {
         if self.config.snapshots_enabled {
             let pre_workspace = self.session.workspace.clone();
             let pre_seq = self.turn_counter;
-            let _ = tokio::task::spawn_blocking(move || pre_turn_snapshot(&pre_workspace, pre_seq))
-                .await;
+            let pre_cap = self.config.snapshots_max_workspace_bytes;
+            let _ = tokio::task::spawn_blocking(move || {
+                pre_turn_snapshot(&pre_workspace, pre_seq, pre_cap)
+            })
+            .await;
         }
 
         // A new turn means any leftover retry banner (success cleared
@@ -1156,8 +1165,9 @@ impl Engine {
         if self.config.snapshots_enabled {
             let post_workspace = self.session.workspace.clone();
             let post_seq = self.turn_counter;
+            let post_cap = self.config.snapshots_max_workspace_bytes;
             crate::utils::spawn_blocking_supervised("post-turn-snapshot", move || {
-                post_turn_snapshot(&post_workspace, post_seq);
+                post_turn_snapshot(&post_workspace, post_seq, post_cap);
             });
         }
     }

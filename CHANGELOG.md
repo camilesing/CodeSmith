@@ -36,6 +36,26 @@ real world uses."
 
 ### Fixed
 
+- **Snapshots no longer try to index a multi-hundred-GB workspace
+  on first turn.** Reported by users running `deepseek-tui` inside
+  project directories with hundreds of GB of content — datasets,
+  model weights (`.safetensors`, `.gguf`, `.pt`), Docker image
+  dumps, parquet / arrow caches — where the side-git snapshot
+  initialization would hang the TUI for minutes or hours while
+  `git add -A` walked the workspace. v0.8.32 adds a default
+  2 GB ceiling on non-excluded workspace content (measured before
+  any git work, walking the same excludes the snapshot path
+  already honors). When the cap is exceeded the side repo isn't
+  initialized; subsequent snapshots are skipped with a clear
+  WARN-level log line referencing the new
+  `[snapshots] max_workspace_gb` config knob users can raise (or
+  set to `0` to disable the cap entirely and restore v0.8.31
+  behaviour). The bounded estimator also early-exits past 200k
+  file entries, so a workspace full of tiny files trips the cap
+  before paying for a full walk. Pre-existing v0.8.27 fixes for
+  the growth-over-time angle (#1112: retention cap, mid-session
+  prune, expanded built-in excludes) continue to apply; this
+  closes the orthogonal "snapshots-too-big-to-start" path.
 - **Toast stack overlay no longer renders on top of the composer
   input** (harvested from PR #1485 by **@MeAiRobot**). When a
   deferred tool's schema auto-loaded after the model requested

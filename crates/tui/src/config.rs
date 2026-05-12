@@ -464,6 +464,10 @@ fn default_snapshot_max_age_days() -> u64 {
     crate::snapshot::DEFAULT_MAX_AGE.as_secs() / (24 * 60 * 60)
 }
 
+fn default_snapshot_max_workspace_gb() -> u64 {
+    crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT / (1024 * 1024 * 1024)
+}
+
 /// Workspace side-git snapshot configuration (#137).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SnapshotsConfig {
@@ -473,6 +477,14 @@ pub struct SnapshotsConfig {
     /// Prune side-git snapshots older than this many days at session boot.
     #[serde(default = "default_snapshot_max_age_days")]
     pub max_age_days: u64,
+    /// Maximum non-excluded workspace size (in GB) before the snapshot
+    /// feature self-disables on first use. Set to `0` to disable the cap
+    /// and snapshot regardless of size (the v0.8.31 behavior). The walk
+    /// honors `.gitignore` and the snapshot module's built-in excludes
+    /// (`node_modules/`, `target/`, ...) so the measured size reflects
+    /// what would actually land in a snapshot commit.
+    #[serde(default = "default_snapshot_max_workspace_gb")]
+    pub max_workspace_gb: u64,
 }
 
 impl Default for SnapshotsConfig {
@@ -480,6 +492,7 @@ impl Default for SnapshotsConfig {
         Self {
             enabled: default_snapshots_enabled(),
             max_age_days: default_snapshot_max_age_days(),
+            max_workspace_gb: default_snapshot_max_workspace_gb(),
         }
     }
 }

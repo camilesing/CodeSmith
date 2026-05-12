@@ -1946,6 +1946,11 @@ impl RuntimeThreadManager {
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
             snapshots_enabled: self.config.snapshots_config().enabled,
+            snapshots_max_workspace_bytes: self
+                .config
+                .snapshots_config()
+                .max_workspace_gb
+                .saturating_mul(1024 * 1024 * 1024),
             lsp_config,
             runtime_services: crate::tools::spec::RuntimeToolServices {
                 task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),

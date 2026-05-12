@@ -616,6 +616,10 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
         }),
         snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_max_workspace_bytes: config
+            .snapshots_config()
+            .max_workspace_gb
+            .saturating_mul(1024 * 1024 * 1024),
         lsp_config: config
             .lsp
             .clone()
