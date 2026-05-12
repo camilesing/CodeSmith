@@ -15,7 +15,7 @@ every new contributor asks: "what does the model actually have to
 work with?" — and the answer is now closer to "everything you'd
 reach for from a shell, including the document formats the real
 world uses." Five new tools (`pdf-extract` swap, `js_execution`,
-`pandoc_convert`, `image_ocr`, `image_analyze`), six community PR
+`pandoc_convert`, `image_ocr`, `image_analyze`), ten community PR
 harvests targeting model-protocol bugs (vLLM thinking) and UX
 papercuts (Shift+Enter on Windows VSCode, mention truncation
 splitting CJK codepoints, approval modal hiding the transcript),
@@ -62,6 +62,117 @@ the TUI on multi-hundred-GB project directories.
 
 ### Fixed
 
+- **Tool-result spillover and wire-dedup now share a retrieval
+  namespace, so `retrieve_tool_result` finds what the model was
+  pointed at.** Two systems used to mint reference blocks
+  independently — disk spillover keyed by tool-call id
+  (`~/.deepseek/tool_outputs/<id>.txt`, only above 100 KB) and the
+  Chat-Completions wire compactor that replaced repeated tool
+  results with `<TOOL_RESULT_REF sha="…"/>` (any size, keyed by
+  SHA256 of the content). The SHA refs were impossible to
+  retrieve: `retrieve_tool_result ref=<sha>` looked in the
+  tool-call-id directory and 404'd. Worse, the wire dedup fired
+  on tiny outputs (a 65-byte `gh run view --json` could turn into
+  a ref the model then chased through three guesses), and the
+  `[artifact: …]` block emitted by `apply_spillover_with_artifact`
+  showed `id:` (with `art_` prefix), `path:` (with a slash), and
+  `tool_call_id:` separately with no indication of which one
+  `retrieve_tool_result` accepted. Reported by users hitting
+  "spilled tool result was not found" 4–5 times per session while
+  polling CI runs.
+  - The wire compactor now persists deduped content to
+    `~/.deepseek/tool_outputs/sha_<sha>.txt` on first sighting,
+    and only dedupes outputs ≥ 1 KiB — tiny results stay inline
+    on both occurrences instead of becoming a ref the model has
+    to chase. The `<TOOL_RESULT_REF>` block grew a
+    literal `retrieve: retrieve_tool_result ref=sha:<sha>` line.
+  - `retrieve_tool_result` learns five new ref shapes:
+    `sha:<64-hex>`, bare 64-hex, `art_<tool_call_id>`,
+    `artifacts/art_<id>.txt`, and absolute paths anywhere under
+    the session-artifact root. The lookup tries the legacy
+    spillover dir, the current session's artifact dir, and the
+    `art_` → legacy fallback in one call. When everything misses,
+    the error enumerates every candidate path tried and lists
+    every accepted ref form so the model can correct on the next
+    attempt instead of guessing blind.
+  - The `[artifact: …]` block emitted alongside spilled outputs
+    now includes a literal `retrieve:     retrieve_tool_result
+    ref=art_<id>` line so the model never has to guess between
+    `id:`, `path:`, and `tool_call_id:`.
+- **`<TURN_META_REF sha="…" original_chars="…" />` is gone.** The
+  legacy wire-level dedup for identical per-turn metadata blocks
+  emitted an opaque SHA-tagged reference that periodically leaked
+  into model reasoning and user-visible debug dumps with no
+  retrieval mechanism — the SHA was an artifact of the cache
+  optimization, not a content address the model could resolve.
+  The compactor now emits a self-explanatory
+  `<turn_meta_unchanged />` marker instead. Same KV-cache
+  friendliness (bytes in the same prompt position when nothing
+  changed), zero ambiguity if the marker ever surfaces.
+- **"Request cancelled while awaiting approval" now says
+  *why*.** The approval and user-input handlers used to emit the
+  same opaque string regardless of source — user Esc, runtime-API
+  DELETE, parent-agent cancel, or a torn-down channel all
+  produced an identical error. A new `CancelReason` enum is
+  latched alongside the `CancellationToken` and surfaced as a
+  `(reason: …)` suffix: `user cancelled the request`, `request
+  cancelled by external caller`, `request was preempted by a new
+  turn`, `engine torn down before approval resolved`. A closed
+  approval channel reports the teardown race explicitly instead
+  of just "Approval channel closed." Remaining non-user
+  cancellation call sites are tracked in #1541.
+- **`pandoc_convert` validates binary-output requests before
+  resolving the `pandoc` binary** (harvested from PR #1523 by
+  **@muyuliyan**). Hosts without pandoc installed now still get
+  the intended validation error for `target_format = "docx"`
+  without `output_path`, which keeps the CI test independent of
+  runner packages.
+- **Mouse movement no longer leaks xterm tracking bytes into the
+  composer while the model is streaming** (harvested from PR #1533
+  by **@Oliver-ZPLiu**, fixes #1529). When mouse capture is
+  enabled, move/drag events can arrive faster than the TUI needs
+  them during a streaming turn; those stale movement events are now
+  discarded while loading, while click/scroll handling remains
+  active when the TUI is idle.
+- **Resize and successful turn completion avoid blank-frame
+  flicker** (harvested from PR #1537 by **@czf0718**, addresses
+  #1515 and #1539). Resize now performs the viewport reset, clear,
+  and redraw inside a single synchronized-output batch. Successful
+  `TurnComplete` events use the incremental renderer instead of
+  forcing a clear+redraw every time; full repaint remains reserved
+  for interrupted/failed turns and periodic resyncs.
+- **The npm wrapper shows binary-download remediation on the first
+  retryable timeout** (harvested from PR #1538 by **@jieshu666**,
+  addresses #1532). Users behind networks that time out when
+  fetching GitHub Release assets now see the mirror/proxy/Cargo
+  alternatives immediately, and the installer points at the fixed
+  `docs/INSTALL.md#npm-binary-download-times-out` anchor.
+- **`edit_file` states its exact-replacement boundary and warns on
+  multi-match replacements** (from #1516). The tool description and
+  base prompt now steer structural or intertwined edits toward
+  `apply_patch` / `write_file`, while keeping legitimate repeated
+  replacements compatible with an advisory "verify with read_file"
+  hint.
+- **Shift+Enter explicitly steers a running turn.** Plain Enter
+  while busy continues to queue (the agreed default since
+  #1331). Pressing **Shift+Enter** during an in-flight turn
+  routes the draft directly through `engine.steer()` — the same
+  path Ctrl+Enter already drove — without going through the
+  queue at all. When the agent is idle, Shift+Enter still inserts
+  a composer newline as before. Ctrl+Enter remains bound for
+  terminals that swallow the Shift modifier on Enter at the
+  protocol level. (Pattern cross-checked against pi-agent's
+  `streamingBehavior: "steer"` API: see `agent-session.ts:156` —
+  same `Shift+Enter → steer / Plain Enter → queue` split, just
+  surfaced as a keypress instead of a programmatic flag.)
+- **`exec_shell_wait` default timeout raised from 5 s → 30 s.**
+  The 5 s default was fine for "did the command exit yet?" polls
+  but forced models into hand-rolled `while true; do
+  exec_shell_wait …; sleep 30; done` loops for `gh run watch`,
+  long `cargo build`s, and `cargo login`-style interactives. 30 s
+  covers the common case in a single tool call without burning a
+  whole turn on the timeout boundary; the model can still pass
+  any value up to 600 s.
 - **Snapshots no longer try to index a multi-hundred-GB workspace
   on first turn.** Reported by users running `deepseek-tui` inside
   project directories with hundreds of GB of content — datasets,
@@ -3701,7 +3812,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.31...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.32...HEAD
+[0.8.32]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.31...v0.8.32
 [0.8.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.30...v0.8.31
 [0.8.30]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.29...v0.8.30
 [0.8.29]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.28...v0.8.29
