@@ -14,6 +14,18 @@ have to work with?" — and the answer is now closer to "everything
 you'd reach for from a shell, including the document formats the
 real world uses."
 
+### Added
+
+- **`/change` slash command** displays the most recent
+  CHANGELOG.md version section from inside the TUI, so users can
+  see what they just upgraded into without leaving the chat
+  (harvested from PR #1416 by **@zhuangbiaowei**). The command
+  works against the bundled release-notes copy when no workspace
+  CHANGELOG is available, and on non-English locales it requests
+  a model-side translation of the section so localised users see
+  the changelog in their UI language. Pure offline fallback when
+  no API key is configured.
+
 ### Fixed
 
 - **`deepseek update` now refreshes the companion TUI binary
