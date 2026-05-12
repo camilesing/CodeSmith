@@ -473,7 +473,7 @@ impl ToolSpec for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for in-place edits. For multi-hunk or cross-file changes, use `apply_patch` instead. Required: 'path', 'search' (exact text to find), 'replace' (text to substitute)."
+        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` must match exactly, including whitespace and indentation. Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead."
     }
 
     fn input_schema(&self) -> Value {
@@ -486,7 +486,7 @@ impl ToolSpec for EditFileTool {
                 },
                 "search": {
                     "type": "string",
-                    "description": "Text to search for"
+                    "description": "Exact text to search for, including whitespace, indentation, and newlines"
                 },
                 "replace": {
                     "type": "string",
@@ -542,7 +542,15 @@ impl ToolSpec for EditFileTool {
 
         let display = file_path.display().to_string();
         let diff = make_unified_diff(&display, &contents, &updated);
-        let summary = format!("Replaced {count} occurrence(s) in {display}");
+        let summary = if count > 1 {
+            format!(
+                "Replaced {count} occurrence(s) in {display}\n\
+                 Warning: multiple matches were replaced with the same substitution. \
+                 Verify the result with read_file before proceeding."
+            )
+        } else {
+            format!("Replaced 1 occurrence in {display}")
+        };
         let body = if diff.is_empty() {
             format!("{summary}\n(no textual changes)")
         } else {
@@ -1023,7 +1031,7 @@ mod tests {
         // Two concerns in one test: with `prefer_external_pdftotext = true`
         // the dispatch must (a) call pdftotext when present, and (b) return
         // the structured `binary_unavailable` response when pdftotext is
-        // missing — both branches were covered by the pre-v0.8.32 default.
+        // missing.
         // Sync test (calls `read_pdf` directly, not the async ReadFileTool
         // wrapper) so the env-var lock is never held across an `.await`.
         let _lock = DS_CONFIG_PATH_LOCK.lock().unwrap();
@@ -1151,6 +1159,11 @@ mod tests {
 
         assert!(result.success);
         assert!(result.content.contains("2 occurrence(s)"));
+        assert!(
+            result.content.contains("multiple matches were replaced"),
+            "{}",
+            result.content
+        );
         // Inline diff (#505) — the unified diff lands above the summary
         // line so the TUI's diff-aware renderer kicks in.
         assert!(result.content.contains("--- a/"), "{}", result.content);
@@ -1168,6 +1181,28 @@ mod tests {
         // Verify edit was applied
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "hi world hi");
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_single_match_has_no_multi_match_warning() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("single.txt");
+        fs::write(&test_file, "hello world").expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({"path": "single.txt", "search": "hello", "replace": "hi"}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        assert!(result.content.contains("Replaced 1 occurrence"));
+        assert!(!result.content.contains("multiple matches were replaced"));
     }
 
     #[tokio::test]
@@ -1320,6 +1355,8 @@ mod tests {
         assert!(!tool.is_read_only());
         assert!(tool.is_sandboxable());
         assert_eq!(tool.approval_requirement(), ApprovalRequirement::Suggest);
+        assert!(tool.description().contains("exact search/replace"));
+        assert!(tool.description().contains("structural"));
     }
 
     #[test]
@@ -1363,6 +1400,11 @@ mod tests {
             .and_then(|value| value.as_array())
             .expect("edit schema should include required array");
         assert_eq!(required.len(), 3);
+        let search_desc = edit_schema["properties"]["search"]["description"]
+            .as_str()
+            .expect("search description");
+        assert!(search_desc.contains("Exact text"));
+        assert!(search_desc.contains("whitespace"));
 
         let list_schema = ListDirTool.input_schema();
         let required = list_schema
