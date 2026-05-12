@@ -16,6 +16,18 @@ real world uses."
 
 ### Fixed
 
+- **`@`-mention truncation no longer splits multi-byte UTF-8
+  sequences** (#1441, harvested from PR #1495 by
+  **@CrepuscularIRIS / autoghclaw**). When `@`-mentioning a file
+  larger than 128 KB the composer truncated the buffer at exactly
+  `MAX_MENTION_FILE_BYTES`, which on CJK / emoji content landed
+  mid-codepoint and produced a stray U+FFFD at the cut point. The
+  truncator now uses `str::from_utf8(...).error_len()` to detect
+  the incomplete-tail case and rounds down to the last valid
+  codepoint boundary before decoding. Genuinely invalid UTF-8
+  files still surface the "file is not UTF-8" error (the rounding
+  is only applied when the error is an incomplete tail, not a
+  real decoding failure mid-buffer).
 - **vLLM provider: `reasoning_effort = "off"` now actually
   disables thinking on Qwen3 / DeepSeek-R1 servers, cutting
   TTFT from ~13s to ~270ms** (harvested from PR #1480 by
