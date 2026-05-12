@@ -16,6 +16,15 @@ real world uses."
 
 ### Fixed
 
+- **`/sessions` picker no longer shows `<turn_meta>` as the
+  session title** (harvested from PR #1498 by **@wdw8276**).
+  `session_manager::create_saved_session_with_id_and_mode`
+  picked the first text content block off the user message via
+  `find_map`; the engine prepends an internal `<turn_meta>` block
+  ahead of the real user text, so the picker rendered that
+  metadata blob as the session name. Guard added so titles fall
+  through to the actual user input. Existing sessions without
+  the prefix block are unaffected.
 - **Kitty keyboard protocol now activates on Windows (VSCode +
   Windows Terminal), so `Shift+Enter` inserts a newline instead
   of submitting** (#1359, harvested from PR #1483 by

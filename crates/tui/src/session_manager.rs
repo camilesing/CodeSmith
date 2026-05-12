@@ -674,7 +674,9 @@ pub fn create_saved_session_with_id_and_mode(
         .find(|m| m.role == "user")
         .and_then(|m| {
             m.content.iter().find_map(|block| match block {
-                ContentBlock::Text { text, .. } => Some(truncate_title(text, 50)),
+                ContentBlock::Text { text, .. } if !text.starts_with("<turn_meta>") => {
+                    Some(truncate_title(text, 50))
+                }
                 _ => None,
             })
         })
