@@ -14,6 +14,20 @@ have to work with?" — and the answer is now closer to "everything
 you'd reach for from a shell, including the document formats the
 real world uses."
 
+### Fixed
+
+- **Markdown renderer no longer eats underscores inside
+  identifiers** (harvested from PR #1455 by **@tiger-dog**). The
+  inline parser was matching `_italic_` against the underscore in
+  `deepseek_tui` / `foo_bar_baz` and rendering the second half of
+  the identifier in italic, which made transcript snippets that
+  named code symbols read as garbled prose. Both `_italic_` and
+  `*italic*` now apply a CommonMark-style boundary check on the
+  closing delimiter — when the next character is a letter, digit,
+  or underscore, the delimiter is treated as literal text instead
+  of markup. Regression-pinned with cases like `crate deepseek_tui
+  handles approvals` and `look at *not_emphasised*tail`.
+
 ### Added
 
 - **`/change` slash command** displays the most recent
