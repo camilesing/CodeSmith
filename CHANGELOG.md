@@ -16,6 +16,24 @@ real world uses."
 
 ### Fixed
 
+- **Kitty keyboard protocol now activates on Windows (VSCode +
+  Windows Terminal), so `Shift+Enter` inserts a newline instead
+  of submitting** (#1359, harvested from PR #1483 by
+  **@CrepuscularIRIS / autoghclaw**). Root cause: crossterm's
+  `PushKeyboardEnhancementFlags` gates the escape sequence on
+  `is_ansi_code_supported()`, which on Windows queries the
+  console mode rather than the VT capability and unconditionally
+  returns false — so the Kitty push (`\x1b[>1u`) was never
+  written, leaving xterm.js in legacy mode where `Shift+Enter`
+  and `Enter` both produce `\r` and are indistinguishable.
+  `Alt+Enter` / `Ctrl+J` were affected the same way. The fix
+  writes the push and pop escapes directly under `#[cfg(windows)]`,
+  bypassing the capability gate; terminals that don't speak the
+  protocol silently discard the sequences. Also extends the
+  pop-on-exit path to two missed call sites (the `main.rs` panic
+  hook and `external_editor.rs::spawn_editor_for_input`) so a
+  crash or `$EDITOR` invocation can no longer leave the parent
+  shell's keyboard state corrupted.
 - **Approval modal can be collapsed to a one-line banner with
   Tab** (harvested from PR #1455 by **@tiger-dog**). Previously the
   approval prompt rendered as a full-screen takeover that hid the

@@ -13,11 +13,15 @@ use crossterm::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
         EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+// On Windows the push/pop helpers write the escapes directly; crossterm's
+// PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
+// never referenced, so the imports are gated to avoid -D warnings failures.
+#[cfg(not(windows))]
+use crossterm::event::{PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect, Size},
@@ -279,6 +283,14 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // (`REPORT_EVENT_TYPES`, `REPORT_ALL_KEYS_AS_ESCAPE_CODES`) emit
     // release events that the existing key handlers would mis-route
     // as duplicate presses.
+    //
+    // On Windows, crossterm's `PushKeyboardEnhancementFlags` command always
+    // reports the terminal as unsupported (`is_ansi_code_supported` returns
+    // false), so the escape is written directly instead. VSCode's integrated
+    // terminal and Windows Terminal ≥1.17 honour the kitty keyboard protocol
+    // and will correctly disambiguate Shift+Enter from plain Enter once this
+    // sequence is received. Terminals that do not understand it silently
+    // ignore it.
     recover_terminal_modes(&mut stdout, use_mouse_capture, use_bracketed_paste);
     let color_depth = palette::ColorDepth::detect();
     let palette_mode = palette::PaletteMode::detect();
@@ -478,7 +490,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::ClearCheckpoint);
     persistence_actor::persist(PersistRequest::Shutdown);
 
-    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    pop_keyboard_enhancement_flags(terminal.backend_mut());
     execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
@@ -7071,7 +7083,7 @@ fn pause_terminal(
     // to a child process so it doesn't inherit a half-configured input
     // mode. Best-effort — terminals that didn't accept the flags
     // silently ignore the pop. Matches the shutdown and panic paths.
-    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    pop_keyboard_enhancement_flags(terminal.backend_mut());
     execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
@@ -7143,6 +7155,24 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal, sync_output_enabled: bool
 }
 
 fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
+    // crossterm's PushKeyboardEnhancementFlags command unconditionally
+    // returns Unsupported on Windows (is_ansi_code_supported() == false), so
+    // the ANSI escape is written directly on that platform. Modern Windows
+    // terminals (VSCode integrated terminal, Windows Terminal ≥1.17) honour
+    // the kitty keyboard protocol; terminals that do not silently discard it.
+    #[cfg(windows)]
+    {
+        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES.bits();
+        if let Err(err) = write!(writer, "\x1b[>{}u", flags).and_then(|()| writer.flush()) {
+            tracing::debug!(
+                target: "kitty_keyboard",
+                ?err,
+                "PushKeyboardEnhancementFlags direct write failed on Windows"
+            );
+        }
+        return;
+    }
+    #[cfg(not(windows))]
     if let Err(err) = execute!(
         writer,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -7153,6 +7183,29 @@ fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
             "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
         );
     }
+}
+
+pub(crate) fn pop_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
+    // Mirror of push_keyboard_enhancement_flags: crossterm's
+    // PopKeyboardEnhancementFlags also has is_ansi_code_supported() == false
+    // on Windows, so write the pop escape directly to restore the terminal to
+    // its pre-launch keyboard mode.
+    // pub(crate) so the panic hook in main.rs and external_editor.rs can
+    // also call the Windows-aware path instead of using the raw crossterm
+    // execute!() macro which silently no-ops on Windows.
+    #[cfg(windows)]
+    {
+        if let Err(err) = write!(writer, "\x1b[<1u").and_then(|()| writer.flush()) {
+            tracing::debug!(
+                target: "kitty_keyboard",
+                ?err,
+                "PopKeyboardEnhancementFlags direct write failed on Windows"
+            );
+        }
+        return;
+    }
+    #[cfg(not(windows))]
+    let _ = execute!(writer, PopKeyboardEnhancementFlags);
 }
 
 /// Re-establish terminal mode flags. Idempotent and best-effort: each
@@ -7167,6 +7220,13 @@ fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
 /// Excluded by design: raw mode and the alternate screen — those persist
 /// across focus events and are only re-established by `resume_terminal`
 /// after a suspension, which always runs a separate path.
+///
+/// Note: calling this on every FocusGained event pushes one extra Kitty
+/// keyboard mode level onto the terminal's stack without a preceding pop.
+/// After N focus cycles the stack reaches depth N; at shutdown only one
+/// level is popped. On terminals with a finite stack this is benign because
+/// the terminal clears the stack on process exit. A future improvement is
+/// to pop-then-push here so the stack stays at depth ≤1.
 fn recover_terminal_modes<W: Write>(
     writer: &mut W,
     use_mouse_capture: bool,
