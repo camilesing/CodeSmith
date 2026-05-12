@@ -2460,7 +2460,7 @@ impl ToolSpec for ShellWaitTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Timeout in milliseconds (default: 5000)"
+                    "description": "Timeout in milliseconds (default: 30000, max: 600000). Use a higher value for long-running builds, CI watchers, and interactive commands that are expected to keep producing output."
                 },
                 "wait": {
                     "type": "boolean",
@@ -2486,7 +2486,7 @@ impl ToolSpec for ShellWaitTool {
     ) -> Result<ToolResult, ToolError> {
         let task_id = required_task_id(&input)?;
         let wait = optional_bool(&input, "wait", true);
-        let timeout_ms = optional_u64(&input, "timeout_ms", 5_000);
+        let timeout_ms = optional_u64(&input, "timeout_ms", 30_000);
 
         let (delta, wait_canceled) = if wait {
             wait_for_shell_delta_cancellable(context, task_id, timeout_ms).await?

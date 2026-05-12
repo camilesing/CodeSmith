@@ -142,6 +142,7 @@ const UI_STATUS_ANIMATION_MS: u64 = 80;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
+const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
 
@@ -735,6 +736,7 @@ async fn run_event_loop(
     let mut web_config_session: Option<WebConfigSession> = None;
     let mut terminal_paused_at: Option<Instant> = None;
     let mut force_terminal_repaint = false;
+    let mut draws_since_last_full_repaint: u64 = 0;
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -1167,7 +1169,11 @@ async fn run_event_loop(
                         status,
                         error,
                     } => {
-                        force_terminal_repaint = true;
+                        if !matches!(status, crate::core::events::TurnOutcomeStatus::Completed)
+                            || draws_since_last_full_repaint >= PERIODIC_FULL_REPAINT_EVERY_N
+                        {
+                            force_terminal_repaint = true;
+                        }
                         // Finalize any in-flight tool group. Cancellation
                         // marks still-running entries as Failed so the user
                         // sees they were interrupted rather than the spinner
@@ -1840,8 +1846,14 @@ async fn run_event_loop(
             None
         };
         if app.needs_redraw && draw_wait.is_none() {
+            let was_full_repaint = force_terminal_repaint;
             draw_app_frame_inner(terminal, app, force_terminal_repaint)?;
             force_terminal_repaint = false;
+            if was_full_repaint {
+                draws_since_last_full_repaint = 0;
+            } else {
+                draws_since_last_full_repaint = draws_since_last_full_repaint.saturating_add(1);
+            }
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
         }
@@ -1988,7 +2000,6 @@ async fn run_event_loop(
                     );
                 }
 
-                reset_terminal_viewport(terminal, app.synchronized_output_enabled)?;
                 app.handle_resize(final_w, final_h);
                 // #macos-resize: some terminals (macOS Terminal.app, Windows
                 // ConHost) briefly report stale dimensions via
@@ -2004,11 +2015,8 @@ async fn run_event_loop(
                     let backend = terminal.backend_mut();
                     backend.force_size(Size::new(final_w, final_h));
                 }
-                // Draw immediately so the cleared screen gets repainted before
-                // any other events can interleave. Without this, the next
-                // iteration's draw can race against fast follow-up input and
-                // leave the user staring at a blank/partial frame.
-                draw_app_frame(terminal, app)?;
+                draw_app_frame_inner(terminal, app, true)?;
+                draws_since_last_full_repaint = 0;
                 {
                     let backend = terminal.backend_mut();
                     backend.clear_forced_size();
@@ -2020,6 +2028,11 @@ async fn run_event_loop(
             if app.use_mouse_capture
                 && let Event::Mouse(mouse) = evt
             {
+                if app.is_loading
+                    && matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_))
+                {
+                    continue;
+                }
                 let events = handle_mouse_event(app, mouse);
                 if handle_view_events(
                     terminal,
@@ -2838,6 +2851,49 @@ async fn run_event_loop(
                         app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
                     }
                     continue;
+                }
+                // Shift+Enter steers a running turn. When idle, the
+                // normal composer-newline branch below still handles it
+                // as a multiline input gesture.
+                KeyCode::Enter
+                    if app.is_loading
+                        && key.modifiers.contains(KeyModifiers::SHIFT)
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    if let Some(input) = app.submit_input() {
+                        if input.starts_with('/') {
+                            if execute_command_input(
+                                terminal,
+                                app,
+                                &mut engine_handle,
+                                &task_manager,
+                                config,
+                                &mut web_config_session,
+                                &input,
+                            )
+                            .await?
+                            {
+                                return Ok(());
+                            }
+                        } else {
+                            let queued = if let Some(mut draft) = app.queued_draft.take() {
+                                draft.display = input;
+                                draft
+                            } else {
+                                build_queued_message(app, input)
+                            };
+                            if let Err(err) =
+                                steer_user_message(app, &engine_handle, queued.clone()).await
+                            {
+                                app.queue_message(queued);
+                                app.status_message = Some(format!(
+                                    "Steer failed ({err}); queued {} message(s)",
+                                    app.queued_message_count()
+                                ));
+                            }
+                        }
+                    }
                 }
                 // Input handling
                 _ if is_composer_newline_key(key) => {
@@ -6197,10 +6253,6 @@ fn draw_app_frame_inner(
     }
     let _ = terminal.backend_mut().flush();
     result
-}
-
-fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
-    draw_app_frame_inner(terminal, app, false)
 }
 
 /// Pull the latest snapshot of cells / revisions / render options into the
