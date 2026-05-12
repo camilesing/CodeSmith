@@ -8,7 +8,8 @@
 #   2. `npm/deepseek-tui/package.json` `version` matches the workspace
 #      `version` in the root `Cargo.toml`.
 #   3. Internal `deepseek-*` path dependency pins match the workspace version.
-#   4. `Cargo.lock` is in sync with the manifests (`cargo metadata --locked`
+#   4. The TUI crate's packaged changelog copy matches root `CHANGELOG.md`.
+#   5. `Cargo.lock` is in sync with the manifests (`cargo metadata --locked`
 #      fails if not).
 set -euo pipefail
 
@@ -43,7 +44,14 @@ if [[ -n "${internal_dep_drift}" ]]; then
   fail=1
 fi
 
-# 4) Cargo.lock in sync.
+# 4) Packaged TUI changelog copy.
+if ! cmp -s CHANGELOG.md crates/tui/CHANGELOG.md; then
+  echo "::error::crates/tui/CHANGELOG.md must match root CHANGELOG.md for crates.io packaging." >&2
+  echo "Run: cp CHANGELOG.md crates/tui/CHANGELOG.md" >&2
+  fail=1
+fi
+
+# 5) Cargo.lock in sync.
 if ! cargo metadata --locked --format-version 1 --no-deps >/dev/null 2>&1; then
   echo "::error::Cargo.lock is out of sync with the manifests. Run 'cargo update -p deepseek-tui' or 'cargo build' and commit the result." >&2
   fail=1
