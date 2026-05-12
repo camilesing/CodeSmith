@@ -1371,7 +1371,18 @@ async fn run_event_loop(
                             && let Ok(manager) = SessionManager::default_location()
                         {
                             let session = build_session_snapshot(app, &manager);
+                            app.session_title = Some(session.metadata.title.clone());
                             persistence_actor::persist(PersistRequest::Checkpoint(session));
+                        } else if app.session_title.is_none() {
+                            // First turn on a brand-new session: persist hasn't fired yet so
+                            // read the title from the session file if it already exists,
+                            // otherwise fall back to deriving from messages.
+                            let persisted = app
+                                .current_session_id
+                                .as_deref()
+                                .and_then(|id| SessionManager::default_location().ok()?.load_session(id).ok())
+                                .map(|s| s.metadata.title);
+                            app.session_title = persisted.or_else(|| derive_session_title(&app.api_messages));
                         }
                     }
                     EngineEvent::CompactionStarted { message, .. } => {
@@ -6828,6 +6839,7 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.session.turn_cache_history.clear();
     app.current_session_id = Some(session.metadata.id.clone());
     app.session_artifacts = session.artifacts.clone();
+    app.session_title = Some(session.metadata.title.clone());
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;
     if let Some(sp) = session.system_prompt.as_ref() {
@@ -6843,6 +6855,30 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     };
     app.scroll_to_bottom();
     recovered
+}
+
+/// Derive a short display title from the API message list.
+/// Skips the `<turn_meta>` block prepended by the engine and takes the first
+/// real user-text block, truncated to 32 characters.
+fn derive_session_title(messages: &[Message]) -> Option<String> {
+    messages.iter().find(|m| m.role == "user").and_then(|m| {
+        m.content.iter().find_map(|block| match block {
+            ContentBlock::Text { text, .. } if !text.starts_with("<turn_meta>") => {
+                let first_line = text.trim().lines().next().unwrap_or("").trim();
+                if first_line.is_empty() {
+                    return None;
+                }
+                let char_count = first_line.chars().count();
+                let chars: String = first_line.chars().take(32).collect();
+                if char_count > 32 {
+                    Some(format!("{chars}…"))
+                } else {
+                    Some(chars)
+                }
+            }
+            _ => None,
+        })
+    })
 }
 
 fn recover_interrupted_user_tail(messages: &[Message]) -> (Vec<Message>, Option<QueuedMessage>) {
