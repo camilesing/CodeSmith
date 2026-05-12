@@ -120,9 +120,25 @@ fn make_plan(
     approval_required: bool,
     interactive: bool,
 ) -> ToolExecutionPlan {
+    make_plan_at(
+        0,
+        read_only,
+        supports_parallel,
+        approval_required,
+        interactive,
+    )
+}
+
+fn make_plan_at(
+    index: usize,
+    read_only: bool,
+    supports_parallel: bool,
+    approval_required: bool,
+    interactive: bool,
+) -> ToolExecutionPlan {
     ToolExecutionPlan {
-        index: 0,
-        id: "tool-1".to_string(),
+        index,
+        id: format!("tool-{index}"),
         name: "grep_files".to_string(),
         input: json!({"pattern": "test"}),
         caller: None,
@@ -206,6 +222,57 @@ fn parallel_batch_requires_read_only_parallel_tools() {
 
     let plans = vec![make_plan(true, true, false, true)];
     assert!(!should_parallelize_tool_batch(&plans));
+}
+
+#[test]
+fn tool_execution_batches_use_serial_barriers() {
+    let batches = plan_tool_execution_batches(vec![
+        make_plan_at(0, true, true, false, false),
+        make_plan_at(1, true, true, false, false),
+        make_plan_at(2, false, false, true, false),
+        make_plan_at(3, true, true, false, false),
+        make_plan_at(4, true, false, false, false),
+        make_plan_at(5, true, true, false, false),
+        make_plan_at(6, true, true, false, false),
+    ]);
+
+    assert_eq!(batches.len(), 5);
+
+    match &batches[0] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![0, 1]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("first batch should be parallel"),
+    }
+    match &batches[1] {
+        ToolExecutionBatch::Serial(plan) => assert_eq!(plan.index, 2),
+        ToolExecutionBatch::Parallel(_) => panic!("second batch should be serial"),
+    }
+    match &batches[2] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![3]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("third batch should be parallel"),
+    }
+    match &batches[3] {
+        ToolExecutionBatch::Serial(plan) => assert_eq!(plan.index, 4),
+        ToolExecutionBatch::Parallel(_) => panic!("fourth batch should be serial"),
+    }
+    match &batches[4] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![5, 6]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("fifth batch should be parallel"),
+    }
 }
 
 #[test]
