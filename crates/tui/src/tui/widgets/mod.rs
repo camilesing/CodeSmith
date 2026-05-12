@@ -1864,24 +1864,23 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         return Vec::new();
     }
 
-    let workspace_name = app
-        .workspace
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| app.workspace.to_string_lossy().into_owned());
+    let workspace = crate::utils::display_path(&app.workspace);
     let body_width = usize::from(area.width.saturating_sub(8).clamp(24, 72));
     let left_padding = usize::from(area.width.saturating_sub(body_width as u16) / 2);
     let inset = " ".repeat(left_padding);
 
     let body = vec![
         Line::from(Span::styled(
-            format!("{inset}DeepSeek TUI"),
+            format!("{inset}>_ DeepSeek TUI (v{})", env!("CARGO_PKG_VERSION")),
             Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
         )),
+        Line::from(""),
         Line::from(Span::styled(
-            format!("{inset}{workspace_name}  ·  {}", app.model),
+            format!("{inset}model: {}  /model to switch", app.model),
+            Style::default().fg(palette::TEXT_MUTED),
+        )),
+        Line::from(Span::styled(
+            format!("{inset}directory: {workspace}"),
             Style::default().fg(palette::TEXT_MUTED),
         )),
     ];
@@ -2186,10 +2185,10 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::{
         ApprovalWidget, COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable,
-        SlashMenuEntry, apply_selection_to_line, composer_height, composer_max_height,
-        composer_min_input_rows, composer_top_padding, compute_takeover_area, cursor_row_col,
-        layout_input, pad_lines_to_bottom, placeholder_visual_lines, should_render_empty_state,
-        slash_completion_hints, wrap_input_lines, wrap_text,
+        SlashMenuEntry, apply_selection_to_line, build_empty_state_lines, composer_height,
+        composer_max_height, composer_min_input_rows, composer_top_padding, compute_takeover_area,
+        cursor_row_col, layout_input, pad_lines_to_bottom, placeholder_visual_lines,
+        should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::localization::Locale;
@@ -2697,6 +2696,29 @@ mod tests {
             content: "hello".to_string(),
         });
         assert!(!should_render_empty_state(&app));
+    }
+
+    #[test]
+    fn empty_state_shows_startup_context() {
+        let mut app = create_test_app();
+        app.workspace = PathBuf::from("/tmp/deepseek-test-workspace");
+        app.model = "deepseek-v4-pro".to_string();
+
+        let lines = build_empty_state_lines(&app, Rect::new(0, 0, 100, 20));
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains(&format!(">_ DeepSeek TUI (v{})", env!("CARGO_PKG_VERSION"))));
+        assert!(rendered.contains("model: deepseek-v4-pro  /model to switch"));
+        assert!(rendered.contains("directory: /tmp/deepseek-test-workspace"));
     }
 
     /// Probe: confirm `cell.lines_with_motion` returns no Line whose total

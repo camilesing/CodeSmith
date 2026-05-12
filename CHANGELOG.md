@@ -153,6 +153,13 @@ real world uses."
 
 ### Added
 
+- **Startup empty-state shows useful context instead of
+  repeating the header** (harvested from PR #1444 by
+  **@reidliu41**). The center of the welcome view used to repeat
+  information already displayed in the header and footer. It now
+  shows the build version, the active model with a `/model`
+  hint, and the current working directory so first-time users
+  have somewhere to look while they decide what to type.
 - **Opt-in `v4-best-practices` bundled skill** (harvested from
   PR #1448 by **@SamhandsomeLee**). A single 50-line `SKILL.md`
   encoding three V4-specific workflow rules for multi-step
