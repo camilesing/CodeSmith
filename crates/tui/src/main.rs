@@ -2180,6 +2180,29 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         }
     }
 
+    match crate::dependencies::resolve_tesseract() {
+        Some(_) => println!(
+            "  {} tesseract: present → image_ocr tool registered",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+        ),
+        None => {
+            println!("  {} tesseract: not found (optional)", "·".dimmed(),);
+            println!(
+                "    image_ocr tool is NOT advertised to the model. Install tesseract to enable:"
+            );
+            match std::env::consts::OS {
+                "macos" => println!("      brew install tesseract"),
+                "linux" => println!(
+                    "      sudo apt install tesseract-ocr    (Debian/Ubuntu) — or your distro's equivalent"
+                ),
+                "windows" => println!("      winget install UB-Mannheim.TesseractOCR"),
+                other => {
+                    println!("      install tesseract for {other} from tesseract-ocr.github.io")
+                }
+            }
+        }
+    }
+
     // PDF reader: pure-Rust `pdf-extract` is the v0.8.32 default, so
     // `pdftotext` is no longer required for `read_file` to handle PDFs.
     // We still surface its presence (a) so users with column-heavy PDFs

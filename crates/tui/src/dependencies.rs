@@ -117,6 +117,32 @@ pub fn resolve_pdftotext() -> Option<String> {
         .clone()
 }
 
+/// Resolve `tesseract` (OCR engine) once per process. Used by
+/// the `image_ocr` tool to decide whether to register itself with
+/// the model. Tesseract is the de-facto open-source OCR engine and
+/// ships as a single binary on every platform we support, so the
+/// candidate list is just `tesseract`.
+pub fn resolve_tesseract() -> Option<String> {
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            if probe_executable("tesseract") {
+                tracing::info!(
+                    target: "tool_dependencies",
+                    "Resolved tesseract binary for image_ocr",
+                );
+                Some("tesseract".to_string())
+            } else {
+                tracing::warn!(
+                    target: "tool_dependencies",
+                    "tesseract binary not found; image_ocr tool will not be registered",
+                );
+                None
+            }
+        })
+        .clone()
+}
+
 /// Resolve `pandoc` (universal document converter) once per
 /// process. Used by the `pandoc_convert` tool to decide whether
 /// to register itself with the model. Pandoc is a single-binary

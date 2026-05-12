@@ -39,6 +39,21 @@ real world uses."
 
 ### Added
 
+- **`image_ocr` tool — extract text from images via local
+  tesseract.** Lets the model OCR a screenshot, scanned receipt,
+  whiteboard photo, or image-only PDF the user drops into the
+  workspace, without bouncing through `exec_shell`. Spawns
+  `tesseract <image> -` and returns the recognised text inline;
+  no file is written. PNG / JPEG / TIFF inputs supported.
+  Registration is gated on `dependencies::resolve_tesseract()`;
+  when tesseract is missing the tool isn't advertised, so the
+  model never tries to call an OCR engine the host can't run.
+  `deepseek doctor` reports tesseract status alongside the other
+  external-binary dependencies with platform-aware install hints
+  (`brew install tesseract` / `apt install tesseract-ocr` /
+  `winget install UB-Mannheim.TesseractOCR`). For non-default
+  language packs or PSM modes, users can still drop into
+  `exec_shell` with the full tesseract CLI surface.
 - **`pandoc_convert` tool — convert documents between formats via
   the local pandoc binary.** Pandoc is the Swiss Army knife the
   real world uses for moving prose around — Markdown to HTML,
