@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.31] - 2026-05-12
+
 A "tools that actually work" release. `code_execution` no longer
 fails on Windows hosts where `python3` isn't on `PATH` — we probe
 for the interpreter at catalog-build time and only advertise the
@@ -3308,7 +3310,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.30...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.31...HEAD
+[0.8.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.30...v0.8.31
 [0.8.30]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.29...v0.8.30
 [0.8.29]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.28...v0.8.29
 [0.8.28]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.27...v0.8.28
