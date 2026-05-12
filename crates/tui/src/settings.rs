@@ -360,19 +360,13 @@ impl Settings {
                 .unwrap_or("en")
                 .to_string();
             s.background_color = normalize_optional_background_color(s.background_color.as_deref());
-            // Drop unknown theme names so a stale settings file with a typo
-            // doesn't pin the app to whatever the default happens to be.
-            // `from_name` is intentionally permissive about case + aliases.
-            if crate::palette::ThemeId::from_name(&s.theme).is_none() {
-                s.theme = "system".to_string();
-            } else {
-                s.theme = s.theme.trim().to_ascii_lowercase();
-                // Canonicalize aliases (e.g. "whale" -> "dark") so the saved
-                // form matches the picker's stored value.
-                if let Some(id) = crate::palette::ThemeId::from_name(&s.theme) {
-                    s.theme = id.name().to_string();
-                }
-            }
+            // Canonicalize the theme value: unknown / typo → "system"; an
+            // alias (e.g. "whale") collapses to its canonical name. Single
+            // `from_name` pass handles both — the previous version called
+            // it twice.
+            s.theme = crate::palette::ThemeId::from_name(&s.theme)
+                .map(|id| id.name().to_string())
+                .unwrap_or_else(|| "system".to_string());
             s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
             s
         };

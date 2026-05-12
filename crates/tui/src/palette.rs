@@ -678,12 +678,19 @@ pub const fn theme_remap_active(theme: ThemeId) -> bool {
 /// Remap a foreground color for a community theme preset. Mirrors the
 /// structure of [`adapt_fg_for_palette_mode`] — same source set, different
 /// destinations sourced from the preset's [`UiTheme`].
+///
+/// The `ui` argument is the *active* UiTheme as carried on `App` —
+/// `ThemeId.ui_theme()` with the user's `background_color` override
+/// already applied. Passing it through (rather than re-resolving from
+/// `theme` inside this function) preserves that override; otherwise a
+/// user combining `background_color = "#..."` with a community theme
+/// would see their override silently overwritten by the preset's
+/// surface_bg on every cell remap.
 #[must_use]
-pub fn adapt_fg_for_theme(color: Color, theme: ThemeId) -> Color {
+pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     if !theme_remap_active(theme) {
         return color;
     }
-    let ui = theme.ui_theme();
 
     if color == TEXT_BODY || color == SELECTION_TEXT || color == Color::White {
         ui.text_body
@@ -715,13 +722,13 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId) -> Color {
     }
 }
 
-/// Remap a background color for a community theme preset.
+/// Remap a background color for a community theme preset. See the
+/// `ui` note on [`adapt_fg_for_theme`] — same contract here.
 #[must_use]
-pub fn adapt_bg_for_theme(color: Color, theme: ThemeId) -> Color {
+pub fn adapt_bg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     if !theme_remap_active(theme) {
         return color;
     }
-    let ui = theme.ui_theme();
 
     if color == DEEPSEEK_INK || color == BACKGROUND_DARK {
         ui.surface_bg

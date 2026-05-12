@@ -18,7 +18,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::palette::{SELECTABLE_THEMES, ThemeId};
+use crate::palette::{SELECTABLE_THEMES, ThemeId, UiTheme};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
 pub struct ThemePickerView {
@@ -26,6 +26,10 @@ pub struct ThemePickerView {
     /// Settings name of the theme that was active when the picker opened.
     /// Used to revert on Esc.
     original_name: String,
+    /// Cached UiTheme for `ThemeId::System`, captured once at construction
+    /// so the per-frame render doesn't re-invoke `UiTheme::detect()` (which
+    /// reads `COLORFGBG`) on every keystroke.
+    system_ui_theme: UiTheme,
 }
 
 impl ThemePickerView {
@@ -40,6 +44,7 @@ impl ThemePickerView {
         Self {
             selected,
             original_name,
+            system_ui_theme: UiTheme::detect(),
         }
     }
 
@@ -48,6 +53,16 @@ impl ThemePickerView {
             .get(self.selected)
             .copied()
             .unwrap_or(ThemeId::System)
+    }
+
+    /// Resolve a theme to a `UiTheme`, returning the cached `System`
+    /// resolution to avoid repeated env-var reads inside `render`.
+    fn ui_theme_for(&self, id: ThemeId) -> UiTheme {
+        if matches!(id, ThemeId::System) {
+            self.system_ui_theme
+        } else {
+            id.ui_theme()
+        }
     }
 
     fn preview_event(&self) -> ViewAction {
@@ -117,13 +132,15 @@ impl ModalView for ThemePickerView {
                 self.selected = SELECTABLE_THEMES.len().saturating_sub(1);
                 self.preview_event()
             }
-            // Number shortcuts: 1..=9 → jump to that row (1-indexed).
+            // Number shortcuts: '1'..='9' jump to that row (1-indexed).
+            // '0' is rejected explicitly — saturating_sub would otherwise
+            // collapse it onto row 0, which is unintuitive.
             KeyCode::Char(c)
-                if c.is_ascii_digit()
+                if matches!(c, '1'..='9')
                     && !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                let idx = (c as usize).saturating_sub('1' as usize);
+                let idx = (c as usize) - ('1' as usize);
                 if idx < SELECTABLE_THEMES.len() {
                     self.selected = idx;
                     self.preview_event()
@@ -136,10 +153,21 @@ impl ModalView for ThemePickerView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let popup_width = 78.min(area.width.saturating_sub(4)).max(52);
-        // 1 title row + 1 spacer + N options + 2 spacer + 1 swatch row
+        // Modal must always fit inside `area`. The old `.max(52) / .max(10)`
+        // floors could produce dimensions larger than the available area on
+        // very small terminals (or split-pane setups), which then made the
+        // centering arithmetic underflow and ratatui assert. Take a
+        // soft-preferred size and clamp it strictly to `area`.
+        let popup_width = 78u16.min(area.width.saturating_sub(4));
+        // 1 title + 1 spacer + N rows + spacer + bottom hint
         let needed_height = (SELECTABLE_THEMES.len() as u16).saturating_add(9);
-        let popup_height = needed_height.min(area.height.saturating_sub(4)).max(10);
+        let popup_height = needed_height.min(area.height.saturating_sub(4));
+
+        if popup_width == 0 || popup_height == 0 {
+            // Nothing sensible to draw — the host's caller has already
+            // cleared the area, so we just return.
+            return;
+        }
 
         let popup_area = Rect {
             x: area.x + (area.width.saturating_sub(popup_width)) / 2,
@@ -153,7 +181,7 @@ impl ModalView for ThemePickerView {
         // skin the modal chrome. That way the popup itself shifts color as
         // the cursor moves, matching what the background will look like
         // after Enter.
-        let live = self.current().ui_theme();
+        let live = self.ui_theme_for(self.current());
 
         Clear.render(popup_area, buf);
 
@@ -215,8 +243,9 @@ impl ModalView for ThemePickerView {
 
             // 3-cell color swatch per row using the candidate theme's own
             // accent + panel + border colors so the picker doubles as a
-            // legend.
-            let row_theme = id.ui_theme();
+            // legend. Use the cached resolver so `System` doesn't repeat
+            // `UiTheme::detect()`.
+            let row_theme = self.ui_theme_for(id);
             let swatch = vec![
                 Span::styled("  ", Style::default().bg(row_theme.surface_bg)),
                 Span::styled("  ", Style::default().bg(row_theme.panel_bg)),
@@ -334,5 +363,35 @@ mod tests {
             selected_name(&action),
             Some(ThemeId::CatppuccinMocha.name())
         );
+    }
+
+    #[test]
+    fn digit_zero_is_rejected_not_remapped_to_row_zero() {
+        let mut v = ThemePickerView::new("dracula".to_string());
+        let before = v.selected;
+        let action = v.handle_key(key(KeyCode::Char('0')));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(v.selected, before, "'0' should not move the cursor");
+    }
+
+    #[test]
+    fn render_does_not_panic_on_zero_sized_area() {
+        // The picker historically panicked here via .max(W).max(H) floors
+        // that produced dimensions larger than the available area, then
+        // underflowed the centering arithmetic.
+        let v = ThemePickerView::new("system".to_string());
+        let outer = ratatui::layout::Rect::new(0, 0, 10, 10);
+        let area = ratatui::layout::Rect::new(0, 0, 0, 0);
+        let mut buf = ratatui::buffer::Buffer::empty(outer);
+        v.render(area, &mut buf);
+    }
+
+    #[test]
+    fn render_does_not_panic_on_tiny_area() {
+        // 20×6 is smaller than every soft floor the picker prefers.
+        let v = ThemePickerView::new("system".to_string());
+        let area = ratatui::layout::Rect::new(0, 0, 20, 6);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        v.render(area, &mut buf);
     }
 }

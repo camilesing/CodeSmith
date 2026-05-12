@@ -5272,13 +5272,11 @@ async fn apply_command_result(
             }
             AppAction::OpenThemePicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::ThemePicker) {
-                    // Capture the persisted theme name so Esc can revert
-                    // through the same ConfigUpdated channel. Falling back
-                    // to "system" when Settings::load fails matches the
-                    // app-startup default.
-                    let original = crate::settings::Settings::load()
-                        .map(|s| s.theme)
-                        .unwrap_or_else(|_| "system".to_string());
+                    // Capture the active theme name straight from `app` so
+                    // Esc can revert through the same ConfigUpdated channel.
+                    // Avoids re-reading settings.toml from disk on every
+                    // `/theme` invocation.
+                    let original = app.theme_id.name().to_string();
                     app.view_stack
                         .push(crate::tui::theme_picker::ThemePickerView::new(original));
                 }
@@ -6180,7 +6178,7 @@ fn draw_app_frame_inner(
     full_repaint: bool,
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
-    terminal.backend_mut().set_theme(app.theme_id);
+    terminal.backend_mut().set_theme(app.theme_id, app.ui_theme);
     // DEC 2026 wrapping is on by default but can be turned off for
     // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
     // whole viewport on every wrapped frame instead of deferring as the
@@ -6464,7 +6462,12 @@ async fn handle_view_events(
                 persist,
             } => {
                 let result = commands::set_config_value(app, &key, &value, persist);
-                if let Some(msg) = result.message {
+                // Only surface the "key = value" confirmation when the
+                // change is being persisted. Live-preview events
+                // (`persist: false`, e.g. arrow keys in the theme picker)
+                // fire on every navigation tick and would otherwise spam
+                // a `System` cell into the transcript per row visited.
+                if persist && let Some(msg) = result.message {
                     app.add_message(HistoryCell::System { content: msg });
                 }
 
