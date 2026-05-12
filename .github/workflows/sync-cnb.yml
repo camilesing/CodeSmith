@@ -88,7 +88,10 @@ jobs:
 
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
-            push_with_retry "tag ${TAG}" "refs/tags/${TAG}:refs/tags/${TAG}"
+            # Release tags may be repointed while rebuilding a failed
+            # publish attempt. CNB is a one-way mirror, so force the tag
+            # there to match GitHub instead of failing on "already exists".
+            push_with_retry "tag ${TAG}" "+refs/tags/${TAG}:refs/tags/${TAG}"
           elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
             # Plain --force. The CNB mirror is one-way by design —
             # nothing else pushes to it, so there's no contributor work
