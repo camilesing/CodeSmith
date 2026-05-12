@@ -16,6 +16,15 @@ real world uses."
 
 ### Fixed
 
+- **Approval modal can be collapsed to a one-line banner with
+  Tab** (harvested from PR #1455 by **@tiger-dog**). Previously the
+  approval prompt rendered as a full-screen takeover that hid the
+  transcript behind it, so users had to dismiss the modal just to
+  remember which tool call they were being asked to approve. Tab
+  now toggles between the takeover card and a single-line bottom
+  banner — the rest of the conversation stays visible while the
+  decision is pending. Tab again restores the full card; the
+  selection state is preserved across the toggle.
 - **Markdown renderer no longer eats underscores inside
   identifiers** (harvested from PR #1455 by **@tiger-dog**). The
   inline parser was matching `_italic_` against the underscore in
