@@ -153,6 +153,14 @@ real world uses."
 
 ### Added
 
+- **Opt-in `v4-best-practices` bundled skill** (harvested from
+  PR #1448 by **@SamhandsomeLee**). A single 50-line `SKILL.md`
+  encoding three V4-specific workflow rules for multi-step
+  thinking-mode tasks. Each rule maps to a concrete observable
+  failure class. Discovered through the existing
+  `crates/tui/assets/skills/...` mechanism alongside the
+  `skill-creator` skill — not enabled by default; users opt in
+  via the standard `/skills` UI.
 - **`image_analyze` tool — vision-model image understanding**
   (harvested from PR #1467 by **@MMMarcinho**). Sends an image
   file to an OpenAI-compatible vision endpoint and returns the
