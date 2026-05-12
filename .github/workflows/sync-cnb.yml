@@ -90,11 +90,17 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/}"
             push_with_retry "tag ${TAG}" "refs/tags/${TAG}:refs/tags/${TAG}"
           elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
-            # --force-with-lease so an unexpected diverged state on CNB
-            # surfaces as a failure (rather than silently overwriting).
-            # The mirror is one-way; if CNB diverges, that's a bug worth
-            # investigating manually before pushing again.
-            push_with_retry "main" HEAD:refs/heads/main --force-with-lease
+            # Plain --force. The CNB mirror is one-way by design —
+            # nothing else pushes to it, so there's no contributor work
+            # to protect against. `--force-with-lease` would be safer
+            # in a multi-writer scenario, but in our setup the lease
+            # check requires `refs/remotes/cnb/main` to exist in the
+            # runner's local clone, which it never does (we add `cnb`
+            # as a fresh remote in this step and don't fetch first).
+            # That made the lease check spuriously fail with
+            # `! [rejected] HEAD -> main (stale info)` even when CNB
+            # was actually behind GitHub.
+            push_with_retry "main" HEAD:refs/heads/main --force
           else
             # workflow_dispatch from a non-main branch — push that branch
             # too, but never force. Useful for testing the mirror against
