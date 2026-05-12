@@ -16,6 +16,24 @@ real world uses."
 
 ### Fixed
 
+- **TUI input no longer freezes while long-running shell jobs
+  flood stdout** (#1299, harvested from PR #1494 by
+  **@CrepuscularIRIS / autoghclaw**). The job-panel refresh path
+  was calling `full_output()` from inside the `ShellManager`
+  mutex, which cloned the entire accumulated stdout/stderr buffer
+  every 2.5 seconds. For browser-automation or large-build jobs
+  the buffer grew unboundedly; cloning held the mutex for
+  O(total_bytes) time, starving the `crossterm::event::poll` loop
+  and dropping keystrokes. The refresh now reads only the last
+  `max_tail_chars * 4` bytes under the lock (lock hold time is
+  O(1) regardless of total output volume) and decodes those into
+  a tail string for display. `stdout_len` / `stderr_len` still
+  report the true total byte counts so no caller invariant
+  breaks. Also tightens `take_delta_from_buffer` to slice
+  `[cursor..total]` inside the lock guard instead of cloning the
+  whole buffer first, and skips UTF-8 continuation bytes at
+  `tail_start` so `from_utf8_lossy` never emits a leading U+FFFD
+  in the job panel.
 - **`@`-mention truncation no longer splits multi-byte UTF-8
   sequences** (#1441, harvested from PR #1495 by
   **@CrepuscularIRIS / autoghclaw**). When `@`-mentioning a file
