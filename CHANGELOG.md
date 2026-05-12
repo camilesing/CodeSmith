@@ -49,6 +49,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a 50 KB file in 16 KB slices instead of dragging the whole thing
   into the conversation context on every turn. PDFs continue to use
   `pages`; `start_line` / `max_lines` apply to text files only.
+- **MCP HTTP servers accept custom headers** for authentication
+  (#1454, harvested from PR #1456 by **@Oliver-ZPLiu**). Mirrors the
+  `headers` field that Claude Code, Codex, and OpenCode already
+  accept in their MCP config — add e.g.
+  `"headers": { "Authorization": "Bearer ${HF_TOKEN}" }` under any
+  HTTP server entry in `~/.deepseek/mcp.json` and the headers are
+  sent on every Streamable HTTP request. Headers are sent
+  literally — env-var interpolation is a follow-up, so tokens
+  pasted directly into mcp.json live there as plain text. The
+  Streamable HTTP transport filters out empty keys, framing
+  overrides (`Accept`, `Content-Type`), and CR/LF in values
+  (response-splitting defense) so a single bad entry can't break
+  protocol negotiation or smuggle a header through a misbehaving
+  proxy. Stdio servers (`command`-based) and the legacy SSE
+  transport ignore the field; SSE coverage is a follow-up.
 
 ## [0.8.30] - 2026-05-11
 
