@@ -30,6 +30,7 @@ mod core;
 mod cost_status;
 mod cycle_manager;
 mod deepseek_theme;
+mod dependencies;
 mod error_taxonomy;
 mod eval;
 mod execpolicy;
@@ -2088,6 +2089,108 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 "·".dimmed()
             );
         }
+    }
+
+    // Tool dependencies — probe external binaries that individual
+    // tools rely on (Python for code_execution, pdftotext for PDF
+    // reading) so users see explicit ✓/✗ rather than the tool failing
+    // at execution time with "program not found". New in v0.8.31.
+    println!();
+    println!("{}", "Tool Dependencies:".bold());
+
+    match crate::dependencies::resolve_python_interpreter() {
+        Some(name) => println!(
+            "  {} Python: {} → code_execution tool registered",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            name
+        ),
+        None => {
+            println!(
+                "  {} Python: not found (tried {:?})",
+                "✗".truecolor(red_r, red_g, red_b),
+                crate::dependencies::PYTHON_CANDIDATES,
+            );
+            println!("    code_execution tool is NOT advertised to the model on this install.");
+            println!("    Install Python 3 and ensure one of those names is on PATH:");
+            match std::env::consts::OS {
+                "macos" => {
+                    println!("      brew install python@3.12   (or download from python.org)")
+                }
+                "linux" => println!(
+                    "      sudo apt install python3    (Debian/Ubuntu) — or your distro's equivalent"
+                ),
+                "windows" => {
+                    println!("      winget install Python.Python.3   (or download from python.org)")
+                }
+                other => println!("      install Python 3 for {other} from python.org"),
+            }
+        }
+    }
+
+    match crate::dependencies::resolve_pdftotext() {
+        Some(_) => println!(
+            "  {} pdftotext: available → read_file extracts PDF text",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+        ),
+        None => {
+            println!(
+                "  {} pdftotext: not found → read_file falls back to a not-supported error for .pdf files",
+                "!".truecolor(sky_r, sky_g, sky_b),
+            );
+            println!("    (Text files still work without pdftotext; this only affects PDF reads.)");
+            match std::env::consts::OS {
+                "macos" => println!("    Install via: brew install poppler"),
+                "linux" => {
+                    println!("    Install via: sudo apt install poppler-utils   (Debian/Ubuntu)")
+                }
+                "windows" => println!(
+                    "    Install Poppler for Windows from https://blog.alivate.com.au/poppler-windows/"
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    // Terminal-quirk overrides currently active. Mirrors the env
+    // signals checked by `Settings::apply_env_overrides` so users
+    // can see at a glance which a11y/compat overrides fired.
+    println!();
+    println!("{}", "Terminal Quirks:".bold());
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    let term_program_lc = term_program.to_ascii_lowercase();
+    let mut any_quirk = false;
+    if matches!(term_program.as_str(), "vscode" | "ghostty") {
+        println!(
+            "  {} TERM_PROGRAM={} → low_motion + fancy_animations=false (auto)",
+            "•".truecolor(sky_r, sky_g, sky_b),
+            term_program
+        );
+        any_quirk = true;
+    }
+    if term_program == "Termius"
+        || std::env::var_os("SSH_CLIENT").is_some_and(|v| !v.is_empty())
+        || std::env::var_os("SSH_TTY").is_some_and(|v| !v.is_empty())
+    {
+        println!(
+            "  {} SSH/Termius session → low_motion + fancy_animations=false (auto, #1433)",
+            "•".truecolor(sky_r, sky_g, sky_b)
+        );
+        any_quirk = true;
+    }
+    if term_program_lc.contains("ptyxis")
+        || std::env::var_os("PTYXIS_VERSION").is_some_and(|v| !v.is_empty())
+    {
+        println!(
+            "  {} Ptyxis detected → synchronized_output=off (auto, v0.8.31)",
+            "•".truecolor(sky_r, sky_g, sky_b)
+        );
+        any_quirk = true;
+    }
+    if !any_quirk {
+        println!(
+            "  {} no env-driven terminal-quirk overrides active",
+            "·".dimmed()
+        );
     }
 
     // Platform and sandbox checks

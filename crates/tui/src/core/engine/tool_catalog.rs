@@ -120,7 +120,17 @@ pub(super) fn build_model_tool_catalog(
 }
 
 pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
-    if mode != AppMode::Plan && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME) {
+    // code_execution depends on a locally-installed Python interpreter
+    // (python3 / python / py -3). Before v0.8.31, the tool was always
+    // advertised and would fail at execution time on Windows where
+    // `python3` isn't on PATH — the model treated the tool as reliable
+    // once it appeared in the catalog. We now probe at catalog-build
+    // time and only advertise when an interpreter resolves. See
+    // `crate::dependencies::resolve_python_interpreter` for the probe.
+    if mode != AppMode::Plan
+        && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME)
+        && crate::dependencies::resolve_python_interpreter().is_some()
+    {
         catalog.push(Tool {
             tool_type: Some(CODE_EXECUTION_TOOL_TYPE.to_string()),
             name: CODE_EXECUTION_TOOL_NAME.to_string(),
@@ -586,9 +596,45 @@ pub(super) async fn execute_code_execution_tool(
     workspace: &Path,
 ) -> Result<ToolResult, ToolError> {
     let code = required_str(input, "code")?;
-    let mut cmd = tokio::process::Command::new("python3");
-    cmd.arg("-c");
-    cmd.arg(code);
+
+    // Resolve the locally-installed Python interpreter we cached at
+    // catalog-build time. If it's absent now (somehow registered but
+    // disappeared between startup and this call — concurrent uninstall,
+    // PATH change, etc.) we fail fast with a clear message rather than
+    // dropping into `tokio::process::Command::new("python3")` and
+    // surfacing the cryptic "program not found" the contributor
+    // originally hit on Windows.
+    let interpreter = crate::dependencies::resolve_python_interpreter().ok_or_else(|| {
+        ToolError::execution_failed(format!(
+            "code_execution: no Python interpreter found on PATH (tried {:?}). \
+             Install Python 3 and ensure one of these is on PATH, then restart \
+             deepseek-tui.",
+            crate::dependencies::PYTHON_CANDIDATES,
+        ))
+    })?;
+    let (program, args) = crate::dependencies::split_interpreter_spec(&interpreter);
+
+    // Write the code to a temp file and execute it as a script rather
+    // than passing it via `-c "<code>"`. Reasons:
+    //   * `-c` has length limits (argv) on Windows.
+    //   * Multiline code with quote nesting is brittle through `-c`.
+    //   * Tracebacks reference a real filename instead of `<string>`,
+    //     so the model can interpret line numbers correctly.
+    // Tempfile lives only for the duration of this execution; Drop
+    // removes it. We use `.py` so any shebang / encoding-sniffer
+    // logic in the interpreter behaves normally.
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| ToolError::execution_failed(format!("tempdir failed: {e}")))?;
+    let script_path = temp_dir.path().join("code_execution.py");
+    tokio::fs::write(&script_path, code)
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("tempfile write failed: {e}")))?;
+
+    let mut cmd = tokio::process::Command::new(&program);
+    for arg in &args {
+        cmd.arg(arg);
+    }
+    cmd.arg(&script_path);
     cmd.current_dir(workspace);
 
     let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())

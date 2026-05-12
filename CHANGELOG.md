@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`code_execution` no longer fails with "program not found" on
+  Windows** (and any other host without `python3` on `PATH`). Before
+  v0.8.31 the tool hardcoded `python3` and was unconditionally
+  advertised in Agent / YOLO modes — so the model would call it,
+  spawn would fail, and the error surfaced as a generic tool failure
+  with no upstream hint. The fix probes for a Python interpreter
+  (`python3` → `python` → `py -3`) at catalog-build time, caches the
+  resolved interpreter, and only advertises `code_execution` when one
+  resolves. On hosts with no Python the tool is not registered at all
+  — the model never sees a tool it can't actually run. Reported by a
+  Windows contributor; resolver lives at
+  `crates/tui/src/dependencies.rs` and is also surfaced by
+  `deepseek doctor`. Folds in the contributor's "write code to a
+  tempfile and run the file" suggestion at the same time, so multiline
+  code with quote nesting no longer round-trips through `python3 -c`.
 - **Termius and every SSH session auto-enable low-motion**
   (#1433, harvested from PR #1479 by **@CrepuscularIRIS / autoghclaw**).
   Termius desktop sets `TERM_PROGRAM=Termius`; sshd exports
@@ -39,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`deepseek doctor` now reports tool-dependency status.** A new
+  "Tool Dependencies" section lists which external binaries the
+  registered tools rely on, with ✓ when present and ✗ + an
+  install hint when missing. Today this covers the Python
+  interpreter (`code_execution`) and `pdftotext` (`read_file` PDF
+  path). A separate "Terminal Quirks" section shows which env-driven
+  auto-overrides (VS Code / Ghostty / Termius / SSH / Ptyxis) are
+  currently active so users can see at a glance why a particular
+  rendering compromise is in effect. Foundation for surfacing future
+  tool dependencies as the toolset grows.
 - **New `synchronized_output` setting** controls whether the renderer
   wraps each frame in DEC mode 2026 synchronized output. Accepts
   `auto` (default; respect the Ptyxis env opt-out), `on` (always emit
