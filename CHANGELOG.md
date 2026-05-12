@@ -3185,7 +3185,35 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.30...HEAD
+[0.8.30]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.29...v0.8.30
+[0.8.29]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.28...v0.8.29
+[0.8.28]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.27...v0.8.28
+[0.8.27]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.26...v0.8.27
+[0.8.26]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.25...v0.8.26
+[0.8.25]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.24...v0.8.25
+[0.8.24]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.23...v0.8.24
+[0.8.23]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.22...v0.8.23
+[0.8.22]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.21...v0.8.22
+[0.8.21]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.20...v0.8.21
+[0.8.20]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.19...v0.8.20
+[0.8.19]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.18...v0.8.19
+[0.8.18]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.17...v0.8.18
+[0.8.17]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.16...v0.8.17
+[0.8.16]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.15...v0.8.16
+[0.8.15]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.13...v0.8.15
+[0.8.13]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.12...v0.8.13
+[0.8.12]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.11...v0.8.12
+[0.8.11]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.10...v0.8.11
+[0.8.10]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.8...v0.8.10
+[0.8.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.7...v0.8.8
+[0.8.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.6...v0.8.7
+[0.8.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.5...v0.8.6
+[0.8.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.4...v0.8.5
+[0.8.4]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.7...v0.7.8
