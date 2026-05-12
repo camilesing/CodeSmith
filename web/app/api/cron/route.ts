@@ -57,6 +57,8 @@ export async function GET(req: Request) {
   const agentEnv: AgentEnv = {
     CURATED_KV: env.CURATED_KV,
     DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY,
+    DEEPSEEK_BASE_URL: env.DEEPSEEK_BASE_URL ?? process.env.DEEPSEEK_BASE_URL,
+    DEEPSEEK_MODEL: env.DEEPSEEK_MODEL ?? process.env.DEEPSEEK_MODEL,
     GITHUB_TOKEN: env.GITHUB_TOKEN,
     CRON_SECRET: env.CRON_SECRET,
     GITHUB_REPO: env.GITHUB_REPO,

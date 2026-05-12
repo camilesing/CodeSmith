@@ -16,6 +16,8 @@ interface KVNamespace {
 interface CloudflareEnv {
   CURATED_KV?: KVNamespace;
   DEEPSEEK_API_KEY?: string;
+  DEEPSEEK_BASE_URL?: string;
+  DEEPSEEK_MODEL?: string;
   GITHUB_TOKEN?: string;
   CRON_SECRET?: string;
   GITHUB_REPO?: string;
@@ -29,6 +31,8 @@ export async function getEnv(): Promise<CloudflareEnv> {
   } catch {
     return {
       DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+      DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL,
+      DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL,
       GITHUB_TOKEN: process.env.GITHUB_TOKEN,
       CRON_SECRET: process.env.CRON_SECRET,
       GITHUB_REPO: process.env.GITHUB_REPO,

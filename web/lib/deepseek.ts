@@ -12,9 +12,19 @@ interface ChatResponse {
   choices: { message: { content: string } }[];
 }
 
-export async function chat(messages: ChatMessage[], apiKey: string, jsonMode = false): Promise<string> {
-  const base = process.env.DEEPSEEK_BASE_URL ?? FALLBACK_BASE;
-  const model = process.env.DEEPSEEK_MODEL ?? FALLBACK_MODEL;
+export interface DeepSeekEnv {
+  baseUrl?: string;
+  model?: string;
+}
+
+export async function chat(
+  messages: ChatMessage[],
+  apiKey: string,
+  jsonMode = false,
+  dsEnv?: DeepSeekEnv
+): Promise<string> {
+  const base = dsEnv?.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? FALLBACK_BASE;
+  const model = dsEnv?.model ?? process.env.DEEPSEEK_MODEL ?? FALLBACK_MODEL;
   const res = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
     headers: {
@@ -64,7 +74,8 @@ Rules:
 export async function curate(
   apiKey: string,
   stats: RepoStats,
-  feed: FeedItem[]
+  feed: FeedItem[],
+  dsEnv?: DeepSeekEnv
 ): Promise<CuratedDispatch> {
   const trimmedFeed = feed.slice(0, 25).map((f) => ({
     kind: f.kind,
@@ -96,7 +107,8 @@ export async function curate(
       { role: "user", content: JSON.stringify(userPayload, null, 2) },
     ],
     apiKey,
-    true
+    true,
+    dsEnv
   );
 
   const parsed = JSON.parse(raw) as Omit<CuratedDispatch, "generatedAt">;

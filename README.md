@@ -225,106 +225,85 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.29
+## What's New In v0.8.32
 
-A maintenance release anchored by a v0.8.27 / v0.8.28 regression fix
-plus 25 community PRs. [Full changelog](CHANGELOG.md).
+A "more useful tools" release expanding the tool surface for real-world
+workflows. Five new tools, ten community PRs targeting model-protocol bugs
+and UX papercuts, and a snapshot cap that stops giant workspaces from
+hanging the TUI on first turn. [Full changelog](CHANGELOG.md).
 
-- **Scroll demon, gone for good** (#1085 regression). Parallel sub-
-  agents running `exec_shell` would scroll the alt-screen out from
-  under ratatui's diff renderer, leaving a blank band growing above
-  the header. Three layers of defence now: a `tracing-subscriber`
-  writing to `~/.deepseek/logs/tui-YYYY-MM-DD.log`, an fd-level
-  `dup2` stderr redirect for the alt-screen lifetime (Unix), and
-  module-level `#![deny(clippy::print_stdout, clippy::print_stderr)]`
-  on the TUI runtime modules. New `eprintln!`s inside `tools/`,
-  `core/`, `tui/`, `network_policy.rs`, or `runtime_threads.rs` now
-  fail CI.
-- **Ctrl+R session restore is workspace-scoped** (#1395, PR #1397 from
-  **@linzhiqin2003**) — previously listed every saved session on disk,
-  which meant Project A's history could leak into Project B.
-- **Runtime version visible in the header.** A discreet `v0.8.29`
-  chip sits in the header's right cluster alongside the provider /
-  effort / Live / context chips. Drops first under tight terminal
-  width.
-- **MCP HTTP transport honors HTTP(S)_PROXY** (#1408 from
-  **@hlx98007**) — corporate / Clash / Shadowsocks proxies now apply
-  to MCP HTTP connections, matching every other tool on the box.
-  `NO_PROXY` honored.
-- **MCP discovery survives malformed items** (#1410 from
-  **@Liu-Vince**) — one bad tool / resource / prompt entry no
-  longer drops the whole page; the malformed entry is skipped and
-  the rest of the catalogue surfaces normally.
-- **MCP SSE accepts CRLF-framed endpoint events** (#1309, PR #1358
-  from **@reidliu41**) — FastMCP / uvicorn streams no longer time
-  out waiting for LF-only event separators.
-- **Composer ignores leaked mouse-report bytes** (#1418, PR #1421
-  from **@reidliu41**) — terminal chains that leak `[<35;44;18M`
-  style mouse reports into stdin no longer fill the input area.
-- **Footer chips respect the available width** (#1357, PR #1417 from
-  **@Wenjunyun123**) — long cache / aux chips drop before crowding
-  the left status line or composer area on narrow terminals.
-- **Note management commands** (PR #1407 from **@reidliu41**) —
-  `/note add`, `/note list`, and friends for persistent maintainer
-  notes inside the TUI.
-- **`/init`-style global AGENTS.md merges with project AGENTS.md**
-  (#1157, PR #1399 from **@linzhiqin2003**) — your `~/.deepseek/
-  AGENTS.md` baseline now layers under the workspace's own
-  AGENTS.md instead of being shadowed.
-- **Language directive: thinking matches the user's message language**
-  (#1118, PR #1398 from **@linzhiqin2003**) — `reasoning_content`
-  follows the latest user message language, not the project context's
-  inferred `lang`.
-- **Web search filters spam-stuffed SERPs** (#964, PR #1396 from
-  **@linzhiqin2003**) — Bing / DDG fallback paths drop the
-  generated-content / SEO-farm domains that were poisoning quick
-  lookups.
-- **Auto routing recognises CJK debug / search keywords** (PRs #1401
-  and #1402 from **@linzhiqin2003**) — `--model auto` and the
-  reasoning-effort picker correctly route Chinese / Japanese
-  technical queries instead of falling through to the generic
-  baseline.
-- **Deferred tools hydrate schemas before first execution** (#1419,
-  PR #1429 from **@SamhandsomeLee**) — `edit_file` and other
-  deferred tools now load, show their expected fields, and ask the
-  model to retry instead of executing guessed argument names.
-- **DeepSeek aliases replay thinking-mode tool turns** (PR #1428
-  from **@Beltran12138**) — `deepseek-chat` and
-  `deepseek-reasoner` now get the same `reasoning_content` replay
-  treatment as explicit V4 model IDs, avoiding second-turn 400s
-  after tool calls.
-- **Skill completions stay under `/skill`** (#1437, PR #1442 from
-  **@reidliu41**) — large local skill collections no longer crowd
-  the root slash-command menu.
-- **`edit_file` rejects no-op replacements** (PR #1460 from
-  **@xiluoduyu**) — identical `search` / `replace` values now fail
-  validation instead of returning an empty diff.
-- **Windows terminal layout gets width-stable glyphs** (#1314,
-  PR #1465 from **@CrepuscularIRIS**) — header and file-tree icons
-  no longer rely on SMP emoji that cmd / PowerShell can mismeasure.
-- **Ghostty uses low-motion rendering by default** (#1445, PR #1468
-  from **@CrepuscularIRIS**) — affected terminals avoid animation
-  flicker without manual config.
-- **Docker buildx provenance EPERM failures get a hint** (#1449,
-  PR #1469 from **@CrepuscularIRIS**) — macOS shell output points at
-  the provenance flag when that restricted metadata write fails.
-- **Windows CMD mouse-wheel fallback scrolls the transcript**
-  (#1443, PR #1471 from **@CrepuscularIRIS**) — wheel events mapped
-  to Up / Down no longer cycle composer history when mouse capture
-  is off.
-- **Sync-to-CNB workflow hardened** — explicit `permissions:
-  contents: read`, narrowed trigger to `main` + `v*` tags (no longer
-  mirrors feature branches), `actions/checkout` bumped v3 → v4.
-- **+438 LOC of new test coverage** for `error_taxonomy`,
-  `parse_pages_arg`, web-search precedence, and
-  `sanitize_stream_chunk` control-byte filtering (PRs #1403-#1406
-  from **@linzhiqin2003**).
+- **Five new tools.** `read_file` now extracts PDFs in pure Rust — no
+  Poppler install required. `pandoc_convert` moves documents between 11
+  formats (Markdown, HTML, DOCX, EPUB, LaTeX…). `image_ocr` runs local
+  tesseract on screenshots and scanned documents. `image_analyze` sends
+  images to a vision model for natural-language description (opt-in only).
+  `js_execution` mirrors `code_execution` for Node.js snippets.
+- **Two more providers.** AtlasCloud joins as a first-class provider
+  (`provider = "atlascloud"`) with the same config-surface shape as the
+  existing NVIDIA NIM / Fireworks rows. `web_search` supports Tavily and
+  Bocha as configurable backends for regions where DuckDuckGo is
+  unreliable.
+- **Prompt-cache survives mid-session edits** (PR #1345 from
+  **@Duducoco**). Moving `instructions`, user memory, and session goal
+  below the volatile-content boundary means the KV prefix cache no longer
+  breaks every time you edit your memory file — skills and context
+  management instructions stay hot regardless of how often you run
+  `/memory`.
+- **vLLM thinking toggle actually works now** (PR #1480 from
+  **@h3c-hexin**). `reasoning_effort = "off"` on vLLM providers now emits
+  the OpenAI `chat_template_kwargs.enable_thinking` extension instead of
+  the silently-ignored Anthropic-native field. Measured improvement on
+  Qwen3: TTFT from ~13s → ~270ms.
+- **Kitty keyboard protocol on Windows** (PR #1483 from
+  **@CrepuscularIRIS / autoghclaw**). `Shift+Enter` now inserts a
+  newline instead of submitting in VSCode and Windows Terminal —
+  previously indistinguishable from plain Enter on Windows.
+- **Tool-result retrieval namespace unified** (#1541). Wire-dedup refs
+  and disk-spillover refs now share a lookup path — `retrieve_tool_result`
+  accepts SHA refs, bare hex hashes, `art_<id>` aliases, and absolute
+  paths, with error messages that list every accepted form.
+- **Snapshots skip giant workspaces** (#1552). A 2 GB ceiling on
+  non-excluded workspace content prevents first-turn `git add -A` from
+  hanging the TUI on multi-hundred-GB project directories. Configurable
+  via `[snapshots] max_workspace_gb`; set to `0` to restore unbounded
+  behaviour.
+- **`deepseek update` refreshes both binaries** (PR #1492 from
+  **@NorethSea**). The updater now enumerates colocated binaries (both
+  the dispatcher and the TUI runtime), downloads and verifies every
+  release asset, and writes the sibling first so a partial failure can't
+  leave the launcher updated while the TUI stays stale.
+- **Approval modal collapses to a one-line banner** (PR #1455 from
+  **@tiger-dog**). Tab toggles between the full takeover card and a
+  bottom-line summary — the transcript stays visible while you decide.
+- **`@`-mention truncation no longer splits CJK codepoints** (PR #1495
+  from **@CrepuscularIRIS / autoghclaw**). Files larger than 128 KB
+  used to truncate mid-codepoint; the truncator now rounds down to the
+  last valid UTF-8 boundary.
+- **Startup empty-state shows the build version**, active model with a
+  `/model` hint, and current working directory (PR #1444 from
+  **@reidliu41**).
+- **`/change` slash command** displays the latest CHANGELOG section
+  inside the TUI (PR #1416 from **@zhuangbiaowei**).
+- **Toast overlay no longer renders on top of the composer** (PR #1485
+  from **@MeAiRobot**). Approval toasts now clamp to the gap between
+  the composer and footer.
+- **TUI no longer freezes during long-running shell jobs** (PR #1494
+  from **@CrepuscularIRIS / autoghclaw**). The job panel's refresh path
+  now reads only the tail bytes under the mutex lock instead of cloning
+  the entire stdout buffer every 2.5 seconds.
+- **Markdown renderer no longer eats underscores in identifiers** (PR
+  #1455 from **@tiger-dog**). `deepseek_tui` and `foo_bar_baz` no longer
+  render half-italic.
+- **`/sessions` picker highlights the selected row** more strongly in
+  dark terminals (PR #1493 from **@reidliu41**), and no longer shows
+  `<turn_meta>` as the session title (PR #1498 from **@wdw8276**).
 
-Thanks to **@linzhiqin2003** (10 landings this cycle),
-**@reidliu41** (5 landings), **@CrepuscularIRIS** (4 landings),
-**@SamhandsomeLee**, **@Beltran12138**, **@Wenjunyun123**,
-**@hlx98007**, **@Liu-Vince**, **@xiluoduyu**, and
-**@shenxiaodaosanhua** for the bug report.
+Thanks to **@CrepuscularIRIS** (4 landings), **@reidliu41** (2 landings),
+**@tiger-dog** (2 landings), **@Duducoco**, **@h3c-hexin**,
+**@NorethSea**, **@MeAiRobot**, **@zhuangbiaowei**, **@wdw8276**,
+**@MMMarcinho**, **@SamhandsomeLee**, **@sandofree**,
+**@lucaszhu-hue**, **@muyuliyan**, **@Oliver-ZPLiu**, **@czf0718**,
+**@jieshu666**, and **@YaYII**.
 
 ---
 
