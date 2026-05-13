@@ -846,8 +846,24 @@ impl Renderable for ComposerWidget<'_> {
             };
             let menu_bottom = (menu_top + menu_visible_rows).min(menu_total);
 
-            // Label column width for two-column layout (name + description)
-            let label_width = 22.min(content_width.saturating_sub(4));
+            // Label column width — grows to fit the widest visible name
+            // (including alias hint like " or /bangzhu") but stays bounded.
+            let label_width = self
+                .slash_menu_entries
+                .iter()
+                .take(menu_bottom)
+                .skip(menu_top)
+                .map(|e| {
+                    if let Some(ref hint) = e.alias_hint {
+                        format!("{} or /{}", e.name, hint).width()
+                    } else {
+                        e.name.width()
+                    }
+                })
+                .max()
+                .unwrap_or(22)
+                .min(content_width.saturating_sub(4))
+                .max(8);
             for (idx, entry) in self
                 .slash_menu_entries
                 .iter()
@@ -881,12 +897,20 @@ impl Renderable for ComposerWidget<'_> {
                     Style::default().fg(palette::TEXT_DIM)
                 };
 
+                // Build display name: canonical name, with "or /alias" hint
+                // when the user typed via a pinyin alias.
+                let display_name = if let Some(ref hint) = entry.alias_hint {
+                    format!("{} or /{}", entry.name, hint)
+                } else {
+                    entry.name.clone()
+                };
+
                 let name_display = {
-                    let display_width: usize = entry.name.width();
+                    let display_width: usize = display_name.width();
                     if display_width > label_width {
                         let mut s = String::new();
                         let mut w = 0;
-                        for ch in entry.name.chars() {
+                        for ch in display_name.chars() {
                             let cw = ch.width().unwrap_or(0);
                             if w + cw + 1 > label_width {
                                 break;
@@ -902,7 +926,7 @@ impl Renderable for ComposerWidget<'_> {
                         s
                     } else {
                         // pad to label_width display cols
-                        let mut s = entry.name.clone();
+                        let mut s = display_name;
                         while s.width() < label_width {
                             s.push(' ');
                         }
@@ -2010,6 +2034,9 @@ pub(crate) struct SlashMenuEntry {
     pub name: String,
     pub description: String,
     pub is_skill: bool,
+    /// Matching pinyin/alias prefix hint, e.g. when user types `/bang` and
+    /// the command `/help` matches via alias `bangzhu`.
+    pub alias_hint: Option<String>,
 }
 
 pub(crate) fn slash_completion_hints(
@@ -2035,17 +2062,42 @@ pub(crate) fn slash_completion_hints(
     // built-in ones from the static registry and use a generic label for
     // user-defined commands.
     if completing_skill_arg.is_none() {
+        let prefix_lower = prefix.to_ascii_lowercase();
         for name in commands::all_command_names_matching(prefix, workspace) {
             let command_key = name.trim_start_matches('/');
-            let description = if let Some(info) = commands::get_command_info(command_key) {
-                info.description_for(locale).to_string()
+            let (description, alias_hint) = if let Some(info) = commands::get_command_info(command_key) {
+                // Detect matching alias: if the user typed via pinyin rather
+                // than the canonical name, record which alias matched.
+                let hint = if !command_key.to_ascii_lowercase().starts_with(&prefix_lower) {
+                    info.aliases
+                        .iter()
+                        .find(|a| a.to_ascii_lowercase().starts_with(&prefix_lower))
+                        .map(|a| a.to_string())
+                } else {
+                    None
+                };
+                let desc = if info.aliases.is_empty() {
+                    info.description_for(locale).to_string()
+                } else {
+                    format!(
+                        "{}  (aliases: {})",
+                        info.description_for(locale),
+                        info.aliases
+                            .iter()
+                            .map(|a| format!("/{a}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                (desc, hint)
             } else {
-                String::from("User-defined command")
+                (String::from("User-defined command"), None)
             };
             entries.push(SlashMenuEntry {
                 name,
                 description,
                 is_skill: false,
+                alias_hint,
             });
         }
     }
@@ -2062,6 +2114,7 @@ pub(crate) fn slash_completion_hints(
                     name: format!("/skill {skill_name}"),
                     description: skill_desc.clone(),
                     is_skill: true,
+                    alias_hint: None,
                 });
             }
         }
@@ -2074,6 +2127,7 @@ pub(crate) fn slash_completion_hints(
                 name: format!("/model {model_name}"),
                 description: String::from("Switch to this model"),
                 is_skill: false,
+                alias_hint: None,
             });
         }
     }
@@ -2639,12 +2693,14 @@ mod tests {
                 name: format!("/skill{i}"),
                 description: String::new(),
                 is_skill: false,
+                alias_hint: None,
             })
             .collect();
         let one_match = vec![SlashMenuEntry {
             name: "/skill".to_string(),
             description: String::new(),
             is_skill: false,
+            alias_hint: None,
         }];
         let no_matches = Vec::<SlashMenuEntry>::new();
 
