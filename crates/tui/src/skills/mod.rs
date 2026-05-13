@@ -12,7 +12,7 @@ pub use install::{
     InstallSource, InstalledSkill, RegistryDocument, RegistryEntry, RegistryFetchResult,
     SkillSyncOutcome, SyncResult, UpdateResult, default_cache_skills_dir,
 };
-pub use system::install_system_skills;
+pub use system::{install_system_skills, is_bundled_skill_name};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1245,6 +1245,67 @@ mod tests {
         assert!(
             names.contains(&"git-conventions"),
             "hidden root must still be walked: {names:?}"
+        );
+    }
+
+    /// Mirrors the qa_pty `skills_menu_shows_local_and_global_skills`
+    /// scenario without the PTY harness: a workspace-level skill in
+    /// `.agents/skills/` and a global skill in `~/.deepseek/skills/`
+    /// must both be discoverable.
+    #[test]
+    fn discover_finds_both_workspace_and_global_skills() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path().join("workspace");
+        let home = tmpdir.path().join("home");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        write_skill(
+            &workspace.join(".agents").join("skills"),
+            "workspace-beta",
+            "Workspace beta skill",
+            "body",
+        );
+        write_skill(
+            &home.join(".deepseek").join("skills"),
+            "global-alpha",
+            "Global alpha skill",
+            "body",
+        );
+
+        // Capture and override HOME so default_skills_dir() resolves
+        // to the sealed test home (same trick the qa_pty harness uses).
+        // Safety: this test is single-threaded with respect to the env
+        // because `cargo test` runs tests in this module sequentially
+        // when they touch process-global state via `--test-threads=1`,
+        // and within rustc's default scheduling the env_var read in
+        // `dirs` happens synchronously inside `discover_for_workspace_and_dir`.
+        let previous_home = std::env::var_os("HOME");
+        // SAFETY: env mutation is unsafe in 2024 edition; this test is
+        // serialized via the file-local skill-discovery suite.
+        unsafe {
+            std::env::set_var("HOME", &home);
+        }
+
+        let skills_dir = workspace.join(".agents").join("skills");
+        let registry = super::discover_for_workspace_and_dir(&workspace, &skills_dir);
+
+        // Restore HOME before any assertion can panic.
+        unsafe {
+            if let Some(v) = previous_home {
+                std::env::set_var("HOME", v);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"workspace-beta"),
+            "workspace-beta from .agents/skills must be discovered: {names:?}",
+        );
+        assert!(
+            names.contains(&"global-alpha"),
+            "global-alpha from ~/.deepseek/skills must be discovered: {names:?}",
         );
     }
 }

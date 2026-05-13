@@ -81,6 +81,16 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
     },
 ];
 
+/// Whether a skill name matches one of the bundled first-party skills.
+///
+/// Used by `/skills` to distinguish user-created skills (which should be
+/// surfaced prominently) from the always-installed bundle (which can be
+/// rendered compactly when many skills are present).
+#[must_use]
+pub fn is_bundled_skill_name(name: &str) -> bool {
+    BUNDLED_SKILLS.iter().any(|s| s.name == name)
+}
+
 /// Attempt to install a single bundled skill into `skills_dir`.
 ///
 /// Returns `true` if installation occurred (fresh install or version bump).
