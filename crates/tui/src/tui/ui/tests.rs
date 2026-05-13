@@ -974,15 +974,15 @@ fn mouse_events_do_not_mutate_transcript_behind_modal() {
 
 #[test]
 fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
-    assert!(is_copy_shortcut(&KeyEvent::new(
+    assert!(crate::tui::key_shortcuts::is_copy_shortcut(&KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::SUPER,
     )));
-    assert!(is_copy_shortcut(&KeyEvent::new(
+    assert!(crate::tui::key_shortcuts::is_copy_shortcut(&KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     )));
-    assert!(!is_copy_shortcut(&KeyEvent::new(
+    assert!(!crate::tui::key_shortcuts::is_copy_shortcut(&KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
     )));
@@ -990,19 +990,19 @@ fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
 
 #[test]
 fn file_tree_shortcut_does_not_steal_plain_ctrl_e() {
-    assert!(!is_file_tree_toggle_shortcut(&KeyEvent::new(
+    assert!(!crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(&KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::CONTROL,
     )));
-    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(&KeyEvent::new(
         KeyCode::Char('E'),
         KeyModifiers::CONTROL,
     )));
-    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(&KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     )));
-    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(&KeyEvent::new(
         KeyCode::Char('E'),
         KeyModifiers::SUPER | KeyModifiers::SHIFT,
     )));
@@ -1446,7 +1446,7 @@ fn active_tool_status_label_summarizes_live_tool_group() {
     assert!(label.contains("run cargo test"));
     assert!(label.contains("1 active"));
     assert!(label.contains("1 done"));
-    assert!(label.contains(tool_details_shortcut_label()));
+    assert!(label.contains(crate::tui::key_shortcuts::tool_details_shortcut_label()));
 }
 
 #[test]
@@ -2818,15 +2818,15 @@ fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
 #[test]
 fn api_key_paste_shortcut_is_not_plain_text_input() {
     let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-    assert!(is_paste_shortcut(&ctrl_v));
-    assert!(!is_text_input_key(&ctrl_v));
+    assert!(crate::tui::key_shortcuts::is_paste_shortcut(&ctrl_v));
+    assert!(!crate::tui::key_shortcuts::is_text_input_key(&ctrl_v));
 
     let legacy_ctrl_v = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
-    assert!(is_paste_shortcut(&legacy_ctrl_v));
-    assert!(!is_text_input_key(&legacy_ctrl_v));
+    assert!(crate::tui::key_shortcuts::is_paste_shortcut(&legacy_ctrl_v));
+    assert!(!crate::tui::key_shortcuts::is_text_input_key(&legacy_ctrl_v));
 
     let shifted = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
-    assert!(is_text_input_key(&shifted));
+    assert!(crate::tui::key_shortcuts::is_text_input_key(&shifted));
 }
 
 #[test]
@@ -2974,8 +2974,8 @@ fn detail_target_prefers_visible_tool_card() {
     assert_eq!(detail_target_cell_index(&app), Some(1));
     let expected = format!(
         "{} Activity: file_search · {} raw",
-        activity_shortcut_label(),
-        tool_details_shortcut_label()
+        crate::tui::key_shortcuts::activity_shortcut_label(),
+        crate::tui::key_shortcuts::tool_details_shortcut_label()
     );
     assert_eq!(
         selected_detail_footer_label(&app).as_deref(),
@@ -3011,14 +3011,14 @@ fn activity_footer_hint_surfaces_visible_thinking_without_raw_tool_hint() {
 #[test]
 fn macos_option_v_glyph_is_treated_as_details_shortcut_only_on_macos() {
     let option_v = KeyEvent::new(KeyCode::Char('\u{221A}'), KeyModifiers::NONE);
-    assert!(is_macos_option_v_legacy_key_for_platform(&option_v, true));
-    assert!(!is_macos_option_v_legacy_key_for_platform(&option_v, false));
+    assert!(crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&option_v, true));
+    assert!(!crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&option_v, false));
 
     let modified = KeyEvent::new(KeyCode::Char('\u{221A}'), KeyModifiers::SHIFT);
-    assert!(!is_macos_option_v_legacy_key_for_platform(&modified, true));
+    assert!(!crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&modified, true));
 
     let plain_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE);
-    assert!(!is_macos_option_v_legacy_key_for_platform(&plain_v, true));
+    assert!(!crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&plain_v, true));
 }
 
 #[test]
@@ -3194,28 +3194,28 @@ fn alt_nav_modifiers_require_alt_and_exclude_ctrl_super() {
     // Alt, allow Shift for capital-letter forms, and block Ctrl/Super so
     // they don't collide with clipboard / window shortcuts. Bare and
     // Shift-only modifiers fall through to text insertion now.
-    assert!(!alt_nav_modifiers(KeyModifiers::NONE));
-    assert!(!alt_nav_modifiers(KeyModifiers::SHIFT));
-    assert!(alt_nav_modifiers(KeyModifiers::ALT));
-    assert!(alt_nav_modifiers(KeyModifiers::ALT | KeyModifiers::SHIFT));
-    assert!(!alt_nav_modifiers(KeyModifiers::CONTROL));
-    assert!(!alt_nav_modifiers(
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::NONE));
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::SHIFT));
+    assert!(crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::ALT));
+    assert!(crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::ALT | KeyModifiers::SHIFT));
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::CONTROL));
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(
         KeyModifiers::ALT | KeyModifiers::CONTROL
     ));
-    assert!(!alt_nav_modifiers(KeyModifiers::ALT | KeyModifiers::SUPER));
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::ALT | KeyModifiers::SUPER));
 }
 
 #[test]
 fn ctrl_h_is_treated_as_terminal_backspace() {
-    assert!(is_ctrl_h_backspace(&KeyEvent::new(
+    assert!(crate::tui::key_shortcuts::is_ctrl_h_backspace(&KeyEvent::new(
         KeyCode::Char('h'),
         KeyModifiers::CONTROL
     )));
-    assert!(!is_ctrl_h_backspace(&KeyEvent::new(
+    assert!(!crate::tui::key_shortcuts::is_ctrl_h_backspace(&KeyEvent::new(
         KeyCode::Char('h'),
         KeyModifiers::NONE
     )));
-    assert!(!is_ctrl_h_backspace(&KeyEvent::new(
+    assert!(!crate::tui::key_shortcuts::is_ctrl_h_backspace(&KeyEvent::new(
         KeyCode::Char('h'),
         KeyModifiers::CONTROL | KeyModifiers::ALT
     )));

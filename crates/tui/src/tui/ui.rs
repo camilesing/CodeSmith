@@ -74,6 +74,8 @@ use crate::tui::streaming_thinking;
 use crate::tui::workspace_context;
 use crate::tui::notifications;
 use crate::tui::file_picker_relevance;
+use crate::tui::format_helpers;
+use crate::tui::key_shortcuts;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
@@ -2276,19 +2278,19 @@ async fn run_event_loop(
                         onboarding::sync_api_key_validation_status(app, false);
                     }
                     KeyCode::Char('h')
-                        if is_ctrl_h_backspace(&key)
+                        if key_shortcuts::is_ctrl_h_backspace(&key)
                             && app.onboarding == OnboardingState::ApiKey =>
                     {
                         app.delete_api_key_char();
                         onboarding::sync_api_key_validation_status(app, false);
                     }
-                    _ if is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey => {
+                    _ if key_shortcuts::is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey => {
                         // Cmd+V / Ctrl+V paste (bracketed paste handled above)
                         app.paste_api_key_from_clipboard();
                         onboarding::sync_api_key_validation_status(app, false);
                     }
                     KeyCode::Char(c)
-                        if app.onboarding == OnboardingState::ApiKey && is_text_input_key(&key) =>
+                        if app.onboarding == OnboardingState::ApiKey && key_shortcuts::is_text_input_key(&key) =>
                     {
                         app.insert_api_key_char(c);
                         onboarding::sync_api_key_validation_status(app, false);
@@ -2350,7 +2352,7 @@ async fn run_event_loop(
 
             // Shifted shortcuts toggle the file-tree pane. Keep plain Ctrl+E
             // reserved for the composer end-of-line binding used by shells.
-            if is_file_tree_toggle_shortcut(&key) {
+            if key_shortcuts::is_file_tree_toggle_shortcut(&key) {
                 if let Some(_state) = app.file_tree.as_mut() {
                     // File tree visible → hide it.
                     app.file_tree = None;
@@ -2486,7 +2488,7 @@ async fn run_event_loop(
             let is_plain_char = matches!(key.code, KeyCode::Char(_)) && !has_ctrl_alt_or_super;
             let is_enter = matches!(key.code, KeyCode::Enter);
 
-            if is_macos_option_v_legacy_key(&key) {
+            if key_shortcuts::is_macos_option_v_legacy_key(&key) {
                 open_tool_details_pager(app);
                 continue;
             }
@@ -2537,7 +2539,7 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('l')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && open_pager_for_last_message(app) =>
                 {
@@ -2632,7 +2634,7 @@ async fn run_event_loop(
                     app.view_stack.push(SessionPickerView::new(&app.workspace));
                     continue;
                 }
-                KeyCode::Char('c') | KeyCode::Char('C') if is_copy_shortcut(&key) => {
+                KeyCode::Char('c') | KeyCode::Char('C') if key_shortcuts::is_copy_shortcut(&key) => {
                     copy_active_selection(app);
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2889,7 +2891,7 @@ async fn run_event_loop(
                 // bottom) work; Ctrl/Super are blocked so the bindings don't
                 // collide with platform clipboard / window shortcuts.
                 KeyCode::Char('g')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open =>
                 {
@@ -2900,14 +2902,14 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Char('G')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open =>
                 {
                     app.scroll_to_bottom();
                 }
                 KeyCode::Char('[')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) =>
@@ -2915,7 +2917,7 @@ async fn run_event_loop(
                     app.status_message = Some("No previous tool output".to_string());
                 }
                 KeyCode::Char(']')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) =>
@@ -2927,7 +2929,7 @@ async fn run_event_loop(
                 // so users can start a message with "?" without losing the
                 // first character.
                 KeyCode::Char('?')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open =>
                 {
@@ -3148,11 +3150,11 @@ async fn run_event_loop(
                 }
                 KeyCode::Backspace => {}
                 KeyCode::Char('h')
-                    if is_ctrl_h_backspace(&key) && !app.remove_selected_composer_attachment() =>
+                    if key_shortcuts::is_ctrl_h_backspace(&key) && !app.remove_selected_composer_attachment() =>
                 {
                     app.delete_char();
                 }
-                KeyCode::Char('h') if is_ctrl_h_backspace(&key) => {}
+                KeyCode::Char('h') if key_shortcuts::is_ctrl_h_backspace(&key) => {}
                 KeyCode::Delete if !app.remove_selected_composer_attachment() => {
                     app.delete_char_forward();
                 }
@@ -3293,7 +3295,7 @@ async fn run_event_loop(
                     };
                     app.set_mode(new_mode);
                 }
-                _ if is_paste_shortcut(&key) => {
+                _ if key_shortcuts::is_paste_shortcut(&key) => {
                     app.paste_from_clipboard();
                 }
                 KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -3407,63 +3409,7 @@ async fn run_cache_warmup(app: &App, config: &Config) -> Result<Usage> {
     Ok(response.usage)
 }
 
-fn format_cache_warmup_result(usage: &Usage) -> String {
-    let cache = match (
-        usage.prompt_cache_hit_tokens,
-        usage.prompt_cache_miss_tokens,
-    ) {
-        (Some(hit), Some(miss)) => format!("Cache warmup complete: hit {hit} | miss {miss}"),
-        (Some(hit), None) => format!("Cache warmup complete: hit {hit} | miss unavailable"),
-        (None, Some(miss)) => format!("Cache warmup complete: hit unavailable | miss {miss}"),
-        (None, None) => "Cache warmup complete: cache telemetry unavailable".to_string(),
-    };
-    format!(
-        "{cache}\nNote: the first warmup is usually a miss. Later requests that reuse the same stable prefix may hit the provider cache; a hit is not guaranteed."
-    )
-}
-
-/// Format prefix stability info for the TUI footer chip.
-fn format_prefix_stability_chip(app: &App) -> Option<(String, ratatui::style::Color)> {
-    let pct = app.prefix_stability_pct?;
-    let changes = app.prefix_change_count;
-
-    let color = if changes == 0 {
-        // Perfect stability: green
-        ratatui::style::Color::Green
-    } else if pct >= 95 {
-        // Excellent: green
-        ratatui::style::Color::Green
-    } else if pct >= 80 {
-        // Good: yellow
-        ratatui::style::Color::Yellow
-    } else {
-        // Poor: red — cache is churning
-        ratatui::style::Color::Red
-    };
-
-    let label = if changes == 0 {
-        format!("P {pct}%")
-    } else {
-        format!(
-            "P {pct}% ({changes} change{})",
-            if changes == 1 { "" } else { "s" }
-        )
-    };
-
-    Some((label, color))
-}
-
-fn format_available_models_message(current_model: &str, models: &[String]) -> String {
-    let mut lines = vec![format!("Available models ({})", models.len())];
-    for model in models {
-        if model == current_model {
-            lines.push(format!("* {model} (current)"));
-        } else {
-            lines.push(format!("  {model}"));
-        }
-    }
-    lines.join("\n")
-}
+// `format_*` chip/message builders moved to `tui/format_helpers.rs`.
 
 fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
     if let Some(ref existing_id) = app.current_session_id
@@ -4482,7 +4428,7 @@ async fn apply_command_result(
                     match fetch_available_models(config).await {
                         Ok(models) => {
                             app.add_message(HistoryCell::System {
-                                content: format_available_models_message(&app.model, &models),
+                                content: format_helpers::available_models_message(&app.model, &models),
                             });
                             app.status_message = Some(format!("Found {} model(s)", models.len()));
                         }
@@ -4498,7 +4444,7 @@ async fn apply_command_result(
                 app.status_message = Some("Warming DeepSeek cache...".to_string());
                 match run_cache_warmup(app, config).await {
                     Ok(usage) => {
-                        let mut message = format_cache_warmup_result(&usage);
+                        let mut message = format_helpers::cache_warmup_result(&usage);
                         // Append prefix-cache stability info.
                         if app.prefix_checks_total > 0 {
                             let changes = app.prefix_change_count;
@@ -6875,7 +6821,7 @@ fn active_tool_status_label(app: &App) -> Option<String> {
     if active_foreground_shell_running(app) {
         parts.push("Ctrl+B shell".to_string());
     }
-    parts.push(tool_details_shortcut_label().to_string());
+    parts.push(key_shortcuts::tool_details_shortcut_label().to_string());
     Some(parts.join(" \u{00B7} "))
 }
 
@@ -7170,7 +7116,7 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     let prefix_spans = app
         .prefix_stability_pct
         .map(|_| {
-            let (label, color) = format_prefix_stability_chip(app)
+            let (label, color) = format_helpers::prefix_stability_chip(app)
                 .unwrap_or(("P --".to_string(), ratatui::style::Color::DarkGray));
             vec![Span::styled(label, Style::default().fg(color))]
         })
@@ -8882,13 +8828,13 @@ fn selected_detail_footer_label(app: &App) -> Option<String> {
     let cell = app.cell_at_virtual_index(cell_index)?;
     let label = truncate_line_to_width(&activity_cell_label(app, cell_index, cell), 30);
     let raw_hint = if app.cell_has_detail_target(cell_index) {
-        format!(" · {} raw", tool_details_shortcut_label())
+        format!(" · {} raw", key_shortcuts::tool_details_shortcut_label())
     } else {
         String::new()
     };
     Some(format!(
         "{} Activity: {label}{raw_hint}",
-        activity_shortcut_label()
+        key_shortcuts::activity_shortcut_label()
     ))
 }
 
@@ -8952,110 +8898,7 @@ fn detail_target_label(app: &App, cell_index: usize) -> Option<String> {
     }
 }
 
-fn is_copy_shortcut(key: &KeyEvent) -> bool {
-    let is_c = matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'));
-    if !is_c {
-        return false;
-    }
-
-    if key.modifiers.contains(KeyModifiers::SUPER) {
-        return true;
-    }
-
-    key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT)
-}
-
-fn is_file_tree_toggle_shortcut(key: &KeyEvent) -> bool {
-    let is_shifted_e = matches!(key.code, KeyCode::Char('E'))
-        || (matches!(key.code, KeyCode::Char('e')) && key.modifiers.contains(KeyModifiers::SHIFT));
-    if !is_shifted_e {
-        return false;
-    }
-
-    let has_forbidden_modifier =
-        key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER);
-    let ctrl_shift_e = key.modifiers.contains(KeyModifiers::CONTROL) && !has_forbidden_modifier;
-
-    let cmd_shift_e = key.modifiers.contains(KeyModifiers::SUPER)
-        && key.modifiers.contains(KeyModifiers::SHIFT)
-        && !key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::ALT);
-
-    ctrl_shift_e || cmd_shift_e
-}
-
-fn tool_details_shortcut_label() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "\u{2325}+V"
-    } else {
-        "Alt+V"
-    }
-}
-
-fn activity_shortcut_label() -> &'static str {
-    "Ctrl+O"
-}
-
-/// Modifier predicate for the v0.8.30 family of `Alt+<letter>` transcript-
-/// nav shortcuts (`Alt+G` / `Alt+Shift+G` / `Alt+[` / `Alt+]` / `Alt+?` /
-/// `Alt+L` / `Alt+V`). Requires `Alt` and disallows `Ctrl` / `Super` so the
-/// bindings don't collide with platform clipboard / window-management
-/// shortcuts. `Shift` is permitted so the capital-letter forms work on
-/// any keyboard layout that produces them as `Alt+Shift+key`.
-///
-/// Plain `Char` events (no modifier, or modifier=`Shift` alone for the
-/// uppercase form) fall through to text insertion, which is the whole
-/// point — typing "good morning" no longer eats the first `g`.
-fn alt_nav_modifiers(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::ALT)
-        && !modifiers.contains(KeyModifiers::CONTROL)
-        && !modifiers.contains(KeyModifiers::SUPER)
-}
-
-fn is_macos_option_v_legacy_key(key: &KeyEvent) -> bool {
-    is_macos_option_v_legacy_key_for_platform(key, cfg!(target_os = "macos"))
-}
-
-fn is_macos_option_v_legacy_key_for_platform(key: &KeyEvent, is_macos: bool) -> bool {
-    is_macos && key.modifiers.is_empty() && matches!(key.code, KeyCode::Char('\u{221A}'))
-}
-
-fn is_paste_shortcut(key: &KeyEvent) -> bool {
-    let is_v = matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'));
-    let is_legacy_ctrl_v = matches!(key.code, KeyCode::Char('\u{16}'));
-    if !is_v && !is_legacy_ctrl_v {
-        return false;
-    }
-
-    if is_legacy_ctrl_v {
-        return true;
-    }
-
-    // Cmd+V on macOS
-    if key.modifiers.contains(KeyModifiers::SUPER) {
-        return true;
-    }
-
-    // Ctrl+V on Linux/Windows
-    key.modifiers.contains(KeyModifiers::CONTROL)
-}
-
-fn is_text_input_key(key: &KeyEvent) -> bool {
-    if matches!(key.code, KeyCode::Char(c) if c.is_control()) {
-        return false;
-    }
-
-    !key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::ALT)
-        && !key.modifiers.contains(KeyModifiers::SUPER)
-}
-
-fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('h'))
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::ALT)
-        && !key.modifiers.contains(KeyModifiers::SUPER)
-}
+// Keyboard-shortcut predicates moved to `tui/key_shortcuts.rs`.
 
 fn extract_reasoning_header(text: &str) -> Option<String> {
     let start = text.find("**")?;
