@@ -16,6 +16,7 @@ Bindings are not (yet) user-configurable — tracked for a future release (#436,
 | `Shift-Tab`          | Cycle reasoning effort: off → high → max → off                 |
 | `Ctrl-R`             | Open the resume-session picker                                 |
 | `Ctrl-L`             | Refresh / clear the screen                                     |
+| `Ctrl-O`             | Open Activity Detail for the selected, live, or most recent activity when the composer is empty |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |
 | `Esc`                | Close topmost modal · cancel slash menu · dismiss toast        |
 
@@ -40,7 +41,7 @@ Editing the message you're about to send.
 | `Ctrl-S`                    | Stash current draft (`/stash list`, `/stash pop` to recover) |
 | `Alt-R`                    | Search prompt history (Alt-R to exit)                  |
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
-| `Ctrl-O`                    | Open external editor for the composer draft             |
+| `Ctrl-O`                    | Open external editor for the composer draft when it has focus |
 
 ### `@` mentions
 
@@ -69,7 +70,7 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 |----------------------|-----------------------------------------------------|
 | `↑` / `↓` / `j` / `k`| Move selection                                     |
 | `Enter`              | Activate the selected item (open / focus / cancel) |
-| `Tab`                | Cycle to next sidebar panel (Files → Tasks → Agents → Todos) |
+| `Tab`                | Cycle to next sidebar panel (Work → Tasks → Agents → Context) |
 | `Esc`                | Return focus to composer                           |
 
 ## Slash-command palette (after `Ctrl-K` or typing `/`)

@@ -6,8 +6,9 @@
 //! `exec()`s them into the same global namespace so variables, imports,
 //! and even open file handles persist naturally across rounds.
 //!
-//! Sub-LLM helpers (`llm_query`, `llm_query_batched`, `rlm_query`,
-//! `rlm_query_batched`) are wired through a stdin/stdout RPC protocol:
+//! Sub-LLM helpers (`sub_query`, `sub_query_batch`, `sub_rlm`, plus legacy
+//! `llm_query`, `llm_query_batched`, `rlm_query`, `rlm_query_batched`) are
+//! wired through a stdin/stdout RPC protocol:
 //! Python emits `__RLM_REQ_<sid>__::{json}` on stdout, Rust dispatches the
 //! request and writes `__RLM_RESP_<sid>__::{json}` back on stdin. No HTTP
 //! sidecar, no temp ports — the same pipes carry both control and data.
@@ -22,6 +23,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use uuid::Uuid;
@@ -43,9 +45,11 @@ pub struct ReplRound {
     pub stderr: String,
     /// `True` if the user code raised an unhandled Python exception.
     pub has_error: bool,
-    /// Captured `FINAL(value)` payload, if any.
+    /// Captured `finalize(value, confidence=...)` payload, if any.
     pub final_value: Option<String>,
-    /// Number of `llm_query`/`rlm_query` RPCs the round issued.
+    /// Optional confidence supplied to `finalize(...)`.
+    pub final_confidence: Option<Value>,
+    /// Number of `sub_query`/`sub_rlm` RPCs the round issued.
     pub rpc_count: u32,
     /// Wall-clock duration of the round.
     pub elapsed: Duration,
@@ -173,8 +177,8 @@ impl PythonRuntime {
         )
     }
 
-    /// Spawn a REPL with `context` (and `ctx`) preloaded from a file. Used
-    /// by the RLM turn loop.
+    /// Spawn a REPL with the long input preloaded from a file. Used by the
+    /// RLM turn loop.
     pub async fn spawn_with_context(context_path: &Path) -> Result<Self, String> {
         Self::spawn_inner(Some(context_path), None).await
     }
@@ -310,6 +314,7 @@ impl PythonRuntime {
 
         let mut stdout_buf = String::new();
         let mut final_value: Option<String> = None;
+        let mut final_confidence: Option<Value> = None;
         let mut had_error = false;
         let mut rpc_count: u32 = 0;
         let round_timeout = self.round_timeout;
@@ -332,10 +337,35 @@ impl PythonRuntime {
                     break;
                 }
                 if let Some(rest) = trimmed.strip_prefix(&final_prefix) {
-                    // Stored as a JSON-encoded string.
-                    let v =
-                        serde_json::from_str::<String>(rest).unwrap_or_else(|_| rest.to_string());
-                    final_value = Some(v);
+                    // New sessions emit an object with value/confidence;
+                    // legacy helpers emitted a JSON string.
+                    match serde_json::from_str::<Value>(rest) {
+                        Ok(Value::Object(map)) => {
+                            let value = map
+                                .get("value")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| {
+                                    map.get("value")
+                                        .map(Value::to_string)
+                                        .unwrap_or_else(|| rest.to_string())
+                                });
+                            final_value = Some(value);
+                            final_confidence = map.get("confidence").cloned();
+                        }
+                        Ok(Value::String(value)) => {
+                            final_value = Some(value);
+                            final_confidence = None;
+                        }
+                        Ok(other) => {
+                            final_value = Some(other.to_string());
+                            final_confidence = None;
+                        }
+                        Err(_) => {
+                            final_value = Some(rest.to_string());
+                            final_confidence = None;
+                        }
+                    }
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix(&err_prefix) {
@@ -399,6 +429,7 @@ impl PythonRuntime {
             stderr,
             has_error: had_error,
             final_value,
+            final_confidence,
             rpc_count,
             elapsed: started.elapsed(),
         })
@@ -493,6 +524,7 @@ fn render_bootstrap(session_id: &str) -> String {
 const BOOTSTRAP_TEMPLATE: &str = r#"
 import json as _json
 import os as _os
+import re as _re
 import sys as _sys
 import traceback as _traceback
 
@@ -574,16 +606,67 @@ def rlm_query_batched(prompts, model=None):
             out.append(r.get("text",""))
     return out
 
-def FINAL(value):
-    """Signal the loop to stop with this final answer."""
-    _sys.stdout.write(_FINAL + _json.dumps(str(value)) + "\n")
+def _slice_text(slice_value):
+    if slice_value is None:
+        return ""
+    if isinstance(slice_value, dict):
+        if "text" in slice_value:
+            return str(slice_value["text"])
+        return _json.dumps(slice_value, ensure_ascii=False)
+    return str(slice_value)
+
+def _prompt_with_slice(prompt, slice_value):
+    text = _slice_text(slice_value)
+    if not text:
+        return str(prompt)
+    if isinstance(slice_value, dict) and ("index" in slice_value or ("start" in slice_value and "end" in slice_value)):
+        label = f"slice index={slice_value.get('index', '?')} range={slice_value.get('start', '?')}:{slice_value.get('end', '?')}"
+    else:
+        label = "slice"
+    return f"{prompt}\n\n--- {label} ---\n{text}"
+
+def sub_query(prompt, slice=None):
+    """One child LLM call, optionally scoped to a bounded slice."""
+    return llm_query(_prompt_with_slice(prompt, slice))
+
+def sub_query_batch(prompt, slices):
+    """Apply one prompt to many bounded slices concurrently."""
+    if not isinstance(slices, (list, tuple)):
+        return ["[sub_query_batch: slices must be a list]"]
+    return llm_query_batched([_prompt_with_slice(prompt, s) for s in slices])
+
+def sub_query_map(prompts, slices=None):
+    """Run N distinct prompts, optionally paired with N bounded slices."""
+    if not isinstance(prompts, (list, tuple)):
+        return ["[sub_query_map: prompts must be a list]"]
+    if slices is None:
+        return llm_query_batched([str(p) for p in prompts])
+    if not isinstance(slices, (list, tuple)):
+        return ["[sub_query_map: slices must be a list]"]
+    if len(prompts) != len(slices):
+        return [f"[sub_query_map: size mismatch ({len(prompts)}/{len(slices)})]" for _ in prompts]
+    return llm_query_batched([_prompt_with_slice(p, s) for p, s in zip(prompts, slices)])
+
+def sub_rlm(prompt, source=None):
+    """Recursive sub-RLM call for tasks that need their own decomposition."""
+    return rlm_query(_prompt_with_slice(prompt, source))
+
+def _emit_final(value, confidence=None):
+    _sys.stdout.write(_FINAL + _json.dumps({
+        "value": str(value),
+        "confidence": confidence,
+    }) + "\n")
     _sys.stdout.flush()
 
+def FINAL(value):
+    """Legacy compatibility alias for finalize(value)."""
+    _emit_final(value)
+
 def FINAL_VAR(name):
-    """Signal the loop to stop, returning the value of a named variable."""
+    """Legacy compatibility alias for finalize(repl_get(name))."""
     name_str = str(name).strip().strip("'\"")
     if name_str in globals():
-        FINAL(globals()[name_str])
+        _emit_final(globals()[name_str])
     else:
         print(f"FINAL_VAR error: variable '{name_str}' not found. "
               f"Use SHOW_VARS() to list available variables.", flush=True)
@@ -603,8 +686,61 @@ def repl_get(name, default=None):
 def repl_set(name, value):
     globals()[str(name)] = value
 
-def chunk_context(max_chars=20000, overlap=0):
-    """Return full-coverage context chunks with index/start/end/text fields."""
+def context_meta():
+    """Return bounded metadata about the loaded input; never includes the full text."""
+    text = _context
+    line_count = 0 if text == "" else text.count("\n") + (0 if text.endswith("\n") else 1)
+    return {
+        "chars": len(text),
+        "lines": line_count,
+        "preview": text[:500],
+        "tail_preview": text[-500:] if len(text) > 500 else text,
+    }
+
+def _slice_chars(start, end):
+    total = len(_context)
+    s = max(0, int(start))
+    e = max(s, min(total, int(end)))
+    return _context[s:e]
+
+def _slice_lines(start, end):
+    lines = _context.splitlines()
+    s = max(0, int(start))
+    e = max(s, min(len(lines), int(end)))
+    return "\n".join(lines[s:e])
+
+def peek(start, end, unit="chars"):
+    """Return a bounded slice of the input by char offsets or line numbers."""
+    if str(unit).lower() in ("line", "lines"):
+        return _slice_lines(start, end)
+    if str(unit).lower() not in ("char", "chars"):
+        raise ValueError("unit must be 'chars' or 'lines'")
+    return _slice_chars(start, end)
+
+def search(pattern, max_hits=100):
+    """Regex-search the input and return bounded hit records with snippets."""
+    max_hits = max(0, int(max_hits))
+    hits = []
+    if max_hits == 0:
+        return hits
+    rx = _re.compile(str(pattern), _re.MULTILINE)
+    for i, m in enumerate(rx.finditer(_context)):
+        if i >= max_hits:
+            break
+        start, end = m.span()
+        snippet_start = max(0, start - 120)
+        snippet_end = min(len(_context), end + 120)
+        hits.append({
+            "index": i,
+            "start": start,
+            "end": end,
+            "match": m.group(0),
+            "snippet": _context[snippet_start:snippet_end],
+        })
+    return hits
+
+def chunk(max_chars=20000, overlap=0):
+    """Return full-coverage input chunks with index/start/end/text fields."""
     max_chars = int(max_chars)
     overlap = max(0, int(overlap))
     if max_chars <= 0:
@@ -614,18 +750,22 @@ def chunk_context(max_chars=20000, overlap=0):
     chunks = []
     start = 0
     idx = 0
-    total = len(context)
+    total = len(_context)
     while start < total:
         end = min(total, start + max_chars)
-        chunks.append({"index": idx, "start": start, "end": end, "text": context[start:end]})
+        chunks.append({"index": idx, "start": start, "end": end, "text": _context[start:end]})
         idx += 1
         if end >= total:
             break
         start = end - overlap
     return chunks
 
+def chunk_context(max_chars=20000, overlap=0):
+    """Compatibility alias for chunk()."""
+    return chunk(max_chars=max_chars, overlap=overlap)
+
 def chunk_coverage(chunks):
-    """Summarize coverage for chunks produced by chunk_context()."""
+    """Summarize coverage for chunks produced by chunk()."""
     spans = []
     for c in chunks:
         try:
@@ -642,36 +782,59 @@ def chunk_coverage(chunks):
         if end > cursor:
             covered += end - max(start, cursor)
             cursor = end
-    if cursor < len(context):
-        gaps.append((cursor, len(context)))
+    if cursor < len(_context):
+        gaps.append((cursor, len(_context)))
     return {
         "chunks": len(chunks),
-        "context_chars": len(context),
+        "context_chars": len(_context),
+        "input_chars": len(_context),
         "covered_chars": covered,
         "gaps": gaps,
-        "complete": covered >= len(context) and not gaps,
+        "complete": covered >= len(_context) and not gaps,
     }
 
-# Load the long input as `context` (and `ctx`) from a file. This keeps the
-# big string out of the process command-line and out of the LLM's window.
+def finalize(value, confidence=None):
+    """Signal the session's final answer and persist confidence metadata."""
+    global final_answer, final_confidence, final_result
+    final_answer = str(value)
+    final_confidence = confidence
+    final_result = {
+        "value": final_answer,
+        "confidence": confidence,
+    }
+    _emit_final(final_answer, confidence=confidence)
+    return final_answer
+
+def evaluate_progress():
+    """Return lightweight state useful before deciding the next REPL step."""
+    vars_now = SHOW_VARS()
+    return {
+        "has_final_answer": "final_answer" in globals(),
+        "final_confidence": globals().get("final_confidence", None),
+        "user_variables": vars_now,
+    }
+
+# Load the long input from a file. This keeps the big string out of the
+# process command-line and out of the LLM's window.
 _ctx_file = _os.environ.get("RLM_CONTEXT_FILE","")
-context = ""
+_context = ""
 if _ctx_file:
     try:
         with open(_ctx_file, "r", encoding="utf-8", errors="replace") as f:
-            context = f.read()
+            _context = f.read()
     except Exception as e:
         _sys.stderr.write(f"[bootstrap] failed to load context: {e}\n")
-ctx = context  # short alias matching aleph
 
 _BOOTSTRAP_NAMES = {
     "_SID","_REQ","_RESP","_FINAL","_ERR","_RUN","_END","_DONE","_READY",
-    "_rpc","_ctx_file","_BOOTSTRAP_NAMES","_main_loop",
+    "_rpc","_ctx_file","_context","_slice_chars","_slice_lines","_BOOTSTRAP_NAMES","_main_loop",
+    "_emit_final","_slice_text","_prompt_with_slice",
     "llm_query","llm_query_batched","rlm_query","rlm_query_batched",
+    "sub_query","sub_query_batch","sub_query_map","sub_rlm",
     "FINAL","FINAL_VAR","SHOW_VARS","repl_get","repl_set",
-    "chunk_context","chunk_coverage",
-    "context","ctx",
-    "_json","_os","_sys","_traceback",
+    "context_meta","peek","search","chunk","chunk_context","chunk_coverage",
+    "finalize","evaluate_progress",
+    "_json","_os","_re","_sys","_traceback",
 }
 
 def _main_loop():
@@ -829,7 +992,7 @@ mod tests {
             .await
             .expect("spawn");
         let round = rt
-            .execute("print(len(context), context[:5])")
+            .execute("print(context_meta()['chars'], peek(0, 5))")
             .await
             .expect("execute");
         assert!(round.stdout.contains("19"));
@@ -838,13 +1001,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ctx_alias_works() {
+    async fn context_aliases_are_not_bound() {
         let path = write_temp_context("aleph-style");
         let mut rt = PythonRuntime::spawn_with_context(&path)
             .await
             .expect("spawn");
-        let round = rt.execute("print(ctx)").await.expect("execute");
-        assert!(round.stdout.contains("aleph-style"));
+        let round = rt
+            .execute("print('context' in globals(), 'ctx' in globals())")
+            .await
+            .expect("execute");
+        assert!(round.stdout.contains("False False"));
         rt.shutdown().await;
     }
 
@@ -863,6 +1029,67 @@ mod tests {
             .await
             .expect("execute");
         assert!(round.stdout.contains("3 26 True"), "{}", round.stdout);
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn bounded_input_helpers_work() {
+        let path = write_temp_context("alpha\nbeta needle\ngamma needle\nomega");
+        let mut rt = PythonRuntime::spawn_with_context(&path)
+            .await
+            .expect("spawn");
+        let round = rt
+            .execute(
+                "meta = context_meta()\n\
+                 hits = search('needle', max_hits=1)\n\
+                 print(meta['chars'], meta['lines'])\n\
+                 print(peek(6, 17))\n\
+                 print(peek(1, 3, unit='lines'))\n\
+                 print(len(hits), hits[0]['match'], hits[0]['start'])",
+            )
+            .await
+            .expect("execute");
+        assert!(round.stdout.contains("36 4"), "{}", round.stdout);
+        assert!(round.stdout.contains("beta needle"), "{}", round.stdout);
+        assert!(
+            round.stdout.contains("beta needle\ngamma needle"),
+            "{}",
+            round.stdout
+        );
+        assert!(round.stdout.contains("1 needle 11"), "{}", round.stdout);
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn new_chunk_helper_reports_full_coverage() {
+        let path = write_temp_context("abcdefghijklmnopqrstuvwxyz");
+        let mut rt = PythonRuntime::spawn_with_context(&path)
+            .await
+            .expect("spawn");
+        let round = rt
+            .execute(
+                "chunks = chunk(max_chars=10)\n\
+                 coverage = chunk_coverage(chunks)\n\
+                 print(len(chunks), coverage['input_chars'], coverage['covered_chars'], coverage['complete'])",
+            )
+            .await
+            .expect("execute");
+        assert!(round.stdout.contains("3 26 26 True"), "{}", round.stdout);
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn finalize_helper_is_captured_directly() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let round = rt
+            .execute("finalize('computed answer', confidence='high')")
+            .await
+            .expect("execute");
+        assert_eq!(round.final_value.as_deref(), Some("computed answer"));
+        assert_eq!(
+            round.final_confidence.as_ref().and_then(Value::as_str),
+            Some("high")
+        );
         rt.shutdown().await;
     }
 
@@ -887,7 +1114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn final_is_captured() {
+    async fn legacy_final_is_captured() {
         let mut rt = PythonRuntime::new().await.expect("spawn");
         let round = rt
             .execute("FINAL('the answer is 42')")
@@ -898,7 +1125,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn final_var_is_captured() {
+    async fn legacy_final_var_is_captured() {
         let mut rt = PythonRuntime::new().await.expect("spawn");
         rt.execute("answer = 'computed'").await.expect("r1");
         let round = rt.execute("FINAL_VAR('answer')").await.expect("r2");
@@ -939,6 +1166,33 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         match &recorded[0] {
             RpcRequest::Llm { prompt, .. } => assert_eq!(prompt, "hello"),
+            other => panic!("expected Llm request, got {other:?}"),
+        }
+        drop(recorded);
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn rpc_dispatcher_round_trips_sub_query_alias() {
+        let bridge = StubBridge::new();
+        let calls = Arc::clone(&bridge.calls);
+
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let round = rt
+            .run("print(sub_query('hello from sub'))", Some(&bridge))
+            .await
+            .expect("execute");
+        assert!(
+            round.stdout.contains("stub#0: hello from sub"),
+            "stdout: {:?}",
+            round.stdout
+        );
+        assert_eq!(round.rpc_count, 1);
+
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0] {
+            RpcRequest::Llm { prompt, .. } => assert_eq!(prompt, "hello from sub"),
             other => panic!("expected Llm request, got {other:?}"),
         }
         drop(recorded);

@@ -67,7 +67,7 @@ impl Theme {
             section_bg: palette::DEEPSEEK_INK,
             section_title_color: palette::DEEPSEEK_BLUE,
             // Horizontal padding only. `Padding::uniform(1)` ate two rows of
-            // each sidebar panel — for compact terminals where Plan/Todos/Tasks
+            // each sidebar panel — for compact terminals where Work/Tasks/Agents
             // get ~3 rows total via the 25% layout split, that left zero rows
             // for content (#63 follow-up: panels rendered as empty boxes even
             // when "No todos" / "No active plan" should have shown).

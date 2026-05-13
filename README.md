@@ -68,7 +68,7 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 - **Durable task queue** — background tasks can survive restarts
 - **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
 - **MCP protocol** — connect to Model Context Protocol servers for extended tooling; please see [docs/MCP.md](docs/MCP.md)
-- **Native RLM** (`rlm_query`) — run batched analysis through cheap `deepseek-v4-flash` children using the same API client
+- **Native RLM** (`rlm_open`/`rlm_eval`) — persistent REPL sessions for batched analysis; run cheap `deepseek-v4-flash` children with bounded helpers like `peek`, `search`, `chunk`, and `sub_query_batch`
 - **LSP diagnostics** — inline error/warning surfacing after every edit via rust-analyzer, pyright, typescript-language-server, gopls, clangd
 - **User memory** — optional persistent note file injected into the system prompt for cross-session preferences
 - **Localized UI** — `en`, `ja`, `zh-Hans`, `pt-BR` with auto-detection
@@ -82,6 +82,17 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 `deepseek` (dispatcher CLI) → `deepseek-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
+
+### Sub-agents: Concurrent Background Execution
+
+DeepSeek TUI can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
+
+- **Non-blocking launch.** `agent_open` returns immediately. The child gets its own fresh context and tool registry and runs independently. The parent keeps working.
+- **Background execution.** Sub-agents execute concurrently (default cap: 10, configurable to 20). The engine manages the pool — no polling loop needed.
+- **Completion notification.** When a sub-agent finishes, the runtime delivers a structured `<deepseek:subagent.done>` event with a summary, evidence list, and execution metrics. The parent model reads the `summary` field and integrates findings.
+- **Bounded result retrieval.** Large transcripts are parked behind `var_handle` references. The model calls `handle_read` for slices, ranges, or JSONPath projections — keeping the parent context lean.
+
+See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for the full sub-agent reference.
 
 ---
 
@@ -225,90 +236,47 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.32
+## What's New In v0.8.33
 
-A "more useful tools" release expanding the tool surface for real-world
-workflows. Five new tools, ten community PRs targeting model-protocol bugs
-and UX papercuts, and a snapshot cap that stops giant workspaces from
-hanging the TUI on first turn. [Full changelog](CHANGELOG.md).
+A sub-agent and RLM renovation release. The model-facing delegation
+surface is now session-oriented: `rlm_open` / `rlm_eval` /
+`rlm_configure` / `rlm_close` for persistent RLM work, `agent_open` /
+`agent_eval` / `agent_close` for named sub-agent sessions, and
+`handle_read` for bounded retrieval from large results. Six tool
+papercuts fixed, two community PRs landed, and the sidebar gets a
+cleaner "Work" tab. [Full changelog](CHANGELOG.md).
 
-- **Five new tools.** `read_file` now extracts PDFs in pure Rust — no
-  Poppler install required. `pandoc_convert` moves documents between 11
-  formats (Markdown, HTML, DOCX, EPUB, LaTeX…). `image_ocr` runs local
-  tesseract on screenshots and scanned documents. `image_analyze` sends
-  images to a vision model for natural-language description (opt-in only).
-  `js_execution` mirrors `code_execution` for Node.js snippets.
-- **Two more providers.** AtlasCloud joins as a first-class provider
-  (`provider = "atlascloud"`) with the same config-surface shape as the
-  existing NVIDIA NIM / Fireworks rows. `web_search` supports Tavily and
-  Bocha as configurable backends for regions where DuckDuckGo is
-  unreliable.
-- **Prompt-cache survives mid-session edits** (PR #1345 from
-  **@Duducoco**). Moving `instructions`, user memory, and session goal
-  below the volatile-content boundary means the KV prefix cache no longer
-  breaks every time you edit your memory file — skills and context
-  management instructions stay hot regardless of how often you run
-  `/memory`.
-- **vLLM thinking toggle actually works now** (PR #1480 from
-  **@h3c-hexin**). `reasoning_effort = "off"` on vLLM providers now emits
-  the OpenAI `chat_template_kwargs.enable_thinking` extension instead of
-  the silently-ignored Anthropic-native field. Measured improvement on
-  Qwen3: TTFT from ~13s → ~270ms.
-- **Kitty keyboard protocol on Windows** (PR #1483 from
-  **@CrepuscularIRIS / autoghclaw**). `Shift+Enter` now inserts a
-  newline instead of submitting in VSCode and Windows Terminal —
-  previously indistinguishable from plain Enter on Windows.
-- **Tool-result retrieval namespace unified** (#1541). Wire-dedup refs
-  and disk-spillover refs now share a lookup path — `retrieve_tool_result`
-  accepts SHA refs, bare hex hashes, `art_<id>` aliases, and absolute
-  paths, with error messages that list every accepted form.
-- **Snapshots skip giant workspaces** (#1552). A 2 GB ceiling on
-  non-excluded workspace content prevents first-turn `git add -A` from
-  hanging the TUI on multi-hundred-GB project directories. Configurable
-  via `[snapshots] max_workspace_gb`; set to `0` to restore unbounded
-  behaviour.
-- **`deepseek update` refreshes both binaries** (PR #1492 from
-  **@NorethSea**). The updater now enumerates colocated binaries (both
-  the dispatcher and the TUI runtime), downloads and verifies every
-  release asset, and writes the sibling first so a partial failure can't
-  leave the launcher updated while the TUI stays stale.
-- **Approval modal collapses to a one-line banner** (PR #1455 from
-  **@tiger-dog**). Tab toggles between the full takeover card and a
-  bottom-line summary — the transcript stays visible while you decide.
-- **`@`-mention truncation no longer splits CJK codepoints** (PR #1495
-  from **@CrepuscularIRIS / autoghclaw**). Files larger than 128 KB
-  used to truncate mid-codepoint; the truncator now rounds down to the
-  last valid UTF-8 boundary.
-- **Startup empty-state shows the build version**, active model with a
-  `/model` hint, and current working directory (PR #1444 from
-  **@reidliu41**).
-- **`/change` slash command** displays the latest CHANGELOG section
-  inside the TUI (PR #1416 from **@zhuangbiaowei**).
-- **Toast overlay no longer renders on top of the composer** (PR #1485
-  from **@MeAiRobot**). Approval toasts now clamp to the gap between
-  the composer and footer.
-- **TUI no longer freezes during long-running shell jobs** (PR #1494
-  from **@CrepuscularIRIS / autoghclaw**). The job panel's refresh path
-  now reads only the tail bytes under the mutex lock instead of cloning
-  the entire stdout buffer every 2.5 seconds.
-- **Markdown renderer no longer eats underscores in identifiers** (PR
-  #1455 from **@tiger-dog**). `deepseek_tui` and `foo_bar_baz` no longer
-  render half-italic.
-- **`/sessions` picker highlights the selected row** more strongly in
-  dark terminals (PR #1493 from **@reidliu41**), and no longer shows
-  `<turn_meta>` as the session title (PR #1498 from **@wdw8276**).
+- **Persistent RLM sessions.** RLM work now uses `rlm_open` /
+  `rlm_eval` / `rlm_close` with bounded REPL helpers (`peek`,
+  `search`, `chunk`, `sub_query`, `sub_query_batch`, `finalize`)
+  — the model drives the REPL through tool calls instead of a
+  foreground loop.
+- **Fork-aware sub-agent sessions.** `agent_open` supports named
+  sessions, `fork_context` for prompt-cache-friendly perspective
+  fanout, and bounded recursive depth. Sub-agent results and
+  transcripts can be parked behind `var_handle` references.
+- **Shared `handle_read` tool.** Large structured results (RLM
+  finals, sub-agent transcripts, tool artifacts) return typed handles
+  with slice, range, count, and JSONPath projections — the model
+  reads back only what it needs.
+- **Text selection now works during streaming.** The loading-state
+  mouse filter drops inert move events but allows transcript and
+  scrollbar drags to continue — the known issue from v0.8.32 is
+  resolved.
+- **Six tool papercuts fixed.** `file_search` safer excludes;
+  `grep_files` returns clean strings; `fetch_url` JSON field
+  projection and headers; `edit_file` indentation fuzz;
+  `exec_shell` merged stdout/stderr; `revert_turn` rejects no-ops.
+- **CLI reasoning-effort honoured** on `--reasoning-effort high`
+  non-auto exec routes (PR #1511 from **@h3c-hexin**).
+- **Sidebar "Work" tab.** The former "Plan" / "Todos" tabs are now
+  one "Work" panel for the active checklist, consistent across Plan,
+  Agent, and YOLO modes.
+- **`/relay` command with CJK aliases** (`/接力`) for structured
+  multi-session handoff prompts.
 
-**Known issue in v0.8.32:** terminal-native text selection can still be
-blocked while the agent is thinking or streaming a response. v0.8.33 is
-planned to ship the text-selection fix alongside the sub-agent and RLM
-renovation.
-
-Thanks to **@CrepuscularIRIS** (4 landings), **@reidliu41** (2 landings),
-**@tiger-dog** (2 landings), **@Duducoco**, **@h3c-hexin**,
-**@NorethSea**, **@MeAiRobot**, **@zhuangbiaowei**, **@wdw8276**,
-**@MMMarcinho**, **@SamhandsomeLee**, **@sandofree**,
-**@lucaszhu-hue**, **@muyuliyan**, **@Oliver-ZPLiu**, **@czf0718**,
-**@jieshu666**, and **@YaYII**.
+Thanks to **@reidliu41** and **@h3c-hexin** for community
+contributions in this release.
 
 ---
 

@@ -450,6 +450,35 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
 }
 
 #[test]
+fn loading_mouse_filter_keeps_active_drags() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+
+    let moved = MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 3,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    };
+    let drag = MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: 5,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    };
+
+    assert!(should_drop_loading_mouse_motion(&app, moved));
+    assert!(should_drop_loading_mouse_motion(&app, drag));
+
+    app.viewport.transcript_selection.dragging = true;
+    assert!(!should_drop_loading_mouse_motion(&app, drag));
+
+    app.viewport.transcript_selection.dragging = false;
+    app.viewport.transcript_scrollbar_dragging = true;
+    assert!(!should_drop_loading_mouse_motion(&app, drag));
+}
+
+#[test]
 fn jump_to_latest_button_click_scrolls_to_tail() {
     let mut app = create_test_app();
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
@@ -1732,7 +1761,10 @@ fn make_subagent(
     status: crate::tools::subagent::SubAgentStatus,
 ) -> crate::tools::subagent::SubAgentResult {
     crate::tools::subagent::SubAgentResult {
+        name: id.to_string(),
         agent_id: id.to_string(),
+        context_mode: "fresh".to_string(),
+        fork_context: false,
         agent_type: crate::tools::subagent::SubAgentType::General,
         assignment: crate::tools::subagent::SubAgentAssignment {
             objective: format!("objective-{id}"),
@@ -2762,6 +2794,15 @@ fn first_line_for_cell(app: &App, cell_index: usize) -> usize {
         .expect("cell should have rendered line")
 }
 
+fn pop_pager_body(app: &mut App) -> String {
+    let mut view = app.view_stack.pop().expect("pager view");
+    let pager = view
+        .as_any_mut()
+        .downcast_mut::<PagerView>()
+        .expect("top view should be pager");
+    pager.body_text()
+}
+
 #[test]
 fn detail_target_prefers_visible_tool_card() {
     let mut app = create_test_app();
@@ -2824,10 +2865,39 @@ fn detail_target_prefers_visible_tool_card() {
     app.viewport.last_transcript_visible = 6;
 
     assert_eq!(detail_target_cell_index(&app), Some(1));
-    let expected = format!("{} details: file_search", tool_details_shortcut_label());
+    let expected = format!(
+        "{} Activity: file_search · {} raw",
+        activity_shortcut_label(),
+        tool_details_shortcut_label()
+    );
     assert_eq!(
         selected_detail_footer_label(&app).as_deref(),
         Some(expected.as_str())
+    );
+}
+
+#[test]
+fn activity_footer_hint_surfaces_visible_thinking_without_raw_tool_hint() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Thinking {
+        content: "visible reasoning".to_string(),
+        streaming: false,
+        duration_secs: Some(1.4),
+    }];
+    app.resync_history_revisions();
+    let revisions = app.history_revisions.clone();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &revisions,
+        100,
+        app.transcript_render_options(),
+    );
+    app.viewport.last_transcript_top = first_line_for_cell(&app, 0);
+    app.viewport.last_transcript_visible = 4;
+
+    assert_eq!(
+        selected_detail_footer_label(&app).as_deref(),
+        Some("Ctrl+O Activity: thinking")
     );
 }
 
@@ -3680,7 +3750,7 @@ fn orphan_during_active_keeps_subsequent_completion_routed_correctly() {
 
 #[test]
 fn tool_details_survive_active_cell_flush() {
-    // The pager / Ctrl+O resolves tool details by cell index. Flushing the
+    // Detail pagers resolve tool details by cell index. Flushing the
     // active cell must move detail records into `tool_details_by_cell` so
     // the pager keeps working after the turn settles.
     let mut app = create_test_app();
@@ -3985,7 +4055,7 @@ fn open_thinking_pager_finds_thinking_in_active_cell() {
     // `app.active_cell` with `streaming = false` until the active cell is
     // flushed to history (end-of-turn, or when an assistant text arrives).
     // During that window the transcript still renders the
-    // "thinking collapsed; press Ctrl+O for full text" affordance from
+    // "thinking collapsed; Ctrl+O opens Activity Detail" affordance from
     // `render_thinking`, so the handler must reach across the virtual
     // transcript — not just `app.history` — or the promise is a lie.
     // Regression guard for the v0.8.29 affordance/handler mismatch.
@@ -4012,6 +4082,123 @@ fn open_thinking_pager_finds_thinking_in_active_cell() {
         app.view_stack.top_kind(),
         Some(ModalKind::Pager),
         "pager must open for thinking entries still in active_cell"
+    );
+}
+
+#[test]
+fn activity_detail_opens_selected_thinking_chunk() {
+    let mut app = create_test_app();
+    app.history = vec![
+        HistoryCell::Thinking {
+            content: "first chunk reasoning".to_string(),
+            streaming: false,
+            duration_secs: Some(0.8),
+        },
+        HistoryCell::Assistant {
+            content: "interlude".to_string(),
+            streaming: false,
+        },
+        HistoryCell::Thinking {
+            content: "second chunk reasoning".to_string(),
+            streaming: false,
+            duration_secs: Some(1.1),
+        },
+    ];
+    app.resync_history_revisions();
+    let revisions = app.history_revisions.clone();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &revisions,
+        100,
+        app.transcript_render_options(),
+    );
+    let line = first_line_for_cell(&app, 0);
+    let point = TranscriptSelectionPoint {
+        line_index: line,
+        column: 0,
+    };
+    app.viewport.transcript_selection.anchor = Some(point);
+    app.viewport.transcript_selection.head = Some(point);
+
+    assert!(open_activity_detail_pager(&mut app));
+    let body = pop_pager_body(&mut app);
+
+    assert!(
+        body.contains("Activity: thinking"),
+        "activity label missing: {body}"
+    );
+    assert!(
+        body.contains("Thinking chunk: 1 of 2"),
+        "chunk position missing: {body}"
+    );
+    assert!(body.contains("first chunk reasoning"), "body: {body}");
+    assert!(
+        !body.contains("second chunk reasoning"),
+        "selected chunk should not fall through to latest thinking: {body}"
+    );
+}
+
+#[test]
+fn activity_detail_fallback_prefers_live_activity_context() {
+    let mut app = create_test_app();
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "active-1",
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "agent_eval".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("agent_id: agent_af58ba3a".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        })),
+    );
+    app.active_cell = Some(active);
+    app.runtime_turn_id = Some("turn_live_123456789".to_string());
+    app.runtime_turn_status = Some("in_progress".to_string());
+
+    assert!(open_activity_detail_pager(&mut app));
+    let body = pop_pager_body(&mut app);
+
+    assert!(body.contains("Turn: turn_live_123456789"));
+    assert!(body.contains("Activity: tool agent_eval"));
+    assert!(body.contains("Status: running"));
+    assert!(body.contains("agent_id: agent_af58ba3a"));
+}
+
+#[test]
+fn activity_detail_fallback_uses_recent_meaningful_activity_without_full_tool_dump() {
+    let mut app = create_test_app();
+    let output = (0..20)
+        .map(|idx| format!("line {idx}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.history
+        .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "read_file".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("src/large.rs".to_string()),
+            output: Some(output),
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        })));
+
+    assert!(open_activity_detail_pager(&mut app));
+    let body = pop_pager_body(&mut app);
+
+    assert!(body.contains("Activity: tool read_file"));
+    assert!(body.contains("Status: done"));
+    assert!(
+        body.contains("Alt+V for details"),
+        "activity detail should stay bounded and point to Alt+V for raw detail: {body}"
+    );
+    assert!(
+        !body.contains("line 10"),
+        "middle of large raw output should not be dumped into Activity Detail: {body}"
     );
 }
 

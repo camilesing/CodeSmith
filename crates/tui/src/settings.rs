@@ -211,7 +211,7 @@ pub struct Settings {
     pub default_mode: String,
     /// Sidebar width as percentage of terminal width
     pub sidebar_width_percent: u16,
-    /// Sidebar focus mode: auto, plan, todos, tasks, agents, context
+    /// Sidebar focus mode: auto, work, tasks, agents, context
     pub sidebar_focus: String,
     /// Enable the session-context panel (#504). Shows working set, tokens,
     /// cost, MCP/LSP status, cycle count, and memory info.
@@ -555,13 +555,13 @@ impl Settings {
             "sidebar_focus" | "focus" => {
                 let normalized = match value.trim().to_ascii_lowercase().as_str() {
                     "auto" => "auto",
-                    "plan" => "plan",
-                    "todos" => "todos",
+                    "work" | "plan" | "todos" => "work",
                     "tasks" => "tasks",
                     "agents" | "subagents" | "sub-agents" => "agents",
+                    "context" | "session" => "context",
                     _ => {
                         anyhow::bail!(
-                            "Failed to update setting: invalid sidebar focus '{value}'. Expected: auto, plan, todos, tasks, agents."
+                            "Failed to update setting: invalid sidebar focus '{value}'. Expected: auto, work, tasks, agents, context."
                         )
                     }
                 };
@@ -732,7 +732,7 @@ impl Settings {
             ("sidebar_width", "Sidebar width percentage: 10-50"),
             (
                 "sidebar_focus",
-                "Sidebar focus: auto, plan, todos, tasks, agents",
+                "Sidebar focus: auto, work, tasks, agents, context",
             ),
             ("cost_currency", "Cost display currency: usd, cny"),
             ("max_history", "Max input history entries"),
@@ -886,8 +886,7 @@ fn normalize_background_color_setting(value: &str) -> Result<Option<String>> {
 
 fn normalize_sidebar_focus(value: &str) -> &str {
     match value.trim().to_ascii_lowercase().as_str() {
-        "plan" => "plan",
-        "todos" => "todos",
+        "work" | "plan" | "todos" => "work",
         "tasks" => "tasks",
         "agents" | "subagents" | "sub-agents" => "agents",
         "context" | "session" => "context",
@@ -1006,6 +1005,28 @@ mod tests {
             .set("cost_currency", "eur")
             .expect_err("unsupported currency");
         assert!(err.to_string().contains("invalid cost currency"));
+    }
+
+    #[test]
+    fn sidebar_focus_accepts_work_values_and_legacy_aliases() {
+        let mut settings = Settings::default();
+
+        settings.set("sidebar_focus", "work").expect("set work");
+        assert_eq!(settings.sidebar_focus, "work");
+
+        settings.set("focus", "plan").expect("legacy plan alias");
+        assert_eq!(settings.sidebar_focus, "work");
+
+        settings.set("focus", "todos").expect("legacy todos alias");
+        assert_eq!(settings.sidebar_focus, "work");
+
+        settings.set("focus", "context").expect("context focus");
+        assert_eq!(settings.sidebar_focus, "context");
+
+        let err = settings
+            .set("sidebar_focus", "classic")
+            .expect_err("classic is not a supported public focus");
+        assert!(err.to_string().contains("invalid sidebar focus"));
     }
 
     #[test]

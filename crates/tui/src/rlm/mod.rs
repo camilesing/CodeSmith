@@ -26,6 +26,7 @@ use crate::models::Usage;
 
 pub mod bridge;
 pub mod prompt;
+pub mod session;
 pub mod turn;
 
 pub use bridge::RlmBridge;

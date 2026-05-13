@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.33] - 2026-05-12
+
+A sub-agent and RLM renovation release. The model-facing delegation
+surface is now session-oriented instead of one-shot: RLM work happens
+through `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`,
+sub-agent work happens through `agent_open` / `agent_eval` /
+`agent_close`, and large outputs can be parked behind typed handles
+that the model reads back explicitly with `handle_read`.
+
+### Added
+
+- **Persistent RLM sessions with bounded REPL helpers.** RLM prompts now
+  use `peek`, `search`, `chunk`, `context_meta`, `sub_query`,
+  `sub_query_batch`, `sub_query_map`, `sub_rlm`, and
+  `finalize(value, confidence)` instead of exposing the full parent
+  context as an ambient variable.
+- **Fork-aware sub-agent sessions.** `agent_open` supports named
+  sessions, `fork_context`, and bounded recursive depth so the parent can
+  ask for multiple perspectives while preserving prompt-cache-friendly
+  prefix context where available.
+- **Shared `handle_read` storage.** RLM finals, sub-agent transcripts,
+  and other large structured results can return `var_handle` references
+  with slice, range, count, and JSONPath projections.
+- **Slash-command routing for the new surface.** `/rlm [N] ...` and
+  `/agent [N] ...` now prompt the assistant to use the persistent tools
+  instead of the removed foreground RLM operation.
+- **`/relay` slash command with CJK aliases** (`/接力`). Hands the
+  assistant a structured handoff prompt for coordinated multi-turn
+  continuation across sessions.
+- **`checklist_write` sidebar rename.** The sidebar focus tab formerly
+  known as "Plan" / "Todos" is now "Work" — one panel for the active
+  checklist and optional plan, consistent across all three modes.
+
+### Changed
+
+- **Prompts and docs now teach only the new tool names.** Legacy
+  RLM/sub-agent helpers remain internally where needed for durable
+  transcript compatibility, but the registry exposes the session tools.
+- **Large or noisy tool results are easier to keep out of context.**
+  Tool output summaries, sub-agent results, and transcript snapshots now
+  point the model toward `handle_read` when it needs raw detail.
+- **Tool-surface smoke guidance is explicit.** Release checks now document
+  the exact version commands and registry-name searches for `handle_read`,
+  persistent RLM tools, and persistent sub-agent tools.
+- **Foreground RLM operation removed.** The old `Op::Rlm` path and its
+  `handle_rlm` engine method are gone; all RLM work now flows through
+  the persistent-session tools.
+- **Stale competitive-analysis doc removed.** The old cross-agent matrix
+  had become an unreliable inventory of tool names rather than useful
+  release guidance.
+
+### Fixed
+
+- **Transcript selection keeps working while the agent is streaming.**
+  The loading-state mouse filter now drops inert move events but allows
+  active transcript and scrollbar drags to continue.
+- **Tool papercuts:** `file_search` has safer default excludes and an
+  explicit `exclude` option; `grep_files` returns single-line context as
+  strings; `fetch_url` can project JSON fields and returns headers;
+  `edit_file` can opt into leading-indentation fuzz; `exec_shell` can
+  merge stdout/stderr in chronological order; `revert_turn` rejects
+  no-op snapshot boundaries.
+- **CLI reasoning-effort honoured on non-auto exec routes** (PR #1511
+  from **@h3c-hexin**). `deepseek -p "..." --reasoning-effort high` now
+  applies the flag correctly instead of falling back to the config-file
+  default.
+- **Edit-file replacement boundaries clarified** (PR #1516). The tool
+  description and error messages now make it unambiguous that
+  `edit_file` is for one clear replacement in one file.
+- **Pandoc output validated before probing** (PR #1523). Binary-format
+  conversions that produce empty or invalid output now surface a clear
+  error instead of a confusing pandoc stack trace.
+- **Running turns can be steered and repainted** (PR #1533, #1537).
+  Composer input during an active turn no longer stalls; the TUI
+  redraws the transcript as the agent streams.
+- **Tasks and Activity Detail are calmer under load.** The Tasks panel now
+  keeps live/background/recent activity from double-counting the same shell
+  or RLM work, groups repeated read/search/checklist noise, and keeps
+  failures, status, command summaries, and durations visible. Ctrl+O now
+  opens Activity Detail for the selected, live, or most recent meaningful
+  activity while Alt+V remains the direct tool-detail pager; the idle footer
+  now advertises that split for the visible activity.
+- **npm retry shows timeout hint on first failure** (PR #1538).
+  Installations behind slow proxies now see a clear "retrying" message
+  instead of a silent hang.
+- **Issue templates improved** (PR #1525 from **@reidliu41**). Bug and
+  feature-request templates are clearer and easier for new contributors.
+
+### Credits
+
+Thanks to **@reidliu41** (#1525) and **@h3c-hexin** (#1511) for
+community contributions in this release.
+
 ## [0.8.32] - 2026-05-12
 
 A "more useful tools" release. v0.8.31 made the tool surface
@@ -3821,7 +3914,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.32...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.33...HEAD
+[0.8.33]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.32...v0.8.33
 [0.8.32]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.31...v0.8.32
 [0.8.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.30...v0.8.31
 [0.8.30]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.29...v0.8.30

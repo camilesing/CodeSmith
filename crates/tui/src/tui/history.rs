@@ -309,7 +309,7 @@ impl HistoryCell {
     /// Render the cell in transcript mode: full content, no caps, no
     /// "Alt+V for details" affordances.
     ///
-    /// Use this for the pager (`v` / `Ctrl+O`), clipboard exports, and any
+    /// Use this for full-detail pagers, clipboard exports, and any
     /// surface that wants the complete body rather than the live summary.
     /// For most variants (User / Assistant / System) this matches `lines()`;
     /// `Thinking` and `Tool` are where the live and transcript surfaces
@@ -1247,19 +1247,21 @@ impl GenericToolCell {
             return lines;
         }
 
-        // Issue #409: `agent_spawn` already gets a dedicated `DelegateCard`
+        // Issue #409: sub-agent open already gets a dedicated `DelegateCard`
         // that owns the live action tree, status, and final summary. The
         // generic tool block for the same call duplicates that signal at
         // 3-4 lines per spawn — N parallel spawns multiply the noise. In
         // live mode, render one compact summary line and let the
         // DelegateCard be the source of truth. Transcript mode keeps the
         // full block so session replay remains complete.
-        if matches!(mode, RenderMode::Live) && self.name == "agent_spawn" {
+        if matches!(mode, RenderMode::Live)
+            && matches!(self.name.as_str(), "agent_open" | "agent_spawn")
+        {
             return self.render_agent_spawn_compact(low_motion);
         }
 
         let mut lines = Vec::new();
-        // Map the actual tool name (e.g. `agent_spawn`, `apply_patch`) to a
+        // Map the actual tool name (e.g. `agent_open`, `apply_patch`) to a
         // family rather than the catch-all `"Tool"` title — this is what
         // gives a `GenericToolCell` the right verb glyph (◐ delegate, ⋮⋮
         // fanout, etc.) instead of falling back to the neutral bullet.
@@ -1343,13 +1345,13 @@ impl GenericToolCell {
         wrap_card_rail(lines)
     }
 
-    /// Render `agent_spawn` as a single compact summary line for live
+    /// Render `agent_open`/legacy `agent_spawn` as a single compact summary line for live
     /// mode (#409). The companion `DelegateCard` already carries the
     /// live action tree, status, and final summary; this line is just
     /// the pointer that says "a spawn happened, here's the agent id".
     ///
     /// Output shape (header):
-    ///   `◐ delegate · agent_spawn  agent-abc12  [running]`
+    ///   `◐ delegate · agent_open  agent-abc12  [running]`
     /// Falls back to a placeholder when the spawn is still pending and
     /// no agent id has been assigned yet.
     fn render_agent_spawn_compact(&self, low_motion: bool) -> Vec<Line<'static>> {
@@ -1438,7 +1440,7 @@ fn render_spillover_annotation(path: &std::path::Path, width: u16) -> Line<'stat
     ])
 }
 
-/// Pull the `agent_id` field out of an `agent_spawn` tool output. The
+/// Pull the `agent_id` field out of a sub-agent open tool output. The
 /// tool emits structured JSON shaped like
 /// `{"agent_id": "agent-abc12", "nickname": "...", "model": "..."}` so we
 /// look for the `agent_id` key and return its string value.
@@ -2160,9 +2162,9 @@ fn render_thinking(
         };
     if needs_affordance {
         let label = if streaming {
-            "thinking continues; press Ctrl+O for full text"
+            "thinking continues; Ctrl+O opens Activity Detail"
         } else {
-            "thinking collapsed; press Ctrl+O for full text"
+            "thinking collapsed; Ctrl+O opens Activity Detail"
         };
         lines.push(Line::from(vec![
             Span::styled(REASONING_RAIL.to_string(), rail_style),
@@ -3646,7 +3648,7 @@ mod tests {
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect::<String>();
-        assert!(text.contains("thinking collapsed; press Ctrl+O for full text"));
+        assert!(text.contains("thinking collapsed; Ctrl+O opens Activity Detail"));
         assert!(text.contains("thinking"));
     }
 
@@ -3694,7 +3696,7 @@ mod tests {
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect::<String>();
         assert!(
-            text.contains("thinking continues; press Ctrl+O for full text"),
+            text.contains("thinking continues; Ctrl+O opens Activity Detail"),
             "streaming-truncation affordance missing, got: {text}"
         );
         // The most recent line must be the visible tail (head dropped).
@@ -4345,11 +4347,11 @@ mod tests {
             "live thinking must drop the tail when collapsed"
         );
         assert!(
-            live_text.contains("press Ctrl+O for full text"),
+            live_text.contains("Ctrl+O opens Activity Detail"),
             "live thinking must offer the pager affordance"
         );
         assert!(
-            !transcript_text.contains("press Ctrl+O for full text"),
+            !transcript_text.contains("Ctrl+O opens Activity Detail"),
             "transcript thinking must not include the live affordance"
         );
     }
@@ -4381,7 +4383,7 @@ mod tests {
             "short thinking must render identically on both surfaces"
         );
         assert!(
-            !live_text.contains("press Ctrl+O for full text"),
+            !live_text.contains("Ctrl+O opens Activity Detail"),
             "short thinking must not show the collapse affordance"
         );
     }

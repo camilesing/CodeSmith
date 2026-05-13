@@ -203,8 +203,7 @@ impl ReasoningEffort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarFocus {
     Auto,
-    Plan,
-    Todos,
+    Work,
     Tasks,
     Agents,
     Context,
@@ -250,8 +249,7 @@ impl SidebarFocus {
     #[must_use]
     pub fn from_setting(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
-            "plan" => Self::Plan,
-            "todos" => Self::Todos,
+            "work" | "plan" | "todos" => Self::Work,
             "tasks" => Self::Tasks,
             "agents" | "subagents" | "sub-agents" => Self::Agents,
             "context" | "session" => Self::Context,
@@ -264,8 +262,7 @@ impl SidebarFocus {
     pub fn as_setting(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::Plan => "plan",
-            Self::Todos => "todos",
+            Self::Work => "work",
             Self::Tasks => "tasks",
             Self::Agents => "agents",
             Self::Context => "context",
@@ -4002,19 +3999,6 @@ pub enum AppAction {
     },
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
-    /// Run a Recursive Language Model (RLM) turn — Algorithm 1 from
-    /// Zhang et al. (arXiv:2512.24601). The prompt is stored in the REPL;
-    /// the root LLM only sees metadata.
-    Rlm {
-        /// The user's prompt — stored in REPL, NOT in LLM context.
-        prompt: String,
-        /// Model for the root LLM.
-        model: String,
-        /// Model for sub-LLM (llm_query) calls.
-        child_model: String,
-        /// Recursion budget for `sub_rlm()` calls.
-        max_depth: u32,
-    },
     ListSubAgents,
     FetchModels,
     CacheWarmup,
@@ -4138,6 +4122,18 @@ mod tests {
     fn test_trust_mode_follows_yolo_on_startup() {
         let app = App::new(test_options(true), &Config::default());
         assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn sidebar_focus_accepts_work_and_maps_legacy_trackers_to_work() {
+        assert_eq!(SidebarFocus::from_setting("auto"), SidebarFocus::Auto);
+        assert_eq!(SidebarFocus::from_setting("work"), SidebarFocus::Work);
+        assert_eq!(SidebarFocus::from_setting("plan"), SidebarFocus::Work);
+        assert_eq!(SidebarFocus::from_setting("todos"), SidebarFocus::Work);
+        assert_eq!(SidebarFocus::from_setting("tasks"), SidebarFocus::Tasks);
+        assert_eq!(SidebarFocus::from_setting("agents"), SidebarFocus::Agents);
+        assert_eq!(SidebarFocus::from_setting("context"), SidebarFocus::Context);
+        assert_eq!(SidebarFocus::Work.as_setting(), "work");
     }
 
     #[test]
