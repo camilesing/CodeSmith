@@ -503,7 +503,10 @@ fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) -> Too
             } else {
                 ""
             };
-            lines.push(format!("  {}: {}{}", field.name, field.kind, required_marker));
+            lines.push(format!(
+                "  {}: {}{}",
+                field.name, field.kind, required_marker
+            ));
         }
     }
     lines.push(String::new());
@@ -531,8 +534,7 @@ fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) -> Too
         }
     }
 
-    ToolResult::success(lines.join("\n"))
-    .with_metadata(json!({
+    ToolResult::success(lines.join("\n")).with_metadata(json!({
         "event": "tool.schema_hydrated",
         "tool": tool.name,
         "executed": false,

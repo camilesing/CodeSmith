@@ -754,9 +754,9 @@ pub fn auto_model_heuristic_with_bias(
         "\u{5206}\u{6790}", // 分析
         "\u{5be6}\u{73fe}", // 實現
     ];
-    let strong_match = COMPLEX_KEYWORDS.iter().any(|kw| {
-        !borderline_pro_keywords.contains(kw) && lower.contains(kw)
-    });
+    let strong_match = COMPLEX_KEYWORDS
+        .iter()
+        .any(|kw| !borderline_pro_keywords.contains(kw) && lower.contains(kw));
     let borderline_match = borderline_pro_keywords.iter().any(|kw| lower.contains(kw));
     let pro_match = strong_match || (!cost_saving && borderline_match);
     if pro_match {

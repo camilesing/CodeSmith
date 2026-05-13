@@ -2065,34 +2065,35 @@ pub(crate) fn slash_completion_hints(
         let prefix_lower = prefix.to_ascii_lowercase();
         for name in commands::all_command_names_matching(prefix, workspace) {
             let command_key = name.trim_start_matches('/');
-            let (description, alias_hint) = if let Some(info) = commands::get_command_info(command_key) {
-                // Detect matching alias: if the user typed via pinyin rather
-                // than the canonical name, record which alias matched.
-                let hint = if !command_key.to_ascii_lowercase().starts_with(&prefix_lower) {
-                    info.aliases
-                        .iter()
-                        .find(|a| a.to_ascii_lowercase().starts_with(&prefix_lower))
-                        .map(|a| a.to_string())
-                } else {
-                    None
-                };
-                let desc = if info.aliases.is_empty() {
-                    info.description_for(locale).to_string()
-                } else {
-                    format!(
-                        "{}  (aliases: {})",
-                        info.description_for(locale),
+            let (description, alias_hint) =
+                if let Some(info) = commands::get_command_info(command_key) {
+                    // Detect matching alias: if the user typed via pinyin rather
+                    // than the canonical name, record which alias matched.
+                    let hint = if !command_key.to_ascii_lowercase().starts_with(&prefix_lower) {
                         info.aliases
                             .iter()
-                            .map(|a| format!("/{a}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
+                            .find(|a| a.to_ascii_lowercase().starts_with(&prefix_lower))
+                            .map(|a| a.to_string())
+                    } else {
+                        None
+                    };
+                    let desc = if info.aliases.is_empty() {
+                        info.description_for(locale).to_string()
+                    } else {
+                        format!(
+                            "{}  (aliases: {})",
+                            info.description_for(locale),
+                            info.aliases
+                                .iter()
+                                .map(|a| format!("/{a}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    };
+                    (desc, hint)
+                } else {
+                    (String::from("User-defined command"), None)
                 };
-                (desc, hint)
-            } else {
-                (String::from("User-defined command"), None)
-            };
             entries.push(SlashMenuEntry {
                 name,
                 description,
