@@ -559,12 +559,12 @@ mod tests {
     /// sandbox-exec refuse to load the profile.
     #[test]
     fn test_npm_cache_paths_emitted_in_policy_and_params_when_home_set() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::test_support::lock_test_env();
 
         let saved_home = std::env::var_os("HOME");
         let saved_npm = std::env::var_os("NPM_CONFIG_CACHE");
-        // SAFETY: HOME/NPM_CONFIG_CACHE are process-global; ENV_LOCK serializes
-        // all mutations in this module, and we always restore the prior value.
+        // SAFETY: HOME/NPM_CONFIG_CACHE are process-global; lock_test_env
+        // serializes mutations here, and we always restore the prior value.
         unsafe {
             std::env::set_var("HOME", "/tmp/seatbelt-npm-test");
             std::env::remove_var("NPM_CONFIG_CACHE");
@@ -618,12 +618,12 @@ mod tests {
     /// and their param must both be omitted.
     #[test]
     fn test_npm_cache_skipped_when_no_env() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::test_support::lock_test_env();
 
         let saved_home = std::env::var_os("HOME");
         let saved_npm = std::env::var_os("NPM_CONFIG_CACHE");
-        // SAFETY: HOME/NPM_CONFIG_CACHE are process-global; ENV_LOCK serializes
-        // mutations here and we restore the prior values before returning.
+        // SAFETY: HOME/NPM_CONFIG_CACHE are process-global; lock_test_env
+        // serializes mutations here and we restore the prior values before returning.
         unsafe {
             std::env::remove_var("HOME");
             std::env::remove_var("NPM_CONFIG_CACHE");

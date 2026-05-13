@@ -2542,6 +2542,7 @@ fn apply_slash_menu_selection_keeps_change_executable_without_version() {
         name: "/change".to_string(),
         description: String::new(),
         is_skill: false,
+        alias_hint: None,
     }];
 
     assert!(apply_slash_menu_selection(&mut app, &entries, true));

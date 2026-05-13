@@ -1101,6 +1101,7 @@ mod tests {
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
+                translation_enabled: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1127,6 +1128,7 @@ mod tests {
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
+                translation_enabled: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
