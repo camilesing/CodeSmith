@@ -443,7 +443,13 @@ If you are upgrading from older releases:
   keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
   `review`. Values must normalize to a supported DeepSeek model id before an
   agent is spawned.
-- `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present; the runtime also discovers global agentskills.io-compatible `~/.agents/skills` and the broader Claude-ecosystem `~/.claude/skills`.
+- `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is
+  a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
+  `./skills` are preferred when present; the runtime also discovers global
+  agentskills.io-compatible `~/.agents/skills` and the broader Claude-ecosystem
+  `~/.claude/skills`. First launch installs versioned bundled skills for common
+  workflows including skill creation, delegation, MCP/plugin scaffolding,
+  documents, presentations, spreadsheets, PDFs, and Feishu/Lark.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
   It is visible in `/config` and can be changed from the TUI. The new path is
   used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
@@ -692,7 +698,7 @@ configure reasoning effort.
 - `--plugins` — scaffold `~/.deepseek/plugins/` with a `README.md` and an
   `example/PLUGIN.md` placeholder using the same frontmatter shape as
   `SKILL.md`. Plugins are not loaded automatically either; reference them
-  from a skill or MCP wrapper when you want them active.
+  from a skill, hook, or MCP wrapper when you want them active.
 - `--all` now scaffolds MCP + skills + tools + plugins together.
 - `--clean` — list `~/.deepseek/sessions/checkpoints/latest.json` and
   `offline_queue.json` if they exist. Pass `--force` to actually remove them.

@@ -1,12 +1,21 @@
-//! System-skill installer: bundles skill-creator and delegate, auto-installs
-//! them on first launch.
+//! System-skill installer: bundles first-party skills and auto-installs them
+//! on first launch.
 
 use std::fs;
 use std::path::Path;
 
-const BUNDLED_SKILL_VERSION: &str = "2";
+const BUNDLED_SKILL_VERSION: &str = "3";
 const SKILL_CREATOR_BODY: &str = include_str!("../../assets/skills/skill-creator/SKILL.md");
 const DELEGATE_BODY: &str = include_str!("../../assets/skills/delegate/SKILL.md");
+const V4_BEST_PRACTICES_BODY: &str = include_str!("../../assets/skills/v4-best-practices/SKILL.md");
+const PLUGIN_CREATOR_BODY: &str = include_str!("../../assets/skills/plugin-creator/SKILL.md");
+const SKILL_INSTALLER_BODY: &str = include_str!("../../assets/skills/skill-installer/SKILL.md");
+const MCP_BUILDER_BODY: &str = include_str!("../../assets/skills/mcp-builder/SKILL.md");
+const DOCUMENTS_BODY: &str = include_str!("../../assets/skills/documents/SKILL.md");
+const PRESENTATIONS_BODY: &str = include_str!("../../assets/skills/presentations/SKILL.md");
+const SPREADSHEETS_BODY: &str = include_str!("../../assets/skills/spreadsheets/SKILL.md");
+const PDF_BODY: &str = include_str!("../../assets/skills/pdf/SKILL.md");
+const FEISHU_BODY: &str = include_str!("../../assets/skills/feishu/SKILL.md");
 
 struct BundledSkill {
     name: &'static str,
@@ -24,6 +33,51 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         name: "delegate",
         body: DELEGATE_BODY,
         introduced_in: 2,
+    },
+    BundledSkill {
+        name: "v4-best-practices",
+        body: V4_BEST_PRACTICES_BODY,
+        introduced_in: 3,
+    },
+    BundledSkill {
+        name: "plugin-creator",
+        body: PLUGIN_CREATOR_BODY,
+        introduced_in: 3,
+    },
+    BundledSkill {
+        name: "skill-installer",
+        body: SKILL_INSTALLER_BODY,
+        introduced_in: 3,
+    },
+    BundledSkill {
+        name: "mcp-builder",
+        body: MCP_BUILDER_BODY,
+        introduced_in: 3,
+    },
+    BundledSkill {
+        name: "documents",
+        body: DOCUMENTS_BODY,
+        introduced_in: 3,
+    },
+    BundledSkill {
+        name: "presentations",
+        body: PRESENTATIONS_BODY,
+        introduced_in: 3,
+    },
+    BundledSkill {
+        name: "spreadsheets",
+        body: SPREADSHEETS_BODY,
+        introduced_in: 3,
+    },
+    BundledSkill {
+        name: "pdf",
+        body: PDF_BODY,
+        introduced_in: 3,
+    },
+    BundledSkill {
+        name: "feishu",
+        body: FEISHU_BODY,
+        introduced_in: 3,
     },
 ];
 
@@ -63,8 +117,8 @@ fn install_one(
 /// Install bundled system skills into `skills_dir`.
 ///
 /// Behaviour:
-/// - Fresh install (no marker, no dir): installs `skill-creator/SKILL.md` and
-///   `delegate/SKILL.md`, then writes the version marker.
+/// - Fresh install (no marker, no dir): installs every bundled skill, then
+///   writes the version marker.
 /// - Version bump (marker present with older version): re-installs any existing
 ///   bundled skill and installs newly introduced bundled skills.
 /// - User deleted a skill dir while marker still present at same version: leaves
@@ -116,22 +170,12 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-
-    fn sc_file(tmp: &TempDir) -> std::path::PathBuf {
-        tmp.path().join("skill-creator").join("SKILL.md")
+    fn skill_file(tmp: &TempDir, name: &str) -> std::path::PathBuf {
+        tmp.path().join(name).join("SKILL.md")
     }
 
-    fn dg_file(tmp: &TempDir) -> std::path::PathBuf {
-        tmp.path().join("delegate").join("SKILL.md")
-    }
-
-    fn sc_dir(tmp: &TempDir) -> std::path::PathBuf {
-        tmp.path().join("skill-creator")
-    }
-
-    fn dg_dir(tmp: &TempDir) -> std::path::PathBuf {
-        tmp.path().join("delegate")
+    fn skill_dir(tmp: &TempDir, name: &str) -> std::path::PathBuf {
+        tmp.path().join(name)
     }
 
     fn marker_file(tmp: &TempDir) -> std::path::PathBuf {
@@ -141,22 +185,45 @@ mod tests {
     // ── fresh install ─────────────────────────────────────────────────────────
 
     #[test]
-    fn fresh_install_creates_both_skills_and_marker() {
+    fn fresh_install_creates_bundled_skills_and_marker() {
         let tmp = TempDir::new().unwrap();
         install_system_skills(tmp.path()).unwrap();
 
-        assert!(
-            sc_file(&tmp).exists(),
-            "skill-creator SKILL.md should be created"
-        );
-        assert!(
-            dg_file(&tmp).exists(),
-            "delegate SKILL.md should be created"
-        );
+        for skill in BUNDLED_SKILLS {
+            assert!(
+                skill_file(&tmp, skill.name).exists(),
+                "{} SKILL.md should be created",
+                skill.name
+            );
+        }
         assert!(marker_file(&tmp).exists(), "marker should be created");
 
         let ver = fs::read_to_string(marker_file(&tmp)).unwrap();
         assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
+    }
+
+    #[test]
+    fn fresh_install_skills_parse_for_discovery() {
+        let tmp = TempDir::new().unwrap();
+        install_system_skills(tmp.path()).unwrap();
+
+        let registry = crate::skills::SkillRegistry::discover(tmp.path());
+        assert!(
+            registry.warnings().is_empty(),
+            "bundled skills should parse cleanly: {:?}",
+            registry.warnings()
+        );
+
+        for skill in BUNDLED_SKILLS {
+            let parsed = registry
+                .get(skill.name)
+                .unwrap_or_else(|| panic!("{} should be discoverable", skill.name));
+            assert!(
+                !parsed.description.is_empty(),
+                "{} should include model-visible description",
+                skill.name
+            );
+        }
     }
 
     // ── idempotence ───────────────────────────────────────────────────────────
@@ -166,22 +233,25 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         install_system_skills(tmp.path()).unwrap();
 
-        // Overwrite both SKILL.md files with sentinels to detect undesired writes.
-        fs::write(sc_file(&tmp), "sc-sentinel").unwrap();
-        fs::write(dg_file(&tmp), "dg-sentinel").unwrap();
+        for skill in BUNDLED_SKILLS {
+            fs::write(
+                skill_file(&tmp, skill.name),
+                format!("{}-sentinel", skill.name),
+            )
+            .unwrap();
+        }
 
         install_system_skills(tmp.path()).unwrap();
 
-        let sc = fs::read_to_string(sc_file(&tmp)).unwrap();
-        let dg = fs::read_to_string(dg_file(&tmp)).unwrap();
-        assert_eq!(
-            sc, "sc-sentinel",
-            "second install should not overwrite skill-creator"
-        );
-        assert_eq!(
-            dg, "dg-sentinel",
-            "second install should not overwrite delegate"
-        );
+        for skill in BUNDLED_SKILLS {
+            let body = fs::read_to_string(skill_file(&tmp, skill.name)).unwrap();
+            assert_eq!(
+                body,
+                format!("{}-sentinel", skill.name),
+                "second install should not overwrite {}",
+                skill.name
+            );
+        }
     }
 
     // ── user deleted a directory ──────────────────────────────────────────────
@@ -192,33 +262,39 @@ mod tests {
         install_system_skills(tmp.path()).unwrap();
 
         // Simulate user deliberately removing one skill directory.
-        fs::remove_dir_all(dg_dir(&tmp)).unwrap();
+        fs::remove_dir_all(skill_dir(&tmp, "delegate")).unwrap();
 
         // Re-launch must NOT recreate the deleted directory.
         install_system_skills(tmp.path()).unwrap();
 
         assert!(
-            !dg_file(&tmp).exists(),
+            !skill_file(&tmp, "delegate").exists(),
             "delegate must not be recreated after user deleted it"
         );
         assert!(
-            sc_file(&tmp).exists(),
+            skill_file(&tmp, "skill-creator").exists(),
             "skill-creator should still be present (not deleted by user)"
         );
     }
 
     #[test]
-    fn user_deleted_both_dirs_are_not_recreated() {
+    fn user_deleted_all_dirs_are_not_recreated() {
         let tmp = TempDir::new().unwrap();
         install_system_skills(tmp.path()).unwrap();
 
-        fs::remove_dir_all(sc_dir(&tmp)).unwrap();
-        fs::remove_dir_all(dg_dir(&tmp)).unwrap();
+        for skill in BUNDLED_SKILLS {
+            fs::remove_dir_all(skill_dir(&tmp, skill.name)).unwrap();
+        }
 
         install_system_skills(tmp.path()).unwrap();
 
-        assert!(!sc_file(&tmp).exists());
-        assert!(!dg_file(&tmp).exists());
+        for skill in BUNDLED_SKILLS {
+            assert!(
+                !skill_file(&tmp, skill.name).exists(),
+                "{} must not be recreated after user deletion",
+                skill.name
+            );
+        }
     }
 
     // ── version bump re-installs ──────────────────────────────────────────────
@@ -227,65 +303,86 @@ mod tests {
     fn outdated_marker_triggers_reinstall_of_existing_skills() {
         let tmp = TempDir::new().unwrap();
 
-        // Simulate a previous install at a lower version with both skills present.
-        fs::create_dir_all(sc_dir(&tmp)).unwrap();
-        fs::write(sc_file(&tmp), "old-sc").unwrap();
-        fs::create_dir_all(dg_dir(&tmp)).unwrap();
-        fs::write(dg_file(&tmp), "old-dg").unwrap();
+        // Simulate a previous install at a lower version with all skills present.
+        for skill in BUNDLED_SKILLS {
+            fs::create_dir_all(skill_dir(&tmp, skill.name)).unwrap();
+            fs::write(skill_file(&tmp, skill.name), format!("old-{}", skill.name)).unwrap();
+        }
         fs::write(marker_file(&tmp), "0").unwrap(); // older than BUNDLED_SKILL_VERSION
 
         install_system_skills(tmp.path()).unwrap();
 
-        let sc = fs::read_to_string(sc_file(&tmp)).unwrap();
-        let dg = fs::read_to_string(dg_file(&tmp)).unwrap();
-        assert_ne!(sc, "old-sc", "outdated skill-creator should be overwritten");
-        assert_ne!(dg, "old-dg", "outdated delegate should be overwritten");
-        assert_eq!(sc, SKILL_CREATOR_BODY);
-        assert_eq!(dg, DELEGATE_BODY);
+        for skill in BUNDLED_SKILLS {
+            let body = fs::read_to_string(skill_file(&tmp, skill.name)).unwrap();
+            assert_ne!(
+                body,
+                format!("old-{}", skill.name),
+                "outdated {} should be overwritten",
+                skill.name
+            );
+            assert_eq!(body, skill.body);
+        }
 
         let ver = fs::read_to_string(marker_file(&tmp)).unwrap();
         assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
     }
 
-    // ── partial previous install (only skill-creator existed) ─────────────────
+    // ── partial previous install ─────────────────────────────────────────────
 
     #[test]
-    fn version_bump_adds_delegate_when_it_was_missing() {
+    fn version_bump_adds_skills_introduced_after_marker() {
         let tmp = TempDir::new().unwrap();
 
-        // Simulate state from v1: only skill-creator present.
-        fs::create_dir_all(sc_dir(&tmp)).unwrap();
-        fs::write(sc_file(&tmp), "old-sc").unwrap();
-        fs::write(marker_file(&tmp), "1").unwrap();
+        // Simulate state from v2: v1/v2 skills exist, v3 skills do not.
+        for skill in BUNDLED_SKILLS
+            .iter()
+            .filter(|skill| skill.introduced_in <= 2)
+        {
+            fs::create_dir_all(skill_dir(&tmp, skill.name)).unwrap();
+            fs::write(skill_file(&tmp, skill.name), format!("old-{}", skill.name)).unwrap();
+        }
+        fs::write(marker_file(&tmp), "2").unwrap();
 
         install_system_skills(tmp.path()).unwrap();
 
-        // skill-creator should be updated, delegate should be newly installed.
-        assert_eq!(
-            fs::read_to_string(sc_file(&tmp)).unwrap(),
-            SKILL_CREATOR_BODY
-        );
-        assert_eq!(fs::read_to_string(dg_file(&tmp)).unwrap(), DELEGATE_BODY);
+        for skill in BUNDLED_SKILLS {
+            assert_eq!(
+                fs::read_to_string(skill_file(&tmp, skill.name)).unwrap(),
+                skill.body,
+                "{} should be installed or refreshed",
+                skill.name
+            );
+        }
     }
 
     #[test]
     fn version_bump_respects_deleted_existing_skill_while_adding_new_skill() {
         let tmp = TempDir::new().unwrap();
 
-        // Simulate v1 where skill-creator had been deliberately removed before
-        // v2 introduced delegate.
-        fs::write(marker_file(&tmp), "1").unwrap();
+        // Simulate v2 where older bundled skills had been deliberately removed
+        // before v3 introduced more system skills.
+        fs::write(marker_file(&tmp), "2").unwrap();
 
         install_system_skills(tmp.path()).unwrap();
 
         assert!(
-            !sc_file(&tmp).exists(),
-            "version bump should not recreate a deleted pre-existing skill"
+            !skill_file(&tmp, "skill-creator").exists(),
+            "version bump should not recreate deleted skill-creator"
         );
         assert!(
-            dg_file(&tmp).exists(),
-            "version bump should install newly introduced bundled skills"
+            !skill_file(&tmp, "delegate").exists(),
+            "version bump should not recreate deleted delegate"
         );
+        for skill in BUNDLED_SKILLS
+            .iter()
+            .filter(|skill| skill.introduced_in > 2)
+        {
+            assert!(
+                skill_file(&tmp, skill.name).exists(),
+                "version bump should install newly introduced {}",
+                skill.name
+            );
+        }
         let ver = fs::read_to_string(marker_file(&tmp)).unwrap();
         assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
     }
@@ -293,13 +390,18 @@ mod tests {
     // ── uninstall ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn uninstall_removes_both_skills_and_marker() {
+    fn uninstall_removes_bundled_skills_and_marker() {
         let tmp = TempDir::new().unwrap();
         install_system_skills(tmp.path()).unwrap();
         uninstall_system_skills(tmp.path()).unwrap();
 
-        assert!(!sc_file(&tmp).exists(), "skill-creator should be removed");
-        assert!(!dg_file(&tmp).exists(), "delegate should be removed");
+        for skill in BUNDLED_SKILLS {
+            assert!(
+                !skill_file(&tmp, skill.name).exists(),
+                "{} should be removed",
+                skill.name
+            );
+        }
         assert!(!marker_file(&tmp).exists(), "marker should be removed");
     }
 

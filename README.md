@@ -453,6 +453,13 @@ Instructions for the agent go here.
 
 Commands: `/skills` (list), `/skill <name>` (activate), `/skill new` (scaffold), `/skill install github:<owner>/<repo>` (community), `/skill update` / `uninstall` / `trust`. Community installs from GitHub require no backend service. Installed skills appear in the model-visible session context; the agent can auto-select relevant skills via the `load_skill` tool when your task matches their descriptions.
 
+First launch also installs bundled system skills for common workflows:
+`skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`,
+`skill-installer`, `mcp-builder`, `documents`, `presentations`,
+`spreadsheets`, `pdf`, and `feishu`. These live under
+`~/.deepseek/skills` and are versioned so new bundles are added on upgrade
+without recreating skills the user deliberately deleted.
+
 ---
 
 ## Documentation
