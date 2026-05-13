@@ -69,6 +69,7 @@ use crate::tui::context_menu::{ContextMenuEntry, ContextMenuView};
 use crate::tui::event_broker::EventBroker;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
+use crate::tui::auto_router;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
@@ -1975,7 +1976,7 @@ async fn run_event_loop(
                 if app.onboarding == OnboardingState::ApiKey {
                     // Paste into API key input
                     app.insert_api_key_str(text);
-                    sync_api_key_validation_status(app, false);
+                    onboarding::sync_api_key_validation_status(app, false);
                 } else if app.is_history_search_active() {
                     app.history_search_insert_str(text);
                 } else if app.view_stack.handle_paste(text) {
@@ -2159,7 +2160,7 @@ async fn run_event_loop(
                                         StatusToastLevel::Info,
                                         Some(2_500),
                                     );
-                                    advance_onboarding_after_language(app);
+                                    onboarding::advance_onboarding_after_language(app);
                                 }
                                 Err(err) => {
                                     app.status_message =
@@ -2170,17 +2171,17 @@ async fn run_event_loop(
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
-                            advance_onboarding_from_welcome(app);
+                            onboarding::advance_onboarding_from_welcome(app);
                         }
                         OnboardingState::Language => {
                             // Enter without a digit pick keeps the existing
                             // setting (which defaults to "auto").
-                            advance_onboarding_after_language(app);
+                            onboarding::advance_onboarding_after_language(app);
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();
-                            if let ApiKeyValidation::Reject(message) =
-                                validate_api_key_for_onboarding(&key)
+                            if let onboarding::ApiKeyValidation::Reject(message) =
+                                onboarding::validate_api_key_for_onboarding(&key)
                             {
                                 app.status_message = Some(message);
                                 continue;
@@ -2229,7 +2230,7 @@ async fn run_event_loop(
                                             .await;
                                     }
 
-                                    advance_onboarding_after_language(app);
+                                    onboarding::advance_onboarding_after_language(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());
@@ -2270,25 +2271,25 @@ async fn run_event_loop(
                     }
                     KeyCode::Backspace if app.onboarding == OnboardingState::ApiKey => {
                         app.delete_api_key_char();
-                        sync_api_key_validation_status(app, false);
+                        onboarding::sync_api_key_validation_status(app, false);
                     }
                     KeyCode::Char('h')
                         if is_ctrl_h_backspace(&key)
                             && app.onboarding == OnboardingState::ApiKey =>
                     {
                         app.delete_api_key_char();
-                        sync_api_key_validation_status(app, false);
+                        onboarding::sync_api_key_validation_status(app, false);
                     }
                     _ if is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey => {
                         // Cmd+V / Ctrl+V paste (bracketed paste handled above)
                         app.paste_api_key_from_clipboard();
-                        sync_api_key_validation_status(app, false);
+                        onboarding::sync_api_key_validation_status(app, false);
                     }
                     KeyCode::Char(c)
                         if app.onboarding == OnboardingState::ApiKey && is_text_input_key(&key) =>
                     {
                         app.insert_api_key_char(c);
-                        sync_api_key_validation_status(app, false);
+                        onboarding::sync_api_key_validation_status(app, false);
                     }
                     _ => {}
                 }
@@ -4313,72 +4314,6 @@ fn handle_history_search_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ApiKeyValidation {
-    Accept { warning: Option<String> },
-    Reject(String),
-}
-
-fn validate_api_key_for_onboarding(api_key: &str) -> ApiKeyValidation {
-    let trimmed = api_key.trim();
-    if trimmed.is_empty() {
-        return ApiKeyValidation::Reject("API key cannot be empty.".to_string());
-    }
-    if trimmed.contains(char::is_whitespace) {
-        return ApiKeyValidation::Reject(
-            "API key appears malformed (contains whitespace).".to_string(),
-        );
-    }
-    if trimmed.len() < 16 {
-        return ApiKeyValidation::Accept {
-            warning: Some(
-                "API key looks short. Double-check it, but unusual formats are allowed."
-                    .to_string(),
-            ),
-        };
-    }
-    if !trimmed.contains('-') {
-        return ApiKeyValidation::Accept {
-            warning: Some(
-                "API key format looks unusual. Check that the full key was copied.".to_string(),
-            ),
-        };
-    }
-    ApiKeyValidation::Accept { warning: None }
-}
-
-fn advance_onboarding_from_welcome(app: &mut App) {
-    app.status_message = None;
-    app.onboarding = OnboardingState::Language;
-}
-
-fn advance_onboarding_after_language(app: &mut App) {
-    app.status_message = None;
-    if app.onboarding_needs_api_key {
-        app.onboarding = OnboardingState::ApiKey;
-    } else if !app.trust_mode && onboarding::needs_trust(&app.workspace) {
-        app.onboarding = OnboardingState::TrustDirectory;
-    } else {
-        app.onboarding = OnboardingState::Tips;
-    }
-}
-
-fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
-    if app.api_key_input.trim().is_empty() && !show_empty_error {
-        app.status_message = None;
-        return;
-    }
-
-    match validate_api_key_for_onboarding(&app.api_key_input) {
-        ApiKeyValidation::Accept { warning } => {
-            app.status_message = warning;
-        }
-        ApiKeyValidation::Reject(message) => {
-            app.status_message = Some(message);
-        }
-    }
-}
-
 fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
     let skill_instruction = app.active_skill.take();
     QueuedMessage::new(input, skill_instruction)
@@ -4502,8 +4437,8 @@ async fn dispatch_user_message(
         persistence_actor::persist(PersistRequest::Checkpoint(session));
     }
 
-    let auto_selection = if should_resolve_auto_model_selection(app) {
-        Some(resolve_auto_model_selection(app, config, &message, &content).await)
+    let auto_selection = if auto_router::should_resolve_auto_model_selection(app) {
+        Some(auto_router::resolve_auto_model_selection(app, config, &message, &content).await)
     } else {
         None
     };
@@ -4523,7 +4458,7 @@ async fn dispatch_user_message(
             .as_ref()
             .and_then(|selection| selection.reasoning_effort)
             .unwrap_or_else(|| {
-                normalize_auto_routed_effort(crate::auto_reasoning::select(false, &message.display))
+                auto_router::normalize_auto_routed_effort(crate::auto_reasoning::select(false, &message.display))
             });
         app.last_effective_reasoning_effort = Some(effort);
         Some(effort.as_setting().to_string())
@@ -4572,99 +4507,6 @@ async fn dispatch_user_message(
     }
 
     Ok(())
-}
-
-fn should_resolve_auto_model_selection(app: &App) -> bool {
-    app.auto_model
-}
-
-async fn resolve_auto_model_selection(
-    app: &App,
-    config: &Config,
-    message: &QueuedMessage,
-    latest_content: &str,
-) -> commands::AutoRouteSelection {
-    let latest_request = if latest_content.trim().is_empty() {
-        message.display.as_str()
-    } else {
-        latest_content
-    };
-    commands::resolve_auto_route_with_flash(
-        config,
-        latest_request,
-        &recent_auto_router_context(&app.api_messages),
-        if app.auto_model { "auto" } else { "fixed" },
-        app.reasoning_effort.as_setting(),
-    )
-    .await
-}
-
-fn normalize_auto_routed_effort(effort: ReasoningEffort) -> ReasoningEffort {
-    commands::normalize_auto_route_effort(effort)
-}
-
-fn recent_auto_router_context(messages: &[Message]) -> String {
-    let mut rows = Vec::new();
-    for message in messages.iter().rev().skip(1) {
-        if rows.len() >= 6 {
-            break;
-        }
-        let text = content_blocks_text(&message.content);
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        rows.push(format!(
-            "{}: {}",
-            message.role,
-            truncate_for_auto_router(text, 900)
-        ));
-    }
-    rows.reverse();
-    if rows.is_empty() {
-        "No prior context.".to_string()
-    } else {
-        rows.join("\n")
-    }
-}
-
-fn content_blocks_text(blocks: &[ContentBlock]) -> String {
-    let mut out = String::new();
-    for block in blocks {
-        match block {
-            ContentBlock::Text { text, .. } => {
-                append_router_text(&mut out, text);
-            }
-            ContentBlock::Thinking { thinking } => {
-                append_router_text(&mut out, thinking);
-            }
-            ContentBlock::ToolUse { name, .. } => {
-                append_router_text(&mut out, &format!("[tool call: {name}]"));
-            }
-            ContentBlock::ToolResult { content, .. } => {
-                append_router_text(&mut out, &format!("[tool result] {content}"));
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-fn append_router_text(out: &mut String, text: &str) {
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    out.push_str(text);
-}
-
-fn truncate_for_auto_router(text: &str, max_chars: usize) -> String {
-    let mut chars = text.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
-    }
 }
 
 async fn apply_model_and_compaction_update(

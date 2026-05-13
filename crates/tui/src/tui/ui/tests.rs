@@ -1754,7 +1754,7 @@ fn fixed_model_auto_thinking_skips_auto_model_router() {
     app.reasoning_effort = ReasoningEffort::Auto;
 
     assert!(
-        !should_resolve_auto_model_selection(&app),
+        !crate::tui::auto_router::should_resolve_auto_model_selection(&app),
         "fixed-model auto thinking must stay local instead of starting a hidden router request"
     );
 }
@@ -1766,7 +1766,7 @@ fn auto_model_still_uses_auto_model_router() {
     app.reasoning_effort = ReasoningEffort::Auto;
 
     assert!(
-        should_resolve_auto_model_selection(&app),
+        crate::tui::auto_router::should_resolve_auto_model_selection(&app),
         "auto model still needs the router to choose the concrete model"
     );
 }
@@ -2763,24 +2763,24 @@ async fn numeric_plan_choice_still_queues_follow_up_when_busy() {
 #[test]
 fn api_key_validation_warns_without_blocking_unusual_formats() {
     assert!(matches!(
-        validate_api_key_for_onboarding(""),
-        ApiKeyValidation::Reject(_)
+        crate::tui::onboarding::validate_api_key_for_onboarding(""),
+        crate::tui::onboarding::ApiKeyValidation::Reject(_)
     ));
     assert!(matches!(
-        validate_api_key_for_onboarding("sk short"),
-        ApiKeyValidation::Reject(_)
+        crate::tui::onboarding::validate_api_key_for_onboarding("sk short"),
+        crate::tui::onboarding::ApiKeyValidation::Reject(_)
     ));
     assert!(matches!(
-        validate_api_key_for_onboarding("short-key"),
-        ApiKeyValidation::Accept { warning: Some(_) }
+        crate::tui::onboarding::validate_api_key_for_onboarding("short-key"),
+        crate::tui::onboarding::ApiKeyValidation::Accept { warning: Some(_) }
     ));
     assert!(matches!(
-        validate_api_key_for_onboarding("averylongkeywithoutdash123456"),
-        ApiKeyValidation::Accept { warning: Some(_) }
+        crate::tui::onboarding::validate_api_key_for_onboarding("averylongkeywithoutdash123456"),
+        crate::tui::onboarding::ApiKeyValidation::Accept { warning: Some(_) }
     ));
     assert!(matches!(
-        validate_api_key_for_onboarding("sk-valid-format-1234567890"),
-        ApiKeyValidation::Accept { warning: None }
+        crate::tui::onboarding::validate_api_key_for_onboarding("sk-valid-format-1234567890"),
+        crate::tui::onboarding::ApiKeyValidation::Accept { warning: None }
     ));
 }
 
@@ -2792,7 +2792,7 @@ fn onboarding_after_api_key_save_does_not_repeat_language_step() {
     app.trust_mode = true;
     app.status_message = Some("saved".to_string());
 
-    advance_onboarding_after_language(&mut app);
+    crate::tui::onboarding::advance_onboarding_after_language(&mut app);
 
     assert_eq!(app.onboarding, OnboardingState::Tips);
     assert_eq!(app.status_message, None);
@@ -2807,7 +2807,7 @@ fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
     app.onboarding_needs_api_key = false;
     app.trust_mode = false;
 
-    advance_onboarding_after_language(&mut app);
+    crate::tui::onboarding::advance_onboarding_after_language(&mut app);
 
     assert_eq!(app.onboarding, OnboardingState::TrustDirectory);
 }
