@@ -601,7 +601,9 @@ impl ToolSpec for EditFileTool {
         } else {
             let fuzz_note = match fuzz_kind {
                 Some("indentation") => " (fuzzy indentation match)",
-                Some("punctuation") => " (fuzzy punctuation match — typographic quotes/dashes normalized)",
+                Some("punctuation") => {
+                    " (fuzzy punctuation match — typographic quotes/dashes normalized)"
+                }
                 Some(other) => other,
                 None => "",
             };

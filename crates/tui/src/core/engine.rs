@@ -1923,9 +1923,9 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
 }
 
 mod approval;
-mod handle;
 mod capacity_flow;
 mod context;
+mod handle;
 pub(crate) use context::compact_tool_result_for_context;
 use context::{
     COMPACTION_SUMMARY_MARKER, MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,

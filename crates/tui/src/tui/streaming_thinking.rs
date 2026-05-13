@@ -220,11 +220,7 @@ pub(super) fn stash_reasoning_buffer_into_last_reasoning(app: &mut App) {
 /// duration. Returns `true` when a thinking entry was finalized (so the
 /// dispatch loop knows the transcript was touched). No-op if no thinking
 /// entry is currently streaming.
-pub(super) fn finalize_active_entry(
-    app: &mut App,
-    duration: Option<f32>,
-    remaining: &str,
-) -> bool {
+pub(super) fn finalize_active_entry(app: &mut App, duration: Option<f32>, remaining: &str) -> bool {
     let Some(entry_idx) = app.streaming_thinking_active_entry.take() else {
         return false;
     };

@@ -59,6 +59,7 @@ use crate::task_manager::{
 };
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentStatus;
+use crate::tui::auto_router;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
@@ -66,16 +67,12 @@ use crate::tui::command_palette::{
 use crate::tui::context_inspector::build_context_inspector_text;
 use crate::tui::context_menu::{ContextMenuEntry, ContextMenuView};
 use crate::tui::event_broker::EventBroker;
-use crate::tui::live_transcript::LiveTranscriptOverlay;
-use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
-use crate::tui::auto_router;
-use crate::tui::vim_mode;
-use crate::tui::streaming_thinking;
-use crate::tui::workspace_context;
-use crate::tui::notifications;
 use crate::tui::file_picker_relevance;
 use crate::tui::format_helpers;
 use crate::tui::key_shortcuts;
+use crate::tui::live_transcript::LiveTranscriptOverlay;
+use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
+use crate::tui::notifications;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
@@ -86,6 +83,7 @@ use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
 };
+use crate::tui::streaming_thinking;
 use crate::tui::subagent_routing::{
     active_fanout_counts, format_task_list, handle_subagent_mailbox, open_task_pager,
     reconcile_subagent_activity_state, running_agent_count, sort_subagents_in_place,
@@ -99,6 +97,8 @@ use crate::tui::tool_routing::{
 use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_display_width};
 use crate::tui::user_input::UserInputView;
 use crate::tui::views::subagent_view_agents;
+use crate::tui::vim_mode;
+use crate::tui::workspace_context;
 
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
@@ -1839,7 +1839,10 @@ async fn run_event_loop(
             && last_status_frame.elapsed()
                 >= Duration::from_millis(status_animation_interval_ms(app))
         {
-            if streaming_thinking::animate_pending_translation(app, pending_thinking_translations > 0) {
+            if streaming_thinking::animate_pending_translation(
+                app,
+                pending_thinking_translations > 0,
+            ) {
                 app.mark_history_updated();
             }
             if !app.low_motion && history_has_live_motion(&app.history) {
@@ -2284,13 +2287,16 @@ async fn run_event_loop(
                         app.delete_api_key_char();
                         onboarding::sync_api_key_validation_status(app, false);
                     }
-                    _ if key_shortcuts::is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey => {
+                    _ if key_shortcuts::is_paste_shortcut(&key)
+                        && app.onboarding == OnboardingState::ApiKey =>
+                    {
                         // Cmd+V / Ctrl+V paste (bracketed paste handled above)
                         app.paste_api_key_from_clipboard();
                         onboarding::sync_api_key_validation_status(app, false);
                     }
                     KeyCode::Char(c)
-                        if app.onboarding == OnboardingState::ApiKey && key_shortcuts::is_text_input_key(&key) =>
+                        if app.onboarding == OnboardingState::ApiKey
+                            && key_shortcuts::is_text_input_key(&key) =>
                     {
                         app.insert_api_key_char(c);
                         onboarding::sync_api_key_validation_status(app, false);
@@ -2634,7 +2640,9 @@ async fn run_event_loop(
                     app.view_stack.push(SessionPickerView::new(&app.workspace));
                     continue;
                 }
-                KeyCode::Char('c') | KeyCode::Char('C') if key_shortcuts::is_copy_shortcut(&key) => {
+                KeyCode::Char('c') | KeyCode::Char('C')
+                    if key_shortcuts::is_copy_shortcut(&key) =>
+                {
                     copy_active_selection(app);
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3150,7 +3158,8 @@ async fn run_event_loop(
                 }
                 KeyCode::Backspace => {}
                 KeyCode::Char('h')
-                    if key_shortcuts::is_ctrl_h_backspace(&key) && !app.remove_selected_composer_attachment() =>
+                    if key_shortcuts::is_ctrl_h_backspace(&key)
+                        && !app.remove_selected_composer_attachment() =>
                 {
                     app.delete_char();
                 }
@@ -3362,7 +3371,6 @@ async fn run_event_loop(
         }
     }
 }
-
 
 fn apply_alt_4_shortcut(app: &mut App, _modifiers: KeyModifiers) {
     app.set_sidebar_focus(SidebarFocus::Agents);
@@ -3978,7 +3986,10 @@ async fn dispatch_user_message(
             .as_ref()
             .and_then(|selection| selection.reasoning_effort)
             .unwrap_or_else(|| {
-                auto_router::normalize_auto_routed_effort(crate::auto_reasoning::select(false, &message.display))
+                auto_router::normalize_auto_routed_effort(crate::auto_reasoning::select(
+                    false,
+                    &message.display,
+                ))
             });
         app.last_effective_reasoning_effort = Some(effort);
         Some(effort.as_setting().to_string())
@@ -4428,7 +4439,9 @@ async fn apply_command_result(
                     match fetch_available_models(config).await {
                         Ok(models) => {
                             app.add_message(HistoryCell::System {
-                                content: format_helpers::available_models_message(&app.model, &models),
+                                content: format_helpers::available_models_message(
+                                    &app.model, &models,
+                                ),
                             });
                             app.status_message = Some(format!("Found {} model(s)", models.len()));
                         }

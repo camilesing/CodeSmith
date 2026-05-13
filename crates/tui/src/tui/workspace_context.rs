@@ -32,7 +32,9 @@ pub(super) fn refresh_if_needed(app: &mut App, now: Instant, allow_refresh: bool
 
     if app
         .workspace_context_refreshed_at
-        .is_some_and(|refreshed_at| now.duration_since(refreshed_at) < Duration::from_secs(REFRESH_SECS))
+        .is_some_and(|refreshed_at| {
+            now.duration_since(refreshed_at) < Duration::from_secs(REFRESH_SECS)
+        })
     {
         return;
     }

@@ -145,7 +145,12 @@ mod tests {
         // Eight messages; final one (the draft being routed) is skipped,
         // so we expect at most six of the remaining seven.
         let msgs: Vec<Message> = (0..8)
-            .map(|i| make_msg(if i % 2 == 0 { "user" } else { "assistant" }, &format!("turn {i}")))
+            .map(|i| {
+                make_msg(
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    &format!("turn {i}"),
+                )
+            })
             .collect();
         let context = recent_auto_router_context(&msgs);
         assert!(!context.contains("turn 7"), "final draft must be skipped");

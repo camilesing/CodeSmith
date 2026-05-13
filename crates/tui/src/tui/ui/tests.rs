@@ -1,10 +1,9 @@
 use super::*;
 use crate::config::{ApiProvider, Config};
-use crate::tui::active_cell::ActiveCell;
-use crate::tui::app::ToolDetailRecord;
-use std::collections::HashSet;
 use crate::config_ui::{self, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::mock_engine_handle;
+use crate::tui::active_cell::ActiveCell;
+use crate::tui::app::ToolDetailRecord;
 use crate::tui::file_mention::{
     apply_mention_menu_selection, find_file_mention_completions, partial_file_mention_at_cursor,
     try_autocomplete_file_mention, user_request_with_file_mentions, visible_mention_menu_entries,
@@ -14,6 +13,7 @@ use crate::tui::history::{
 };
 use crate::tui::views::{ModalView, ViewAction};
 use crate::working_set::Workspace;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
@@ -982,30 +982,31 @@ fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
         KeyCode::Char('c'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     )));
-    assert!(!crate::tui::key_shortcuts::is_copy_shortcut(&KeyEvent::new(
-        KeyCode::Char('c'),
-        KeyModifiers::CONTROL,
-    )));
+    assert!(!crate::tui::key_shortcuts::is_copy_shortcut(
+        &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)
+    ));
 }
 
 #[test]
 fn file_tree_shortcut_does_not_steal_plain_ctrl_e() {
-    assert!(!crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(&KeyEvent::new(
-        KeyCode::Char('e'),
-        KeyModifiers::CONTROL,
-    )));
-    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(&KeyEvent::new(
-        KeyCode::Char('E'),
-        KeyModifiers::CONTROL,
-    )));
-    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(&KeyEvent::new(
-        KeyCode::Char('e'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    )));
-    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(&KeyEvent::new(
-        KeyCode::Char('E'),
-        KeyModifiers::SUPER | KeyModifiers::SHIFT,
-    )));
+    assert!(!crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
+        &KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL,)
+    ));
+    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
+        &KeyEvent::new(KeyCode::Char('E'), KeyModifiers::CONTROL,)
+    ));
+    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
+        &KeyEvent::new(
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )
+    ));
+    assert!(crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
+        &KeyEvent::new(
+            KeyCode::Char('E'),
+            KeyModifiers::SUPER | KeyModifiers::SHIFT,
+        )
+    ));
 }
 
 #[test]
@@ -1061,7 +1062,9 @@ fn parse_git_status_path_handles_simple_and_renamed_entries() {
         Some("crates/tui/src/tui/ui.rs".to_string())
     );
     assert_eq!(
-        crate::tui::file_picker_relevance::parse_git_status_path("R  old name.rs -> crates/tui/src/tui/file_picker.rs"),
+        crate::tui::file_picker_relevance::parse_git_status_path(
+            "R  old name.rs -> crates/tui/src/tui/file_picker.rs"
+        ),
         Some("crates/tui/src/tui/file_picker.rs".to_string())
     );
 }
@@ -2823,7 +2826,9 @@ fn api_key_paste_shortcut_is_not_plain_text_input() {
 
     let legacy_ctrl_v = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
     assert!(crate::tui::key_shortcuts::is_paste_shortcut(&legacy_ctrl_v));
-    assert!(!crate::tui::key_shortcuts::is_text_input_key(&legacy_ctrl_v));
+    assert!(!crate::tui::key_shortcuts::is_text_input_key(
+        &legacy_ctrl_v
+    ));
 
     let shifted = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
     assert!(crate::tui::key_shortcuts::is_text_input_key(&shifted));
@@ -3012,7 +3017,9 @@ fn activity_footer_hint_surfaces_visible_thinking_without_raw_tool_hint() {
 fn macos_option_v_glyph_is_treated_as_details_shortcut_only_on_macos() {
     let option_v = KeyEvent::new(KeyCode::Char('\u{221A}'), KeyModifiers::NONE);
     assert!(crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&option_v, true));
-    assert!(!crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&option_v, false));
+    assert!(
+        !crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&option_v, false)
+    );
 
     let modified = KeyEvent::new(KeyCode::Char('\u{221A}'), KeyModifiers::SHIFT);
     assert!(!crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&modified, true));
@@ -3194,31 +3201,43 @@ fn alt_nav_modifiers_require_alt_and_exclude_ctrl_super() {
     // Alt, allow Shift for capital-letter forms, and block Ctrl/Super so
     // they don't collide with clipboard / window shortcuts. Bare and
     // Shift-only modifiers fall through to text insertion now.
-    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::NONE));
-    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::SHIFT));
-    assert!(crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::ALT));
-    assert!(crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::ALT | KeyModifiers::SHIFT));
-    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::CONTROL));
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(
+        KeyModifiers::NONE
+    ));
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(
+        KeyModifiers::SHIFT
+    ));
+    assert!(crate::tui::key_shortcuts::alt_nav_modifiers(
+        KeyModifiers::ALT
+    ));
+    assert!(crate::tui::key_shortcuts::alt_nav_modifiers(
+        KeyModifiers::ALT | KeyModifiers::SHIFT
+    ));
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(
+        KeyModifiers::CONTROL
+    ));
     assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(
         KeyModifiers::ALT | KeyModifiers::CONTROL
     ));
-    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(KeyModifiers::ALT | KeyModifiers::SUPER));
+    assert!(!crate::tui::key_shortcuts::alt_nav_modifiers(
+        KeyModifiers::ALT | KeyModifiers::SUPER
+    ));
 }
 
 #[test]
 fn ctrl_h_is_treated_as_terminal_backspace() {
-    assert!(crate::tui::key_shortcuts::is_ctrl_h_backspace(&KeyEvent::new(
-        KeyCode::Char('h'),
-        KeyModifiers::CONTROL
-    )));
-    assert!(!crate::tui::key_shortcuts::is_ctrl_h_backspace(&KeyEvent::new(
-        KeyCode::Char('h'),
-        KeyModifiers::NONE
-    )));
-    assert!(!crate::tui::key_shortcuts::is_ctrl_h_backspace(&KeyEvent::new(
-        KeyCode::Char('h'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT
-    )));
+    assert!(crate::tui::key_shortcuts::is_ctrl_h_backspace(
+        &KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)
+    ));
+    assert!(!crate::tui::key_shortcuts::is_ctrl_h_backspace(
+        &KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)
+    ));
+    assert!(!crate::tui::key_shortcuts::is_ctrl_h_backspace(
+        &KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        )
+    ));
 }
 
 #[test]
@@ -5238,16 +5257,26 @@ fn completed_turn_notification_falls_back_to_latest_assistant_message() {
         }],
     });
 
-    let msg =
-        crate::tui::notifications::completed_turn_message(&app, "", false, Duration::from_secs(75), None);
+    let msg = crate::tui::notifications::completed_turn_message(
+        &app,
+        "",
+        false,
+        Duration::from_secs(75),
+        None,
+    );
     assert_eq!(msg, "Latest reply");
 }
 
 #[test]
 fn completed_turn_notification_falls_back_to_default_when_empty() {
     let app = create_test_app();
-    let msg =
-        crate::tui::notifications::completed_turn_message(&app, "", false, Duration::from_secs(5), None);
+    let msg = crate::tui::notifications::completed_turn_message(
+        &app,
+        "",
+        false,
+        Duration::from_secs(5),
+        None,
+    );
     assert_eq!(msg, "deepseek: turn complete");
 }
 

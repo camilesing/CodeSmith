@@ -56,8 +56,8 @@ mega-files that had grown around the agent loop and TUI.
   turn loop and tool execution code, making the agent-loop core
   easier to read end-to-end.
 - **Structured tracing on tool dispatch.** Tool entry, exit, duration,
-  and result/error are emitted through `tracing` spans so
-  `RUST_LOG=deepseek_cli::tools=debug` produces a coherent timeline
+  and result/error are emitted through `tracing` events so
+  `RUST_LOG=engine.tool_execution=debug` produces a coherent timeline
   instead of scattered ad-hoc prints.
 - **`/init` updates `AGENTS.md` in place** instead of refusing when
   the file already exists, so adding new project guidance does not
@@ -4071,7 +4071,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.33...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.34...HEAD
+[0.8.34]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.33...v0.8.34
 [0.8.33]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.32...v0.8.33
 [0.8.32]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.31...v0.8.32
 [0.8.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.30...v0.8.31

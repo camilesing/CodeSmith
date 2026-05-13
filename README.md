@@ -241,53 +241,34 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.33
+## What's New In v0.8.34
 
-A sub-agent and RLM renovation release. The model-facing delegation
-surface is now session-oriented: `rlm_open` / `rlm_eval` /
-`rlm_configure` / `rlm_close` for persistent RLM work, `agent_open` /
-`agent_eval` / `agent_close` for named sub-agent sessions, and
-`handle_read` for bounded retrieval from large results. Six tool
-papercuts fixed, two community PRs landed, and the sidebar gets a
-cleaner "Work" tab. [Full changelog](CHANGELOG.md).
+A polish, terminal-protocol, and internal-cleanup release. The
+model-facing tool surface stays stable while v0.8.34 improves first-run
+skills, terminal notifications, prompt-cache visibility, MCP transport
+compatibility, and the maintainability of the largest TUI files.
+[Full changelog](CHANGELOG.md).
 
-- **Persistent RLM sessions.** RLM work now uses `rlm_open` /
-  `rlm_eval` / `rlm_close` with bounded REPL helpers (`peek`,
-  `search`, `chunk`, `sub_query`, `sub_query_batch`, `finalize`)
-  — the model drives the REPL through tool calls instead of a
-  foreground loop.
-- **Fork-aware sub-agent sessions.** `agent_open` supports named
-  sessions, `fork_context` for prompt-cache-friendly perspective
-  fanout, and bounded recursive depth. Sub-agent results and
-  transcripts can be parked behind `var_handle` references.
-- **Shared `handle_read` tool.** Large structured results (RLM
-  finals, sub-agent transcripts, tool artifacts) return typed handles
-  with slice, range, count, and JSONPath projections — the model
-  reads back only what it needs.
-- **Text selection now works during streaming.** The loading-state
-  mouse filter drops inert move events but allows transcript and
-  scrollbar drags to continue — the known issue from v0.8.32 is
-  resolved.
-- **Theme presets.** Use `/theme` for a live picker, or `/theme grayscale`,
-  `/theme catppuccin-mocha`, `/theme tokyo-night`, `/theme dracula`, and
-  `/theme gruvbox-dark` to save a theme directly.
-- **Session history picker.** `/sessions` and `Ctrl+R` now put full
-  session history on the left, the session list on the right, number keys
-  `1`-`9` open visible histories, and `PgUp` / `PgDn` scroll history.
-- **Six tool papercuts fixed.** `file_search` safer excludes;
-  `grep_files` returns clean strings; `fetch_url` JSON field
-  projection and headers; `edit_file` indentation fuzz;
-  `exec_shell` merged stdout/stderr; `revert_turn` rejects no-ops.
-- **CLI reasoning-effort honoured** on `--reasoning-effort high`
-  non-auto exec routes (PR #1511 from **@h3c-hexin**).
-- **Sidebar "Work" tab.** The former "Plan" / "Todos" tabs are now
-  one "Work" panel for the active checklist, consistent across Plan,
-  Agent, and YOLO modes.
-- **`/relay` command with CJK aliases** (`/接力`) for structured
-  multi-session handoff prompts.
-
-Thanks to **@reidliu41** and **@h3c-hexin** for community
-contributions in this release.
+- **Bundled DeepSeek-native workflow skills.** Fresh installs now get
+  first-party skills for delegation, skill creation, MCP/plugin setup,
+  documents, presentations, spreadsheets, PDFs, and Feishu/Lark.
+- **User skills stay visible.** `/skills` separates user-created skills
+  from built-ins so workspace and global skills do not disappear behind
+  the bundled catalog.
+- **MCP HTTP defaults are more compatible.** Streamable HTTP requests
+  default to `Accept: application/json, text/event-stream` and preserve
+  `Mcp-Session-Id` across requests.
+- **Terminal notifications cover more terminals.** Kitty `OSC 99` and
+  Ghostty `OSC 777` join the existing notification paths.
+- **Prefix-cache stability is visible.** The footer surfaces cache
+  stability so users can notice cache-busting changes before cost climbs.
+- **`edit_file` handles typographic punctuation drift.** With
+  `fuzz: true`, smart quotes, en/em dashes, and non-breaking spaces no
+  longer prevent a safe replacement when the file uses ASCII punctuation.
+- **Large internals are getting smaller.** Focused modules now own
+  auto-routing, Vim-mode handling, workspace context, streaming thinking,
+  notifications, file-picker relevance, formatting helpers, and key
+  shortcut predicates.
 
 ---
 

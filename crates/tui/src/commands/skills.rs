@@ -154,8 +154,10 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
                     let _ = writeln!(output, "  /{} - {}", skill.name, skill.description);
                 }
             } else {
-                let names: Vec<String> =
-                    bundled_skills.iter().map(|s| format!("/{}", s.name)).collect();
+                let names: Vec<String> = bundled_skills
+                    .iter()
+                    .map(|s| format!("/{}", s.name))
+                    .collect();
                 output.push_str("  ");
                 output.push_str(&names.join(", "));
                 output.push('\n');
@@ -890,7 +892,10 @@ mod tests {
             .expect("user skills section header missing");
         let alpha = msg.find("/alpha-skill").expect("alpha skill should render");
         let beta = msg.find("/beta-skill").expect("beta skill should render");
-        assert!(alpha > section, "alpha-skill should follow the header: {msg}");
+        assert!(
+            alpha > section,
+            "alpha-skill should follow the header: {msg}"
+        );
         assert!(beta > section, "beta-skill should follow the header: {msg}");
         // Each entry on its own line with the description inline.
         assert!(msg.contains("/alpha-skill - First skill"), "got: {msg}");

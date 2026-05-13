@@ -19,17 +19,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::tui::app::App;
+use crate::tui::app::ToolDetailRecord;
+use crate::tui::file_mention::{ContextReferenceKind, ContextReferenceSource};
 use crate::tui::file_picker::FilePickerRelevance;
 use crate::tui::file_picker::FilePickerView;
-use crate::tui::file_mention::{ContextReferenceKind, ContextReferenceSource};
-use crate::tui::app::ToolDetailRecord;
 
 /// Push the `/files` picker onto the view stack, pre-populated with
 /// per-session relevance ranks (modified, @-mentioned, tool-touched).
 pub(super) fn open_file_picker(app: &mut App) {
     let relevance = build_relevance(app);
-    app.view_stack
-        .push(FilePickerView::new_with_relevance(&app.workspace, relevance));
+    app.view_stack.push(FilePickerView::new_with_relevance(
+        &app.workspace,
+        relevance,
+    ));
 }
 
 pub(super) fn build_relevance(app: &App) -> FilePickerRelevance {
