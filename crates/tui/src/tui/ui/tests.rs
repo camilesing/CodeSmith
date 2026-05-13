@@ -1125,7 +1125,11 @@ fn create_test_app() -> App {
         resume_session_id: None,
         initial_input: None,
     };
-    App::new(options, &Config::default())
+    let mut app = App::new(options, &Config::default());
+    // Pin locale and currency for deterministic tests regardless of host locale.
+    app.cost_currency = crate::pricing::CostCurrency::Usd;
+    app.ui_locale = crate::localization::Locale::En;
+    app
 }
 
 fn create_test_options() -> TuiOptions {

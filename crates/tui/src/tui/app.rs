@@ -1249,8 +1249,10 @@ impl App {
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let ui_locale = resolve_locale(&settings.locale);
-        let cost_currency =
-            CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd);
+        let cost_currency = match (settings.cost_currency.as_str(), ui_locale.tag()) {
+            ("usd", "zh-Hans") => CostCurrency::Cny,
+            _ => CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd),
+        };
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let composer_vim_enabled = settings
