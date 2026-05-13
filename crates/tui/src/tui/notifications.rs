@@ -270,6 +270,173 @@ pub fn humanize_duration(d: Duration) -> String {
     format!("{total}s")
 }
 
+// ── Per-turn notification composition ────────────────────────────────
+//
+// The helpers below decide *whether* to notify on a completed turn and
+// *what message* to put in the body. The low-level dispatcher is
+// `notify_done`; everything in this block sits in front of it.
+
+use crate::models::{ContentBlock, Message};
+use crate::tui::app::App;
+
+/// Resolve the effective notification method/threshold/include-summary tuple
+/// for a completed turn, taking the high-level
+/// `[tui].notification_condition` override into account on top of the
+/// lower-level `[notifications]` block.
+///
+/// Returns `None` to mean "do not notify" (either because the user set
+/// `notification_condition = "never"` or because the resolved method is
+/// `Off`).
+pub fn settings(config: &crate::config::Config) -> Option<(Method, Duration, bool)> {
+    let notif = config.notifications_config();
+    let method = match notif.method {
+        crate::config::NotificationMethod::Auto => Method::Auto,
+        crate::config::NotificationMethod::Osc9 => Method::Osc9,
+        crate::config::NotificationMethod::Bel => Method::Bel,
+        crate::config::NotificationMethod::Kitty => Method::Kitty,
+        crate::config::NotificationMethod::Ghostty => Method::Ghostty,
+        crate::config::NotificationMethod::Off => Method::Off,
+    };
+
+    if let Some(condition) = config
+        .tui
+        .as_ref()
+        .and_then(|tui| tui.notification_condition)
+    {
+        match condition {
+            crate::config::NotificationCondition::Always => {
+                return Some((method, Duration::ZERO, notif.include_summary));
+            }
+            crate::config::NotificationCondition::Never => return None,
+        }
+    }
+
+    Some((
+        method,
+        Duration::from_secs(notif.threshold_secs),
+        notif.include_summary,
+    ))
+}
+
+/// Build the notification body for a completed turn. Prefers the live
+/// streaming text the user just saw; falls back to the latest assistant
+/// message in `api_messages` if streaming text is empty (for example, the
+/// turn finished entirely through tool output). When `include_summary` is
+/// true, an elapsed/cost line is appended.
+pub fn completed_turn_message(
+    app: &App,
+    current_streaming_text: &str,
+    include_summary: bool,
+    turn_elapsed: Duration,
+    turn_cost: Option<crate::pricing::CostEstimate>,
+) -> String {
+    let mut msg = text_summary(current_streaming_text)
+        .or_else(|| latest_assistant_text(&app.api_messages))
+        .unwrap_or_else(|| "deepseek: turn complete".to_string());
+
+    if include_summary {
+        let human = humanize_duration(turn_elapsed);
+        let summary = match turn_cost {
+            Some(c) => {
+                let cost = crate::pricing::format_cost_estimate(c, app.cost_currency);
+                format!("deepseek: turn complete ({human}, {cost})")
+            }
+            None => format!("deepseek: turn complete ({human})"),
+        };
+        if msg == "deepseek: turn complete" {
+            msg = summary;
+        } else {
+            msg.push('\n');
+            msg.push_str(&summary);
+        }
+    }
+
+    msg
+}
+
+/// Compose a notification body for a sub-agent completion. Falls back
+/// to a generic "sub-agent X complete" if no human-readable line can
+/// be teased out of the child's transcript.
+pub fn subagent_completion_message(
+    id: &str,
+    result: &str,
+    include_summary: bool,
+    elapsed: Duration,
+) -> String {
+    let result_line = result
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("<deepseek:subagent.done>"));
+    let mut msg = result_line
+        .and_then(text_summary)
+        .map(|summary| format!("sub-agent {id}: {summary}"))
+        .unwrap_or_else(|| format!("deepseek: sub-agent {id} complete"));
+
+    if include_summary {
+        let human = humanize_duration(elapsed);
+        msg.push('\n');
+        msg.push_str(&format!("deepseek: sub-agent complete ({human})"));
+    }
+
+    msg
+}
+
+/// Find the latest assistant message in `messages` and return a
+/// notification-ready summary of its `Text` content. Thinking blocks,
+/// tool calls, and tool results are skipped — only the user-visible
+/// reply contributes to the body.
+pub fn latest_assistant_text(messages: &[Message]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "assistant")
+        .and_then(|message| {
+            let text = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    ContentBlock::Thinking { .. }
+                    | ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::ServerToolUse { .. }
+                    | ContentBlock::ToolSearchToolResult { .. }
+                    | ContentBlock::CodeExecutionToolResult { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            text_summary(&text)
+        })
+}
+
+/// Sanitize + collapse + truncate streaming text into something fit to
+/// hand the OS notification system. Returns `None` when nothing
+/// useful remains after sanitization.
+pub fn text_summary(text: &str) -> Option<String> {
+    const MAX_CHARS: usize = 360;
+
+    let sanitized = super::ui::sanitize_stream_chunk(text);
+    let collapsed = sanitized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some((idx, _)) = trimmed.char_indices().nth(MAX_CHARS) {
+        let mut s = String::with_capacity(idx + 3);
+        s.push_str(&trimmed[..idx]);
+        s.push_str("...");
+        Some(s)
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};

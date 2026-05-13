@@ -73,6 +73,7 @@ use crate::tui::auto_router;
 use crate::tui::vim_mode;
 use crate::tui::streaming_thinking;
 use crate::tui::workspace_context;
+use crate::tui::notifications;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
@@ -1308,10 +1309,10 @@ async fn run_event_loop(
                         // Emit OSC 9 / BEL desktop notification for long turns.
                         if status == crate::core::events::TurnOutcomeStatus::Completed
                             && let Some((method, threshold, include_summary)) =
-                                notification_settings(config)
+                                notifications::settings(config)
                         {
                             let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
-                            let msg = completed_turn_notification_message(
+                            let msg = notifications::completed_turn_message(
                                 app,
                                 &current_streaming_text,
                                 include_summary,
@@ -1567,10 +1568,10 @@ async fn run_event_loop(
                             !has_other_running_subagents && app.use_alt_screen;
                         if !has_other_running_subagents
                             && let Some((method, threshold, include_summary)) =
-                                notification_settings(config)
+                                notifications::settings(config)
                         {
                             let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
-                            let msg = subagent_completion_notification_message(
+                            let msg = notifications::subagent_completion_message(
                                 &id,
                                 &result,
                                 include_summary,
@@ -3644,7 +3645,10 @@ fn persist_offline_queue_state(app: &App) {
     }
 }
 
-fn sanitize_stream_chunk(chunk: &str) -> String {
+/// Strip ANSI control codes / non-printable bytes from a streaming
+/// text chunk. `pub(super)` because `tui::notifications` consumes it
+/// from `super::ui` for its per-turn message composition.
+pub(super) fn sanitize_stream_chunk(chunk: &str) -> String {
     // Keep printable characters and common whitespace; drop control bytes.
     chunk
         .chars()
@@ -3652,155 +3656,8 @@ fn sanitize_stream_chunk(chunk: &str) -> String {
         .collect()
 }
 
-/// Resolve the effective notification method/threshold/include-summary tuple
-/// for a completed turn, taking the high-level
-/// `[tui].notification_condition` override into account on top of the
-/// lower-level `[notifications]` block.
-///
-/// Returns `None` to mean "do not notify" (either because the user set
-/// `notification_condition = "never"` or because the resolved method is
-/// `Off`).
-fn notification_settings(
-    config: &Config,
-) -> Option<(crate::tui::notifications::Method, Duration, bool)> {
-    let notif = config.notifications_config();
-    let method = match notif.method {
-        crate::config::NotificationMethod::Auto => crate::tui::notifications::Method::Auto,
-        crate::config::NotificationMethod::Osc9 => crate::tui::notifications::Method::Osc9,
-        crate::config::NotificationMethod::Bel => crate::tui::notifications::Method::Bel,
-        crate::config::NotificationMethod::Kitty => crate::tui::notifications::Method::Kitty,
-        crate::config::NotificationMethod::Ghostty => crate::tui::notifications::Method::Ghostty,
-        crate::config::NotificationMethod::Off => crate::tui::notifications::Method::Off,
-    };
-
-    if let Some(condition) = config
-        .tui
-        .as_ref()
-        .and_then(|tui| tui.notification_condition)
-    {
-        match condition {
-            crate::config::NotificationCondition::Always => {
-                return Some((method, Duration::ZERO, notif.include_summary));
-            }
-            crate::config::NotificationCondition::Never => return None,
-        }
-    }
-
-    Some((
-        method,
-        Duration::from_secs(notif.threshold_secs),
-        notif.include_summary,
-    ))
-}
-
-/// Build the notification body for a completed turn. Prefers the live
-/// streaming text the user just saw; falls back to the latest assistant
-/// message in `api_messages` if streaming text is empty (for example, the
-/// turn finished entirely through tool output). When `include_summary` is
-/// true, an elapsed/cost line is appended.
-fn completed_turn_notification_message(
-    app: &App,
-    current_streaming_text: &str,
-    include_summary: bool,
-    turn_elapsed: Duration,
-    turn_cost: Option<crate::pricing::CostEstimate>,
-) -> String {
-    let mut msg = notification_text_summary(current_streaming_text)
-        .or_else(|| latest_assistant_notification_text(&app.api_messages))
-        .unwrap_or_else(|| "deepseek: turn complete".to_string());
-
-    if include_summary {
-        let human = crate::tui::notifications::humanize_duration(turn_elapsed);
-        let summary = match turn_cost {
-            Some(c) => {
-                let cost = crate::pricing::format_cost_estimate(c, app.cost_currency);
-                format!("deepseek: turn complete ({human}, {cost})")
-            }
-            None => format!("deepseek: turn complete ({human})"),
-        };
-        if msg == "deepseek: turn complete" {
-            msg = summary;
-        } else {
-            msg.push('\n');
-            msg.push_str(&summary);
-        }
-    }
-
-    msg
-}
-
-fn subagent_completion_notification_message(
-    id: &str,
-    result: &str,
-    include_summary: bool,
-    elapsed: Duration,
-) -> String {
-    let result_line = result
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with("<deepseek:subagent.done>"));
-    let mut msg = result_line
-        .and_then(notification_text_summary)
-        .map(|summary| format!("sub-agent {id}: {summary}"))
-        .unwrap_or_else(|| format!("deepseek: sub-agent {id} complete"));
-
-    if include_summary {
-        let human = crate::tui::notifications::humanize_duration(elapsed);
-        msg.push('\n');
-        msg.push_str(&format!("deepseek: sub-agent complete ({human})"));
-    }
-
-    msg
-}
-
-fn latest_assistant_notification_text(messages: &[Message]) -> Option<String> {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "assistant")
-        .and_then(|message| {
-            let text = message
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text, .. } => Some(text.as_str()),
-                    ContentBlock::Thinking { .. }
-                    | ContentBlock::ToolUse { .. }
-                    | ContentBlock::ToolResult { .. }
-                    | ContentBlock::ServerToolUse { .. }
-                    | ContentBlock::ToolSearchToolResult { .. }
-                    | ContentBlock::CodeExecutionToolResult { .. } => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            notification_text_summary(&text)
-        })
-}
-
-fn notification_text_summary(text: &str) -> Option<String> {
-    const MAX_CHARS: usize = 360;
-
-    let sanitized = sanitize_stream_chunk(text);
-    let collapsed = sanitized
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let trimmed = collapsed.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if let Some((idx, _)) = trimmed.char_indices().nth(MAX_CHARS) {
-        let mut s = String::with_capacity(idx + 3);
-        s.push_str(&trimmed[..idx]);
-        s.push_str("...");
-        Some(s)
-    } else {
-        Some(trimmed.to_string())
-    }
-}
+// Per-turn notification composition (settings, message body, summary)
+// moved to `tui/notifications.rs` alongside the dispatch primitives.
 
 /// Ensure an in-flight streaming Assistant cell exists in history and return
 /// its index. Thinking cells go through `streaming_thinking::ensure_active_entry`

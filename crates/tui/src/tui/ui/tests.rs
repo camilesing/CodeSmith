@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::{ApiProvider, Config};
+use crate::tui::active_cell::ActiveCell;
 use crate::config_ui::{self, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::mock_engine_handle;
 use crate::tui::file_mention::{
@@ -5160,7 +5161,7 @@ fn notification_settings_tui_always_keeps_configured_method_no_threshold() {
     };
 
     let (method, threshold, include_summary) =
-        super::notification_settings(&config).expect("notification should be enabled");
+        crate::tui::notifications::settings(&config).expect("notification should be enabled");
     assert_eq!(method, crate::tui::notifications::Method::Bel);
     assert_eq!(threshold, Duration::ZERO);
     assert!(include_summary);
@@ -5176,7 +5177,7 @@ fn notification_settings_tui_never_disables_notifications() {
         ..Config::default()
     };
 
-    assert!(super::notification_settings(&config).is_none());
+    assert!(crate::tui::notifications::settings(&config).is_none());
 }
 
 #[test]
@@ -5191,7 +5192,7 @@ fn notification_settings_no_tui_override_uses_notifications_block() {
     };
 
     let (method, threshold, include_summary) =
-        super::notification_settings(&config).expect("notification should be enabled");
+        crate::tui::notifications::settings(&config).expect("notification should be enabled");
     assert_eq!(method, crate::tui::notifications::Method::Osc9);
     assert_eq!(threshold, Duration::from_secs(45));
     assert!(!include_summary);
@@ -5200,7 +5201,7 @@ fn notification_settings_no_tui_override_uses_notifications_block() {
 #[test]
 fn completed_turn_notification_uses_streaming_text() {
     let app = create_test_app();
-    let msg = super::completed_turn_notification_message(
+    let msg = crate::tui::notifications::completed_turn_message(
         &app,
         "Hello there.\n\nWhat's next?",
         false,
@@ -5236,7 +5237,7 @@ fn completed_turn_notification_falls_back_to_latest_assistant_message() {
     });
 
     let msg =
-        super::completed_turn_notification_message(&app, "", false, Duration::from_secs(75), None);
+        crate::tui::notifications::completed_turn_message(&app, "", false, Duration::from_secs(75), None);
     assert_eq!(msg, "Latest reply");
 }
 
@@ -5244,7 +5245,7 @@ fn completed_turn_notification_falls_back_to_latest_assistant_message() {
 fn completed_turn_notification_falls_back_to_default_when_empty() {
     let app = create_test_app();
     let msg =
-        super::completed_turn_notification_message(&app, "", false, Duration::from_secs(5), None);
+        crate::tui::notifications::completed_turn_message(&app, "", false, Duration::from_secs(5), None);
     assert_eq!(msg, "deepseek: turn complete");
 }
 
@@ -5252,7 +5253,7 @@ fn completed_turn_notification_falls_back_to_default_when_empty() {
 fn completed_turn_notification_truncates_long_text() {
     let app = create_test_app();
     let long = "a".repeat(500);
-    let msg = super::completed_turn_notification_message(
+    let msg = crate::tui::notifications::completed_turn_message(
         &app,
         &long,
         false,
@@ -5266,7 +5267,7 @@ fn completed_turn_notification_truncates_long_text() {
 
 #[test]
 fn subagent_completion_notification_uses_summary_line_not_sentinel() {
-    let msg = super::subagent_completion_notification_message(
+    let msg = crate::tui::notifications::subagent_completion_message(
         "agent_live",
         "Finished the docs audit.\n<deepseek:subagent.done>{}</deepseek:subagent.done>",
         false,
@@ -5279,7 +5280,7 @@ fn subagent_completion_notification_uses_summary_line_not_sentinel() {
 
 #[test]
 fn subagent_completion_notification_can_include_elapsed_summary() {
-    let msg = super::subagent_completion_notification_message(
+    let msg = crate::tui::notifications::subagent_completion_message(
         "agent_live",
         "",
         true,
