@@ -513,6 +513,7 @@ This project ships with help from a growing community of contributors:
 - **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter and custom-endpoint model-ID preservation (#1066)
 - **[Jefsky](https://github.com/Jefsky)** — DeepSeek endpoint correction report (#1079, #1084)
 - **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API-key preference diagnosis (#1081)
+- **[Horace Liu](https://github.com/liuhq)** — Nix package support and install documentation (#1173)
 
 ---
 
