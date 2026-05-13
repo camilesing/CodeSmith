@@ -1084,14 +1084,11 @@ mod tests {
             )
             .await
             .expect("execute");
-        assert!(round.stdout.contains("36 4"), "{}", round.stdout);
-        assert!(round.stdout.contains("beta needle"), "{}", round.stdout);
-        assert!(
-            round.stdout.contains("beta needle\ngamma needle"),
-            "{}",
-            round.stdout
-        );
-        assert!(round.stdout.contains("1 needle 11"), "{}", round.stdout);
+        let stdout = round.stdout.replace("\r\n", "\n");
+        assert!(stdout.contains("36 4"), "{stdout}");
+        assert!(stdout.contains("beta needle"), "{stdout}");
+        assert!(stdout.contains("beta needle\ngamma needle"), "{stdout}");
+        assert!(stdout.contains("1 needle 11"), "{stdout}");
         rt.shutdown().await;
     }
 

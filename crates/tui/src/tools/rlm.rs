@@ -533,7 +533,11 @@ mod tests {
             .await
             .expect("eval");
         let eval_json: Value = serde_json::from_str(&eval.content).expect("eval json");
-        assert_eq!(eval_json["stdout_preview"], "ok\n");
+        let stdout_preview = eval_json["stdout_preview"]
+            .as_str()
+            .expect("stdout_preview")
+            .replace("\r\n", "\n");
+        assert_eq!(stdout_preview, "ok\n");
 
         let close = RlmCloseTool
             .execute(json!({"name": "sample"}), &ctx)
