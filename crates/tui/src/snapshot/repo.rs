@@ -647,13 +647,26 @@ impl SnapshotRepo {
 
         for i in (0..keep).rev() {
             let s = &snapshots[i];
-            let tree = run_git(&self.git_dir, &self.work_tree, &["rev-parse", &format!("{}^{{tree}}", s.id.as_str())])?;
+            let tree = run_git(
+                &self.git_dir,
+                &self.work_tree,
+                &["rev-parse", &format!("{}^{{tree}}", s.id.as_str())],
+            )?;
             if !tree.status.success() {
-                return Err(io_other(format!("rev-parse {}^{{tree}} failed: {}", s.id.as_str(), String::from_utf8_lossy(&tree.stderr).trim())));
+                return Err(io_other(format!(
+                    "rev-parse {}^{{tree}} failed: {}",
+                    s.id.as_str(),
+                    String::from_utf8_lossy(&tree.stderr).trim()
+                )));
             }
             let tree_hash = String::from_utf8_lossy(&tree.stdout).trim().to_string();
 
-            let mut args = vec!["commit-tree".to_string(), "-m".to_string(), s.label.clone(), tree_hash];
+            let mut args = vec![
+                "commit-tree".to_string(),
+                "-m".to_string(),
+                s.label.clone(),
+                tree_hash,
+            ];
             if let Some(ref p) = prev_sha {
                 args.push("-p".to_string());
                 args.push(p.clone());
@@ -661,20 +674,38 @@ impl SnapshotRepo {
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
             let newc = run_git(&self.git_dir, &self.work_tree, &arg_refs)?;
             if !newc.status.success() {
-                return Err(io_other(format!("commit-tree failed: {}", String::from_utf8_lossy(&newc.stderr).trim())));
+                return Err(io_other(format!(
+                    "commit-tree failed: {}",
+                    String::from_utf8_lossy(&newc.stderr).trim()
+                )));
             }
             let new_sha = String::from_utf8_lossy(&newc.stdout).trim().to_string();
             prev_sha = Some(new_sha);
         }
 
         if let Some(final_sha) = prev_sha {
-            let up = run_git(&self.git_dir, &self.work_tree, &["update-ref", "HEAD", &final_sha])?;
+            let up = run_git(
+                &self.git_dir,
+                &self.work_tree,
+                &["update-ref", "HEAD", &final_sha],
+            )?;
             if !up.status.success() {
-                return Err(io_other(format!("update-ref HEAD failed: {}", String::from_utf8_lossy(&up.stderr).trim())));
+                return Err(io_other(format!(
+                    "update-ref HEAD failed: {}",
+                    String::from_utf8_lossy(&up.stderr).trim()
+                )));
             }
         }
-        let _ = run_git(&self.git_dir, &self.work_tree, &["reflog", "expire", "--expire=now", "--all"]);
-        let _ = run_git(&self.git_dir, &self.work_tree, &["gc", "--prune=now", "--quiet"]);
+        let _ = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["reflog", "expire", "--expire=now", "--all"],
+        );
+        let _ = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["gc", "--prune=now", "--quiet"],
+        );
         Ok(removed)
     }
 

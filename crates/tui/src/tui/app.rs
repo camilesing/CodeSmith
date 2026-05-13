@@ -1792,8 +1792,7 @@ impl App {
         metadata.cost.subagent_cost_usd = self.session.subagent_cost;
         metadata.cost.subagent_cost_cny = self.session.subagent_cost_cny;
         metadata.cost.displayed_cost_high_water_usd = self.session.displayed_cost_high_water;
-        metadata.cost.displayed_cost_high_water_cny =
-            self.session.displayed_cost_high_water_cny;
+        metadata.cost.displayed_cost_high_water_cny = self.session.displayed_cost_high_water_cny;
     }
 
     /// Recompute the displayed cost high-water mark. Called any time a cost

@@ -346,7 +346,9 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
     // use the same fallback chain so the policy text and the -DKEY=VALUE
     // params stay in sync.
     if let Some(npm_cache) = resolve_npm_cache_dir() {
-        let canonical = npm_cache.canonicalize().unwrap_or_else(|_| npm_cache.clone());
+        let canonical = npm_cache
+            .canonicalize()
+            .unwrap_or_else(|_| npm_cache.clone());
         params.push(("NPM_CACHE_DIR".to_string(), canonical));
     }
 
@@ -594,8 +596,7 @@ mod tests {
             "read-only mode should allow reading the npm cache"
         );
         assert!(
-            !read_only_text
-                .contains(r#"(allow file-write* (subpath (param "NPM_CACHE_DIR")))"#),
+            !read_only_text.contains(r#"(allow file-write* (subpath (param "NPM_CACHE_DIR")))"#),
             "read-only mode must NOT grant write access to the npm cache"
         );
 
