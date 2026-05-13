@@ -730,6 +730,26 @@ pub fn auto_model_heuristic_with_bias(
     _current_model: &str,
     cost_saving: bool,
 ) -> String {
+    auto_model_heuristic_selection_with_bias(input, _current_model, cost_saving).model
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoModelHeuristicConfidence {
+    Decisive,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutoModelHeuristicSelection {
+    model: String,
+    confidence: AutoModelHeuristicConfidence,
+}
+
+fn auto_model_heuristic_selection_with_bias(
+    input: &str,
+    _current_model: &str,
+    cost_saving: bool,
+) -> AutoModelHeuristicSelection {
     let len = input.chars().count();
     let lower = input.to_lowercase();
     let borderline_pro_keywords: &[&str] = &[
@@ -745,20 +765,34 @@ pub fn auto_model_heuristic_with_bias(
     let borderline_match = borderline_pro_keywords.iter().any(|kw| lower.contains(kw));
     let pro_match = strong_match || (!cost_saving && borderline_match);
     if pro_match {
-        return "deepseek-v4-pro".to_string();
+        return AutoModelHeuristicSelection {
+            model: "deepseek-v4-pro".to_string(),
+            confidence: AutoModelHeuristicConfidence::Decisive,
+        };
     }
     // Short messages → Flash
     if len < 100 {
-        return "deepseek-v4-flash".to_string();
+        return AutoModelHeuristicSelection {
+            model: "deepseek-v4-flash".to_string(),
+            confidence: AutoModelHeuristicConfidence::Decisive,
+        };
     }
     // Long complex requests → Pro. Cost-saving raises the threshold so that
     // long-but-routine requests (pasted logs, CSV-style data) don't escalate.
     let long_threshold = if cost_saving { 1_000 } else { 500 };
     if len > long_threshold {
-        return "deepseek-v4-pro".to_string();
+        return AutoModelHeuristicSelection {
+            model: "deepseek-v4-pro".to_string(),
+            confidence: AutoModelHeuristicConfidence::Decisive,
+        };
     }
-    // Default to Flash for cost savings
-    "deepseek-v4-flash".to_string()
+    // Grey-zone default branch: Flash is the deterministic fallback, but the
+    // Flash router can still add value here because there was no strong local
+    // signal.
+    AutoModelHeuristicSelection {
+        model: "deepseek-v4-flash".to_string(),
+        confidence: AutoModelHeuristicConfidence::Ambiguous,
+    }
 }
 
 /// Keywords that escalate `auto`-mode model selection to
@@ -921,6 +955,12 @@ pub async fn resolve_auto_route_with_flash(
     selected_thinking_mode: &str,
 ) -> AutoRouteSelection {
     let cost_saving = config.auto_cost_saving();
+    let heuristic =
+        auto_model_heuristic_selection_with_bias(latest_request, selected_model_mode, cost_saving);
+    if heuristic.confidence == AutoModelHeuristicConfidence::Decisive {
+        return auto_route_from_heuristic(latest_request, heuristic);
+    }
+
     match auto_route_flash_recommendation(
         config,
         latest_request,
@@ -935,17 +975,16 @@ pub async fn resolve_auto_route_with_flash(
             reasoning_effort: recommendation.reasoning_effort,
             source: AutoRouteSource::FlashRouter,
         },
-        Ok(None) | Err(_) => fallback_auto_route(latest_request, selected_model_mode, cost_saving),
+        Ok(None) | Err(_) => auto_route_from_heuristic(latest_request, heuristic),
     }
 }
 
-fn fallback_auto_route(
+fn auto_route_from_heuristic(
     latest_request: &str,
-    selected_model_mode: &str,
-    cost_saving: bool,
+    heuristic: AutoModelHeuristicSelection,
 ) -> AutoRouteSelection {
     AutoRouteSelection {
-        model: auto_model_heuristic_with_bias(latest_request, selected_model_mode, cost_saving),
+        model: heuristic.model,
         reasoning_effort: Some(normalize_auto_route_effort(crate::auto_reasoning::select(
             false,
             latest_request,
@@ -1396,6 +1435,47 @@ mod tests {
         assert_eq!(
             auto_model_heuristic("\u{4f60}\u{597d}", "auto"),
             "deepseek-v4-flash",
+        );
+    }
+
+    #[test]
+    fn auto_heuristic_selection_marks_short_and_complex_routes_decisive() {
+        let short = auto_model_heuristic_selection_with_bias("yes", "auto", false);
+        assert_eq!(short.model, "deepseek-v4-flash");
+        assert_eq!(
+            short.confidence,
+            AutoModelHeuristicConfidence::Decisive,
+            "trivial replies should skip the Flash router"
+        );
+
+        let complex = auto_model_heuristic_selection_with_bias(
+            "Please review the auth migration",
+            "auto",
+            false,
+        );
+        assert_eq!(complex.model, "deepseek-v4-pro");
+        assert_eq!(
+            complex.confidence,
+            AutoModelHeuristicConfidence::Decisive,
+            "strong complexity keywords should skip the Flash router"
+        );
+    }
+
+    #[test]
+    fn auto_heuristic_selection_leaves_default_branch_ambiguous_for_router() {
+        let request =
+            "Please update the configuration notes so each option has a clearer label. ".repeat(3);
+        assert!(
+            (100..500).contains(&request.chars().count()),
+            "test request must stay in the default grey zone"
+        );
+
+        let selection = auto_model_heuristic_selection_with_bias(&request, "auto", false);
+        assert_eq!(selection.model, "deepseek-v4-flash");
+        assert_eq!(
+            selection.confidence,
+            AutoModelHeuristicConfidence::Ambiguous,
+            "only the grey-zone default branch should invoke the Flash router"
         );
     }
 
