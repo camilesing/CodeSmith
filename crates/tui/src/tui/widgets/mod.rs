@@ -659,8 +659,7 @@ impl Renderable for ComposerWidget<'_> {
                     ));
                 }
                 if !right_spans.is_empty() {
-                    block = block
-                        .title_top(Line::from(right_spans).right_aligned());
+                    block = block.title_top(Line::from(right_spans).right_aligned());
                 }
             }
             if let Some(hint_line) = hint_line {

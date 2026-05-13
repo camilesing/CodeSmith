@@ -1408,9 +1408,15 @@ async fn run_event_loop(
                             let persisted = app
                                 .current_session_id
                                 .as_deref()
-                                .and_then(|id| SessionManager::default_location().ok()?.load_session(id).ok())
+                                .and_then(|id| {
+                                    SessionManager::default_location()
+                                        .ok()?
+                                        .load_session(id)
+                                        .ok()
+                                })
                                 .map(|s| s.metadata.title);
-                            app.session_title = persisted.or_else(|| derive_session_title(&app.api_messages));
+                            app.session_title =
+                                persisted.or_else(|| derive_session_title(&app.api_messages));
                         }
                     }
                     EngineEvent::CompactionStarted { message, .. } => {
