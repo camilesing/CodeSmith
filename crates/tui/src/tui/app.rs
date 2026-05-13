@@ -1266,13 +1266,8 @@ impl App {
             initial_input,
         } = options;
 
-        let mut provider = config.api_provider();
-
-        // Check if API key exists
-        let needs_api_key = !has_api_key(config);
-        let api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
-        let was_onboarded = crate::tui::onboarding::is_onboarded();
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+        let mut provider = config.api_provider();
 
         // Let settings override the config provider so runtime switches survive restarts.
         if let Some(ref provider_str) = settings.default_provider
@@ -1280,6 +1275,16 @@ impl App {
         {
             provider = parsed;
         }
+        let mut effective_auth_config = config.clone();
+        effective_auth_config.provider = Some(provider.as_str().to_string());
+
+        // Check if the effective provider has an API key. This must happen
+        // after settings.default_provider is applied; otherwise a saved
+        // third-party provider can be pushed back into DeepSeek onboarding.
+        let needs_api_key = !has_api_key(&effective_auth_config);
+        let api_key_env_only =
+            crate::config::active_provider_uses_env_only_api_key(&effective_auth_config);
+        let was_onboarded = crate::tui::onboarding::is_onboarded();
         let auto_compact = settings.auto_compact;
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
@@ -4151,10 +4156,12 @@ pub enum McpUiAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
+    use crate::test_support::lock_test_env;
     use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
     use crate::tools::todo::TodoStatus;
     use crate::tui::clipboard::PastedImage;
+    use std::ffi::OsString;
 
     fn test_options(yolo: bool) -> TuiOptions {
         TuiOptions {
@@ -4182,10 +4189,74 @@ mod tests {
         }
     }
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
     #[test]
     fn test_trust_mode_follows_yolo_on_startup() {
         let app = App::new(test_options(true), &Config::default());
         assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn settings_default_provider_auth_check_uses_provider_scoped_key() {
+        let _lock = lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            tmp.path().join("settings.toml"),
+            "default_provider = \"openai\"\n",
+        )
+        .expect("settings");
+        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+        let _deepseek_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
+        let _openai_key = EnvVarGuard::remove("OPENAI_API_KEY");
+
+        let config = Config {
+            providers: Some(ProvidersConfig {
+                openai: ProviderConfig {
+                    api_key: Some("openai-config-key".to_string()),
+                    ..ProviderConfig::default()
+                },
+                ..ProvidersConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        let app = App::new(test_options(false), &config);
+
+        assert_eq!(app.api_provider, ApiProvider::Openai);
+        assert!(
+            !app.onboarding_needs_api_key,
+            "OpenAI provider config key should satisfy startup auth without a DeepSeek key"
+        );
+        assert_ne!(app.onboarding, OnboardingState::ApiKey);
+        assert!(!app.api_key_env_only);
     }
 
     #[test]
