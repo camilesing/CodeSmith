@@ -30,6 +30,7 @@ pub mod feedback_picker;
 pub mod file_frecency;
 pub mod file_mention;
 pub mod file_picker;
+pub mod file_picker_relevance;
 pub mod file_tree;
 pub mod frame_rate_limiter;
 pub mod history;

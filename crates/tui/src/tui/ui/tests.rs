@@ -1,6 +1,8 @@
 use super::*;
 use crate::config::{ApiProvider, Config};
 use crate::tui::active_cell::ActiveCell;
+use crate::tui::app::ToolDetailRecord;
+use std::collections::HashSet;
 use crate::config_ui::{self, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::mock_engine_handle;
 use crate::tui::file_mention::{
@@ -1055,11 +1057,11 @@ fn transcript_scroll_percent_is_clamped_and_relative() {
 #[test]
 fn parse_git_status_path_handles_simple_and_renamed_entries() {
     assert_eq!(
-        parse_git_status_path(" M crates/tui/src/tui/ui.rs"),
+        crate::tui::file_picker_relevance::parse_git_status_path(" M crates/tui/src/tui/ui.rs"),
         Some("crates/tui/src/tui/ui.rs".to_string())
     );
     assert_eq!(
-        parse_git_status_path("R  old name.rs -> crates/tui/src/tui/file_picker.rs"),
+        crate::tui::file_picker_relevance::parse_git_status_path("R  old name.rs -> crates/tui/src/tui/file_picker.rs"),
         Some("crates/tui/src/tui/file_picker.rs".to_string())
     );
 }
@@ -1074,7 +1076,7 @@ fn workspace_file_candidate_normalizes_absolute_and_line_suffixed_paths() {
 
     let raw = format!("\"{}:42\",", path.display());
     assert_eq!(
-        workspace_file_candidate(&raw, root),
+        crate::tui::file_picker_relevance::workspace_file_candidate(&raw, root),
         Some("src/lib.rs".to_string())
     );
 }
@@ -1090,7 +1092,7 @@ fn tool_path_relevance_extracts_paths_from_command_text() {
     let mut relevance = crate::tui::file_picker::FilePickerRelevance::default();
     let mut seen = HashSet::new();
     let mut budget = 16;
-    mark_tool_paths_from_text(
+    crate::tui::file_picker_relevance::mark_tool_paths_from_text(
         "sed -n '1,20p' src/zeta.rs",
         root,
         &mut seen,
