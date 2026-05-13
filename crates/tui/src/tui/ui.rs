@@ -44,7 +44,7 @@ use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
-use crate::hooks::HookEvent;
+use crate::hooks::{HookEvent, HookExecutor};
 use crate::llm_client::LlmClient;
 use crate::models::{
     ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
@@ -345,7 +345,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 
         match load_result {
             Ok(Some(saved)) => {
-                let recovered = apply_loaded_session(&mut app, &saved);
+                let recovered = apply_loaded_session(&mut app, config, &saved);
                 if !recovered {
                     app.status_message = Some(format!(
                         "Resumed session: {}",
@@ -5462,6 +5462,9 @@ async fn apply_command_result(
             AppAction::Mcp(action) => {
                 handle_mcp_ui_action(app, config, action).await;
             }
+            AppAction::SwitchWorkspace { workspace } => {
+                switch_workspace(app, engine_handle, task_manager, config, workspace).await;
+            }
             AppAction::SwitchProfile { profile } => {
                 app.config_profile = Some(profile.clone());
                 match Config::load(app.config_path.clone(), Some(&profile)) {
@@ -5565,6 +5568,72 @@ fn open_external_url(url: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn apply_workspace_runtime_state(app: &mut App, config: &Config, workspace: PathBuf) {
+    app.workspace = workspace.clone();
+    app.hooks = HookExecutor::new(config.hooks_config(), workspace.clone());
+    app.skills_dir = crate::tui::app::resolve_skills_dir(&workspace, &config.skills_dir(), config);
+    app.refresh_skill_cache();
+    app.workspace_context = None;
+    if let Ok(mut cell) = app.workspace_context_cell.lock() {
+        *cell = None;
+    }
+    app.workspace_context_refreshed_at = None;
+    app.file_tree = None;
+
+    let shell_manager = crate::tools::shell::new_shared_shell_manager(workspace);
+    app.runtime_services.shell_manager = Some(shell_manager);
+    app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
+}
+
+async fn sync_runtime_workspace_state(task_manager: &SharedTaskManager, workspace: PathBuf) {
+    task_manager.set_default_workspace(workspace).await;
+}
+
+async fn switch_workspace(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    task_manager: &SharedTaskManager,
+    config: &Config,
+    workspace: PathBuf,
+) {
+    if app.is_loading {
+        app.status_message =
+            Some("Cannot switch workspace while a request is running.".to_string());
+        app.add_message(HistoryCell::System {
+            content: "Cannot switch workspace while a request is running.".to_string(),
+        });
+        return;
+    }
+
+    if app.workspace == workspace {
+        app.status_message = Some(format!("Workspace unchanged: {}", workspace.display()));
+        return;
+    }
+
+    apply_workspace_runtime_state(app, config, workspace.clone());
+    sync_runtime_workspace_state(task_manager, workspace.clone()).await;
+
+    let _ = engine_handle.send(Op::Shutdown).await;
+    let engine_config = build_engine_config(app, config);
+    *engine_handle = spawn_engine(engine_config, config);
+    if !app.api_messages.is_empty() {
+        let _ = engine_handle
+            .send(Op::SyncSession {
+                session_id: app.current_session_id.clone(),
+                messages: app.api_messages.clone(),
+                system_prompt: app.system_prompt.clone(),
+                model: app.model.clone(),
+                workspace: workspace.clone(),
+            })
+            .await;
+    }
+
+    app.add_message(HistoryCell::System {
+        content: format!("Switched workspace to {}", workspace.display()),
+    });
+    app.status_message = Some(format!("Workspace: {}", workspace.display()));
 }
 
 async fn handle_mcp_ui_action(
@@ -6537,7 +6606,8 @@ async fn handle_view_events(
 
                 match manager.load_session(&session_id) {
                     Ok(session) => {
-                        let recovered = apply_loaded_session(app, &session);
+                        let recovered = apply_loaded_session(app, config, &session);
+                        sync_runtime_workspace_state(task_manager, app.workspace.clone()).await;
                         let _ = engine_handle
                             .send(Op::SyncSession {
                                 session_id: app.current_session_id.clone(),
@@ -6882,7 +6952,7 @@ async fn apply_provider_picker_api_key(
     switch_provider(app, engine_handle, config, provider, None).await;
 }
 
-fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
+fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) -> bool {
     let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
     app.api_messages = messages;
     app.clear_history();
@@ -6928,7 +6998,7 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.viewport.transcript_selection.clear();
     app.model.clone_from(&session.metadata.model);
     app.update_model_compaction_budget();
-    app.workspace.clone_from(&session.metadata.workspace);
+    apply_workspace_runtime_state(app, config, session.metadata.workspace.clone());
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
     app.session.session_cost = session.metadata.cost.session_cost_usd;

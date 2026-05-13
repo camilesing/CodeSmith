@@ -231,6 +231,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdHomeDescription,
     },
     CommandInfo {
+        name: "workspace",
+        aliases: &["cwd"],
+        usage: "/workspace [path]",
+        description_id: MessageId::CmdWorkspaceDescription,
+    },
+    CommandInfo {
         name: "note",
         aliases: &[],
         usage: "/note [add|list|show|edit|remove|clear|path]",
@@ -552,6 +558,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "links" | "dashboard" | "api" | "lianjie" => core::deepseek_links(app),
         "feedback" => feedback::feedback(app, arg),
         "home" | "stats" | "overview" | "zhuye" | "shouye" => core::home_dashboard(app),
+        "workspace" | "cwd" => core::workspace_switch(app, arg),
         "note" => note::note(app, arg),
         "memory" => memory::memory(app, arg),
         "attach" | "image" | "media" | "fujian" => attachment::attach(app, arg),
@@ -1057,6 +1064,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use std::sync::MutexGuard;
+    use tempfile::tempdir;
 
     fn create_test_app() -> App {
         let options = TuiOptions {
@@ -1289,6 +1297,17 @@ mod tests {
             assert!(msg.contains("https://platform.deepseek.com"));
             assert!(result.action.is_none());
         }
+    }
+
+    #[test]
+    fn execute_workspace_alias_switches_workspace() {
+        let dir = tempdir().expect("temp dir");
+        let mut app = create_test_app();
+        let result = execute(&format!("/cwd {}", dir.path().display()), &mut app);
+        assert!(matches!(
+            result.action,
+            Some(AppAction::SwitchWorkspace { workspace }) if workspace == dir.path().canonicalize().unwrap()
+        ));
     }
 
     #[test]

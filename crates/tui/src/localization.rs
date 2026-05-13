@@ -313,6 +313,7 @@ pub enum MessageId {
     CmdTrustDescription,
     CmdLspDescription,
     CmdShareDescription,
+    CmdWorkspaceDescription,
     CmdUndoDescription,
     CmdVerboseDescription,
     CmdCacheAdvice,
@@ -543,6 +544,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdTrustDescription,
     MessageId::CmdLspDescription,
     MessageId::CmdShareDescription,
+    MessageId::CmdWorkspaceDescription,
     MessageId::CmdUndoDescription,
     MessageId::CmdVerboseDescription,
     MessageId::CmdCacheAdvice,
@@ -995,6 +997,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdTrustDescription => {
             "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
+        MessageId::CmdWorkspaceDescription => "Show or switch the current workspace",
         MessageId::CmdUndoDescription => "Remove last message pair",
         MessageId::CmdVerboseDescription => "Toggle full live thinking in the transcript",
         MessageId::CmdCacheAdvice => {
@@ -1375,6 +1378,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdTrustDescription => {
             "ワークスペースの信頼設定とパス別許可リストを管理（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
+        MessageId::CmdWorkspaceDescription => "現在のワークスペースを表示または切り替え",
         MessageId::CmdUndoDescription => "最後のメッセージ対を削除",
         MessageId::CmdVerboseDescription => "ライブ思考表示の詳細モードを切り替え",
         MessageId::CmdCacheAdvice => {
@@ -1708,6 +1712,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdTrustDescription => {
             "管理工作区信任与按路径的白名单（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
+        MessageId::CmdWorkspaceDescription => "显示或切换当前工作空间",
         MessageId::CmdUndoDescription => "移除最后一组消息对",
         MessageId::CmdVerboseDescription => "切换实时思考内容的完整显示",
         MessageId::CmdCacheAdvice => {
@@ -2049,6 +2054,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdTrustDescription => {
             "Gerenciar a confiança do workspace e a allowlist por caminho (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
+        MessageId::CmdWorkspaceDescription => "Mostrar ou trocar o workspace atual",
         MessageId::CmdUndoDescription => "Remover o último par de mensagens",
         MessageId::CmdVerboseDescription => "Alternar pensamento ao vivo completo no transcript",
         MessageId::CmdCacheAdvice => {
@@ -2434,6 +2440,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdTrustDescription => {
             "Gestionar la confianza del workspace y la lista de paths permitidos (`/trust add <ruta>`, `/trust list`, `/trust on|off`)"
         }
+        MessageId::CmdWorkspaceDescription => "Mostrar o cambiar el workspace actual",
         MessageId::CmdUndoDescription => "Eliminar el último par de mensajes",
         MessageId::CmdVerboseDescription => {
             "Alternar pensamiento en vivo completo en la transcripción"

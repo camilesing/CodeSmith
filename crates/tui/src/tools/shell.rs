@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -601,6 +601,11 @@ impl ShellManager {
     #[allow(dead_code)]
     pub fn is_sandbox_available(&mut self) -> bool {
         self.sandbox_manager.is_available()
+    }
+
+    #[allow(dead_code)]
+    pub fn default_workspace(&self) -> &Path {
+        &self.default_workspace
     }
 
     /// Execute a shell command with the configured sandbox policy.
