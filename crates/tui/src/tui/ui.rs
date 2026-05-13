@@ -7887,6 +7887,17 @@ fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
     )]
 }
 
+fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
+    let workspace = app.workspace.as_path();
+    let Some(branch) = workspace_git_branch(workspace) else {
+        return Vec::new();
+    };
+    vec![Span::styled(
+        format!("git:{branch}"),
+        Style::default().fg(app.ui_theme.text_muted),
+    )]
+}
+
 fn footer_cost_spans(app: &App) -> Vec<Span<'static>> {
     let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     if !should_show_footer_cost(displayed_cost) {
