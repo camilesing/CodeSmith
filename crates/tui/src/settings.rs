@@ -593,6 +593,9 @@ impl Settings {
                 };
                 self.sidebar_focus = normalized.to_string();
             }
+            "context_panel" | "context" | "session_panel" => {
+                self.context_panel = parse_bool(value)?;
+            }
             "cost_currency" | "currency" => {
                 let Some(currency) = crate::pricing::CostCurrency::from_setting(value) else {
                     anyhow::bail!(
@@ -681,6 +684,7 @@ impl Settings {
             self.sidebar_width_percent
         ));
         lines.push(format!("  sidebar_focus:      {}", self.sidebar_focus));
+        lines.push(format!("  context_panel:      {}", self.context_panel));
         lines.push(format!("  cost_currency:      {}", self.cost_currency));
         lines.push(format!("  max_history:        {}", self.max_input_history));
         lines.push(format!(
@@ -743,6 +747,7 @@ impl Settings {
                 "composer_border",
                 "Show a border around the composer input area: on/off",
             ),
+            ("composer_vim_mode", "Composer editing mode: normal, vim"),
             (
                 "transcript_spacing",
                 "Transcript spacing: compact, comfortable, spacious",
@@ -764,6 +769,10 @@ impl Settings {
             (
                 "sidebar_focus",
                 "Sidebar focus: auto, work, tasks, agents, context",
+            ),
+            (
+                "context_panel",
+                "Show the session context sidebar panel: on/off",
             ),
             ("cost_currency", "Cost display currency: usd, cny"),
             ("max_history", "Max input history entries"),
@@ -1087,6 +1096,22 @@ mod tests {
             .set("sidebar_focus", "classic")
             .expect_err("classic is not a supported public focus");
         assert!(err.to_string().contains("invalid sidebar focus"));
+    }
+
+    #[test]
+    fn context_panel_is_configurable() {
+        let mut settings = Settings::default();
+        assert!(!settings.context_panel);
+
+        settings
+            .set("context_panel", "on")
+            .expect("enable context panel");
+        assert!(settings.context_panel);
+
+        settings
+            .set("session_panel", "off")
+            .expect("disable context panel via alias");
+        assert!(!settings.context_panel);
     }
 
     #[test]

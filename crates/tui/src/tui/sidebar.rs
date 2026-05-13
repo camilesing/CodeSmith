@@ -23,7 +23,7 @@ use crate::tools::subagent::SubAgentStatus;
 use crate::tools::todo::TodoStatus;
 
 use super::app::{App, SidebarFocus, TaskPanelEntry};
-use super::history::{HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
+use super::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
 use super::subagent_routing::active_fanout_counts;
 use super::ui::truncate_line_to_width;
 
@@ -389,11 +389,21 @@ fn push_work_checklist_lines(
     ]));
 
     let reserve_for_strategy = if summary.has_strategy() { 2 } else { 0 };
-    let max_items = max_rows
+    let available_item_rows = max_rows
         .saturating_sub(lines.len())
         .saturating_sub(reserve_for_strategy)
         .min(summary.checklist_items.len());
-    for item in summary.checklist_items.iter().take(max_items) {
+    let max_items =
+        if summary.checklist_items.len() > available_item_rows && available_item_rows > 1 {
+            available_item_rows - 1
+        } else {
+            available_item_rows
+        };
+    let start = checklist_window_start(&summary.checklist_items, max_items);
+    let end = start
+        .saturating_add(max_items)
+        .min(summary.checklist_items.len());
+    for item in summary.checklist_items[start..end].iter() {
         let (prefix, color) = match item.status {
             TodoStatus::Pending => ("[ ]", palette::TEXT_MUTED),
             TodoStatus::InProgress => ("[~]", palette::STATUS_WARNING),
@@ -406,13 +416,35 @@ fn push_work_checklist_lines(
         )));
     }
 
-    let remaining = summary.checklist_items.len().saturating_sub(max_items);
+    let earlier = start;
+    let later = summary.checklist_items.len().saturating_sub(end);
+    let remaining = earlier.saturating_add(later);
     if remaining > 0 && lines.len() < max_rows {
+        let label = match (earlier, later) {
+            (0, later) => format!("+{later} more checklist items"),
+            (earlier, 0) => format!("+{earlier} earlier checklist items"),
+            (earlier, later) => format!("+{earlier} earlier, +{later} later"),
+        };
         lines.push(Line::from(Span::styled(
-            format!("+{remaining} more checklist items"),
+            label,
             Style::default().fg(palette::TEXT_MUTED),
         )));
     }
+}
+
+fn checklist_window_start(items: &[SidebarWorkChecklistItem], max_items: usize) -> usize {
+    if max_items >= items.len() {
+        return 0;
+    }
+    let Some(active_idx) = items
+        .iter()
+        .position(|item| item.status == TodoStatus::InProgress)
+    else {
+        return 0;
+    };
+    active_idx
+        .saturating_sub(max_items / 2)
+        .min(items.len().saturating_sub(max_items))
 }
 
 fn push_work_strategy_lines(
@@ -891,19 +923,42 @@ fn sidebar_tool_row_from_cell(cell: &HistoryCell) -> Option<SidebarToolRow> {
             duration_ms: None,
         }),
         ToolCell::Generic(generic) => Some(SidebarToolRow {
-            name: generic.name.clone(),
+            name: friendly_generic_tool_name(&generic.name).to_string(),
             status: generic.status,
-            summary: compact_join([
-                generic.input_summary.clone().unwrap_or_default(),
-                generic.output_summary.clone().unwrap_or_default(),
-                generic
-                    .output
-                    .as_deref()
-                    .map(summarize_tool_output)
-                    .unwrap_or_default(),
-            ]),
+            summary: generic_tool_sidebar_summary(generic),
             duration_ms: None,
         }),
+    }
+}
+
+fn friendly_generic_tool_name(name: &str) -> &str {
+    match name {
+        "task_shell_start" => "start shell job",
+        "task_shell_wait" => "wait shell job",
+        "task_shell_write" => "write shell job",
+        _ => name,
+    }
+}
+
+fn generic_tool_sidebar_summary(generic: &GenericToolCell) -> String {
+    match generic.name.as_str() {
+        "task_shell_start" => compact_join([
+            generic.input_summary.clone().unwrap_or_default(),
+            "background shell job".to_string(),
+        ]),
+        "task_shell_wait" => compact_join([
+            generic.input_summary.clone().unwrap_or_default(),
+            generic.output_summary.clone().unwrap_or_default(),
+        ]),
+        _ => compact_join([
+            generic.input_summary.clone().unwrap_or_default(),
+            generic.output_summary.clone().unwrap_or_default(),
+            generic
+                .output
+                .as_deref()
+                .map(summarize_tool_output)
+                .unwrap_or_default(),
+        ]),
     }
 }
 
@@ -1709,6 +1764,40 @@ mod tests {
     }
 
     #[test]
+    fn work_panel_keeps_active_checklist_item_visible_when_truncated() {
+        let summary = SidebarWorkSummary {
+            checklist_completion_pct: 38,
+            checklist_items: (1..=8)
+                .map(|id| SidebarWorkChecklistItem {
+                    id,
+                    content: format!("Release task {id}"),
+                    status: if id <= 3 {
+                        TodoStatus::Completed
+                    } else if id == 5 {
+                        TodoStatus::InProgress
+                    } else {
+                        TodoStatus::Pending
+                    },
+                })
+                .collect(),
+            ..SidebarWorkSummary::default()
+        };
+
+        let text = lines_to_text(&work_panel_lines(&summary, 80, 6, PaletteMode::Dark));
+
+        assert!(
+            text.iter()
+                .any(|line| line.contains("[~] #5 Release task 5")),
+            "active checklist item should stay visible in a short Work panel: {text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains("earlier"))
+                || text.iter().any(|line| line.contains("later")),
+            "truncation should explain omitted checklist rows: {text:?}"
+        );
+    }
+
+    #[test]
     fn work_panel_includes_strategy_only_when_plan_state_is_non_empty() {
         let empty_text = lines_to_text(&work_panel_lines(
             &SidebarWorkSummary::default(),
@@ -2031,6 +2120,37 @@ mod tests {
         assert!(
             text.iter().any(|line| line.contains("cargo check")),
             "current command summary should stay visible: {text:?}"
+        );
+    }
+
+    #[test]
+    fn tasks_panel_uses_plain_names_for_shell_background_helpers() {
+        let mut app = create_test_app();
+        let mut active = ActiveCell::new();
+        active.push_tool(
+            "shell-wait",
+            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                name: "task_shell_wait".to_string(),
+                status: ToolStatus::Running,
+                input_summary: Some("task_id: shell_33a08c3c".to_string()),
+                output: None,
+                prompts: None,
+                spillover_path: None,
+                output_summary: None,
+                is_diff: false,
+            })),
+        );
+        app.active_cell = Some(active);
+
+        let text = lines_to_text(&task_panel_lines(&app, 80, 6));
+
+        assert!(
+            text.iter().any(|line| line.contains("[~] wait shell job")),
+            "shell helper should render as a user-facing activity: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("task_shell_wait")),
+            "internal helper name should not leak into sidebar: {text:?}"
         );
     }
 

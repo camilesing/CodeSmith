@@ -11,7 +11,9 @@ use crate::llm_client::LlmClient;
 use crate::localization::resolve_locale;
 use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 use crate::settings::Settings;
-use crate::tui::app::{App, AppAction, AppMode, OnboardingState, ReasoningEffort, SidebarFocus};
+use crate::tui::app::{
+    App, AppAction, AppMode, OnboardingState, ReasoningEffort, SidebarFocus, VimMode,
+};
 use crate::tui::approval::ApprovalMode;
 use anyhow::Result;
 
@@ -132,21 +134,73 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
             Some(if app.auto_compact { "true" } else { "false" }.to_string())
         }
         "calm_mode" | "calm" => Some(if app.calm_mode { "true" } else { "false" }.to_string()),
+        "low_motion" | "motion" => Some(if app.low_motion { "true" } else { "false" }.to_string()),
+        "fancy_animations" | "fancy" | "animations" => Some(
+            if app.fancy_animations {
+                "true"
+            } else {
+                "false"
+            }
+            .to_string(),
+        ),
+        "bracketed_paste" | "paste" => Some(
+            if app.use_bracketed_paste {
+                "true"
+            } else {
+                "false"
+            }
+            .to_string(),
+        ),
+        "paste_burst_detection" | "paste_burst" => Some(
+            if app.use_paste_burst_detection {
+                "true"
+            } else {
+                "false"
+            }
+            .to_string(),
+        ),
         "show_thinking" | "thinking" => {
             Some(if app.show_thinking { "true" } else { "false" }.to_string())
         }
+        "show_tool_details" | "tool_details" => Some(
+            if app.show_tool_details {
+                "true"
+            } else {
+                "false"
+            }
+            .to_string(),
+        ),
         "mode" | "default_mode" => Some(app.mode.as_setting().to_string()),
         "max_history" | "history" => Some(app.max_input_history.to_string()),
         "sidebar_width" | "sidebar" => Some(app.sidebar_width_percent.to_string()),
         "sidebar_focus" | "focus" => Some(app.sidebar_focus.as_setting().to_string()),
+        "context_panel" | "context" | "session_panel" => {
+            Some(if app.context_panel { "true" } else { "false" }.to_string())
+        }
         "composer_density" | "composer" => Some(density_display(app.composer_density).to_string()),
         "composer_border" | "border" => {
             Some(if app.composer_border { "true" } else { "false" }.to_string())
         }
+        "composer_vim_mode" | "vim_mode" | "vim" => Some(
+            if app.composer.vim_enabled {
+                "vim"
+            } else {
+                "normal"
+            }
+            .to_string(),
+        ),
         "transcript_spacing" | "spacing" => {
             Some(spacing_display(app.transcript_spacing).to_string())
         }
         "status_indicator" | "indicator" => Some(app.status_indicator.clone()),
+        "synchronized_output" | "sync_output" | "sync" => Some(
+            if app.synchronized_output_enabled {
+                "on"
+            } else {
+                "off"
+            }
+            .to_string(),
+        ),
         "cost_currency" | "currency" => Some(
             match app.cost_currency {
                 crate::pricing::CostCurrency::Usd => "usd",
@@ -154,6 +208,14 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
             }
             .to_string(),
         ),
+        "default_model" => Settings::load().ok().map(|settings| {
+            settings
+                .default_model
+                .unwrap_or_else(|| "(default)".to_string())
+        }),
+        "prefer_external_pdftotext" | "external_pdftotext" | "pdftotext" => Settings::load()
+            .ok()
+            .map(|settings| settings.prefer_external_pdftotext.to_string()),
         _ => {
             let known = Settings::available_settings()
                 .iter()
@@ -406,8 +468,20 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.low_motion = settings.low_motion;
             app.needs_redraw = true;
         }
+        "fancy_animations" | "fancy" | "animations" => {
+            app.fancy_animations = settings.fancy_animations;
+            app.needs_redraw = true;
+        }
+        "bracketed_paste" | "paste" => {
+            app.use_bracketed_paste = settings.bracketed_paste;
+            app.needs_redraw = true;
+        }
         "status_indicator" | "indicator" => {
             app.status_indicator = settings.status_indicator.clone();
+            app.needs_redraw = true;
+        }
+        "synchronized_output" | "sync_output" | "sync" => {
+            app.synchronized_output_enabled = settings.synchronized_output_enabled();
             app.needs_redraw = true;
         }
         "show_thinking" | "thinking" => {
@@ -444,6 +518,16 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         }
         "composer_border" | "border" => {
             app.composer_border = settings.composer_border;
+            app.needs_redraw = true;
+        }
+        "composer_vim_mode" | "vim_mode" | "vim" => {
+            app.composer.vim_enabled = settings.composer_vim_mode == "vim";
+            app.composer.vim_mode = if app.composer.vim_enabled {
+                VimMode::Normal
+            } else {
+                VimMode::Insert
+            };
+            app.composer.vim_pending_d = false;
             app.needs_redraw = true;
         }
         "paste_burst_detection" | "paste_burst" => {
@@ -486,6 +570,10 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         "sidebar_focus" | "focus" => {
             app.set_sidebar_focus(SidebarFocus::from_setting(&settings.sidebar_focus));
         }
+        "context_panel" | "context" | "session_panel" => {
+            app.context_panel = settings.context_panel;
+            app.needs_redraw = true;
+        }
         _ => {}
     }
 
@@ -493,10 +581,12 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         "default_mode" | "mode" => settings.default_mode.clone(),
         "cost_currency" | "currency" => settings.cost_currency.clone(),
         "theme" | "ui_theme" => settings.theme.clone(),
+        "synchronized_output" | "sync_output" | "sync" => settings.synchronized_output.clone(),
         "background_color" | "background" | "bg" => settings
             .background_color
             .clone()
             .unwrap_or_else(|| "default".to_string()),
+        "composer_vim_mode" | "vim_mode" | "vim" => settings.composer_vim_mode.clone(),
         _ => value.to_string(),
     };
 
