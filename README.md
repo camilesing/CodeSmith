@@ -347,6 +347,10 @@ The first ACP slice supports new sessions and prompt responses through your
 existing DeepSeek config/API key. Tool-backed editing and checkpoint replay are
 not exposed through ACP yet.
 
+Community-maintained adapter: [acp-deepseek-adapter](https://github.com/rockeverm3m/acp-deepseek-adapter)
+bridges `deepseek exec --auto` to `cc-connect` for users who need tool-backed
+ACP workflows outside the built-in Zed slice.
+
 ### Keyboard Shortcuts
 
 | Key | Action |
