@@ -361,7 +361,14 @@ fn selection_to_text_copies_rendered_transcript_block() {
     let selected = selection_to_text(&app).expect("selection text");
     assert!(selected.contains("Note copy system"), "{selected:?}");
     assert!(selected.contains("copy user"), "{selected:?}");
-    assert!(selected.contains("copy thinking"), "{selected:?}");
+    assert!(
+        !selected.contains("copy thinking"),
+        "raw completed thinking should stay out of live selection text: {selected:?}"
+    );
+    assert!(
+        selected.contains("Ctrl+O"),
+        "selection should keep the reasoning detail affordance: {selected:?}"
+    );
     assert!(selected.contains("tool output line"), "{selected:?}");
     assert!(selected.contains("copy assistant"), "{selected:?}");
     // #1163: tool-card middle lines are rendered with a `│ ` left rail
@@ -1930,6 +1937,8 @@ fn event_poll_timeout_has_nonzero_floor() {
 fn footer_status_line_spans_show_mode_and_model_idle_and_active() {
     let mut app = create_test_app();
     app.model = "deepseek-v4-flash".to_string();
+    // Pin Agent mode regardless of user settings on the host machine.
+    let _ = app.set_mode(crate::tui::app::AppMode::Agent);
 
     let idle = spans_text(&footer_status_line_spans(&app, 60));
     assert!(idle.contains("agent"));
@@ -4054,9 +4063,8 @@ fn open_thinking_pager_finds_thinking_in_active_cell() {
     // After ThinkingComplete fires, the finalized thinking entry stays in
     // `app.active_cell` with `streaming = false` until the active cell is
     // flushed to history (end-of-turn, or when an assistant text arrives).
-    // During that window the transcript still renders the
-    // "thinking collapsed; Ctrl+O opens Activity Detail" affordance from
-    // `render_thinking`, so the handler must reach across the virtual
+    // During that window the transcript still renders the Ctrl+O affordance
+    // from `render_thinking`, so the handler must reach across the virtual
     // transcript — not just `app.history` — or the promise is a lie.
     // Regression guard for the v0.8.29 affordance/handler mismatch.
     let mut app = create_test_app();
@@ -4083,10 +4091,14 @@ fn open_thinking_pager_finds_thinking_in_active_cell() {
         Some(ModalKind::Pager),
         "pager must open for thinking entries still in active_cell"
     );
+    let body = pop_pager_body(&mut app);
+    assert!(body.contains("Activity: reasoning timeline"), "{body}");
+    assert!(body.contains("Thinking chunk 1 of 1"), "{body}");
+    assert!(body.contains("deliberating"), "{body}");
 }
 
 #[test]
-fn activity_detail_opens_selected_thinking_chunk() {
+fn activity_detail_opens_reasoning_timeline_for_selected_thinking() {
     let mut app = create_test_app();
     app.history = vec![
         HistoryCell::Thinking {
@@ -4124,17 +4136,19 @@ fn activity_detail_opens_selected_thinking_chunk() {
     let body = pop_pager_body(&mut app);
 
     assert!(
-        body.contains("Activity: thinking"),
+        body.contains("Activity: reasoning timeline"),
         "activity label missing: {body}"
     );
     assert!(
-        body.contains("Thinking chunk: 1 of 2"),
+        body.contains("Selected chunk: 1 of 2"),
         "chunk position missing: {body}"
     );
+    assert!(body.contains("Thinking chunk 1 of 2 (selected)"), "{body}");
+    assert!(body.contains("Thinking chunk 2 of 2"), "{body}");
     assert!(body.contains("first chunk reasoning"), "body: {body}");
     assert!(
-        !body.contains("second chunk reasoning"),
-        "selected chunk should not fall through to latest thinking: {body}"
+        body.contains("second chunk reasoning"),
+        "timeline should include the whole session's thinking: {body}"
     );
 }
 
@@ -4949,7 +4963,7 @@ fn composer_arrows_scroll_empty_up() {
         false,
         false,
     ));
-    assert_eq!(app.viewport.pending_scroll_delta, -1);
+    assert_eq!(app.viewport.pending_scroll_delta, -3);
     assert!(app.input.is_empty());
 }
 
@@ -4964,7 +4978,7 @@ fn composer_arrows_scroll_empty_down() {
         false,
         false,
     ));
-    assert_eq!(app.viewport.pending_scroll_delta, 1);
+    assert_eq!(app.viewport.pending_scroll_delta, 3);
 }
 
 #[test]
