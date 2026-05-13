@@ -199,9 +199,9 @@ impl PrefixStabilityManager {
         &mut self,
         system_text: &str,
         tools: Option<&[Tool]>,
-    ) -> Result<bool, PrefixChange> {
+    ) -> Result<bool, Box<PrefixChange>> {
         let fp = PrefixFingerprint::compute(system_text, tools);
-        let old_fp = std::mem::replace(&mut self.current, Some(fp.clone()));
+        let old_fp = self.current.replace(fp.clone());
         self.check_count += 1;
 
         let pinned = match &self.pinned {
@@ -238,7 +238,7 @@ impl PrefixStabilityManager {
             // (avoid recomputing the hash — clone was for the change record).
             self.pinned = Some(fp);
 
-            Err(change)
+            Err(Box::new(change))
         }
     }
 
