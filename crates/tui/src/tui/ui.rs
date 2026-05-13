@@ -747,6 +747,14 @@ async fn run_event_loop(
     let mut terminal_paused_at: Option<Instant> = None;
     let mut force_terminal_repaint = false;
     let mut draws_since_last_full_repaint: u64 = 0;
+    // FocusGained debounce: some terminal emulators (e.g. Tabby) re-trigger
+    // FocusGained when we re-arm focus-change reporting inside
+    // recover_terminal_modes, creating a tight repaint loop. Skip
+    // mode recovery (but still mark a repaint) within the debounce window.
+    const FOCUS_RECOVERY_DEBOUNCE: Duration = Duration::from_millis(200);
+    let mut last_focus_recovery = Instant::now()
+        .checked_sub(Duration::from_secs(60))
+        .unwrap_or_else(Instant::now);
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -1988,11 +1996,15 @@ async fn run_event_loop(
             // bracketed-paste modes — recover_terminal_modes() is the
             // canonical place those flags live.
             if terminal_event_needs_viewport_recapture(&evt) {
-                recover_terminal_modes(
-                    terminal.backend_mut(),
-                    app.use_mouse_capture,
-                    app.use_bracketed_paste,
-                );
+                let now = Instant::now();
+                if now.duration_since(last_focus_recovery) >= FOCUS_RECOVERY_DEBOUNCE {
+                    recover_terminal_modes(
+                        terminal.backend_mut(),
+                        app.use_mouse_capture,
+                        app.use_bracketed_paste,
+                    );
+                    last_focus_recovery = now;
+                }
                 force_terminal_repaint = true;
                 app.needs_redraw = true;
             }
