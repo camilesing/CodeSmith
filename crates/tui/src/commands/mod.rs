@@ -621,7 +621,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "goal" | "mubiao" => goal::goal(app, arg),
 
         // Skills commands
-        "skills" => skills::list_skills(app, arg),
+        "skills" | "jinengliebiao" => skills::list_skills(app, arg),
         "skill" | "jineng" => skills::run_skill(app, arg),
         "review" | "shencha" => review::review(app, arg),
         "restore" => restore::restore(app, arg),
