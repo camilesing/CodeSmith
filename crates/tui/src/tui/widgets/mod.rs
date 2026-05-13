@@ -634,33 +634,21 @@ impl Renderable for ComposerWidget<'_> {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color))
                 .style(background);
-            // Top-right corner: session title (muted) + vim mode indicator (colored).
-            // Both share one right-aligned title_top line to avoid overlap.
-            {
-                let mut right_spans: Vec<Span> = Vec::new();
-                if let Some(title) = self.app.session_title.as_deref() {
-                    right_spans.push(Span::styled(
-                        title,
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ));
-                }
-                if self.app.composer.vim_enabled {
-                    let color = match self.app.composer.vim_mode {
-                        VimMode::Normal => palette::TEXT_MUTED,
-                        VimMode::Insert => palette::DEEPSEEK_SKY,
-                        VimMode::Visual => palette::MODE_PLAN,
-                    };
-                    if !right_spans.is_empty() {
-                        right_spans.push(Span::raw("  "));
-                    }
-                    right_spans.push(Span::styled(
+            // Top-right corner: keep only editor state here. Session titles
+            // belong in session/history surfaces, not in the input chrome.
+            if self.app.composer.vim_enabled {
+                let color = match self.app.composer.vim_mode {
+                    VimMode::Normal => palette::TEXT_MUTED,
+                    VimMode::Insert => palette::DEEPSEEK_SKY,
+                    VimMode::Visual => palette::MODE_PLAN,
+                };
+                block = block.title_top(
+                    Line::from(Span::styled(
                         self.app.composer.vim_mode.label(),
                         Style::default().fg(color).bold(),
-                    ));
-                }
-                if !right_spans.is_empty() {
-                    block = block.title_top(Line::from(right_spans).right_aligned());
-                }
+                    ))
+                    .right_aligned(),
+                );
             }
             if let Some(hint_line) = hint_line {
                 block = block.title_bottom(hint_line);
@@ -2325,6 +2313,17 @@ mod tests {
         App::new(options, &Config::default())
     }
 
+    fn buffer_text(buf: &Buffer, area: Rect) -> String {
+        let mut text = String::new();
+        for y in area.y..area.y.saturating_add(area.height) {
+            for x in area.x..area.x.saturating_add(area.width) {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
     #[test]
     fn pad_lines_to_bottom_noop_when_already_filled() {
         let mut lines = vec![Line::from("one"), Line::from("two")];
@@ -2674,6 +2673,31 @@ mod tests {
         // cursor_y = 0 + (1-0) + (1+0) = 2
         assert_eq!(placeholder_visual_lines(12), 2);
         assert_eq!(widget.cursor_pos(area), Some((1, 2)));
+    }
+
+    #[test]
+    fn composer_border_does_not_render_session_title() {
+        let mut app = create_test_app();
+        app.composer_density = ComposerDensity::Comfortable;
+        app.session_title =
+            Some("hello could you please take a look at deepseek-tui and all changes".to_string());
+        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
+        let mention_menu_entries = Vec::<String>::new();
+        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 5,
+        };
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(rendered.contains("Composer"));
+        assert!(!rendered.contains("deepseek-tui"));
+        assert!(!rendered.contains("hello could you"));
     }
 
     #[test]
