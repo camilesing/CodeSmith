@@ -410,7 +410,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "change",
         aliases: &[],
-        usage: "/change",
+        usage: "/change [version]",
         description_id: MessageId::CmdChangeDescription,
     },
     CommandInfo {
@@ -590,7 +590,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "cache" => debug::cache(app, arg),
 
         // ChangeLog command
-        "change" => change::change(app),
+        "change" => change::change(app, arg),
         "system" => debug::system_prompt(app),
         "context" | "ctx" => debug::context(app),
         "edit" => debug::edit(app),
