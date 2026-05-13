@@ -193,7 +193,7 @@ pub struct Settings {
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
-    /// UI locale: auto, en, ja, zh-Hans, pt-BR
+    /// UI locale: auto, en, ja, zh-Hans, pt-BR, es-419
     pub locale: String,
     /// UI theme: system, dark, light, grayscale
     pub theme: String,
@@ -475,7 +475,7 @@ impl Settings {
             "locale" | "language" => {
                 let Some(locale) = normalize_configured_locale(value) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR."
+                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR, es-419."
                     );
                 };
                 self.locale = locale.to_string();
@@ -713,7 +713,7 @@ impl Settings {
             ("show_tool_details", "Show detailed tool output: on/off"),
             (
                 "locale",
-                "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR",
+                "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR, es-419",
             ),
             ("theme", "UI theme: system, dark, light, grayscale"),
             (

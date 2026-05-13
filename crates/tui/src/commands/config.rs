@@ -88,6 +88,7 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
             crate::localization::Locale::ZhHant => "zh-Hant",
             crate::localization::Locale::Ja => "ja",
             crate::localization::Locale::PtBr => "pt-BR",
+            crate::localization::Locale::Es419 => "es-419",
         }
     }
     fn density_display(d: crate::tui::app::ComposerDensity) -> &'static str {
@@ -419,6 +420,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         }
         "locale" | "language" => {
             app.ui_locale = resolve_locale(&settings.locale);
+            app.mark_history_updated();
             app.needs_redraw = true;
         }
         "theme" | "ui_theme" | "background_color" | "background" | "bg" => {
