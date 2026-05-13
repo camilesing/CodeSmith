@@ -1339,22 +1339,22 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     )));
 
     // ── Session cost ─────────────────────────────────────────────
-    let total_cost = app.displayed_session_cost_for_currency(app.cost_currency);
+    let displayed_total = app.displayed_session_cost_for_currency(app.cost_currency);
     let session_cost = app.session_cost_for_currency(app.cost_currency);
     let agent_cost = app.subagent_cost_for_currency(app.cost_currency);
     let real_total = session_cost + agent_cost;
     // Only show the additive breakdown when it matches the displayed
     // total; when the high-water mark is in effect (post-reconciliation),
     // the breakdown would not sum to the displayed value (#244).
-    let cost_line = if (total_cost - real_total).abs() < COST_EQ_TOLERANCE {
+    let cost_line = if (displayed_total - real_total).abs() < COST_EQ_TOLERANCE {
         format!(
             "cost: {} (session {} + agents {})",
-            app.format_cost_amount(total_cost),
+            app.format_cost_amount(displayed_total),
             app.format_cost_amount(session_cost),
             app.format_cost_amount(agent_cost)
         )
     } else {
-        format!("cost: {}", app.format_cost_amount(total_cost),)
+        format!("cost: {}", app.format_cost_amount(displayed_total))
     };
     lines.push(Line::from(Span::styled(
         cost_line,

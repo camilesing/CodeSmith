@@ -17,8 +17,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
 use crate::session_manager::{
-    SavedSession, SessionManager, SessionMetadata, extract_title, extract_user_prompt,
-    strip_thinking_tags,
+    SavedSession, SessionCostSnapshot, SessionManager, SessionMetadata, extract_title,
+    extract_user_prompt, strip_thinking_tags,
 };
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
@@ -801,7 +801,7 @@ mod tests {
             model: "deepseek-v4-pro".to_string(),
             workspace: std::path::PathBuf::from("/tmp"),
             mode: Some("agent".to_string()),
-            cost: crate::session_manager::SessionCostSnapshot::default(),
+            cost: SessionCostSnapshot::default(),
         }
     }
 

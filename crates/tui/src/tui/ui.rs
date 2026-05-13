@@ -3481,6 +3481,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             app.system_prompt.as_ref(),
         );
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
+        app.sync_cost_to_metadata(&mut updated.metadata);
         updated.context_references = app.session_context_references.clone();
         updated.artifacts = app.session_artifacts.clone();
         updated
@@ -3505,6 +3506,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
                 Some(app.mode.as_setting()),
             )
         };
+        app.sync_cost_to_metadata(&mut session.metadata);
         session.context_references = app.session_context_references.clone();
         session.artifacts = app.session_artifacts.clone();
         session
@@ -6874,10 +6876,10 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    app.session.session_cost = 0.0;
-    app.session.session_cost_cny = 0.0;
-    app.session.subagent_cost = 0.0;
-    app.session.subagent_cost_cny = 0.0;
+    app.session.session_cost = session.metadata.cost.session_cost_usd;
+    app.session.session_cost_cny = session.metadata.cost.session_cost_cny;
+    app.session.subagent_cost = session.metadata.cost.subagent_cost_usd;
+    app.session.subagent_cost_cny = session.metadata.cost.subagent_cost_cny;
     app.session.subagent_cost_event_seqs.clear();
     // Restore the high-water marks from persisted metadata so the
     // monotonic cost guarantee (#244) survives session restarts.
