@@ -754,28 +754,6 @@ pub fn build_system_prompt(base: &str, project_context: Option<&ProjectContext>)
     SystemPrompt::Text(full_prompt)
 }
 
-// ── Legacy functions for backwards compatibility ──────────────────────
-
-pub fn base_system_prompt() -> SystemPrompt {
-    SystemPrompt::Text(BASE_PROMPT.trim().to_string())
-}
-
-pub fn normal_system_prompt() -> SystemPrompt {
-    system_prompt_for_mode(AppMode::Agent)
-}
-
-pub fn agent_system_prompt() -> SystemPrompt {
-    system_prompt_for_mode(AppMode::Agent)
-}
-
-pub fn yolo_system_prompt() -> SystemPrompt {
-    system_prompt_for_mode(AppMode::Yolo)
-}
-
-pub fn plan_system_prompt() -> SystemPrompt {
-    system_prompt_for_mode(AppMode::Plan)
-}
-
 #[cfg(test)]
 mod tests {
     // Don't assert on prose. If you wouldn't fail a code review for
@@ -786,6 +764,44 @@ mod tests {
     /// Discriminator unique to the injected relay block (not present in the
     /// agent prompt's own discussion of the convention).
     const HANDOFF_BLOCK_MARKER: &str = "left a relay artifact at `.deepseek/handoff.md`";
+
+    #[test]
+    fn base_prompt_carries_execution_discipline_block() {
+        // The XML-tagged execution-discipline block is the contract —
+        // verify each section name is present so reviewers can't quietly
+        // strip the rules that herd V4 toward acting instead of narrating.
+        for tag in [
+            "<tool_persistence>",
+            "<mandatory_tool_use>",
+            "<act_dont_ask>",
+            "<verification>",
+            "<missing_context>",
+        ] {
+            assert!(
+                BASE_PROMPT.contains(tag),
+                "BASE_PROMPT missing required tag {tag}"
+            );
+        }
+        assert!(
+            BASE_PROMPT.contains("Tool-use enforcement"),
+            "BASE_PROMPT missing the tool-use enforcement clause"
+        );
+    }
+
+    #[test]
+    fn execution_discipline_is_at_the_end_for_cache_stability() {
+        // DeepSeek's prefix cache keys on a leading byte-stable run, so
+        // the new sections must be appended, not interleaved earlier.
+        let body = BASE_PROMPT;
+        let persistence_at = body
+            .find("<tool_persistence>")
+            .expect("tool_persistence anchor present");
+        let language_at = body.find("## Language").expect("Language anchor present");
+        assert!(
+            language_at < persistence_at,
+            "execution-discipline block must come after the early sections"
+        );
+    }
 
     #[test]
     fn render_environment_block_lists_supplied_locale_and_workspace() {
