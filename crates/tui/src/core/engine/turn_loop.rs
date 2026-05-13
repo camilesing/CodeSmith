@@ -235,6 +235,49 @@ impl Engine {
                 &self.session.messages,
             );
 
+            // Check prefix-cache stability before building the request.
+            // This detects system-prompt or tool-set drift that would
+            // invalidate DeepSeek's KV prefix cache for this turn.
+            // Sends an event on EVERY check so the TUI can maintain
+            // its own counter for the stable-checks tally.
+            if let Some(pm) = self.session.prefix_stability.as_mut() {
+                let system_text =
+                    crate::prefix_cache::system_prompt_text(self.session.system_prompt.as_ref());
+                let tools_ref: Option<&[crate::models::Tool]> = active_tools.as_deref();
+                match pm.check_and_update(&system_text, tools_ref) {
+                    Err(change) => {
+                        tracing::debug!(
+                            target: "prefix_cache",
+                            "{}",
+                            change.description()
+                        );
+                        let _ = self
+                            .tx_event
+                            .send(Event::PrefixCacheChange {
+                                description: change.description(),
+                                system_prompt_changed: change.system_changed,
+                                tools_changed: change.tools_changed,
+                                stability_pct: (pm.stability_ratio() * 100.0).round() as u32,
+                                changed: true,
+                            })
+                            .await;
+                    }
+                    Ok(_) => {
+                        // Stable check — keep the TUI counter in sync.
+                        let _ = self
+                            .tx_event
+                            .send(Event::PrefixCacheChange {
+                                description: String::new(),
+                                system_prompt_changed: false,
+                                tools_changed: false,
+                                stability_pct: (pm.stability_ratio() * 100.0).round() as u32,
+                                changed: false,
+                            })
+                            .await;
+                    }
+                }
+            }
+
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.messages_with_turn_metadata(),

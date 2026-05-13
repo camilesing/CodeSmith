@@ -1449,6 +1449,21 @@ async fn run_event_loop(
                     EngineEvent::CoherenceState { state, .. } => {
                         app.coherence_state = state;
                     }
+                    EngineEvent::PrefixCacheChange {
+                        description,
+                        stability_pct,
+                        changed,
+                        ..
+                    } => {
+                        app.prefix_checks_total = app.prefix_checks_total.saturating_add(1);
+                        app.prefix_stability_pct = Some(stability_pct);
+                        if changed {
+                            app.prefix_change_count = app.prefix_change_count.saturating_add(1);
+                            if !description.is_empty() {
+                                app.last_prefix_change_desc = Some(description);
+                            }
+                        }
+                    }
                     EngineEvent::CapacityDecision { .. } => {
                         // Telemetry-only event. Surface actual interventions and failures
                         // instead of replacing the footer with no-op guardrail chatter.
@@ -3472,6 +3487,37 @@ fn format_cache_warmup_result(usage: &Usage) -> String {
     )
 }
 
+/// Format prefix stability info for the TUI footer chip.
+fn format_prefix_stability_chip(app: &App) -> Option<(String, ratatui::style::Color)> {
+    let pct = app.prefix_stability_pct?;
+    let changes = app.prefix_change_count;
+
+    let color = if changes == 0 {
+        // Perfect stability: green
+        ratatui::style::Color::Green
+    } else if pct >= 95 {
+        // Excellent: green
+        ratatui::style::Color::Green
+    } else if pct >= 80 {
+        // Good: yellow
+        ratatui::style::Color::Yellow
+    } else {
+        // Poor: red — cache is churning
+        ratatui::style::Color::Red
+    };
+
+    let label = if changes == 0 {
+        format!("P {pct}%")
+    } else {
+        format!(
+            "P {pct}% ({changes} change{})",
+            if changes == 1 { "" } else { "s" }
+        )
+    };
+
+    Some((label, color))
+}
+
 fn format_available_models_message(current_model: &str, models: &[String]) -> String {
     let mut lines = vec![format!("Available models ({})", models.len())];
     for model in models {
@@ -5241,10 +5287,25 @@ async fn apply_command_result(
                 app.status_message = Some("Warming DeepSeek cache...".to_string());
                 match run_cache_warmup(app, config).await {
                     Ok(usage) => {
-                        let message = format_cache_warmup_result(&usage);
-                        app.add_message(HistoryCell::System {
-                            content: message.clone(),
-                        });
+                        let mut message = format_cache_warmup_result(&usage);
+                        // Append prefix-cache stability info.
+                        if app.prefix_checks_total > 0 {
+                            let changes = app.prefix_change_count;
+                            let total = app.prefix_checks_total;
+                            let stable = total.saturating_sub(changes);
+                            let pct = app
+                                .prefix_stability_pct
+                                .map(|p| format!("{p}%"))
+                                .unwrap_or_else(|| "--".to_string());
+                            message.push_str(&format!(
+                                "\n\nPrefix stability: {pct} ({stable}/{total} checks stable, {changes} change{})",
+                                if changes == 1 { "" } else { "s" }
+                            ));
+                            if let Some(ref desc) = app.last_prefix_change_desc {
+                                message.push_str(&format!("\nLast prefix change: {desc}"));
+                            }
+                        }
+                        app.add_message(HistoryCell::System { content: message });
                         app.status_message = Some("Cache warmup complete".to_string());
                     }
                     Err(error) => {
@@ -8038,20 +8099,29 @@ fn should_show_footer_cost(displayed_cost: f64) -> bool {
 fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     // Context % is already shown in the header signal bar — don't
     // duplicate it in the footer. The footer carries unique info only:
-    // coherence, in-flight sub-agents, reasoning replay tokens, cache hit
-    // rate, and session cost.
+    // prefix stability, coherence, in-flight sub-agents, reasoning
+    // replay tokens, cache hit rate, and session cost.
     let coherence_spans = footer_coherence_spans(app);
     let agents_spans =
         crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
     let cost_spans = footer_cost_spans(app);
+    let prefix_spans = app
+        .prefix_stability_pct
+        .map(|_| {
+            let (label, color) = format_prefix_stability_chip(app)
+                .unwrap_or(("P --".to_string(), ratatui::style::Color::DarkGray));
+            vec![Span::styled(label, Style::default().fg(color))]
+        })
+        .unwrap_or_default();
 
     let parts: Vec<&Vec<Span<'static>>> = [
         &coherence_spans,
         &agents_spans,
         &replay_spans,
         &cache_spans,
+        &prefix_spans,
         &cost_spans,
     ]
     .iter()

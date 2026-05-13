@@ -1084,6 +1084,16 @@ pub struct App {
     /// Used by `/cycles` and `/cycle <n>` slash commands.
     pub cycle_briefings: Vec<CycleBriefing>,
 
+    // === Prefix-Cache Stability Tracking ===
+    /// Number of times the prefix (system prompt + tool specs) has changed.
+    pub prefix_change_count: u64,
+    /// Total number of prefix stability checks performed.
+    pub prefix_checks_total: u64,
+    /// Current prefix stability percentage, if known.
+    pub prefix_stability_pct: Option<u32>,
+    /// Description of the last prefix change, if any.
+    pub last_prefix_change_desc: Option<String>,
+
     /// Active cycle configuration (token threshold, briefing cap, per-model
     /// overrides). Loaded from config and forwarded to the engine.
     pub cycle: CycleConfig,
@@ -1582,6 +1592,10 @@ impl App {
             quit_armed_until: None,
             cycle_count: 0,
             cycle_briefings: Vec::new(),
+            prefix_change_count: 0,
+            prefix_checks_total: 0,
+            prefix_stability_pct: None,
+            last_prefix_change_desc: None,
             cycle: CycleConfig::default(),
             collapsed_cells: HashSet::new(),
             collapsed_cell_map: Vec::new(),
