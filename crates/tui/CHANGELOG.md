@@ -34,9 +34,6 @@ mega-files that had grown around the agent loop and TUI.
   by round-trip.
 - **Cancel-all shell jobs.** A single action stops every running
   background shell command instead of cancelling them one-by-one.
-- **Session title in composer border.** The top-right of the composer
-  shows the derived session title so the active thread is visible
-  without opening the sessions panel.
 - **`edit_file` tolerates typographic punctuation drift.** When the
   exact-match and leading-whitespace-fuzzy passes both fail and
   `fuzz: true` is set, the tool retries with smart quotes (`"`/`"` →
@@ -68,6 +65,14 @@ mega-files that had grown around the agent loop and TUI.
   (v0.8.6 era), `PROMPT_ANALYSIS.md`, and the redundant
   `DEPENDENCY_GRAPH.md` no longer ship in releases; `docs/ARCHITECTURE.md`
   remains the canonical crate-layout reference.
+- **First-turn prompt context is leaner and easier to audit.** The
+  generated project context pack now ignores hidden tool/cache state,
+  balances top-level directories before descending, and `/context`
+  shows named prompt layers instead of a single opaque system blob.
+- **Model-visible prompt policy de-conflicted.** The base and mode
+  prompts no longer forbid useful `deepseek` CLI diagnostics, no
+  longer require checklists for simple one-step work, and align
+  long-session compaction guidance around the 60% threshold.
 
 ### Fixed
 
@@ -98,6 +103,8 @@ mega-files that had grown around the agent loop and TUI.
   users reach the same surface.
 - **VTE flicker terminals get reduced motion** by default to avoid
   thrashing on terminals that mishandle frequent partial redraws.
+- **Composer border no longer shows the derived session title**, keeping
+  the composer chrome reserved for editor and mode state.
 
 ## [0.8.33] - 2026-05-12
 
