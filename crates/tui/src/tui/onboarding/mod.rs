@@ -270,11 +270,11 @@ mod tests {
     fn validate_warns_on_short_or_no_hyphen_keys_but_accepts() {
         match validate_api_key_for_onboarding("abc123") {
             ApiKeyValidation::Accept { warning: Some(_) } => {}
-            other => panic!("expected accept-with-warning, got {other:?}"),
+            _ => panic!("expected accept-with-warning"),
         }
         match validate_api_key_for_onboarding("abcdefghijklmnop") {
             ApiKeyValidation::Accept { warning: Some(_) } => {}
-            other => panic!("expected accept-with-warning, got {other:?}"),
+            _ => panic!("expected accept-with-warning"),
         }
     }
 
