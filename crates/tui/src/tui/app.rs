@@ -1075,6 +1075,9 @@ pub struct App {
     /// Whether LSP diagnostics are currently enabled. Mirrors the config file
     /// `[lsp].enabled` setting. Toggled at runtime via `/lsp on|off`.
     pub lsp_enabled: bool,
+    /// Derived title for the current session shown in the composer border.
+    /// Updated when `EngineEvent::SessionUpdated` fires or a saved session is loaded.
+    pub session_title: Option<String>,
 }
 
 /// Message queued while the engine is busy.
@@ -1559,6 +1562,7 @@ impl App {
                 .as_ref()
                 .and_then(|tui| tui.composer_arrows_scroll)
                 .unwrap_or(!use_mouse_capture),
+            session_title: None,
         }
     }
 

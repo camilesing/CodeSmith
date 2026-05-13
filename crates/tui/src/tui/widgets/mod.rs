@@ -634,19 +634,34 @@ impl Renderable for ComposerWidget<'_> {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color))
                 .style(background);
-            // Vim mode indicator — shown in the top-right corner of the
-            // composer border when vim editing is active.
-            if self.app.composer.vim_enabled {
-                let color = match self.app.composer.vim_mode {
-                    VimMode::Normal => palette::TEXT_MUTED,
-                    VimMode::Insert => palette::DEEPSEEK_SKY,
-                    VimMode::Visual => palette::MODE_PLAN,
-                };
-                let label = self.app.composer.vim_mode.label();
-                block = block.title_top(
-                    Line::from(Span::styled(label, Style::default().fg(color).bold()))
-                        .right_aligned(),
-                );
+            // Top-right corner: session title (muted) + vim mode indicator (colored).
+            // Both share one right-aligned title_top line to avoid overlap.
+            {
+                let mut right_spans: Vec<Span> = Vec::new();
+                if let Some(title) = self.app.session_title.as_deref() {
+                    right_spans.push(Span::styled(
+                        title,
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ));
+                }
+                if self.app.composer.vim_enabled {
+                    let color = match self.app.composer.vim_mode {
+                        VimMode::Normal => palette::TEXT_MUTED,
+                        VimMode::Insert => palette::DEEPSEEK_SKY,
+                        VimMode::Visual => palette::MODE_PLAN,
+                    };
+                    if !right_spans.is_empty() {
+                        right_spans.push(Span::raw("  "));
+                    }
+                    right_spans.push(Span::styled(
+                        self.app.composer.vim_mode.label(),
+                        Style::default().fg(color).bold(),
+                    ));
+                }
+                if !right_spans.is_empty() {
+                    block = block
+                        .title_top(Line::from(right_spans).right_aligned());
+                }
             }
             if let Some(hint_line) = hint_line {
                 block = block.title_bottom(hint_line);
