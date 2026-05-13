@@ -355,7 +355,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "theme",
         aliases: &[],
-        usage: "/theme [dark|light|grayscale|system]",
+        usage: "/theme [name]",
         description_id: MessageId::CmdThemeDescription,
     },
     CommandInfo {

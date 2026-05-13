@@ -424,6 +424,8 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.needs_redraw = true;
         }
         "theme" | "ui_theme" | "background_color" | "background" | "bg" => {
+            app.theme_id = crate::palette::ThemeId::from_name(&settings.theme)
+                .unwrap_or(crate::palette::ThemeId::System);
             app.ui_theme = crate::palette::ui_theme_from_settings(
                 &settings.theme,
                 settings.background_color.as_deref(),
@@ -584,33 +586,14 @@ fn mode_display_name(mode: AppMode) -> &'static str {
     }
 }
 
-/// Switch the runtime theme. `/set theme <value> --save` persists it.
+/// `/theme [name]` — with no argument, open the interactive picker (arrow
+/// keys, live preview, Enter to persist, Esc to revert). With an argument,
+/// route through `set_config_value("theme", ...)` so the apply + save flow is
+/// shared with `/config`.
 pub fn theme(app: &mut App, arg: Option<&str>) -> CommandResult {
-    let requested = match arg.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(value) => {
-            let Some(theme) = crate::palette::normalize_theme_name(value) else {
-                return CommandResult::error("Usage: /theme [dark|light|grayscale|system]");
-            };
-            theme
-        }
-        None => match app.ui_theme.mode {
-            crate::palette::PaletteMode::Dark => "light",
-            crate::palette::PaletteMode::Light => "grayscale",
-            crate::palette::PaletteMode::Grayscale => "dark",
-        },
-    };
-
-    let background = Settings::load()
-        .ok()
-        .and_then(|settings| settings.background_color);
-    app.ui_theme = crate::palette::ui_theme_from_settings(requested, background.as_deref());
-    app.needs_redraw = true;
-
-    let label = crate::palette::theme_label_for_mode(app.ui_theme.mode);
-    if requested == "system" {
-        CommandResult::message(format!("Theme switched to system ({label})."))
-    } else {
-        CommandResult::message(format!("Theme switched to {label}."))
+    match arg.map(str::trim).filter(|s| !s.is_empty()) {
+        None => CommandResult::action(AppAction::OpenThemePicker),
+        Some(name) => set_config_value(app, "theme", name, true),
     }
 }
 
@@ -1602,7 +1585,8 @@ mod tests {
         let mut app = create_test_app();
         let result = theme(&mut app, Some("grayscale"));
 
-        assert_eq!(result.message.unwrap(), "Theme switched to grayscale.");
+        assert_eq!(result.message.unwrap(), "theme = grayscale (saved)");
+        assert_eq!(app.theme_id, crate::palette::ThemeId::Grayscale);
         assert_eq!(app.ui_theme.mode, crate::palette::PaletteMode::Grayscale);
         assert!(app.needs_redraw);
     }

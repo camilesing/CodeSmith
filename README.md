@@ -264,8 +264,9 @@ cleaner "Work" tab. [Full changelog](CHANGELOG.md).
   mouse filter drops inert move events but allows transcript and
   scrollbar drags to continue — the known issue from v0.8.32 is
   resolved.
-- **Grayscale theme.** Use `/theme grayscale` for a quiet black/white
-  palette, or `/set theme grayscale --save` to make it the saved default.
+- **Theme presets.** Use `/theme` for a live picker, or `/theme grayscale`,
+  `/theme catppuccin-mocha`, `/theme tokyo-night`, `/theme dracula`, and
+  `/theme gruvbox-dark` to save a theme directly.
 - **Session history picker.** `/sessions` and `Ctrl+R` now put full
   session history on the left, the session list on the right, number keys
   `1`-`9` open visible histories, and `PgUp` / `PgDn` scroll history.

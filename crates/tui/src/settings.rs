@@ -28,7 +28,7 @@ use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
 /// # Example `~/.deepseek/tui.toml`
 ///
 /// ```toml
-/// theme    = "dark"        # "system" | "dark" | "light" | "grayscale"
+/// theme    = "dark"        # "system" | "dark" | "light" | "grayscale" | "catppuccin-mocha" | ...
 /// font_size = 14
 ///
 /// [keybinds]
@@ -43,7 +43,7 @@ use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TuiPrefs {
-    /// UI colour theme: `"dark"` | `"light"` | `"grayscale"` | `"system"`.
+    /// UI colour theme.
     /// Default `"dark"`.
     pub theme: String,
     /// Terminal font size hint forwarded to supporting front-ends (e.g. the
@@ -152,7 +152,7 @@ impl TuiPrefs {
         let theme = self.theme.trim().to_ascii_lowercase();
         let Some(theme) = normalize_theme_name(&theme) else {
             anyhow::bail!(
-                "Invalid tui.toml theme '{}': expected system, dark, light, or grayscale.",
+                "Invalid tui.toml theme '{}': expected system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, or gruvbox-dark.",
                 self.theme
             );
         };
@@ -195,7 +195,11 @@ pub struct Settings {
     pub show_tool_details: bool,
     /// UI locale: auto, en, ja, zh-Hans, pt-BR, es-419
     pub locale: String,
-    /// UI theme: system, dark, light, grayscale
+    /// Named UI theme. Accepts `"system"` (follow terminal background),
+    /// `"dark"`, `"light"`, `"grayscale"`, or one of the community
+    /// presets: `"catppuccin-mocha"`, `"tokyo-night"`, `"dracula"`,
+    /// `"gruvbox-dark"`. The `background_color` setting still overrides the
+    /// surface color on top of the resolved theme.
     pub theme: String,
     /// Optional main TUI background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
@@ -353,8 +357,8 @@ impl Settings {
             s.locale = normalize_configured_locale(&s.locale)
                 .unwrap_or("en")
                 .to_string();
-            s.theme = normalize_settings_theme(&s.theme).to_string();
             s.background_color = normalize_optional_background_color(s.background_color.as_deref());
+            s.theme = normalize_settings_theme(&s.theme).to_string();
             s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
             s
         };
@@ -480,13 +484,21 @@ impl Settings {
                 };
                 self.locale = locale.to_string();
             }
-            "theme" | "ui_theme" => {
-                let Some(theme) = normalize_theme_name(value) else {
+            "theme" => {
+                let Some(id) = crate::palette::ThemeId::from_name(value) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale."
+                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark."
                     );
                 };
-                self.theme = theme.to_string();
+                self.theme = id.name().to_string();
+            }
+            "ui_theme" => {
+                let Some(id) = crate::palette::ThemeId::from_name(value) else {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark."
+                    );
+                };
+                self.theme = id.name().to_string();
             }
             "background_color" | "background" | "bg" => {
                 self.background_color = normalize_background_color_setting(value)?;
@@ -645,7 +657,7 @@ impl Settings {
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
         lines.push(format!("  locale:            {}", self.locale));
-        lines.push(format!("  theme:             {}", self.theme));
+        lines.push(format!("  theme:              {}", self.theme));
         lines.push(format!(
             "  background_color:   {}",
             self.background_color.as_deref().unwrap_or("(default)")
@@ -715,7 +727,10 @@ impl Settings {
                 "locale",
                 "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR, es-419",
             ),
-            ("theme", "UI theme: system, dark, light, grayscale"),
+            (
+                "theme",
+                "UI theme: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark",
+            ),
             (
                 "background_color",
                 "Main TUI background color: #RRGGBB or default",
@@ -1000,6 +1015,11 @@ mod tests {
 
         settings.set("theme", "whale").expect("set dark alias");
         assert_eq!(settings.theme, "dark");
+
+        settings
+            .set("theme", "tokyonight")
+            .expect("set community theme alias");
+        assert_eq!(settings.theme, "tokyo-night");
 
         let err = settings
             .set("theme", "solarized")
@@ -1655,7 +1675,16 @@ mod tests {
 
     #[test]
     fn tui_prefs_validate_accepts_known_themes() {
-        for theme in ["dark", "light", "system", "grayscale"] {
+        for theme in [
+            "dark",
+            "light",
+            "system",
+            "grayscale",
+            "catppuccin-mocha",
+            "tokyo-night",
+            "dracula",
+            "gruvbox-dark",
+        ] {
             let mut prefs = TuiPrefs {
                 theme: theme.to_string(),
                 ..TuiPrefs::default()
@@ -1691,7 +1720,7 @@ mod tests {
         assert!(err.to_string().contains("Invalid tui.toml theme"));
         assert!(
             err.to_string()
-                .contains("expected system, dark, light, or grayscale")
+                .contains("expected system, dark, light, grayscale")
         );
     }
 

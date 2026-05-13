@@ -262,8 +262,9 @@ RLM 工作，`agent_open` / `agent_eval` / `agent_close` 用于命名子
 - **流式输出期间文本选择正常工作。** 加载状态的鼠标过滤器丢弃
   无关移动事件，但允许对话记录和滚动条拖动继续——
   v0.8.32 的已知问题已解决。
-- **灰度主题。** 使用 `/theme grayscale` 可切换到更克制的黑白
-  调色板；使用 `/set theme grayscale --save` 可保存为默认主题。
+- **主题预设。** 使用 `/theme` 打开实时预览选择器，或通过
+  `/theme grayscale`、`/theme catppuccin-mocha`、`/theme tokyo-night`、
+  `/theme dracula`、`/theme gruvbox-dark` 直接保存主题。
 - **会话历史选择器。** `/sessions` 和 `Ctrl+R` 现在左侧显示完整
   会话历史，右侧显示会话列表；按 `1`-`9` 打开可见会话历史，
   `PgUp` / `PgDn` 翻页查看历史。

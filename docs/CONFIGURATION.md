@@ -327,10 +327,12 @@ replacement compaction. You can inspect or update these from the TUI with
 
 Common settings keys:
 
-- `theme` (`system`, `dark`, `light`, `grayscale`; default `system`):
-  `system` follows terminal background detection, `dark`/`light` use the
-  DeepSeek palettes, and `grayscale` is the low-opinion black/white theme.
-  Aliases such as `whale`, `mono`, and `black-white` are accepted.
+- `theme` (`system`, `dark`, `light`, `grayscale`, `catppuccin-mocha`,
+  `tokyo-night`, `dracula`, `gruvbox-dark`; default `system`): `system`
+  follows terminal background detection, `dark`/`light` use the DeepSeek
+  palettes, `grayscale` is the low-opinion black/white theme, and the named
+  community presets apply across the TUI. Aliases such as `whale`, `mono`,
+  `black-white`, `tokyonight`, and `gruvbox` are accepted.
 - `auto_compact` (on/off, default off)
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
   detection for terminals that do not emit bracketed-paste events. This is

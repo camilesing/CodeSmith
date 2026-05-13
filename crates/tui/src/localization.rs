@@ -947,7 +947,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdModelsDescription => "List available models from API",
         MessageId::CmdNetworkDescription => "Manage network allow and deny rules",
         MessageId::CmdNoteDescription => "Add, list, edit, or remove workspace notes",
-        MessageId::CmdThemeDescription => "Switch theme: dark, light, grayscale, or system",
+        MessageId::CmdThemeDescription => "Switch theme or open the theme picker",
         MessageId::CmdProviderDescription => {
             "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
