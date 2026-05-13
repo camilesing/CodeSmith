@@ -2721,6 +2721,9 @@ async fn run_event_loop(
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_up(3);
                 }
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    app.scroll_up(3);
+                }
                 KeyCode::Up
                     if key.modifiers.is_empty()
                         && mention_menu_open
@@ -2765,6 +2768,9 @@ async fn run_event_loop(
                     app.scroll_down(app.viewport.last_transcript_visible.max(3));
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.scroll_down(3);
+                }
+                KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     app.scroll_down(3);
                 }
                 KeyCode::Down if key.modifiers.is_empty() && mention_menu_open => {

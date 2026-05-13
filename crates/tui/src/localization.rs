@@ -332,6 +332,7 @@ pub enum MessageId {
     KbScrollTranscript,
     KbNavigateHistory,
     KbScrollTranscriptAlt,
+    KbBrowseHistory,
     KbScrollPage,
     KbJumpTopBottom,
     KbJumpTopBottomEmpty,
@@ -566,6 +567,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::KbScrollTranscript,
     MessageId::KbNavigateHistory,
     MessageId::KbScrollTranscriptAlt,
+    MessageId::KbBrowseHistory,
     MessageId::KbScrollPage,
     MessageId::KbJumpTopBottom,
     MessageId::KbJumpTopBottomEmpty,
@@ -1039,6 +1041,7 @@ fn english(id: MessageId) -> &'static str {
             "Scroll transcript, navigate input history, or select composer attachments"
         }
         MessageId::KbNavigateHistory => "Navigate input history",
+        MessageId::KbBrowseHistory => "Browse conversation history",
         MessageId::KbScrollTranscriptAlt => "Scroll transcript",
         MessageId::KbScrollPage => "Scroll transcript by page",
         MessageId::KbJumpTopBottom => "Jump to top / bottom of transcript",
@@ -1416,6 +1419,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "会話履歴をスクロール、入力履歴を移動、または添付ファイルを選択"
         }
         MessageId::KbNavigateHistory => "入力履歴を移動",
+        MessageId::KbBrowseHistory => "会話履歴を閲覧",
         MessageId::KbScrollTranscriptAlt => "会話履歴をスクロール",
         MessageId::KbScrollPage => "ページ単位で会話履歴をスクロール",
         MessageId::KbJumpTopBottom => "会話履歴の先頭/末尾へジャンプ",
@@ -1742,6 +1746,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         }
         MessageId::KbScrollTranscript => "滚动对话记录、浏览输入历史或选择附件",
         MessageId::KbNavigateHistory => "浏览输入历史",
+        MessageId::KbBrowseHistory => "浏览对话历史",
         MessageId::KbScrollTranscriptAlt => "滚动对话记录",
         MessageId::KbScrollPage => "按页滚动对话记录",
         MessageId::KbJumpTopBottom => "跳转到对话顶部/底部",
@@ -2088,6 +2093,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Rolar transcrição, navegar histórico de entrada ou selecionar anexos do compositor"
         }
         MessageId::KbNavigateHistory => "Navegar histórico de entrada",
+        MessageId::KbBrowseHistory => "Navegar histórico da conversa",
         MessageId::KbScrollTranscriptAlt => "Rolar transcrição",
         MessageId::KbScrollPage => "Rolar transcrição por página",
         MessageId::KbJumpTopBottom => "Pular para topo / fim da transcrição",
