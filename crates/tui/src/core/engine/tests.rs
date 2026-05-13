@@ -508,6 +508,111 @@ fn active_tool_list_pushes_deferred_activations_to_the_tail() {
 }
 
 #[test]
+fn deferred_tool_preflight_loads_edit_schema_without_executing_bad_aliases() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let registry = engine
+        .build_turn_tool_registry_builder(
+            AppMode::Agent,
+            engine.config.todos.clone(),
+            engine.config.plan_state.clone(),
+        )
+        .build(engine.build_tool_context(AppMode::Agent, false));
+    let catalog = build_model_tool_catalog(
+        registry.to_api_tools_with_cache(true),
+        vec![],
+        AppMode::Agent,
+    );
+    let mut active = initial_active_tools(&catalog);
+    assert!(!active.contains("edit_file"));
+
+    let result = preflight_requested_deferred_tool(
+        "edit_file",
+        &json!({
+            "path": "src/foo.rs",
+            "old_string": "before",
+            "new_string": "after"
+        }),
+        &catalog,
+        &mut active,
+    )
+    .expect("deferred edit_file should preflight");
+
+    assert!(active.contains("edit_file"));
+    assert!(result.success);
+    assert!(result.content.contains("Tool `edit_file` was deferred"));
+    assert!(result.content.contains("The tool was not executed"));
+    assert!(result.content.contains("path: string required"));
+    assert!(result.content.contains("search: string required"));
+    assert!(result.content.contains("replace: string required"));
+    assert!(result.content.contains("old_string -> search"));
+    assert!(result.content.contains("new_string -> replace"));
+    assert_eq!(
+        result.metadata.as_ref().unwrap()["deferred_tool_loaded"],
+        json!(true)
+    );
+}
+
+#[test]
+fn deferred_tool_preflight_guides_checklist_update_list_replacement() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let registry = engine
+        .build_turn_tool_registry_builder(
+            AppMode::Agent,
+            engine.config.todos.clone(),
+            engine.config.plan_state.clone(),
+        )
+        .build(engine.build_tool_context(AppMode::Agent, false));
+    let catalog = build_model_tool_catalog(
+        registry.to_api_tools_with_cache(true),
+        vec![],
+        AppMode::Agent,
+    );
+    let mut active = initial_active_tools(&catalog);
+    assert!(!active.contains("checklist_update"));
+
+    let result = preflight_requested_deferred_tool(
+        "checklist_update",
+        &json!({
+            "todos": [
+                { "content": "wire preflight", "status": "completed" }
+            ]
+        }),
+        &catalog,
+        &mut active,
+    )
+    .expect("deferred checklist_update should preflight");
+
+    assert!(active.contains("checklist_update"));
+    assert!(result.success);
+    assert!(
+        result
+            .content
+            .contains("Tool `checklist_update` was deferred")
+    );
+    assert!(result.content.contains("id: integer required"));
+    assert!(result.content.contains("status: string"));
+    assert!(result.content.contains("Missing required fields:"));
+    assert!(result.content.contains("id, status"));
+    assert!(result.content.contains("Unexpected fields:"));
+    assert!(result.content.contains("todos"));
+    assert!(result.content.contains("Use checklist_write"));
+}
+
+#[test]
+fn deferred_tool_preflight_skips_already_active_tools() {
+    let mut tool = api_tool("deferred_tool");
+    tool.defer_loading = Some(true);
+    let catalog = vec![tool];
+    let mut active = HashSet::from(["deferred_tool".to_string()]);
+
+    assert!(
+        preflight_requested_deferred_tool("deferred_tool", &json!({}), &catalog, &mut active,)
+            .is_none(),
+        "already active tools should execute normally"
+    );
+}
+
+#[test]
 fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     let registry = engine
