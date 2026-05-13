@@ -37,6 +37,13 @@ mega-files that had grown around the agent loop and TUI.
 - **Session title in composer border.** The top-right of the composer
   shows the derived session title so the active thread is visible
   without opening the sessions panel.
+- **`edit_file` tolerates typographic punctuation drift.** When the
+  exact-match and leading-whitespace-fuzzy passes both fail and
+  `fuzz: true` is set, the tool retries with smart quotes (`"`/`"` →
+  `"`, `'`/`'` → `'`), en/em-dashes (`–`/`—` → `-`), and non-breaking
+  spaces (U+00A0 → space) normalized to ASCII. Catches the copy-paste
+  failure mode where a browser or chat client substituted Unicode
+  punctuation for the ASCII the file actually contains.
 
 ### Changed
 
