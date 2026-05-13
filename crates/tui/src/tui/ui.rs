@@ -70,6 +70,9 @@ use crate::tui::event_broker::EventBroker;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
 use crate::tui::auto_router;
+use crate::tui::vim_mode;
+use crate::tui::streaming_thinking;
+use crate::tui::workspace_context;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
@@ -94,7 +97,6 @@ use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_
 use crate::tui::user_input::UserInputView;
 use crate::tui::views::subagent_view_agents;
 
-use super::active_cell::ActiveCell;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
     StatusToastLevel, SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
@@ -142,7 +144,6 @@ const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // the per-tool spinner pulse — keep this fast enough that the spout reads as
 // motion (~12 fps) instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = 80;
-const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
@@ -838,7 +839,7 @@ async fn run_event_loop(
                                 .to_string()
                         }
                     };
-                    replace_pending_thinking_translation(app, &placeholder, text);
+                    streaming_thinking::replace_pending_translation(app, &placeholder, text);
                     if pending_translations == 0
                         && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))
                     {
@@ -910,10 +911,10 @@ async fn run_event_loop(
                         // thinking entry here so this branch is order-
                         // independent.
                         if app.streaming_thinking_active_entry.is_some() {
-                            if finalize_current_streaming_thinking(app) {
+                            if streaming_thinking::finalize_current(app) {
                                 transcript_batch_updated = true;
                             }
-                            stash_reasoning_buffer_into_last_reasoning(app);
+                            streaming_thinking::stash_reasoning_buffer_into_last_reasoning(app);
                         }
                         let mut completed_message_index = None;
                         if let Some(index) = app.streaming_message_index.take() {
@@ -990,12 +991,12 @@ async fn run_event_loop(
                         // P2.3: thinking lives in the active cell so it groups
                         // visually with the tool calls that follow until the
                         // next assistant prose chunk flushes the group.
-                        if start_streaming_thinking_block(app) {
+                        if streaming_thinking::start_block(app) {
                             transcript_batch_updated = true;
                         }
                         if app.translation_enabled {
-                            let entry_idx = ensure_streaming_thinking_active_entry(app);
-                            set_streaming_thinking_placeholder(app, entry_idx);
+                            let entry_idx = streaming_thinking::ensure_active_entry(app);
+                            streaming_thinking::set_placeholder(app, entry_idx);
                             transcript_batch_updated = true;
                         }
                     }
@@ -1009,14 +1010,14 @@ async fn run_event_loop(
                             app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
                         }
 
-                        let entry_idx = ensure_streaming_thinking_active_entry(app);
+                        let entry_idx = streaming_thinking::ensure_active_entry(app);
                         app.streaming_state.push_content(0, &sanitized);
                         let committed = app.streaming_state.commit_text(0);
                         if !committed.is_empty() {
                             if app.translation_enabled {
-                                set_streaming_thinking_placeholder(app, entry_idx);
+                                streaming_thinking::set_placeholder(app, entry_idx);
                             } else {
-                                append_streaming_thinking(app, entry_idx, &committed);
+                                streaming_thinking::append(app, entry_idx, &committed);
                             }
                             transcript_batch_updated = true;
                         }
@@ -1029,7 +1030,7 @@ async fn run_event_loop(
                                 .thinking_started_at
                                 .take()
                                 .map(|t| t.elapsed().as_secs_f32());
-                            if finalize_streaming_thinking_active_entry(app, duration, "") {
+                            if streaming_thinking::finalize_active_entry(app, duration, "") {
                                 transcript_batch_updated = true;
                             }
                             if !original_thinking.is_empty()
@@ -1076,16 +1077,16 @@ async fn run_event_loop(
                                     crate::localization::thinking_translation_placeholder(
                                         app.ui_locale,
                                     );
-                                replace_pending_thinking_translation(
+                                streaming_thinking::replace_pending_translation(
                                     app,
                                     placeholder,
                                     original_thinking,
                                 );
                             }
-                        } else if finalize_current_streaming_thinking(app) {
+                        } else if streaming_thinking::finalize_current(app) {
                             transcript_batch_updated = true;
                         }
-                        stash_reasoning_buffer_into_last_reasoning(app);
+                        streaming_thinking::stash_reasoning_buffer_into_last_reasoning(app);
                     }
                     EngineEvent::ToolCallStarted { id, name, input } => {
                         app.pending_tool_uses
@@ -1773,9 +1774,9 @@ async fn run_event_loop(
             let committed = app.streaming_state.commit_text(0);
             if !committed.is_empty() {
                 if app.translation_enabled {
-                    set_streaming_thinking_placeholder(app, entry_idx);
+                    streaming_thinking::set_placeholder(app, entry_idx);
                 } else {
-                    append_streaming_thinking(app, entry_idx, &committed);
+                    streaming_thinking::append(app, entry_idx, &committed);
                 }
                 transcript_batch_updated = true;
             }
@@ -1835,7 +1836,7 @@ async fn run_event_loop(
             && last_status_frame.elapsed()
                 >= Duration::from_millis(status_animation_interval_ms(app))
         {
-            if animate_pending_thinking_translation(app, pending_thinking_translations > 0) {
+            if streaming_thinking::animate_pending_translation(app, pending_thinking_translations > 0) {
                 app.mark_history_updated();
             }
             if !app.low_motion && history_has_live_motion(&app.history) {
@@ -1890,7 +1891,7 @@ async fn run_event_loop(
         tick_selection_autoscroll(app);
         let allow_workspace_context_refresh =
             !app.is_loading && !has_running_agents && !app.is_compacting;
-        refresh_workspace_context_if_needed(app, now, allow_workspace_context_refresh);
+        workspace_context::refresh_if_needed(app, now, allow_workspace_context_refresh);
 
         // Draw is gated by the frame-rate limiter (120 FPS cap). When a
         // redraw is needed but the limiter says we're inside the cooldown
@@ -3334,7 +3335,7 @@ async fn run_event_loop(
                         && !mention_menu_open
                         && app.view_stack.is_empty() =>
                 {
-                    handle_vim_normal_key(app, c);
+                    vim_mode::handle_vim_normal_key(app, c);
                     continue;
                 }
                 // Vim composer: in Visual mode plain chars are ignored
@@ -3359,86 +3360,6 @@ async fn run_event_loop(
     }
 }
 
-/// Handle a plain character key press when the composer is in vim Normal mode.
-///
-/// Implements the core set of normal-mode bindings:
-/// - `h` / `l`  — left / right by character
-/// - `j` / `k`  — down / up by logical line (falls back to prev/next history)
-/// - `w` / `b`  — word forward / backward
-/// - `0` / `$`  — line start / end
-/// - `x`        — delete character under cursor
-/// - `d` (×2)   — delete current line (`dd`)
-/// - `i`        — enter Insert before cursor
-/// - `a`        — enter Insert after cursor
-/// - `o`        — open new line below and enter Insert
-/// - `v`        — enter Visual mode
-/// - `G`        — move to end of buffer
-fn handle_vim_normal_key(app: &mut App, c: char) {
-    use crate::tui::app::VimMode;
-
-    // Handle pending `d` (waiting for second `d` to complete `dd`).
-    if app.composer.vim_pending_d {
-        app.composer.vim_pending_d = false;
-        if c == 'd' {
-            app.vim_delete_line();
-        }
-        // Any other key cancels the pending operator.
-        return;
-    }
-
-    match c {
-        'h' => {
-            app.move_cursor_left();
-        }
-        'l' => {
-            app.move_cursor_right();
-        }
-        'j' => {
-            app.vim_move_down();
-        }
-        'k' => {
-            app.vim_move_up();
-        }
-        'w' => {
-            app.vim_move_word_forward();
-        }
-        'b' => {
-            app.vim_move_word_backward();
-        }
-        '0' => {
-            app.vim_move_line_start();
-        }
-        '$' => {
-            app.vim_move_line_end();
-        }
-        'x' => {
-            app.vim_delete_char_under_cursor();
-        }
-        'd' => {
-            // Start the `dd` operator sequence.
-            app.composer.vim_pending_d = true;
-        }
-        'i' => {
-            app.vim_enter_insert();
-        }
-        'a' => {
-            app.vim_enter_append();
-        }
-        'o' => {
-            app.vim_open_line_below();
-        }
-        'v' => {
-            app.composer.vim_mode = VimMode::Visual;
-            app.needs_redraw = true;
-        }
-        'G' => {
-            app.move_cursor_end();
-        }
-        _ => {
-            // Unknown normal-mode key — silently ignored in Normal mode.
-        }
-    }
-}
 
 fn apply_alt_4_shortcut(app: &mut App, _modifiers: KeyModifiers) {
     app.set_sidebar_focus(SidebarFocus::Agents);
@@ -3658,7 +3579,7 @@ pub(crate) fn apply_engine_error_to_app(
     let recoverable = envelope.recoverable;
     let message = envelope.message.clone();
     let severity = envelope.severity;
-    finalize_current_streaming_thinking(app);
+    streaming_thinking::finalize_current(app);
     app.streaming_state.reset();
     app.streaming_message_index = None;
     app.streaming_thinking_active_entry = None;
@@ -3882,7 +3803,7 @@ fn notification_text_summary(text: &str) -> Option<String> {
 }
 
 /// Ensure an in-flight streaming Assistant cell exists in history and return
-/// its index. Thinking cells go through `ensure_streaming_thinking_active_entry`
+/// its index. Thinking cells go through `streaming_thinking::ensure_active_entry`
 /// (active cell) instead.
 fn ensure_streaming_assistant_history_cell(app: &mut App) -> usize {
     if let Some(index) = app.streaming_message_index {
@@ -3972,211 +3893,7 @@ fn replace_matching_assistant_text(
     false
 }
 
-/// Ensure an in-flight Thinking entry exists in `active_cell` and return its
-/// entry index. If no thinking entry is currently streaming, push a fresh one.
-/// P2.3: thinking shares the active cell with subsequent tool calls so the
-/// pair render as one logical "Working…" block.
-fn ensure_streaming_thinking_active_entry(app: &mut App) -> usize {
-    if let Some(idx) = app.streaming_thinking_active_entry {
-        return idx;
-    }
-    if app.active_cell.is_none() {
-        app.active_cell = Some(ActiveCell::new());
-    }
-    let active = app.active_cell.as_mut().expect("active_cell just ensured");
-    let entry_idx = active.push_thinking(HistoryCell::Thinking {
-        content: String::new(),
-        streaming: true,
-        duration_secs: None,
-    });
-    app.streaming_thinking_active_entry = Some(entry_idx);
-    app.bump_active_cell_revision();
-    entry_idx
-}
-
-/// Append text to a streaming Thinking entry inside `active_cell`. Bumps the
-/// active-cell revision so the renderer re-draws the live tail.
-fn append_streaming_thinking(app: &mut App, entry_idx: usize, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    let mutated = if let Some(active) = app.active_cell.as_mut()
-        && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(entry_idx)
-    {
-        content.push_str(text);
-        true
-    } else {
-        false
-    };
-    if mutated {
-        app.bump_active_cell_revision();
-    }
-}
-
-fn thinking_translation_placeholder_frame(app: &App) -> String {
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let elapsed = app
-        .thinking_started_at
-        .or(app.turn_started_at)
-        .map(|started| started.elapsed().as_secs_f32())
-        .unwrap_or_default();
-    let frame = match (elapsed.mul_add(2.0, 0.0) as usize) % 4 {
-        0 => "|",
-        1 => "/",
-        2 => "-",
-        _ => "\\",
-    };
-    format!("{base} ({elapsed:.1}s {frame})")
-}
-
-fn set_streaming_thinking_placeholder(app: &mut App, entry_idx: usize) {
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let next = thinking_translation_placeholder_frame(app);
-    let mutated = if let Some(active) = app.active_cell.as_mut()
-        && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(entry_idx)
-        && (content.is_empty() || content.starts_with(base))
-    {
-        if *content != next {
-            *content = next;
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-    if mutated {
-        app.bump_active_cell_revision();
-    }
-}
-
-fn animate_pending_thinking_translation(app: &mut App, translation_pending: bool) -> bool {
-    if !app.translation_enabled {
-        return false;
-    }
-    let thinking_streaming = app.streaming_thinking_active_entry.is_some();
-    if !translation_pending && !thinking_streaming {
-        return false;
-    }
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let next = thinking_translation_placeholder_frame(app);
-
-    if let Some(active) = app.active_cell.as_mut() {
-        for idx in (0..active.entry_count()).rev() {
-            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
-                && content.starts_with(base)
-                && *content != next
-            {
-                *content = next.clone();
-                app.bump_active_cell_revision();
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn replace_pending_thinking_translation(app: &mut App, placeholder: &str, translated_text: String) {
-    if let Some(active) = app.active_cell.as_mut() {
-        for idx in (0..active.entry_count()).rev() {
-            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
-                && content.starts_with(placeholder)
-            {
-                *content = translated_text;
-                app.bump_active_cell_revision();
-                return;
-            }
-        }
-    }
-
-    for idx in (0..app.history.len()).rev() {
-        if let Some(HistoryCell::Thinking { content, .. }) = app.history.get_mut(idx)
-            && content.starts_with(placeholder)
-        {
-            *content = translated_text;
-            app.bump_history_cell(idx);
-            return;
-        }
-    }
-}
-
-/// Start a new streaming thinking block. If another thinking block is still
-/// active, first drain its pending UI tail so a late block boundary cannot
-/// discard content buffered inside `StreamingState`.
-fn start_streaming_thinking_block(app: &mut App) -> bool {
-    let finalized_previous = if app.streaming_thinking_active_entry.is_some() {
-        let finalized = finalize_current_streaming_thinking(app);
-        stash_reasoning_buffer_into_last_reasoning(app);
-        finalized
-    } else {
-        false
-    };
-
-    app.reasoning_buffer.clear();
-    app.reasoning_header = None;
-    app.thinking_started_at = Some(Instant::now());
-    app.streaming_state.reset();
-    app.streaming_state.start_thinking(0, None);
-    let _ = ensure_streaming_thinking_active_entry(app);
-    finalized_previous
-}
-
-fn finalize_current_streaming_thinking(app: &mut App) -> bool {
-    let duration = app
-        .thinking_started_at
-        .take()
-        .map(|t| t.elapsed().as_secs_f32());
-    let remaining = app.streaming_state.finalize_block_text(0);
-    finalize_streaming_thinking_active_entry(app, duration, &remaining)
-}
-
-fn stash_reasoning_buffer_into_last_reasoning(app: &mut App) {
-    if app.reasoning_buffer.is_empty() {
-        return;
-    }
-
-    if let Some(existing) = app.last_reasoning.as_mut()
-        && !existing.is_empty()
-    {
-        if !existing.ends_with('\n') {
-            existing.push('\n');
-        }
-        existing.push_str(&app.reasoning_buffer);
-    } else {
-        app.last_reasoning = Some(app.reasoning_buffer.clone());
-    }
-    app.reasoning_buffer.clear();
-}
-
-/// Finalize the in-flight thinking entry in `active_cell`: append the
-/// collector's remaining buffered text, stop the spinner, and stamp the
-/// duration. Returns `true` when a thinking entry was finalized (so the
-/// dispatch loop knows the transcript was touched). No-op if no thinking
-/// entry is currently streaming.
-fn finalize_streaming_thinking_active_entry(
-    app: &mut App,
-    duration: Option<f32>,
-    remaining: &str,
-) -> bool {
-    let Some(entry_idx) = app.streaming_thinking_active_entry.take() else {
-        return false;
-    };
-    if !remaining.is_empty() {
-        append_streaming_thinking(app, entry_idx, remaining);
-    }
-    if let Some(active) = app.active_cell.as_mut()
-        && let Some(HistoryCell::Thinking {
-            streaming,
-            duration_secs,
-            ..
-        }) = active.entry_mut(entry_idx)
-    {
-        *streaming = false;
-        *duration_secs = duration;
-    }
-    app.bump_active_cell_revision();
-    true
-}
+// Streaming-thinking lifecycle helpers moved to `tui/streaming_thinking.rs`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EscapeAction {
@@ -7040,157 +6757,6 @@ fn compact_user_context_display(content: &str) -> String {
         .to_string()
 }
 
-fn refresh_workspace_context_if_needed(app: &mut App, now: Instant, allow_refresh: bool) {
-    // Drain the async cell result into the live field first, so the render
-    // path always reads the latest value (#399 S1).
-    if let Ok(mut cell) = app.workspace_context_cell.lock()
-        && let Some(ctx) = cell.take()
-    {
-        app.workspace_context = Some(ctx);
-    }
-
-    if app
-        .workspace_context_refreshed_at
-        .is_some_and(|refreshed_at| {
-            now.duration_since(refreshed_at) < Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS)
-        })
-    {
-        return;
-    }
-
-    if !allow_refresh {
-        return;
-    }
-
-    // Offload git query to a background thread when a Tokio runtime is
-    // available. Fall back to synchronous execution for tests and other
-    // non-async contexts (#399 S1).
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        let ctx = app.workspace_context_cell.clone();
-        let workspace = app.workspace.clone();
-        handle.spawn_blocking(move || {
-            let result = collect_workspace_context(&workspace);
-            if let Ok(mut guard) = ctx.lock() {
-                *guard = result;
-            }
-        });
-    } else {
-        // No runtime — run synchronously so tests and one-shot callers
-        // still get a result immediately.
-        app.workspace_context = collect_workspace_context(&app.workspace);
-    }
-    app.workspace_context_refreshed_at = Some(now);
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct WorkspaceChangeSummary {
-    staged: usize,
-    modified: usize,
-    untracked: usize,
-    conflicts: usize,
-}
-
-impl WorkspaceChangeSummary {
-    fn is_clean(&self) -> bool {
-        self.staged == 0 && self.modified == 0 && self.untracked == 0 && self.conflicts == 0
-    }
-}
-
-fn collect_workspace_context(workspace: &Path) -> Option<String> {
-    let branch = workspace_git_branch(workspace)?;
-    let summary = workspace_git_change_summary(workspace)?;
-
-    let mut parts = Vec::new();
-    if summary.staged > 0 {
-        parts.push(format!("{} staged", summary.staged));
-    }
-    if summary.modified > 0 {
-        parts.push(format!("{} modified", summary.modified));
-    }
-    if summary.untracked > 0 {
-        parts.push(format!("{} untracked", summary.untracked));
-    }
-    if summary.conflicts > 0 {
-        parts.push(format!("{} conflicts", summary.conflicts));
-    }
-
-    let status = if summary.is_clean() {
-        "clean".to_string()
-    } else {
-        parts.join(", ")
-    };
-
-    Some(format!("{branch} | {status}"))
-}
-
-fn workspace_git_branch(workspace: &Path) -> Option<String> {
-    let branch = run_git_query(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?;
-    let branch = branch.trim().to_string();
-    if branch == "HEAD" || branch.is_empty() {
-        let short_hash = run_git_query(workspace, &["rev-parse", "--short", "HEAD"]).ok()?;
-        let short_hash = short_hash.trim();
-        if short_hash.is_empty() {
-            return None;
-        }
-        return Some(format!("detached:{short_hash}"));
-    }
-    Some(branch)
-}
-
-fn workspace_git_change_summary(workspace: &Path) -> Option<WorkspaceChangeSummary> {
-    let status = run_git_query(
-        workspace,
-        &["status", "--short", "--untracked-files=normal"],
-    )
-    .ok()?;
-
-    if status.trim().is_empty() {
-        return Some(WorkspaceChangeSummary::default());
-    }
-
-    let mut summary = WorkspaceChangeSummary::default();
-    for line in status.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let mut chars = line.chars();
-        let staged = chars.next()?;
-        let modified = chars.next().unwrap_or(' ');
-
-        if staged == ' ' && modified == ' ' {
-            continue;
-        }
-        if staged == '?' && modified == '?' {
-            summary.untracked = summary.untracked.saturating_add(1);
-            continue;
-        }
-
-        if staged == 'U' || modified == 'U' {
-            summary.conflicts = summary.conflicts.saturating_add(1);
-        }
-        if staged != ' ' && staged != '?' {
-            summary.staged = summary.staged.saturating_add(1);
-        }
-        if modified != ' ' && modified != '?' {
-            summary.modified = summary.modified.saturating_add(1);
-        }
-    }
-
-    Some(summary)
-}
-
-fn run_git_query(workspace: &Path, args: &[&str]) -> std::io::Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(workspace)
-        .output()?;
-    if !output.status.success() {
-        return Err(std::io::Error::other("git command failed"));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
 fn pause_terminal(
     terminal: &mut AppTerminal,
     use_alt_screen: bool,
@@ -7902,7 +7468,7 @@ fn render_footer_from(
 }
 
 fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
-    let Some(branch) = workspace_git_branch(&app.workspace) else {
+    let Some(branch) = workspace_context::branch(&app.workspace) else {
         return Vec::new();
     };
     vec![Span::styled(

@@ -2654,12 +2654,12 @@ fn workspace_context_refresh_is_deferred_while_ui_is_busy() {
     app.workspace = repo.path().to_path_buf();
 
     let now = Instant::now();
-    refresh_workspace_context_if_needed(&mut app, now, false);
+    crate::tui::workspace_context::refresh_if_needed(&mut app, now, false);
 
     assert!(app.workspace_context.is_none());
     assert!(app.workspace_context_refreshed_at.is_none());
 
-    refresh_workspace_context_if_needed(&mut app, now, true);
+    crate::tui::workspace_context::refresh_if_needed(&mut app, now, true);
 
     let context = app
         .workspace_context
@@ -2676,7 +2676,7 @@ fn workspace_context_refresh_respects_ttl_before_requerying_git() {
     app.workspace = repo.path().to_path_buf();
 
     let start = Instant::now();
-    refresh_workspace_context_if_needed(&mut app, start, true);
+    crate::tui::workspace_context::refresh_if_needed(&mut app, start, true);
     let initial = app
         .workspace_context
         .clone()
@@ -2684,12 +2684,12 @@ fn workspace_context_refresh_respects_ttl_before_requerying_git() {
 
     std::fs::write(repo.path().join("dirty.txt"), "dirty").expect("write dirty marker");
 
-    let before_ttl = start + Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS - 1);
-    refresh_workspace_context_if_needed(&mut app, before_ttl, true);
+    let before_ttl = start + Duration::from_secs(crate::tui::workspace_context::REFRESH_SECS - 1);
+    crate::tui::workspace_context::refresh_if_needed(&mut app, before_ttl, true);
     assert_eq!(app.workspace_context.as_deref(), Some(initial.as_str()));
 
-    let after_ttl = start + Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS);
-    refresh_workspace_context_if_needed(&mut app, after_ttl, true);
+    let after_ttl = start + Duration::from_secs(crate::tui::workspace_context::REFRESH_SECS);
+    crate::tui::workspace_context::refresh_if_needed(&mut app, after_ttl, true);
     let refreshed = app
         .workspace_context
         .as_deref()
@@ -4043,8 +4043,8 @@ fn thinking_then_tools_share_active_cell_until_text_flushes() {
     let mut app = create_test_app();
 
     // 1. Thinking starts and streams a delta.
-    let thinking_idx = ensure_streaming_thinking_active_entry(&mut app);
-    append_streaming_thinking(&mut app, thinking_idx, "planning the read");
+    let thinking_idx = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    crate::tui::streaming_thinking::append(&mut app, thinking_idx, "planning the read");
     assert!(
         app.history.is_empty(),
         "thinking must not write into history mid-turn"
@@ -4085,7 +4085,7 @@ fn thinking_then_tools_share_active_cell_until_text_flushes() {
     ));
 
     // 3. Thinking finalizes — entry stays in active cell, just stops streaming.
-    let finalized = finalize_streaming_thinking_active_entry(&mut app, Some(1.5), "");
+    let finalized = crate::tui::streaming_thinking::finalize_active_entry(&mut app, Some(1.5), "");
     assert!(finalized, "finalizer reports it touched the active cell");
     let HistoryCell::Thinking {
         streaming,
@@ -4134,8 +4134,8 @@ fn flush_active_cell_finalizes_unclosed_thinking_block() {
     // assistant text arrives, `flush_active_cell` must still stop the
     // spinner so the migrated history cell isn't perpetually streaming.
     let mut app = create_test_app();
-    let _ = ensure_streaming_thinking_active_entry(&mut app);
-    append_streaming_thinking(&mut app, 0, "incomplete");
+    let _ = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    crate::tui::streaming_thinking::append(&mut app, 0, "incomplete");
 
     app.flush_active_cell();
 
@@ -4163,9 +4163,9 @@ fn open_thinking_pager_finds_thinking_in_active_cell() {
     // transcript — not just `app.history` — or the promise is a lie.
     // Regression guard for the v0.8.29 affordance/handler mismatch.
     let mut app = create_test_app();
-    let _ = ensure_streaming_thinking_active_entry(&mut app);
-    append_streaming_thinking(&mut app, 0, "deliberating");
-    let finalized = finalize_streaming_thinking_active_entry(&mut app, Some(1.2), "");
+    let _ = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    crate::tui::streaming_thinking::append(&mut app, 0, "deliberating");
+    let finalized = crate::tui::streaming_thinking::finalize_active_entry(&mut app, Some(1.2), "");
     assert!(finalized);
     assert!(
         app.history.is_empty(),
@@ -4316,7 +4316,7 @@ fn engine_error_finalizes_active_thinking_block() {
     use crate::error_taxonomy::StreamError;
 
     let mut app = create_test_app();
-    let entry_idx = ensure_streaming_thinking_active_entry(&mut app);
+    let entry_idx = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
     app.thinking_started_at = Some(Instant::now());
     app.streaming_state.start_thinking(0, None);
     app.streaming_state.push_content(0, "partial reasoning");
@@ -4356,7 +4356,7 @@ fn message_complete_drain_preserves_thinking_when_thinking_complete_lost() {
     // remainder of `MessageComplete` reads it.
     let mut app = create_test_app();
 
-    let _ = ensure_streaming_thinking_active_entry(&mut app);
+    let _ = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
     app.thinking_started_at = Some(Instant::now());
     app.streaming_state.start_thinking(0, None);
     app.streaming_state.push_content(0, "deep reasoning text");
@@ -4375,8 +4375,8 @@ fn message_complete_drain_preserves_thinking_when_thinking_complete_lost() {
     // Mirror the head of `EngineEvent::MessageComplete` — the new defensive
     // drain installed by the #861 RC3 fix.
     if app.streaming_thinking_active_entry.is_some() {
-        let _ = finalize_current_streaming_thinking(&mut app);
-        stash_reasoning_buffer_into_last_reasoning(&mut app);
+        let _ = crate::tui::streaming_thinking::finalize_current(&mut app);
+        crate::tui::streaming_thinking::stash_reasoning_buffer_into_last_reasoning(&mut app);
     }
 
     assert!(
@@ -4399,9 +4399,9 @@ fn second_thinking_block_appends_new_entry_in_same_active_cell() {
     // the SAME active cell rather than flush the first group prematurely.
     let mut app = create_test_app();
 
-    let _ = ensure_streaming_thinking_active_entry(&mut app);
-    append_streaming_thinking(&mut app, 0, "first plan");
-    let _ = finalize_streaming_thinking_active_entry(&mut app, Some(0.5), "");
+    let _ = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    crate::tui::streaming_thinking::append(&mut app, 0, "first plan");
+    let _ = crate::tui::streaming_thinking::finalize_active_entry(&mut app, Some(0.5), "");
 
     handle_tool_call_started(
         &mut app,
@@ -4411,12 +4411,12 @@ fn second_thinking_block_appends_new_entry_in_same_active_cell() {
     );
 
     // Second Thinking block.
-    let second_idx = ensure_streaming_thinking_active_entry(&mut app);
+    let second_idx = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
     assert_eq!(
         second_idx, 2,
         "second thinking entry follows the tool entry"
     );
-    append_streaming_thinking(&mut app, second_idx, "second plan");
+    crate::tui::streaming_thinking::append(&mut app, second_idx, "second plan");
 
     let active = app.active_cell.as_ref().expect("active cell present");
     assert_eq!(active.entry_count(), 3);
@@ -4436,14 +4436,14 @@ fn second_thinking_block_appends_new_entry_in_same_active_cell() {
 fn new_thinking_block_drains_pending_tail_from_previous_block() {
     let mut app = create_test_app();
 
-    assert!(!start_streaming_thinking_block(&mut app));
+    assert!(!crate::tui::streaming_thinking::start_block(&mut app));
     let first_idx = app
         .streaming_thinking_active_entry
         .expect("first thinking entry active");
     app.reasoning_buffer.push_str("first tail");
     app.streaming_state.push_content(0, "first tail");
 
-    assert!(start_streaming_thinking_block(&mut app));
+    assert!(crate::tui::streaming_thinking::start_block(&mut app));
     let second_idx = app
         .streaming_thinking_active_entry
         .expect("second thinking entry active");
