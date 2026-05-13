@@ -804,6 +804,18 @@ pub struct SubagentsConfig {
     pub max_concurrent: Option<usize>,
 }
 
+/// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
+///
+/// `cost_saving` (#1207): when `true`, the auto-mode router prefers
+/// `deepseek-v4-flash` for ambiguous requests, only escalating to
+/// `deepseek-v4-pro` when the task clearly benefits from deeper reasoning.
+/// Default is `false` (balanced — match the existing routing voice).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AutoConfig {
+    #[serde(default)]
+    pub cost_saving: Option<bool>,
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -896,6 +908,11 @@ pub struct Config {
     /// `DEEPSEEK_MEMORY=on` is set.
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
+
+    /// Tunables for `--model auto` (#1207). When absent, the auto router
+    /// keeps its existing balanced behaviour.
+    #[serde(default)]
+    pub auto: Option<AutoConfig>,
 
     /// Post-edit LSP diagnostics injection (#136). When absent, the engine
     /// applies the defaults documented in [`LspConfigToml`].
@@ -1142,6 +1159,18 @@ struct RequirementsFile {
 // === Config Loading ===
 
 impl Config {
+    /// Return `true` if the `[auto] cost_saving = true` opt-in is set
+    /// (#1207). When true, the auto-mode router biases toward
+    /// `deepseek-v4-flash` for ambiguous requests instead of escalating to
+    /// `deepseek-v4-pro`. Default: `false` (balanced behaviour).
+    #[must_use]
+    pub fn auto_cost_saving(&self) -> bool {
+        self.auto
+            .as_ref()
+            .and_then(|a| a.cost_saving)
+            .unwrap_or(false)
+    }
+
     /// Load configuration from disk and merge with environment overrides.
     ///
     /// # Examples
@@ -2705,6 +2734,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         snapshots: override_cfg.snapshots.or(base.snapshots),
         search: override_cfg.search.or(base.search),
         memory: override_cfg.memory.or(base.memory),
+        auto: override_cfg.auto.or(base.auto),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {
             enabled: override_cfg.context.enabled.or(base.context.enabled),

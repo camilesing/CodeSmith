@@ -732,17 +732,44 @@ fn expand_tilde(raw: &str) -> String {
 /// Messages with complex keywords → Pro.
 /// Default → Flash (cost savings).
 pub fn auto_model_heuristic(input: &str, _current_model: &str) -> String {
+    auto_model_heuristic_with_bias(input, _current_model, false)
+}
+
+/// `auto_model_heuristic` parameterised by the `[auto] cost_saving` opt-in
+/// (#1207). When `cost_saving` is `true` the keyword set drops the borderline
+/// triggers (`implement`, `analyze`) and the long-message length threshold
+/// goes from 500 to 1000 — both shifts let "looks involved but might be a
+/// one-liner" requests stay on Flash unless they actually look agentic.
+pub fn auto_model_heuristic_with_bias(
+    input: &str,
+    _current_model: &str,
+    cost_saving: bool,
+) -> String {
     let len = input.chars().count();
     let lower = input.to_lowercase();
-    if COMPLEX_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    let borderline_pro_keywords: &[&str] = &[
+        "implement",
+        "analyze",
+        "\u{5b9e}\u{73b0}", // 实现
+        "\u{5206}\u{6790}", // 分析
+        "\u{5be6}\u{73fe}", // 實現
+    ];
+    let strong_match = COMPLEX_KEYWORDS.iter().any(|kw| {
+        !borderline_pro_keywords.contains(kw) && lower.contains(kw)
+    });
+    let borderline_match = borderline_pro_keywords.iter().any(|kw| lower.contains(kw));
+    let pro_match = strong_match || (!cost_saving && borderline_match);
+    if pro_match {
         return "deepseek-v4-pro".to_string();
     }
     // Short messages → Flash
     if len < 100 {
         return "deepseek-v4-flash".to_string();
     }
-    // Long complex requests → Pro
-    if len > 500 {
+    // Long complex requests → Pro. Cost-saving raises the threshold so that
+    // long-but-routine requests (pasted logs, CSV-style data) don't escalate.
+    let long_threshold = if cost_saving { 1_000 } else { 500 };
+    if len > long_threshold {
         return "deepseek-v4-pro".to_string();
     }
     // Default to Flash for cost savings
@@ -836,6 +863,16 @@ tool-heavy work, ambiguous requests, or anything that benefits from deeper reaso
 Use thinking off only for trivial no-tool answers, high for ordinary reasoning, and max for \
 agentic, coding, multi-file, release, architecture, debugging, security, tool-heavy, or uncertain work.";
 
+/// Bias appended to the auto-router's system prompt when the user opts in to
+/// `[auto] cost_saving = true` (#1207). Reverses the default tie-breaker for
+/// genuinely ambiguous requests so Pro is reserved for tasks that clearly
+/// require it; ordinary tweaks, config edits, and short reads stay on Flash.
+pub const AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM: &str = "\
+\n\nCost-saving mode is ON. Prefer deepseek-v4-flash for any request that is \
+not unmistakably agentic, multi-step, architecture/design, security review, \
+debugging, or otherwise clearly out of Flash's capability. Resolve ambiguous \
+cases in favour of deepseek-v4-flash, not deepseek-v4-pro.";
+
 /// Parse the Flash router's JSON-only response.
 ///
 /// The runtime treats classifier output as untrusted: only known V4 model IDs
@@ -898,6 +935,7 @@ pub async fn resolve_auto_route_with_flash(
     selected_model_mode: &str,
     selected_thinking_mode: &str,
 ) -> AutoRouteSelection {
+    let cost_saving = config.auto_cost_saving();
     match auto_route_flash_recommendation(
         config,
         latest_request,
@@ -912,13 +950,17 @@ pub async fn resolve_auto_route_with_flash(
             reasoning_effort: recommendation.reasoning_effort,
             source: AutoRouteSource::FlashRouter,
         },
-        Ok(None) | Err(_) => fallback_auto_route(latest_request, selected_model_mode),
+        Ok(None) | Err(_) => fallback_auto_route(latest_request, selected_model_mode, cost_saving),
     }
 }
 
-fn fallback_auto_route(latest_request: &str, selected_model_mode: &str) -> AutoRouteSelection {
+fn fallback_auto_route(
+    latest_request: &str,
+    selected_model_mode: &str,
+    cost_saving: bool,
+) -> AutoRouteSelection {
     AutoRouteSelection {
-        model: auto_model_heuristic(latest_request, selected_model_mode),
+        model: auto_model_heuristic_with_bias(latest_request, selected_model_mode, cost_saving),
         reasoning_effort: Some(normalize_auto_route_effort(crate::auto_reasoning::select(
             false,
             latest_request,
@@ -939,6 +981,10 @@ async fn auto_route_flash_recommendation(
     }
 
     let client = DeepSeekClient::new(config)?;
+    let mut router_system = AUTO_MODEL_ROUTER_SYSTEM_PROMPT.to_string();
+    if config.auto_cost_saving() {
+        router_system.push_str(AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM);
+    }
     let request = MessageRequest {
         model: "deepseek-v4-flash".to_string(),
         messages: vec![Message {
@@ -954,9 +1000,7 @@ async fn auto_route_flash_recommendation(
             }],
         }],
         max_tokens: 96,
-        system: Some(SystemPrompt::Text(
-            AUTO_MODEL_ROUTER_SYSTEM_PROMPT.to_string(),
-        )),
+        system: Some(SystemPrompt::Text(router_system)),
         tools: None,
         tool_choice: None,
         metadata: None,
@@ -1407,6 +1451,85 @@ mod tests {
             parse_auto_route_recommendation(r#"{"model":"some-other-model","thinking":"max"}"#,)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn auto_heuristic_default_routes_implement_to_pro() {
+        // Default (no cost-saving): "implement" is one of the borderline
+        // keywords that escalates to Pro.
+        assert_eq!(
+            auto_model_heuristic_with_bias("Please implement a binary search", "auto", false),
+            "deepseek-v4-pro"
+        );
+    }
+
+    #[test]
+    fn auto_heuristic_cost_saving_keeps_borderline_keywords_on_flash() {
+        // Cost-saving: "implement" / "analyze" are no longer enough to escalate.
+        assert_eq!(
+            auto_model_heuristic_with_bias("Please implement a binary search", "auto", true),
+            "deepseek-v4-flash"
+        );
+        assert_eq!(
+            auto_model_heuristic_with_bias("analyze this snippet", "auto", true),
+            "deepseek-v4-flash"
+        );
+    }
+
+    #[test]
+    fn auto_heuristic_strong_keywords_still_route_to_pro_under_cost_saving() {
+        // Cost-saving must NOT swallow obviously Pro-grade work.
+        for kw in [
+            "refactor",
+            "architecture",
+            "design",
+            "debug",
+            "security",
+            "review",
+            "audit",
+            "migrate",
+            "optimize",
+            "rewrite",
+        ] {
+            let req = format!("Please {kw} this module");
+            assert_eq!(
+                auto_model_heuristic_with_bias(&req, "auto", true),
+                "deepseek-v4-pro",
+                "expected Pro for strong keyword `{kw}` even in cost-saving mode"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_heuristic_cost_saving_raises_long_message_threshold() {
+        // 600-char request is "long" by default (>500) → Pro,
+        // but stays Flash under cost-saving (threshold 1000).
+        let body = "filler sentence. ".repeat(40); // ~680 chars
+        assert_eq!(
+            auto_model_heuristic_with_bias(&body, "auto", false),
+            "deepseek-v4-pro"
+        );
+        assert_eq!(
+            auto_model_heuristic_with_bias(&body, "auto", true),
+            "deepseek-v4-flash"
+        );
+    }
+
+    #[test]
+    fn config_auto_cost_saving_defaults_to_false() {
+        let cfg = crate::config::Config::default();
+        assert!(!cfg.auto_cost_saving());
+    }
+
+    #[test]
+    fn config_auto_cost_saving_reads_table() {
+        let cfg = crate::config::Config {
+            auto: Some(crate::config::AutoConfig {
+                cost_saving: Some(true),
+            }),
+            ..Default::default()
+        };
+        assert!(cfg.auto_cost_saving());
     }
 
     #[test]
