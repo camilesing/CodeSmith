@@ -47,6 +47,7 @@ pub fn agents_global_skills_dir() -> Option<PathBuf> {
 /// ecosystem, so picking up the global path lets users inherit skills
 /// they already installed for other Claude-compatible tools without
 /// re-authoring them in DeepSeek's native layout (#902).
+#[allow(dead_code)]
 #[must_use]
 pub fn claude_global_skills_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|p| p.join(".claude").join("skills"))
@@ -390,6 +391,11 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// installed (the system-prompt skills block is then suppressed).
 #[must_use]
 pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
+    let home = dirs::home_dir();
+    skills_directories_with_home(workspace, home.as_deref())
+}
+
+fn skills_directories_with_home(workspace: &Path, home_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut candidates = vec![
         workspace.join(".agents").join("skills"),
         workspace.join("skills"),
@@ -397,13 +403,13 @@ pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
         workspace.join(".claude").join("skills"),
         workspace.join(".cursor").join("skills"),
     ];
-    if let Some(global_agents) = agents_global_skills_dir() {
-        candidates.push(global_agents);
+    if let Some(home) = home_dir {
+        candidates.push(home.join(".agents").join("skills"));
+        candidates.push(home.join(".claude").join("skills"));
+        candidates.push(home.join(".deepseek").join("skills"));
+    } else {
+        candidates.push(PathBuf::from("/tmp/deepseek/skills"));
     }
-    if let Some(global_claude) = claude_global_skills_dir() {
-        candidates.push(global_claude);
-    }
-    candidates.push(default_skills_dir());
     existing_skill_dirs(candidates)
 }
 
@@ -451,7 +457,11 @@ pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
 /// custom configured directory is appended when it is outside that set.
 #[must_use]
 pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> SkillRegistry {
-    let mut dirs = skills_directories(workspace);
+    let dirs = skills_directories(workspace);
+    discover_for_workspace_dirs_and_dir(dirs, skills_dir)
+}
+
+fn discover_for_workspace_dirs_and_dir(mut dirs: Vec<PathBuf>, skills_dir: &Path) -> SkillRegistry {
     if skills_dir.is_dir() && !dirs.iter().any(|p| p == skills_dir) {
         dirs.push(skills_dir.to_path_buf());
     }
@@ -469,6 +479,16 @@ pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> Sk
         }
     }
     merged
+}
+
+#[cfg(test)]
+fn discover_for_workspace_and_dir_with_home(
+    workspace: &Path,
+    skills_dir: &Path,
+    home_dir: Option<&Path>,
+) -> SkillRegistry {
+    let dirs = skills_directories_with_home(workspace, home_dir);
+    discover_for_workspace_dirs_and_dir(dirs, skills_dir)
 }
 
 /// Render the system-prompt skills block from every workspace
@@ -1270,31 +1290,9 @@ mod tests {
             "body",
         );
 
-        // Capture and override HOME so default_skills_dir() resolves
-        // to the sealed test home (same trick the qa_pty harness uses).
-        // Safety: this test is single-threaded with respect to the env
-        // because `cargo test` runs tests in this module sequentially
-        // when they touch process-global state via `--test-threads=1`,
-        // and within rustc's default scheduling the env_var read in
-        // `dirs` happens synchronously inside `discover_for_workspace_and_dir`.
-        let previous_home = std::env::var_os("HOME");
-        // SAFETY: env mutation is unsafe in 2024 edition; this test is
-        // serialized via the file-local skill-discovery suite.
-        unsafe {
-            std::env::set_var("HOME", &home);
-        }
-
         let skills_dir = workspace.join(".agents").join("skills");
-        let registry = super::discover_for_workspace_and_dir(&workspace, &skills_dir);
-
-        // Restore HOME before any assertion can panic.
-        unsafe {
-            if let Some(v) = previous_home {
-                std::env::set_var("HOME", v);
-            } else {
-                std::env::remove_var("HOME");
-            }
-        }
+        let registry =
+            super::discover_for_workspace_and_dir_with_home(&workspace, &skills_dir, Some(&home));
 
         let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
         assert!(
