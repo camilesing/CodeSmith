@@ -358,15 +358,31 @@ Cargo mirror setup in [Section 3](#3-install-via-cargo-any-tier-1-rust-target).
 ### Debian/Ubuntu: `feature edition2024 is required` from `cargo install`
 
 Some Debian/Ubuntu distro packages ship an older Cargo that cannot parse Rust
-2024 crates. For example, Cargo 1.75.0 fails before building with:
+2024 crates. For example, Cargo 1.75.0 on Ubuntu 24.04 fails before building
+with:
 
 ```text
 feature `edition2024` is required
+The package requires the Cargo feature called `edition2024`, but that feature
+is not stabilized in this version of Cargo
 ```
 
 Install current stable Rust through rustup, then rerun the two Cargo install
-commands from [Section 3](#3-install-via-cargo-any-tier-1-rust-target). After
-rustup finishes, `which cargo` should point to `~/.cargo/bin/cargo`, not
+commands from [Section 3](#3-install-via-cargo-any-tier-1-rust-target). For
+mainland China networks, this rsproxy-based sequence has been verified to work:
+
+```bash
+export RUSTUP_DIST_SERVER=https://rsproxy.cn
+export RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+rustup default stable
+cargo install deepseek-tui-cli --locked
+cargo install deepseek-tui     --locked
+```
+
+Afterward, `which cargo` should point to `~/.cargo/bin/cargo`, not
 `/usr/bin/cargo`.
 
 ### Debian/Ubuntu: `error: linker 'cc' not found` while building
