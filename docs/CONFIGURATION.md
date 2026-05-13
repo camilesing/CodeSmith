@@ -77,7 +77,10 @@ through unchanged for OpenAI-compatible gateways. `atlascloud` defaults to
 `deepseek-ai/deepseek-v4-flash` as its default model. SGLang, vLLM, and Ollama are
 self-hosted and can run without an API key by default. Ollama defaults to
 `http://localhost:11434/v1` and sends model tags such as `deepseek-coder:1.3b`
-or `qwen2.5-coder:7b` unchanged.
+or `qwen2.5-coder:7b` unchanged. Self-hosted providers and loopback custom
+URLs (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`) do not read the secret store
+unless API-key auth is explicitly requested; use an env var or config-file key
+when a local server does require bearer auth.
 
 Third-party OpenAI-compatible gateways that need extra request headers can set
 `http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
@@ -295,7 +298,10 @@ replacement compaction. You can inspect or update these from the TUI with
 
 Common settings keys:
 
-- `theme` (default, dark, light, whale)
+- `theme` (`system`, `dark`, `light`, `grayscale`; default `system`):
+  `system` follows terminal background detection, `dark`/`light` use the
+  DeepSeek palettes, and `grayscale` is the low-opinion black/white theme.
+  Aliases such as `whale`, `mono`, and `black-white` are accepted.
 - `auto_compact` (on/off, default off)
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
   detection for terminals that do not emit bracketed-paste events. This is

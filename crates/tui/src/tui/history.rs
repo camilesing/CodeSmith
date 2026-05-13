@@ -2011,8 +2011,20 @@ pub fn output_is_image(output: &str) -> bool {
     .any(|ext| lower.contains(ext))
 }
 
+#[allow(dead_code)] // Kept for compatibility/tests; live view uses explicit summaries only.
 #[must_use]
 pub fn extract_reasoning_summary(text: &str) -> Option<String> {
+    extract_explicit_reasoning_summary(text).or_else(|| {
+        let fallback = text.trim();
+        if fallback.is_empty() {
+            None
+        } else {
+            Some(fallback.to_string())
+        }
+    })
+}
+
+fn extract_explicit_reasoning_summary(text: &str) -> Option<String> {
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
@@ -2044,12 +2056,7 @@ pub fn extract_reasoning_summary(text: &str) -> Option<String> {
             };
         }
     }
-    let fallback = text.trim();
-    if fallback.is_empty() {
-        None
-    } else {
-        Some(fallback.to_string())
-    }
+    None
 }
 
 fn render_thinking(
@@ -2094,6 +2101,7 @@ fn render_thinking(
     lines.push(Line::from(header_spans));
 
     let content_width = width.saturating_sub(3).max(1);
+    let mut collapsed_without_explicit_summary = false;
     let body_text = if collapsed {
         if streaming {
             // #861 RC4 / #1324: during streaming we don't yet have a
@@ -2104,7 +2112,13 @@ fn render_thinking(
             // staring at an empty placeholder.
             content.to_string()
         } else {
-            extract_reasoning_summary(content).unwrap_or_else(|| content.trim().to_string())
+            match extract_explicit_reasoning_summary(content) {
+                Some(summary) => summary,
+                None => {
+                    collapsed_without_explicit_summary = true;
+                    String::new()
+                }
+            }
         }
     } else {
         content.to_string()
@@ -2158,13 +2172,13 @@ fn render_thinking(
             // knows there's more above and how to reach it.
             truncated
         } else {
-            truncated || body_text.trim() != content.trim()
+            collapsed_without_explicit_summary || truncated || body_text.trim() != content.trim()
         };
     if needs_affordance {
         let label = if streaming {
-            "thinking continues; Ctrl+O opens Activity Detail"
+            "More reasoning in Ctrl+O"
         } else {
-            "thinking collapsed; Ctrl+O opens Activity Detail"
+            "Full reasoning in Ctrl+O"
         };
         lines.push(Line::from(vec![
             Span::styled(REASONING_RAIL.to_string(), rail_style),
@@ -3648,7 +3662,7 @@ mod tests {
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect::<String>();
-        assert!(text.contains("thinking collapsed; Ctrl+O opens Activity Detail"));
+        assert!(text.contains("Full reasoning in Ctrl+O"));
         assert!(text.contains("thinking"));
     }
 
@@ -3696,7 +3710,7 @@ mod tests {
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect::<String>();
         assert!(
-            text.contains("thinking continues; Ctrl+O opens Activity Detail"),
+            text.contains("More reasoning in Ctrl+O"),
             "streaming-truncation affordance missing, got: {text}"
         );
         // The most recent line must be the visible tail (head dropped).
@@ -4276,10 +4290,10 @@ mod tests {
 
     // === display_lines (lines_with_options) vs transcript_lines parity ===
     //
-    // These lock the contract for CX#8: live view compresses thinking and
-    // caps tool output, transcript view shows the full body. Both surfaces
-    // must contain the first paragraph / first line of the underlying
-    // content so users never lose the lede.
+    // These lock the contract for CX#8: live view keeps reasoning compact
+    // and caps tool output, transcript view shows the full body. Completed
+    // reasoning without an explicit Summary stays out of the main flow so it
+    // cannot masquerade as user text.
 
     fn line_text(line: &ratatui::text::Line<'static>) -> String {
         line.spans
@@ -4295,8 +4309,9 @@ mod tests {
     #[test]
     fn long_thinking_display_is_shorter_than_transcript() {
         // Build a multi-paragraph thinking body so the live view has
-        // something to compress. The first paragraph is the lede; both
-        // surfaces must keep it.
+        // something to compress. Without an explicit Summary block, the
+        // live surface should show status + affordance only; Ctrl+O remains
+        // the path to the full body.
         let body = "First paragraph lede.\n\
                     Second sentence of the first paragraph.\n\n\
                     Second paragraph: deeper analysis follows.\n\
@@ -4331,12 +4346,12 @@ mod tests {
         let transcript_text = lines_text(&transcript);
 
         assert!(
-            live_text.contains("First paragraph lede"),
-            "live thinking must keep the lede: {live_text}"
-        );
-        assert!(
             transcript_text.contains("First paragraph lede"),
             "transcript thinking must keep the lede"
+        );
+        assert!(
+            !live_text.contains("First paragraph lede"),
+            "live thinking must not show raw completed reasoning: {live_text}"
         );
         assert!(
             transcript_text.contains("Fourth paragraph"),
@@ -4347,19 +4362,20 @@ mod tests {
             "live thinking must drop the tail when collapsed"
         );
         assert!(
-            live_text.contains("Ctrl+O opens Activity Detail"),
+            live_text.contains("Full reasoning in Ctrl+O"),
             "live thinking must offer the pager affordance"
         );
         assert!(
-            !transcript_text.contains("Ctrl+O opens Activity Detail"),
+            !transcript_text.contains("Full reasoning in Ctrl+O"),
             "transcript thinking must not include the live affordance"
         );
     }
 
     #[test]
-    fn short_thinking_display_equals_transcript() {
-        // A single-line thinking body has nothing to compress; live and
-        // transcript surfaces should agree.
+    fn completed_thinking_without_summary_stays_out_of_live_view() {
+        // Even a short completed reasoning body can read like the user's
+        // prompt when rendered inline. Keep it in transcript/detail surfaces
+        // and show the Ctrl+O affordance in the main flow.
         let cell = HistoryCell::Thinking {
             content: "One brief reasoning step.".to_string(),
             streaming: false,
@@ -4378,13 +4394,17 @@ mod tests {
         let live_text = lines_text(&live);
         let transcript_text = lines_text(&transcript);
 
-        assert_eq!(
-            live_text, transcript_text,
-            "short thinking must render identically on both surfaces"
+        assert!(
+            !live_text.contains("One brief reasoning step."),
+            "live thinking must hide raw completed reasoning: {live_text}"
         );
         assert!(
-            !live_text.contains("Ctrl+O opens Activity Detail"),
-            "short thinking must not show the collapse affordance"
+            transcript_text.contains("One brief reasoning step."),
+            "transcript thinking must keep the full reasoning body"
+        );
+        assert!(
+            live_text.contains("Full reasoning in Ctrl+O"),
+            "live thinking must offer the detail affordance"
         );
     }
 

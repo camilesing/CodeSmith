@@ -355,7 +355,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "theme",
         aliases: &[],
-        usage: "/theme",
+        usage: "/theme [dark|light|grayscale|system]",
         description_id: MessageId::CmdThemeDescription,
     },
     CommandInfo {
@@ -578,7 +578,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "status" => status::status(app),
         "statusline" => config::status_line(app),
         "mode" => config::mode(app, arg),
-        "theme" => config::theme(app),
+        "theme" => config::theme(app, arg),
         "verbose" => config::verbose(app, arg),
         "trust" => config::trust(app, arg),
         "logout" => config::logout(app),

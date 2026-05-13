@@ -1,6 +1,6 @@
 //! Long-lived Python REPL runtime.
 //!
-//! One `python3 -u` subprocess lives for the duration of an RLM turn (or an
+//! One Python subprocess lives for the duration of an RLM turn (or an
 //! inline `repl` block sequence in the agent loop). Code blocks are sent
 //! over stdin framed by `__RLM_RUN__`/`__RLM_END__` sentinels; the bootstrap
 //! `exec()`s them into the same global namespace so variables, imports,
@@ -29,6 +29,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use uuid::Uuid;
 
 use crate::child_env;
+use crate::dependencies::{PYTHON_CANDIDATES, resolve_python_interpreter, split_interpreter_spec};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -47,6 +48,10 @@ pub struct ReplRound {
     pub has_error: bool,
     /// Captured `finalize(value, confidence=...)` payload, if any.
     pub final_value: Option<String>,
+    /// Captured final value before string fallback. Structured `finalize`
+    /// payloads use this so `handle_read` can expose JSON instead of a Python
+    /// repr string.
+    pub final_json: Option<Value>,
     /// Optional confidence supplied to `finalize(...)`.
     pub final_confidence: Option<Value>,
     /// Number of `sub_query`/`sub_rlm` RPCs the round issued.
@@ -190,8 +195,23 @@ impl PythonRuntime {
         let session_id = Uuid::new_v4().simple().to_string();
         let bootstrap = render_bootstrap(&session_id);
 
-        let mut cmd = Command::new("python3");
-        cmd.arg("-u")
+        let interpreter = resolve_python_interpreter().ok_or_else(|| {
+            format!(
+                "no Python interpreter found on PATH (tried {:?}). \
+                 Install Python 3 and ensure one of these commands works, then restart deepseek-tui.",
+                PYTHON_CANDIDATES,
+            )
+        })?;
+        let (program, interpreter_args) = split_interpreter_spec(&interpreter);
+        if program.is_empty() {
+            return Err(format!(
+                "resolved Python interpreter is empty: {interpreter:?}"
+            ));
+        }
+
+        let mut cmd = Command::new(&program);
+        cmd.args(&interpreter_args)
+            .arg("-u")
             .arg("-c")
             .arg(&bootstrap)
             .stdin(Stdio::piped())
@@ -211,16 +231,16 @@ impl PythonRuntime {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("failed to spawn python3: {e}"))?;
+            .map_err(|e| format!("failed to spawn Python interpreter `{interpreter}`: {e}"))?;
 
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "python3 stdin pipe missing".to_string())?;
+            .ok_or_else(|| format!("Python interpreter `{interpreter}` stdin pipe missing"))?;
         let raw_stdout = child
             .stdout
             .take()
-            .ok_or_else(|| "python3 stdout pipe missing".to_string())?;
+            .ok_or_else(|| format!("Python interpreter `{interpreter}` stdout pipe missing"))?;
         let stdout = BufReader::new(raw_stdout);
 
         let mut rt = Self {
@@ -244,12 +264,14 @@ impl PythonRuntime {
             Ok(Ok(())) => Ok(rt),
             Ok(Err(e)) => {
                 let _ = rt.child.kill().await;
-                Err(format!("python3 bootstrap failed: {e}"))
+                Err(format!(
+                    "Python interpreter `{interpreter}` bootstrap failed: {e}"
+                ))
             }
             Err(_) => {
                 let _ = rt.child.kill().await;
                 Err(format!(
-                    "python3 bootstrap did not signal ready within {}s",
+                    "Python interpreter `{interpreter}` bootstrap did not signal ready within {}s",
                     SPAWN_READY_TIMEOUT.as_secs()
                 ))
             }
@@ -265,7 +287,7 @@ impl PythonRuntime {
                 .await
                 .map_err(|e| format!("stdout read: {e}"))?;
             if n == 0 {
-                return Err("python3 closed stdout before ready signal".to_string());
+                return Err("Python interpreter closed stdout before ready signal".to_string());
             }
             let trimmed = line.trim_end_matches(['\n', '\r']);
             if trimmed == ready_sentinel {
@@ -314,6 +336,7 @@ impl PythonRuntime {
 
         let mut stdout_buf = String::new();
         let mut final_value: Option<String> = None;
+        let mut final_json: Option<Value> = None;
         let mut final_confidence: Option<Value> = None;
         let mut had_error = false;
         let mut rpc_count: u32 = 0;
@@ -328,7 +351,7 @@ impl PythonRuntime {
                     .await
                     .map_err(|e| format!("stdout read: {e}"))?;
                 if n == 0 {
-                    return Err("python3 closed stdout mid-round".to_string());
+                    return Err("Python interpreter closed stdout mid-round".to_string());
                 }
                 let trimmed = line.trim_end_matches(['\n', '\r']);
 
@@ -341,23 +364,25 @@ impl PythonRuntime {
                     // legacy helpers emitted a JSON string.
                     match serde_json::from_str::<Value>(rest) {
                         Ok(Value::Object(map)) => {
-                            let value = map
+                            let value_json = map
                                 .get("value")
-                                .and_then(Value::as_str)
+                                .cloned()
+                                .unwrap_or(Value::String(rest.to_string()));
+                            let value = value_json
+                                .as_str()
                                 .map(str::to_string)
-                                .unwrap_or_else(|| {
-                                    map.get("value")
-                                        .map(Value::to_string)
-                                        .unwrap_or_else(|| rest.to_string())
-                                });
+                                .unwrap_or_else(|| value_json.to_string());
+                            final_json = Some(value_json);
                             final_value = Some(value);
                             final_confidence = map.get("confidence").cloned();
                         }
                         Ok(Value::String(value)) => {
+                            final_json = Some(Value::String(value.clone()));
                             final_value = Some(value);
                             final_confidence = None;
                         }
                         Ok(other) => {
+                            final_json = Some(other.clone());
                             final_value = Some(other.to_string());
                             final_confidence = None;
                         }
@@ -429,6 +454,7 @@ impl PythonRuntime {
             stderr,
             has_error: had_error,
             final_value,
+            final_json,
             final_confidence,
             rpc_count,
             elapsed: started.elapsed(),
@@ -625,17 +651,17 @@ def _prompt_with_slice(prompt, slice_value):
         label = "slice"
     return f"{prompt}\n\n--- {label} ---\n{text}"
 
-def sub_query(prompt, slice=None):
+def sub_query(prompt, slice=None, timeout_secs=None, **kwargs):
     """One child LLM call, optionally scoped to a bounded slice."""
     return llm_query(_prompt_with_slice(prompt, slice))
 
-def sub_query_batch(prompt, slices):
+def sub_query_batch(prompt, slices, timeout_secs=None, **kwargs):
     """Apply one prompt to many bounded slices concurrently."""
     if not isinstance(slices, (list, tuple)):
         return ["[sub_query_batch: slices must be a list]"]
     return llm_query_batched([_prompt_with_slice(prompt, s) for s in slices])
 
-def sub_query_map(prompts, slices=None):
+def sub_query_map(prompts, slices=None, timeout_secs=None, **kwargs):
     """Run N distinct prompts, optionally paired with N bounded slices."""
     if not isinstance(prompts, (list, tuple)):
         return ["[sub_query_map: prompts must be a list]"]
@@ -647,15 +673,23 @@ def sub_query_map(prompts, slices=None):
         return [f"[sub_query_map: size mismatch ({len(prompts)}/{len(slices)})]" for _ in prompts]
     return llm_query_batched([_prompt_with_slice(p, s) for p, s in zip(prompts, slices)])
 
-def sub_rlm(prompt, source=None):
+def sub_rlm(prompt, source=None, timeout_secs=None, **kwargs):
     """Recursive sub-RLM call for tasks that need their own decomposition."""
     return rlm_query(_prompt_with_slice(prompt, source))
 
+def _json_safe(value):
+    try:
+        _json.dumps(value, ensure_ascii=False)
+        return value
+    except Exception:
+        return str(value)
+
 def _emit_final(value, confidence=None):
+    safe_value = _json_safe(value)
     _sys.stdout.write(_FINAL + _json.dumps({
-        "value": str(value),
+        "value": safe_value,
         "confidence": confidence,
-    }) + "\n")
+    }, ensure_ascii=False) + "\n")
     _sys.stdout.flush()
 
 def FINAL(value):
@@ -796,7 +830,7 @@ def chunk_coverage(chunks):
 def finalize(value, confidence=None):
     """Signal the session's final answer and persist confidence metadata."""
     global final_answer, final_confidence, final_result
-    final_answer = str(value)
+    final_answer = _json_safe(value)
     final_confidence = confidence
     final_result = {
         "value": final_answer,
@@ -824,16 +858,17 @@ if _ctx_file:
             _context = f.read()
     except Exception as e:
         _sys.stderr.write(f"[bootstrap] failed to load context: {e}\n")
+content = _context
 
 _BOOTSTRAP_NAMES = {
     "_SID","_REQ","_RESP","_FINAL","_ERR","_RUN","_END","_DONE","_READY",
     "_rpc","_ctx_file","_context","_slice_chars","_slice_lines","_BOOTSTRAP_NAMES","_main_loop",
-    "_emit_final","_slice_text","_prompt_with_slice",
+    "_emit_final","_json_safe","_slice_text","_prompt_with_slice",
     "llm_query","llm_query_batched","rlm_query","rlm_query_batched",
     "sub_query","sub_query_batch","sub_query_map","sub_rlm",
     "FINAL","FINAL_VAR","SHOW_VARS","repl_get","repl_set",
     "context_meta","peek","search","chunk","chunk_context","chunk_coverage",
-    "finalize","evaluate_progress",
+    "finalize","evaluate_progress","content",
     "_json","_os","_re","_sys","_traceback",
 }
 
@@ -1001,16 +1036,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_aliases_are_not_bound() {
+    async fn context_aliases_keep_common_content_name_bounded() {
         let path = write_temp_context("aleph-style");
         let mut rt = PythonRuntime::spawn_with_context(&path)
             .await
             .expect("spawn");
         let round = rt
-            .execute("print('context' in globals(), 'ctx' in globals())")
+            .execute("print(content == _context, 'context' in globals(), 'ctx' in globals())")
             .await
             .expect("execute");
-        assert!(round.stdout.contains("False False"));
+        assert!(round.stdout.contains("True False False"));
         rt.shutdown().await;
     }
 
@@ -1087,8 +1122,52 @@ mod tests {
             .expect("execute");
         assert_eq!(round.final_value.as_deref(), Some("computed answer"));
         assert_eq!(
+            round.final_json.as_ref().and_then(Value::as_str),
+            Some("computed answer")
+        );
+        assert_eq!(
             round.final_confidence.as_ref().and_then(Value::as_str),
             Some("high")
+        );
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn finalize_preserves_json_values_for_handles() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let round = rt
+            .execute("finalize({'answer': 42, 'items': ['a', 'b']})")
+            .await
+            .expect("execute");
+
+        assert_eq!(
+            round.final_value.as_deref(),
+            Some(r#"{"answer":42,"items":["a","b"]}"#)
+        );
+        assert_eq!(
+            round.final_json,
+            Some(serde_json::json!({"answer": 42, "items": ["a", "b"]}))
+        );
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn sub_query_accepts_timeout_keyword_for_agent_guesses() {
+        let bridge = StubBridge::new();
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let round = rt
+            .run(
+                "answer = sub_query('summarize', timeout_secs=2)\nprint(answer)",
+                Some(&bridge),
+            )
+            .await
+            .expect("execute");
+
+        assert!(!round.has_error, "{}", round.stdout);
+        assert!(
+            round.stdout.contains("stub#0: summarize"),
+            "{}",
+            round.stdout
         );
         rt.shutdown().await;
     }

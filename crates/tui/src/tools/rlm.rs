@@ -222,12 +222,17 @@ impl ToolSpec for RlmEvalTool {
         session.total_duration += round.elapsed;
         session.last_used_at = Instant::now();
 
-        let final_handle = if let Some(value) = round.final_value.clone() {
+        let final_handle = if let Some(value_json) = round.final_json.clone() {
             session.final_count = session.final_count.saturating_add(1);
             let handle_name = format!("final_{}", session.final_count);
             let handle = {
                 let mut store = context.runtime.handle_store.lock().await;
-                store.insert_text(session.id.clone(), handle_name, value)
+                match value_json {
+                    Value::String(value) => {
+                        store.insert_text(session.id.clone(), handle_name, value)
+                    }
+                    other => store.insert_json(session.id.clone(), handle_name, other),
+                }
             };
             Some(handle)
         } else {
@@ -497,6 +502,7 @@ fn _assert_var_handle_shape(_: Option<VarHandle>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::handle::HandleReadTool;
     use crate::tools::spec::ToolContext;
 
     fn ctx() -> ToolContext {
@@ -558,6 +564,42 @@ mod tests {
 
         RlmCloseTool
             .execute(json!({"name": "finals"}), &ctx)
+            .await
+            .expect("close");
+    }
+
+    #[tokio::test]
+    async fn rlm_eval_final_preserves_json_handle() {
+        let ctx = ctx();
+        RlmOpenTool
+            .execute(json!({"name": "json-final", "content": "body"}), &ctx)
+            .await
+            .expect("open");
+
+        let eval = RlmEvalTool::new(None)
+            .execute(
+                json!({"name": "json-final", "code": "finalize({'answer': 42, 'items': ['a', 'b']})"}),
+                &ctx,
+            )
+            .await
+            .expect("eval");
+        let eval_json: Value = serde_json::from_str(&eval.content).expect("eval json");
+        assert_eq!(eval_json["final"]["kind"], "var_handle");
+        assert_eq!(eval_json["final"]["type"], "dict");
+        assert_eq!(eval_json["final"]["length"], 2);
+
+        let read = HandleReadTool
+            .execute(
+                json!({"handle": eval_json["final"].clone(), "jsonpath": "$.items[*]"}),
+                &ctx,
+            )
+            .await
+            .expect("read final handle");
+        let read_json: Value = serde_json::from_str(&read.content).expect("read json");
+        assert_eq!(read_json["matches"], json!(["a", "b"]));
+
+        RlmCloseTool
+            .execute(json!({"name": "json-final"}), &ctx)
             .await
             .expect("close");
     }

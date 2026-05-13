@@ -177,6 +177,21 @@ Large RLM outputs should come back as `var_handle`s. Use `handle_read` for
 bounded text slices, line ranges, counts, or JSONPath projections instead of
 replaying the full value into the parent transcript.
 
+Inside `rlm_eval`, the loaded source is available as `_context`; `content` is
+also bound as a convenience alias because agents naturally reach for it during
+Python analysis. The shorter `context` and `ctx` names are intentionally not
+bound so user variables can use them without colliding with the bootstrap.
+
+Child-call timeouts are session policy: use `rlm_configure` with
+`sub_query_timeout_secs` before running a large fan-out. The helpers
+`sub_query`, `sub_query_batch`, `sub_query_map`, and `sub_rlm` accept a
+`timeout_secs` keyword for compatibility with common agent guesses, but the
+effective timeout remains configured at the RLM session level.
+
+`finalize(value, confidence=...)` preserves JSON-serializable values. Strings
+become text handles; dicts, lists, numbers, booleans, and null become JSON
+handles that `handle_read` can project with JSONPath.
+
 ### Session relay
 
 `/relay [focus]` asks the current agent to write `.deepseek/handoff.md` as a

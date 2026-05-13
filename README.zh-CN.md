@@ -244,6 +244,11 @@ RLM 工作，`agent_open` / `agent_eval` / `agent_close` 用于命名子
 - **流式输出期间文本选择正常工作。** 加载状态的鼠标过滤器丢弃
   无关移动事件，但允许对话记录和滚动条拖动继续——
   v0.8.32 的已知问题已解决。
+- **灰度主题。** 使用 `/theme grayscale` 可切换到更克制的黑白
+  调色板；使用 `/set theme grayscale --save` 可保存为默认主题。
+- **会话历史选择器。** `/sessions` 和 `Ctrl+R` 现在左侧显示完整
+  会话历史，右侧显示会话列表；按 `1`-`9` 打开可见会话历史，
+  `PgUp` / `PgDn` 翻页查看历史。
 - **六个工具细节修复。** `file_search` 更安全的默认排除项；
   `grep_files` 返回干净的字符串；`fetch_url` JSON 字段投影和
   响应头；`edit_file` 缩进模糊匹配；`exec_shell` 合并
@@ -265,6 +270,8 @@ RLM 工作，`agent_open` / `agent_eval` / `agent_close` 用于命名子
 ```bash
 deepseek                                       # 交互式 TUI
 deepseek "explain this function"              # 一次性提示
+deepseek exec --auto --output-format stream-json "fix this bug" # 面向后端集成的 NDJSON 流
+deepseek exec --resume <SESSION_ID> "follow up" # 继续非交互会话
 deepseek --model deepseek-v4-flash "summarize" # 指定模型
 deepseek --yolo                                # 自动批准工具
 deepseek auth set --provider deepseek         # 保存 API key
@@ -458,6 +465,11 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 
 ## 致谢
 
+- **[DeepSeek](https://github.com/deepseek-ai)** — 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
+- **[DataWhale](https://github.com/datawhalechina)** — 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
+- **[OpenWarp](https://github.com/zerx-lab/warp)** — 感谢 OpenWarp 优先支持 DeepSeek TUI，并一起打磨更好的终端智能体体验。
+- **[Open Design](https://github.com/nexu-io/open-design)** — 感谢 Open Design 对面向设计的智能体工作流提供支持与协作。
+
 本项目由不断壮大的贡献者社区共同打造：
 
 - **[merchloubna70-dot](https://github.com/merchloubna70-dot)** — 28 个 PR，涵盖功能、修复和 VS Code 扩展基础架构 (#645–#681)
@@ -495,7 +507,7 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **Unic (YuniqueUnic)** — 基于 schema 的配置 UI（TUI + web）
 - **Jason** — SSRF 安全加固
 - **[axobase001](https://github.com/axobase001)** — 快照孤儿文件清理、npm 安装守卫、会话遥测修复、模型作用域缓存清理、符号链接技能支持，以及 npm 镜像逃生路径指引 (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
-- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` 深色/浅色主题切换命令和 SSE gzip/brotli 解压支持 (#1057, #1061)
+- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` 命令基础和 SSE gzip/brotli 解压支持 (#1057, #1061)
 - **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan 模式只读沙箱安全修复 (#1077)
 - **[bevis-wong](https://github.com/bevis-wong)** — 粘贴-回车自动提交问题的精确复现 (#1073)
 - **[Duducoco](https://github.com/Duducoco)** 和 **[AlphaGogoo](https://github.com/AlphaGogoo)** — 技能斜杠菜单和 `/skills` 覆盖范围修复 (#1068, #1083)

@@ -129,6 +129,7 @@ const SLASH_MENU_LIMIT: usize = 128;
 const MENTION_MENU_LIMIT: usize = 6;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
+const COMPOSER_ARROW_SCROLL_LINES: usize = 3;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
@@ -4136,7 +4137,7 @@ fn handle_composer_history_arrow(
     match key.code {
         KeyCode::Up => {
             if scroll_on_empty {
-                app.scroll_up(1);
+                app.scroll_up(COMPOSER_ARROW_SCROLL_LINES);
             } else {
                 app.history_up();
             }
@@ -4144,7 +4145,7 @@ fn handle_composer_history_arrow(
         }
         KeyCode::Down => {
             if scroll_on_empty {
-                app.scroll_down(1);
+                app.scroll_down(COMPOSER_ARROW_SCROLL_LINES);
             } else {
                 app.history_down();
             }
@@ -8412,7 +8413,10 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Up);
-            app.viewport.pending_scroll_delta += update.delta_lines;
+            app.viewport.pending_scroll_delta = app
+                .viewport
+                .pending_scroll_delta
+                .saturating_add(update.delta_lines);
             if update.delta_lines != 0 {
                 app.user_scrolled_during_stream = true;
                 app.needs_redraw = true;
@@ -8420,7 +8424,10 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
         }
         MouseEventKind::ScrollDown => {
             let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Down);
-            app.viewport.pending_scroll_delta += update.delta_lines;
+            app.viewport.pending_scroll_delta = app
+                .viewport
+                .pending_scroll_delta
+                .saturating_add(update.delta_lines);
             if update.delta_lines != 0 {
                 app.user_scrolled_during_stream = true;
                 app.needs_redraw = true;
@@ -9046,11 +9053,16 @@ fn open_activity_detail_pager(app: &mut App) -> bool {
         app.status_message = Some("No activity detail available".to_string());
         return true;
     };
-    app.view_stack.push(PagerView::from_text(
-        "Activity Detail",
-        &text,
-        width.saturating_sub(2),
-    ));
+    let title = if matches!(
+        app.cell_at_virtual_index(idx),
+        Some(HistoryCell::Thinking { .. })
+    ) {
+        "Reasoning Timeline"
+    } else {
+        "Activity Detail"
+    };
+    app.view_stack
+        .push(PagerView::from_text(title, &text, width.saturating_sub(2)));
     true
 }
 
@@ -9126,6 +9138,10 @@ fn activity_cell_rank(cell: &HistoryCell) -> Option<u8> {
 
 fn activity_detail_text(app: &App, cell_index: usize, width: u16) -> Option<String> {
     let cell = app.cell_at_virtual_index(cell_index)?;
+    if matches!(cell, HistoryCell::Thinking { .. }) {
+        return reasoning_timeline_text(app, cell_index);
+    }
+
     let mut sections = Vec::new();
 
     if let Some(turn_id) = app.runtime_turn_id.as_ref() {
@@ -9151,6 +9167,91 @@ fn activity_detail_text(app: &App, cell_index: usize, width: u16) -> Option<Stri
 
     sections.push(String::new());
     sections.push(activity_cell_to_text(cell, width));
+    Some(sections.join("\n"))
+}
+
+fn reasoning_timeline_text(app: &App, selected_cell_index: usize) -> Option<String> {
+    let thinking_indices: Vec<usize> = (0..app.virtual_cell_count())
+        .filter(|&idx| {
+            matches!(
+                app.cell_at_virtual_index(idx),
+                Some(HistoryCell::Thinking { .. })
+            )
+        })
+        .collect();
+    if thinking_indices.is_empty() {
+        return None;
+    }
+
+    let selected_position = thinking_indices
+        .iter()
+        .position(|&idx| idx == selected_cell_index)
+        .map(|idx| idx + 1);
+    let total = thinking_indices.len();
+    let running = thinking_indices.iter().any(|&idx| {
+        matches!(
+            app.cell_at_virtual_index(idx),
+            Some(HistoryCell::Thinking {
+                streaming: true,
+                ..
+            })
+        )
+    });
+
+    let mut sections = Vec::new();
+    if let Some(turn_id) = app.runtime_turn_id.as_ref() {
+        let status = app.runtime_turn_status.as_deref().unwrap_or("in progress");
+        sections.push(format!(
+            "Turn: {} ({status})",
+            truncate_line_to_width(turn_id, 24)
+        ));
+    }
+    sections.push("Activity: reasoning timeline".to_string());
+    sections.push(format!(
+        "Status: {} · {total} chunk{}",
+        if running { "running" } else { "done" },
+        if total == 1 { "" } else { "s" }
+    ));
+    if let Some(position) = selected_position {
+        sections.push(format!("Selected chunk: {position} of {total}"));
+    }
+    sections.push(String::new());
+
+    for (position, cell_index) in thinking_indices.iter().copied().enumerate() {
+        let Some(HistoryCell::Thinking {
+            content,
+            streaming,
+            duration_secs,
+        }) = app.cell_at_virtual_index(cell_index)
+        else {
+            continue;
+        };
+        let position = position + 1;
+        let marker = if Some(position) == selected_position {
+            " (selected)"
+        } else {
+            ""
+        };
+        let mut status = if *streaming {
+            "running".to_string()
+        } else {
+            "done".to_string()
+        };
+        if let Some(duration_secs) = duration_secs {
+            status.push_str(" · ");
+            status.push_str(&format!("{duration_secs:.1}s"));
+        }
+        sections.push(format!("Thinking chunk {position} of {total}{marker}"));
+        sections.push(format!("Status: {status}"));
+        let body = content.trim();
+        if body.is_empty() {
+            sections.push("(no reasoning text recorded)".to_string());
+        } else {
+            sections.push(body.to_string());
+        }
+        sections.push(String::new());
+    }
+
     Some(sections.join("\n"))
 }
 

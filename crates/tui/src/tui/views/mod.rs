@@ -611,6 +611,13 @@ impl ConfigView {
             },
             ConfigRow {
                 section: ConfigSection::Display,
+                key: "theme".to_string(),
+                value: settings.theme.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
                 key: "locale".to_string(),
                 value: settings.locale.clone(),
                 editable: true,
@@ -1040,6 +1047,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         | "composer_border"
         | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
+        "theme" => "system | dark | light | grayscale",
         "locale" => "auto | en | ja | zh-Hans | pt-BR",
         "background_color" => "#RRGGBB | default",
         "default_mode" => "agent | plan | yolo",
@@ -2067,6 +2075,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(keys.contains(&"model"));
         assert!(keys.contains(&"approval_mode"));
+        assert!(keys.contains(&"theme"));
         assert!(keys.contains(&"locale"));
         assert!(keys.contains(&"background_color"));
         assert!(keys.contains(&"auto_compact"));

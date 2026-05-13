@@ -922,7 +922,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdModelsDescription => "List available models from API",
         MessageId::CmdNetworkDescription => "Manage network allow and deny rules",
         MessageId::CmdNoteDescription => "Add, list, edit, or remove workspace notes",
-        MessageId::CmdThemeDescription => "Toggle between dark and light theme",
+        MessageId::CmdThemeDescription => "Switch theme: dark, light, grayscale, or system",
         MessageId::CmdProviderDescription => {
             "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
@@ -937,7 +937,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdReviewDescription => "Run a structured code review on a file, diff, or PR",
         MessageId::CmdRlmDescription => "Open a persistent RLM context: /rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "Save session to file",
-        MessageId::CmdSessionsDescription => "Open session picker",
+        MessageId::CmdSessionsDescription => "Open session history picker",
         MessageId::CmdSettingsDescription => "Show persistent settings",
         MessageId::CmdSkillDescription => {
             "Activate a skill, or install/update/uninstall/trust a community skill"
@@ -1295,7 +1295,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "API から利用可能なモデルを一覧表示",
         MessageId::CmdNetworkDescription => "ネットワーク許可・拒否ルールを管理",
         MessageId::CmdNoteDescription => "ワークスペースノートの追加、一覧、編集、削除",
-        MessageId::CmdThemeDescription => "テーマ（ダーク/ライト）を切り替え",
+        MessageId::CmdThemeDescription => {
+            "テーマを切り替え（ダーク/ライト/グレースケール/システム）"
+        }
         MessageId::CmdProviderDescription => {
             "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim | ollama）"
         }
@@ -1312,7 +1314,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdReviewDescription => "ファイル・diff・PR に対して構造化コードレビューを実行",
         MessageId::CmdRlmDescription => "永続 RLM コンテキストを開く: /rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "セッションをファイルに保存",
-        MessageId::CmdSessionsDescription => "セッションピッカーを開く",
+        MessageId::CmdSessionsDescription => "セッション履歴ピッカーを開く",
         MessageId::CmdSettingsDescription => "永続化された設定を表示",
         MessageId::CmdSkillDescription => {
             "スキルを有効化、またはコミュニティスキルをインストール／更新／アンインストール／信頼"
@@ -1632,7 +1634,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
         MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
         MessageId::CmdNoteDescription => "添加、列出、编辑或删除工作区笔记",
-        MessageId::CmdThemeDescription => "在浅色和深色主题之间切换",
+        MessageId::CmdThemeDescription => "切换主题：深色、浅色、灰度或系统",
         MessageId::CmdProviderDescription => {
             "切换或查看当前 LLM 后端（deepseek | nvidia-nim | ollama）"
         }
@@ -1647,7 +1649,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdReviewDescription => "对文件、diff 或 PR 进行结构化代码审查",
         MessageId::CmdRlmDescription => "打开持久 RLM 上下文：/rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "将会话保存到文件",
-        MessageId::CmdSessionsDescription => "打开会话选择器",
+        MessageId::CmdSessionsDescription => "打开会话历史选择器",
         MessageId::CmdSettingsDescription => "显示持久化设置",
         MessageId::CmdSkillDescription => "激活技能，或安装/更新/卸载/信任社区技能",
         MessageId::CmdSkillsDescription => {
@@ -1953,7 +1955,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "Listar os modelos disponíveis pela API",
         MessageId::CmdNetworkDescription => "Gerenciar regras de rede permitidas e bloqueadas",
         MessageId::CmdNoteDescription => "Adicionar, listar, editar ou remover notas do workspace",
-        MessageId::CmdThemeDescription => "Alternar entre o tema claro e escuro",
+        MessageId::CmdThemeDescription => "Alternar tema: escuro, claro, tons de cinza ou sistema",
         MessageId::CmdProviderDescription => {
             "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim | ollama)"
         }
@@ -1974,7 +1976,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Abrir um contexto RLM persistente: /rlm [0-3] <file_or_text>"
         }
         MessageId::CmdSaveDescription => "Salvar a sessão em arquivo",
-        MessageId::CmdSessionsDescription => "Abrir o seletor de sessões",
+        MessageId::CmdSessionsDescription => "Abrir seletor de histórico de sessões",
         MessageId::CmdSettingsDescription => "Exibir as configurações persistidas",
         MessageId::CmdSkillDescription => {
             "Ativar uma skill, ou instalar/atualizar/desinstalar/confiar em uma skill da comunidade"

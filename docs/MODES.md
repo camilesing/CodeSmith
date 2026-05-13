@@ -78,6 +78,9 @@ See `MCP.md`.
 Run `deepseek --help` for the canonical list. Common flags:
 
 - `-p, --prompt <TEXT>`: one-shot prompt mode (prints and exits)
+- `deepseek exec --output-format stream-json <PROMPT>`: emit one JSON object per line for harnesses and backend wrappers
+- `deepseek exec --resume <ID|PREFIX> <PROMPT>` / `--session-id <ID|PREFIX>`: continue a saved session non-interactively
+- `deepseek exec --continue <PROMPT>`: continue the most recent saved session for this workspace non-interactively
 - `--model <MODEL>`: when using the `deepseek` facade, forward a DeepSeek model override to the TUI
 - `--workspace <DIR>`: workspace root for file tools
 - `--yolo`: start in YOLO mode

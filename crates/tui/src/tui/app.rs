@@ -1259,14 +1259,8 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
-        let mut ui_theme = palette::UiTheme::detect();
-        if let Some(background) = settings
-            .background_color
-            .as_deref()
-            .and_then(palette::parse_hex_rgb_color)
-        {
-            ui_theme = ui_theme.with_background_color(background);
-        }
+        let ui_theme =
+            palette::ui_theme_from_settings(&settings.theme, settings.background_color.as_deref());
         let model = settings
             .provider_models
             .as_ref()
@@ -2587,10 +2581,12 @@ impl App {
 
     /// Handle terminal resize event.
     pub fn handle_resize(&mut self, _width: u16, _height: u16) {
+        let preserved_scroll = (!self.viewport.transcript_scroll.is_at_tail())
+            .then_some(self.viewport.last_transcript_top);
         self.viewport.transcript_cache = TranscriptViewCache::new();
 
-        if !self.viewport.transcript_scroll.is_at_tail() {
-            self.viewport.transcript_scroll = TranscriptScroll::to_bottom();
+        if let Some(top) = preserved_scroll {
+            self.viewport.transcript_scroll = TranscriptScroll::at_line(top);
         }
 
         self.viewport.pending_scroll_delta = 0;
@@ -4110,7 +4106,9 @@ mod tests {
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
-            start_in_agent_mode: yolo,
+            // Keep unit tests independent from the developer's saved
+            // `default_mode` setting.
+            start_in_agent_mode: true,
             skip_onboarding: false,
             yolo,
             resume_session_id: None,
@@ -4416,7 +4414,6 @@ mod tests {
     #[test]
     fn test_cycle_mode_transitions() {
         let mut app = App::new(test_options(false), &Config::default());
-        // Default mode should be Agent based on settings
         let initial_mode = app.mode;
         app.cycle_mode();
         // Mode should have changed
@@ -4571,6 +4568,32 @@ mod tests {
         // Just verify scroll methods can be called without panic
         app.scroll_up(5);
         app.scroll_down(3);
+    }
+
+    #[test]
+    fn resize_preserves_scrolled_transcript_position() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.viewport.transcript_scroll = TranscriptScroll::at_line(42);
+        app.viewport.last_transcript_top = 42;
+        app.viewport.pending_scroll_delta = 5;
+
+        app.handle_resize(120, 40);
+
+        let meta = vec![TranscriptLineMeta::Spacer; 240];
+        let (_, top) = app.viewport.transcript_scroll.resolve_top(&meta, 200);
+        assert_eq!(top, 42);
+        assert_eq!(app.viewport.pending_scroll_delta, 0);
+    }
+
+    #[test]
+    fn resize_keeps_tail_state_when_user_was_at_tail() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
+        app.viewport.last_transcript_top = 42;
+
+        app.handle_resize(120, 40);
+
+        assert!(app.viewport.transcript_scroll.is_at_tail());
     }
 
     #[test]

@@ -263,6 +263,11 @@ cleaner "Work" tab. [Full changelog](CHANGELOG.md).
   mouse filter drops inert move events but allows transcript and
   scrollbar drags to continue — the known issue from v0.8.32 is
   resolved.
+- **Grayscale theme.** Use `/theme grayscale` for a quiet black/white
+  palette, or `/set theme grayscale --save` to make it the saved default.
+- **Session history picker.** `/sessions` and `Ctrl+R` now put full
+  session history on the left, the session list on the right, number keys
+  `1`-`9` open visible histories, and `PgUp` / `PgDn` scroll history.
 - **Six tool papercuts fixed.** `file_search` safer excludes;
   `grep_files` returns clean strings; `fetch_url` JSON field
   projection and headers; `edit_file` indentation fuzz;
@@ -285,6 +290,8 @@ contributions in this release.
 ```bash
 deepseek                                         # interactive TUI
 deepseek "explain this function"                 # one-shot prompt
+deepseek exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
+deepseek exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
 deepseek --model deepseek-v4-flash "summarize"   # model override
 deepseek --model auto "fix this bug"             # auto-select model + thinking
 deepseek --yolo                                  # auto-approve tools
@@ -466,6 +473,8 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
 - **[DataWhale](https://github.com/datawhalechina)** 🐋 — thank you for your support and for welcoming us into the Whale Brother family. 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
+- **[OpenWarp](https://github.com/zerx-lab/warp)** — thank you for prioritizing DeepSeek TUI support and for collaborating on a better terminal-agent experience.
+- **[Open Design](https://github.com/nexu-io/open-design)** — thank you for support and collaboration around design-forward agent workflows.
 
 This project ships with help from a growing community of contributors:
 
@@ -504,7 +513,7 @@ This project ships with help from a growing community of contributors:
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
 - **[axobase001](https://github.com/axobase001)** — snapshot orphan cleanup, npm install guards, session telemetry fixes, model-scope cache clear, symlinked skill support, and npm mirror-escape-hatch guidance (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
-- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command for dark/light toggle and SSE gzip/brotli decompression (#1057, #1061)
+- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command foundation and SSE gzip/brotli decompression (#1057, #1061)
 - **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan-mode read-only sandbox safety fix (#1077)
 - **[bevis-wong](https://github.com/bevis-wong)** — precise paste-Enter auto-submit reproducer (#1073)
 - **[Duducoco](https://github.com/Duducoco)** and **[AlphaGogoo](https://github.com/AlphaGogoo)** — skills slash-menu and `/skills` coverage fix (#1068, #1083)

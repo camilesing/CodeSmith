@@ -16,7 +16,7 @@ Bindings are not (yet) user-configurable — tracked for a future release (#436,
 | `Shift-Tab`          | Cycle reasoning effort: off → high → max → off                 |
 | `Ctrl-R`             | Open the resume-session picker                                 |
 | `Ctrl-L`             | Refresh / clear the screen                                     |
-| `Ctrl-O`             | Open Activity Detail for the selected, live, or most recent activity when the composer is empty |
+| `Ctrl-O`             | Open Activity Detail for selected/live/recent tool work, or the full reasoning timeline for thinking blocks when the composer is empty |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |
 | `Esc`                | Close topmost modal · cancel slash menu · dismiss toast        |
 
@@ -80,6 +80,20 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 | `↑` / `↓`            | Move selection                                     |
 | `Enter` / `Tab`      | Run / complete the highlighted command             |
 | `Esc`                | Dismiss palette                                     |
+
+## Session Picker (`Ctrl-R` or `/sessions`)
+
+| Chord                | Action                                              |
+|----------------------|-----------------------------------------------------|
+| `↑` / `↓` / `j` / `k`| Move selection in the session list                 |
+| `1`-`9`              | Open the visible session history at that list slot |
+| `PgUp` / `PgDn`      | Page the history pane                              |
+| `Enter`              | Resume the selected session                        |
+| `/`                  | Search sessions                                    |
+| `s`                  | Cycle sort order                                   |
+| `a`                  | Toggle current-workspace scope vs all workspaces   |
+| `d`                  | Delete selected session after confirmation         |
+| `Esc` / `q`          | Close the picker                                   |
 
 ## Approval modal (when a tool requests approval)
 
