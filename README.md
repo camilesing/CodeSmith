@@ -40,6 +40,11 @@ docker run --rm -it \
 > In mainland China, speed up the npm path with
 > `--registry=https://registry.npmmirror.com`, or use the
 > [Cargo mirror](#china--mirror-friendly-installation) below.
+>
+> Download safety: official release binaries live under
+> `https://github.com/Hmbown/DeepSeek-TUI/releases`. For manual downloads,
+> verify the SHA-256 manifest and avoid look-alike repositories or search-result
+> mirrors. See [download safety and checksums](docs/INSTALL.md#2-download-safety-and-checksums).
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
