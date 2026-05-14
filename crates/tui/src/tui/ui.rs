@@ -2,6 +2,7 @@
 
 use std::io::{self, Stdout, Write};
 use std::path::PathBuf;
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -4665,29 +4666,9 @@ async fn apply_command_result(
     Ok(false)
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn open_external_url(url: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("open");
-        command.arg(url);
-        command
-    };
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let mut command = Command::new("xdg-open");
-        command.arg(url);
-        command
-    };
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", url]);
-        command
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    return Err(anyhow::anyhow!(
-        "browser opening is unsupported on this platform"
-    ));
+    let mut command = external_url_command(url);
 
     let status = command
         .stdout(Stdio::null())
@@ -4700,6 +4681,34 @@ fn open_external_url(url: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn open_external_url(_url: &str) -> Result<()> {
+    Err(anyhow::anyhow!(
+        "browser opening is unsupported on this platform"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn external_url_command(url: &str) -> Command {
+    let mut command = Command::new("open");
+    command.arg(url);
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn external_url_command(url: &str) -> Command {
+    let mut command = Command::new("xdg-open");
+    command.arg(url);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn external_url_command(url: &str) -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "start", "", url]);
+    command
 }
 
 fn apply_workspace_runtime_state(app: &mut App, config: &Config, workspace: PathBuf) {
