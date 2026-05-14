@@ -176,6 +176,19 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 `rsproxy`, Tencent COS, and Aliyun OSS mirrors work the same way; pick whichever
 is fastest from your network.
 
+### Tencent Cloud remote-first setup
+
+For an always-on workspace that can be controlled from a phone, use the
+Tencent-native path instead of treating install as a single laptop step:
+
+- CNB mirror/source: `https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git`
+- Tencent Lighthouse HK: `/opt/whalebro` remote workspace
+- Feishu/Lark: long-connection phone bridge
+- EdgeOne: optional public HTTPS edge for docs/status/webhook surfaces
+
+Start with [Tencent Cloud Remote-First Quickstart](TENCENT_CLOUD_REMOTE_FIRST.md),
+then follow [Tencent Lighthouse Hong Kong Phone Setup](TENCENT_LIGHTHOUSE_HK.md).
+
 ---
 
 ## 5. Install via Nix
@@ -452,6 +465,28 @@ cargo install deepseek-tui-cli --locked
 Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to a mirrored release-asset directory
 (rsproxy, TUNA, Tencent COS, Aliyun OSS), or skip npm entirely and use the
 Cargo mirror setup in [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
+
+### `deepseek update` is blocked by GitHub from mainland China
+
+`deepseek update` normally contacts GitHub Releases for metadata and binary
+assets. On networks where GitHub is blocked or unreliable, use the CNB source
+mirror instead and install both binaries from the release tag:
+
+```bash
+cargo install --git https://cnb.cool/deepseek-tui.com/DeepSeek-TUI --tag vX.Y.Z deepseek-tui-cli --locked --force
+cargo install --git https://cnb.cool/deepseek-tui.com/DeepSeek-TUI --tag vX.Y.Z deepseek-tui     --locked --force
+```
+
+If you operate a binary asset mirror, `deepseek update` can use it directly:
+
+```bash
+DEEPSEEK_TUI_VERSION=X.Y.Z \
+DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/vX.Y.Z/ \
+deepseek update
+```
+
+The mirror directory must contain `deepseek-artifacts-sha256.txt` and the
+platform binaries from the GitHub release.
 
 ### Debian/Ubuntu: `feature edition2024 is required` from `cargo install`
 
