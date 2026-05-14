@@ -1908,6 +1908,17 @@ fn ctrl_alt_0_hides_sidebar() {
 }
 
 #[test]
+fn ctrl_alt_0_restores_auto_sidebar_when_already_hidden() {
+    let mut app = create_test_app();
+    app.sidebar_focus = SidebarFocus::Hidden;
+
+    apply_alt_0_shortcut(&mut app, KeyModifiers::ALT | KeyModifiers::CONTROL);
+
+    assert_eq!(app.sidebar_focus, SidebarFocus::Auto);
+    assert_eq!(app.status_message.as_deref(), Some("Sidebar focus: auto"));
+}
+
+#[test]
 fn hidden_sidebar_focus_suppresses_sidebar_split_even_when_wide() {
     let mut app = create_test_app();
     app.sidebar_width_percent = 28;
