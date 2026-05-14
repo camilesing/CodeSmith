@@ -459,7 +459,19 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 
     // Spawn the Engine - it will handle all API communication
     let engine_handle = spawn_engine(engine_config, config);
-    let translation_client = Arc::new(DeepSeekClient::new(config)?);
+    // The translation client is optional: it never crashes the TUI on
+    // startup, even when the API key is missing, the base URL is malformed,
+    // or the network is unavailable.
+    // Translations are skipped with a logged warning until a key is saved.
+    let translation_client = match DeepSeekClient::new(config) {
+        Ok(client) => Some(Arc::new(client)),
+        Err(err) => {
+            if app.onboarding == OnboardingState::None {
+                tracing::warn!("Translation client initialization failed: {err}");
+            }
+            None
+        }
+    };
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -736,7 +748,7 @@ async fn run_event_loop(
     mut engine_handle: EngineHandle,
     task_manager: SharedTaskManager,
     event_broker: &EventBroker,
-    translation_client: Arc<DeepSeekClient>,
+    translation_client: Option<Arc<DeepSeekClient>>,
 ) -> Result<()> {
     // Track streaming state
     let mut current_streaming_text = String::new();
@@ -954,6 +966,7 @@ async fn run_event_loop(
                         if app.translation_enabled
                             && !current_streaming_text.is_empty()
                             && crate::tui::translation::needs_translation(&current_streaming_text)
+                            && let Some(translation_client) = translation_client.as_ref()
                         {
                             app.status_message = Some(
                                 crate::localization::tr(
@@ -1046,6 +1059,7 @@ async fn run_event_loop(
                             }
                             if !original_thinking.is_empty()
                                 && crate::tui::translation::needs_translation(&original_thinking)
+                                && let Some(translation_client) = translation_client.as_ref()
                             {
                                 app.status_message = Some(
                                     crate::localization::thinking_translation_in_progress(
