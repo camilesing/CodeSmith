@@ -87,6 +87,18 @@ fn resume_hint_omits_missing_session_id() {
 }
 
 #[test]
+fn plain_mcp_show_refreshes_discovery_counts() {
+    use crate::tui::app::McpUiAction;
+
+    assert!(mcp_ui_action_refreshes_discovery(&McpUiAction::Show));
+    assert!(mcp_ui_action_refreshes_discovery(&McpUiAction::Validate));
+    assert!(mcp_ui_action_refreshes_discovery(&McpUiAction::Reload));
+    assert!(!mcp_ui_action_refreshes_discovery(&McpUiAction::Init {
+        force: false,
+    }));
+}
+
+#[test]
 fn focus_gained_forces_terminal_viewport_recapture() {
     assert!(terminal_event_needs_viewport_recapture(&Event::FocusGained));
     assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));

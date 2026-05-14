@@ -4762,10 +4762,7 @@ async fn handle_mcp_ui_action(
     let path = app.mcp_config_path.clone();
     let mut changed = false;
     let mut message = None;
-    let discover = matches!(
-        action,
-        crate::tui::app::McpUiAction::Validate | crate::tui::app::McpUiAction::Reload
-    );
+    let discover = mcp_ui_action_refreshes_discovery(&action);
 
     let action_result = match action {
         crate::tui::app::McpUiAction::Show => Ok(()),
@@ -4861,6 +4858,15 @@ async fn handle_mcp_ui_action(
         }
         Err(err) => add_mcp_message(app, format!("MCP snapshot failed: {err}")),
     }
+}
+
+fn mcp_ui_action_refreshes_discovery(action: &crate::tui::app::McpUiAction) -> bool {
+    matches!(
+        action,
+        crate::tui::app::McpUiAction::Show
+            | crate::tui::app::McpUiAction::Validate
+            | crate::tui::app::McpUiAction::Reload
+    )
 }
 
 fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobAction) {
