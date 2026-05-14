@@ -19,6 +19,8 @@ const FIRST_RUN = `deepseek`;
 const VERIFY = `deepseek --version
 deepseek doctor`;
 
+const UPDATE = `deepseek update`;
+
 const SET_KEY_BASH = `export DEEPSEEK_API_KEY=sk-...`;
 const SET_KEY_AUTH = `deepseek auth set --provider deepseek --api-key sk-...`;
 
@@ -149,11 +151,42 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         </p>
       </section>
 
-      {/* ③ FIRST RUN */}
+      {/* ③ UPDATE */}
+      <section className="mx-auto max-w-[1100px] px-6 py-10 hairline-t">
+        <div className="flex items-baseline gap-4 mb-5">
+          <Seal char="新" />
+          <div className="eyebrow">{isZh ? "03 · 更新" : "03 · Update"}</div>
+        </div>
+
+        <InstallCodeBlock cmd={UPDATE} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+
+        <p className="mt-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
+          {isZh ? (
+            <>
+              检查 GitHub Releases 是否有新版本并就地替换二进制。
+              通过 Homebrew 或 npm 安装的话，使用包管理器升级更稳：
+              <code className="inline">brew upgrade deepseek-tui</code> 或{" "}
+              <code className="inline">npm update -g deepseek-tui</code>。
+              Cargo 安装的可以重跑{" "}
+              <code className="inline">cargo install deepseek-tui-cli --locked --force</code>。
+            </>
+          ) : (
+            <>
+              Checks GitHub Releases for a newer version and replaces the binary in place. If you
+              installed via Homebrew or npm, prefer the package manager instead:{" "}
+              <code className="inline">brew upgrade deepseek-tui</code> or{" "}
+              <code className="inline">npm update -g deepseek-tui</code>. Cargo users can re-run{" "}
+              <code className="inline">cargo install deepseek-tui-cli --locked --force</code>.
+            </>
+          )}
+        </p>
+      </section>
+
+      {/* ④ FIRST RUN */}
       <section className="mx-auto max-w-[1100px] px-6 py-10 hairline-t">
         <div className="flex items-baseline gap-4 mb-5">
           <Seal char="始" />
-          <div className="eyebrow">{isZh ? "03 · 首次运行" : "03 · First run"}</div>
+          <div className="eyebrow">{isZh ? "04 · 首次运行" : "04 · First run"}</div>
         </div>
 
         <ol className="space-y-6 max-w-2xl">
@@ -220,12 +253,12 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         </ol>
       </section>
 
-      {/* ④ OTHER WAYS TO INSTALL */}
+      {/* ⑤ OTHER WAYS TO INSTALL */}
       <section id="other-ways" className="bg-paper-deep hairline-t hairline-b">
         <div className="mx-auto max-w-[1100px] px-6 py-12">
           <div className="flex items-baseline gap-4 mb-5">
             <Seal char="备" />
-            <div className="eyebrow">{isZh ? "04 · 其他安装方式" : "04 · Other ways to install"}</div>
+            <div className="eyebrow">{isZh ? "05 · 其他安装方式" : "05 · Other ways to install"}</div>
           </div>
           <h2 className="font-display text-3xl mb-2">
             {isZh ? "其他安装方式" : "Other ways to install"}
@@ -360,12 +393,12 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         </div>
       </section>
 
-      {/* ⑤ WHERE CONFIG LIVES */}
+      {/* ⑥ WHERE CONFIG LIVES */}
       <section className="mx-auto max-w-[1100px] px-6 py-12">
         <div className="flex items-baseline gap-4 mb-5">
           <Seal char="件" />
           <div className="eyebrow">
-            {isZh ? "05 · 配置文件位置" : "05 · Where config lives"}
+            {isZh ? "06 · 配置文件位置" : "06 · Where config lives"}
           </div>
         </div>
         <h2 className="font-display text-3xl mb-6">
