@@ -6375,6 +6375,23 @@ pub(crate) fn pop_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
     let _ = execute!(writer, PopKeyboardEnhancementFlags);
 }
 
+/// Best-effort terminal restoration for emergency exit paths
+/// (panic hook, signal handlers). Mirrors the normal teardown in
+/// `run_event_loop` but tolerates any subset of modes not actually being
+/// active — every step is discarded on failure so a half-initialized TUI
+/// (e.g. SIGINT during startup before `EnterAlternateScreen`) still gets
+/// raw mode + kitty keyboard flags cleared, which is what causes the
+/// `^[[>5u` shell pollution reported in #1583.
+pub fn emergency_restore_terminal() {
+    let mut stdout = std::io::stdout();
+    pop_keyboard_enhancement_flags(&mut stdout);
+    let _ = execute!(stdout, DisableFocusChange);
+    let _ = execute!(stdout, DisableBracketedPaste);
+    let _ = execute!(stdout, DisableMouseCapture);
+    let _ = disable_raw_mode();
+    let _ = execute!(stdout, LeaveAlternateScreen);
+}
+
 /// Re-establish terminal mode flags. Idempotent and best-effort: each
 /// underlying flag is silently discarded by terminals that don't support
 /// it, and a single flag's failure doesn't prevent later flags from being
