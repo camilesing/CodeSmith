@@ -1456,10 +1456,38 @@ fn active_tool_status_label_summarizes_live_tool_group() {
 
     let label = active_tool_status_label(&app).expect("status label");
 
-    assert!(label.contains("run cargo test"));
+    assert!(label.contains("cargo test"));
     assert!(label.contains("1 active"));
     assert!(label.contains("1 done"));
     assert!(label.contains(crate::tui::key_shortcuts::tool_details_shortcut_label()));
+}
+
+#[test]
+fn active_tool_status_label_strips_shell_wrappers_from_ci_polling() {
+    let mut app = create_test_app();
+    app.turn_started_at = Some(Instant::now() - Duration::from_secs(5));
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "exec-1",
+        HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "cd /tmp/repo && sleep 15 && gh pr checks 1611 --repo Hmbown/DeepSeek-TUI"
+                .to_string(),
+            status: ToolStatus::Running,
+            output: None,
+            started_at: app.turn_started_at,
+            duration_ms: None,
+            source: ExecSource::Assistant,
+            interaction: None,
+            output_summary: None,
+        })),
+    );
+    app.active_cell = Some(active);
+
+    let label = active_tool_status_label(&app).expect("status label");
+
+    assert!(label.contains("gh pr checks 1611"), "label: {label}");
+    assert!(!label.contains("cd /tmp"), "label: {label}");
+    assert!(!label.contains("sleep 15"), "label: {label}");
 }
 
 #[test]
