@@ -103,6 +103,7 @@ use crate::tui::workspace_context;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
     StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions,
+    looks_like_slash_command_input,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -2961,7 +2962,7 @@ async fn run_event_loop(
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
                     if let Some(input) = app.submit_input() {
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
@@ -3010,7 +3011,7 @@ async fn run_event_loop(
                 // #382: Ctrl+Enter forces a steer into the current turn.
                 KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(input) = app.submit_input() {
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
@@ -3061,7 +3062,7 @@ async fn run_event_loop(
                     // to the legacy submit path.
                     if slash_menu_open
                         && !slash_menu_entries.is_empty()
-                        && app.input.starts_with('/')
+                        && looks_like_slash_command_input(&app.input)
                         && apply_slash_menu_selection(app, &slash_menu_entries, false)
                     {
                         app.close_slash_menu();
@@ -3081,7 +3082,7 @@ async fn run_event_loop(
                             handle_memory_quick_add(app, &input, config);
                             continue;
                         }
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
