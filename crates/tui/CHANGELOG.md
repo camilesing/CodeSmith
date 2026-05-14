@@ -30,11 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Wrapped OSC 8 links keep their full target.** Long clickable URLs now
   reopen the original full link target on each wrapped visual chunk instead of
   exposing truncated hyperlink targets (#1577).
+- **Provider-selected models survive startup and picker reselects.** The
+  `/model` picker now uses live provider model catalogs when available, saved
+  default providers sync into the runtime config before the first request, and
+  reselecting the active provider from the picker keeps the current model
+  instead of falling back to the provider default (#1632).
 
 ### Thanks
 
 Thanks to **DC ([@duanchao-lab](https://github.com/duanchao-lab))** for the
-terminal cleanup-guard idea harvested from #1630.
+terminal cleanup-guard idea harvested from #1630, and **imkingjh999
+([@imkingjh999](https://github.com/imkingjh999))** for the provider/model
+switching fixes harvested from #1642. Thanks to **Photo
+([@eng2007](https://github.com/eng2007))** for the provider-aware `/model`
+picker catalog work harvested from #1201.
 
 ## [0.8.37] - 2026-05-14
 

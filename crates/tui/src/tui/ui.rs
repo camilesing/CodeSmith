@@ -345,6 +345,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let mut config = config.clone();
     let config = &mut config;
     let mut app = App::new(options.clone(), config);
+    sync_config_provider_from_app(config, &app);
 
     // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
@@ -4264,6 +4265,14 @@ async fn switch_provider(
     }
 }
 
+fn sync_config_provider_from_app(config: &mut Config, app: &App) {
+    config.provider = Some(app.api_provider.as_str().to_string());
+}
+
+fn provider_picker_model_override(app: &App, provider: ApiProvider) -> Option<String> {
+    (app.api_provider == provider).then(|| app.model.clone())
+}
+
 fn open_text_pager(app: &mut App, title: String, content: String) {
     let width = app
         .viewport
@@ -4502,8 +4511,33 @@ async fn apply_command_result(
             }
             AppAction::OpenModelPicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModelPicker) {
-                    app.view_stack
-                        .push(crate::tui::model_picker::ModelPickerView::new(app));
+                    app.status_message =
+                        Some(format!("Fetching {} models...", app.api_provider.as_str()));
+                    let picker = match fetch_available_models(config).await {
+                        Ok(models) if !models.is_empty() => {
+                            app.status_message = Some(format!("Found {} model(s)", models.len()));
+                            crate::tui::model_picker::ModelPickerView::new_with_models(app, models)
+                        }
+                        Ok(_) => {
+                            app.status_message = Some(format!(
+                                "{} returned no models; showing defaults",
+                                app.api_provider.as_str()
+                            ));
+                            crate::tui::model_picker::ModelPickerView::new(app)
+                        }
+                        Err(error) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!(
+                                    "Failed to fetch {} models: {error}. Showing built-in defaults.",
+                                    app.api_provider.as_str()
+                                ),
+                            });
+                            app.status_message =
+                                Some("Model fetch failed; showing defaults".to_string());
+                            crate::tui::model_picker::ModelPickerView::new(app)
+                        }
+                    };
+                    app.view_stack.push(picker);
                 }
             }
             AppAction::OpenProviderPicker => {
@@ -5907,7 +5941,8 @@ async fn handle_view_events(
                 .await;
             }
             ViewEvent::ProviderPickerApplied { provider } => {
-                switch_provider(app, engine_handle, config, provider, None).await;
+                let model_override = provider_picker_model_override(app, provider);
+                switch_provider(app, engine_handle, config, provider, model_override).await;
             }
             ViewEvent::ProviderPickerApiKeySubmitted { provider, api_key } => {
                 apply_provider_picker_api_key(app, engine_handle, config, provider, api_key).await;

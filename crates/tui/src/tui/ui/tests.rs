@@ -69,6 +69,49 @@ impl Drop for ConfigPathEnvGuard {
     }
 }
 
+struct SettingsHomeGuard {
+    _tmp: TempDir,
+    previous_home: Option<OsString>,
+    previous_userprofile: Option<OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl SettingsHomeGuard {
+    fn new() -> Self {
+        let lock = crate::test_support::lock_test_env();
+        let tmp = TempDir::new().expect("settings tempdir");
+        let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("USERPROFILE", tmp.path());
+        }
+        Self {
+            _tmp: tmp,
+            previous_home,
+            previous_userprofile,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for SettingsHomeGuard {
+    fn drop(&mut self) {
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            match self.previous_home.take() {
+                Some(previous) => std::env::set_var("HOME", previous),
+                None => std::env::remove_var("HOME"),
+            }
+            match self.previous_userprofile.take() {
+                Some(previous) => std::env::set_var("USERPROFILE", previous),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+}
+
 #[test]
 fn resume_hint_uses_canonical_resume_command() {
     assert_eq!(
@@ -1642,6 +1685,42 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
         }
         other => panic!("expected SetCompaction, got {other:?}"),
     }
+}
+
+#[test]
+fn saved_default_provider_syncs_back_to_runtime_config() {
+    let _home = SettingsHomeGuard::new();
+    let settings = crate::settings::Settings {
+        default_provider: Some("ollama".to_string()),
+        ..Default::default()
+    };
+    settings.save().expect("save settings");
+
+    let mut config = Config::default();
+    assert_eq!(config.api_provider(), ApiProvider::Deepseek);
+
+    let app = App::new(create_test_options(), &config);
+    assert_eq!(app.api_provider, ApiProvider::Ollama);
+
+    sync_config_provider_from_app(&mut config, &app);
+
+    assert_eq!(config.api_provider(), ApiProvider::Ollama);
+}
+
+#[test]
+fn provider_picker_reselecting_active_provider_preserves_current_model() {
+    let mut app = create_test_app();
+    app.api_provider = ApiProvider::Ollama;
+    app.model = "deepseek-coder-v2:16b".to_string();
+
+    assert_eq!(
+        provider_picker_model_override(&app, ApiProvider::Ollama).as_deref(),
+        Some("deepseek-coder-v2:16b")
+    );
+    assert_eq!(
+        provider_picker_model_override(&app, ApiProvider::Deepseek),
+        None
+    );
 }
 
 #[tokio::test]
