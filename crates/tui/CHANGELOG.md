@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Update guidance is clearer on the website.** The homepage and install page
+  now surface `deepseek update` while keeping package-manager update paths
+  visible for Homebrew, npm, and Cargo installs.
+
+### Fixed
+
+- **OpenAI-compatible providers receive stricter request bodies.** Fireworks
+  requests now use `reasoning_effort` without the DeepSeek/Anthropic-style
+  top-level `thinking` field, and chat tool schemas no longer include
+  Anthropic-only metadata such as `allowed_callers`, `defer_loading`, or
+  `input_examples` (#1592).
+- **pnpm global installs no longer hang in optional postinstall.** pnpm
+  postinstall now skips install-time binary downloads and leaves the existing
+  runtime downloader to verify or fetch binaries on first run (#1637).
+- **Terminal modes are restored on early TUI exits.** A cleanup guard now
+  restores raw mode, alternate screen, focus events, mouse capture, bracketed
+  paste, keyboard flags, and cursor visibility if startup returns early after
+  terminal initialization (#1593, #1582).
+- **Wrapped OSC 8 links keep their full target.** Long clickable URLs now
+  reopen the original full link target on each wrapped visual chunk instead of
+  exposing truncated hyperlink targets (#1577).
+
+### Thanks
+
+Thanks to **DC ([@duanchao-lab](https://github.com/duanchao-lab))** for the
+terminal cleanup-guard idea harvested from #1630.
+
 ## [0.8.37] - 2026-05-14
 
 ### Added
