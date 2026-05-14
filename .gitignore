@@ -93,6 +93,13 @@ apps/
 # Maintainer-internal design notes (trade-secret material, never published)
 .private/
 
+# Agent handoffs and version-specific setup plans are working-state notes, not
+# public docs. Keep durable setup guidance in docs/runbooks instead.
+docs/*HANDOFF*.md
+docs/*handoff*.md
+docs/*_PLAN.md
+!docs/archive/**
+
 # direnv
 .envrc
 .direnv
