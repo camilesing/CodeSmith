@@ -4980,18 +4980,17 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
 }
 
 #[test]
-fn default_footer_includes_prefix_stability_before_cache() {
+fn default_footer_keeps_prefix_stability_opt_in() {
     let items = crate::config::StatusItem::default_footer();
-    let prefix = items
-        .iter()
-        .position(|item| *item == crate::config::StatusItem::PrefixStability)
-        .expect("default footer includes prefix stability");
-    let cache = items
-        .iter()
-        .position(|item| *item == crate::config::StatusItem::Cache)
-        .expect("default footer includes cache");
 
-    assert!(prefix < cache);
+    assert!(
+        !items.contains(&crate::config::StatusItem::PrefixStability),
+        "prefix stability is a diagnostic chip and should not crowd the default footer"
+    );
+    assert!(
+        items.contains(&crate::config::StatusItem::Cache),
+        "default footer should still include provider-reported cache hit rate"
+    );
 }
 
 #[test]
@@ -5002,7 +5001,7 @@ fn render_footer_from_prefix_stability_item_renders_cache_slot_chip() {
 
     let props = render_footer_from(&app, &[crate::config::StatusItem::PrefixStability], None);
 
-    assert_eq!(spans_text(&props.cache), "P 100%");
+    assert_eq!(spans_text(&props.cache), "cache prefix 100%");
 }
 
 #[test]
@@ -5023,7 +5022,7 @@ fn render_footer_from_preserves_prefix_then_cache_order() {
         None,
     );
 
-    assert!(spans_text(&props.cache).starts_with("P 100%  Cache: 90.0% hit"));
+    assert!(spans_text(&props.cache).starts_with("cache prefix 100%  Cache: 90.0% hit"));
 }
 
 #[test]

@@ -648,7 +648,7 @@ pub enum StatusItem {
     Agents,
     /// Reasoning-replay token count ("rsn 12.3k").
     ReasoningReplay,
-    /// Prefix stability ("P 100%").
+    /// Prefix stability ("cache prefix 100%").
     PrefixStability,
     /// Cache hit rate ("cache 73%").
     Cache,
@@ -663,9 +663,10 @@ pub enum StatusItem {
 }
 
 impl StatusItem {
-    /// Default footer composition matching v0.6.6 behaviour exactly. Used when
-    /// `tui.status_items` is missing from `config.toml` so upgraders see the
-    /// same footer they had before.
+    /// Default footer composition for the always-on status line. Used when
+    /// `tui.status_items` is missing from `config.toml` so upgraders see a
+    /// concise footer by default; diagnostic chips remain available via
+    /// `/statusline` without crowding the main UI.
     #[must_use]
     pub fn default_footer() -> Vec<StatusItem> {
         vec![
@@ -676,7 +677,6 @@ impl StatusItem {
             StatusItem::Coherence,
             StatusItem::Agents,
             StatusItem::ReasoningReplay,
-            StatusItem::PrefixStability,
             StatusItem::Cache,
         ]
     }

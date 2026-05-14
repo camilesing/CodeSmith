@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.37] - 2026-05-14
+
 ### Added
 
 - **Tencent Lighthouse + Feishu/Lark bridge setup.** Added a `/opt/whalebro`
@@ -17,9 +19,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Feishu/Lark + optional EdgeOne teaching path and added non-active CNB deploy
   templates for a future Lighthouse deploy button. Feishu/Lighthouse branches
   are now mirrored to CNB for Tencent-first bootstrap.
+- **Homebrew tap automation is release-gated.** The release workflow can update
+  `Hmbown/homebrew-deepseek-tui` from the checksum manifest when a tap token is
+  configured, and skips cleanly before downloading release assets when no tap
+  token exists.
+
+### Changed
+
+- **Bing is the default `web_search` backend.** DuckDuckGo remains selectable
+  with `[search] provider = "duckduckgo"` and keeps its Bing fallback path.
 
 ### Fixed
 
+- **First-run onboarding stays usable without an API key.** Missing-key startup
+  no longer aborts the TUI before onboarding can collect provider settings.
+- **Streamable HTTP MCP sessions keep their server-issued session ID.** Custom
+  headers also apply to GET preflight requests, fixing authenticated MCP
+  servers that require both.
+- **DeepSeek model completions use canonical IDs.** Alias completions now
+  resolve to stable DeepSeek model names before being written to config.
+- **Terminal and child-process reliability is tighter.** Signal shutdown now
+  restores the terminal, child tasks preserve proxy environment variables, and
+  Windows Enter / CSI-u input handling avoids the prior event mismatch.
+- **Long terminal text wraps instead of overflowing.** Streaming output, diff
+  rendering, and the pager now hard-wrap overlong no-whitespace and CJK runs.
+- **Release and platform edges are safer.** The TUI no longer trips the Windows
+  Instant-underflow test path, unsupported desktop targets compile the external
+  URL opener, and legacy DeepSeek CN provider aliases deserialize to the
+  canonical DeepSeek provider.
+- **Footer diagnostics are less cryptic.** Prefix-cache stability is no longer
+  shown in the default footer, and the opt-in `/statusline` chip now says
+  `cache prefix 100%` instead of the ambiguous `P 100%`.
 - **Feishu/Lark bridge dependency installs are locked and audited.** The
   bridge now ships a package lock, installs with `npm ci` on Lighthouse when
   available, and overrides the Lark SDK's transitive `axios` dependency to a
@@ -33,10 +63,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflow now mirrors Feishu/Lighthouse release branches, so Tencent
   Lighthouse bootstrap can use CNB before the release branch merges.
 
-### Changed
+### Thanks
 
-- **Bing is the default `web_search` backend.** DuckDuckGo remains selectable
-  with `[search] provider = "duckduckgo"` and keeps its Bing fallback path.
+Thanks to **ZzzPL ([@Oliver-ZPLiu](https://github.com/Oliver-ZPLiu))** for
+the MCP Streamable HTTP and Homebrew automation fixes (#1643, #1631),
+**Reid ([@reidliu41](https://github.com/reidliu41))** for CI, streaming wrap,
+and model-completion fixes (#1603, #1628, #1601), **MidoriKurage
+([@mdrkrg](https://github.com/mdrkrg))** for the onboarding crash fix (#1598),
+**Gordon ([@gordonlu](https://github.com/gordonlu))** for the Windows Enter /
+CSI-u fix (#1612), **Aitensa ([@Aitensa](https://github.com/Aitensa))** for
+the CJK diff/pager wrap fix (#1622), **qiyan233
+([@qiyan233](https://github.com/qiyan233))** for legacy DeepSeek CN provider
+aliases (#1645), **jieshu666 ([@jieshu666](https://github.com/jieshu666))**
+for the repaint-flicker reduction (#1563), **Vishnu
+([@Vishnu1837](https://github.com/Vishnu1837))** for terminal restoration on
+signals (#1586), and **axobase001
+([@axobase001](https://github.com/axobase001))** for proxy environment
+preservation in child tasks (#1608).
 
 ## [0.8.36] - 2026-05-14
 
@@ -4161,7 +4204,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.36...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.37...HEAD
+[0.8.37]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.36...v0.8.37
 [0.8.36]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.35...v0.8.36
 [0.8.35]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.34...v0.8.35
 [0.8.34]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.33...v0.8.34

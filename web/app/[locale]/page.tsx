@@ -17,7 +17,7 @@ const FALLBACK_STATS: RepoStats = {
   forks: 0,
   openIssues: 0,
   openPulls: 0,
-  contributors: 69,
+  contributors: 91,
   fetchedAt: new Date().toISOString(),
 };
 

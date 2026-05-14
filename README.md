@@ -67,7 +67,7 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 - **Thinking-mode streaming** — see DeepSeek reasoning blocks as the model works
 - **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers
 - **1M-token context** — context tracking, manual or configured compaction, and prefix-cache telemetry
-- **Prefix-cache stability tracking** — a footer chip surfaces how stable the cached prefix has been across recent turns so cost-busting edits are visible before they land
+- **Prefix-cache stability tracking** — an optional `/statusline` footer chip surfaces how stable the cached prefix has been across recent turns so cost-busting edits are visible before they land
 - **Three modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved)
 - **Reasoning-effort tiers** — cycle through `off → high → max` with `Shift + Tab`
 - **Session save/resume** — checkpoint and resume long-running sessions
@@ -491,7 +491,7 @@ This project ships with help from a growing community of contributors:
 - **[loongmiaow-pixel](https://github.com/loongmiaow-pixel)** — Windows + China install documentation (#578)
 - **[20bytes](https://github.com/20bytes)** — User memory docs and help polish (#569)
 - **[staryxchen](https://github.com/staryxchen)** — glibc compatibility preflight (#556)
-- **[Vishnu1837](https://github.com/Vishnu1837)** — glibc compatibility improvements (#565)
+- **[Vishnu1837](https://github.com/Vishnu1837)** — glibc compatibility improvements and terminal restoration on SIGINT/SIGTERM (#565, #1586)
 - **[shentoumengxin](https://github.com/shentoumengxin)** — Shell `cwd` boundary validation (#524)
 - **[toi500](https://github.com/toi500)** — Windows paste fix report
 - **[xsstomy](https://github.com/xsstomy)** — Terminal startup repaint report
@@ -502,8 +502,8 @@ This project ships with help from a growing community of contributors:
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — model ID case-sensitivity compatibility report (#729)
-- **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report and Windows clipboard fallback (#738, #850)
-- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, Ollama provider support, and thinking-block stream finalization (#863, #870, #921, #1078)
+- **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report, Windows clipboard fallback, MCP Streamable HTTP session fixes, and Homebrew tap automation (#738, #850, #1643, #1631)
+- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, Ollama provider support, thinking-block stream finalization, CI cache hardening, streaming wrap, and DeepSeek model completions (#863, #870, #921, #1078, #1603, #1628, #1601)
 - **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
 - **[y0sif](https://github.com/y0sif)** — parent turn-loop wakeup after direct child sub-agent completion (#901)
@@ -520,7 +520,7 @@ This project ships with help from a growing community of contributors:
 - **Hafeez Pizofreude** — SSRF protection in `fetch_url` and Star History chart
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
-- **[axobase001](https://github.com/axobase001)** — snapshot orphan cleanup, npm install guards, session telemetry fixes, model-scope cache clear, symlinked skill support, and npm mirror-escape-hatch guidance (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
+- **[axobase001](https://github.com/axobase001)** — snapshot orphan cleanup, npm install guards, session telemetry fixes, model-scope cache clear, symlinked skill support, npm mirror-escape-hatch guidance, and proxy preservation for child tasks (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056, #1608)
 - **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command foundation and SSE gzip/brotli decompression (#1057, #1061)
 - **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan-mode read-only sandbox safety fix (#1077)
 - **[bevis-wong](https://github.com/bevis-wong)** — precise paste-Enter auto-submit reproducer (#1073)
@@ -530,6 +530,11 @@ This project ships with help from a growing community of contributors:
 - **[Jefsky](https://github.com/Jefsky)** — DeepSeek endpoint correction report (#1079, #1084)
 - **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API-key preference diagnosis (#1081)
 - **[Horace Liu](https://github.com/liuhq)** — Nix package support and install documentation (#1173)
+- **[jieshu666](https://github.com/jieshu666)** — terminal repaint flicker reduction (#1563)
+- **[gordonlu](https://github.com/gordonlu)** — Windows Enter / CSI-u input fix (#1612)
+- **[mdrkrg](https://github.com/mdrkrg)** — first-run onboarding crash fix when the API key is missing (#1598)
+- **[Aitensa](https://github.com/Aitensa)** — CJK wrapping propagation for diff and pager output (#1622)
+- **[qiyan233](https://github.com/qiyan233)** — legacy DeepSeek CN provider alias compatibility (#1645)
 
 ---
 
