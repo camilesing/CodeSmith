@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default providers sync into the runtime config before the first request, and
   reselecting the active provider from the picker keeps the current model
   instead of falling back to the provider default (#1632).
+- **Windows wheel-as-arrow scrolling works with mouse capture enabled.**
+  `composer_arrows_scroll` now defaults on for Windows terminals even when
+  mouse capture is enabled, so wheel events that arrive as arrow keys scroll the
+  transcript instead of cycling composer history (#1578).
 
 ### Thanks
 
@@ -47,7 +51,9 @@ terminal cleanup-guard idea harvested from #1630, and **imkingjh999
 ([@imkingjh999](https://github.com/imkingjh999))** for the provider/model
 switching fixes harvested from #1642. Thanks to **Photo
 ([@eng2007](https://github.com/eng2007))** for the provider-aware `/model`
-picker catalog work harvested from #1201.
+picker catalog work harvested from #1201. Thanks to
+**[@kunpeng-ai-lab](https://github.com/kunpeng-ai-lab)** for the Windows
+composer scroll fix harvested from #1578.
 
 ## [0.8.37] - 2026-05-14
 

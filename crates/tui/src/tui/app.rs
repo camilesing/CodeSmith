@@ -1233,6 +1233,14 @@ impl std::ops::DerefMut for App {
 
 // === App State ===
 
+fn default_composer_arrows_scroll(use_mouse_capture: bool) -> bool {
+    default_composer_arrows_scroll_for_platform(use_mouse_capture, cfg!(windows))
+}
+
+fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, is_windows: bool) -> bool {
+    is_windows || !use_mouse_capture
+}
+
 impl App {
     /// Cap on the session turn-cache history. Holds enough turns to debug a long
     /// session without being so large the on-screen `/cache` table wraps.
@@ -1629,7 +1637,7 @@ impl App {
                 .tui
                 .as_ref()
                 .and_then(|tui| tui.composer_arrows_scroll)
-                .unwrap_or(!use_mouse_capture),
+                .unwrap_or_else(|| default_composer_arrows_scroll(use_mouse_capture)),
             session_title: None,
         }
     }
@@ -4208,6 +4216,21 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         }
+    }
+
+    #[test]
+    fn composer_arrows_scroll_default_is_true_without_mouse_capture() {
+        assert!(default_composer_arrows_scroll_for_platform(false, false));
+    }
+
+    #[test]
+    fn composer_arrows_scroll_default_is_false_with_mouse_capture_on_non_windows() {
+        assert!(!default_composer_arrows_scroll_for_platform(true, false));
+    }
+
+    #[test]
+    fn composer_arrows_scroll_default_is_true_on_windows_even_with_mouse_capture() {
+        assert!(default_composer_arrows_scroll_for_platform(true, true));
     }
 
     struct EnvVarGuard {
