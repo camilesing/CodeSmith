@@ -31,9 +31,12 @@ brew install deepseek-tui
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
 
 # 5. Docker — prebuilt release image.
+docker volume create deepseek-tui-home
 docker run --rm -it \
-  -e DEEPSEEK_API_KEY \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v deepseek-tui-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
+  -w /workspace \
   ghcr.io/hmbown/deepseek-tui:latest
 ```
 
@@ -45,6 +48,16 @@ docker run --rm -it \
 > `https://github.com/Hmbown/DeepSeek-TUI/releases`. For manual downloads,
 > verify the SHA-256 manifest and avoid look-alike repositories or search-result
 > mirrors. See [download safety and checksums](docs/INSTALL.md#2-download-safety-and-checksums).
+
+Already installed? Use the updater that matches the install path:
+
+```bash
+deepseek update                         # release-binary updater
+npm install -g deepseek-tui@latest      # npm wrapper
+brew update && brew upgrade deepseek-tui
+cargo install deepseek-tui-cli --locked --force
+cargo install deepseek-tui     --locked --force
+```
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
@@ -236,6 +249,18 @@ Both binaries are required. Cross-compilation and platform-specific notes: [docs
 deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
 deepseek --provider nvidia-nim
 
+# AtlasCloud
+deepseek auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
+deepseek --provider atlascloud
+
+# OpenRouter
+deepseek auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
+deepseek --provider openrouter --model deepseek/deepseek-v4-pro
+
+# Novita
+deepseek auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
+deepseek --provider novita --model deepseek/deepseek-v4-pro
+
 # Fireworks
 deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
 deepseek --provider fireworks --model deepseek-v4-pro
@@ -255,29 +280,19 @@ ollama pull deepseek-coder:1.3b
 deepseek --provider ollama --model deepseek-coder:1.3b
 ```
 
+Inside the TUI, `/provider` opens the provider picker and `/model` opens the
+model picker. `/provider openrouter` and `/model <id>` switch directly, while
+`/models` lists live API models. The `/model` picker uses the active provider's
+live model catalog when the provider exposes one, with provider-aware defaults
+as a fallback.
+
 ---
 
-## What's New In v0.8.35
+## Release Notes
 
-A post-release cleanup branch for the `v0.8.34` line. It keeps the
-model-facing surface stable while trimming first-turn context, clarifying
-context-pressure behavior, and reducing sidebar noise during long runs.
-[Full changelog](CHANGELOG.md).
-
-- **First-turn context is leaner.** Hidden tool/cache state is excluded
-  from the generated project pack, and `/context` now names prompt layers
-  instead of showing one opaque blob.
-- **Prompt rules are de-conflicted.** Useful `deepseek` diagnostics are
-  allowed, simple one-step work no longer forces checklist ceremony, and
-  sustained sessions consistently suggest `/compact` around 60%.
-- **Automatic compaction stays conservative.** The 80% threshold remains
-  an opt-in hard guardrail so DeepSeek V4 prefix-cache behavior is not
-  disturbed by default.
-- **The Tasks sidebar settles down.** Completed live-tool rows expire
-  after a short linger, and very old running shell rows collapse instead
-  of filling the right rail.
-- **`auto_compact` help is honest.** Settings now report the real default:
-  off.
+Release-specific changes live in [CHANGELOG.md](CHANGELOG.md). This README
+stays focused on current install paths, core workflows, provider setup, runtime
+interfaces, and extension points.
 
 ---
 
@@ -318,8 +333,13 @@ docker volume create deepseek-tui-home
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
   -v deepseek-tui-home:/home/deepseek/.deepseek \
+  -v "$PWD:/workspace" \
+  -w /workspace \
   ghcr.io/hmbown/deepseek-tui:latest
 ```
+
+See [docs/DOCKER.md](docs/DOCKER.md) for pinned tags, local image builds,
+volume ownership notes, and non-interactive pipeline usage.
 
 ### Zed / ACP
 
@@ -389,14 +409,20 @@ Key environment variables:
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
+| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
 | `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Allow non-local `http://` API base URLs on trusted networks |
-| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | Generic OpenAI-compatible endpoint and model ID |
+| `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | AtlasCloud endpoint and model override |
+| `OPENROUTER_BASE_URL` | OpenRouter endpoint override |
+| `NOVITA_BASE_URL` | Novita endpoint override |
+| `FIREWORKS_BASE_URL` | Fireworks endpoint override |
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
+| `SGLANG_MODEL` | Self-hosted SGLang model ID |
 | `VLLM_BASE_URL` | Self-hosted vLLM endpoint |
+| `VLLM_MODEL` | Self-hosted vLLM model ID |
 | `OLLAMA_BASE_URL` | Self-hosted Ollama endpoint |
 | `OLLAMA_MODEL` | Self-hosted Ollama model tag |
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
@@ -413,7 +439,7 @@ Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_AL
 | `deepseek-v4-pro` | 1M | $0.003625 / 1M* | $0.435 / 1M* | $0.87 / 1M* |
 | `deepseek-v4-flash` | 1M | $0.0028 / 1M | $0.14 / 1M | $0.28 / 1M |
 
-DeepSeek Platform defaults to `https://api.deepseek.com/beta` in v0.8.16 so beta-gated API features can be tested without extra setup. Set `base_url = "https://api.deepseek.com"` to opt out.
+DeepSeek Platform defaults to `https://api.deepseek.com/beta` so beta-gated API features can be tested without extra setup. Set `base_url = "https://api.deepseek.com"` to opt out.
 
 Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash` and retire after July 24, 2026. NVIDIA NIM variants use your NVIDIA account terms.
 
@@ -466,6 +492,10 @@ without recreating skills the user deliberately deleted.
 | [MCP.md](docs/MCP.md) | Model Context Protocol integration |
 | [RUNTIME_API.md](docs/RUNTIME_API.md) | HTTP/SSE API server |
 | [INSTALL.md](docs/INSTALL.md) | Platform-specific install guide |
+| [DOCKER.md](docs/DOCKER.md) | GHCR image, volumes, and Docker usage |
+| [CNB_MIRROR.md](docs/CNB_MIRROR.md) | CNB mirror and China-friendly install notes |
+| [TENCENT_CLOUD_REMOTE_FIRST.md](docs/TENCENT_CLOUD_REMOTE_FIRST.md) | Tencent/CNB/Lighthouse/Feishu remote-first path |
+| [TENCENT_LIGHTHOUSE_HK.md](docs/TENCENT_LIGHTHOUSE_HK.md) | Lighthouse Hong Kong server setup |
 | [MEMORY.md](docs/MEMORY.md) | User memory feature guide |
 | [SUBAGENTS.md](docs/SUBAGENTS.md) | Sub-agent role taxonomy and lifecycle |
 | [KEYBINDINGS.md](docs/KEYBINDINGS.md) | Full shortcut catalog |

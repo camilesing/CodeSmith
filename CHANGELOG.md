@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Update guidance is clearer on the website.** The homepage and install page
   now surface `deepseek update` while keeping package-manager update paths
   visible for Homebrew, npm, and Cargo installs.
+- **README setup docs are current again.** The English, Simplified Chinese,
+  and Japanese READMEs now use the current Docker volume/workspace invocation,
+  document update paths, list the current provider/model switching surface, and
+  send release-specific feature notes back to the changelog.
 
 ### Fixed
 
