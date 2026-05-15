@@ -7,6 +7,10 @@
 
 use super::*;
 
+fn loop_guard_block_tool_result(message: String) -> ToolResult {
+    ToolResult::error(message).with_metadata(json!({"loop_guard": "identical_tool_call"}))
+}
+
 impl Engine {
     pub(super) async fn handle_deepseek_turn(
         &mut self,
@@ -1214,10 +1218,7 @@ impl Engine {
                         loop_guard.record_attempt(&tool_name, &tool_input)
                 {
                     crate::logging::warn(message.clone());
-                    guard_result = Some(
-                        ToolResult::success(message)
-                            .with_metadata(json!({"loop_guard": "identical_tool_call"})),
-                    );
+                    guard_result = Some(loop_guard_block_tool_result(message));
                 }
 
                 plans.push(ToolExecutionPlan {
@@ -2021,6 +2022,24 @@ mod tests {
         assert!(should_hold_turn_for_subagents(1, 0));
         assert!(should_hold_turn_for_subagents(0, 1));
         assert!(!should_hold_turn_for_subagents(0, 0));
+    }
+
+    #[test]
+    fn loop_guard_block_tool_result_counts_as_failure() {
+        let result = loop_guard_block_tool_result("Blocked: repeated call".to_string());
+
+        assert!(
+            !result.success,
+            "LoopGuard blocks must count as tool failures so repeated blocked calls can trip halt handling"
+        );
+        assert_eq!(
+            result
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("loop_guard"))
+                .and_then(|v| v.as_str()),
+            Some("identical_tool_call")
+        );
     }
 
     #[test]

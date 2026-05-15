@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   legacy Windows console hosts now automatically enable low-motion rendering,
   disable fancy animations, and resolve `synchronized_output = "auto"` to off
   so streaming redraws do not overlap or visibly flicker (#1590).
+- **LoopGuard blocks now count as failed tool calls.** Identical tool-call
+  blocks now return a failed tool result instead of a success, so repeated
+  blocked checklist/tool retries can trip the existing failure warning and halt
+  path instead of spinning indefinitely (#1574).
 
 ### Thanks
 
@@ -59,7 +63,9 @@ picker catalog work harvested from #1201. Thanks to
 **[@kunpeng-ai-lab](https://github.com/kunpeng-ai-lab)** for the Windows
 composer scroll fix harvested from #1578, and **WuMing
 ([@asdfg314284230](https://github.com/asdfg314284230))** for the Windows
-PowerShell flicker fix harvested from #1591.
+PowerShell flicker fix harvested from #1591. Thanks to
+**[@maker316](https://github.com/maker316)** for the LoopGuard/checklist loop
+report in #1574.
 
 ## [0.8.37] - 2026-05-14
 
