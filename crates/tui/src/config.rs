@@ -877,6 +877,7 @@ impl StatusItem {
             StatusItem::Mode,
             StatusItem::Model,
             StatusItem::Cost,
+            StatusItem::Balance,
             StatusItem::Status,
             StatusItem::Coherence,
             StatusItem::Agents,
@@ -888,7 +889,6 @@ impl StatusItem {
             StatusItem::LastToolElapsed,
             StatusItem::RateLimit,
             StatusItem::Tokens,
-            StatusItem::Balance,
         ]
     }
 
