@@ -779,6 +779,8 @@ pub enum StatusItem {
     RateLimit,
     /// Session token usage: input / cache-hit / output.
     Tokens,
+    /// DeepSeek account balance, refreshed once per turn completion.
+    Balance,
 }
 
 impl StatusItem {
@@ -798,6 +800,7 @@ impl StatusItem {
             StatusItem::ReasoningReplay,
             StatusItem::Cache,
             StatusItem::Tokens,
+            StatusItem::Balance,
         ]
     }
 
@@ -818,7 +821,11 @@ impl StatusItem {
             StatusItem::GitBranch => "git_branch",
             StatusItem::LastToolElapsed => "last_tool_elapsed",
             StatusItem::RateLimit => "rate_limit",
+<<<<<<< HEAD
             StatusItem::Tokens => "tokens",
+=======
+            StatusItem::Balance => "balance",
+>>>>>>> 4bc823e6 (feat: add account balance status bar item)
         }
     }
 
@@ -839,7 +846,11 @@ impl StatusItem {
             StatusItem::GitBranch => "Git branch",
             StatusItem::LastToolElapsed => "Last tool elapsed",
             StatusItem::RateLimit => "Rate-limit remaining",
+<<<<<<< HEAD
             StatusItem::Tokens => "Session tokens",
+=======
+            StatusItem::Balance => "Account balance",
+>>>>>>> 4bc823e6 (feat: add account balance status bar item)
         }
     }
 
@@ -861,7 +872,11 @@ impl StatusItem {
             StatusItem::GitBranch => "current workspace branch",
             StatusItem::LastToolElapsed => "ms of the most recent tool call (placeholder)",
             StatusItem::RateLimit => "remaining requests in the budget (placeholder)",
+<<<<<<< HEAD
             StatusItem::Tokens => "input / cache-hit / output token totals",
+=======
+            StatusItem::Balance => "topped-up + granted balance from DeepSeek",
+>>>>>>> 4bc823e6 (feat: add account balance status bar item)
         }
     }
 
@@ -883,6 +898,7 @@ impl StatusItem {
             StatusItem::LastToolElapsed,
             StatusItem::RateLimit,
             StatusItem::Tokens,
+            StatusItem::Balance,
         ]
     }
 
@@ -891,7 +907,11 @@ impl StatusItem {
     pub fn is_left_cluster(self) -> bool {
         matches!(
             self,
-            StatusItem::Mode | StatusItem::Model | StatusItem::Cost | StatusItem::Status
+            StatusItem::Mode
+                | StatusItem::Model
+                | StatusItem::Cost
+                | StatusItem::Status
+                | StatusItem::Balance
         )
     }
 }
