@@ -800,7 +800,6 @@ impl StatusItem {
             StatusItem::ReasoningReplay,
             StatusItem::Cache,
             StatusItem::Tokens,
-            StatusItem::Balance,
         ]
     }
 
@@ -821,11 +820,8 @@ impl StatusItem {
             StatusItem::GitBranch => "git_branch",
             StatusItem::LastToolElapsed => "last_tool_elapsed",
             StatusItem::RateLimit => "rate_limit",
-<<<<<<< HEAD
             StatusItem::Tokens => "tokens",
-=======
             StatusItem::Balance => "balance",
->>>>>>> 4bc823e6 (feat: add account balance status bar item)
         }
     }
 
@@ -846,11 +842,8 @@ impl StatusItem {
             StatusItem::GitBranch => "Git branch",
             StatusItem::LastToolElapsed => "Last tool elapsed",
             StatusItem::RateLimit => "Rate-limit remaining",
-<<<<<<< HEAD
             StatusItem::Tokens => "Session tokens",
-=======
             StatusItem::Balance => "Account balance",
->>>>>>> 4bc823e6 (feat: add account balance status bar item)
         }
     }
 
@@ -872,11 +865,8 @@ impl StatusItem {
             StatusItem::GitBranch => "current workspace branch",
             StatusItem::LastToolElapsed => "ms of the most recent tool call (placeholder)",
             StatusItem::RateLimit => "remaining requests in the budget (placeholder)",
-<<<<<<< HEAD
             StatusItem::Tokens => "input / cache-hit / output token totals",
-=======
             StatusItem::Balance => "topped-up + granted balance from DeepSeek",
->>>>>>> 4bc823e6 (feat: add account balance status bar item)
         }
     }
 
@@ -913,6 +903,19 @@ impl StatusItem {
                 | StatusItem::Status
                 | StatusItem::Balance
         )
+    }
+
+    /// Whether this item is relevant for `provider`.  Provider-specific
+    /// items return `false` for unsupported providers so the picker doesn't
+    /// offer toggles that can never show useful data.
+    #[must_use]
+    pub fn is_available_for(self, provider: ApiProvider) -> bool {
+        match self {
+            StatusItem::Balance => {
+                matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+            }
+            _ => true,
+        }
     }
 }
 
@@ -7554,5 +7557,24 @@ model = "deepseek-ai/deepseek-v4-pro"
         let json = serde_json::to_value(&cap).unwrap();
         let deserialized: ProviderCapability = serde_json::from_value(json).unwrap();
         assert_eq!(cap, deserialized);
+    }
+
+    #[test]
+    fn status_item_balance_available_only_for_deepseek_providers() {
+        // Balance item should only be offered for DeepSeek / DeepSeekCN.
+        assert!(StatusItem::Balance.is_available_for(ApiProvider::Deepseek));
+        assert!(StatusItem::Balance.is_available_for(ApiProvider::DeepseekCN));
+        // Sanity: all other known providers should hide the Balance toggle.
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Openrouter));
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Novita));
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::NvidiaNim));
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Fireworks));
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Sglang));
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Vllm));
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Ollama));
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Openai));
+        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Atlascloud));
+        // Other StatusItem variants should be available everywhere.
+        assert!(StatusItem::Mode.is_available_for(ApiProvider::Ollama));
     }
 }
