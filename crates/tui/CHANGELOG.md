@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Feishu/Lark bridge startup order is guarded.** The bridge now keeps
   `ThreadStore` initialized before startup opens persisted thread state, with a
   regression test to prevent moving it below its first use.
+- **`/model` picker opens instantly with the curated list again.** Reverted
+  the v0.8.38 live-catalog rework: the picker no longer makes a blocking
+  network call on open and once again shows the curated `auto` /
+  `deepseek-v4-pro` / `deepseek-v4-flash` rows. The `/models` command still
+  lists the live provider catalog.
+- **"Approve for session" groups by command family again.** Session approvals
+  are keyed by a lossy, arity-aware fingerprint once more, so approving
+  `cargo build` also covers `cargo build --release`. Denials keep the exact
+  per-call fingerprint from #1617, so denying one call no longer over-blocks
+  later, different calls to the same tool.
 
 ## [0.8.38] - 2026-05-15
 

@@ -4154,6 +4154,7 @@ mod tests {
             .tx_event
             .send(EngineEvent::ApprovalRequired {
                 approval_key: "test_key".to_string(),
+                approval_grouping_key: "test_key".to_string(),
                 id: "tool_stale".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "stale approval".to_string(),
@@ -4226,6 +4227,7 @@ mod tests {
             .tx_event
             .send(EngineEvent::ApprovalRequired {
                 approval_key: "key1".to_string(),
+                approval_grouping_key: "key1".to_string(),
                 id: "tool_external_allow".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "external allow".to_string(),
@@ -4302,6 +4304,7 @@ mod tests {
             .tx_event
             .send(EngineEvent::ApprovalRequired {
                 approval_key: "key2".to_string(),
+                approval_grouping_key: "key2".to_string(),
                 id: "tool_external_deny".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "external deny".to_string(),
@@ -4487,6 +4490,7 @@ mod tests {
             .tx_event
             .send(EngineEvent::ApprovalRequired {
                 approval_key: "key3".to_string(),
+                approval_grouping_key: "key3".to_string(),
                 id: "tool_remember".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "remember=true".to_string(),
