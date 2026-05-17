@@ -496,6 +496,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
+                system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
             })
@@ -2300,6 +2301,7 @@ async fn run_event_loop(
                                                 session_id: app.current_session_id.clone(),
                                                 messages: app.api_messages.clone(),
                                                 system_prompt: app.system_prompt.clone(),
+                                                system_prompt_override: false,
                                                 model: app.model.clone(),
                                                 workspace: app.workspace.clone(),
                                             })
@@ -3177,6 +3179,7 @@ async fn run_event_loop(
                                         session_id: app.current_session_id.clone(),
                                         messages: app.api_messages.clone(),
                                         system_prompt: app.system_prompt.clone(),
+                                        system_prompt_override: false,
                                         model: app.model.clone(),
                                         workspace: app.workspace.clone(),
                                     })
@@ -4244,6 +4247,7 @@ async fn switch_provider(
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
+                system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
             })
@@ -4356,6 +4360,7 @@ async fn apply_command_result(
                         session_id,
                         messages,
                         system_prompt,
+                        system_prompt_override: false,
                         model,
                         workspace,
                     })
@@ -4673,6 +4678,7 @@ async fn apply_command_result(
                                     session_id: app.current_session_id.clone(),
                                     messages: app.api_messages.clone(),
                                     system_prompt: app.system_prompt.clone(),
+                                    system_prompt_override: false,
                                     model: app.model.clone(),
                                     workspace: app.workspace.clone(),
                                 })
@@ -4819,6 +4825,7 @@ async fn switch_workspace(
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
+                system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: workspace.clone(),
             })
@@ -5808,6 +5815,7 @@ async fn handle_view_events(
                                 session_id: app.current_session_id.clone(),
                                 messages: app.api_messages.clone(),
                                 system_prompt: app.system_prompt.clone(),
+                                system_prompt_override: false,
                                 model: app.model.clone(),
                                 workspace: app.workspace.clone(),
                             })
@@ -5951,6 +5959,7 @@ async fn handle_view_events(
                             session_id: app.current_session_id.clone(),
                             messages: app.api_messages.clone(),
                             system_prompt: app.system_prompt.clone(),
+                            system_prompt_override: false,
                             model: app.model.clone(),
                             workspace: app.workspace.clone(),
                         })

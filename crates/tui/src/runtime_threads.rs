@@ -1998,6 +1998,7 @@ impl RuntimeThreadManager {
                     session_id: None,
                     messages: session_messages,
                     system_prompt: sys_prompt,
+                    system_prompt_override: thread.system_prompt.is_some(),
                     model: thread.model.clone(),
                     workspace: thread.workspace.clone(),
                 })

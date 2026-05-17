@@ -395,7 +395,8 @@ mod tests {
     #[test]
     fn denial_key_stays_exact_while_grouping_key_collapses() {
         let exact_a = build_approval_key("exec_shell", &json!({"command": "cargo build"}));
-        let exact_b = build_approval_key("exec_shell", &json!({"command": "cargo build --release"}));
+        let exact_b =
+            build_approval_key("exec_shell", &json!({"command": "cargo build --release"}));
         assert_ne!(exact_a, exact_b, "denials must remain exact-call scoped");
 
         let group_a = build_approval_grouping_key("exec_shell", &json!({"command": "cargo build"}));
