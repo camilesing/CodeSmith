@@ -200,10 +200,7 @@ fn push_shell_args(cmd: &mut Command, program: &str, args: &[String]) {
         .and_then(|s| s.to_str())
         .map(|s| s.eq_ignore_ascii_case("cmd"))
         .unwrap_or(false);
-    if is_cmd
-        && args.len() == 2
-        && args[0].eq_ignore_ascii_case("/C")
-    {
+    if is_cmd && args.len() == 2 && args[0].eq_ignore_ascii_case("/C") {
         cmd.raw_arg(&args[0]);
         cmd.raw_arg(&args[1]);
     } else {

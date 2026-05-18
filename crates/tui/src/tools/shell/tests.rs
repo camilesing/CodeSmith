@@ -819,7 +819,11 @@ fn test_list_jobs_cleans_up_completed_old_processes() {
 #[test]
 fn issue_1691_quoted_commit_message_round_trips() {
     let cmd = r#"git commit -m "feat: complete sub-pages""#;
-    let spec = CommandSpec::shell(cmd, std::path::PathBuf::from("/tmp"), Duration::from_secs(5));
+    let spec = CommandSpec::shell(
+        cmd,
+        std::path::PathBuf::from("/tmp"),
+        Duration::from_secs(5),
+    );
 
     #[cfg(not(windows))]
     {

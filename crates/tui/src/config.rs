@@ -2392,7 +2392,9 @@ fn apply_env_overrides(config: &mut Config) {
                 .providers
                 .get_or_insert_with(ProvidersConfig::default);
             let entry = match provider {
-                ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!("DeepSeek providers are handled in the if branch above (issue #1714)"),
+                ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(
+                    "DeepSeek providers are handled in the if branch above (issue #1714)"
+                ),
                 ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
                 ApiProvider::Openai => &mut providers.openai,
                 ApiProvider::Atlascloud => &mut providers.atlascloud,

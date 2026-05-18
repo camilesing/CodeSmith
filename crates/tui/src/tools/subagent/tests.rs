@@ -358,6 +358,38 @@ async fn session_projection_exposes_forked_prefix_cache_contract() {
     assert_eq!(projection.transcript_handle.name, "transcript");
 }
 
+#[tokio::test]
+async fn terminal_session_projection_prefers_full_transcript_handle() {
+    let mut snapshot = make_snapshot(SubAgentStatus::Completed);
+    snapshot.result = Some("done".to_string());
+
+    let ctx = ToolContext::new(".");
+    let full_handle = {
+        let mut store = ctx.runtime.handle_store.lock().await;
+        store.insert_json(
+            "agent:agent_test",
+            "full_transcript",
+            json!({
+                "kind": "subagent_full_transcript",
+                "agent_id": "agent_test",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            { "type": "text", "text": "complete child output" }
+                        ]
+                    }
+                ]
+            }),
+        )
+    };
+
+    let projection = subagent_session_projection(snapshot, false, &ctx).await;
+
+    assert_eq!(projection.transcript_handle, full_handle);
+    assert_eq!(projection.transcript_handle.name, "full_transcript");
+}
+
 #[test]
 fn test_delegate_defaults_to_fork_context() {
     let input = with_default_fork_context(json!({ "prompt": "review current work" }), true);

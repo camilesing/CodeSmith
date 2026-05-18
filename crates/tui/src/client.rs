@@ -2716,12 +2716,8 @@ mod tests {
             ]
         });
 
-        let result = sanitize_thinking_mode_messages(
-            &mut body,
-            "gpt-4o",
-            Some("max"),
-            ApiProvider::Openai,
-        );
+        let result =
+            sanitize_thinking_mode_messages(&mut body, "gpt-4o", Some("max"), ApiProvider::Openai);
 
         assert!(result.is_none());
         let assistant = body["messages"]

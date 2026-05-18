@@ -2045,11 +2045,7 @@ fn should_emit_thinking_only_status(
     steers_pending: bool,
     holding_for_subagents: bool,
 ) -> bool {
-    tool_uses_empty
-        && turn_error_is_none
-        && !cancelled
-        && !steers_pending
-        && !holding_for_subagents
+    tool_uses_empty && turn_error_is_none && !cancelled && !steers_pending && !holding_for_subagents
 }
 
 /// Resolve an `"auto"` reasoning-effort tier to a concrete value.

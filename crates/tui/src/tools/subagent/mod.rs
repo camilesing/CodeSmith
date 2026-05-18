@@ -1624,6 +1624,7 @@ async fn subagent_session_projection(
     timed_out: bool,
     context: &ToolContext,
 ) -> SubAgentSessionProjection {
+    let transcript_session_id = format!("agent:{}", snapshot.agent_id);
     let transcript_payload = json!({
         "kind": "subagent_session_snapshot",
         "agent_id": snapshot.agent_id.clone(),
@@ -1639,11 +1640,22 @@ async fn subagent_session_projection(
     });
     let transcript_handle = {
         let mut store = context.runtime.handle_store.lock().await;
-        store.insert_json(
-            format!("agent:{}", snapshot.agent_id),
-            "transcript",
-            transcript_payload,
-        )
+        let full_transcript_lookup = VarHandle {
+            kind: "var_handle".to_string(),
+            session_id: transcript_session_id.clone(),
+            name: "full_transcript".to_string(),
+            type_name: String::new(),
+            length: 0,
+            repr_preview: String::new(),
+            sha256: String::new(),
+        };
+        if snapshot.status != SubAgentStatus::Running
+            && let Some(record) = store.get(&full_transcript_lookup)
+        {
+            record.handle.clone()
+        } else {
+            store.insert_json(transcript_session_id, "transcript", transcript_payload)
+        }
     };
 
     SubAgentSessionProjection {
@@ -2160,7 +2172,7 @@ impl ToolSpec for AgentEvalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch or wait on a child sub-agent session. Optionally deliver a message/items to a running session, then return the latest session projection. With block=true (default), waits for the session to reach a terminal boundary; block=false is a non-blocking status fetch."
+        "Fetch or wait on a child sub-agent session. Optionally deliver a message/items to a running session, then return the latest session projection. With block=true (default), waits for the session to reach a terminal boundary; block=false is a non-blocking status fetch. Terminal projections expose a handle_read-compatible transcript_handle for the full child transcript."
     }
 
     fn input_schema(&self) -> Value {
@@ -3292,6 +3304,36 @@ fn subagent_failed_sentinel(agent_id: &str, _err: &str) -> String {
     format!("<deepseek:subagent.done>{payload}</deepseek:subagent.done>")
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn insert_subagent_full_transcript_handle(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    agent_type: &SubAgentType,
+    assignment: &SubAgentAssignment,
+    status: &SubAgentStatus,
+    result: Option<&String>,
+    messages: &[Message],
+    steps_taken: u32,
+    duration_ms: u64,
+    fork_context: bool,
+) -> VarHandle {
+    let payload = json!({
+        "kind": "subagent_full_transcript",
+        "agent_id": agent_id,
+        "agent_type": agent_type.as_str(),
+        "status": subagent_status_name(status),
+        "context_mode": if fork_context { "forked" } else { "fresh" },
+        "fork_context": fork_context,
+        "result": result,
+        "steps_taken": steps_taken,
+        "duration_ms": duration_ms,
+        "assignment": assignment,
+        "messages": messages,
+    });
+    let mut store = runtime.context.runtime.handle_store.lock().await;
+    store.insert_json(format!("agent:{agent_id}"), "full_transcript", payload)
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn run_subagent(
     runtime: &SubAgentRuntime,
@@ -3362,6 +3404,21 @@ async fn run_subagent(
                     agent_id: agent_id.clone(),
                 });
             }
+            let status = SubAgentStatus::Cancelled;
+            let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            insert_subagent_full_transcript_handle(
+                runtime,
+                &agent_id,
+                &agent_type,
+                &assignment,
+                &status,
+                None,
+                &messages,
+                steps,
+                duration_ms,
+                fork_context_enabled,
+            )
+            .await;
             return Ok(SubAgentResult {
                 name: agent_id.clone(),
                 agent_id: agent_id.clone(),
@@ -3376,10 +3433,10 @@ async fn run_subagent(
                 assignment: assignment.clone(),
                 model: runtime.model.clone(),
                 nickname: None,
-                status: SubAgentStatus::Cancelled,
+                status,
                 result: None,
                 steps_taken: steps,
-                duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                duration_ms,
                 from_prior_session: false,
             });
         }
@@ -3443,6 +3500,21 @@ async fn run_subagent(
                         agent_id: agent_id.clone(),
                     });
                 }
+                let status = SubAgentStatus::Cancelled;
+                let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                insert_subagent_full_transcript_handle(
+                    runtime,
+                    &agent_id,
+                    &agent_type,
+                    &assignment,
+                    &status,
+                    None,
+                    &messages,
+                    steps,
+                    duration_ms,
+                    fork_context_enabled,
+                )
+                .await;
                 return Ok(SubAgentResult {
                     name: agent_id.clone(),
                     agent_id: agent_id.clone(),
@@ -3452,11 +3524,10 @@ async fn run_subagent(
                     assignment: assignment.clone(),
                     model: runtime.model.clone(),
                     nickname: None,
-                    status: SubAgentStatus::Cancelled,
+                    status,
                     result: None,
                     steps_taken: steps,
-                    duration_ms: u64::try_from(started_at.elapsed().as_millis())
-                        .unwrap_or(u64::MAX),
+                    duration_ms,
                     from_prior_session: false,
                 });
             }
@@ -3582,6 +3653,21 @@ async fn run_subagent(
     }
 
     release_resident_leases_for(&agent_id);
+    let status = SubAgentStatus::Completed;
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    insert_subagent_full_transcript_handle(
+        runtime,
+        &agent_id,
+        &agent_type,
+        &assignment,
+        &status,
+        final_result.as_ref(),
+        &messages,
+        steps,
+        duration_ms,
+        fork_context_enabled,
+    )
+    .await;
 
     Ok(SubAgentResult {
         name: agent_id.clone(),
@@ -3597,10 +3683,10 @@ async fn run_subagent(
         assignment,
         model: runtime.model.clone(),
         nickname: None,
-        status: SubAgentStatus::Completed,
+        status,
         result: final_result,
         steps_taken: steps,
-        duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+        duration_ms,
         from_prior_session: false,
     })
 }

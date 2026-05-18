@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.40] - 2026-05-18
+
+### Fixed
+
+- **WSL2 and headless Linux startup no longer blocks on clipboard init.** The
+  TUI now defers clipboard initialization so machines without an X server can
+  reach the first frame instead of hanging on a blank screen (#1773, #1772).
+- **Windows alt-screen output stays clean when `RUST_LOG` is set.** Runtime
+  tracing is routed away from the interactive buffer so logs no longer leak
+  into the TUI display (#1774, #1776).
+- **OpenAI-compatible custom model names are preserved.** Non-DeepSeek
+  providers now pass explicit model names through instead of rewriting them to
+  a DeepSeek default (#1714, #1740).
+- **DeepSeek reasoning replay works through OpenAI-compatible endpoints.**
+  DeepSeek models selected under the generic `openai` provider now replay
+  prior `reasoning_content` consistently and classify streamed reasoning the
+  same way the replay path does (#1694, #1739, #1743).
+- **Thinking-only turns no longer disappear.** If a clean turn ends with
+  thinking but no final answer text, the UI now surfaces a clear status instead
+  of silently ending the turn (#1727, #1742).
+- **Windows `cmd /C` preserves quoted shell arguments.** Commands such as
+  `git commit -m "feat: complete sub-pages"` now round-trip through the Windows
+  shell wrapper without losing the quoted message (#1691, #1744).
+- **Home/End are line-local inside multiline composer drafts.** The keys now
+  jump to the current input line boundary before falling back to transcript
+  navigation (#1748, #1749).
+- **Ctrl+C restores the canceled prompt reliably.** Canceling a streaming turn
+  puts the submitted prompt back in the composer and suppresses late stream
+  events from drawing stale output (#1757, #1764).
+- **Compaction recovers from cache-aligned summary context overflow.** When a
+  cache-preserving summary request itself exceeds the provider context window,
+  compaction retries with the bounded formatted summary path instead of failing
+  with a 400 "compression command failed" style error.
+- **Terminal sub-agent sessions expose full transcript handles.** Completed
+  and canceled child agents now store the full child message transcript behind
+  `transcript_handle`, so the parent can inspect details with `handle_read`
+  instead of relying only on a lossy summary (#1738).
+- **Repeated shell wait rows collapse in the Tasks sidebar.** Multiple live
+  `task_shell_wait` polls for the same background job now render as one row
+  with an explicit collapsed-wait count, reducing the stuck-task appearance
+  tracked for v0.8.40 (#1737).
+
+### Thanks
+
+Thanks to **jayzhu ([@zlh124](https://github.com/zlh124))** for the WSL2
+startup report and clipboard-init fix in #1772/#1773. Thanks to **Paulo Aboim
+Pinto ([@aboimpinto](https://github.com/aboimpinto))** for the Windows
+alt-screen logging report and fix in #1774/#1776, and for the Home/End
+composer work in #1748/#1749. Thanks to **Zhongyue Lin
+([@LeoLin990405](https://github.com/LeoLin990405))** for the provider model
+passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes
+in #1740, #1743, #1742, and #1744. Thanks to **Nightt
+([@nightt5879](https://github.com/nightt5879))** for the Ctrl+C prompt restore
+fix in #1764. Thanks to **Bevis** and the community reports that surfaced the
+compaction failure mode addressed in this release.
+
 ## [0.8.39] - 2026-05-17
 
 ### Fixed
@@ -4364,7 +4420,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.39...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.40...HEAD
+[0.8.40]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.39...v0.8.40
 [0.8.39]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.38...v0.8.39
 [0.8.38]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.37...v0.8.38
 [0.8.37]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.36...v0.8.37
