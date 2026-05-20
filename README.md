@@ -255,6 +255,10 @@ deepseek --provider nvidia-nim
 deepseek auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
 deepseek --provider atlascloud
 
+# Wanjie Ark
+deepseek auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
+deepseek --provider wanjie-ark --model deepseek-reasoner
+
 # OpenRouter
 deepseek auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
 deepseek --provider openrouter --model deepseek/deepseek-v4-pro
@@ -283,10 +287,9 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 ```
 
 Inside the TUI, `/provider` opens the provider picker and `/model` opens the
-model picker. `/provider openrouter` and `/model <id>` switch directly, while
-`/models` lists live API models. The `/model` picker uses the active provider's
-live model catalog when the provider exposes one, with provider-aware defaults
-as a fallback.
+local model/thinking picker. `/provider openrouter` and `/model <id>` switch
+directly, while `/models` explicitly fetches and lists live API models when the
+active provider supports model listing.
 
 ---
 
@@ -411,13 +414,14 @@ Key environment variables:
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
+| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
 | `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Allow non-local `http://` API base URLs on trusted networks |
-| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | Generic OpenAI-compatible endpoint and model ID |
 | `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | AtlasCloud endpoint and model override |
+| `WANJIE_ARK_BASE_URL` / `WANJIE_ARK_MODEL` | Wanjie Ark endpoint and model override |
 | `OPENROUTER_BASE_URL` | OpenRouter endpoint override |
 | `NOVITA_BASE_URL` | Novita endpoint override |
 | `FIREWORKS_BASE_URL` | Fireworks endpoint override |

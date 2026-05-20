@@ -905,7 +905,10 @@ pub(super) fn apply_reasoning_effort(
                     "enable_thinking": false,
                 });
             }
-            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
+            ApiProvider::Openai
+            | ApiProvider::Atlascloud
+            | ApiProvider::WanjieArk
+            | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -930,7 +933,10 @@ pub(super) fn apply_reasoning_effort(
                 });
                 body["reasoning_effort"] = json!("high");
             }
-            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
+            ApiProvider::Openai
+            | ApiProvider::Atlascloud
+            | ApiProvider::WanjieArk
+            | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -956,7 +962,10 @@ pub(super) fn apply_reasoning_effort(
                 });
                 body["reasoning_effort"] = json!("max");
             }
-            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
+            ApiProvider::Openai
+            | ApiProvider::Atlascloud
+            | ApiProvider::WanjieArk
+            | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,

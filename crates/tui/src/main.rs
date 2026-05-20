@@ -1473,6 +1473,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "ATLASCLOUD_API_KEY",
                     "deepseek auth set --provider atlascloud --api-key \"...\"",
                 ),
+                crate::config::ApiProvider::WanjieArk => (
+                    "WANJIE_ARK_API_KEY",
+                    "deepseek auth set --provider wanjie-ark --api-key \"...\"",
+                ),
                 crate::config::ApiProvider::Openrouter => (
                     "OPENROUTER_API_KEY",
                     "deepseek auth set --provider openrouter --api-key \"...\"",
@@ -1507,6 +1511,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::NvidiaNim => "nvidia_nim",
                     crate::config::ApiProvider::Openai => "openai",
                     crate::config::ApiProvider::Atlascloud => "atlascloud",
+                    crate::config::ApiProvider::WanjieArk => "wanjie_ark",
                     crate::config::ApiProvider::Openrouter => "openrouter",
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
@@ -1717,6 +1722,25 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             crate::config::ApiProvider::NvidiaNim,
             "nvidia-nim",
             &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::Openai,
+            "openai",
+            &["OPENAI_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::Atlascloud,
+            "atlascloud",
+            &["ATLASCLOUD_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::WanjieArk,
+            "wanjie-ark",
+            &[
+                "WANJIE_ARK_API_KEY",
+                "WANJIE_API_KEY",
+                "WANJIE_MAAS_API_KEY",
+            ][..],
         ),
         (
             crate::config::ApiProvider::Openrouter,
