@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.40] - 2026-05-18
 
+### Added
+
+- **Configurable sub-agent per-step API timeout.** A new
+  `[subagents] api_timeout_secs` setting in `~/.deepseek/config.toml`
+  controls how long each sub-agent step will wait on a DeepSeek
+  `create_message` response before falling back. The value is clamped to
+  `1..=1800`; `0` or unset preserves the legacy 120-second default, so
+  existing installs see no behavior change. Long-thinking children (e.g.
+  heavy plan or review work behind `agent_open`) can extend the timeout
+  without recompiling (#1806, #1808).
+- **Delegated file-write permissions for write-capable sub-agent roles.**
+  `implementer` and `custom` sub-agents may now run `Suggest`-level write
+  tools (`write_file`, `edit_file`, `apply_patch`) without the parent
+  runtime being auto-approved. Read-only stances (`explore`, `plan`,
+  `review`, `verifier`) and the default `general` role still bounce
+  approval-gated tools so they can't quietly mutate the workspace, and
+  `Required`-level tools (shell, etc.) still need parent auto-approve
+  regardless of role. Pick `implementer` (or pass an explicit `custom`
+  allowlist) when the delegated task needs to land file changes
+  (#1828, #1833).
+
 ### Fixed
 
 - **WSL2 and headless Linux startup no longer blocks on clipboard init.** The
@@ -73,6 +94,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to persisted active turns after the long-connection client starts, and text
   chunking no longer splits emoji or other multi-code-unit characters.
 
+### Changed
+
+- **Slash-command autocomplete ranks exact alias matches first.** Typing
+  `/q` now surfaces `/exit` (whose alias `q` is an exact match) above
+  `/clear` (which only matches by the longer pinyin alias `qingping`).
+  Within each rank tier the menu still falls back to alphabetical name
+  order for deterministic display (#1811).
+
 ### Thanks
 
 Thanks to **jayzhu ([@zlh124](https://github.com/zlh124))** for the WSL2
@@ -85,8 +114,18 @@ composer work in #1748/#1749, plus the per-process log filename follow-up in
 passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes
 in #1740, #1743, #1742, and #1744. Thanks to **Nightt
 ([@nightt5879](https://github.com/nightt5879))** for the Ctrl+C prompt restore
-fix in #1764. Thanks to **Bevis** and the community reports that surfaced the
-compaction failure mode addressed in this release.
+fix in #1764. Thanks to **Ling ([@LING71671](https://github.com/LING71671);
+commits as `www17 <ivonrust@gmail.com>`)** for the configurable sub-agent API
+timeout in #1808, harvested with `1..=1800` clamping and a fail-fast guard
+so a stray `api_timeout_secs = 0` keeps the legacy 120-second default.
+Thanks to **[@knqiufan](https://github.com/knqiufan)** for the sub-agent
+file-write delegation work in #1833, harvested with structured approval-
+gate semantics (`Implementer` and `Custom` only, never `Required`-level
+tools) so write-capable children can actually land code without bypassing
+the `Required` approval class. Thanks to **[@IIzzaya](https://github.com/IIzzaya)**
+for the exact-alias-first slash-completion ordering idea in #1811, landed
+with a focused regression test. Thanks to **Bevis** and the community reports
+that surfaced the compaction failure mode addressed in this release.
 
 ## [0.8.39] - 2026-05-17
 
