@@ -1164,6 +1164,7 @@ fn child_runtime_increments_depth_and_preserves_auto_approve() {
     parent.context.auto_approve = false; // parent in suggest mode
     let child = parent.child_runtime();
     assert_eq!(child.spawn_depth, 2, "child depth = parent + 1");
+    assert_eq!(child.step_api_timeout, DEFAULT_STEP_API_TIMEOUT);
     assert!(
         !child.context.auto_approve,
         "child must inherit parent approval state"
@@ -1176,6 +1177,18 @@ fn child_runtime_increments_depth_and_preserves_auto_approve() {
         auto_child.context.auto_approve,
         "auto-approved parents should still create auto-approved children"
     );
+}
+
+#[test]
+fn child_and_background_runtimes_preserve_step_api_timeout() {
+    let timeout = Duration::from_secs(7);
+    let parent = stub_runtime().with_step_api_timeout(timeout);
+
+    let child = parent.child_runtime();
+    assert_eq!(child.step_api_timeout, timeout);
+
+    let background = parent.background_runtime();
+    assert_eq!(background.step_api_timeout, timeout);
 }
 
 #[tokio::test]
@@ -1434,6 +1447,7 @@ fn stub_runtime() -> SubAgentRuntime {
         mailbox: None,
         parent_completion_tx: None,
         fork_context: None,
+        step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
     }
 }
 

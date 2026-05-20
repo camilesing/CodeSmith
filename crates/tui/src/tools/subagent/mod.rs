@@ -67,7 +67,13 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-step LLM API call timeout. Each `create_message` request must complete
 /// within this window or the step is treated as timed out. Prevents a single
 /// stuck API call from blocking the sub-agent indefinitely.
-const STEP_API_TIMEOUT: Duration = Duration::from_secs(120);
+/// Legacy fallback for the per-step DeepSeek API timeout. The active timeout
+/// now travels on `SubAgentRuntime::step_api_timeout` so users can override
+/// it via `[subagents] api_timeout_secs` in `~/.deepseek/config.toml`. The
+/// constant only exists for tests/stub runtimes that need a hard-coded
+/// default; production runtimes set the field explicitly (#1806, #1808).
+const DEFAULT_STEP_API_TIMEOUT: Duration =
+    Duration::from_secs(crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS);
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_RESULT_TIMEOUT_MS: u64 = 30_000;
 #[allow(dead_code)] // Legacy agent_wait clamp; new agent_eval uses DEFAULT/MAX.
@@ -643,6 +649,12 @@ pub struct SubAgentRuntime {
     pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
     /// Snapshot of the request prefix visible to an opt-in forked child.
     pub fork_context: Option<SubAgentForkContext>,
+    /// Per-step DeepSeek API timeout for the child's `create_message` call.
+    /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800) at
+    /// engine construction so a slow but legitimate model turn does not
+    /// false-timeout the child mid-thinking. `child_runtime()` and
+    /// `background_runtime()` preserve the parent's value (#1806, #1808).
+    pub step_api_timeout: Duration,
 }
 
 impl SubAgentRuntime {
@@ -676,7 +688,18 @@ impl SubAgentRuntime {
             mailbox: None,
             parent_completion_tx: None,
             fork_context: None,
+            step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
         }
+    }
+
+    /// Override the per-step DeepSeek API timeout (default
+    /// `DEFAULT_STEP_API_TIMEOUT`). Called by the engine after reading
+    /// `[subagents] api_timeout_secs`. Tests may use this to fail fast
+    /// without waiting the legacy 120 seconds (#1806, #1808).
+    #[must_use]
+    pub fn with_step_api_timeout(mut self, timeout: Duration) -> Self {
+        self.step_api_timeout = timeout;
+        self
     }
 
     /// Attach the wakeup channel so the engine's parent turn loop can resume
@@ -799,6 +822,7 @@ impl SubAgentRuntime {
             mailbox: self.mailbox.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
             fork_context: self.fork_context.clone(),
+            step_api_timeout: self.step_api_timeout,
         }
     }
 
@@ -3534,8 +3558,8 @@ async fn run_subagent(
                     from_prior_session: false,
                 });
             }
-            api = tokio::time::timeout(STEP_API_TIMEOUT, runtime.client.create_message(request)) => {
-                api.map_err(|_| anyhow!("API call timed out after {}s", STEP_API_TIMEOUT.as_secs()))??
+            api = tokio::time::timeout(runtime.step_api_timeout, runtime.client.create_message(request)) => {
+                api.map_err(|_| anyhow!("API call timed out after {}s", runtime.step_api_timeout.as_secs()))??
             }
         };
 

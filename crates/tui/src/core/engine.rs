@@ -166,6 +166,11 @@ pub struct EngineConfig {
     pub search_provider: crate::config::SearchProvider,
     /// API key for Tavily or Bocha. `None` for Bing or DuckDuckGo.
     pub search_api_key: Option<String>,
+    /// Per-step DeepSeek API timeout for sub-agent `create_message` requests.
+    /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800)
+    /// once at engine construction, then threaded onto every
+    /// `SubAgentRuntime` the engine builds (#1806, #1808).
+    pub subagent_api_timeout: Duration,
 }
 
 impl Default for EngineConfig {
@@ -206,6 +211,9 @@ impl Default for EngineConfig {
             workshop: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
+            subagent_api_timeout: Duration::from_secs(
+                crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS,
+            ),
         }
     }
 }
@@ -656,6 +664,7 @@ impl Engine {
                         self.session.reasoning_effort_auto,
                     )
                     .with_max_spawn_depth(self.config.max_spawn_depth)
+                    .with_step_api_timeout(self.config.subagent_api_timeout)
                     .background_runtime();
                     let route = resolve_subagent_assignment_route(&runtime, None, &prompt).await;
                     runtime.model = route.model;
@@ -1063,6 +1072,7 @@ impl Engine {
                             self.session.reasoning_effort_auto,
                         )
                         .with_max_spawn_depth(self.config.max_spawn_depth)
+                        .with_step_api_timeout(self.config.subagent_api_timeout)
                         .with_parent_completion_tx(self.tx_subagent_completion.clone());
                         if let Some(context) = fork_context_for_runtime.clone() {
                             rt = rt.with_fork_context(context);

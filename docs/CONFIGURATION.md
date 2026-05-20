@@ -447,12 +447,14 @@ If you are upgrading from older releases:
   related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are
   `default_model`, `worker_model`, `explorer_model`, `awaiter_model`,
-  `review_model`, `custom_model`, and `max_concurrent`. The
+  `review_model`, `custom_model`, `max_concurrent`, and `api_timeout_secs`. The
   `[subagents] max_concurrent` value overrides top-level `max_subagents` and is
-  also clamped to `1..=20`. `[subagents.models]` accepts lower-case role or type
-  keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
-  `review`. Values must normalize to a supported DeepSeek model id before an
-  agent is spawned.
+  also clamped to `1..=20`; `[subagents] api_timeout_secs` controls the
+  per-step API timeout for sub-agent model calls and is clamped to `1..=1800`,
+  with `0` or unset preserving the legacy 120 second default.
+  `[subagents.models]` accepts lower-case role or type keys such as `worker`,
+  `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
+  to a supported DeepSeek model id before an agent is spawned.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is
   a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
   `./skills` are preferred when present; the runtime also discovers global
