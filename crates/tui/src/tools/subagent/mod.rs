@@ -602,8 +602,10 @@ pub struct SubAgentForkContext {
 /// Runtime configuration for spawning sub-agents.
 ///
 /// Carries everything a child needs to (a) build its own tool registry —
-/// including the manager so grandchildren can spawn — and (b) cooperate
-/// with the rest of the spawn tree on cancellation and depth cap.
+/// including the manager so grandchildren can spawn — and (b) cooperate with
+/// lifecycle cancellation and depth caps. `child_runtime()` links cancellation
+/// tokens, while `background_runtime()` deliberately detaches long-running
+/// `agent_open` sessions from the caller's turn token.
 #[derive(Clone)]
 pub struct SubAgentRuntime {
     pub client: DeepSeekClient,
@@ -625,8 +627,9 @@ pub struct SubAgentRuntime {
     /// exceed this is rejected at the spawn entry. Use `>` (strictly
     /// greater than) so equality is allowed — matches codex's pattern.
     pub max_spawn_depth: u32,
-    /// Cooperative cancellation token. Children derive a child_token() from
-    /// the parent so cancelling the root cascades down.
+    /// Cooperative cancellation token. Direct `child_runtime()` callers derive
+    /// a child token from the parent; model-visible `agent_open` uses
+    /// `background_runtime()` to replace that token with a detached one.
     pub cancel_token: CancellationToken,
     /// Structured progress / lifecycle stream. Cloned across children so the
     /// whole spawn tree publishes into one ordered, fan-out-able mailbox.
@@ -696,10 +699,10 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Attach a `Mailbox` so this runtime (and every descendant — children
-    /// clone it) publishes structured `MailboxMessage` envelopes alongside
-    /// the legacy `Event` stream. Pair with [`Self::with_cancel_token`] when
-    /// you want close-as-cancel to propagate the same way.
+    /// Attach a `Mailbox` so this runtime and its derived children publish
+    /// structured `MailboxMessage` envelopes alongside the legacy `Event`
+    /// stream. Pair with [`Self::with_cancel_token`] when the mailbox close
+    /// token should match this runtime's cancellation token.
     #[must_use]
     #[allow(dead_code)] // wired by #128 (in-transcript cards) when it lands.
     pub fn with_mailbox(mut self, mailbox: Mailbox) -> Self {
@@ -3389,9 +3392,9 @@ async fn run_subagent(
     let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
 
     for _step in 0..max_steps {
-        // Cooperative cancellation: bail if the parent (or root) cancelled
-        // us while we were between steps. Children derive their token from
-        // the parent's via `child_token()` so this propagates the whole tree.
+        // Cooperative cancellation: bail if this session's token was cancelled
+        // while we were between steps. Top-level model-visible sub-agents use
+        // a detached token so parent turn cancellation does not stop them.
         if runtime.cancel_token.is_cancelled() {
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
