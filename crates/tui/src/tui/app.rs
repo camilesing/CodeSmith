@@ -419,8 +419,17 @@ fn strip_raw_mouse_report_runs(input: &str, cursor: usize) -> Option<(String, us
                 index += 1;
             }
             let run = &chars[start..index];
-            if looks_like_raw_mouse_report_run(run) {
+            if let Some(keep) = raw_mouse_report_keep_mask(run) {
                 changed = true;
+                for (offset, ch) in run.iter().copied().enumerate() {
+                    if !keep[offset] {
+                        continue;
+                    }
+                    if start + offset < cursor {
+                        new_cursor += 1;
+                    }
+                    output.push(ch);
+                }
                 continue;
             }
             for (offset, ch) in run.iter().copied().enumerate() {
@@ -463,6 +472,98 @@ fn looks_like_raw_mouse_report_run(run: &[char]) -> bool {
 
 fn has_sgr_mouse_marker(run: &[char]) -> bool {
     run.windows(2).any(|window| window == ['[', '<'])
+}
+
+fn raw_mouse_report_keep_mask(run: &[char]) -> Option<Vec<bool>> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut index = 0usize;
+
+    while index < run.len() {
+        let (start, body_start) = if run[index] == '\x1b'
+            && run.get(index + 1) == Some(&'[')
+            && run.get(index + 2) == Some(&'<')
+        {
+            (index, index + 3)
+        } else if run[index] == '[' && run.get(index + 1) == Some(&'<') {
+            (index, index + 2)
+        } else {
+            index += 1;
+            continue;
+        };
+
+        let mut end = body_start;
+        let mut has_digit = false;
+        let mut has_separator = false;
+        let mut matched = false;
+        while end < run.len() {
+            match run[end] {
+                '0'..='9' => {
+                    has_digit = true;
+                    end += 1;
+                }
+                ';' | ':' => {
+                    has_separator = true;
+                    end += 1;
+                }
+                'M' | 'm' if has_digit && has_separator => {
+                    ranges.push((start, end + 1));
+                    index = end + 1;
+                    matched = true;
+                    break;
+                }
+                _ => break,
+            }
+        }
+        if !matched {
+            index = index.saturating_add(1);
+        }
+    }
+
+    if ranges.is_empty() {
+        if looks_like_raw_mouse_report_run(run) {
+            return Some(vec![false; run.len()]);
+        }
+        return None;
+    }
+
+    ranges.sort_unstable_by_key(|(start, _)| *start);
+    let first_start = ranges[0].0;
+    let mut prefix_start = first_start;
+    while prefix_start > 0 && is_raw_mouse_report_fragment_char(run[prefix_start - 1]) {
+        prefix_start -= 1;
+    }
+    if prefix_start < first_start
+        && looks_like_raw_mouse_report_fragment(&run[prefix_start..first_start])
+    {
+        ranges.push((prefix_start, first_start));
+    }
+
+    let last_end = ranges.iter().map(|(_, end)| *end).max().unwrap_or_default();
+    if last_end < run.len() && looks_like_raw_mouse_report_fragment(&run[last_end..]) {
+        ranges.push((last_end, run.len()));
+    }
+
+    ranges.sort_unstable_by_key(|(start, _)| *start);
+    let mut keep = vec![true; run.len()];
+    for (start, end) in ranges {
+        for slot in keep.iter_mut().take(end.min(run.len())).skip(start) {
+            *slot = false;
+        }
+    }
+    Some(keep)
+}
+
+fn is_raw_mouse_report_fragment_char(ch: char) -> bool {
+    matches!(ch, ';' | ':' | 'M' | 'm') || ch.is_ascii_digit()
+}
+
+fn looks_like_raw_mouse_report_fragment(run: &[char]) -> bool {
+    if run.len() < 4 {
+        return false;
+    }
+    run.iter().any(|ch| ch.is_ascii_digit())
+        && run.iter().any(|ch| matches!(ch, ';' | ':'))
+        && run.iter().any(|ch| matches!(ch, 'M' | 'm'))
 }
 
 const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
@@ -4502,6 +4603,30 @@ mod tests {
 
         assert_eq!(app.input, "draft ");
         assert_eq!(app.cursor_position, "draft ".chars().count());
+    }
+
+    #[test]
+    fn composer_preserves_draft_suffix_when_stripping_mouse_report() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_mouse_capture = true;
+        app.insert_str("commit -m");
+
+        app.insert_str("[<65;44;18M");
+
+        assert_eq!(app.input, "commit -m");
+        assert_eq!(app.cursor_position, "commit -m".chars().count());
+    }
+
+    #[test]
+    fn composer_preserves_numeric_draft_when_stripping_mouse_report() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_mouse_capture = true;
+        app.insert_str("123");
+
+        app.insert_str("[<65;44;18M");
+
+        assert_eq!(app.input, "123");
+        assert_eq!(app.cursor_position, 3);
     }
 
     #[test]
