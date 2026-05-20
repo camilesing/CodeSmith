@@ -85,7 +85,7 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 - **Prefix-cache stability tracking** — an optional `/statusline` footer chip surfaces how stable the cached prefix has been across recent turns so cost-busting edits are visible before they land
 - **Three modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved)
 - **Reasoning-effort tiers** — cycle through `off → high → max` with `Shift + Tab`
-- **Session save/resume** — checkpoint and resume long-running sessions
+- **Session save/resume/fork** — checkpoint long-running sessions and fork saved conversations into sibling paths with parent lineage shown in the picker
 - **Workspace rollback** — side-git pre/post-turn snapshots with `/restore` and `revert_turn`, without touching your repo's `.git`
 - **OS-level sandbox** — Seatbelt on macOS, Landlock on Linux, Job Objects on Windows; shell commands run with workspace-scoped filesystem access only
 - **Durable task queue** — background tasks can survive restarts
@@ -320,7 +320,7 @@ deepseek models                                  # list live API models
 deepseek sessions                                # list saved sessions
 deepseek resume --last                           # resume the most recent session in this workspace
 deepseek resume <SESSION_ID>                     # resume a specific session by UUID
-deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
+deepseek fork <SESSION_ID>                       # fork a saved session into a sibling path
 deepseek serve --http                            # HTTP/SSE API server
 deepseek serve --acp                             # ACP stdio adapter for Zed/custom agents
 deepseek run pr <N>                              # fetch PR and pre-seed review prompt
@@ -329,6 +329,19 @@ deepseek mcp validate                            # validate MCP config/connectiv
 deepseek mcp-server                              # run dispatcher MCP stdio server
 deepseek update                                  # check for and apply binary updates
 ```
+
+### Branching Conversations
+
+Saved sessions are intentionally branchable. `deepseek fork <SESSION_ID>` copies
+an existing saved session into a new sibling session, records the parent session
+id in metadata, and opens that fork so you can explore an alternate direction
+without polluting the original path. The session picker and `deepseek sessions`
+mark forked sessions with their parent id.
+
+Inside the TUI, Esc-Esc backtrack can rewind the active transcript to a prior
+user prompt and put that prompt back in the composer for editing. `/restore`
+and `revert_turn` are separate workspace rollback tools: they restore files
+from side-git snapshots but do not rewrite conversation history.
 
 Docker images are published to GHCR for release builds:
 
@@ -571,6 +584,10 @@ This project ships with help from a growing community of contributors:
 - **[mdrkrg](https://github.com/mdrkrg)** — first-run onboarding crash fix when the API key is missing (#1598)
 - **[Aitensa](https://github.com/Aitensa)** — CJK wrapping propagation for diff and pager output (#1622)
 - **[qiyan233](https://github.com/qiyan233)** — legacy DeepSeek CN provider alias compatibility (#1645)
+- **[zlh124](https://github.com/zlh124)** — WSL2/headless startup report and clipboard-init fix (#1772, #1773)
+- **[aboimpinto](https://github.com/aboimpinto)** — Windows alt-screen logging, Home/End composer, and runtime log follow-ups (#1774, #1776, #1748, #1749, #1782, #1783)
+- **[LeoLin990405](https://github.com/LeoLin990405)** — provider model passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes (#1740, #1743, #1742, #1744)
+- **[nightt5879](https://github.com/nightt5879)** — Ctrl+C prompt restore fix (#1764)
 
 ---
 

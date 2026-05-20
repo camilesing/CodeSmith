@@ -1280,6 +1280,8 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
             workspace: PathBuf::from("/tmp/resume-recovery"),
             mode: Some("yolo".to_string()),
             cost: crate::session_manager::SessionCostSnapshot::default(),
+            parent_session_id: None,
+            forked_from_message_count: None,
         },
         messages,
         system_prompt: None,

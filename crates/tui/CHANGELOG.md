@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OpenAI-compatible custom model names are preserved.** Non-DeepSeek
   providers now pass explicit model names through instead of rewriting them to
   a DeepSeek default (#1714, #1740).
+- **Wanjie Ark is a first-class provider.** `--provider wanjie-ark`, the TUI
+  provider picker, `deepseek auth`, doctor, and config files now target
+  Wanjie's OpenAI-compatible MaaS endpoint with pass-through model IDs and
+  Wanjie-specific env vars.
 - **DeepSeek reasoning replay works through OpenAI-compatible endpoints.**
   DeepSeek models selected under the generic `openai` provider now replay
   prior `reasoning_content` consistently and classify streamed reasoning the
@@ -42,10 +46,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and canceled child agents now store the full child message transcript behind
   `transcript_handle`, so the parent can inspect details with `handle_read`
   instead of relying only on a lossy summary (#1738).
+- **Forked saved sessions now keep visible lineage.** `deepseek fork` records
+  the parent session id and fork-time message count in additive metadata, and
+  session listings mark forked paths with their source id. This gives users a
+  bounded branchable-conversation workflow while the larger visual tree browser
+  stays scoped for a future release.
 - **Repeated shell wait rows collapse in the Tasks sidebar.** Multiple live
   `task_shell_wait` polls for the same background job now render as one row
   with an explicit collapsed-wait count, reducing the stuck-task appearance
   tracked for v0.8.40 (#1737).
+- **Leaked mouse scroll reports no longer erase composer draft suffixes.** If
+  a terminal delivers raw SGR mouse bytes into the input stream, the sanitizer
+  now strips only the mouse report and adjacent coordinate fragments instead
+  of deleting legitimate draft text such as `commit -m` or numeric prompts
+  (#1778).
+- **TUI runtime logs are separated per process and pruned on startup.** Each
+  session now writes `~/.deepseek/logs/tui-YYYY-MM-DD-PID.log`, and startup
+  removes stale TUI logs older than seven days by default. Set
+  `DEEPSEEK_LOG_RETENTION_DAYS` to a positive day count to adjust retention
+  (#1782, #1784).
+- **The offline eval harness preserves quoted Windows shell payloads.** Its
+  `exec_shell` step now uses the same single-payload shape as the runtime shell
+  path, with raw `cmd /C` arguments on Windows so quoted commands remain intact
+  (#1779).
+- **The Feishu/Lark bridge recovers better after restarts.** It now reattaches
+  to persisted active turns after the long-connection client starts, and text
+  chunking no longer splits emoji or other multi-code-unit characters.
 
 ### Thanks
 
@@ -53,7 +79,8 @@ Thanks to **jayzhu ([@zlh124](https://github.com/zlh124))** for the WSL2
 startup report and clipboard-init fix in #1772/#1773. Thanks to **Paulo Aboim
 Pinto ([@aboimpinto](https://github.com/aboimpinto))** for the Windows
 alt-screen logging report and fix in #1774/#1776, and for the Home/End
-composer work in #1748/#1749. Thanks to **Zhongyue Lin
+composer work in #1748/#1749, plus the per-process log filename follow-up in
+#1782/#1783. Thanks to **Zhongyue Lin
 ([@LeoLin990405](https://github.com/LeoLin990405))** for the provider model
 passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes
 in #1740, #1743, #1742, and #1744. Thanks to **Nightt

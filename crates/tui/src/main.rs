@@ -3152,6 +3152,7 @@ fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Res
         system_prompt.as_ref(),
     );
     forked.metadata.copy_cost_from(&saved.metadata);
+    forked.metadata.mark_forked_from(&saved.metadata);
     manager.save_session(&forked)?;
 
     let source_title = saved.metadata.title.trim();
