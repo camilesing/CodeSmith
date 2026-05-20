@@ -713,6 +713,7 @@ fn test_subagent_tool_registry_reports_unavailable_tools() {
     runtime.allow_shell = false;
     let registry = SubAgentToolRegistry::new(
         runtime,
+        SubAgentType::Explore,
         Some(vec!["read_file".to_string(), "missing_tool".to_string()]),
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
@@ -731,6 +732,7 @@ fn test_review_agent_tools_exclude_agent_spawn() {
     // None = full parent tool inheritance (the default for builtin types).
     let registry = SubAgentToolRegistry::new(
         runtime,
+        SubAgentType::Review,
         None,
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
@@ -1197,6 +1199,7 @@ async fn subagent_registry_blocks_approval_tools_without_parent_auto_approve() {
     runtime.context.auto_approve = false;
     let registry = SubAgentToolRegistry::new(
         runtime,
+        SubAgentType::General,
         Some(vec!["exec_shell".to_string()]),
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
@@ -1211,6 +1214,173 @@ async fn subagent_registry_blocks_approval_tools_without_parent_auto_approve() {
         err.to_string().contains("requires approval"),
         "unexpected error: {err}"
     );
+}
+
+#[tokio::test]
+async fn implementer_delegation_allows_suggest_write_without_parent_auto_approve() {
+    // Issue #1828: implementer agents could not write files even when their
+    // whole job is to land code changes, because the registry blocked every
+    // approval-gated tool when the parent ran in `suggest` mode. The
+    // hardened gate (#1833) delegates `Suggest`-level tools (write_file,
+    // edit_file, apply_patch) to write-capable roles.
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(workspace.clone());
+    runtime.context.auto_approve = false;
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::Implementer,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    let result = registry
+        .execute(
+            "agent_test",
+            "write_file",
+            json!({"path": "delegated.txt", "content": "hello"}),
+        )
+        .await
+        .expect("delegated write should be allowed for implementer");
+
+    let written = std::fs::read_to_string(workspace.join("delegated.txt"))
+        .expect("file should exist after delegated write");
+    assert_eq!(written, "hello");
+    assert!(
+        !result.contains("requires approval"),
+        "successful write should not look like an approval error: {result}"
+    );
+}
+
+#[tokio::test]
+async fn general_delegation_still_blocks_suggest_write_without_parent_auto_approve() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(workspace.clone());
+    runtime.context.auto_approve = false;
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    let err = registry
+        .execute(
+            "agent_test",
+            "write_file",
+            json!({"path": "general.txt", "content": "ok"}),
+        )
+        .await
+        .expect_err("general agent should not silently gain write permission");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not delegated to general sub-agents"),
+        "general writes should be rejected with a role-aware message: {msg}"
+    );
+
+    assert!(
+        !workspace.join("general.txt").exists(),
+        "general write must not land without parent auto-approve"
+    );
+}
+
+#[tokio::test]
+async fn explore_role_still_blocks_suggest_writes_without_parent_auto_approve() {
+    // Read-only stances (explore, plan, review, verifier) must not gain
+    // write capabilities via delegation — otherwise a parent that asked
+    // for "just look at the code" could find files mutated behind its back.
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.context.auto_approve = false;
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::Explore,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    let err = registry
+        .execute(
+            "agent_test",
+            "write_file",
+            json!({"path": "should_not_appear.txt", "content": "denied"}),
+        )
+        .await
+        .expect_err("explore agents must not write");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not delegated to explore sub-agents"),
+        "explore writes should be rejected with a role-aware message: {msg}"
+    );
+    assert!(
+        !tmp.path().join("should_not_appear.txt").exists(),
+        "file must not have been written"
+    );
+}
+
+#[tokio::test]
+async fn delegated_write_role_still_blocks_required_tools() {
+    // Required-level tools (exec_shell, etc.) remain gated behind parent
+    // auto-approve regardless of role. Implementer can write files, but it
+    // still can't bypass shell approval just because it's a "write" role.
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.context.auto_approve = false;
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::Implementer,
+        Some(vec!["exec_shell".to_string()]),
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    let err = registry
+        .execute("agent_test", "exec_shell", json!({"command": "echo hi"}))
+        .await
+        .expect_err("Required-level shell must still need parent auto-approve");
+    assert!(
+        err.to_string().contains(
+            "cannot run inside this sub-agent unless the parent session is auto-approved"
+        ),
+        "expected Required-level approval message, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn auto_approved_parent_runs_required_tools_in_subagent() {
+    // Baseline: when the parent runtime IS auto-approved, every approval
+    // class is permitted (same as before the delegation hardening).
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.context.auto_approve = true;
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    // Calling exec_shell with interactive=true is what we block via the
+    // separate terminal-takeover guard; pick the simpler write-file path
+    // to assert that approval gating is off when auto_approve is set.
+    registry
+        .execute(
+            "agent_test",
+            "write_file",
+            json!({"path": "auto.txt", "content": "auto"}),
+        )
+        .await
+        .expect("auto-approved parent should allow writes");
 }
 
 #[test]
@@ -1754,6 +1924,46 @@ fn child_runtime_propagates_completion_tx_for_gating() {
     assert!(
         child.parent_completion_tx.is_some(),
         "child carries the wakeup channel forward"
+    );
+}
+
+#[test]
+fn subagent_runtime_default_step_api_timeout_is_legacy_120s() {
+    // The legacy hardcoded constant is now the default field value so existing
+    // call sites and tests that construct a runtime without explicit timeout
+    // wiring keep their old behavior (#1806, #1808).
+    let runtime = stub_runtime();
+    assert_eq!(runtime.step_api_timeout, DEFAULT_STEP_API_TIMEOUT);
+    assert_eq!(
+        DEFAULT_STEP_API_TIMEOUT,
+        std::time::Duration::from_secs(crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS)
+    );
+}
+
+#[test]
+fn with_step_api_timeout_overrides_runtime_field() {
+    let runtime = stub_runtime().with_step_api_timeout(std::time::Duration::from_secs(900));
+    assert_eq!(runtime.step_api_timeout.as_secs(), 900);
+}
+
+#[test]
+fn child_runtime_preserves_step_api_timeout() {
+    // Real sub-agents spawn through `child_runtime()` / `background_runtime()`;
+    // forgetting to clone the timeout would silently drop the user's config
+    // override and resurrect the 120 s default for every child step.
+    let parent = stub_runtime().with_step_api_timeout(std::time::Duration::from_secs(900));
+    let child = parent.child_runtime();
+    let background = parent.background_runtime();
+
+    assert_eq!(
+        child.step_api_timeout.as_secs(),
+        900,
+        "child_runtime must preserve parent's per-step timeout"
+    );
+    assert_eq!(
+        background.step_api_timeout.as_secs(),
+        900,
+        "background_runtime (detached) must also preserve the parent's timeout"
     );
 }
 

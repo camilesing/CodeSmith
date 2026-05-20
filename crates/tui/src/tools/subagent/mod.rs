@@ -3389,6 +3389,7 @@ async fn run_subagent(
     });
     let tool_registry = SubAgentToolRegistry::new(
         runtime_for_tools,
+        agent_type.clone(),
         allowed_tools.clone(),
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
@@ -4416,7 +4417,9 @@ fn emit_agent_progress(
 /// - **Full inheritance** (`allowed_tools = None`): the child sees the same
 ///   tool surface as the parent's Agent mode — every tool family including
 ///   `with_subagent_tools` (so it can recurse). Approval-gated tools are
-///   callable only when the parent runtime is auto-approved.
+///   callable only when the parent runtime is auto-approved or, for explicit
+///   write-capable roles (`implementer`, `custom`), when the tool's approval
+///   requirement is `Suggest`.
 /// - **Explicit narrow** (`allowed_tools = Some(list)`): legacy / Custom
 ///   path. The registry still builds the full surface, but only the listed
 ///   tool names are visible to the model and callable.
@@ -4425,12 +4428,17 @@ struct SubAgentToolRegistry {
     /// only the listed tools are visible to the model and callable.
     allowed_tools: Option<Vec<String>>,
     auto_approve: bool,
+    /// The role/type of the sub-agent that this registry belongs to. Used to
+    /// decide whether `Suggest`-level tools (write/edit/patch) may run inside
+    /// the child without the parent runtime being auto-approved (#1828, #1833).
+    agent_type: SubAgentType,
     registry: ToolRegistry,
 }
 
 impl SubAgentToolRegistry {
     fn new(
         runtime: SubAgentRuntime,
+        agent_type: SubAgentType,
         explicit_allowed_tools: Option<Vec<String>>,
         todo_list: SharedTodoList,
         plan_state: SharedPlanState,
@@ -4455,8 +4463,20 @@ impl SubAgentToolRegistry {
         Self {
             allowed_tools: explicit_allowed_tools,
             auto_approve: runtime.context.auto_approve,
+            agent_type,
             registry,
         }
+    }
+
+    /// Whether this role is allowed to use `Suggest`-level tools (write_file,
+    /// edit_file, apply_patch, ...) without the parent runtime being
+    /// auto-approved. Read-only stances (`explore`, `plan`, `review`,
+    /// `verifier`) stay blocked so they can't quietly mutate the workspace
+    /// while a non-auto parent is delegating bounded investigation.
+    /// `Required`-level tools (shell, etc.) still need parent auto-approve
+    /// regardless of role (#1828, #1833).
+    fn role_can_delegate_writes(agent_type: &SubAgentType) -> bool {
+        matches!(agent_type, SubAgentType::Implementer | SubAgentType::Custom)
     }
 
     /// Whether a given tool name is permitted under this child's filter.
@@ -4511,10 +4531,30 @@ impl SubAgentToolRegistry {
             let Some(spec) = self.registry.get(name) else {
                 return Err(anyhow!("Tool {name} is not registered"));
             };
-            if spec.approval_requirement() != ApprovalRequirement::Auto {
-                return Err(anyhow!(
-                    "Tool {name} requires approval and cannot run inside this sub-agent unless the parent session is auto-approved"
-                ));
+            match spec.approval_requirement() {
+                ApprovalRequirement::Auto => {}
+                ApprovalRequirement::Suggest => {
+                    // Write/edit/patch tools land here. Explicit
+                    // write-capable roles (`implementer`, `custom`) may run them
+                    // without parent auto-approve so that delegated work
+                    // can actually land file changes; the previous
+                    // behavior blocked every write under `suggest` mode
+                    // even for the role explicitly chartered to write
+                    // (#1828, #1833). Read-only roles still bounce so
+                    // exploration/review/planning/verifier children
+                    // can't mutate the workspace behind the parent's back.
+                    if !Self::role_can_delegate_writes(&self.agent_type) {
+                        return Err(anyhow!(
+                            "Tool {name} requires approval and is not delegated to {role} sub-agents; rerun the parent with auto approval or pick a write-capable role",
+                            role = self.agent_type.as_str()
+                        ));
+                    }
+                }
+                ApprovalRequirement::Required => {
+                    return Err(anyhow!(
+                        "Tool {name} requires approval and cannot run inside this sub-agent unless the parent session is auto-approved"
+                    ));
+                }
             }
         }
         reject_subagent_terminal_takeover(name, &input)?;

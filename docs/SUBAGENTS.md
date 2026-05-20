@@ -110,6 +110,23 @@ cancelled records persist for inspection but don't occupy a slot.
 Agents that lost their `task_handle` (e.g. across a process
 restart) also don't count against the cap.
 
+## Per-step API timeout (#1806, #1808)
+
+Each sub-agent step wraps its DeepSeek `create_message` call in a
+per-step timeout so a single stuck request can't pin the parent's
+completion wakeup channel indefinitely. The default is `120` seconds,
+which matches the legacy hardcoded value. Long-thinking children that
+legitimately exceed that, for example heavy plan or review work behind
+`agent_open`, can extend the timeout in `~/.deepseek/config.toml`:
+
+```toml
+[subagents]
+api_timeout_secs = 900  # 15 minutes; clamped to 1..=1800
+```
+
+Values are clamped to `1..=1800`. `0` and `unset` keep the legacy
+`120` second default, so existing installs see no behavior change.
+
 ## Lifecycle
 
 Each opened session produces a record that progresses through:
