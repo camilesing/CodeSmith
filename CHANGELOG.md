@@ -93,6 +93,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Feishu/Lark bridge recovers better after restarts.** It now reattaches
   to persisted active turns after the long-connection client starts, and text
   chunking no longer splits emoji or other multi-code-unit characters.
+- **RLM survives non-UTF-8 stdout.** `rlm_eval` now decodes REPL stdout
+  lossily instead of treating a single invalid byte as a fatal crash, so
+  binary-adjacent diagnostics can still return a bounded result (#1815,
+  #1819).
+- **Small UI/review reliability fixes landed with the stability branch.**
+  `/clear` now resets all displayed cost state, grayscale theme previews avoid
+  luma overflow, `/theme` picker arrow navigation wraps at the list edges, and
+  encoded JSON review output is parsed before display.
+- **New-file writes execute on the first Agent-mode call.** `write_file` now
+  stays preloaded in Agent mode, so creating a file no longer stops at the
+  deferred-tool schema hydration message before the normal approval/execution
+  path (#1825, #1841).
 
 ### Changed
 
@@ -101,6 +113,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/clear` (which only matches by the longer pinyin alias `qingping`).
   Within each rank tier the menu still falls back to alphabetical name
   order for deterministic display (#1811).
+- **CNB mirror preflight covers stability-release branches.** The CNB sync
+  path now recognizes the v0.8.40 stability branch shape before release tags
+  exist, making the Tencent Lighthouse/Lark deployment path easier to verify
+  before publishing.
 
 ### Thanks
 
@@ -116,8 +132,9 @@ in #1740, #1743, #1742, and #1744. Thanks to **Nightt
 ([@nightt5879](https://github.com/nightt5879))** for the Ctrl+C prompt restore
 fix in #1764. Thanks to **Ling ([@LING71671](https://github.com/LING71671);
 commits as `www17 <ivonrust@gmail.com>`)** for the configurable sub-agent API
-timeout in #1808, harvested with `1..=1800` clamping and a fail-fast guard
-so a stray `api_timeout_secs = 0` keeps the legacy 120-second default.
+timeout in #1808 and the Agent-mode `write_file` preload fix in #1841,
+harvested with `1..=1800` clamping and a fail-fast guard so a stray
+`api_timeout_secs = 0` keeps the legacy 120-second default.
 Thanks to **[@knqiufan](https://github.com/knqiufan)** for the sub-agent
 file-write delegation work in #1833, harvested with structured approval-
 gate semantics (`Implementer` and `Custom` only, never `Required`-level
@@ -125,7 +142,9 @@ tools) so write-capable children can actually land code without bypassing
 the `Required` approval class. Thanks to **[@IIzzaya](https://github.com/IIzzaya)**
 for the exact-alias-first slash-completion ordering idea in #1811, landed
 with a focused regression test. Thanks to **Bevis** and the community reports
-that surfaced the compaction failure mode addressed in this release.
+that surfaced the compaction failure mode addressed in this release. Thanks to
+**Reid ([@reidliu41](https://github.com/reidliu41))** for the grayscale theme
+overflow report and `/theme` picker edge-wrapping patch in #1814.
 
 ## [0.8.39] - 2026-05-17
 
