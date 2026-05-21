@@ -3973,9 +3973,11 @@ fn apply_loaded_session_restores_auto_model_mode() {
 #[test]
 fn app_new_restores_saved_model_and_reasoning_effort() {
     let _guard = ConfigPathEnvGuard::new();
-    let mut settings = crate::settings::Settings::default();
-    settings.default_model = Some("deepseek-v4-pro".to_string());
-    settings.reasoning_effort = Some("high".to_string());
+    let settings = crate::settings::Settings {
+        default_model: Some("deepseek-v4-pro".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        ..Default::default()
+    };
     settings.save().expect("save settings");
 
     let options = TuiOptions {
@@ -3999,8 +4001,10 @@ fn app_new_restores_saved_model_and_reasoning_effort() {
         resume_session_id: None,
         initial_input: None,
     };
-    let mut config = Config::default();
-    config.reasoning_effort = Some("max".to_string());
+    let config = Config {
+        reasoning_effort: Some("max".to_string()),
+        ..Default::default()
+    };
 
     let app = App::new(options, &config);
 
