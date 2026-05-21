@@ -2910,7 +2910,10 @@ mod stream_decoder_tests {
         // to and `retrieve_tool_result ref=sha:` reads back from.
         let path = crate::tools::truncate::sha_spillover_path(&sha)
             .expect("sha spillover path resolvable under test root");
-        assert!(path.exists(), "large write_file output not persisted: {path:?}");
+        assert!(
+            path.exists(),
+            "large write_file output not persisted: {path:?}"
+        );
         let persisted = std::fs::read_to_string(&path).expect("read persisted spillover");
         assert_eq!(
             persisted, big_diff,
