@@ -3971,6 +3971,78 @@ fn apply_loaded_session_restores_auto_model_mode() {
 }
 
 #[test]
+fn app_new_restores_saved_model_and_reasoning_effort() {
+    let _guard = ConfigPathEnvGuard::new();
+    let mut settings = crate::settings::Settings::default();
+    settings.default_model = Some("deepseek-v4-pro".to_string());
+    settings.reasoning_effort = Some("high".to_string());
+    settings.save().expect("save settings");
+
+    let options = TuiOptions {
+        model: "auto".to_string(),
+        workspace: PathBuf::from("."),
+        config_path: None,
+        config_profile: None,
+        allow_shell: false,
+        use_alt_screen: true,
+        use_mouse_capture: false,
+        use_bracketed_paste: true,
+        max_subagents: 1,
+        skills_dir: PathBuf::from("."),
+        memory_path: PathBuf::from("memory.md"),
+        notes_path: PathBuf::from("notes.txt"),
+        mcp_config_path: PathBuf::from("mcp.json"),
+        use_memory: false,
+        start_in_agent_mode: true,
+        skip_onboarding: false,
+        yolo: false,
+        resume_session_id: None,
+        initial_input: None,
+    };
+    let mut config = Config::default();
+    config.reasoning_effort = Some("max".to_string());
+
+    let app = App::new(options, &config);
+
+    assert!(!app.auto_model);
+    assert_eq!(app.model, "deepseek-v4-pro");
+    assert_eq!(app.reasoning_effort, ReasoningEffort::High);
+}
+
+#[tokio::test]
+async fn model_picker_persists_model_and_reasoning_effort() {
+    let _guard = ConfigPathEnvGuard::new();
+    let mut app = create_test_app();
+    app.set_model_selection("auto".to_string());
+    app.reasoning_effort = ReasoningEffort::Auto;
+    let engine = mock_engine_handle();
+
+    apply_model_picker_choice(
+        &mut app,
+        &engine.handle,
+        "deepseek-v4-pro".to_string(),
+        ReasoningEffort::High,
+        "auto".to_string(),
+        ReasoningEffort::Auto,
+    )
+    .await;
+
+    let settings = crate::settings::Settings::load().expect("load settings");
+    assert_eq!(settings.default_model.as_deref(), Some("deepseek-v4-pro"));
+    assert_eq!(
+        settings
+            .provider_models
+            .as_ref()
+            .and_then(|models| models.get("deepseek"))
+            .map(String::as_str),
+        Some("deepseek-v4-pro")
+    );
+    assert_eq!(settings.reasoning_effort.as_deref(), Some("high"));
+    assert!(!app.auto_model);
+    assert_eq!(app.reasoning_effort, ReasoningEffort::High);
+}
+
+#[test]
 fn apply_loaded_session_restores_artifact_registry() {
     let mut app = create_test_app();
     let mut session = saved_session_with_messages(vec![

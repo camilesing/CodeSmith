@@ -109,6 +109,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concrete model now updates existing session metadata, and resumed sessions
   recompute the `auto` flag from the saved model instead of falling back to the
   startup default.
+- **The `/model` picker persists thinking effort across restarts.** Selecting
+  Pro/Flash plus `high`/`max`/`auto` now writes both `default_model` and
+  `reasoning_effort` to `settings.toml`, and startup restores the saved effort
+  before falling back to `config.toml`.
+- **The footer water strip is visible by default again.** `fancy_animations`
+  now defaults to `true`, while `NO_ANIMATIONS`, SSH/Termius, VS Code, Ghostty,
+  and legacy terminal overrides still disable the animated strip where it is
+  known to flicker.
 
 ### Changed
 

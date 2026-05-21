@@ -1472,21 +1472,23 @@ impl App {
             })
             .unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
+        let configured_reasoning_effort = settings
+            .reasoning_effort
+            .as_deref()
+            .or_else(|| config.reasoning_effort());
         let threshold_model = if auto_model {
             DEFAULT_TEXT_MODEL
         } else {
             model.as_str()
         };
         let compact_threshold =
-            compaction_threshold_for_model_and_effort(threshold_model, config.reasoning_effort());
+            compaction_threshold_for_model_and_effort(threshold_model, configured_reasoning_effort);
         let reasoning_effort = if auto_model {
             ReasoningEffort::Auto
         } else {
-            config
-                .reasoning_effort()
-                .map_or_else(ReasoningEffort::default, |s| {
-                    ReasoningEffort::from_setting(s)
-                })
+            configured_reasoning_effort.map_or_else(ReasoningEffort::default, |s| {
+                ReasoningEffort::from_setting(s)
+            })
         };
 
         // Start in YOLO mode if --yolo flag was passed

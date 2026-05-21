@@ -213,6 +213,7 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
                 .default_model
                 .unwrap_or_else(|| "(default)".to_string())
         }),
+        "reasoning_effort" | "effort" => Some(app.reasoning_effort.as_setting().to_string()),
         "prefer_external_pdftotext" | "external_pdftotext" | "pdftotext" => Settings::load()
             .ok()
             .map(|settings| settings.prefer_external_pdftotext.to_string()),
@@ -557,6 +558,19 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 action = Some(AppAction::UpdateCompaction(app.compaction_config()));
             }
         }
+        "reasoning_effort" | "effort" => {
+            app.reasoning_effort = if app.auto_model {
+                ReasoningEffort::Auto
+            } else {
+                settings
+                    .reasoning_effort
+                    .as_deref()
+                    .map_or_else(ReasoningEffort::default, ReasoningEffort::from_setting)
+            };
+            app.last_effective_reasoning_effort = None;
+            app.update_model_compaction_budget();
+            action = Some(AppAction::UpdateCompaction(app.compaction_config()));
+        }
         "sidebar_width" | "sidebar" => {
             app.sidebar_width_percent = settings.sidebar_width_percent;
             app.mark_history_updated();
@@ -580,6 +594,10 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             .background_color
             .clone()
             .unwrap_or_else(|| "default".to_string()),
+        "reasoning_effort" | "effort" => settings
+            .reasoning_effort
+            .clone()
+            .unwrap_or_else(|| "config/default".to_string()),
         "composer_vim_mode" | "vim_mode" | "vim" => settings.composer_vim_mode.clone(),
         _ => value.to_string(),
     };

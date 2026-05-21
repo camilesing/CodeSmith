@@ -4126,22 +4126,19 @@ async fn apply_model_picker_choice(
     // Best-effort persist; surface a status warning if the settings file
     // can't be written rather than aborting the in-memory change.
     let mut persist_warning: Option<String> = None;
-    match crate::settings::Settings::load() {
-        Ok(mut settings) => {
-            if model_changed {
-                let _ = settings.set("default_model", &model);
-                settings.set_model_for_provider(app.api_provider.as_str(), &model);
-            }
-            if effort_changed {
-                let _ = settings.set("reasoning_effort", effort.as_setting());
-            }
-            if let Err(err) = settings.save() {
-                persist_warning = Some(format!("(not persisted: {err})"));
-            }
+    let persist_result = (|| -> anyhow::Result<()> {
+        let mut settings = crate::settings::Settings::load()?;
+        if model_changed {
+            settings.set("default_model", &model)?;
+            settings.set_model_for_provider(app.api_provider.as_str(), &model);
         }
-        Err(err) => {
-            persist_warning = Some(format!("(not persisted: {err})"));
+        if effort_changed {
+            settings.set("reasoning_effort", effort.as_setting())?;
         }
+        settings.save()
+    })();
+    if let Err(err) = persist_result {
+        persist_warning = Some(format!("(not persisted: {err})"));
     }
 
     if model_changed {
