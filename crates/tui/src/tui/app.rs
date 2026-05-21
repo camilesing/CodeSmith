@@ -4150,6 +4150,25 @@ impl App {
             compaction_threshold_for_model_and_effort(&model, self.reasoning_effort.api_value());
     }
 
+    pub fn set_model_selection(&mut self, model: String) {
+        let auto_model = model.trim().eq_ignore_ascii_case("auto");
+        self.model = if auto_model {
+            "auto".to_string()
+        } else {
+            model
+        };
+        self.auto_model = auto_model;
+        self.last_effective_model = None;
+    }
+
+    pub fn model_selection_for_persistence(&self) -> String {
+        if self.auto_model || self.model.trim().eq_ignore_ascii_case("auto") {
+            "auto".to_string()
+        } else {
+            self.model.clone()
+        }
+    }
+
     pub fn effective_model_for_budget(&self) -> &str {
         if self.auto_model {
             return self

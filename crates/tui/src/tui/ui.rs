@@ -1497,8 +1497,7 @@ async fn run_event_loop(
                         if app.auto_model {
                             app.last_effective_model = Some(model);
                         } else {
-                            app.model = model;
-                            app.last_effective_model = None;
+                            app.set_model_selection(model);
                         }
                         app.update_model_compaction_budget();
                         app.workspace = workspace;
@@ -3513,6 +3512,7 @@ async fn run_cache_warmup(app: &App, config: &Config) -> Result<Usage> {
 // `format_*` chip/message builders moved to `tui/format_helpers.rs`.
 
 fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
+    let model = app.model_selection_for_persistence();
     if let Some(ref existing_id) = app.current_session_id
         && let Ok(existing) = manager.load_session(existing_id)
     {
@@ -3522,6 +3522,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             u64::from(app.session.total_tokens),
             app.system_prompt.as_ref(),
         );
+        updated.metadata.model = model;
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
         app.sync_cost_to_metadata(&mut updated.metadata);
         updated.context_references = app.session_context_references.clone();
@@ -3532,7 +3533,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             create_saved_session_with_id_and_mode(
                 existing_id.clone(),
                 &app.api_messages,
-                &app.model,
+                &model,
                 &app.workspace,
                 u64::from(app.session.total_tokens),
                 app.system_prompt.as_ref(),
@@ -3541,7 +3542,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         } else {
             create_saved_session_with_mode(
                 &app.api_messages,
-                &app.model,
+                &model,
                 &app.workspace,
                 u64::from(app.session.total_tokens),
                 app.system_prompt.as_ref(),
@@ -4111,15 +4112,15 @@ async fn apply_model_picker_choice(
     }
 
     if model_changed {
-        app.auto_model = model_is_auto;
-        app.last_effective_model = None;
-        app.model = model.clone();
-        app.update_model_compaction_budget();
+        app.set_model_selection(model.clone());
         app.clear_model_scoped_telemetry();
     }
     if effort_changed {
         app.reasoning_effort = effort;
         app.last_effective_reasoning_effort = None;
+    }
+    if model_changed || effort_changed {
+        app.update_model_compaction_budget();
     }
 
     // Best-effort persist; surface a status warning if the settings file
@@ -4236,7 +4237,7 @@ async fn switch_provider(
     let new_model = config.default_model();
     let cache_scope_changed = previous_provider != target || previous_model != new_model;
     app.api_provider = target;
-    app.model = new_model.clone();
+    app.set_model_selection(new_model.clone());
     app.update_model_compaction_budget();
     if cache_scope_changed {
         app.clear_model_scoped_telemetry();
@@ -4672,7 +4673,7 @@ async fn apply_command_result(
                         *config = new_config.clone();
                         app.api_provider = config.api_provider();
                         let new_model = config.default_model();
-                        app.model = new_model.clone();
+                        app.set_model_selection(new_model.clone());
                         app.update_model_compaction_budget();
                         app.session.last_prompt_tokens = None;
                         app.session.last_completion_tokens = None;
@@ -6255,7 +6256,7 @@ fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) 
     app.sync_context_references_from_session(&session.context_references, &message_to_cell);
     app.mark_history_updated();
     app.viewport.transcript_selection.clear();
-    app.model.clone_from(&session.metadata.model);
+    app.set_model_selection(session.metadata.model.clone());
     app.update_model_compaction_budget();
     apply_workspace_runtime_state(app, config, session.metadata.workspace.clone());
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);

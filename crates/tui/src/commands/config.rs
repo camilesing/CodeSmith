@@ -370,9 +370,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         "model" => {
             // Support "/model auto" — auto-select model based on request complexity
             if value.trim().eq_ignore_ascii_case("auto") {
-                app.auto_model = true;
-                app.model = "auto".to_string();
-                app.last_effective_model = None;
+                app.set_model_selection("auto".to_string());
                 app.reasoning_effort = ReasoningEffort::Auto;
                 app.last_effective_reasoning_effort = None;
                 app.update_model_compaction_budget();
@@ -384,15 +382,13 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 );
             }
             // Clear auto mode when a specific model is set
-            app.auto_model = false;
-            app.last_effective_model = None;
             let Some(model) = normalize_model_name_for_provider(app.api_provider, value) else {
                 return CommandResult::error(format!(
                     "Invalid model '{value}'. Expected a DeepSeek model ID. Common models: {}",
                     COMMON_DEEPSEEK_MODELS.join(", ")
                 ));
             };
-            app.model = model.clone();
+            app.set_model_selection(model.clone());
             app.update_model_compaction_budget();
             app.session.last_prompt_tokens = None;
             app.session.last_completion_tokens = None;
@@ -550,9 +546,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         }
         "default_model" => {
             if let Some(ref model) = settings.default_model {
-                app.auto_model = model.trim().eq_ignore_ascii_case("auto");
-                app.model.clone_from(model);
-                app.last_effective_model = None;
+                app.set_model_selection(model.clone());
                 if app.auto_model {
                     app.reasoning_effort = ReasoningEffort::Auto;
                     app.last_effective_reasoning_effort = None;

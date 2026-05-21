@@ -3913,6 +3913,64 @@ fn first_snapshot_preserves_current_session_id_for_artifact_ownership() {
 }
 
 #[test]
+fn existing_session_snapshot_updates_model_selection() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manager =
+        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+    let mut existing = saved_session_with_messages(vec![text_message("user", "hello")]);
+    existing.metadata.model = "auto".to_string();
+    manager
+        .save_session(&existing)
+        .expect("save existing session");
+
+    let mut app = create_test_app();
+    app.current_session_id = Some(existing.metadata.id.clone());
+    app.api_messages.push(text_message("user", "hello"));
+    app.set_model_selection("deepseek-v4-flash".to_string());
+
+    let snapshot = build_session_snapshot(&app, &manager);
+
+    assert_eq!(snapshot.metadata.id, existing.metadata.id);
+    assert_eq!(snapshot.metadata.model, "deepseek-v4-flash");
+}
+
+#[test]
+fn apply_loaded_session_restores_concrete_model_mode() {
+    let mut app = create_test_app();
+    app.set_model_selection("auto".to_string());
+    let mut session = saved_session_with_messages(vec![
+        text_message("user", "hello"),
+        text_message("assistant", "hi"),
+    ]);
+    session.metadata.model = "deepseek-v4-flash".to_string();
+
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+
+    assert!(!recovered);
+    assert!(!app.auto_model);
+    assert_eq!(app.model, "deepseek-v4-flash");
+    assert_eq!(app.model_selection_for_persistence(), "deepseek-v4-flash");
+}
+
+#[test]
+fn apply_loaded_session_restores_auto_model_mode() {
+    let mut app = create_test_app();
+    app.set_model_selection("deepseek-v4-pro".to_string());
+    let mut session = saved_session_with_messages(vec![
+        text_message("user", "hello"),
+        text_message("assistant", "hi"),
+    ]);
+    session.metadata.model = "auto".to_string();
+
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+
+    assert!(!recovered);
+    assert!(app.auto_model);
+    assert_eq!(app.model, "auto");
+    assert_eq!(app.model_selection_for_persistence(), "auto");
+}
+
+#[test]
 fn apply_loaded_session_restores_artifact_registry() {
     let mut app = create_test_app();
     let mut session = saved_session_with_messages(vec![

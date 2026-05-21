@@ -105,6 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays preloaded in Agent mode, so creating a file no longer stops at the
   deferred-tool schema hydration message before the normal approval/execution
   path (#1825, #1841).
+- **Saved sessions keep the selected model mode.** Changing from `auto` to a
+  concrete model now updates existing session metadata, and resumed sessions
+  recompute the `auto` flag from the saved model instead of falling back to the
+  startup default.
 
 ### Changed
 
