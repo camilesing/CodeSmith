@@ -9,7 +9,8 @@ function isVersionFlag(args = process.argv.slice(2)) {
 
 function handleVersionFallback(binaryName) {
   if (isVersionFlag()) {
-    const binVersion = pkg.deepseekBinaryVersion || pkg.version;
+    const binVersion =
+      pkg.codewhaleBinaryVersion || pkg.deepseekBinaryVersion || pkg.version;
     console.log(`${binaryName} (npm wrapper) v${pkg.version}`);
     console.log(`binary version: v${binVersion}`);
     console.log(`repo: ${pkg.repository?.url || "N/A"}`);
@@ -33,26 +34,26 @@ async function run(binaryName) {
   process.exit(result.status ?? 1);
 }
 
-async function runDeepseek() {
-  await run("deepseek");
+async function runCodewhale() {
+  await run("codewhale");
 }
 
-async function runDeepseekTui() {
-  await run("deepseek-tui");
+async function runCodewhaleTui() {
+  await run("codewhale-tui");
 }
 
 module.exports = {
   run,
-  runDeepseek,
-  runDeepseekTui,
+  runCodewhale,
+  runCodewhaleTui,
   _internal: { isVersionFlag },
 };
 
 if (require.main === module) {
   const command = process.argv[1] || "";
   if (command.includes("tui")) {
-    runDeepseekTui();
+    runCodewhaleTui();
   } else {
-    runDeepseek();
+    runCodewhale();
   }
 }

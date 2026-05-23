@@ -5,10 +5,10 @@
 # Checks performed:
 #   1. No `crates/*/Cargo.toml` carries a literal `version = "x.y.z"`; every
 #      crate must inherit `version.workspace = true`.
-#   2. `npm/deepseek-tui/package.json` `version` matches the workspace
-#      `version` in the root `Cargo.toml`. (The npm wrapper directory is
-#      renamed to `npm/codewhale/` in a follow-up phase; this script will
-#      be updated then.)
+#   2. `npm/codewhale/package.json` `version` matches the workspace
+#      `version` in the root `Cargo.toml`. (`npm/deepseek-tui/` still
+#      exists during the transition as a deprecation shim package; its
+#      version is also checked.)
 #   3. Internal `codewhale-*` path dependency pins match the workspace version.
 #   4. The TUI crate's packaged changelog copy matches root `CHANGELOG.md`.
 #   5. The current release has a dated Keep a Changelog entry and compare link.
@@ -32,10 +32,19 @@ fi
 
 # 2) Workspace ↔ npm package.json.
 workspace_version="$(grep -E '^version = "' Cargo.toml | head -n1 | sed -E 's/^version = "([^"]+)".*/\1/')"
-npm_version="$(node -p "require('./npm/deepseek-tui/package.json').version")"
+npm_version="$(node -p "require('./npm/codewhale/package.json').version")"
 if [[ "${workspace_version}" != "${npm_version}" ]]; then
-  echo "::error::npm/deepseek-tui/package.json version (${npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
+  echo "::error::npm/codewhale/package.json version (${npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
   fail=1
+fi
+# Also pin the legacy deprecation shim package to the same workspace version
+# so a stale `deepseek-tui` doesn't ship pointing at a different release.
+if [[ -f npm/deepseek-tui/package.json ]]; then
+  legacy_npm_version="$(node -p "require('./npm/deepseek-tui/package.json').version")"
+  if [[ "${workspace_version}" != "${legacy_npm_version}" ]]; then
+    echo "::error::npm/deepseek-tui/package.json version (${legacy_npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
+    fail=1
+  fi
 fi
 
 # 3) Internal path dependency pins.
