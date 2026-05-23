@@ -109,7 +109,7 @@ check_binaries() {
   fi
   if [[ -x "${tui}" ]]; then
     pass "${tui} is executable"
-    "${tui}" --version 2>/dev/null | sed 's/^/[info] deepseek-tui version: /' || warn "deepseek-tui --version failed"
+    "${tui}" --version 2>/dev/null | sed 's/^/[info] codewhale-tui version: /' || warn "codewhale-tui --version failed"
   else
     fail "${tui} is missing or not executable"
   fi
