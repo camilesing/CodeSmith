@@ -69,7 +69,7 @@ Other platform/architecture combinations (musl, riscv64, FreeBSD, …) aren't
 shipped as prebuilts. Unsupported platforms, checksum failures, and glibc
 compatibility problems still fail with a clear error pointing you at
 `cargo install codewhale-cli codewhale-tui --locked` and the full
-[docs/INSTALL.md](https://github.com/Hmbown/DeepSeek-TUI/blob/main/docs/INSTALL.md)
+[docs/INSTALL.md](https://github.com/Hmbown/CodeWhale/blob/main/docs/INSTALL.md)
 build-from-source guide.
 
 ## Configuration
@@ -77,7 +77,7 @@ build-from-source guide.
 - Default binary version comes from `codewhaleBinaryVersion` in `package.json`
   (with `deepseekBinaryVersion` as a backward-compat fallback).
 - Set `DEEPSEEK_TUI_VERSION` or `DEEPSEEK_VERSION` to override the release version.
-- Set `DEEPSEEK_TUI_GITHUB_REPO` or `DEEPSEEK_GITHUB_REPO` to override the source repo (defaults to `Hmbown/DeepSeek-TUI`).
+- Set `DEEPSEEK_TUI_GITHUB_REPO` or `DEEPSEEK_GITHUB_REPO` to override the source repo (defaults to `Hmbown/CodeWhale`).
 - Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to use an internal or mirrored
   release-asset directory when GitHub Releases is unavailable. The directory
   must contain `codewhale-artifacts-sha256.txt` and the platform binaries.

@@ -4,13 +4,13 @@
   "description": "Deprecated. Renamed to `codewhale`. Run `npm install -g codewhale` instead.",
   "author": "Hmbown",
   "license": "MIT",
-  "homepage": "https://github.com/Hmbown/DeepSeek-TUI/blob/main/docs/REBRAND.md",
+  "homepage": "https://github.com/Hmbown/CodeWhale/blob/main/docs/REBRAND.md",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Hmbown/DeepSeek-TUI.git"
+    "url": "git+https://github.com/Hmbown/CodeWhale.git"
   },
   "bugs": {
-    "url": "https://github.com/Hmbown/DeepSeek-TUI/issues"
+    "url": "https://github.com/Hmbown/CodeWhale/issues"
   },
   "keywords": [
     "deprecated",

@@ -97,7 +97,7 @@ check_workspace() {
 }
 
 check_binaries() {
-  section "Codewhale binaries"
+  section "CodeWhale binaries"
   local cargo_bin="/home/${DEEPSEEK_USER}/.cargo/bin"
   local codewhale="${cargo_bin}/codewhale"
   local tui="${cargo_bin}/codewhale-tui"

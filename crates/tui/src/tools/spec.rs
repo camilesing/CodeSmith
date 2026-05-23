@@ -1,4 +1,4 @@
-//! Tool specification traits for the Codewhale agent system.
+//! Tool specification traits for the CodeWhale agent system.
 //!
 //! This module defines the core abstractions for tools:
 //! - `ToolSpec`: The main trait that all tools must implement

@@ -34,26 +34,26 @@ async function run(binaryName) {
   process.exit(result.status ?? 1);
 }
 
-async function runCodewhale() {
+async function runCodeWhale() {
   await run("codewhale");
 }
 
-async function runCodewhaleTui() {
+async function runCodeWhaleTui() {
   await run("codewhale-tui");
 }
 
 module.exports = {
   run,
-  runCodewhale,
-  runCodewhaleTui,
+  runCodeWhale,
+  runCodeWhaleTui,
   _internal: { isVersionFlag },
 };
 
 if (require.main === module) {
   const command = process.argv[1] || "";
   if (command.includes("tui")) {
-    runCodewhaleTui();
+    runCodeWhaleTui();
   } else {
-    runCodewhale();
+    runCodeWhale();
   }
 }

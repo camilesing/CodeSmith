@@ -1,4 +1,4 @@
-# Codewhale
+# CodeWhale
 
 > Terminal coding agent for DeepSeek V4. It runs from the `codewhale` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
 
@@ -29,7 +29,7 @@ brew tap Hmbown/deepseek-tui
 brew install deepseek-tui
 
 # 4. Direct download — no package manager or toolchain.
-#    https://github.com/Hmbown/DeepSeek-TUI/releases
+#    https://github.com/Hmbown/CodeWhale/releases
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
 
 # 5. Docker — prebuilt release image.
@@ -47,7 +47,7 @@ docker run --rm -it \
 > [Cargo mirror](#china--mirror-friendly-installation) below.
 >
 > Download safety: official release binaries live under
-> `https://github.com/Hmbown/DeepSeek-TUI/releases`. For manual downloads,
+> `https://github.com/Hmbown/CodeWhale/releases`. For manual downloads,
 > verify the SHA-256 manifest and avoid look-alike repositories or search-result
 > mirrors. See [download safety and checksums](docs/INSTALL.md#2-download-safety-and-checksums).
 
@@ -61,10 +61,10 @@ cargo install codewhale-cli --locked --force
 cargo install codewhale-tui     --locked --force
 ```
 
-[![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
+[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
 [![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[DeepWiki project index](https://deepwiki.com/Hmbown/DeepSeek-TUI)
+[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
 
 ![codewhale screenshot](assets/screenshot.png)
 
@@ -72,7 +72,7 @@ cargo install codewhale-tui     --locked --force
 
 ## What Is It?
 
-Codewhale is a coding agent that runs in your terminal. It can read and edit files, run shell commands, search the web, manage git, and coordinate sub-agents from a keyboard-driven TUI.
+CodeWhale is a coding agent that runs in your terminal. It can read and edit files, run shell commands, search the web, manage git, and coordinate sub-agents from a keyboard-driven TUI.
 
 It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), including 1M-token context windows, streaming reasoning blocks, and prefix-cache-aware cost reporting.
 
@@ -110,7 +110,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
 
 ### Sub-agents: Concurrent Background Execution
 
-Codewhale can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
+CodeWhale can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
 
 - **Non-blocking launch.** `agent_open` returns immediately. The child gets its own fresh context and tool registry and runs independently. The parent keeps working.
 - **Background execution.** Sub-agents execute concurrently (default cap: 10, configurable to 20). The engine manages the pool — no polling loop needed.
@@ -181,7 +181,7 @@ Use a fixed model or fixed thinking level when you want repeatable benchmarking,
 
 ### Linux ARM64 (Raspberry Pi, Asahi, Graviton, HarmonyOS PC)
 
-`npm i -g codewhale` works on glibc-based ARM64 Linux from v0.8.8 onward. You can also download prebuilt binaries from the [Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases) and place them side by side on your `PATH`.
+`npm i -g codewhale` works on glibc-based ARM64 Linux from v0.8.8 onward. You can also download prebuilt binaries from the [Releases page](https://github.com/Hmbown/CodeWhale/releases) and place them side by side on your `PATH`.
 
 ### China / Mirror-friendly Installation
 
@@ -204,7 +204,7 @@ cargo install codewhale-tui     --locked   # provides `codewhale-tui`
 codewhale --version
 ```
 
-Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
+Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/CodeWhale/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
 
 ### Windows (Scoop)
 
@@ -233,8 +233,8 @@ Works on any Tier-1 Rust target — including musl, riscv64, FreeBSD, and older 
 #   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
 #   sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
 
-git clone https://github.com/Hmbown/DeepSeek-TUI.git
-cd DeepSeek-TUI
+git clone https://github.com/Hmbown/CodeWhale.git
+cd CodeWhale
 
 cargo install --path crates/cli --locked   # requires Rust 1.88+; provides `codewhale`
 cargo install --path crates/tui --locked   # provides `codewhale-tui`
@@ -591,7 +591,7 @@ This project ships with help from a growing community of contributors:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/DeepSeek-TUI/issues) for good first contributions.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/CodeWhale/issues) for good first contributions.
 
 Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
@@ -604,4 +604,4 @@ Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/DeepSeek-TUI&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FDeepSeek-TUI&type=date&logscale=&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/CodeWhale&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeWhale&type=date&logscale=&legend=top-left)

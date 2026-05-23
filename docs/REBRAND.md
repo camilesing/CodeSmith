@@ -1,4 +1,4 @@
-# Rebrand: DeepSeek TUI → Codewhale
+# Rebrand: DeepSeek TUI → CodeWhale
 
 Starting with **v0.8.41**, this project ships under a new name: `codewhale`.
 
@@ -55,8 +55,8 @@ Anything that targets the DeepSeek provider API stays exactly as it was:
 - **Config directory**: `~/.deepseek/`. Renaming this would invalidate
   every existing install's saved API key, sessions, skills, MCP config,
   and audit log.
-- **GitHub repository URL**: still `https://github.com/Hmbown/DeepSeek-TUI`.
-  A repo rename is a maintainer-side operation that ships separately.
+- **GitHub repository URL**: `https://github.com/Hmbown/CodeWhale`.
+  The old `Hmbown/DeepSeek-TUI` URL redirects there during the transition.
 - **Homebrew tap and formula** (`Hmbown/homebrew-deepseek-tui`): still
   installs by the legacy name during the transition. The tap's formula
   will be flipped to the new names in a follow-up.
@@ -119,15 +119,15 @@ still verifies.
 
 ## Why the name change
 
-Codewhale is a shorter, terminal-friendlier handle for the same terminal
+CodeWhale is a shorter, terminal-friendlier handle for the same terminal
 coding agent. In v0.8.41 it remains centered on DeepSeek V4 while the project
 name, command names, package names, release assets, Docker image, and CNB
-mirror move to Codewhale.
+mirror move to CodeWhale.
 
 ## Reporting issues with the rename
 
 If your install broke during the migration, please open an issue at
-<https://github.com/Hmbown/DeepSeek-TUI/issues> and include:
+<https://github.com/Hmbown/CodeWhale/issues> and include:
 
 - The output of `codewhale --version` (or `deepseek --version` if you're
   still on the shim).

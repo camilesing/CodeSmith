@@ -1,5 +1,5 @@
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║                         Codewhale Configuration                               ║
+# ║                         CodeWhale Configuration                               ║
 # ║                                                                              ║
 # ║  Terminal coding agent for DeepSeek.                                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -530,7 +530,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #
 # [[hooks.hooks]]
 # event = "session_start"
-# command = "echo 'Codewhale session started'"
+# command = "echo 'CodeWhale session started'"
 #
 # # Inject ephemeral creds into every shell call. Output one
 # # KEY=VALUE per line on stdout (export prefix optional).

@@ -1,4 +1,4 @@
-# Codewhale
+# CodeWhale
 
 > **面向 [DeepSeek V4](https://platform.deepseek.com) 的终端原生编程智能体：100 万 token 上下文、思考模式流式推理、前缀缓存感知。自包含 Rust 二进制发布——开箱即带 MCP 客户端、沙箱和持久化任务队列。**
 
@@ -25,7 +25,7 @@ brew tap Hmbown/deepseek-tui
 brew install deepseek-tui
 
 # 4. 直接下载 —— 无需任何工具链。
-#    https://github.com/Hmbown/DeepSeek-TUI/releases
+#    https://github.com/Hmbown/CodeWhale/releases
 #    覆盖 Linux x64/ARM64、macOS x64/ARM64、Windows x64
 
 # 5. Docker —— 预构建发布镜像。
@@ -42,7 +42,7 @@ docker run --rm -it \
 > 或使用下方的 [Cargo 镜像](#中国大陆--镜像友好安装)。
 >
 > 下载安全：官方二进制只发布在
-> `https://github.com/Hmbown/DeepSeek-TUI/releases`。手动下载时请校验
+> `https://github.com/Hmbown/CodeWhale/releases`。手动下载时请校验
 > SHA-256 manifest，并避免相似仓库名或搜索结果里的镜像站。详见
 > [下载安全与校验](docs/INSTALL.md#2-download-safety-and-checksums)。
 
@@ -56,10 +56,10 @@ cargo install codewhale-cli --locked --force
 cargo install codewhale-tui     --locked --force
 ```
 
-[![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
+[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
 [![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[DeepWiki project index](https://deepwiki.com/Hmbown/DeepSeek-TUI)
+[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
 
 ![codewhale 截图](assets/screenshot.png)
 
@@ -168,7 +168,7 @@ Auto 模式同时控制两个设置：
 
 ### Linux ARM64（HarmonyOS 轻薄本、openEuler、Kylin、树莓派、Graviton 等）
 
-从 v0.8.8 起，`npm i -g codewhale` 直接支持 glibc 系的 ARM64 Linux。你也可以从 [Releases 页面](https://github.com/Hmbown/DeepSeek-TUI/releases) 下载预编译二进制，放到 `PATH` 目录中。
+从 v0.8.8 起，`npm i -g codewhale` 直接支持 glibc 系的 ARM64 Linux。你也可以从 [Releases 页面](https://github.com/Hmbown/CodeWhale/releases) 下载预编译二进制，放到 `PATH` 目录中。
 
 ### 中国大陆 / 镜像友好安装
 
@@ -191,7 +191,7 @@ cargo install codewhale-tui     --locked   # 提供交互式 TUI 伴随二进制
 codewhale --version
 ```
 
-也可以直接从 [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases) 下载预编译二进制。`DEEPSEEK_TUI_RELEASE_BASE_URL` 可用于镜像后的 release 资产。
+也可以直接从 [GitHub Releases](https://github.com/Hmbown/CodeWhale/releases) 下载预编译二进制。`DEEPSEEK_TUI_RELEASE_BASE_URL` 可用于镜像后的 release 资产。
 
 ### Windows (Scoop)
 
@@ -218,8 +218,8 @@ codewhale --version
 #   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
 #   sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
 
-git clone https://github.com/Hmbown/DeepSeek-TUI.git
-cd DeepSeek-TUI
+git clone https://github.com/Hmbown/CodeWhale.git
+cd CodeWhale
 
 cargo install --path crates/cli --locked   # 需要 Rust 1.88+；提供 `codewhale`
 cargo install --path crates/tui --locked   # 提供 `codewhale-tui`
@@ -557,7 +557,7 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 
 ## 贡献
 
-欢迎提交 pull request——请先查看 [CONTRIBUTING.md](CONTRIBUTING.md) 并留意[开放 issue](https://github.com/Hmbown/DeepSeek-TUI/issues) 中的好入门任务。
+欢迎提交 pull request——请先查看 [CONTRIBUTING.md](CONTRIBUTING.md) 并留意[开放 issue](https://github.com/Hmbown/CodeWhale/issues) 中的好入门任务。
 
 *本项目与 DeepSeek Inc. 无隶属关系。*
 
@@ -567,4 +567,4 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 
 ## Star 历史
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/DeepSeek-TUI&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FDeepSeek-TUI&type=date&logscale=&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/CodeWhale&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeWhale&type=date&logscale=&legend=top-left)

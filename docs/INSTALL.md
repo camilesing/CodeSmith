@@ -1,4 +1,4 @@
-# Installing Codewhale
+# Installing CodeWhale
 
 This page covers every supported install path and the most common
 "it didn't install" failures, including **Linux ARM64** and other less
@@ -48,7 +48,7 @@ systems such as Alpine should use [Build from source](#7-build-from-source).
 ## 2. Download safety and checksums
 
 Official release binaries are published only from
-`https://github.com/Hmbown/DeepSeek-TUI/releases` and the npm package named
+`https://github.com/Hmbown/CodeWhale/releases` and the npm package named
 `codewhale-tui`. Do not install release assets from look-alike repositories,
 archives, or search-result mirrors unless you deliberately trust that mirror.
 
@@ -57,7 +57,7 @@ binaries manually, verify them before running:
 
 ```bash
 # Run from the directory containing the downloaded binaries.
-curl -L -O https://github.com/Hmbown/DeepSeek-TUI/releases/latest/download/codewhale-artifacts-sha256.txt
+curl -L -O https://github.com/Hmbown/CodeWhale/releases/latest/download/codewhale-artifacts-sha256.txt
 sha256sum -c codewhale-artifacts-sha256.txt --ignore-missing
 ```
 
@@ -198,14 +198,14 @@ then follow [Tencent Lighthouse Hong Kong Phone Setup](TENCENT_LIGHTHOUSE_HK.md)
 If you already have Nix with flake support, run:
 
 ```sh
-nix run github:Hmbown/DeepSeek-TUI
+nix run github:Hmbown/CodeWhale
 ```
 
 Nix builds `codewhale-tui` and then starts the `codewhale` dispatcher. Pass
 arguments after `--`, for example:
 
 ```sh
-nix run github:Hmbown/DeepSeek-TUI -- --help
+nix run github:Hmbown/CodeWhale -- --help
 ```
 
 ### Flake
@@ -217,7 +217,7 @@ Add inputs to `flake.nix`:
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    codewhale-tui.url = "github:Hmbown/DeepSeek-TUI";
+    codewhale-tui.url = "github:Hmbown/CodeWhale";
     codewhale-tui.inputs.nixpkgs.follows = "nixpkgs";
   };
 }
@@ -252,16 +252,16 @@ Install into a NixOS module:
 ## 6. Manual download from GitHub Releases
 
 Grab the matching pair of binaries for your platform from the
-[Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases) and drop them
+[Releases page](https://github.com/Hmbown/CodeWhale/releases) and drop them
 side by side into a directory on your `PATH` (e.g. `~/.local/bin`):
 
 ```bash
 # Linux ARM64 example
 mkdir -p ~/.local/bin
 curl -L -o ~/.local/bin/codewhale      \
-    https://github.com/Hmbown/DeepSeek-TUI/releases/latest/download/codewhale-linux-arm64
+    https://github.com/Hmbown/CodeWhale/releases/latest/download/codewhale-linux-arm64
 curl -L -o ~/.local/bin/codewhale-tui  \
-    https://github.com/Hmbown/DeepSeek-TUI/releases/latest/download/codewhale-tui-linux-arm64
+    https://github.com/Hmbown/CodeWhale/releases/latest/download/codewhale-tui-linux-arm64
 chmod +x ~/.local/bin/codewhale ~/.local/bin/codewhale-tui
 codewhale --version
 ```
@@ -270,7 +270,7 @@ Verify integrity against the per-release SHA-256 manifest:
 
 ```bash
 curl -L -o /tmp/codewhale-artifacts-sha256.txt \
-    https://github.com/Hmbown/DeepSeek-TUI/releases/latest/download/codewhale-artifacts-sha256.txt
+    https://github.com/Hmbown/CodeWhale/releases/latest/download/codewhale-artifacts-sha256.txt
 ( cd ~/.local/bin && sha256sum -c /tmp/codewhale-artifacts-sha256.txt --ignore-missing )
 ```
 
@@ -311,8 +311,8 @@ LoongArch, FreeBSD, and pre-2024 ARM64 distros.
 ### Build and install
 
 ```bash
-git clone https://github.com/Hmbown/DeepSeek-TUI.git
-cd DeepSeek-TUI
+git clone https://github.com/Hmbown/CodeWhale.git
+cd CodeWhale
 
 cargo install --path crates/cli --locked   # provides `codewhale`
 cargo install --path crates/tui --locked   # provides `codewhale-tui`
@@ -414,8 +414,8 @@ that session and run `cargo build` from the project root.
 **Build**
 
 ```bash
-git clone https://github.com/Hmbown/DeepSeek-TUI.git
-cd DeepSeek-TUI
+git clone https://github.com/Hmbown/CodeWhale.git
+cd CodeWhale
 set CARGO_HTTP_CHECK_REVOKE=false   # may be needed behind some Chinese ISPs
 cargo build --release
 ```
@@ -450,7 +450,7 @@ cargo install codewhale-tui     --locked
 
 ### `codewhale update` reports `no asset found for platform codewhale-linux-aarch64`
 
-This is [#503](https://github.com/Hmbown/DeepSeek-TUI/issues/503) in v0.8.7 —
+This is [#503](https://github.com/Hmbown/CodeWhale/issues/503) in v0.8.7 —
 the self-updater used Rust's `aarch64`/`x86_64` arch names instead of the
 release artifact's `arm64`/`x64`. Workaround until v0.8.8:
 
@@ -619,7 +619,7 @@ Use one of these paths:
    assets. See [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
 4. Download both `codewhale` and `codewhale-tui` manually from the
-   [Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases), place them
+   [Releases page](https://github.com/Hmbown/CodeWhale/releases), place them
    in a directory on `PATH`, and make them executable. See
    [Section 6](#6-manual-download-from-github-releases).
 

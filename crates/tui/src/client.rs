@@ -516,7 +516,7 @@ impl DeepSeekClient {
             .user_agent(concat!(
                 "Mozilla/5.0 (compatible; codewhale/",
                 env!("CARGO_PKG_VERSION"),
-                "; +https://github.com/Hmbown/DeepSeek-TUI)"
+                "; +https://github.com/Hmbown/CodeWhale)"
             ))
             .connect_timeout(Duration::from_secs(30))
             .tcp_keepalive(Some(Duration::from_secs(30)))

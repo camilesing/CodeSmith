@@ -5,7 +5,7 @@ who want an always-on agent workspace, a phone control surface, and a stack
 that works well from mainland China.
 
 It complements the local install path. If you only want to use `codewhale` on a
-laptop, start with the README quickstart. If you want "Codewhale as a remote
+laptop, start with the README quickstart. If you want "CodeWhale as a remote
 workbench I can control from my phone", start here.
 
 ## Default Stack

@@ -1,4 +1,4 @@
-# Codewhale Release Runbook
+# CodeWhale Release Runbook
 
 This runbook is the source of truth for shipping Rust crates, GitHub release assets,
 and the `codewhale` npm wrapper.

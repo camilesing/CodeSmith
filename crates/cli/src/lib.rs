@@ -115,7 +115,7 @@ struct Cli {
 enum Commands {
     /// Run interactive/non-interactive flows via the TUI binary.
     Run(RunArgs),
-    /// Run Codewhale diagnostics.
+    /// Run CodeWhale diagnostics.
     Doctor(TuiPassthroughArgs),
     /// List live DeepSeek API models via the TUI binary.
     Models(TuiPassthroughArgs),
@@ -129,7 +129,7 @@ enum Commands {
     Init(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
-    /// Run the Codewhale non-interactive agent command.
+    /// Run the CodeWhale non-interactive agent command.
     #[command(after_help = "\
 Common forwarded flags:
   --auto                           Enable agentic mode with tool access
@@ -140,7 +140,7 @@ Common forwarded flags:
   --output-format <FORMAT>         Output format: text or stream-json
 ")]
     Exec(TuiPassthroughArgs),
-    /// Run a Codewhale-powered code review over a git diff.
+    /// Run a CodeWhale-powered code review over a git diff.
     Review(TuiPassthroughArgs),
     /// Apply a patch file or stdin to the working tree.
     Apply(TuiPassthroughArgs),
@@ -1572,7 +1572,7 @@ The `codewhale` dispatcher delegates interactive sessions to a sibling \
   • npm:    npm install -g codewhale                (downloads both binaries)\n\
   • cargo:  cargo install codewhale-cli codewhale-tui --locked\n\
   • GitHub Releases: download BOTH `codewhale-<platform>` AND \
-`codewhale-tui-<platform>` from https://github.com/Hmbown/DeepSeek-TUI/releases/latest \
+`codewhale-tui-<platform>` from https://github.com/Hmbown/CodeWhale/releases/latest \
 and place them in the same directory.\n\
 \n\
 Or set DEEPSEEK_TUI_BIN to the absolute path of an existing `codewhale-tui` binary.",

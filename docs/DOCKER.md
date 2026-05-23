@@ -1,6 +1,6 @@
 # Docker
 
-Codewhale publishes a multi-arch Linux image to GitHub Container Registry
+CodeWhale publishes a multi-arch Linux image to GitHub Container Registry
 for each release.
 
 ```bash
@@ -34,7 +34,7 @@ docker run --rm -it \
 ```
 
 Replace `vX.Y.Z` with a tag from
-[GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
+[GitHub Releases](https://github.com/Hmbown/CodeWhale/releases).
 
 ## Local build
 

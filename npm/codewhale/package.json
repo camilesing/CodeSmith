@@ -5,13 +5,13 @@
   "description": "Install and run the codewhale CLI dispatcher and codewhale-tui terminal UI from GitHub release artifacts.",
   "author": "Hmbown",
   "license": "MIT",
-  "homepage": "https://github.com/Hmbown/DeepSeek-TUI",
+  "homepage": "https://github.com/Hmbown/CodeWhale",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Hmbown/DeepSeek-TUI.git"
+    "url": "git+https://github.com/Hmbown/CodeWhale.git"
   },
   "bugs": {
-    "url": "https://github.com/Hmbown/DeepSeek-TUI/issues"
+    "url": "https://github.com/Hmbown/CodeWhale/issues"
   },
   "keywords": [
     "codewhale",

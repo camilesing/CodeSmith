@@ -11,5 +11,5 @@ npm install -g codewhale
 deprecation shims under the old `deepseek` / `deepseek-tui` names so existing
 scripts keep working through one transition release.
 
-See [docs/REBRAND.md](https://github.com/Hmbown/DeepSeek-TUI/blob/main/docs/REBRAND.md)
+See [docs/REBRAND.md](https://github.com/Hmbown/CodeWhale/blob/main/docs/REBRAND.md)
 for the full migration story.

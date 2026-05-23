@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Codewhale multi-arch Docker image (#501)
+# CodeWhale multi-arch Docker image (#501)
 #
 # Build:  docker buildx build --platform linux/amd64,linux/arm64 -t codewhale:latest .
 # Run:    docker run --rm -it -e DEEPSEEK_API_KEY -v codewhale-home:/home/codewhale/.deepseek codewhale

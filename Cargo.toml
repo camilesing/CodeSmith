@@ -27,7 +27,7 @@ edition = "2024"
 # confusing E0658 from rustc.
 rust-version = "1.88"
 license = "MIT"
-repository = "https://github.com/Hmbown/DeepSeek-TUI"
+repository = "https://github.com/Hmbown/CodeWhale"
 
 [workspace.dependencies]
 anyhow = "1.0.100"

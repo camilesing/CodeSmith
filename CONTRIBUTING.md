@@ -15,7 +15,7 @@ Thank you for your interest in contributing to codewhale! This document provides
 1. Fork and clone the repository:
    ```bash
    git clone https://github.com/YOUR_USERNAME/DeepSeek-TUI.git
-   cd DeepSeek-TUI
+   cd CodeWhale
    ```
 
 2. Build the project:

@@ -323,7 +323,7 @@ jobs:
           files: artifacts/*/*
           prerelease: false
           body: |
-            > This release renames the project to **Codewhale**. The legacy
+            > This release renames the project to **CodeWhale**. The legacy
             > `deepseek` and `deepseek-tui` binaries continue to ship as
             > deprecation shims for one release cycle; they print a one-line
             > warning and forward to `codewhale` / `codewhale-tui`. They will
@@ -391,7 +391,7 @@ jobs:
 
             ## Changelog
 
-            See [CHANGELOG.md](https://github.com/Hmbown/DeepSeek-TUI/blob/main/CHANGELOG.md) for the full notes for this release.
+            See [CHANGELOG.md](https://github.com/Hmbown/CodeWhale/blob/main/CHANGELOG.md) for the full notes for this release.
 
   homebrew:
     needs: [release, resolve]

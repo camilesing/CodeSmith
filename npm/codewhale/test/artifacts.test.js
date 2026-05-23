@@ -52,7 +52,7 @@ test("genuinely unsupported platform throws with raw platform name", () => {
 });
 
 test("known platforms are unaffected by alias map", () => {
-  for (const [platform, arch, expectedCodewhale] of [
+  for (const [platform, arch, expectedCodeWhale] of [
     ["linux", "x64", "codewhale-linux-x64"],
     ["darwin", "arm64", "codewhale-macos-arm64"],
     ["win32", "x64", "codewhale-windows-x64.exe"],
@@ -60,7 +60,7 @@ test("known platforms are unaffected by alias map", () => {
     withMockedOs(platform, arch, () => {
       const { detectBinaryNames } = require(ARTIFACTS_PATH);
       const result = detectBinaryNames();
-      assert.equal(result.codewhale, expectedCodewhale);
+      assert.equal(result.codewhale, expectedCodeWhale);
     });
   }
 });

@@ -1,7 +1,7 @@
 //! Self-update for the `codewhale` binary.
 //!
 //! The `update` subcommand fetches the latest release from
-//! `github.com/Hmbown/DeepSeek-TUI/releases/latest`, downloads the
+//! `github.com/Hmbown/CodeWhale/releases/latest`, downloads the
 //! platform-correct binary, verifies its SHA256 checksum, and atomically
 //! replaces the currently running binary.
 
@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use std::io::Write;
 
 const CHECKSUM_MANIFEST_ASSET: &str = "codewhale-artifacts-sha256.txt";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Hmbown/DeepSeek-TUI/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Hmbown/CodeWhale/releases/latest";
 const CNB_REPO_URL: &str = "https://cnb.cool/codewhale.net/codewhale";
 const RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_TUI_RELEASE_BASE_URL";
 const LEGACY_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_RELEASE_BASE_URL";
