@@ -11,14 +11,14 @@ is the implementation runbook for the Lighthouse host itself.
 
 ```text
 CNB mirror or GitHub branch
-  -> /opt/whalebro/codewhale-tui
+  -> /opt/whalebro/codewhale
 
 Feishu/Lark mobile app
   -> Feishu/Lark long-connection bot
   -> codewhale-feishu-bridge systemd service
   -> http://127.0.0.1:7878 codewhale serve --http
   -> /opt/whalebro
-       -> codewhale-tui/
+       -> codewhale/
 
 Optional public edge:
 EdgeOne -> Caddy/Nginx public site on Lighthouse
@@ -31,11 +31,11 @@ HTTP service, not the runtime API.
 ## Remote Whalebro Workspace
 
 Use `/opt/whalebro` as the VPS workspace root. The first-class checkout is
-`/opt/whalebro/codewhale-tui`.
+`/opt/whalebro/codewhale`.
 
 Create these paths first:
 
-- `/opt/whalebro/codewhale-tui`
+- `/opt/whalebro/codewhale`
 - `/opt/whalebro/worktrees`
 
 Linux is enough for Rust, Node, and service work. Mac-only release work such
@@ -87,9 +87,9 @@ SSH into the Lighthouse instance and run:
 sudo apt-get update
 sudo apt-get install -y git
 export DEEPSEEK_BRANCH=main
-export DEEPSEEK_REPO_URL=https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git
-git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/codewhale-tui
-cd /tmp/codewhale-tui
+export DEEPSEEK_REPO_URL=https://cnb.cool/codewhale.net/codewhale.git
+git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/codewhale
+cd /tmp/codewhale
 sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
   DEEPSEEK_REPO_BRANCH="$DEEPSEEK_BRANCH" \
   bash scripts/tencent-lighthouse/bootstrap-ubuntu.sh
@@ -106,7 +106,7 @@ For stable release docs, confirm the CNB mirror has the branch or tag before
 using it:
 
 ```bash
-export DEEPSEEK_REPO_URL=https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git
+export DEEPSEEK_REPO_URL=https://cnb.cool/codewhale.net/codewhale.git
 git ls-remote "$DEEPSEEK_REPO_URL" \
   refs/heads/main \
   refs/tags/v0.8.37
@@ -129,7 +129,7 @@ sed -n '1,120p' /tmp/rustup-init.sh
 sh /tmp/rustup-init.sh -y --profile minimal
 . "$HOME/.cargo/env"
 rustup default stable
-cd /opt/whalebro/codewhale-tui
+cd /opt/whalebro/codewhale
 cargo install --path crates/cli --locked --force
 cargo install --path crates/tui --locked --force
 exit
@@ -138,14 +138,14 @@ exit
 Copy and install the bridge/service files:
 
 ```bash
-cd /opt/whalebro/codewhale-tui
+cd /opt/whalebro/codewhale
 sudo bash scripts/tencent-lighthouse/install-services.sh
 ```
 
 After editing both env files, validate the bridge/runtime pairing:
 
 ```bash
-sudo -u codewhale node /opt/deepseek/bridge/scripts/validate-config.mjs \
+sudo -u codewhale node /opt/codewhale/bridge/scripts/validate-config.mjs \
   --env /etc/deepseek/feishu-bridge.env \
   --runtime-env /etc/deepseek/runtime.env \
   --workspace-root /opt/whalebro \
@@ -196,7 +196,7 @@ sudo journalctl -u codewhale-feishu-bridge -f
 Run the Lighthouse doctor after both services are configured:
 
 ```bash
-cd /opt/whalebro/codewhale-tui
+cd /opt/whalebro/codewhale
 sudo bash scripts/tencent-lighthouse/doctor.sh
 ```
 
@@ -289,5 +289,5 @@ From a phone DM to the bot:
 - Keep the Lighthouse firewall focused on SSH for this setup.
 - Use SSH key auth.
 - Use `tmux` for emergency terminal work from Blink/Termius.
-- Keep `/opt/whalebro/codewhale-tui` on a personal branch while working from the
+- Keep `/opt/whalebro/codewhale` on a personal branch while working from the
   phone.

@@ -13,7 +13,7 @@ use std::io::Write;
 
 const CHECKSUM_MANIFEST_ASSET: &str = "codewhale-artifacts-sha256.txt";
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Hmbown/DeepSeek-TUI/releases/latest";
-const CNB_REPO_URL: &str = "https://cnb.cool/deepseek-tui.com/DeepSeek-TUI";
+const CNB_REPO_URL: &str = "https://cnb.cool/codewhale.net/codewhale";
 const RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_TUI_RELEASE_BASE_URL";
 const LEGACY_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_RELEASE_BASE_URL";
 const UPDATE_VERSION_ENV: &str = "DEEPSEEK_TUI_VERSION";

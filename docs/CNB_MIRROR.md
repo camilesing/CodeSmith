@@ -1,6 +1,6 @@
 # CNB Cool mirror
 
-`cnb.cool/deepseek-tui.com/DeepSeek-TUI` is a one-way mirror of this
+`cnb.cool/codewhale.net/codewhale` is a one-way mirror of this
 GitHub repository for users on networks where GitHub is slow or blocked
 (primarily mainland China). The mirror receives every push to `main`, every
 `fix/*`, `rebrand/*`, and `work/v*` branch used for first-party release work,
@@ -73,12 +73,12 @@ should have both the new commit on `main` and the new tag:
 
 ```bash
 # Quick check: does the new tag exist on CNB?
-git ls-remote https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git \
+git ls-remote https://cnb.cool/codewhale.net/codewhale.git \
     refs/tags/vX.Y.Z
 
 # Quick check: is CNB's main at the same commit as origin/main?
 gh_main=$(git ls-remote https://github.com/Hmbown/DeepSeek-TUI.git refs/heads/main | awk '{print $1}')
-cnb_main=$(git ls-remote https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git refs/heads/main | awk '{print $1}')
+cnb_main=$(git ls-remote https://cnb.cool/codewhale.net/codewhale.git refs/heads/main | awk '{print $1}')
 test "$gh_main" = "$cnb_main" && echo "in sync" || echo "DIVERGED: gh=$gh_main cnb=$cnb_main"
 ```
 
@@ -103,10 +103,10 @@ password manager.
 
 ```bash
 # Add the CNB remote alongside origin.
-git remote add cnb https://cnb:${CNB_TOKEN}@cnb.cool/deepseek-tui.com/DeepSeek-TUI.git
+git remote add cnb https://cnb:${CNB_TOKEN}@cnb.cool/codewhale.net/codewhale.git
 
 # Or, if you don't want the token in your shell history:
-git remote add cnb https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git
+git remote add cnb https://cnb.cool/codewhale.net/codewhale.git
 # (you'll be prompted for username `cnb` and password ${CNB_TOKEN}
 #  on the first push; subsequent pushes use the credential helper.)
 ```
@@ -164,8 +164,8 @@ behind GitHub-blocking networks should use one of these paths:
 
 - **`cargo install`** from the CNB mirror:
   ```bash
-  cargo install --git https://cnb.cool/deepseek-tui.com/DeepSeek-TUI --tag vX.Y.Z codewhale-cli
-  cargo install --git https://cnb.cool/deepseek-tui.com/DeepSeek-TUI --tag vX.Y.Z codewhale-tui
+  cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-cli
+  cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-tui
   ```
   (Both binaries are required — the dispatcher and the TUI ship
   separately; see `AGENTS.md` for the two-binary install rationale.)
@@ -190,7 +190,7 @@ The Lighthouse + Feishu/Lark tutorial uses CNB as the Tencent-side source and
 automation lane. For a stable install, clone `main` or a release tag from:
 
 ```bash
-https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git
+https://cnb.cool/codewhale.net/codewhale.git
 ```
 
 The mirror receives `main`, release tags, and the Tencent setup branch patterns

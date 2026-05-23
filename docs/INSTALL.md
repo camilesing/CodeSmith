@@ -1,4 +1,4 @@
-# Installing codewhale
+# Installing Codewhale
 
 This page covers every supported install path and the most common
 "it didn't install" failures, including **Linux ARM64** and other less
@@ -181,7 +181,7 @@ is fastest from your network.
 For an always-on workspace that can be controlled from a phone, use the
 Tencent-native path instead of treating install as a single laptop step:
 
-- CNB mirror/source: `https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git`
+- CNB mirror/source: `https://cnb.cool/codewhale.net/codewhale.git`
 - Tencent Lighthouse HK: `/opt/whalebro` remote workspace
 - Feishu/Lark: long-connection phone bridge
 - EdgeOne: optional public HTTPS edge for docs/status/webhook surfaces
@@ -278,7 +278,7 @@ curl -L -o /tmp/codewhale-artifacts-sha256.txt \
 
 ### Windows Scoop
 
-codewhale is listed in Scoop's main bucket:
+The `codewhale` package is listed in Scoop's main bucket:
 
 ```powershell
 scoop update
@@ -473,8 +473,8 @@ assets. On networks where GitHub is blocked or unreliable, use the CNB source
 mirror instead and install both binaries from the release tag:
 
 ```bash
-cargo install --git https://cnb.cool/deepseek-tui.com/DeepSeek-TUI --tag vX.Y.Z codewhale-cli --locked --force
-cargo install --git https://cnb.cool/deepseek-tui.com/DeepSeek-TUI --tag vX.Y.Z codewhale-tui     --locked --force
+cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-cli --locked --force
+cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-tui     --locked --force
 ```
 
 If you operate a binary asset mirror, `codewhale update` can use it directly:

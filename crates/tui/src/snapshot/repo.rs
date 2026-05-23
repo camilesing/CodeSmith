@@ -115,7 +115,7 @@ const SIZE_WALK_SKIP_DIRS: &[&str] = &[
 ];
 
 const BUILTIN_EXCLUDES: &str = "\
-# DeepSeek TUI built-in snapshot exclusions
+# Codewhale built-in snapshot exclusions
 node_modules/
 target/
 dist/

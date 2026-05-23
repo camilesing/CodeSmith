@@ -5,17 +5,17 @@ who want an always-on agent workspace, a phone control surface, and a stack
 that works well from mainland China.
 
 It complements the local install path. If you only want to use `codewhale` on a
-laptop, start with the README quickstart. If you want "DS-TUI as a remote
+laptop, start with the README quickstart. If you want "Codewhale as a remote
 workbench I can control from my phone", start here.
 
 ## Default Stack
 
 ```text
 GitHub main/tags
-  -> CNB mirror: cnb.cool/deepseek-tui.com/DeepSeek-TUI
+  -> CNB mirror: cnb.cool/codewhale.net/codewhale
   -> optional CNB build/deploy pipeline
   -> Tencent Lighthouse HK
-       /opt/whalebro/codewhale-tui
+       /opt/whalebro/codewhale
        /opt/whalebro/worktrees
        codewhale-runtime.service on 127.0.0.1:7878
        codewhale-feishu-bridge.service
@@ -45,7 +45,7 @@ EdgeOne is optional:
 2. Clone from CNB by default when the branch or tag exists there:
 
    ```bash
-   export DEEPSEEK_REPO_URL=https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git
+   export DEEPSEEK_REPO_URL=https://cnb.cool/codewhale.net/codewhale.git
    git ls-remote "$DEEPSEEK_REPO_URL" refs/heads/main
    ```
 
@@ -57,8 +57,8 @@ EdgeOne is optional:
 
    ```bash
    export DEEPSEEK_BRANCH=main
-   git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/codewhale-tui
-   cd /tmp/codewhale-tui
+   git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/codewhale
+   cd /tmp/codewhale
    sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
      DEEPSEEK_REPO_BRANCH="$DEEPSEEK_BRANCH" \
      bash scripts/tencent-lighthouse/bootstrap-ubuntu.sh
@@ -85,7 +85,7 @@ The intended deploy button should:
 
 1. Run bridge validation/tests and lightweight release-version checks.
 2. SSH to Lighthouse with a deploy key stored as a CNB secret.
-3. Update `/opt/whalebro/codewhale-tui`.
+3. Update `/opt/whalebro/codewhale`.
 4. Rebuild/install both binaries.
 5. Reinstall/restart systemd services.
 6. Run `scripts/tencent-lighthouse/doctor.sh`.

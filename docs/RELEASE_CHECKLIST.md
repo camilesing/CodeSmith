@@ -88,7 +88,7 @@ Run, in order, from the repo root:
       reports the new version on the npm registry.
 - [ ] `crates.io` has the new version (or the `publish-crates.sh` job has
       pushed it).
-- [ ] `ghcr.io/hmbown/deepseek-tui:vX.Y.Z` and `:latest` are updated.
+- [ ] `ghcr.io/hmbown/codewhale:vX.Y.Z` and `:latest` are updated.
 
 ## 8. Post-tag
 

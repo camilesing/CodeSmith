@@ -1,4 +1,4 @@
-# Rebrand: deepseek-tui → codewhale
+# Rebrand: DeepSeek TUI → Codewhale
 
 Starting with **v0.8.41**, this project ships under a new name: `codewhale`.
 
@@ -60,7 +60,7 @@ Anything that targets the DeepSeek provider API stays exactly as it was:
 - **Homebrew tap and formula** (`Hmbown/homebrew-deepseek-tui`): still
   installs by the legacy name during the transition. The tap's formula
   will be flipped to the new names in a follow-up.
-- **Docker image** (`ghcr.io/hmbown/deepseek-tui`): unchanged.
+- **Docker image**: `ghcr.io/hmbown/codewhale`.
 
 ## Deprecation shims (one release cycle)
 
@@ -119,11 +119,10 @@ still verifies.
 
 ## Why the name change
 
-`codewhale` is a shorter, terminal-friendlier handle that doesn't suggest
-the project is tied to a single provider. The dispatcher already supports
-DeepSeek, NVIDIA NIM, OpenAI-compatible endpoints, AtlasCloud, Wanjie Ark,
-OpenRouter, Novita, Fireworks, SGLang, vLLM, and Ollama, with more on the
-roadmap. The new name reflects that.
+Codewhale is a shorter, terminal-friendlier handle for the same terminal
+coding agent. In v0.8.41 it remains centered on DeepSeek V4 while the project
+name, command names, package names, release assets, Docker image, and CNB
+mirror move to Codewhale.
 
 ## Reporting issues with the rename
 

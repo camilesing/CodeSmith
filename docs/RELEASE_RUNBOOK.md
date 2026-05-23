@@ -1,4 +1,4 @@
-# codewhale Release Runbook
+# Codewhale Release Runbook
 
 This runbook is the source of truth for shipping Rust crates, GitHub release assets,
 and the `codewhale` npm wrapper.
@@ -187,13 +187,13 @@ To re-enable automated publish: provision an npm automation token with "Bypass 2
 ## CNB Cool mirror
 
 Every push to `main`, `fix/*`, `rebrand/*`, `work/v*`, and every `v*` tag is mirrored to
-`cnb.cool/deepseek-tui.com/DeepSeek-TUI` via the `Sync to CNB` workflow
+`cnb.cool/codewhale.net/codewhale` via the `Sync to CNB` workflow
 so users behind GitHub-blocking networks can fetch the source and so CNB can
 run the heavy Linux CI lane. After a release tag, **verify the mirror caught
 it** before declaring the release shipped:
 
 ```bash
-git ls-remote https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git refs/tags/vX.Y.Z
+git ls-remote https://cnb.cool/codewhale.net/codewhale.git refs/tags/vX.Y.Z
 ```
 
 If the workflow failed for the release tag, the manual fallback is

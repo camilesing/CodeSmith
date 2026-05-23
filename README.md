@@ -1,4 +1,4 @@
-# codewhale
+# Codewhale
 
 > Terminal coding agent for DeepSeek V4. It runs from the `codewhale` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
 
@@ -33,13 +33,13 @@ brew install deepseek-tui
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
 
 # 5. Docker — prebuilt release image.
-docker volume create codewhale-tui-home
+docker volume create codewhale-home
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-tui-home:/home/deepseek/.deepseek \
+  -v codewhale-home:/home/codewhale/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/deepseek-tui:latest
+  ghcr.io/hmbown/codewhale:latest
 ```
 
 > In mainland China, speed up the npm path with
@@ -72,7 +72,7 @@ cargo install codewhale-tui     --locked --force
 
 ## What Is It?
 
-codewhale is a coding agent that runs in your terminal. It can read and edit files, run shell commands, search the web, manage git, and coordinate sub-agents from a keyboard-driven TUI.
+Codewhale is a coding agent that runs in your terminal. It can read and edit files, run shell commands, search the web, manage git, and coordinate sub-agents from a keyboard-driven TUI.
 
 It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), including 1M-token context windows, streaming reasoning blocks, and prefix-cache-aware cost reporting.
 
@@ -110,7 +110,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
 
 ### Sub-agents: Concurrent Background Execution
 
-codewhale can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
+Codewhale can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
 
 - **Non-blocking launch.** `agent_open` returns immediately. The child gets its own fresh context and tool registry and runs independently. The parent keeps working.
 - **Background execution.** Sub-agents execute concurrently (default cap: 10, configurable to 20). The engine manages the pool — no polling loop needed.
@@ -208,7 +208,7 @@ Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.c
 
 ### Windows (Scoop)
 
-[Scoop](https://scoop.sh) is a Windows package manager. codewhale is listed
+[Scoop](https://scoop.sh) is a Windows package manager. The `codewhale` package is listed
 in Scoop's main bucket, but that manifest updates independently and can lag the
 GitHub/npm/Cargo release. Run `scoop update` first, then verify the installed
 version with `codewhale --version`:
@@ -346,14 +346,14 @@ from side-git snapshots but do not rewrite conversation history.
 Docker images are published to GHCR for release builds:
 
 ```bash
-docker volume create codewhale-tui-home
+docker volume create codewhale-home
 
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-tui-home:/home/deepseek/.deepseek \
+  -v codewhale-home:/home/codewhale/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/deepseek-tui:latest
+  ghcr.io/hmbown/codewhale:latest
 ```
 
 See [docs/DOCKER.md](docs/DOCKER.md) for pinned tags, local image builds,

@@ -115,7 +115,7 @@ struct Cli {
 enum Commands {
     /// Run interactive/non-interactive flows via the TUI binary.
     Run(RunArgs),
-    /// Run DeepSeek TUI diagnostics.
+    /// Run Codewhale diagnostics.
     Doctor(TuiPassthroughArgs),
     /// List live DeepSeek API models via the TUI binary.
     Models(TuiPassthroughArgs),
@@ -129,7 +129,7 @@ enum Commands {
     Init(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
-    /// Run the DeepSeek TUI non-interactive agent command.
+    /// Run the Codewhale non-interactive agent command.
     #[command(after_help = "\
 Common forwarded flags:
   --auto                           Enable agentic mode with tool access
@@ -140,7 +140,7 @@ Common forwarded flags:
   --output-format <FORMAT>         Output format: text or stream-json
 ")]
     Exec(TuiPassthroughArgs),
-    /// Run a DeepSeek-powered code review over a git diff.
+    /// Run a Codewhale-powered code review over a git diff.
     Review(TuiPassthroughArgs),
     /// Apply a patch file or stdin to the working tree.
     Apply(TuiPassthroughArgs),

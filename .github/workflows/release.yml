@@ -323,7 +323,7 @@ jobs:
           files: artifacts/*/*
           prerelease: false
           body: |
-            > This release renames the project to **codewhale**. The legacy
+            > This release renames the project to **Codewhale**. The legacy
             > `deepseek` and `deepseek-tui` binaries continue to ship as
             > deprecation shims for one release cycle; they print a one-line
             > warning and forward to `codewhale` / `codewhale-tui`. They will
@@ -345,8 +345,8 @@ jobs:
             ```bash
             docker run --rm -it \
               -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-              -v ~/.deepseek:/home/deepseek/.deepseek \
-              ghcr.io/hmbown/deepseek-tui:${{ needs.resolve.outputs.tag }}
+              -v ~/.deepseek:/home/codewhale/.deepseek \
+              ghcr.io/hmbown/codewhale:${{ needs.resolve.outputs.tag }}
             ```
 
             The image ships the `codewhale` dispatcher and `codewhale-tui` runtime (plus the legacy `deepseek` / `deepseek-tui` shims during the transition). The `latest` tag is also updated on release.

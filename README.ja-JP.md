@@ -1,4 +1,4 @@
-# 🐳 codewhale
+# 🐳 Codewhale
 
 > **このターミナルネイティブのコーディングエージェントは、DeepSeek V4 の 100 万トークンのコンテキストウィンドウとプレフィックスキャッシュ機能を中心に構築されています。単一のバイナリとして配布され、Node.js や Python のランタイムは不要です。MCP クライアント、サンドボックス、永続的なタスクキューも標準で同梱されています。**
 
@@ -28,13 +28,13 @@ brew install deepseek-tui
 #    Linux x64/ARM64、macOS x64/ARM64、Windows x64 向けのビルド済みバイナリがあります。
 
 # 5. Docker — ビルド済みリリースイメージ。
-docker volume create codewhale-tui-home
+docker volume create codewhale-home
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-tui-home:/home/deepseek/.deepseek \
+  -v codewhale-home:/home/codewhale/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/deepseek-tui:latest
+  ghcr.io/hmbown/codewhale:latest
 ```
 
 > 中国本土では、`--registry=https://registry.npmmirror.com` を指定して npm 経由のダウンロードを高速化するか、下記の[Cargo ミラー](#中国--ミラーフレンドリーなインストール)を利用してください。

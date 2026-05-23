@@ -1,4 +1,4 @@
-# codewhale
+# Codewhale
 
 > **面向 [DeepSeek V4](https://platform.deepseek.com) 的终端原生编程智能体：100 万 token 上下文、思考模式流式推理、前缀缓存感知。自包含 Rust 二进制发布——开箱即带 MCP 客户端、沙箱和持久化任务队列。**
 
@@ -29,13 +29,13 @@ brew install deepseek-tui
 #    覆盖 Linux x64/ARM64、macOS x64/ARM64、Windows x64
 
 # 5. Docker —— 预构建发布镜像。
-docker volume create codewhale-tui-home
+docker volume create codewhale-home
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-tui-home:/home/deepseek/.deepseek \
+  -v codewhale-home:/home/codewhale/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/deepseek-tui:latest
+  ghcr.io/hmbown/codewhale:latest
 ```
 
 > 中国大陆访问较慢时，npm 可加 `--registry=https://registry.npmmirror.com`，
@@ -316,14 +316,14 @@ codewhale update                                # 检查并应用二进制更新
 Docker 镜像发布在 GHCR 上：
 
 ```bash
-docker volume create codewhale-tui-home
+docker volume create codewhale-home
 
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-tui-home:/home/deepseek/.deepseek \
+  -v codewhale-home:/home/codewhale/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/deepseek-tui:latest
+  ghcr.io/hmbown/codewhale:latest
 ```
 
 固定 tag、本地构建、volume 权限和非交互管道用法见 [docs/DOCKER.md](docs/DOCKER.md)。
