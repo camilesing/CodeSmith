@@ -185,7 +185,7 @@ impl ProvidersToml {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
     /// TUI-compatible DeepSeek API key. Kept at the root so both `deepseek`
-    /// and `deepseek-tui` can share a single config file.
+    /// and `codewhale-tui` can share a single config file.
     pub api_key: Option<String>,
     /// TUI-compatible DeepSeek base URL.
     pub base_url: Option<String>,

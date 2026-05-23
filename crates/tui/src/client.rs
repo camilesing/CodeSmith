@@ -514,7 +514,7 @@ impl DeepSeekClient {
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
             .user_agent(concat!(
-                "Mozilla/5.0 (compatible; deepseek-tui/",
+                "Mozilla/5.0 (compatible; codewhale/",
                 env!("CARGO_PKG_VERSION"),
                 "; +https://github.com/Hmbown/DeepSeek-TUI)"
             ))
