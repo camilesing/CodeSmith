@@ -4735,19 +4735,18 @@ async fn apply_command_result(
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn open_external_url(url: &str) -> Result<()> {
-    let mut command = external_url_command(url);
+    spawn_external_url_command(external_url_command(url))
+}
 
-    let status = command
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn spawn_external_url_command(mut command: Command) -> Result<()> {
+    command
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .map_err(|err| anyhow::anyhow!("failed to launch browser command: {err}"))?;
-    if !status.success() {
-        return Err(anyhow::anyhow!(
-            "browser command exited with status {status}"
-        ));
-    }
-    Ok(())
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| anyhow::anyhow!("failed to launch browser command: {err}"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

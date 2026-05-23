@@ -2221,6 +2221,34 @@ fn event_poll_timeout_has_nonzero_floor() {
 }
 
 #[test]
+#[cfg(any(unix, windows))]
+fn external_url_launcher_does_not_wait_for_browser_process() {
+    let command = slow_external_url_command();
+    let start = Instant::now();
+
+    spawn_external_url_command(command).expect("spawn external URL command");
+
+    assert!(
+        start.elapsed() < Duration::from_millis(750),
+        "opening a feedback URL must not wait for the browser command to exit"
+    );
+}
+
+#[cfg(unix)]
+fn slow_external_url_command() -> Command {
+    let mut command = Command::new("sh");
+    command.args(["-c", "sleep 1"]);
+    command
+}
+
+#[cfg(windows)]
+fn slow_external_url_command() -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "ping -n 2 127.0.0.1 >NUL"]);
+    command
+}
+
+#[test]
 fn footer_status_line_spans_show_mode_and_model_idle_and_active() {
     let mut app = create_test_app();
     app.model = "deepseek-v4-flash".to_string();
