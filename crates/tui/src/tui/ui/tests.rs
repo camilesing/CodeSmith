@@ -116,7 +116,7 @@ impl Drop for SettingsHomeGuard {
 fn resume_hint_uses_canonical_resume_command() {
     assert_eq!(
         resume_hint_text(),
-        "To continue this session, execute deepseek run --continue"
+        "To continue this session, execute codewhale run --continue"
     );
     assert!(should_show_resume_hint(Some(
         "019dd9d6-4f44-7c83-9863-59674a12b827"
@@ -1952,7 +1952,7 @@ fn init_git_repo() -> TempDir {
     let commit = Command::new("git")
         .args([
             "-c",
-            "user.name=DeepSeek TUI Tests",
+            "user.name=codewhale Tests",
             "-c",
             "user.email=tests@example.com",
             "commit",
@@ -2836,7 +2836,7 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
     assert!(entries.iter().any(|entry| entry.name == "/config"));
     assert!(entries.iter().any(|entry| entry.name == "/links"));
     assert!(!entries.iter().any(|entry| entry.name == "/set"));
-    assert!(!entries.iter().any(|entry| entry.name == "/deepseek"));
+    assert!(!entries.iter().any(|entry| entry.name == "/codewhale"));
 }
 
 #[test]
@@ -5942,7 +5942,7 @@ fn completed_turn_notification_falls_back_to_default_when_empty() {
         Duration::from_secs(5),
         None,
     );
-    assert_eq!(msg, "deepseek: turn complete");
+    assert_eq!(msg, "codewhale: turn complete");
 }
 
 #[test]
@@ -5965,13 +5965,13 @@ fn completed_turn_notification_truncates_long_text() {
 fn subagent_completion_notification_uses_summary_line_not_sentinel() {
     let msg = crate::tui::notifications::subagent_completion_message(
         "agent_live",
-        "Finished the docs audit.\n<deepseek:subagent.done>{}</deepseek:subagent.done>",
+        "Finished the docs audit.\n<codewhale:subagent.done>{}</codewhale:subagent.done>",
         false,
         Duration::from_secs(42),
     );
 
     assert_eq!(msg, "sub-agent agent_live: Finished the docs audit.");
-    assert!(!msg.contains("deepseek:subagent.done"));
+    assert!(!msg.contains("codewhale:subagent.done"));
 }
 
 #[test]
@@ -5983,8 +5983,8 @@ fn subagent_completion_notification_can_include_elapsed_summary() {
         Duration::from_secs(65),
     );
 
-    assert!(msg.contains("deepseek: sub-agent agent_live complete"));
-    assert!(msg.contains("deepseek: sub-agent complete (1m 5s)"));
+    assert!(msg.contains("codewhale: sub-agent agent_live complete"));
+    assert!(msg.contains("codewhale: sub-agent complete (1m 5s)"));
 }
 
 #[test]

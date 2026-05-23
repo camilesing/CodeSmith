@@ -576,7 +576,7 @@ fn should_show_resume_hint(session_id: Option<&str>) -> bool {
 }
 
 fn resume_hint_text() -> &'static str {
-    "To continue this session, execute deepseek run --continue"
+    "To continue this session, execute codewhale run --continue"
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {
