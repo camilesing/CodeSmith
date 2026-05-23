@@ -7,8 +7,14 @@ repository.workspace = true
 description = "Codex-style CLI facade for DeepSeek workspace architecture"
 
 [[bin]]
-name = "deepseek"
+name = "codewhale"
 path = "src/main.rs"
+
+# Legacy alias — forwards to `codewhale` and prints a deprecation notice.
+# Will be removed in v0.9.0.
+[[bin]]
+name = "deepseek"
+path = "src/bin/deepseek_legacy_shim.rs"
 
 [dependencies]
 anyhow.workspace = true

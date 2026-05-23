@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Terminal UI for DeepSeek"
-default-run = "deepseek-tui"
+default-run = "codewhale-tui"
 
 [features]
 default = ["tui", "json", "toml"]
@@ -15,8 +15,14 @@ json = ["schemaui/json"]
 toml = ["schemaui/toml"]
 
 [[bin]]
-name = "deepseek-tui"
+name = "codewhale-tui"
 path = "src/main.rs"
+
+# Legacy alias — forwards to `codewhale-tui` and prints a deprecation
+# notice. Will be removed in v0.9.0.
+[[bin]]
+name = "deepseek-tui"
+path = "src/bin/deepseek_tui_legacy_shim.rs"
 
 [dependencies]
 anyhow = "1.0.100"

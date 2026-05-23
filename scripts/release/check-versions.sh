@@ -6,8 +6,10 @@
 #   1. No `crates/*/Cargo.toml` carries a literal `version = "x.y.z"`; every
 #      crate must inherit `version.workspace = true`.
 #   2. `npm/deepseek-tui/package.json` `version` matches the workspace
-#      `version` in the root `Cargo.toml`.
-#   3. Internal `deepseek-*` path dependency pins match the workspace version.
+#      `version` in the root `Cargo.toml`. (The npm wrapper directory is
+#      renamed to `npm/codewhale/` in a follow-up phase; this script will
+#      be updated then.)
+#   3. Internal `codewhale-*` path dependency pins match the workspace version.
 #   4. The TUI crate's packaged changelog copy matches root `CHANGELOG.md`.
 #   5. The current release has a dated Keep a Changelog entry and compare link.
 #   6. README contributor additions are mentioned in the current release entry.
@@ -38,11 +40,11 @@ fi
 
 # 3) Internal path dependency pins.
 internal_dep_drift="$(
-  grep -nE 'deepseek-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"' crates/*/Cargo.toml \
+  grep -nE 'codewhale-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"' crates/*/Cargo.toml \
     | grep -v "version[[:space:]]*=[[:space:]]*\"${workspace_version}\"" || true
 )"
 if [[ -n "${internal_dep_drift}" ]]; then
-  echo "::error::Internal deepseek-* path dependency versions must match workspace version ${workspace_version}:" >&2
+  echo "::error::Internal codewhale-* path dependency versions must match workspace version ${workspace_version}:" >&2
   echo "${internal_dep_drift}" >&2
   fail=1
 fi
@@ -125,7 +127,7 @@ fi
 
 # 8) Cargo.lock in sync.
 if ! cargo metadata --locked --format-version 1 --no-deps >/dev/null 2>&1; then
-  echo "::error::Cargo.lock is out of sync with the manifests. Run 'cargo update -p deepseek-tui' or 'cargo build' and commit the result." >&2
+  echo "::error::Cargo.lock is out of sync with the manifests. Run 'cargo update -p codewhale-tui' or 'cargo build' and commit the result." >&2
   fail=1
 fi
 
