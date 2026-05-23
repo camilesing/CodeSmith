@@ -9,17 +9,17 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use deepseek_agent::ModelRegistry;
-use deepseek_app_server::{
+use codewhale_agent::ModelRegistry;
+use codewhale_app_server::{
     AppServerOptions, run as run_app_server, run_stdio as run_app_server_stdio,
 };
-use deepseek_config::{
+use codewhale_config::{
     CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions, RuntimeApiKeySource,
 };
-use deepseek_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
-use deepseek_mcp::{McpServerDefinition, run_stdio_server};
-use deepseek_secrets::Secrets;
-use deepseek_state::{StateStore, ThreadListFilters};
+use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
+use codewhale_mcp::{McpServerDefinition, run_stdio_server};
+use codewhale_secrets::Secrets;
+use codewhale_state::{StateStore, ThreadListFilters};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProviderArg {
@@ -715,7 +715,7 @@ const PROVIDER_LIST: [ProviderKind; 11] = [
 #[cfg(test)]
 fn no_keyring_secrets() -> Secrets {
     Secrets::new(std::sync::Arc::new(
-        deepseek_secrets::InMemoryKeyringStore::new(),
+        codewhale_secrets::InMemoryKeyringStore::new(),
     ))
 }
 
@@ -2149,7 +2149,7 @@ mod tests {
 
     #[test]
     fn auth_set_writes_to_shared_config_file() {
-        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2220,7 +2220,7 @@ mod tests {
 
     #[test]
     fn auth_clear_removes_from_config() {
-        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2255,7 +2255,7 @@ mod tests {
 
     #[test]
     fn auth_status_and_list_only_probe_active_provider_keyring() {
-        use deepseek_secrets::{KeyringStore, SecretsError};
+        use codewhale_secrets::{KeyringStore, SecretsError};
         use std::sync::{Arc, Mutex};
 
         #[derive(Default)]
@@ -2307,7 +2307,7 @@ mod tests {
 
     #[test]
     fn auth_status_reports_all_active_provider_sources_with_last4() {
-        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let _lock = env_lock();
@@ -2345,7 +2345,7 @@ mod tests {
 
     #[test]
     fn dispatch_keyring_recovery_self_heals_into_config_file() {
-        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2418,7 +2418,7 @@ mod tests {
 
     #[test]
     fn auth_migrate_moves_plaintext_keys_into_keyring_and_strips_file() {
-        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2463,7 +2463,7 @@ mod tests {
 
     #[test]
     fn auth_migrate_dry_run_does_not_modify_anything() {
-        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();

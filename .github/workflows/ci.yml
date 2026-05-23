@@ -92,7 +92,7 @@ jobs:
       - name: Lockfile drift guard
         run: git diff --exit-code -- Cargo.lock
       - name: Run Offline Eval Harness
-        run: cargo run -p deepseek-tui --all-features -- eval
+        run: cargo run -p codewhale-tui --all-features -- eval
 
   npm-wrapper-smoke:
     name: npm wrapper smoke
@@ -120,7 +120,7 @@ jobs:
         with:
           cache-bin: false
       - name: Build wrapper binaries
-        run: cargo build --release --locked -p deepseek-tui-cli -p deepseek-tui
+        run: cargo build --release --locked -p codewhale-cli -p codewhale-tui
       - name: Smoke wrapper install and delegated entrypoints
         run: node scripts/release/npm-wrapper-smoke.js
 
