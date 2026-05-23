@@ -32,6 +32,8 @@ pub enum Method {
     Osc9,
     /// Plain BEL character: `\x07`
     Bel,
+    /// osascript
+    MacOS,
     /// Kitty notification protocol (OSC 99) with ST terminator.
     /// Uses `ESC ] 99 ; params ST` — no audible beep, unlike BEL.
     Kitty,
@@ -96,6 +98,10 @@ fn resolve_method() -> Method {
         return Method::Bel;
     }
 
+    if cfg!(target_os = "macos") {
+        return Method::MacOS;
+    }
+
     // Ghostty-based terminals (cmux, etc.) may not set their own
     // TERM_PROGRAM but do set TERM=xterm-ghostty. Likewise for Kitty.
     let term = std::env::var("TERM").unwrap_or_default();
@@ -153,8 +159,8 @@ fn build_escape(method: Method, in_tmux: bool, msg: &str) -> Vec<u8> {
             let seq = format!("\x1b]777;notify;codewhale;{msg}\x07");
             wrap_for_multiplexer(&seq, in_tmux).into_bytes()
         }
-        // Auto and Off should not reach build_escape.
-        Method::Auto | Method::Off => vec![],
+        // Auto and Off and MacOS should not reach build_escape.
+        Method::Auto | Method::Off | Method::MacOS => vec![],
     }
 }
 
@@ -178,6 +184,13 @@ pub fn notify_done_to<W: Write>(
         Method::Auto => resolve_method(),
         other => other,
     };
+
+    // macOS Notification Center: handled via osascript, not terminal escapes.
+    if Method::MacOS==effective {
+        macos_display_notification(msg);
+        return;
+    }
+
     let bytes = build_escape(effective, in_tmux, msg);
     if bytes.is_empty() {
         return;
@@ -376,6 +389,75 @@ fn beep_sound() {
 /// Pure terminal BEL character.
 fn bell_sound() {
     let _ = io::stdout().write_all(b"\x07");
+}
+
+/// Show a macOS Notification Center alert via `osascript`.
+///
+/// Runs on a dedicated background thread so the caller is not blocked.
+///
+/// The notification includes:
+/// - **Title**: "DeepSeek TUI"
+/// - **Subtitle**: First line of `msg` (when the message contains a newline,
+///   e.g. the response preview from a completed turn)
+/// - **Body**: Remaining lines of `msg`, or the full `msg` if single-line
+/// - **Sound**: Default macOS notification sound
+///
+/// The whole body is capped at 200 **characters** (not bytes) to keep the
+/// bubble readable while correctly handling multi-byte text. Embedded double
+/// quotes are escaped as `\"` so AppleScript tokenises correctly.
+///
+/// This is best-effort: if `osascript` is not available (e.g. headless SSH
+/// session) the error is logged via `tracing::warn!` instead of silently
+/// swallowed.
+#[cfg(target_os = "macos")]
+fn macos_display_notification(msg: &str) {
+    let body = msg.to_string();
+
+    // Spawn on a background thread so we don't block the caller.
+    // osascript itself is fast (~50 ms), but spawning a subprocess
+    // synchronously from an async context steals a tokio thread.
+    let _ = std::thread::Builder::new()
+        .name("osascript-notif".into())
+        .spawn(move || {
+            // Char-bounded truncation (not byte-bounded) so we don't slice
+            // through a multi-byte sequence and emit invalid UTF-8 to the
+            // AppleScript parser.
+            let body_str: String = body.chars().take(200).collect();
+
+            // Escape embedded double-quote characters for AppleScript.
+            let escaped = body_str.replace('"', "\\\"");
+
+            // Build the AppleScript command.
+            // When the message has multiple lines, the first line becomes
+            // the subtitle and the rest becomes the body — this lets turn
+            // notifications show the response preview in the subtitle and
+            // the duration/cost summary in the body.
+            let script = if let Some(idx) = escaped.find('\n') {
+                let subtitle = escaped[..idx].trim();
+                let body_text = escaped[idx + 1..].trim();
+                format!(
+                    "display notification \"{body_text}\" with title \"DeepSeek TUI\" subtitle \"{subtitle}\" sound name \"default\""
+                )
+            } else {
+                format!(
+                    "display notification \"{escaped}\" with title \"DeepSeek TUI\" sound name \"default\""
+                )
+            };
+
+            match std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .output()
+            {
+                Ok(output) if !output.status.success() => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    tracing::warn!(stderr = %stderr, "osascript notification failed");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "osascript notification error");
+                }
+                _ => {}
+            }
+        });
 }
 
 /// Return a human-readable duration string, capped at two units so

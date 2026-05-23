@@ -1994,6 +1994,19 @@ async fn run_event_loop(
                             );
                             app.view_stack
                                 .push(ApprovalView::new_for_locale(request, app.ui_locale));
+                            if let Some((method, _, _)) =
+                                crate::tui::notifications::settings(config)
+                            {
+                                let in_tmux =
+                                    std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                                crate::tui::notifications::notify_done(
+                                    method,
+                                    in_tmux,
+                                    &format!("Approval needed: {tool_name} - {description}"),
+                                    Duration::ZERO,
+                                    Duration::ZERO,
+                                );
+                            }
                             app.status_message = Some(format!(
                                 "Approval required for '{tool_name}': {description}"
                             ));
@@ -2001,6 +2014,19 @@ async fn run_event_loop(
                     }
                     EngineEvent::UserInputRequired { id, request } => {
                         app.view_stack.push(UserInputView::new(id.clone(), request));
+                        if let Some((method, _, _)) =
+                            crate::tui::notifications::settings(config)
+                        {
+                            let in_tmux =
+                                std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                            crate::tui::notifications::notify_done(
+                                method,
+                                in_tmux,
+                                "Action required: please respond in the terminal",
+                                Duration::ZERO,
+                                Duration::ZERO,
+                            );
+                        }
                         app.status_message = Some(
                             "Action required: answer the popup with 1-4, arrows, or Enter"
                                 .to_string(),
@@ -2056,6 +2082,21 @@ async fn run_event_loop(
                                 blocked_write,
                             );
                             app.view_stack.push(ElevationView::new(request));
+                            if let Some((method, _, _)) =
+                                crate::tui::notifications::settings(config)
+                            {
+                                let in_tmux =
+                                    std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                                crate::tui::notifications::notify_done(
+                                    method,
+                                    in_tmux,
+                                    &format!(
+                                        "Sandbox: {denial_reason} for '{tool_name}'"
+                                    ),
+                                    Duration::ZERO,
+                                    Duration::ZERO,
+                                );
+                            }
                             app.status_message =
                                 Some(format!("Sandbox blocked {tool_name}: {denial_reason}"));
                         }
