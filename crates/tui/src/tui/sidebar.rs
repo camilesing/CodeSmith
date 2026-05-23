@@ -2051,7 +2051,7 @@ mod tests {
             .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
                 name: "read_file".to_string(),
                 status: ToolStatus::Success,
-                input_summary: Some("deepseek-tui/CHANGELOG.md".to_string()),
+                input_summary: Some("codewhale-tui/CHANGELOG.md".to_string()),
                 output: Some("done".to_string()),
                 prompts: None,
                 spillover_path: None,
@@ -2328,7 +2328,7 @@ mod tests {
     fn tasks_panel_failed_shell_rows_point_to_activity_details() {
         let mut app = create_test_app();
         app.history.push(HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: "cargo test -p deepseek-tui".to_string(),
+            command: "cargo test -p codewhale-tui".to_string(),
             status: ToolStatus::Failed,
             output: Some("test failed".to_string()),
             started_at: None,
