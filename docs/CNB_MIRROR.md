@@ -3,7 +3,8 @@
 `cnb.cool/deepseek-tui.com/DeepSeek-TUI` is a one-way mirror of this
 GitHub repository for users on networks where GitHub is slow or blocked
 (primarily mainland China). The mirror receives every push to `main`, every
-`v*` release tag, and Tencent release-candidate branches used by the
+`fix/*`, `rebrand/*`, and `work/v*` branch used for first-party release work,
+every `v*` release tag, and Tencent release-candidate branches used by the
 Lighthouse/Feishu setup.
 
 ## How it works
@@ -12,15 +13,17 @@ The mirror is maintained by the [`Sync to CNB`](../.github/workflows/sync-cnb.ym
 GitHub Actions workflow:
 
 - **Trigger:** `push` to `main`, `push` of any `v*` tag,
-  release stability branches matching `work/v*-stability`,
+  release work branches matching `work/v*`, first-party fix and rebrand
+  branches matching `fix/*` and `rebrand/*`,
   Tencent setup branches matching `work/v*-feishu-*` or
   `work/v*-lighthouse*`, or `workflow_dispatch` for manual recovery.
 - **Auth:** HTTPS basic auth as user `cnb` with the `CNB_GIT_TOKEN`
   repository secret as the password.
 - **Scope:** only the ref that triggered the run is pushed. Tag pushes
-  push exactly that tag. Branch pushes mirror `main` or an explicitly
-  matched release/Tencent setup branch. Other feature branches and dependabot
-  refs are intentionally *not* mirrored.
+  push exactly that tag. Branch pushes mirror `main`, first-party
+  `fix/*`/`rebrand/*` branches, or explicitly matched release/Tencent setup
+  branches. Other feature branches and dependabot refs are intentionally
+  *not* mirrored.
 - **Concurrency:** runs are serialized via a `cnb-sync` concurrency
   group so the back-to-back `main` push and tag push from
   `auto-tag.yml` cannot race each other.
@@ -43,16 +46,25 @@ release assets from source and publishes a CNB release with:
 - `codewhale-artifacts-sha256.txt`
 
 This gives users who can reach CNB but not GitHub a CNB-native release path.
-GitHub remains the canonical full release matrix; the CNB tag pipeline is the
-China-friendly Linux x64 fallback.
+GitHub remains the canonical macOS/Windows release matrix; the CNB tag pipeline
+is the China-friendly Linux x64 fallback.
 
-## Release branch preflight
+## CNB Linux CI and release preflight
 
-Release stability branches matching `work/v*-stability` are mirrored to CNB so
-CNB can run Linux/container release preflight before the branch merges. This is
-useful for offloading Linux Rust, npm wrapper, and Feishu bridge checks, but it
-does not replace platform-specific GitHub Actions jobs such as Windows and
-macOS.
+First-party `fix/*` and `rebrand/*` branches are mirrored to CNB so the heavy
+Linux Rust gates run on Tencent-hosted runners instead of GitHub Actions:
+
+- `./scripts/release/check-versions.sh`
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+- `cargo test --workspace --all-features --locked`
+- `cargo build --release --locked -p codewhale-cli -p codewhale-tui`
+- `node scripts/release/npm-wrapper-smoke.js`
+
+Release branches matching `work/v*` also run the Feishu bridge checks and
+`./scripts/release/publish-crates.sh dry-run`. GitHub Actions keeps the cheap
+drift/fmt statuses plus the macOS and Windows jobs that CNB cannot replace.
 
 ## Verifying the mirror after a release
 
@@ -147,7 +159,7 @@ expired:
 ## Binary release assets and `codewhale update`
 
 CNB now builds Linux x64 assets for `v*` tags from the source-controlled
-`.cnb.yml` pipeline. GitHub remains the canonical full release matrix. Users
+`.cnb.yml` pipeline. GitHub remains the canonical macOS/Windows release matrix. Users
 behind GitHub-blocking networks should use one of these paths:
 
 - **`cargo install`** from the CNB mirror:

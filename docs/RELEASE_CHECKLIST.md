@@ -29,8 +29,10 @@ publish-crates), see [`RELEASE_RUNBOOK.md`](RELEASE_RUNBOOK.md).
 - [ ] `Cargo.toml` workspace `version` is bumped.
 - [ ] All per-crate `crates/*/Cargo.toml` path-dependency `version = "..."`
       pins match the new workspace version.
-- [ ] `npm/codewhale-tui/package.json` `version` AND `deepseekBinaryVersion`
+- [ ] `npm/codewhale/package.json` `version` AND `codewhaleBinaryVersion`
       are both bumped.
+- [ ] `npm/deepseek-tui/package.json` `version` is bumped for the one-release
+      deprecation shim.
 - [ ] `Cargo.lock` is refreshed (`cargo update --workspace --offline`).
 - [ ] `./scripts/release/check-versions.sh` reports
       `Version state OK: workspace=X.Y.Z, npm=X.Y.Z, lockfile in sync.`
@@ -82,7 +84,7 @@ Run, in order, from the repo root:
 - [ ] `git push origin vX.Y.Z`
 - [ ] The `release.yml` workflow has built and uploaded artifacts to the
       GitHub release for this tag.
-- [ ] `npm view codewhale-tui@X.Y.Z version deepseekBinaryVersion --json`
+- [ ] `npm view codewhale@X.Y.Z version codewhaleBinaryVersion --json`
       reports the new version on the npm registry.
 - [ ] `crates.io` has the new version (or the `publish-crates.sh` job has
       pushed it).

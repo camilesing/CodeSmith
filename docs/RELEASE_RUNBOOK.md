@@ -1,10 +1,10 @@
 # codewhale Release Runbook
 
 This runbook is the source of truth for shipping Rust crates, GitHub release assets,
-and the `codewhale-tui` npm wrapper.
+and the `codewhale` npm wrapper.
 
 Current packaging note:
-- `codewhale-tui` is the live runtime and TUI package shipped to users today.
+- `codewhale-tui` is the live runtime crate shipped to users today.
 - `codewhale-tui-core` is a supporting workspace crate for the extraction/parity effort, not a replacement for the shipping runtime.
 
 ## Canonical Publish Targets
@@ -25,17 +25,16 @@ Current packaging note:
   - `codewhale-core`
   - `codewhale-app-server`
   - `codewhale-tui-core`
-- `codewhale-cli` on crates.io is an unrelated crate and is not part of this release flow.
 
 ## Version Coordination
 
 - Rust crates inherit the shared workspace version from [Cargo.toml](../Cargo.toml).
 - Internal path dependency versions should match the shared workspace version; stale older pins are release blockers once the workspace version moves.
-- The npm wrapper version lives in [npm/codewhale-tui/package.json](../npm/codewhale-tui/package.json).
-- `deepseekBinaryVersion` controls which GitHub release binaries the npm wrapper downloads.
+- The npm wrapper version lives in [npm/codewhale/package.json](../npm/codewhale/package.json).
+- `codewhaleBinaryVersion` controls which GitHub release binaries the npm wrapper downloads.
 - Packaging-only npm releases are allowed:
   - bump the npm package version
-  - leave `deepseekBinaryVersion` pinned to the previously released Rust binaries
+  - leave `codewhaleBinaryVersion` pinned to the previously released Rust binaries
   - rerun `npm pack` smoke checks before `npm publish`
 
 ## Preflight
@@ -54,8 +53,13 @@ cargo publish --dry-run --locked --allow-dirty -p codewhale-tui
 
 `check-versions.sh` also runs in CI on every push/PR (the `versions` job in
 `.github/workflows/ci.yml`), so drift between `Cargo.toml`, the per-crate
-manifests, `npm/codewhale-tui/package.json`, and `Cargo.lock` is caught before
+manifests, `npm/codewhale/package.json`, and `Cargo.lock` is caught before
 release time rather than at it.
+
+The source-controlled CNB pipeline mirrors the heavy Linux version/fmt/check/
+clippy/test/npm-smoke gates for `fix/*`, `rebrand/*`, `work/v*`, and `main`.
+GitHub Actions keeps the cheap drift/fmt statuses plus macOS and Windows
+coverage, while CNB carries the Linux work.
 
 `publish-crates.sh dry-run` performs a full `cargo publish --dry-run` for crates
 without unpublished workspace dependencies and a packaging preflight for dependent
@@ -81,14 +85,14 @@ directory with a full asset matrix fixture before starting the server:
 
 ```bash
 DEEPSEEK_TUI_PREPARE_ALL_ASSETS=1 node scripts/release/prepare-local-release-assets.js
-cd npm/codewhale-tui
+cd npm/codewhale
 DEEPSEEK_TUI_VERSION=X.Y.Z DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm run release:check
 ```
 
 Set `DEEPSEEK_TUI_VERSION` to the npm package version you are verifying for that local run.
 
-The CI workflow runs the same tarball install + delegated-entrypoint smoke test
-on Linux, macOS, and Windows.
+The CNB workflow runs the Linux tarball install + delegated-entrypoint smoke
+test; GitHub Actions keeps macOS and Windows smoke coverage.
 
 After publishing, prove the release is visible in both registries:
 
@@ -96,7 +100,7 @@ After publishing, prove the release is visible in both registries:
 ./scripts/release/check-published.sh X.Y.Z
 ```
 
-Do not mark a Rust release complete until that command sees `codewhale-tui@X.Y.Z`
+Do not mark a Rust release complete until that command sees `codewhale@X.Y.Z`
 on npm and every `codewhale-*` crate at `X.Y.Z` on crates.io. For a rare
 npm packaging-only release, run with `--allow-npm-binary-mismatch` and keep the
 release notes explicit that no new Rust binary version shipped.
@@ -159,14 +163,14 @@ on a workstation with `npm login` and an authenticator app.
 
 ### Steps
 
-1. Set the npm package version in [npm/codewhale-tui/package.json](../npm/codewhale-tui/package.json) to match the workspace `Cargo.toml`. CI's version-drift guard will catch mismatches before tag.
-2. Set `deepseekBinaryVersion` to the GitHub release tag that should supply binaries.
+1. Set the npm package version in [npm/codewhale/package.json](../npm/codewhale/package.json) to match the workspace `Cargo.toml`. CI's version-drift guard will catch mismatches before tag.
+2. Set `codewhaleBinaryVersion` to the GitHub release tag that should supply binaries.
 3. Push the version bump to `main`. `auto-tag.yml` creates the matching `vX.Y.Z` tag, and `release.yml` builds the binary matrix and drafts the GitHub Release.
 4. **Wait for the GitHub Release to finalize** with all eight signed binaries plus `codewhale-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
 5. From a developer machine, publish the npm wrapper manually:
 
 ```bash
-cd npm/codewhale-tui
+cd npm/codewhale
 npm publish --access public
 # (you will be prompted for the npm OTP from your authenticator)
 ```
@@ -182,11 +186,11 @@ To re-enable automated publish: provision an npm automation token with "Bypass 2
 
 ## CNB Cool mirror
 
-Every push to `main` and every `v*` tag is mirrored to
+Every push to `main`, `fix/*`, `rebrand/*`, `work/v*`, and every `v*` tag is mirrored to
 `cnb.cool/deepseek-tui.com/DeepSeek-TUI` via the `Sync to CNB` workflow
-so users behind GitHub-blocking networks can fetch the source. After a
-release tag, **verify the mirror caught it** before declaring the
-release shipped:
+so users behind GitHub-blocking networks can fetch the source and so CNB can
+run the heavy Linux CI lane. After a release tag, **verify the mirror caught
+it** before declaring the release shipped:
 
 ```bash
 git ls-remote https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git refs/tags/vX.Y.Z
@@ -206,7 +210,7 @@ remote add cnb …`, then `git push cnb vX.Y.Z`).
   - retag or upload corrected assets before `npm publish`
 - npm packaging-only problem:
   - bump only the npm package version
-  - keep `deepseekBinaryVersion` on the last known-good Rust release
+  - keep `codewhaleBinaryVersion` on the last known-good Rust release
   - repack and republish the wrapper
 - A bad npm publish cannot be overwritten:
   - publish a new npm version with corrected metadata or install logic

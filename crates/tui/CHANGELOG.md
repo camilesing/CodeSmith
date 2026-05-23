@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.41] - 2026-05-23
+
 ### Changed
 
 - **Project renamed to codewhale.** The canonical CLI dispatcher is now
@@ -14,8 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (was `deepseek-tui`). The 14 workspace crates are renamed from
   `deepseek-*` / `deepseek-tui-*` to `codewhale-*` / `codewhale-tui-*`.
   The npm wrapper package is now `codewhale` (was `deepseek-tui`). See
-  [docs/REBRAND.md](https://github.com/Hmbown/DeepSeek-TUI/blob/main/docs/REBRAND.md)
-  for migration notes.
+  [docs/REBRAND.md](docs/REBRAND.md) for migration notes.
 - **DeepSeek provider integration is unchanged.** `DEEPSEEK_*` env vars,
   model IDs (`deepseek-v4-pro`, `deepseek-v4-flash`, the legacy
   `deepseek-chat` / `deepseek-reasoner` aliases), the
@@ -30,6 +31,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `deepseek-tui` npm package continues to publish for one release
   cycle as a no-`bin` deprecation shim whose postinstall directs users
   to `npm install -g codewhale`. It will be removed in v0.9.0.
+
+### Fixed
+
+- **Windows CI spillover tests are isolated.** Tool-result deduplication
+  tests now use a temporary spillover root guarded by the existing global
+  spillover mutex, removing the shared-state race that made Windows CI fail
+  unrelated PRs (#1943).
+- **Terminated sub-agents keep `agent_eval` recoverable.** Evaluating a
+  completed child session now returns the available transcript result instead
+  of losing the final output (#1738, #1928).
+- **Bare `@/` completions no longer freeze the TUI.** File-mention
+  completion skips bare separator and dot tokens so Windows/WSL2 workspaces
+  do not trigger an eager 4096-entry filesystem walk on the UI thread
+  (#1921, #1929).
+- **Enter paths avoid synchronous UI-thread waits.** Composer history writes,
+  offline queue persistence, feedback URL launching, and clipboard fallback
+  helpers now run off the hot Enter path where appropriate (#1927, #1931,
+  #1940, #1941, #1944).
+- **tmux and screen sessions stop idling as terminal activity.** Terminal
+  multiplexers now force low-motion behavior and pin the fallback footer label
+  so passive animations do not trip activity monitors (#1925, #1942).
+- **Composer sanitization catches OSC 8 and Kitty fragments.** The input
+  sanitizer now strips common hyperlink and keyboard-protocol fragments that
+  leaked into drafts while preserving ordinary prose (#1915, #1933).
+- **The Work sidebar hides stale completed tasks.** Terminal task records older
+  than the current session and outside the recent-completion window no longer
+  crowd active Work sidebar rows (#1913, #1930).
+- **V4 Pro pricing docs reflect permanent rates.** The English, Simplified
+  Chinese, and Japanese READMEs now describe the V4 Pro pricing change as
+  permanent instead of temporary (#1923, #1932).
+
+### Thanks
+
+Thanks to **OpenWarp ([@zerx-lab](https://github.com/zerx-lab))** for
+prioritizing codewhale support and collaborating on terminal-agent UX.
+Thanks to **[@leo119](https://github.com/leo119)** for the update-command
+documentation lineage now preserved through the rename.
 
 ## [0.8.40] - 2026-05-21
 
@@ -4557,7 +4595,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.40...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.41...HEAD
+[0.8.41]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.40...v0.8.41
 [0.8.40]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.39...v0.8.40
 [0.8.39]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.38...v0.8.39
 [0.8.38]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.37...v0.8.38

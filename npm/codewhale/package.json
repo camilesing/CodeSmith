@@ -1,7 +1,7 @@
 {
   "name": "codewhale",
-  "version": "0.8.40",
-  "codewhaleBinaryVersion": "0.8.40",
+  "version": "0.8.41",
+  "codewhaleBinaryVersion": "0.8.41",
   "description": "Install and run the codewhale CLI dispatcher and codewhale-tui terminal UI from GitHub release artifacts.",
   "author": "Hmbown",
   "license": "MIT",
