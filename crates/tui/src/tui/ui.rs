@@ -54,7 +54,7 @@ use crate::session_manager::{
     create_saved_session_with_id_and_mode, create_saved_session_with_mode, update_session,
 };
 use crate::task_manager::{
-    NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus,
+    NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
 };
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentStatus;
@@ -724,13 +724,69 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
     }
 }
 
+/// How long after a task finishes it should still appear in the Work
+/// sidebar even if its `ended_at` predates the current TUI session.
+///
+/// Tasks completing during the current session always show (until the
+/// next session boundary). Tasks that completed shortly before the
+/// session also show, so users coming back to a terminal see "you just
+/// finished X". Anything older than this window is hidden — preventing
+/// the sidebar from accumulating indefinitely (bug #1913).
+const WORK_SIDEBAR_RECENT_COMPLETED_TTL: chrono::Duration = chrono::Duration::hours(2);
+
+/// Choose which durable-task summaries should appear in the Work
+/// sidebar's Tasks panel.
+///
+/// Active tasks (`Queued`/`Running`) are always included. Terminal
+/// tasks (`Completed`/`Failed`/`Canceled`) are kept only if their
+/// `ended_at` falls within the "recent" window — defined as either:
+///
+/// - within the current TUI session (`ended_at >= session_started_at`), or
+/// - within `recent_ttl` of `now` (so a task that finished a few
+///   minutes before the session started still shows).
+///
+/// Anything older than that — including the multi-day-old completed
+/// tasks reported in bug #1913 — is excluded so the sidebar does not
+/// accumulate indefinitely across sessions.
+///
+/// A terminal task missing `ended_at` is treated as not-recent and
+/// dropped: durable tasks always stamp `ended_at` when they reach a
+/// terminal state, so absence of it indicates a record from a much
+/// older schema and isn't worth surfacing.
+pub(crate) fn select_work_sidebar_tasks(
+    tasks: Vec<TaskSummary>,
+    session_started_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+    recent_ttl: chrono::Duration,
+) -> Vec<TaskSummary> {
+    let recent_cutoff = now - recent_ttl;
+    tasks
+        .into_iter()
+        .filter(|task| match task.status {
+            TaskStatus::Queued | TaskStatus::Running => true,
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled => {
+                match task.ended_at {
+                    Some(ended_at) => ended_at >= session_started_at || ended_at >= recent_cutoff,
+                    None => false,
+                }
+            }
+        })
+        .collect()
+}
+
 async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManager) {
     let tasks = task_manager.list_tasks(None).await;
-    let mut entries: Vec<TaskPanelEntry> = tasks
-        .into_iter()
-        .filter(|task| matches!(task.status, TaskStatus::Queued | TaskStatus::Running))
-        .map(task_summary_to_panel_entry)
-        .collect();
+    let session_started_at = app.session_started_at;
+    let now = chrono::Utc::now();
+    let mut entries: Vec<TaskPanelEntry> = select_work_sidebar_tasks(
+        tasks,
+        session_started_at,
+        now,
+        WORK_SIDEBAR_RECENT_COMPLETED_TTL,
+    )
+    .into_iter()
+    .map(task_summary_to_panel_entry)
+    .collect();
 
     entries.extend(active_rlm_task_entries(app));
 

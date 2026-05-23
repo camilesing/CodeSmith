@@ -6178,3 +6178,151 @@ fn toast_stack_overlay_respects_composer_boundary() {
         "max_above ({max_above}) must never exceed the composer→footer gap ({gap})"
     );
 }
+
+// === Bug #1913: Work sidebar should hide stale completed tasks ============
+//
+// The Work sidebar reads `~/.deepseek/tasks/` on startup, which holds every
+// durable task the user has ever run. Without filtering, completed tasks
+// from prior sessions persist indefinitely. The projection helper keeps
+// active tasks, keeps tasks that finished during this session, keeps tasks
+// that finished within the last `recent_ttl`, and drops everything older.
+
+mod work_sidebar_projection_tests {
+    use super::*;
+    use crate::task_manager::{TaskStatus, TaskSummary};
+    use chrono::{Duration, TimeZone, Utc};
+
+    fn sample_task(
+        id: &str,
+        status: TaskStatus,
+        ended_at: Option<chrono::DateTime<Utc>>,
+    ) -> TaskSummary {
+        TaskSummary {
+            id: id.to_string(),
+            status,
+            prompt_summary: format!("task {id}"),
+            model: "deepseek-v4-flash".to_string(),
+            mode: "agent".to_string(),
+            created_at: Utc.with_ymd_and_hms(2026, 5, 16, 12, 0, 0).unwrap(),
+            started_at: Some(Utc.with_ymd_and_hms(2026, 5, 16, 12, 1, 0).unwrap()),
+            ended_at,
+            duration_ms: ended_at.map(|_| 1_234),
+            error: None,
+            thread_id: None,
+            turn_id: None,
+        }
+    }
+
+    #[test]
+    fn work_sidebar_hides_stale_completed_tasks_but_keeps_active_and_recent() {
+        // Pretend the TUI session started on 2026-05-23T10:00:00Z. "Now"
+        // is one minute into the session.
+        let session_started_at = Utc.with_ymd_and_hms(2026, 5, 23, 10, 0, 0).unwrap();
+        let now = session_started_at + Duration::minutes(1);
+        let recent_ttl = Duration::hours(2);
+
+        let active_running = sample_task("active_run", TaskStatus::Running, None);
+        let active_queued = sample_task("active_q", TaskStatus::Queued, None);
+
+        // Completed during the current session — must show.
+        let just_finished = sample_task(
+            "just_done",
+            TaskStatus::Completed,
+            Some(session_started_at + Duration::seconds(30)),
+        );
+
+        // Completed shortly before the session started, inside the
+        // recent-TTL window — must show.
+        let recently_finished_before_session = sample_task(
+            "recent_done",
+            TaskStatus::Failed,
+            Some(session_started_at - Duration::minutes(15)),
+        );
+
+        // Stale completed from 6 days ago (the exact scenario in #1913) —
+        // must be hidden.
+        let stale_completed = sample_task(
+            "stale_done",
+            TaskStatus::Completed,
+            Some(session_started_at - Duration::days(6)),
+        );
+        let stale_canceled = sample_task(
+            "stale_cancel",
+            TaskStatus::Canceled,
+            Some(session_started_at - Duration::days(7)),
+        );
+        let stale_failed = sample_task(
+            "stale_fail",
+            TaskStatus::Failed,
+            Some(session_started_at - Duration::days(3)),
+        );
+
+        // A terminal task without `ended_at` shouldn't sneak through.
+        let terminal_no_timestamp = sample_task("ghost", TaskStatus::Completed, None);
+
+        let tasks = vec![
+            active_running.clone(),
+            active_queued.clone(),
+            just_finished.clone(),
+            recently_finished_before_session.clone(),
+            stale_completed.clone(),
+            stale_canceled.clone(),
+            stale_failed.clone(),
+            terminal_no_timestamp.clone(),
+        ];
+
+        let kept = select_work_sidebar_tasks(tasks, session_started_at, now, recent_ttl);
+        let kept_ids: Vec<&str> = kept.iter().map(|t| t.id.as_str()).collect();
+
+        assert!(
+            kept_ids.contains(&"active_run"),
+            "active running task must always show: {kept_ids:?}"
+        );
+        assert!(
+            kept_ids.contains(&"active_q"),
+            "active queued task must always show: {kept_ids:?}"
+        );
+        assert!(
+            kept_ids.contains(&"just_done"),
+            "task completed during the current session must show: {kept_ids:?}"
+        );
+        assert!(
+            kept_ids.contains(&"recent_done"),
+            "task completed within the recent TTL before session start must show: \
+             {kept_ids:?}"
+        );
+
+        assert!(
+            !kept_ids.contains(&"stale_done"),
+            "completed task from 6 days ago must be hidden (bug #1913): {kept_ids:?}"
+        );
+        assert!(
+            !kept_ids.contains(&"stale_cancel"),
+            "canceled task from 7 days ago must be hidden: {kept_ids:?}"
+        );
+        assert!(
+            !kept_ids.contains(&"stale_fail"),
+            "failed task from 3 days ago must be hidden: {kept_ids:?}"
+        );
+        assert!(
+            !kept_ids.contains(&"ghost"),
+            "terminal task missing ended_at must be hidden: {kept_ids:?}"
+        );
+    }
+
+    #[test]
+    fn work_sidebar_keeps_tasks_completed_at_session_boundary() {
+        // Edge case: a task that finished at exactly the same instant the
+        // session started should still be visible (>= comparison).
+        let session_started_at = Utc.with_ymd_and_hms(2026, 5, 23, 10, 0, 0).unwrap();
+        let now = session_started_at + Duration::seconds(1);
+        let recent_ttl = Duration::hours(2);
+
+        let at_boundary = sample_task("boundary", TaskStatus::Completed, Some(session_started_at));
+
+        let kept =
+            select_work_sidebar_tasks(vec![at_boundary], session_started_at, now, recent_ttl);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "boundary");
+    }
+}
