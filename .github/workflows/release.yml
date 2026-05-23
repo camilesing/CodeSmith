@@ -273,6 +273,12 @@ jobs:
             type=raw,value=latest
       - name: Build and push
         uses: docker/build-push-action@v6
+        env:
+          # The build record is useful in CI, but it is uploaded as a
+          # `.dockerbuild` artifact. The release job intentionally downloads
+          # all binary artifacts, so suppress the extra record artifact there.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          DOCKER_BUILD_SUMMARY: false
         with:
           context: source
           file: infra/Dockerfile
