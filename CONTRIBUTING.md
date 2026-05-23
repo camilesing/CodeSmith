@@ -14,7 +14,7 @@ Thank you for your interest in contributing to codewhale! This document provides
 
 1. Fork and clone the repository:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/DeepSeek-TUI.git
+   git clone https://github.com/YOUR_USERNAME/CodeWhale.git
    cd CodeWhale
    ```
 
@@ -25,12 +25,12 @@ Thank you for your interest in contributing to codewhale! This document provides
 
 3. Run tests:
    ```bash
-   cargo test
+   cargo test --workspace --all-features
    ```
 
 4. Run with development settings:
    ```bash
-   cargo run
+   cargo run --bin codewhale
    ```
 
 ## Development Workflow
@@ -153,9 +153,9 @@ these crates, including the bottom-up build order.
 
 3. Ensure CI passes:
    ```bash
-   cargo fmt --check
-   cargo clippy
-   cargo test
+   cargo fmt --all -- --check
+   cargo clippy --workspace --all-targets --all-features
+   cargo test --workspace --all-features
    ```
 
 4. Push your branch and create a Pull Request

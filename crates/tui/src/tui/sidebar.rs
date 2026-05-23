@@ -628,12 +628,7 @@ fn task_panel_lines(app: &App, content_width: usize, max_rows: usize) -> Vec<Lin
                 .duration_ms
                 .map(format_duration_ms)
                 .unwrap_or_else(|| "-".to_string());
-            let label = format!(
-                "{} {} {}",
-                truncate_line_to_width(&task.id, 10),
-                task.status,
-                duration
-            );
+            let (label, detail) = background_task_labels(task, &duration);
             lines.push(Line::from(Span::styled(
                 truncate_line_to_width(&label, content_width.max(1)),
                 Style::default().fg(color),
@@ -641,10 +636,7 @@ fn task_panel_lines(app: &App, content_width: usize, max_rows: usize) -> Vec<Lin
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {}",
-                    truncate_line_to_width(
-                        &task.prompt_summary,
-                        content_width.saturating_sub(2).max(1)
-                    )
+                    truncate_line_to_width(&detail, content_width.saturating_sub(2).max(1))
                 ),
                 Style::default().fg(palette::TEXT_DIM),
             )));
@@ -692,6 +684,26 @@ fn push_sidebar_label(lines: &mut Vec<Line<'static>>, label: &str, color: ratatu
         label.to_string(),
         Style::default().fg(color).bold(),
     )));
+}
+
+fn background_task_labels(task: &TaskPanelEntry, duration: &str) -> (String, String) {
+    if let Some(command) = task.prompt_summary.strip_prefix("shell: ") {
+        let command = concise_shell_command_label(command, 96);
+        return (
+            format!("{} {} {}", task.status, command, duration),
+            format!("{} \u{00B7} shell job", task.id),
+        );
+    }
+
+    (
+        format!(
+            "{} {} {}",
+            truncate_line_to_width(&task.id, 10),
+            task.status,
+            duration
+        ),
+        task.prompt_summary.clone(),
+    )
 }
 
 fn active_tool_rows(app: &App) -> Vec<SidebarToolRow> {
@@ -2213,6 +2225,31 @@ mod tests {
         assert!(
             !text.iter().any(|line| line.contains("Background jobs")),
             "duplicate background shell row should be hidden: {text:?}"
+        );
+    }
+
+    #[test]
+    fn tasks_panel_puts_background_shell_command_on_primary_row() {
+        let mut app = create_test_app();
+        app.task_panel.push(TaskPanelEntry {
+            id: "shell_33a08c3c".to_string(),
+            status: "running".to_string(),
+            prompt_summary: "shell: cd /tmp/repo && cargo test --workspace --all-features"
+                .to_string(),
+            duration_ms: Some(178_000),
+        });
+
+        let text = lines_to_text(&task_panel_lines(&app, 96, 8));
+
+        assert!(
+            text.iter()
+                .any(|line| line.contains("running cargo test --workspace --all-features")),
+            "background shell headline should show the command, not only the shell id: {text:?}"
+        );
+        assert!(
+            text.iter()
+                .any(|line| line.contains("shell_33a08c3c") && line.contains("shell job")),
+            "shell id should remain available as detail: {text:?}"
         );
     }
 

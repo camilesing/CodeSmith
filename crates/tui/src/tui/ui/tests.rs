@@ -3868,6 +3868,72 @@ fn ok_result(
 }
 
 #[test]
+fn shell_wait_without_command_uses_task_id_until_command_metadata_arrives() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "shell-wait",
+        "exec_shell_wait",
+        &serde_json::json!({"task_id": "shell_33a08c3c"}),
+    );
+
+    let exec = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .iter()
+        .find_map(|cell| match cell {
+            HistoryCell::Tool(ToolCell::Exec(exec)) => Some(exec),
+            _ => None,
+        })
+        .expect("exec cell");
+    assert_eq!(exec.command, "shell job shell_33a08c3c");
+    assert!(
+        exec.interaction
+            .as_deref()
+            .is_some_and(|text| text.contains("shell_33a08c3c"))
+    );
+    assert!(
+        !exec.command.contains("<command>")
+            && !exec
+                .interaction
+                .as_deref()
+                .unwrap_or_default()
+                .contains("<command>")
+    );
+
+    let result = Ok(crate::tools::spec::ToolResult::success(
+        "Background task running (no new output).",
+    )
+    .with_metadata(serde_json::json!({
+        "status": "Running",
+        "duration_ms": 178_000_u64,
+        "task_id": "shell_33a08c3c",
+        "command": "cargo test --workspace --all-features",
+    })));
+    handle_tool_call_complete(&mut app, "shell-wait", "exec_shell_wait", &result);
+
+    let exec = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .iter()
+        .find_map(|cell| match cell {
+            HistoryCell::Tool(ToolCell::Exec(exec)) => Some(exec),
+            _ => None,
+        })
+        .expect("exec cell");
+    assert_eq!(exec.command, "cargo test --workspace --all-features");
+    assert!(
+        exec.interaction
+            .as_deref()
+            .is_some_and(|text| text.contains("cargo test --workspace"))
+    );
+}
+
+#[test]
 fn tool_child_usage_metadata_updates_live_cost_counter() {
     let mut app = create_test_app();
     let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(

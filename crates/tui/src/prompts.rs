@@ -804,6 +804,18 @@ mod tests {
     }
 
     #[test]
+    fn plan_mode_prompt_uses_update_plan_as_confirmation_handoff() {
+        assert!(
+            PLAN_MODE.contains("call `update_plan`"),
+            "Plan mode must tell the model to finish plans through update_plan"
+        );
+        assert!(
+            PLAN_MODE.contains("accept / revise / exit prompt"),
+            "Plan mode must explain why update_plan is the UI handoff signal"
+        );
+    }
+
+    #[test]
     fn render_environment_block_lists_supplied_locale_and_workspace() {
         let tmp = tempdir().expect("tempdir");
         let block = render_environment_block(tmp.path(), "zh-Hans");
