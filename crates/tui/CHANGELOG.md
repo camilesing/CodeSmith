@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whitespace-only lines, repeated spaces, and Markdown-looking `#` / `-` text
   now survive in transcript history, while assistant messages still render
   Markdown normally.
+- **English turns stay English after localized context.** The Brother Whale
+  identity and base language rules no longer inject native-script examples into
+  the English prompt path, and the prompt now calls out localized READMEs, issue
+  text, file contents, and tool results as data rather than language signals.
 - **Stream decode failures no longer leave the turn visually stuck.** The UI
   now marks an active turn failed and flushes live cells as soon as the engine
   emits a stream error, so the sidebar/footer recover without requiring

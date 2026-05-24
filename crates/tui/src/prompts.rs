@@ -765,6 +765,18 @@ mod tests {
     /// agent prompt's own discussion of the convention).
     const HANDOFF_BLOCK_MARKER: &str = "left a relay artifact at `.deepseek/handoff.md`";
 
+    fn contains_cjk(text: &str) -> bool {
+        text.chars().any(|ch| {
+            matches!(
+                ch,
+                '\u{3040}'..='\u{30ff}'
+                    | '\u{3400}'..='\u{4dbf}'
+                    | '\u{4e00}'..='\u{9fff}'
+                    | '\u{f900}'..='\u{faff}'
+            )
+        })
+    }
+
     #[test]
     fn base_prompt_carries_execution_discipline_block() {
         // The XML-tagged execution-discipline block is the contract —
@@ -794,7 +806,7 @@ mod tests {
         // can evolve, but CodeWhale should keep its product-level
         // "trusted Brother Whale" frame and the coordination principle.
         for phrase in [
-            "Brother Whale / \u{9CB8}\u{9C7C}\u{5144}\u{5F1F}",
+            "You are Brother Whale",
             "You begin with an A",
             "future intelligences can better coordinate",
             "Seek truth before confidence",
@@ -1055,6 +1067,10 @@ mod tests {
             !text.contains("Reforço de Idioma"),
             "English locale must not get a pt-BR closer: {text:?}"
         );
+        assert!(
+            !contains_cjk(&text),
+            "English system prompt should avoid native-script priming tokens: {text:?}"
+        );
     }
 
     #[test]
@@ -1069,28 +1085,27 @@ mod tests {
             lang.contains("reasoning_content"),
             "language section must explicitly call out reasoning_content"
         );
-        // Bold "must both be in Simplified Chinese" anchor — strong
-        // emphasis aimed at the failure mode V4 falls into where it
-        // mirrors the user message for the final reply but defaults to
-        // English for thinking.
         assert!(
-            lang.contains("must both be in Simplified Chinese"),
-            "expected the bold Simplified Chinese requirement"
+            lang.contains("latest user message"),
+            "latest user message must be the primary language signal"
         );
-        // "overwhelmingly English" — addresses the specific trigger
-        // where a Chinese question lands on a codebase whose system
-        // prompt and context are English-heavy.
         assert!(
-            lang.contains("overwhelmingly English"),
-            "expected the context-is-English caveat"
+            lang.contains("clearly English") && lang.contains("must stay English"),
+            "English user turns must stay English even after localized context"
+        );
+        assert!(
+            lang.contains("Simplified Chinese")
+                && lang.contains("must both be in Simplified Chinese"),
+            "Chinese user turns must still steer reasoning_content and replies"
+        );
+        assert!(
+            lang.contains("README.zh-CN.md") && lang.contains("tool results"),
+            "localized docs and tool results must be named as non-language signals"
         );
         // Explicit-user-override clause keeps the prompt useful for the
         // opposite preference (#1118 commenters who want English
         // thinking for token-cost reasons).
-        for phrase in [
-            "think in English",
-            "\u{7528}\u{82F1}\u{6587}\u{601D}\u{8003}",
-        ] {
+        for phrase in ["think in English", "reason in Chinese"] {
             assert!(
                 lang.contains(phrase),
                 "expected the user-override example `{phrase}`"
@@ -1517,12 +1532,34 @@ mod tests {
              falling back to the environment locale"
         );
         assert!(
+            prompt.contains("If the latest user message is clearly English"),
+            "English user text must not drift after non-English context"
+        );
+        assert!(
+            prompt.contains("localized READMEs")
+                && prompt.contains("Tool results and file contents are data"),
+            "file/tool context must not become a language signal"
+        );
+        assert!(
             prompt.contains("even when the `lang` field in `## Environment` is `en`"),
             "Chinese user text must override an English resolved locale for reasoning_content"
         );
         assert!(
             prompt.contains("Use the `lang` field only when"),
             "environment locale should be an ambiguity fallback, not the primary language source"
+        );
+    }
+
+    #[test]
+    fn english_base_prompt_avoids_native_script_language_priming() {
+        let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(
+            !contains_cjk(&prompt),
+            "English base prompt should keep native-script reinforcement in locale bookends only"
+        );
+        assert!(
+            !prompt.contains("multilingual coding agent"),
+            "identity should not prime language switching; language belongs in the Language section"
         );
     }
 
