@@ -632,7 +632,8 @@ fn print_mobile_urls(addr: SocketAddr, token: Option<&str>, auth_enabled: bool) 
 
 fn detect_lan_ip() -> Option<String> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
+    // UDP connect only selects the outbound interface locally; no packet is sent.
+    socket.connect("10.255.255.255:1").ok()?;
     let addr = socket.local_addr().ok()?;
     Some(addr.ip().to_string())
 }
