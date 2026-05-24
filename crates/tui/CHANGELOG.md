@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.43] - 2026-05-24
+
+### Fixed
+
+- **`grep_files` now respects the cancellation token.** Long-running file
+  searches cancel promptly instead of running to completion after the user
+  aborts (#1839). Thanks @LING71671.
+- **npm installer stream-pause race condition fixed.** The install script now
+  pauses HTTP response streams immediately, preventing early data loss that
+  caused "Invalid checksum manifest line" errors (#1860). Thanks @jeoor.
+- **Ctrl+Z restores the last cleared composer draft.** Pressing Ctrl+Z in an
+  empty composer recovers the text that was last cleared with Ctrl+U or
+  Ctrl+S, matching the muscle memory users expect from other editors (#1911).
+  Thanks @LING71671.
+- **Clipboard works on non-wlroots Wayland compositors.** The Linux clipboard
+  path now tries `wl-copy` before `arboard`, fixing silent copy failures on
+  niri, River, cosmic-comp, and GNOME mutter (#1938). Thanks @ousamabenyounes.
+
+### Changed
+
+- **Contributor count and acknowledgement surfaces refreshed.** The website
+  fallback contributor count now reflects 98 live GitHub contributors (up from
+  the stale 91). All three README translations (English, 中文, 日本語) now
+  include 30+ previously unlisted contributors whose PRs were merged since
+  April 2026.
+- **README and web surface rebrand refinements.** Crate descriptions, npm
+  package text, and website copy now consistently position CodeWhale as
+  open-model-first and provider-spanning, with DeepSeek V4 as the first-class
+  path.
+
+### Security
+
+(No user-facing security changes in this release.)
+
 ## [0.8.42] - 2026-05-24
 
 ### Changed
@@ -4661,7 +4695,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/CodeWhale/compare/v0.8.42...HEAD
+[Unreleased]: https://github.com/Hmbown/CodeWhale/compare/v0.8.43...HEAD
+[0.8.43]: https://github.com/Hmbown/CodeWhale/compare/v0.8.42...v0.8.43
 [0.8.42]: https://github.com/Hmbown/CodeWhale/compare/v0.8.41...v0.8.42
 [0.8.41]: https://github.com/Hmbown/CodeWhale/compare/v0.8.40...v0.8.41
 [0.8.40]: https://github.com/Hmbown/CodeWhale/compare/v0.8.39...v0.8.40
