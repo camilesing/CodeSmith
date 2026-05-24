@@ -5138,8 +5138,10 @@ mod tests {
         let mut options = test_options(false);
         options.workspace = workspace.clone();
         options.skills_dir = configured_dir.clone();
-        let mut config = Config::default();
-        config.skills_dir = Some(configured_dir.to_string_lossy().into_owned());
+        let config = Config {
+            skills_dir: Some(configured_dir.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
         let app = App::new(options, &config);
 
         assert!(
