@@ -2300,7 +2300,11 @@ async fn run_event_loop(
             // Decision card keyboard routing (v0.8.43 truth-surface).
             // When a card is active, number keys 1-9 select options,
             // j/k or Up/Down navigate, and Enter confirms.
-            if let Some(card) = app.decision_card.as_mut() {
+            // Only route keys to the decision card when no other modal
+            // (Help, Config, Pager, etc.) is on top of the view stack (#2005).
+            if app.view_stack.is_empty()
+                && let Some(card) = app.decision_card.as_mut()
+            {
                 match key.code {
                     KeyCode::Char(c @ '1'..='9') => {
                         let n = (c as u8 - b'1' + 1) as usize;
@@ -2544,7 +2548,7 @@ async fn run_event_loop(
                     app.input = "/jobs cancel-all".to_string();
                     app.cursor_position = app.input.len();
                     app.status_message =
-                        Some("Press Enter to kill all running shell jobs".to_string());
+                        Some("Press Enter to cancel all running commands".to_string());
                     continue;
                 }
                 // When the composer is the active input target (no modal/pager
@@ -2567,8 +2571,11 @@ async fn run_event_loop(
 
             // y / Y in the Tasks sidebar: yank the current turn id (y)
             // or copy full task detail (Y) to the system clipboard.
+            // Only active when the composer is empty to avoid stealing
+            // keystrokes from typed input (#2000).
             if app.view_stack.is_empty()
                 && app.sidebar_focus == SidebarFocus::Tasks
+                && app.input.is_empty()
                 && !app.runtime_turn_id.as_deref().unwrap_or("").is_empty()
             {
                 if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
@@ -2666,7 +2673,7 @@ async fn run_event_loop(
             // File-tree navigation: intercept keys when the file-tree pane is
             // visible so Up/Down/Enter/Esc operate on the tree rather than
             // falling through to composer or modal handlers.
-            if app.file_tree.is_some() {
+            if app.file_tree_visible {
                 match key.code {
                     KeyCode::Up => {
                         if let Some(state) = app.file_tree.as_mut() {
@@ -3496,10 +3503,11 @@ async fn run_event_loop(
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.clear_input_recoverable();
                 }
-                KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.restore_last_cleared_input_if_empty() {
-                        app.status_message = Some("Restored cleared draft".to_string());
-                    }
+                KeyCode::Char('z')
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && app.restore_last_cleared_input_if_empty() =>
+                {
+                    app.status_message = Some("Restored cleared draft".to_string());
                 }
                 KeyCode::Char('w') | KeyCode::Char('W')
                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -5151,14 +5159,14 @@ fn mcp_ui_action_refreshes_discovery(action: &crate::tui::app::McpUiAction) -> b
 
 fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobAction) {
     let Some(shell_manager) = app.runtime_services.shell_manager.clone() else {
-        add_shell_job_message(app, "Shell job center is not attached.".to_string());
+        add_shell_job_message(app, "Command center is not attached.".to_string());
         return;
     };
 
     let mut manager = match shell_manager.lock() {
         Ok(manager) => manager,
         Err(_) => {
-            add_shell_job_message(app, "Shell job center lock is poisoned.".to_string());
+            add_shell_job_message(app, "Command center lock is poisoned.".to_string());
             return;
         }
     };
@@ -5170,12 +5178,12 @@ fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobActio
         }
         crate::tui::app::ShellJobAction::Show { id } => match manager.inspect_job(&id) {
             Ok(detail) => open_shell_job_pager(app, &detail),
-            Err(err) => add_shell_job_message(app, format!("Shell job lookup failed: {err}")),
+            Err(err) => add_shell_job_message(app, format!("Command lookup failed: {err}")),
         },
         crate::tui::app::ShellJobAction::Poll { id, wait } => {
             match manager.poll_delta(&id, wait, if wait { 5_000 } else { 1_000 }) {
                 Ok(delta) => add_shell_job_message(app, format_shell_poll(&delta.result)),
-                Err(err) => add_shell_job_message(app, format!("Shell job poll failed: {err}")),
+                Err(err) => add_shell_job_message(app, format!("Command poll failed: {err}")),
             }
         }
         crate::tui::app::ShellJobAction::SendStdin { id, input, close } => {
@@ -5183,21 +5191,24 @@ fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobActio
                 Ok(()) => match manager.poll_delta(&id, false, 1_000) {
                     Ok(delta) => add_shell_job_message(app, format_shell_poll(&delta.result)),
                     Err(err) => {
-                        add_shell_job_message(app, format!("Shell stdin sent; poll failed: {err}"));
+                        add_shell_job_message(
+                            app,
+                            format!("Command input sent; poll failed: {err}"),
+                        );
                     }
                 },
-                Err(err) => add_shell_job_message(app, format!("Shell stdin failed: {err}")),
+                Err(err) => add_shell_job_message(app, format!("Command input failed: {err}")),
             }
         }
         crate::tui::app::ShellJobAction::Cancel { id } => match manager.kill(&id) {
             Ok(result) => add_shell_job_message(app, format_shell_poll(&result)),
-            Err(err) => add_shell_job_message(app, format!("Shell job cancel failed: {err}")),
+            Err(err) => add_shell_job_message(app, format!("Command cancel failed: {err}")),
         },
         crate::tui::app::ShellJobAction::CancelAll => match manager.kill_running() {
             Ok(results) => {
                 let count = results.len();
                 if count == 0 {
-                    add_shell_job_message(app, "No running shell jobs to cancel.".to_string());
+                    add_shell_job_message(app, "No running commands to cancel.".to_string());
                 } else {
                     let tasks: Vec<String> = results
                         .iter()
@@ -5205,11 +5216,11 @@ fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobActio
                         .collect();
                     add_shell_job_message(
                         app,
-                        format!("Killed {count} shell job(s): {}", tasks.join(", ")),
+                        format!("Canceled {count} command(s): {}", tasks.join(", ")),
                     );
                 }
             }
-            Err(err) => add_shell_job_message(app, format!("Shell job cancel-all failed: {err}")),
+            Err(err) => add_shell_job_message(app, format!("Command cancel-all failed: {err}")),
         },
     }
 }
@@ -5671,6 +5682,7 @@ fn render(f: &mut Frame, app: &mut App) {
         // enough, reserve the left ~25% for the file tree.
         let mut chat_area =
             if app.file_tree.is_some() && chunks[1].width >= SIDEBAR_VISIBLE_MIN_WIDTH {
+                app.file_tree_visible = true;
                 let split = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
@@ -5685,6 +5697,7 @@ fn render(f: &mut Frame, app: &mut App) {
 
                 remaining
             } else {
+                app.file_tree_visible = false;
                 chunks[1]
             };
 
