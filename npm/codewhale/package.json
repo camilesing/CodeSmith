@@ -35,6 +35,7 @@
   "type": "commonjs",
   "bin": {
     "codewhale": "bin/codewhale.js",
+    "codew": "bin/codew.js",
     "codewhale-tui": "bin/codewhale-tui.js"
   },
   "scripts": {
