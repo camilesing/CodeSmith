@@ -608,7 +608,7 @@ fn print_mobile_urls(addr: SocketAddr, token: Option<&str>, auth_enabled: bool) 
     let token_query = if auth_enabled {
         token
             .filter(|token| !token.trim().is_empty())
-            .map(|token| format!("?token={token}"))
+            .map(|token| format!("?token={}", url_query_component(token)))
             .unwrap_or_default()
     } else {
         String::new()
@@ -628,6 +628,22 @@ fn print_mobile_urls(addr: SocketAddr, token: Option<&str>, auth_enabled: bool) 
         println!("  URL:   http://{addr}/mobile{token_query}");
     }
     println!("Mobile security: use only on a trusted LAN/VPN; this server does not provide TLS.");
+}
+
+fn url_query_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                use std::fmt::Write as _;
+                let _ = write!(encoded, "%{byte:02X}");
+            }
+        }
+    }
+    encoded
 }
 
 fn detect_lan_ip() -> Option<String> {
@@ -2009,6 +2025,14 @@ mod tests {
         let auth = resolve_runtime_auth(Some(" ".to_string()), Some("\t".to_string()), false);
         assert!(auth.generated);
         assert!(auth.token.is_some());
+    }
+
+    #[test]
+    fn url_query_component_percent_encodes_token() {
+        assert_eq!(
+            url_query_component("abc ABC+/?:=&%"),
+            "abc%20ABC%2B%2F%3F%3A%3D%26%25"
+        );
     }
 
     async fn spawn_test_server_with_root(
