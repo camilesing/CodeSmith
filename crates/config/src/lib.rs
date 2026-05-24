@@ -470,10 +470,10 @@ impl ConfigToml {
                 serialize_http_headers(&self.providers.atlascloud.http_headers)
             }
             "providers.wanjie_ark.api_key" => self.providers.wanjie_ark.api_key.clone(),
-            "providers.volcengine.api_key" => self.providers.volcengine.api_key.clone(),
             "providers.wanjie_ark.base_url" => self.providers.wanjie_ark.base_url.clone(),
-            "providers.volcengine.base_url" => self.providers.volcengine.base_url.clone(),
             "providers.wanjie_ark.model" => self.providers.wanjie_ark.model.clone(),
+            "providers.volcengine.api_key" => self.providers.volcengine.api_key.clone(),
+            "providers.volcengine.base_url" => self.providers.volcengine.base_url.clone(),
             "providers.volcengine.model" => self.providers.volcengine.model.clone(),
             "providers.wanjie_ark.http_headers" => {
                 serialize_http_headers(&self.providers.wanjie_ark.http_headers)
@@ -588,15 +588,6 @@ impl ConfigToml {
             "providers.atlascloud.http_headers" => {
                 self.providers.atlascloud.http_headers = parse_http_headers(value)?;
             }
-            "providers.volcengine.api_key" => {
-                self.providers.volcengine.api_key = Some(value.to_string());
-            }
-            "providers.volcengine.base_url" => {
-                self.providers.volcengine.base_url = Some(value.to_string());
-            }
-            "providers.volcengine.model" => {
-                self.providers.volcengine.model = Some(value.to_string());
-            }
             "providers.wanjie_ark.api_key" => {
                 self.providers.wanjie_ark.api_key = Some(value.to_string());
             }
@@ -605,6 +596,15 @@ impl ConfigToml {
             }
             "providers.wanjie_ark.model" => {
                 self.providers.wanjie_ark.model = Some(value.to_string());
+            }
+            "providers.volcengine.api_key" => {
+                self.providers.volcengine.api_key = Some(value.to_string());
+            }
+            "providers.volcengine.base_url" => {
+                self.providers.volcengine.base_url = Some(value.to_string());
+            }
+            "providers.volcengine.model" => {
+                self.providers.volcengine.model = Some(value.to_string());
             }
             "providers.wanjie_ark.http_headers" => {
                 self.providers.wanjie_ark.http_headers = parse_http_headers(value)?;
@@ -741,12 +741,12 @@ impl ConfigToml {
             "providers.atlascloud.base_url" => self.providers.atlascloud.base_url = None,
             "providers.atlascloud.model" => self.providers.atlascloud.model = None,
             "providers.atlascloud.http_headers" => self.providers.atlascloud.http_headers.clear(),
-            "providers.volcengine.api_key" => self.providers.volcengine.api_key = None,
-            "providers.volcengine.base_url" => self.providers.volcengine.base_url = None,
-            "providers.volcengine.model" => self.providers.volcengine.model = None,
             "providers.wanjie_ark.api_key" => self.providers.wanjie_ark.api_key = None,
             "providers.wanjie_ark.base_url" => self.providers.wanjie_ark.base_url = None,
             "providers.wanjie_ark.model" => self.providers.wanjie_ark.model = None,
+            "providers.volcengine.api_key" => self.providers.volcengine.api_key = None,
+            "providers.volcengine.base_url" => self.providers.volcengine.base_url = None,
+            "providers.volcengine.model" => self.providers.volcengine.model = None,
             "providers.wanjie_ark.http_headers" => {
                 self.providers.wanjie_ark.http_headers.clear();
             }

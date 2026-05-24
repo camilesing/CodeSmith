@@ -1452,9 +1452,11 @@ fn build_tui_command(
         if resolved_runtime.provider == ProviderKind::Atlascloud {
             cmd.env("ATLASCLOUD_API_KEY", api_key);
         }
-        if resolved_runtime.provider == ProviderKind::WanjieArk || resolved_runtime.provider == ProviderKind::Volcengine {
-            cmd.env("VOLCENGINE_API_KEY", api_key);
+        if resolved_runtime.provider == ProviderKind::WanjieArk {
             cmd.env("WANJIE_ARK_API_KEY", api_key);
+        }
+        if resolved_runtime.provider == ProviderKind::Volcengine {
+            cmd.env("VOLCENGINE_API_KEY", api_key);
         }
         let source = resolved_runtime
             .api_key_source
@@ -1492,9 +1494,11 @@ fn build_tui_command(
         if resolved_runtime.provider == ProviderKind::Atlascloud {
             cmd.env("ATLASCLOUD_API_KEY", api_key);
         }
-        if resolved_runtime.provider == ProviderKind::WanjieArk || resolved_runtime.provider == ProviderKind::Volcengine {
-            cmd.env("VOLCENGINE_API_KEY", api_key);
+        if resolved_runtime.provider == ProviderKind::WanjieArk {
             cmd.env("WANJIE_ARK_API_KEY", api_key);
+        }
+        if resolved_runtime.provider == ProviderKind::Volcengine {
+            cmd.env("VOLCENGINE_API_KEY", api_key);
         }
         cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
     }

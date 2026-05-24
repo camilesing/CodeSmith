@@ -114,7 +114,6 @@ impl Default for ModelRegistry {
                 aliases: vec![
                     "deepseek-v4-flash".to_string(),
                     "deepseek-chat".to_string(),
-                    "deepseek-reasoner".to_string(),
                     "volcengine-deepseek-v4-flash".to_string(),
                     "ark-deepseek-v4-flash".to_string(),
                 ],

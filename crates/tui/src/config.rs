@@ -305,7 +305,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
     // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
     let cache_telemetry_supported = matches!(
         provider,
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::NvidiaNim
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::NvidiaNim | ApiProvider::Volcengine
     );
 
     // Request payload mode: all current providers use chat completions.
