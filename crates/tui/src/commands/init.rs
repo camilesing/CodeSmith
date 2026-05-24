@@ -35,9 +35,9 @@ pub fn init(app: &mut App) -> CommandResult {
     }
 }
 
-/// If `workspace` is inside a git repository, ensure `.deepseek/` is listed
-/// in the nearest `.gitignore` so that snapshots, instructions, and other
-/// workspace-local state are not accidentally committed.
+/// If `workspace` is inside a git repository, ensure `.codewhale/` and
+/// `.deepseek/` are listed in the nearest `.gitignore` so that snapshots,
+/// instructions, and other workspace-local state are not accidentally committed.
 fn ensure_deepseek_gitignored(workspace: &Path) {
     // Only act if this workspace is a git repo.
     if !workspace.join(".git").exists() {
@@ -45,24 +45,27 @@ fn ensure_deepseek_gitignored(workspace: &Path) {
     }
 
     let gitignore = workspace.join(".gitignore");
-    let entry = ".deepseek/";
+    let entries = [".codewhale/", ".deepseek/"];
 
-    // Read existing contents (if any) and check whether the entry is already present.
-    // Check both with and without trailing slash to catch variants like
-    // ".deepseek" and ".deepseek/".
-    if let Ok(existing) = std::fs::read_to_string(&gitignore) {
+    // Read existing contents once.
+    let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    let mut missing: Vec<&str> = Vec::new();
+    for entry in entries {
         let entry_no_slash = entry.trim_end_matches('/');
-        if existing.lines().any(|line| {
+        let already_ignored = existing.lines().any(|line| {
             let trimmed = line.trim();
             trimmed == entry || trimmed == entry_no_slash
-        }) {
-            return; // already ignored
+        });
+        if !already_ignored {
+            missing.push(entry);
         }
     }
 
-    // Append the entry. If .gitignore doesn't exist yet, create it with a header.
-    // Ensure there's a trailing newline before our entry to avoid joining with
-    // a previous unterminated line.
+    if missing.is_empty() {
+        return;
+    }
+
+    // Append missing entries. If .gitignore doesn't exist yet, create it.
     use std::io::Write;
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
@@ -73,7 +76,6 @@ fn ensure_deepseek_gitignored(workspace: &Path) {
         if let Ok(meta) = file.metadata()
             && meta.len() > 0
         {
-            // Read last byte to check for trailing newline.
             if let Ok(mut f) = std::fs::File::open(&gitignore) {
                 use std::io::Seek;
                 if f.seek(std::io::SeekFrom::End(-1)).is_ok() {
@@ -84,7 +86,9 @@ fn ensure_deepseek_gitignored(workspace: &Path) {
                 }
             }
         }
-        let _ = writeln!(file, "{entry}");
+        for entry in &missing {
+            let _ = writeln!(file, "{entry}");
+        }
     }
 }
 

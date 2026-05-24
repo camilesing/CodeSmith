@@ -64,6 +64,7 @@ project_overhaul_prompt.md
 .wrangler/
 
 # Local runtime state
+.codewhale/
 .deepseek/
 **/session_*.json
 *.db

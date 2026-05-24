@@ -977,6 +977,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "codewhale-config",
  "codewhale-secrets",
  "codewhale-tools",
  "colored",

@@ -4452,10 +4452,8 @@ fn load_recent_checkpoint(
 ) -> Option<(session_manager::SavedSession, std::time::Duration)> {
     let session = manager.load_checkpoint().ok().flatten()?;
 
-    let home = dirs::home_dir()?;
-    let checkpoint_path = home
-        .join(".deepseek")
-        .join("sessions")
+    let checkpoint_path = manager
+        .sessions_dir()
         .join("checkpoints")
         .join("latest.json");
     let metadata = std::fs::metadata(&checkpoint_path).ok()?;
@@ -4743,6 +4741,12 @@ async fn run_interactive(
             ?err,
             "spillover prune skipped on boot"
         ),
+    }
+
+    // v0.8.44: prune managed sessions on boot to prevent unbounded growth.
+    // Keeps at most MAX_SESSIONS (50) recent sessions; non-fatal on error.
+    if let Ok(manager) = session_manager::SessionManager::default_location() {
+        let _ = manager.cleanup_old_sessions();
     }
 
     tui::run_tui(
