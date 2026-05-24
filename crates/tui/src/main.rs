@@ -1502,6 +1502,9 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                 crate::config::ApiProvider::Ollama => {
                     ("OLLAMA_API_KEY", "codewhale auth set --provider ollama")
                 }
+                crate::config::ApiProvider::Volcengine => {
+                    ("VOLCENGINE_API_KEY", "deepseek auth set --provider volcengine")
+                }
                 crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "codewhale auth set --provider deepseek")
                 }
@@ -1514,6 +1517,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Openai => "openai",
                     crate::config::ApiProvider::Atlascloud => "atlascloud",
                     crate::config::ApiProvider::WanjieArk => "wanjie_ark",
+                    crate::config::ApiProvider::Volcengine => "volcengine",
                     crate::config::ApiProvider::Openrouter => "openrouter",
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
