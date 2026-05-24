@@ -1575,7 +1575,9 @@ fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String>
 }
 
 fn deepseek_home_dir() -> PathBuf {
-    dirs::home_dir().map_or_else(|| PathBuf::from(".deepseek"), |h| h.join(".deepseek"))
+    codewhale_config::codewhale_home()
+        .unwrap_or_else(|_| dirs::home_dir()
+            .map_or_else(|| PathBuf::from(".codewhale"), |h| h.join(".codewhale")))
 }
 
 /// Resolve the default tools directory. Mirrors `default_skills_dir` shape.
@@ -2047,16 +2049,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Configuration summary
     println!("{}", "Configuration:".bold());
-    let default_config_dir =
-        dirs::home_dir().map_or_else(|| PathBuf::from(".deepseek"), |h| h.join(".deepseek"));
     let config_path = config_path_override
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("DEEPSEEK_CONFIG_PATH")
-                .ok()
-                .map(PathBuf::from)
-        })
-        .unwrap_or_else(|| default_config_dir.join("config.toml"));
+        .or_else(|| codewhale_config::resolve_config_path(None).ok())
+        .unwrap_or_else(|| {
+            codewhale_config::codewhale_home()
+                .unwrap_or_else(|_| PathBuf::from(".codewhale"))
+                .join("config.toml")
+        });
 
     if config_path.exists() {
         println!(
@@ -2072,6 +2072,35 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         );
     }
     println!("  workspace: {}", crate::utils::display_path(workspace));
+
+    // State root (v0.8.44)
+    println!();
+    println!("{}", "State Root:".bold());
+    let code_home = codewhale_config::codewhale_home()
+        .unwrap_or_else(|_| PathBuf::from("~/.codewhale"));
+    let legacy_home = codewhale_config::legacy_deepseek_home()
+        .unwrap_or_else(|_| PathBuf::from("~/.deepseek"));
+    let active_root = if code_home.exists() {
+        &code_home
+    } else if legacy_home.exists() {
+        &legacy_home
+    } else {
+        &code_home
+    };
+    println!("  active: {}", crate::utils::display_path(active_root));
+    if active_root != &code_home {
+        println!(
+            "  note: legacy {} found; migrate with `codewhale setup --migrate`",
+            crate::utils::display_path(&legacy_home)
+        );
+    }
+    if legacy_home.exists() && code_home.exists() {
+        println!(
+            "  dual roots: {} (primary) + {} (legacy)",
+            crate::utils::display_path(&code_home),
+            crate::utils::display_path(&legacy_home)
+        );
+    }
 
     // Check API keys
     println!();
@@ -2572,7 +2601,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             );
         }
     }
-    let stash_path = dirs::home_dir().map(|h| h.join(".deepseek").join("composer_stash.jsonl"));
+    let stash_path = codewhale_config::codewhale_home()
+        .ok()
+        .map(|h| h.join("composer_stash.jsonl"));
     if let Some(stash_path) = stash_path {
         let stash_count = crate::composer_stash::load_stash().len();
         if stash_path.exists() {
@@ -2861,16 +2892,14 @@ fn run_doctor_json(
 ) -> Result<()> {
     use serde_json::json;
 
-    let default_config_dir =
-        dirs::home_dir().map_or_else(|| PathBuf::from(".deepseek"), |h| h.join(".deepseek"));
     let config_path = config_path_override
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("DEEPSEEK_CONFIG_PATH")
-                .ok()
-                .map(PathBuf::from)
-        })
-        .unwrap_or_else(|| default_config_dir.join("config.toml"));
+        .or_else(|| codewhale_config::resolve_config_path(None).ok())
+        .unwrap_or_else(|| {
+            codewhale_config::codewhale_home()
+                .unwrap_or_else(|_| PathBuf::from(".codewhale"))
+                .join("config.toml")
+        });
 
     let api_key_state = match resolve_api_key_source(config) {
         ApiKeySource::Env => "env",
@@ -3056,11 +3085,13 @@ fn run_doctor_json(
                     .unwrap_or(0),
             },
             "stash": {
-                "path": dirs::home_dir()
-                    .map(|h| h.join(".deepseek").join("composer_stash.jsonl").display().to_string())
+                "path": codewhale_config::codewhale_home()
+                    .ok()
+                    .map(|h| h.join("composer_stash.jsonl").display().to_string())
                     .unwrap_or_default(),
-                "present": dirs::home_dir()
-                    .map(|h| h.join(".deepseek").join("composer_stash.jsonl"))
+                "present": codewhale_config::codewhale_home()
+                    .ok()
+                    .map(|h| h.join("composer_stash.jsonl"))
                     .is_some_and(|p| p.exists()),
                 "count": crate::composer_stash::load_stash().len(),
             },
@@ -4569,10 +4600,21 @@ fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) 
 /// Only explicitly set fields in the project file are applied; everything
 /// else falls back to the global value.
 fn merge_project_config(config: &mut Config, workspace: &Path) {
-    let path = workspace.join(".deepseek").join("config.toml");
+    // v0.8.44: prefer .codewhale/config.toml, fall back to .deepseek/
+    let path = workspace
+        .join(codewhale_config::CODEWHALE_APP_DIR)
+        .join("config.toml");
     let raw = match std::fs::read_to_string(&path) {
         Ok(r) => r,
-        Err(_) => return,
+        Err(_) => {
+            let legacy = workspace
+                .join(codewhale_config::LEGACY_APP_DIR)
+                .join("config.toml");
+            match std::fs::read_to_string(&legacy) {
+                Ok(r) => r,
+                Err(_) => return,
+            }
+        }
     };
     let project: toml::Value = match toml::from_str(&raw) {
         Ok(v) => v,
