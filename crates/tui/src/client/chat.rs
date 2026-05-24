@@ -1604,8 +1604,7 @@ fn log_thinking_mode_violations(body: &Value) {
         let has_tc = msg.get("tool_calls").is_some();
         if reasoning.trim().is_empty() {
             violations.push(format!(
-                "assistant[{idx}] (reasoning_content missing, tool_calls={})",
-                has_tc
+                "assistant[{idx}] (reasoning_content missing, tool_calls={has_tc})"
             ));
         }
     }

@@ -459,8 +459,7 @@ impl ModalView for HelpView {
                         let cursor = if is_selected { "▶ " } else { "  " };
                         let label = truncate_to_width(&entry.label, label_width);
                         let desc = truncate_to_width(&entry.description, desc_capacity);
-                        let line_text =
-                            format!("{cursor}{label:<label_width$}  {desc}", label = label,);
+                        let line_text = format!("{cursor}{label:<label_width$}  {desc}",);
                         lines.push(Line::from(Span::styled(line_text, style)));
                     }
                 }

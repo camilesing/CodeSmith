@@ -205,9 +205,8 @@ impl PythonRuntime {
 
         let interpreter = resolve_python_interpreter().ok_or_else(|| {
             format!(
-                "no Python interpreter found on PATH (tried {:?}). \
+                "no Python interpreter found on PATH (tried {PYTHON_CANDIDATES:?}). \
                  Install Python 3 and ensure one of these commands works, then restart codewhale.",
-                PYTHON_CANDIDATES,
             )
         })?;
         let (program, interpreter_args) = split_interpreter_spec(&interpreter);

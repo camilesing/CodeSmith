@@ -3413,7 +3413,7 @@ mod tests {
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         // One header line, no details/args/output expansion.
-        assert_eq!(lines.len(), 1, "expected exactly 1 line, got {:?}", lines);
+        assert_eq!(lines.len(), 1, "expected exactly 1 line, got {lines:?}");
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         // Header carries the agent id and the running status.
         assert!(

@@ -168,8 +168,7 @@ fn load_handoff_block(workspace: &Path) -> Option<String> {
         return None;
     }
     Some(format!(
-        "## Previous Session Relay\n\nThe previous session in this workspace left a relay artifact at `{}`. Consider it the first artifact to read on this turn — open blockers, in-flight changes, and recent decisions live there. Update or rewrite it before exiting if state changes materially.\n\n{}",
-        HANDOFF_RELATIVE_PATH, trimmed
+        "## Previous Session Relay\n\nThe previous session in this workspace left a relay artifact at `{HANDOFF_RELATIVE_PATH}`. Consider it the first artifact to read on this turn — open blockers, in-flight changes, and recent decisions live there. Update or rewrite it before exiting if state changes materially.\n\n{trimmed}"
     ))
 }
 
@@ -600,7 +599,7 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // `load_project_context_with_parents` auto-generates .deepseek/instructions.md
     // when no context file exists, so the fallback should always be available.
     let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
-        format!("{}\n\n{}", mode_prompt, project_block)
+        format!("{mode_prompt}\n\n{project_block}")
     } else {
         // Extremely unlikely: context generation failed (e.g. filesystem error).
         // Use mode prompt alone rather than panic.
@@ -1664,7 +1663,7 @@ mod tests {
     #[test]
     fn legacy_constants_still_available() {
         // Verify the legacy .txt constant still compiles and contains expected content
-        assert!(!AGENT_PROMPT.is_empty());
+        assert!(AGENT_PROMPT.lines().next().is_some());
     }
 
     // ── Cache-prefix stability harness (#263 step 2) ───────────────────────
