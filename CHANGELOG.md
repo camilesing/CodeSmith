@@ -60,6 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package text, and website copy now consistently position CodeWhale as
   open-model-first and provider-spanning, with DeepSeek V4 as the first-class
   path.
+- **New contributor names added to README acknowledgements.** Thanks to
+  @Apeiron0w0, @aqilaziz, @ChaceLyee2101, @ComeFromTheMars, @CrepuscularIRIS,
+  @dst1213, @eltociear, @fuleinist, @greyfreedom, @h3c-hexin, @heloanc,
+  @hxy91819, @J3y0r, @JiarenWang, @jinpengxuan, @KhalidAlnujaidi, @laoye2020,
+  @lbcheng888, @linzhiqin2003, @Liu-Vince, @lixiasky-back, @pengyou200902,
+  @punkcanyang, @Rene-Kuhm, @SamhandsomeLee, @sockerch, @sternelee,
+  @Wenjunyun123, @whtis, and @wuwuzhijing for the translations, typo fixes,
+  docs polish, and small UX improvements that landed across the 0.8.42 →
+  0.8.43 cycle.
 
 ### Security
 

@@ -2561,15 +2561,14 @@ impl App {
     }
 
     /// Whether a virtual transcript cell can open a meaningful Alt+V detail
-    /// view.
+    /// view. Thinking cells render their own raw text inline so there is no
+    /// separate "raw" target — only tool / sub-agent cells get the hint.
     #[must_use]
     pub fn cell_has_detail_target(&self, index: usize) -> bool {
         self.tool_detail_record_for_cell(index).is_some()
             || matches!(
                 self.cell_at_virtual_index(index),
-                Some(
-                    HistoryCell::Tool(_) | HistoryCell::SubAgent(_) | HistoryCell::Thinking { .. }
-                )
+                Some(HistoryCell::Tool(_) | HistoryCell::SubAgent(_))
             )
     }
 
