@@ -881,6 +881,7 @@ pub struct ComposerState {
     pub paste_burst: PasteBurst,
     pub input_history: Vec<String>,
     pub draft_history: VecDeque<String>,
+    pub clear_undo_buffer: Option<String>,
     pub history_index: Option<usize>,
     pub(crate) history_navigation_draft: Option<InputHistoryDraft>,
     pub composer_history_search: Option<ComposerHistorySearch>,
@@ -912,6 +913,7 @@ impl Default for ComposerState {
             paste_burst: PasteBurst::default(),
             input_history: Vec::new(),
             draft_history: VecDeque::new(),
+            clear_undo_buffer: None,
             history_index: None,
             history_navigation_draft: None,
             composer_history_search: None,
@@ -1728,6 +1730,7 @@ impl App {
                 paste_burst: PasteBurst::default(),
                 input_history,
                 draft_history: VecDeque::new(),
+                clear_undo_buffer: None,
                 history_index: None,
                 history_navigation_draft: None,
                 composer_history_search: None,
@@ -3796,6 +3799,11 @@ impl App {
 
     pub fn stash_current_input_for_recovery(&mut self) {
         let draft = self.input.clone();
+        if draft.trim().is_empty() {
+            self.clear_undo_buffer = None;
+            return;
+        }
+        self.clear_undo_buffer = Some(draft.clone());
         self.remember_draft_for_recovery(draft);
     }
 
@@ -4030,6 +4038,28 @@ impl App {
         self.history_navigation_draft = None;
         self.selected_attachment_index = None;
         self.needs_redraw = true;
+        true
+    }
+
+    /// Restore the last cleared input if the composer is empty.
+    /// Returns `true` if the input was restored.
+    pub fn restore_last_cleared_input_if_empty(&mut self) -> bool {
+        if !self.input.is_empty() {
+            return false;
+        }
+        let Some(saved) = self.clear_undo_buffer.take().filter(|s| !s.is_empty()) else {
+            return false;
+        };
+
+        self.input = saved;
+        self.cursor_position = char_count(&self.input);
+        self.history_index = None;
+        self.history_navigation_draft = None;
+        self.selected_attachment_index = None;
+        self.slash_menu_selected = 0;
+        self.slash_menu_hidden = false;
+        self.needs_redraw = true;
+        self.clear_undo_buffer = None;
         true
     }
 
@@ -5764,6 +5794,50 @@ mod tests {
             app.history_search_matches(),
             vec!["recover this".to_string()]
         );
+    }
+
+    #[test]
+    fn clear_undo_buffer_is_set_on_clear_input_recoverable() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello".to_string();
+        app.cursor_position = 5;
+
+        app.clear_input_recoverable();
+
+        assert!(app.input.is_empty());
+        assert_eq!(app.clear_undo_buffer.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn clear_undo_buffer_is_none_when_clearing_empty_input() {
+        let mut app = App::new(test_options(false), &Config::default());
+        assert!(app.input.is_empty());
+
+        app.clear_input_recoverable();
+
+        assert!(app.clear_undo_buffer.is_none());
+    }
+
+    #[test]
+    fn restore_last_cleared_input_restores_saved_draft() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "previous".to_string();
+        app.cursor_position = 8;
+        app.clear_input_recoverable();
+        assert!(app.input.is_empty());
+
+        let restored = app.restore_last_cleared_input_if_empty();
+        assert!(restored);
+        assert_eq!(app.input, "previous");
+        assert!(app.clear_undo_buffer.is_none());
+    }
+
+    #[test]
+    fn restore_last_cleared_input_does_nothing_when_composer_not_empty() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.clear_undo_buffer = Some("old".to_string());
+        app.input = "current".to_string();
+        assert!(!app.restore_last_cleared_input_if_empty());
     }
 
     #[test]
