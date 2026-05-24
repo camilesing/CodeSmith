@@ -2801,6 +2801,25 @@ async fn run_event_loop(
                 {
                     continue;
                 }
+                // Space toggles collapse/expand of the focused thinking block
+                // when the composer is empty (#1972).
+                KeyCode::Char(' ')
+                    if key.modifiers == KeyModifiers::NONE
+                        && app.input.is_empty() =>
+                {
+                    if let Some(idx) = detail_target_cell_index(app) {
+                        if app.collapsed_cells.contains(&idx) {
+                            app.collapsed_cells.remove(&idx);
+                            app.status_message = Some("Thinking block expanded".to_string());
+                        } else {
+                            app.collapsed_cells.insert(idx);
+                            app.status_message = Some("Thinking block collapsed".to_string());
+                        }
+                        app.mark_history_updated();
+                        app.needs_redraw = true;
+                    }
+                    continue;
+                }
                 KeyCode::Char('t') | KeyCode::Char('T')
                     if key.modifiers == KeyModifiers::CONTROL =>
                 {
