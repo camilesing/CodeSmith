@@ -1106,7 +1106,7 @@ fn plan_choice_from_option_maps_expected_values() {
 
 #[test]
 fn plan_prompt_view_escape_emits_dismiss_event() {
-    let mut view = PlanPromptView::new();
+    let mut view = PlanPromptView::new(None);
 
     let action = view.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
