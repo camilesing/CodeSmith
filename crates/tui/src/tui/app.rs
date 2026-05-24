@@ -770,7 +770,7 @@ impl AppMode {
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
-            AppMode::Goal => "Goal mode - track a persistent objective across turns",
+            AppMode::Goal => "Goal mode - track objectives (read-only tools, no command execution)",
         }
     }
 }
@@ -1151,6 +1151,9 @@ pub struct App {
     pub context_panel: bool,
     /// File-tree pane state. `None` when hidden; `Some` when visible.
     pub file_tree: Option<crate::tui::file_tree::FileTreeState>,
+    /// Whether the file-tree pane was actually rendered in the last frame.
+    /// Set false when the terminal is too narrow to show the tree.
+    pub file_tree_visible: bool,
     #[allow(dead_code)]
     pub compact_threshold: usize,
     pub max_input_history: usize,
@@ -1818,6 +1821,7 @@ impl App {
             sidebar_focus,
             context_panel: settings.context_panel,
             file_tree: None,
+            file_tree_visible: false,
             compact_threshold,
             max_input_history,
             allow_shell,
