@@ -2804,8 +2804,7 @@ async fn run_event_loop(
                 // Space toggles collapse/expand of the focused thinking block
                 // when the composer is empty (#1972).
                 KeyCode::Char(' ')
-                    if key.modifiers == KeyModifiers::NONE
-                        && app.input.is_empty() =>
+                    if key.modifiers == KeyModifiers::NONE && app.input.is_empty() =>
                 {
                     if let Some(idx) = detail_target_cell_index(app) {
                         if app.collapsed_cells.contains(&idx) {
@@ -5735,6 +5734,21 @@ fn render(f: &mut Frame, app: &mut App) {
     // surface the older ones as a 1-2 line strip above the footer so a
     // burst of events isn't collapsed to a single visible message.
     render_toast_stack_overlay(f, size, chunks[3], chunks[4], app);
+
+    // Decision card overlay (v0.8.43 truth-surface). When a decision card is
+    // active, render it centered on top of the transcript.
+    if let Some(ref card) = app.decision_card {
+        let card_width = size.width.min(60).max(30);
+        let card_height = card.desired_height(card_width);
+        let card_area = ratatui::layout::Rect {
+            x: size.x.saturating_add(size.width.saturating_sub(card_width) / 2),
+            y: size.y.saturating_add(size.height.saturating_sub(card_height) / 2),
+            width: card_width,
+            height: card_height.min(size.height),
+        };
+        let buf = f.buffer_mut();
+        card.render(card_area, buf);
+    }
 
     if !app.view_stack.is_empty() {
         // The live transcript overlay snapshots the app's history + active

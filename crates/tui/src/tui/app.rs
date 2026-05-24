@@ -2567,7 +2567,9 @@ impl App {
         self.tool_detail_record_for_cell(index).is_some()
             || matches!(
                 self.cell_at_virtual_index(index),
-                Some(HistoryCell::Tool(_) | HistoryCell::SubAgent(_) | HistoryCell::Thinking { .. })
+                Some(
+                    HistoryCell::Tool(_) | HistoryCell::SubAgent(_) | HistoryCell::Thinking { .. }
+                )
             )
     }
 
