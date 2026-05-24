@@ -2,8 +2,16 @@
 
 > DeepSeek-first agentic terminal for open source and open-weight coding models. It runs from the `codewhale` command, streams reasoning blocks, edits local workspaces with approval gates, and can auto-route each turn to the right DeepSeek model and thinking level.
 
+[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
+[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Hmbown)
+[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
+
 [简体中文 README](README.zh-CN.md)
 [日本語 README](README.ja-JP.md)
+
+[Install](#install) · [Quickstart](#quickstart) · [Usage](#usage) · [Documentation](#documentation) · [Contributing](#contributing) · [Support](#support)
 
 ## Install
 
@@ -60,11 +68,6 @@ brew update && brew upgrade deepseek-tui
 cargo install codewhale-cli --locked --force
 cargo install codewhale-tui     --locked --force
 ```
-
-[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
 
 ![codewhale screenshot](assets/screenshot.png)
 
@@ -535,6 +538,19 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
+## Support
+
+CodeWhale is MIT-licensed and usable without sponsorship. If it saves you time,
+the clearest way to support ongoing maintenance is
+[GitHub Sponsors](https://github.com/sponsors/Hmbown). One-time support is also
+available through [Buy Me a Coffee](https://www.buymeacoffee.com/hmbown).
+
+Sponsorship helps cover release builds, CI/runtime testing, package publishing,
+and maintainer time for issue triage and review. Feature requests, bug reports,
+and pull requests do not require sponsorship.
+
+---
+
 ## Thanks
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
@@ -598,14 +614,42 @@ This project ships with help from a growing community of contributors:
 - **[aboimpinto](https://github.com/aboimpinto)** — Windows alt-screen logging, Home/End composer, and runtime log follow-ups (#1774, #1776, #1748, #1749, #1782, #1783)
 - **[LeoLin990405](https://github.com/LeoLin990405)** — provider model passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes (#1740, #1743, #1742, #1744)
 - **[nightt5879](https://github.com/nightt5879)** — Ctrl+C prompt restore fix (#1764)
+- **[h3c-hexin](https://github.com/h3c-hexin)** — streaming batch tool-call preservation and CLI reasoning-effort passthrough (#1686, #1511)
+- **[hxy91819](https://github.com/hxy91819)** — prefix-cache preservation during tool-result pruning (#1514)
+- **[JiarenWang](https://github.com/JiarenWang)** — Plan-mode read-only enforcement, approval-takeover clamping, Ctrl+H delete fix, and undo context sync (#1123, #962, #958, #1150)
+- **[Liu-Vince](https://github.com/Liu-Vince)** — MCP pagination, markdown indentation preservation, zh-Hans i18n polish, and env-var documentation (#1256, #1179, #1274, #1178)
+- **[linzhiqin2003](https://github.com/linzhiqin2003)** — `--model auto` cost-saving bias, execution-discipline prompts, and declarative-fact memory hygiene (#1385, #1384, #1381)
+- **[lbcheng888](https://github.com/lbcheng888)** — cost persistence across save/restore and transcript scroll fix (#1192, #1211)
+- **[pengyou200902](https://github.com/pengyou200902)** — UTF-8-safe memory truncation, truncation-marker precision, and keybinding docs (#968, #1122, #1095)
+- **[ChaceLyee2101](https://github.com/ChaceLyee2101)** — reasoning-token cost tracking with auto-CNY on zh-Hans and zh-CN README sync (#1505, #1504)
+- **[CrepuscularIRIS](https://github.com/CrepuscularIRIS)** — low-motion mode for Termius/SSH and npx MCP server sandbox fix (#1479, #1346)
+- **[laoye2020](https://github.com/laoye2020)** — Catppuccin, Tokyo Night, Dracula, and Gruvbox themes with `/theme` picker (#1534)
+- **[punkcanyang](https://github.com/punkcanyang)** — Kitty (OSC 99) and Ghostty (OSC 777) desktop notification support (#1426)
+- **[Rene-Kuhm](https://github.com/Rene-Kuhm)** — Spanish (es-419) Latin American localization (#1452)
+- **[sternelee](https://github.com/sternelee)** — DeepSeek prefix-cache stability tracking (#1517)
+- **[ComeFromTheMars](https://github.com/ComeFromTheMars)** — Shift+Up/Down transcript scroll shortcuts (#1432)
+- **[sockerch](https://github.com/sockerch)** — pinyin aliases for all slash commands (#1306)
+- **[Apeiron0w0](https://github.com/Apeiron0w0)** — FocusGained debounce for Tabby terminal flicker loop (#1560)
+- **[greyfreedom](https://github.com/greyfreedom)** — jump-to-latest-transcript button (#969)
+- **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — explicit hidden-file mention completion (#1270)
+- **[dst1213](https://github.com/dst1213)** — quota-error HTTP 400 retry (#1203)
+- **[fuleinist](https://github.com/fuleinist)** — `--yolo` flag forwarding from CLI to TUI (#1233)
+- **[heloanc](https://github.com/heloanc)** — Home/End key composer support (#1246)
+- **[jinpengxuan](https://github.com/jinpengxuan)** — active provider credential preservation during onboarding (#1265)
+- **[lixiasky-back](https://github.com/lixiasky-back)** — verified npm binary adoption (#1339)
+- **[J3y0r](https://github.com/J3y0r)** — workspace-switch command (#1065)
+- **[KhalidAlnujaidi](https://github.com/KhalidAlnujaidi)** — delegate skill bundling (#1144)
+- **[Wenjunyun123](https://github.com/Wenjunyun123)** — docs anchor-offset preservation (#1282)
+- **[whtis](https://github.com/whtis)** — zh-CN README dispatcher-path sync (#1235)
+- **[aqilaziz](https://github.com/aqilaziz)** — memory skill-link fix (#1095)
+- **[wuwuzhijing](https://github.com/wuwuzhijing)** — rsproxy rustup workaround install docs (#1011)
+- **[eltociear](https://github.com/eltociear)** — Japanese README translation (#746)
 
 ---
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/CodeWhale/issues) for good first contributions.
-
-Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
 > [!Note]
 > *Not affiliated with DeepSeek Inc.*

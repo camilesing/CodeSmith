@@ -127,6 +127,7 @@ pub enum AppMode {
     Agent,
     Yolo,
     Plan,
+    Goal,
 }
 
 /// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
@@ -737,6 +738,7 @@ impl AppMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "plan" => Self::Plan,
             "yolo" => Self::Yolo,
+            "goal" => Self::Goal,
             _ => Self::Agent,
         }
     }
@@ -747,6 +749,7 @@ impl AppMode {
             Self::Agent => "agent",
             Self::Yolo => "yolo",
             Self::Plan => "plan",
+            Self::Goal => "goal",
         }
     }
 
@@ -756,6 +759,7 @@ impl AppMode {
             AppMode::Agent => "AGENT",
             AppMode::Yolo => "YOLO",
             AppMode::Plan => "PLAN",
+            AppMode::Goal => "GOAL",
         }
     }
 
@@ -766,6 +770,7 @@ impl AppMode {
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
+            AppMode::Goal => "Goal mode - track a persistent objective across turns",
         }
     }
 }
@@ -881,6 +886,7 @@ pub struct ComposerState {
     pub paste_burst: PasteBurst,
     pub input_history: Vec<String>,
     pub draft_history: VecDeque<String>,
+    pub clear_undo_buffer: Option<String>,
     pub history_index: Option<usize>,
     pub(crate) history_navigation_draft: Option<InputHistoryDraft>,
     pub composer_history_search: Option<ComposerHistorySearch>,
@@ -912,6 +918,7 @@ impl Default for ComposerState {
             paste_burst: PasteBurst::default(),
             input_history: Vec::new(),
             draft_history: VecDeque::new(),
+            clear_undo_buffer: None,
             history_index: None,
             history_navigation_draft: None,
             composer_history_search: None,
@@ -971,6 +978,7 @@ pub struct GoalState {
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
     pub goal_started_at: Option<Instant>,
+    pub goal_completed: bool,
 }
 
 /// Session cost and token telemetry state.
@@ -1015,6 +1023,13 @@ impl Default for SessionState {
             last_cache_inspection: None,
         }
     }
+}
+
+/// Evidence collected during a turn for the post-turn receipt.
+#[derive(Debug, Clone)]
+pub struct ToolEvidence {
+    pub tool_name: String,
+    pub summary: String,
 }
 
 /// Global UI state for the TUI.
@@ -1340,6 +1355,9 @@ pub struct App {
     pub workspace_context_refreshed_at: Option<Instant>,
     /// Cached background tasks for sidebar rendering.
     pub task_panel: Vec<TaskPanelEntry>,
+    /// Active decision card (v0.8.43 truth-surface). When set, keyboard input
+    /// is routed through the card navigation instead of the composer.
+    pub decision_card: Option<crate::tui::widgets::decision_card::DecisionCard>,
     /// Wall-clock time when this TUI session started. Used by the Work
     /// sidebar projection to hide completed durable tasks that finished
     /// before the current session (bug #1913).
@@ -1411,6 +1429,12 @@ pub struct App {
     /// Derived title for the current session shown in the composer border.
     /// Updated when `EngineEvent::SessionUpdated` fires or a saved session is loaded.
     pub session_title: Option<String>,
+
+    /// Post-turn receipt line rendered at the bottom of the transcript.
+    /// Set when a turn completes; cleared when a new turn starts.
+    pub receipt_text: Option<String>,
+    /// Tool evidence collected during the current turn for the receipt.
+    pub tool_evidence: Vec<ToolEvidence>,
 }
 
 /// Message queued while the engine is busy.
@@ -1728,6 +1752,7 @@ impl App {
                 paste_burst: PasteBurst::default(),
                 input_history,
                 draft_history: VecDeque::new(),
+                clear_undo_buffer: None,
                 history_index: None,
                 history_navigation_draft: None,
                 composer_history_search: None,
@@ -1893,6 +1918,7 @@ impl App {
             workspace_context_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),
+            decision_card: None,
             session_started_at: chrono::Utc::now(),
             needs_redraw: true,
             thinking_started_at: None,
@@ -1919,6 +1945,8 @@ impl App {
                 .and_then(|tui| tui.composer_arrows_scroll)
                 .unwrap_or_else(|| default_composer_arrows_scroll(use_mouse_capture)),
             session_title: None,
+            receipt_text: None,
+            tool_evidence: Vec::new(),
         }
     }
 
@@ -2032,12 +2060,13 @@ impl App {
         true
     }
 
-    /// Cycle through modes: Plan → Agent → YOLO → Plan.
+    /// Cycle through modes: Plan → Agent → YOLO → Goal → Plan.
     pub fn cycle_mode(&mut self) {
         let next = match self.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Yolo => AppMode::Goal,
+            AppMode::Goal => AppMode::Plan,
         };
         let _ = self.set_mode(next);
     }
@@ -2048,7 +2077,8 @@ impl App {
         let next = match self.mode {
             AppMode::Agent => AppMode::Plan,
             AppMode::Yolo => AppMode::Agent,
-            AppMode::Plan => AppMode::Yolo,
+            AppMode::Plan => AppMode::Goal,
+            AppMode::Goal => AppMode::Yolo,
         };
         let _ = self.set_mode(next);
     }
@@ -2531,7 +2561,8 @@ impl App {
     }
 
     /// Whether a virtual transcript cell can open a meaningful Alt+V detail
-    /// view.
+    /// view. Thinking cells render their own raw text inline so there is no
+    /// separate "raw" target — only tool / sub-agent cells get the hint.
     #[must_use]
     pub fn cell_has_detail_target(&self, index: usize) -> bool {
         self.tool_detail_record_for_cell(index).is_some()
@@ -3796,6 +3827,11 @@ impl App {
 
     pub fn stash_current_input_for_recovery(&mut self) {
         let draft = self.input.clone();
+        if draft.trim().is_empty() {
+            self.clear_undo_buffer = None;
+            return;
+        }
+        self.clear_undo_buffer = Some(draft.clone());
         self.remember_draft_for_recovery(draft);
     }
 
@@ -4030,6 +4066,28 @@ impl App {
         self.history_navigation_draft = None;
         self.selected_attachment_index = None;
         self.needs_redraw = true;
+        true
+    }
+
+    /// Restore the last cleared input if the composer is empty.
+    /// Returns `true` if the input was restored.
+    pub fn restore_last_cleared_input_if_empty(&mut self) -> bool {
+        if !self.input.is_empty() {
+            return false;
+        }
+        let Some(saved) = self.clear_undo_buffer.take().filter(|s| !s.is_empty()) else {
+            return false;
+        };
+
+        self.input = saved;
+        self.cursor_position = char_count(&self.input);
+        self.history_index = None;
+        self.history_navigation_draft = None;
+        self.selected_attachment_index = None;
+        self.slash_menu_selected = 0;
+        self.slash_menu_hidden = false;
+        self.needs_redraw = true;
+        self.clear_undo_buffer = None;
         true
     }
 
@@ -5328,11 +5386,15 @@ mod tests {
 
         app.mode = AppMode::Plan;
         app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Yolo);
+        assert_eq!(app.mode, AppMode::Goal);
 
         app.mode = AppMode::Agent;
         app.cycle_mode_reverse();
         assert_eq!(app.mode, AppMode::Plan);
+
+        app.mode = AppMode::Goal;
+        app.cycle_mode_reverse();
+        assert_eq!(app.mode, AppMode::Yolo);
     }
 
     #[test]
@@ -5341,17 +5403,20 @@ mod tests {
         let first_mode = match app.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Yolo => AppMode::Goal,
+            AppMode::Goal => AppMode::Plan,
         };
         let second_mode = match first_mode {
-            AppMode::Plan => AppMode::Yolo,
-            AppMode::Agent => AppMode::Plan,
-            AppMode::Yolo => AppMode::Agent,
+            AppMode::Plan => AppMode::Agent,
+            AppMode::Agent => AppMode::Goal,
+            AppMode::Yolo => AppMode::Plan,
+            AppMode::Goal => AppMode::Yolo,
         };
         let third_mode = match second_mode {
-            AppMode::Plan => AppMode::Yolo,
-            AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Plan => AppMode::Agent,
+            AppMode::Agent => AppMode::Goal,
+            AppMode::Yolo => AppMode::Goal,
+            AppMode::Goal => AppMode::Plan,
         };
 
         app.set_mode(first_mode);
@@ -5764,6 +5829,50 @@ mod tests {
             app.history_search_matches(),
             vec!["recover this".to_string()]
         );
+    }
+
+    #[test]
+    fn clear_undo_buffer_is_set_on_clear_input_recoverable() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello".to_string();
+        app.cursor_position = 5;
+
+        app.clear_input_recoverable();
+
+        assert!(app.input.is_empty());
+        assert_eq!(app.clear_undo_buffer.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn clear_undo_buffer_is_none_when_clearing_empty_input() {
+        let mut app = App::new(test_options(false), &Config::default());
+        assert!(app.input.is_empty());
+
+        app.clear_input_recoverable();
+
+        assert!(app.clear_undo_buffer.is_none());
+    }
+
+    #[test]
+    fn restore_last_cleared_input_restores_saved_draft() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "previous".to_string();
+        app.cursor_position = 8;
+        app.clear_input_recoverable();
+        assert!(app.input.is_empty());
+
+        let restored = app.restore_last_cleared_input_if_empty();
+        assert!(restored);
+        assert_eq!(app.input, "previous");
+        assert!(app.clear_undo_buffer.is_none());
+    }
+
+    #[test]
+    fn restore_last_cleared_input_does_nothing_when_composer_not_empty() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.clear_undo_buffer = Some("old".to_string());
+        app.input = "current".to_string();
+        assert!(!app.restore_last_cleared_input_if_empty());
     }
 
     #[test]

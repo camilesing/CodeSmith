@@ -2,8 +2,16 @@
 
 > **DeepSeek 优先、面向开源与开放权重编码模型的终端原生编程智能体：100 万 token 上下文、思考模式流式推理、前缀缓存感知。自包含 Rust 二进制发布——开箱即带 MCP 客户端、沙箱和持久化任务队列。**
 
+[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
+[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Hmbown)
+[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
+
 [English README](README.md)
 [日本語 README](README.ja-JP.md)
+
+[安装](#安装) · [快速开始](#快速开始) · [使用方式](#使用方式) · [文档](#文档) · [贡献](#贡献) · [支持](#支持)
 
 ## 安装
 
@@ -55,11 +63,6 @@ brew update && brew upgrade deepseek-tui
 cargo install codewhale-cli --locked --force
 cargo install codewhale-tui     --locked --force
 ```
-
-[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
 
 ![codewhale 截图](assets/screenshot.png)
 
@@ -505,6 +508,17 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 
 ---
 
+## 支持
+
+CodeWhale 采用 MIT 许可证，使用和参与贡献都不需要赞助。如果它帮你节省了时间，
+最直接的长期支持方式是 [GitHub Sponsors](https://github.com/sponsors/Hmbown)。
+一次性支持也可以通过 [Buy Me a Coffee](https://www.buymeacoffee.com/hmbown) 完成。
+
+赞助会用于发布构建、CI/运行时测试、包发布，以及维护者处理 issue 和 review 的时间。
+功能请求、Bug 报告和 pull request 不需要赞助。
+
+---
+
 ## 致谢
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
@@ -558,6 +572,46 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter 和自定义端点模型 ID 保留 (#1066)
 - **[Jefsky](https://github.com/Jefsky)** — `deepseek-cn` 官方端点默认值 (#1079, #1084)
 - **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API key 优先级诊断 (#1081)
+- **[Horace Liu](https://github.com/liuhq)** — Nix 包支持和安装文档 (#1173)
+- **[jieshu666](https://github.com/jieshu666)** — 终端重绘闪烁修复 (#1563)
+- **[gordonlu](https://github.com/gordonlu)** — Windows Enter / CSI-u 输入修复 (#1612)
+- **[mdrkrg](https://github.com/mdrkrg)** — 首次运行 API key 缺失时的启动崩溃修复 (#1598)
+- **[Aitensa](https://github.com/Aitensa)** — diff 和 pager 输出的 CJK 换行支持 (#1622)
+- **[qiyan233](https://github.com/qiyan233)** — 遗留 DeepSeek CN provider 别名兼容 (#1645)
+- **[zlh124](https://github.com/zlh124)** — WSL2/headless 启动报告和剪贴板初始化修复 (#1772, #1773)
+- **[aboimpinto](https://github.com/aboimpinto)** — Windows alt-screen 日志、Home/End 编辑器，以及运行时日志跟进 (#1774, #1776, #1748, #1749, #1782, #1783)
+- **[LeoLin990405](https://github.com/LeoLin990405)** — provider 模型透传、reasoning 重放、thinking-only turn 和 Windows 引用修复 (#1740, #1743, #1742, #1744)
+- **[nightt5879](https://github.com/nightt5879)** — Ctrl+C 提示恢复修复 (#1764)
+- **[h3c-hexin](https://github.com/h3c-hexin)** — 流式批量工具调用保留和 CLI reasoning-effort 透传 (#1686, #1511)
+- **[hxy91819](https://github.com/hxy91819)** — 工具结果裁剪时的前缀缓存保留 (#1514)
+- **[JiarenWang](https://github.com/JiarenWang)** — Plan 模式只读执行、审批接管优化、Ctrl+H 删除修复和 undo 上下文同步 (#1123, #962, #958, #1150)
+- **[Liu-Vince](https://github.com/Liu-Vince)** — MCP 分页、markdown 缩进保留、zh-Hans i18n 优化和环境变量文档 (#1256, #1179, #1274, #1178)
+- **[linzhiqin2003](https://github.com/linzhiqin2003)** — `--model auto` 成本节约偏好、执行纪律提示和声明式事实记忆指导 (#1385, #1384, #1381)
+- **[lbcheng888](https://github.com/lbcheng888)** — 跨保存/恢复的成本持久化和对话滚动修复 (#1192, #1211)
+- **[pengyou200902](https://github.com/pengyou200902)** — UTF-8 安全记忆截断、截断标记精确化和快捷键文档 (#968, #1122, #1095)
+- **[ChaceLyee2101](https://github.com/ChaceLyee2101)** — 推理 token 成本统计和 zh-Hans 自动 CNY 显示，以及 zh-CN README 同步 (#1505, #1504)
+- **[CrepuscularIRIS](https://github.com/CrepuscularIRIS)** — Termius/SSH 低动画模式和 npx MCP 服务器沙箱修复 (#1479, #1346)
+- **[laoye2020](https://github.com/laoye2020)** — Catppuccin、Tokyo Night、Dracula 和 Gruvbox 主题及 `/theme` 选择器 (#1534)
+- **[punkcanyang](https://github.com/punkcanyang)** — Kitty (OSC 99) 和 Ghostty (OSC 777) 桌面通知支持 (#1426)
+- **[Rene-Kuhm](https://github.com/Rene-Kuhm)** — 西班牙语（es-419）拉丁美洲本地化 (#1452)
+- **[sternelee](https://github.com/sternelee)** — DeepSeek 前缀缓存稳定性追踪 (#1517)
+- **[ComeFromTheMars](https://github.com/ComeFromTheMars)** — Shift+Up/Down 对话滚动快捷键 (#1432)
+- **[sockerch](https://github.com/sockerch)** — 所有斜杠命令的拼音别名 (#1306)
+- **[Apeiron0w0](https://github.com/Apeiron0w0)** — Tabby 终端闪烁循环的 FocusGained 去抖动 (#1560)
+- **[greyfreedom](https://github.com/greyfreedom)** — 跳转到最新对话按钮 (#969)
+- **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — 显式隐藏文件提及补全 (#1270)
+- **[dst1213](https://github.com/dst1213)** — 配额错误 HTTP 400 重试 (#1203)
+- **[fuleinist](https://github.com/fuleinist)** — `--yolo` 标志从 CLI 转发到 TUI (#1233)
+- **[heloanc](https://github.com/heloanc)** — Home/End 键编辑器支持 (#1246)
+- **[jinpengxuan](https://github.com/jinpengxuan)** — 入职期间活动 provider 凭据保留 (#1265)
+- **[lixiasky-back](https://github.com/lixiasky-back)** — 已验证 npm 二进制采用 (#1339)
+- **[J3y0r](https://github.com/J3y0r)** — 工作区切换命令 (#1065)
+- **[KhalidAlnujaidi](https://github.com/KhalidAlnujaidi)** — delegate 技能打包 (#1144)
+- **[Wenjunyun123](https://github.com/Wenjunyun123)** — 文档锚点偏移保留 (#1282)
+- **[whtis](https://github.com/whtis)** — zh-CN README 调度程序路径同步 (#1235)
+- **[aqilaziz](https://github.com/aqilaziz)** — memory 技能链接修复 (#1095)
+- **[wuwuzhijing](https://github.com/wuwuzhijing)** — rsproxy rustup 变通安装文档 (#1011)
+- **[eltociear](https://github.com/eltociear)** — 日语 README 翻译 (#746)
 
 ---
 

@@ -1,5 +1,6 @@
 //! TUI event loop and rendering logic for `DeepSeek` CLI.
 
+use std::fmt::Write as _;
 use std::io::{self, Stdout, Write};
 use std::path::PathBuf;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -1480,6 +1481,24 @@ async fn run_event_loop(
                             );
                         }
 
+                        // Generate post-turn receipt for completed turns.
+                        if status == crate::core::events::TurnOutcomeStatus::Completed {
+                            let tool_count = app.tool_evidence.len();
+                            let mut receipt = "✓ turn completed".to_string();
+                            if tool_count > 0 {
+                                let _ = write!(receipt, " · {tool_count} tool(s) used");
+                                for evidence in &app.tool_evidence {
+                                    let summary = if evidence.summary.len() > 60 {
+                                        format!("{}…", &evidence.summary[..57])
+                                    } else {
+                                        evidence.summary.clone()
+                                    };
+                                    let _ = write!(receipt, " · {}: {summary}", evidence.tool_name);
+                                }
+                            }
+                            app.receipt_text = Some(receipt);
+                        }
+
                         // Auto-save completed turn and clear crash checkpoint.
                         // Offloaded to the persistence actor so the UI
                         // stays responsive.
@@ -2278,6 +2297,47 @@ async fn run_event_loop(
                 continue;
             }
 
+            // Decision card keyboard routing (v0.8.43 truth-surface).
+            // When a card is active, number keys 1-9 select options,
+            // j/k or Up/Down navigate, and Enter confirms.
+            if let Some(card) = app.decision_card.as_mut() {
+                match key.code {
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let n = (c as u8 - b'1' + 1) as usize;
+                        card.select_number(n);
+                        card.confirm();
+                        app.status_message = card
+                            .confirmed_label()
+                            .map(|label| format!("Selected: {label}"));
+                        app.decision_card = None;
+                        app.needs_redraw = true;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        card.select_next();
+                        app.needs_redraw = true;
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        card.select_prev();
+                        app.needs_redraw = true;
+                    }
+                    KeyCode::Enter => {
+                        card.confirm();
+                        app.status_message = card
+                            .confirmed_label()
+                            .map(|label| format!("Selected: {label}"));
+                        app.decision_card = None;
+                        app.needs_redraw = true;
+                    }
+                    KeyCode::Esc => {
+                        app.decision_card = None;
+                        app.status_message = Some("Decision cancelled".to_string());
+                        app.needs_redraw = true;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {
                 match key.code {
@@ -2505,6 +2565,35 @@ async fn run_event_loop(
                 continue;
             }
 
+            // y / Y in the Tasks sidebar: yank the current turn id (y)
+            // or copy full task detail (Y) to the system clipboard.
+            if app.view_stack.is_empty()
+                && app.sidebar_focus == SidebarFocus::Tasks
+                && !app.runtime_turn_id.as_deref().unwrap_or("").is_empty()
+            {
+                if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
+                    if let Some(turn_id) = app.runtime_turn_id.as_ref()
+                        && app.clipboard.write_text(turn_id).is_ok()
+                    {
+                        app.status_message = Some(format!("Copied turn id {turn_id}"));
+                    }
+                    continue;
+                }
+                if key.code == KeyCode::Char('Y') && key.modifiers == KeyModifiers::NONE {
+                    let mut detail = String::new();
+                    if let Some(turn_id) = app.runtime_turn_id.as_ref() {
+                        let _ = write!(detail, "turn {turn_id}");
+                    }
+                    if let Some(status) = app.runtime_turn_status.as_deref() {
+                        let _ = write!(detail, "  status={status}");
+                    }
+                    if !detail.is_empty() && app.clipboard.write_text(&detail).is_ok() {
+                        app.status_message = Some(format!("Copied {detail}"));
+                    }
+                    continue;
+                }
+            }
+
             // Shifted shortcuts toggle the file-tree pane. Keep plain Ctrl+E
             // reserved for the composer end-of-line binding used by shells.
             if key_shortcuts::is_file_tree_toggle_shortcut(&key) {
@@ -2710,6 +2799,24 @@ async fn run_event_loop(
                         && app.input.is_empty()
                         && open_activity_detail_pager(app) =>
                 {
+                    continue;
+                }
+                // Space toggles collapse/expand of the focused thinking block
+                // when the composer is empty (#1972).
+                KeyCode::Char(' ')
+                    if key.modifiers == KeyModifiers::NONE && app.input.is_empty() =>
+                {
+                    if let Some(idx) = detail_target_cell_index(app) {
+                        if app.collapsed_cells.contains(&idx) {
+                            app.collapsed_cells.remove(&idx);
+                            app.status_message = Some("Thinking block expanded".to_string());
+                        } else {
+                            app.collapsed_cells.insert(idx);
+                            app.status_message = Some("Thinking block collapsed".to_string());
+                        }
+                        app.mark_history_updated();
+                        app.needs_redraw = true;
+                    }
                     continue;
                 }
                 KeyCode::Char('t') | KeyCode::Char('T')
@@ -3389,6 +3496,11 @@ async fn run_event_loop(
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.clear_input_recoverable();
                 }
+                KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if app.restore_last_cleared_input_if_empty() {
+                        app.status_message = Some("Restored cleared draft".to_string());
+                    }
+                }
                 KeyCode::Char('w') | KeyCode::Char('W')
                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
@@ -3433,7 +3545,9 @@ async fn run_event_loop(
                 KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let new_mode = match app.mode {
                         AppMode::Plan => AppMode::Agent,
-                        _ => AppMode::Plan,
+                        AppMode::Agent => AppMode::Yolo,
+                        AppMode::Yolo => AppMode::Goal,
+                        AppMode::Goal => AppMode::Plan,
                     };
                     app.set_mode(new_mode);
                 }
@@ -3462,6 +3576,14 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_mode(AppMode::Plan);
+                    continue;
+                }
+                KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Goal);
+                    continue;
+                }
+                KeyCode::Char('G') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Goal);
                     continue;
                 }
                 KeyCode::Char('v') | KeyCode::Char('V')
@@ -3933,6 +4055,9 @@ async fn dispatch_user_message(
     app.runtime_turn_status = None;
     app.last_send_at = Some(dispatch_started_at);
     app.last_submitted_prompt = Some(message.display.clone());
+    // Clear the previous turn's receipt and evidence.
+    app.receipt_text = None;
+    app.tool_evidence.clear();
 
     let cwd = std::env::current_dir().ok();
     let references = crate::tui::file_mention::context_references_from_input(
@@ -5609,6 +5734,25 @@ fn render(f: &mut Frame, app: &mut App) {
     // surface the older ones as a 1-2 line strip above the footer so a
     // burst of events isn't collapsed to a single visible message.
     render_toast_stack_overlay(f, size, chunks[3], chunks[4], app);
+
+    // Decision card overlay (v0.8.43 truth-surface). When a decision card is
+    // active, render it centered on top of the transcript.
+    if let Some(ref card) = app.decision_card {
+        let card_width = size.width.clamp(30, 60);
+        let card_height = card.desired_height(card_width);
+        let card_area = ratatui::layout::Rect {
+            x: size
+                .x
+                .saturating_add(size.width.saturating_sub(card_width) / 2),
+            y: size
+                .y
+                .saturating_add(size.height.saturating_sub(card_height) / 2),
+            width: card_width,
+            height: card_height.min(size.height),
+        };
+        let buf = f.buffer_mut();
+        card.render(card_area, buf);
+    }
 
     if !app.view_stack.is_empty() {
         // The live transcript overlay snapshots the app's history + active

@@ -7,7 +7,7 @@ use crate::hooks::HookEvent;
 use crate::tools::ReviewOutput;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tui::active_cell::ActiveCell;
-use crate::tui::app::{App, ToolDetailRecord};
+use crate::tui::app::{App, ToolDetailRecord, ToolEvidence};
 use crate::tui::history::{
     DiffPreviewCell, ExecCell, ExecSource, ExploringEntry, GenericToolCell, HistoryCell,
     McpToolCell, PatchSummaryCell, PlanStep, PlanUpdateCell, ReviewCell, ToolCell, ToolStatus,
@@ -693,6 +693,22 @@ pub(super) fn handle_tool_call_complete(
             .with_tool_result(&result_text, success, None);
         let _ = app.execute_hooks(HookEvent::ToolCallAfter, &context);
     }
+
+    // Collect evidence for the post-turn receipt.
+    let evidence_summary = match result.as_ref() {
+        Ok(tool_result) => {
+            if tool_result.success {
+                summarize_tool_output(&tool_result.content)
+            } else {
+                format!("failed: {}", summarize_tool_output(&tool_result.content))
+            }
+        }
+        Err(err) => format!("error: {err}"),
+    };
+    app.tool_evidence.push(ToolEvidence {
+        tool_name: name.to_string(),
+        summary: evidence_summary,
+    });
 }
 
 fn refresh_active_tool_completion_timestamp(app: &mut App, cell_index: usize) {

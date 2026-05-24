@@ -354,6 +354,9 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
             let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeTip));
             let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeChecklistTip));
         }
+        AppMode::Goal => {
+            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeGoalModeTip));
+        }
     }
 
     CommandResult::message(stats)

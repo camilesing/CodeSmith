@@ -22,7 +22,7 @@ use crate::sandbox::SandboxPolicy;
 pub(crate) fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> SandboxPolicy {
     match mode {
         AppMode::Plan => SandboxPolicy::ReadOnly,
-        AppMode::Agent => SandboxPolicy::WorkspaceWrite {
+        AppMode::Agent | AppMode::Goal => SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![workspace.to_path_buf()],
             network_access: true,
             exclude_tmpdir: false,

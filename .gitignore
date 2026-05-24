@@ -61,11 +61,13 @@ count_deps.py
 project_overhaul_prompt.md
 .codex/
 .context/
+.wrangler/
 
 # Local runtime state
 .deepseek/
 **/session_*.json
 *.db
+npm/*/bin/downloads/
 
 # Companion app (tracked separately)
 apps/

@@ -1,10 +1,20 @@
 {
   "name": "codewhale",
-  "version": "0.8.42",
-  "codewhaleBinaryVersion": "0.8.42",
-  "description": "Install and run CodeWhale, a DeepSeek-first agentic terminal for open coding models, from GitHub release artifacts.",
+  "version": "0.8.43",
+  "codewhaleBinaryVersion": "0.8.43",
+  "description": "Install and run CodeWhale, the agentic terminal for open-source and open-weight coding models, from GitHub release artifacts.",
   "author": "Hmbown",
   "license": "MIT",
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/Hmbown"
+    },
+    {
+      "type": "buymeacoffee",
+      "url": "https://www.buymeacoffee.com/hmbown"
+    }
+  ],
   "homepage": "https://github.com/Hmbown/CodeWhale",
   "repository": {
     "type": "git",
