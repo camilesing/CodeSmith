@@ -1492,12 +1492,11 @@ async fn run_event_loop(
                             if tool_count > 0 {
                                 let _ = write!(receipt, " · {tool_count} tool(s) used");
                                 for evidence in &app.tool_evidence {
-                                    let summary = if evidence.summary.len() > 60 {
-                                        let byte_end = evidence.summary.floor_char_boundary(57);
-                                        format!("{}…", &evidence.summary[..byte_end])
-                                    } else {
-                                        evidence.summary.clone()
-                                    };
+                                    let summary = crate::utils::truncate_with_ellipsis(
+                                        &evidence.summary,
+                                        60,
+                                        "…",
+                                    );
                                     let _ = write!(receipt, " · {}: {summary}", evidence.tool_name);
                                 }
                             }
