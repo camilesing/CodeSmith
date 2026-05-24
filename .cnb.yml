@@ -47,6 +47,7 @@
       script: |
         set -eu
         cargo build --release --locked -p codewhale-cli -p codewhale-tui
+        export PATH="$PWD/target/release:$PATH"
         node scripts/release/npm-wrapper-smoke.js
         ./target/release/codewhale --version
         ./target/release/codewhale-tui --version
@@ -88,6 +89,7 @@
       script: |
         set -eu
         cargo build --release --locked -p codewhale-cli -p codewhale-tui
+        export PATH="$PWD/target/release:$PATH"
         node scripts/release/npm-wrapper-smoke.js
         ./target/release/codewhale --version
         ./target/release/codewhale-tui --version
