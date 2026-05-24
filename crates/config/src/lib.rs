@@ -1550,6 +1550,34 @@ pub fn default_config_path() -> Result<PathBuf> {
     Ok(primary)
 }
 
+/// v0.8.44: one-time migration from `~/.deepseek/config.toml` to
+/// `~/.codewhale/config.toml`. Called on first launch after the config
+/// is loaded; copies the legacy file if the primary doesn't exist yet.
+/// Never overwrites an existing primary config.
+pub fn migrate_config_if_needed() -> Result<()> {
+    let primary = codewhale_home()?.join(CONFIG_FILE_NAME);
+    if primary.exists() {
+        return Ok(());
+    }
+    let legacy = legacy_deepseek_home()?.join(CONFIG_FILE_NAME);
+    if !legacy.exists() {
+        return Ok(());
+    }
+    // Copy the config to the new home.
+    if let Some(parent) = primary.parent() {
+        std::fs::create_dir_all(parent)
+            .context("failed to create codewhale config directory")?;
+    }
+    std::fs::copy(&legacy, &primary)
+        .context("failed to migrate config from deepseek to codewhale home")?;
+    tracing::info!(
+        "Migrated config from {} to {}",
+        legacy.display(),
+        primary.display()
+    );
+    Ok(())
+}
+
 fn parse_bool(raw: &str) -> Result<bool> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" | "enabled" => Ok(true),
