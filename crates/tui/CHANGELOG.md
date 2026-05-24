@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Goal mode ships as a persistent objective surface.** Orthogonal to Plan /
+  Agent / YOLO execution modes. Use `/goal <objective>` to set a goal, `/goal
+  done` to mark it complete. Goal status appears in the Work sidebar with
+  elapsed time. Alt+G toggles Goal mode; `/mode goal` or `/mode 4` activates
+  it from the command line (#1976).
+- **Post-turn receipts cite evidence for every completed turn.** When a turn
+  finishes, a receipt line shows in the transcript tail with a summary of
+  tool calls, file changes, and evidence that supports the agent's claims.
+  Tool evidence is collected per-turn and flushed on new dispatch.
+- **Stall reason classification.** When a turn has been running for more than
+  30 seconds, the footer now appends a classified reason: "waiting for model",
+  "tools executing", "sub-agents working", "compacting context", or "waiting —
+  no recent activity".
+- **Decision card widget for structured user input.** When Brother Whale needs
+  a choice, it surfaces a bordered card with numbered options, keyboard
+  navigation (1-9 / j/k / arrows), and Enter/Esc to confirm or cancel.
 - **Tasks sidebar now shows fuller turn IDs and supports copy-to-clipboard.**
   Turn ID prefixes are widened from 12 to 16 characters for disambiguation,
   background job status is presented as "X running, Y completed" instead of
@@ -47,7 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-(No user-facing security changes in this release.)
+- **`codewhale doctor` now referenced correctly in SSE timeout errors.**
+  The error message shown when SSE streams fail to connect now points users to
+  `codewhale doctor` (not the legacy `deepseek doctor`).
 
 ## [0.8.42] - 2026-05-24
 
