@@ -1128,10 +1128,10 @@ fn merge_provider_config(target: &mut ProviderConfigToml, source: &ProviderConfi
 pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
     for dir in [CODEWHALE_APP_DIR, LEGACY_APP_DIR] {
         let path = workspace.join(dir).join(CONFIG_FILE_NAME);
-        if path.exists() {
-            if let Ok(raw) = fs::read_to_string(&path) {
-                return toml::from_str(&raw).ok();
-            }
+        if path.exists()
+            && let Ok(raw) = fs::read_to_string(&path)
+        {
+            return toml::from_str(&raw).ok();
         }
     }
     None

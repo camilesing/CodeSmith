@@ -6532,7 +6532,7 @@ mod work_sidebar_projection_tests {
     fn receipt_summary_truncation_does_not_panic_on_multibyte_boundary() {
         // Build a summary where byte 57 falls mid-character (em dash is 3 bytes).
         // 56 ASCII chars + em dash ensures byte 57 lands inside the em dash.
-        let prefix: String = std::iter::repeat('a').take(56).collect(); // 56 ASCII bytes
+        let prefix = "a".repeat(56); // 56 ASCII bytes
         let summary = format!("{prefix}— rest of summary"); // byte 56='a', 57-59='—'
         assert!(summary.len() > 60);
         // Byte 57 should be inside the em dash (3-byte UTF-8 sequence).
