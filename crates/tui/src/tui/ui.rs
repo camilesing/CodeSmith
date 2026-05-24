@@ -2279,6 +2279,47 @@ async fn run_event_loop(
                 continue;
             }
 
+            // Decision card keyboard routing (v0.8.43 truth-surface).
+            // When a card is active, number keys 1-9 select options,
+            // j/k or Up/Down navigate, and Enter confirms.
+            if let Some(card) = app.decision_card.as_mut() {
+                match key.code {
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let n = (c as u8 - b'1' + 1) as usize;
+                        card.select_number(n);
+                        card.confirm();
+                        app.status_message = card
+                            .confirmed_label()
+                            .map(|label| format!("Selected: {label}"));
+                        app.decision_card = None;
+                        app.needs_redraw = true;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        card.select_next();
+                        app.needs_redraw = true;
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        card.select_prev();
+                        app.needs_redraw = true;
+                    }
+                    KeyCode::Enter => {
+                        card.confirm();
+                        app.status_message = card
+                            .confirmed_label()
+                            .map(|label| format!("Selected: {label}"));
+                        app.decision_card = None;
+                        app.needs_redraw = true;
+                    }
+                    KeyCode::Esc => {
+                        app.decision_card = None;
+                        app.status_message = Some("Decision cancelled".to_string());
+                        app.needs_redraw = true;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {
                 match key.code {

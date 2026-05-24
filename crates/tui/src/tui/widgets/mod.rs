@@ -10,6 +10,7 @@ pub mod key_hint;
 // the composer area in `ui.rs`. `pub mod` (vs the usual `pub use` pattern)
 // keeps the unused-imports lint quiet until then.
 pub mod agent_card;
+pub mod decision_card;
 pub mod pending_input_preview;
 mod renderable;
 pub mod tool_card;
