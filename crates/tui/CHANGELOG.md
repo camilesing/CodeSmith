@@ -27,11 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Goal mode ships as a persistent objective surface.** Orthogonal to Plan /
-  Agent / YOLO execution modes. Use `/goal <objective>` to set a goal, `/goal
-  done` to mark it complete. Goal status appears in the Work sidebar with
-  elapsed time. Alt+G toggles Goal mode; `/mode goal` or `/mode 4` activates
-  it from the command line (#1976).
+- **`/goal` remains the persistent objective surface.** Use `/goal <objective>`
+  to set a goal and `/goal done` to mark it complete. Goal status appears in
+  the Work sidebar with elapsed time, but it does not change Plan / Agent /
+  YOLO mode or approval behavior. A tabbed Ralph-style Goal loop is deferred to
+  v0.8.44 (#2007).
 - **Post-turn receipts cite evidence for every completed turn.** When a turn
   finishes, a receipt line shows in the transcript tail with a summary of
   tool calls, file changes, and evidence that supports the agent's claims.
@@ -3838,7 +3838,7 @@ Welcome — and thank you.
   compaction defaults are enabled, transcript history is bounded, persisted
   sessions are capped, and oversized history folds into archived context
   placeholders instead of freezing the TUI.
-- **v0.8.6 feature batch** (#373-#402) — adds Goal mode, cache-hit chips,
+- **v0.8.6 feature batch** (#373-#402) — adds goal tracking, cache-hit chips,
   cycle-boundary visualization, file-tree pane, `/share`, `/model auto`,
   user-defined slash commands, `/profile`, LSP diagnostic wiring,
   crash-recovery, self-update, `/init`, `/diff`, patch-aware `/undo`,

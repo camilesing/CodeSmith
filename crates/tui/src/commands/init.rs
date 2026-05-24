@@ -100,15 +100,58 @@ fn generate_project_doc(workspace: &Path) -> String {
     let project_info = detect_project_type(workspace);
     doc.push_str(&project_info);
 
-    // Add standard sections
-    doc.push_str("\n## Guidelines\n\n");
+    // Agent behavior — conventions, gotchas, testing
+    doc.push_str("## Agent Guidance\n\n");
+    doc.push_str("<!-- How should an AI agent approach this project? Fill in tool gotchas, -->\n");
+    doc.push_str("<!-- file patterns to avoid, and anything that helps a model navigate -->\n");
+    doc.push_str("<!-- the codebase without reading every file. -->\n");
+    doc.push_str("\n");
+    doc.push_str("- **CodeWhale reads this file as:** <!-- WHALE.md (CodeWhale-native) or AGENTS.md (compatible with other agents) -->\n");
+    doc.push_str(
+        "- **Read-only surface:** <!-- Which directories can the agent read but not write? -->\n",
+    );
+    doc.push_str(
+        "- **Never edit:** <!-- Files that are generated, vendored, or owned by another tool -->\n",
+    );
+    doc.push_str("- **Always test with:** <!-- The single command that validates a change (e.g. `cargo test -p foo`) -->\n");
+    doc.push_str("\n");
+
+    // Architecture — the "big picture" that requires reading multiple files
+    doc.push_str("## Architecture\n\n");
+    doc.push_str("<!-- Describe the high-level structure. What are the key modules and how -->\n");
+    doc.push_str("<!-- do they connect? Focus on the context a new contributor would need. -->\n");
+    doc.push_str("\n");
+    doc.push_str("### Entry Points\n");
+    doc.push_str(
+        "<!-- Where does execution start? Binary entry, request handler, main loop? -->\n",
+    );
+    doc.push_str("\n");
+    doc.push_str("### Key Modules\n");
+    doc.push_str("<!-- List the 3-6 most important directories/files and their role -->\n");
+    doc.push_str("\n");
+    doc.push_str("### Data Flow\n");
+    doc.push_str("<!-- How does a request / event / input travel through the system? -->\n");
+    doc.push_str("\n");
+
+    // Cache-aware editing — helps maintain prefix-cache hit rates
+    doc.push_str("## Cache Stability\n\n");
+    doc.push_str("<!-- DeepSeek V4 uses a byte-stable prefix cache (128-token granularity). -->\n");
+    doc.push_str(
+        "<!-- Keeping these things stable turn-over-turn saves ~90% on input tokens. -->\n",
+    );
+    doc.push_str("\n");
+    doc.push_str("- **Frequently-rebuilt files:** <!-- Generated code, lockfiles, build artifacts → mark as cache-churn -->\n");
+    doc.push_str("- **Stable scaffolding:** <!-- Config files, project instructions, model cards → keep byte-stable -->\n");
+    doc.push_str("- **Append, don't reorder:** <!-- New context goes at the end of the request; reordering invalidates cache -->\n");
+    doc.push_str("\n");
+
+    // Guidelines
+    doc.push_str("## Guidelines\n\n");
     doc.push_str("- Follow existing code style and patterns\n");
     doc.push_str("- Write tests for new functionality\n");
     doc.push_str("- Keep changes focused and atomic\n");
     doc.push_str("- Document public APIs\n");
-
-    doc.push_str("\n## Important Notes\n\n");
-    doc.push_str("<!-- Add project-specific notes here -->\n");
+    doc.push_str("- Update this file when project conventions change\n");
 
     doc
 }

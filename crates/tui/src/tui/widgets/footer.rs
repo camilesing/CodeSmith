@@ -292,13 +292,11 @@ fn mode_style(app: &App) -> (&'static str, Color) {
         AppMode::Agent => "agent",
         AppMode::Yolo => "yolo",
         AppMode::Plan => "plan",
-        AppMode::Goal => "goal",
     };
     let color = match app.mode {
         AppMode::Agent => app.ui_theme.mode_agent,
         AppMode::Yolo => app.ui_theme.mode_yolo,
         AppMode::Plan => app.ui_theme.mode_plan,
-        AppMode::Goal => app.ui_theme.mode_goal,
     };
     (label, color)
 }

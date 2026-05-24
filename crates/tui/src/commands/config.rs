@@ -659,7 +659,7 @@ pub fn mode(app: &mut App, arg: Option<&str>) -> CommandResult {
     };
     match parse_mode_arg(arg) {
         Some(mode) => CommandResult::message(switch_mode(app, mode)),
-        None => CommandResult::error("Usage: /mode [agent|plan|yolo|goal|1|2|3|4]"),
+        None => CommandResult::error("Usage: /mode [agent|plan|yolo|1|2|3]"),
     }
 }
 
@@ -676,7 +676,6 @@ fn parse_mode_arg(arg: &str) -> Option<AppMode> {
         "agent" | "1" => Some(AppMode::Agent),
         "plan" | "2" => Some(AppMode::Plan),
         "yolo" | "3" => Some(AppMode::Yolo),
-        "goal" | "4" => Some(AppMode::Goal),
         _ => None,
     }
 }
@@ -686,7 +685,6 @@ fn mode_display_name(mode: AppMode) -> &'static str {
         AppMode::Agent => "Agent",
         AppMode::Plan => "Plan",
         AppMode::Yolo => "YOLO",
-        AppMode::Goal => "Goal",
     }
 }
 

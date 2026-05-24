@@ -315,6 +315,7 @@ interfaces, and extension points.
 codewhale                                         # interactive TUI
 codewhale "explain this function"                 # one-shot prompt
 codewhale exec --auto --output-format stream-json "fix this bug"  # agentic exec with tool auto-approvals
+codewhale swebench run --instance-id <ID> --issue-file issue.md  # write all_preds.jsonl for SWE-bench
 codewhale exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
 codewhale --model deepseek-v4-flash "summarize"   # model override
 codewhale --model auto "fix this bug"             # auto-route model + thinking
@@ -366,6 +367,23 @@ docker run --rm -it \
 
 See [docs/DOCKER.md](docs/DOCKER.md) for pinned tags, local image builds,
 volume ownership notes, and non-interactive pipeline usage.
+
+### SWE-bench
+
+CodeWhale can emit SWE-bench-compatible prediction JSONL from a checked-out
+task workspace:
+
+```bash
+codewhale swebench run \
+  --instance-id django__django-12345 \
+  --issue-file issue.md \
+  --predictions-path all_preds.jsonl
+```
+
+`run` uses the same tool-backed automation path as `codewhale exec --auto`,
+then exports the final working-tree diff as `model_patch`. Use
+`codewhale swebench export --instance-id <ID>` when you have already produced
+the diff yourself. See [docs/SWEBENCH.md](docs/SWEBENCH.md) for the full flow.
 
 ### Zed / ACP
 
@@ -533,6 +551,7 @@ without recreating skills the user deliberately deleted.
 | [RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md) | Release process |
 | [LOCALIZATION.md](docs/LOCALIZATION.md) | UI locale matrix & switching |
 | [OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md) | Ops & recovery |
+| [RECURSIVE_SELF_IMPROVEMENT.md](docs/RECURSIVE_SELF_IMPROVEMENT.md) | Copyable prompts for agent-assisted CodeWhale improvements |
 
 Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
@@ -570,7 +589,7 @@ This project ships with help from a growing community of contributors:
 - **[toi500](https://github.com/toi500)** — Windows paste fix report
 - **[xsstomy](https://github.com/xsstomy)** — Terminal startup repaint report
 - **[melody0709](https://github.com/melody0709)** — Slash-prefix Enter activation report
-- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports; lloydzhou also contributed deterministic environment context (#813, #922) and KV prefix-cache stabilisation (#1080)
+- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports and npm installer stream-pause race fix (#1860); lloydzhou also contributed deterministic environment context (#813, #922) and KV prefix-cache stabilisation (#1080)
 - **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README clarity pass (#685)
 - **[woyxiang](https://github.com/woyxiang)** — Windows install documentation (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
@@ -644,12 +663,19 @@ This project ships with help from a growing community of contributors:
 - **[aqilaziz](https://github.com/aqilaziz)** — memory skill-link fix (#1095)
 - **[wuwuzhijing](https://github.com/wuwuzhijing)** — rsproxy rustup workaround install docs (#1011)
 - **[eltociear](https://github.com/eltociear)** — Japanese README translation (#746)
+- **[Ling](https://github.com/LING71671)** — `grep_files` cancellation-token support and Ctrl+Z composer-draft recovery (#1839, #1911)
+- **[Ben Younes](https://github.com/ousamabenyounes)** — Linux Wayland (non-wlroots) clipboard support (#1938)
 
 ---
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/CodeWhale/issues) for good first contributions.
+
+If you want CodeWhale to help improve CodeWhale, start with the
+[recursive self-improvement prompt](docs/RECURSIVE_SELF_IMPROVEMENT.md). It is
+designed to turn one DeepSeek V4 Pro session, or another capable open-weight
+path, into one small, reviewable patch.
 
 > [!Note]
 > *Not affiliated with DeepSeek Inc.*

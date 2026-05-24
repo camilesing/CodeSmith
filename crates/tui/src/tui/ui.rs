@@ -116,7 +116,8 @@ use super::history::{
     summarize_tool_output,
 };
 use super::slash_menu::{
-    apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
+    apply_slash_menu_selection, partial_inline_skill_mention_at_cursor,
+    try_autocomplete_slash_command, visible_slash_menu_entries,
 };
 use super::views::{ConfigView, HelpView, ModalKind, ShellControlView, ViewEvent};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
@@ -1489,14 +1490,15 @@ async fn run_event_loop(
                                 let _ = write!(receipt, " · {tool_count} tool(s) used");
                                 for evidence in &app.tool_evidence {
                                     let summary = if evidence.summary.len() > 60 {
-                                        format!("{}…", &evidence.summary[..57])
+                                        let byte_end = evidence.summary.floor_char_boundary(57);
+                                        format!("{}…", &evidence.summary[..byte_end])
                                     } else {
                                         evidence.summary.clone()
                                     };
                                     let _ = write!(receipt, " · {}: {summary}", evidence.tool_name);
                                 }
                             }
-                            app.receipt_text = Some(receipt);
+                            app.set_receipt_text(receipt);
                         }
 
                         // Auto-save completed turn and clear crash checkpoint.
@@ -2058,6 +2060,7 @@ async fn run_event_loop(
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
         // window. Triggers a redraw if the prompt was visible.
         app.tick_quit_armed();
+        app.tick_receipt();
         // While the user is drag-selecting past the transcript edge, advance
         // the viewport on a fixed cadence and extend the selection head so a
         // long passage can be selected in one drag (#1163).
@@ -3141,9 +3144,7 @@ async fn run_event_loop(
                 // hijacked for navigation — typing "good" yielded "ood" with
                 // no whale and no warning. The Alt-prefixed shortcuts mirror
                 // the Alt+R / Alt+V / Alt+C pattern already in use. Shift is
-                // permitted so capital-letter forms (e.g. `Alt+Shift+G` for
-                // bottom) work; Ctrl/Super are blocked so the bindings don't
-                // collide with platform clipboard / window shortcuts.
+                // permitted for most capital-letter forms.
                 KeyCode::Char('g')
                     if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
@@ -3300,12 +3301,17 @@ async fn run_event_loop(
                     // sending the literal `/mo` text. Only kick in when the
                     // popup has at least one entry; otherwise fall through
                     // to the legacy submit path.
+                    let selecting_inline_skill = slash_menu_open
+                        && partial_inline_skill_mention_at_cursor(&app.input, app.cursor_position)
+                            .is_some();
                     if slash_menu_open
                         && !slash_menu_entries.is_empty()
-                        && looks_like_slash_command_input(&app.input)
                         && apply_slash_menu_selection(app, &slash_menu_entries, false)
                     {
                         app.close_slash_menu();
+                        if selecting_inline_skill {
+                            continue;
+                        }
                     }
                     if let Some(input) = app.handle_composer_enter() {
                         if handle_plan_choice(app, config, &engine_handle, &input).await? {
@@ -3554,8 +3560,7 @@ async fn run_event_loop(
                     let new_mode = match app.mode {
                         AppMode::Plan => AppMode::Agent,
                         AppMode::Agent => AppMode::Yolo,
-                        AppMode::Yolo => AppMode::Goal,
-                        AppMode::Goal => AppMode::Plan,
+                        AppMode::Yolo => AppMode::Plan,
                     };
                     app.set_mode(new_mode);
                 }
@@ -3584,14 +3589,6 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_mode(AppMode::Plan);
-                    continue;
-                }
-                KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_mode(AppMode::Goal);
-                    continue;
-                }
-                KeyCode::Char('G') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_mode(AppMode::Goal);
                     continue;
                 }
                 KeyCode::Char('v') | KeyCode::Char('V')
@@ -4064,7 +4061,7 @@ async fn dispatch_user_message(
     app.last_send_at = Some(dispatch_started_at);
     app.last_submitted_prompt = Some(message.display.clone());
     // Clear the previous turn's receipt and evidence.
-    app.receipt_text = None;
+    app.clear_receipt();
     app.tool_evidence.clear();
 
     let cwd = std::env::current_dir().ok();
@@ -7713,13 +7710,18 @@ pub(crate) fn selected_detail_footer_label(app: &App) -> Option<String> {
     let cell_index = activity_footer_target_cell_index(app)?;
     let cell = app.cell_at_virtual_index(cell_index)?;
     let label = truncate_line_to_width(&activity_cell_label(app, cell_index, cell), 30);
-    let raw_hint = if app.cell_has_detail_target(cell_index) {
-        format!(" · {} raw", key_shortcuts::tool_details_shortcut_label())
+    let detail_hint = if app.cell_has_detail_target(cell_index) {
+        let noun = if matches!(cell, HistoryCell::SubAgent(_)) {
+            "details"
+        } else {
+            "raw"
+        };
+        format!(" · {} {noun}", key_shortcuts::tool_details_shortcut_label())
     } else {
         String::new()
     };
     Some(format!(
-        "{} Activity: {label}{raw_hint}",
+        "{} Activity: {label}{detail_hint}",
         key_shortcuts::activity_shortcut_label()
     ))
 }

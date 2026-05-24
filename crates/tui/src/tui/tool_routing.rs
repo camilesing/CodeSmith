@@ -541,11 +541,11 @@ pub(super) fn handle_tool_call_complete(
                         .and_then(|m| m.get("command"))
                         .and_then(serde_json::Value::as_str)
                         && !meta_command.trim().is_empty()
-                        && (exec.command == "shell job" || exec.command.starts_with("shell job "))
+                        && (exec.command == "command" || exec.command.starts_with("command "))
                     {
                         exec.command = meta_command.to_string();
                         if exec.interaction.as_deref().is_some_and(|interaction| {
-                            interaction.starts_with("Waiting for shell job")
+                            interaction.starts_with("Waiting for command")
                         }) {
                             let task_suffix = tool_result
                                 .metadata
@@ -1123,8 +1123,8 @@ fn exec_target_from_input(input: &serde_json::Value) -> String {
             .get("task_id")
             .or_else(|| input.get("id"))
             .and_then(|v| v.as_str())
-            .map(|task_id| format!("shell job {task_id}"))
-            .unwrap_or_else(|| "shell job".to_string())
+            .map(|task_id| format!("command {task_id}"))
+            .unwrap_or_else(|| "command".to_string())
     })
 }
 
@@ -1164,7 +1164,7 @@ fn exec_interaction_summary(name: &str, input: &serde_json::Value) -> Option<(St
                 .or_else(|| input.get("id"))
                 .and_then(|v| v.as_str())
         {
-            return Some((format!("Waiting for shell job {task_id}"), true));
+            return Some((format!("Waiting for command {task_id}"), true));
         }
         return Some((format!("Waited for {command_display}"), true));
     }

@@ -181,7 +181,6 @@ impl<'a> HeaderWidget<'a> {
             AppMode::Agent => palette::MODE_AGENT,
             AppMode::Yolo => palette::MODE_YOLO,
             AppMode::Plan => palette::MODE_PLAN,
-            AppMode::Goal => palette::MODE_GOAL,
         }
     }
 
@@ -190,7 +189,6 @@ impl<'a> HeaderWidget<'a> {
             AppMode::Agent => "Agent",
             AppMode::Yolo => "Yolo",
             AppMode::Plan => "Plan",
-            AppMode::Goal => "Goal",
         }
     }
 

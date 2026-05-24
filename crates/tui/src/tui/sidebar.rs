@@ -496,7 +496,7 @@ fn push_work_strategy_lines(
         let total = pending + in_progress + completed;
         lines.push(Line::from(vec![
             Span::styled(
-                "Strategy ",
+                "Strategy metadata ",
                 Style::default().fg(theme.plan_summary_color).bold(),
             ),
             Span::styled(
@@ -510,7 +510,7 @@ fn push_work_strategy_lines(
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "Strategy",
+            "Strategy metadata",
             Style::default().fg(theme.plan_summary_color).bold(),
         )));
     }
@@ -631,11 +631,11 @@ fn task_panel_lines(app: &App, content_width: usize, max_rows: usize) -> Vec<Lin
             .count();
         let done = background_rows.len().saturating_sub(running);
         let label = if running == 0 {
-            format!("Background jobs: {done} completed")
+            format!("Background commands: {done} completed")
         } else if done == 0 {
-            format!("Background jobs: {running} running")
+            format!("Background commands: {running} running")
         } else {
-            format!("Background jobs: {running} running, {done} completed")
+            format!("Background commands: {running} running, {done} completed")
         };
         lines.push(Line::from(Span::styled(
             label,
@@ -732,7 +732,7 @@ fn background_task_labels(task: &TaskPanelEntry, duration: &str) -> (String, Str
         let command = concise_shell_command_label(command, 96);
         return (
             format!("{} {} {}", task.status, command, duration),
-            format!("{} \u{00B7} shell job", task.id),
+            format!("{} \u{00B7} command", task.id),
         );
     }
 
@@ -1072,9 +1072,9 @@ fn failure_summary_with_hint(summary: &str) -> String {
 
 fn friendly_generic_tool_name(name: &str) -> &str {
     match name {
-        "task_shell_start" => "start shell job",
-        "task_shell_wait" => "wait shell job",
-        "task_shell_write" => "write shell job",
+        "task_shell_start" => "start command",
+        "task_shell_wait" => "wait command",
+        "task_shell_write" => "write command",
         _ => name,
     }
 }
@@ -1083,7 +1083,7 @@ fn generic_tool_sidebar_summary(generic: &GenericToolCell) -> String {
     match generic.name.as_str() {
         "task_shell_start" => compact_join([
             generic.input_summary.clone().unwrap_or_default(),
-            "background shell job".to_string(),
+            "background command".to_string(),
         ]),
         "task_shell_wait" => compact_join([
             generic.input_summary.clone().unwrap_or_default(),
@@ -1284,7 +1284,7 @@ fn is_ci_poll_row(row: &SidebarToolRow) -> bool {
 }
 
 fn is_shell_wait_poll_row(row: &SidebarToolRow) -> bool {
-    row.status == ToolStatus::Running && row.name == "wait shell job"
+    row.status == ToolStatus::Running && row.name == "wait command"
 }
 
 fn shell_wait_poll_key(row: &SidebarToolRow) -> String {
@@ -2048,7 +2048,7 @@ mod tests {
         };
         let text = lines_to_text(&work_panel_lines(&summary, 80, 16, PaletteMode::Dark));
         assert!(
-            text.iter().any(|line| line == "Strategy"),
+            text.iter().any(|line| line == "Strategy metadata"),
             "non-empty plan should show strategy label: {text:?}"
         );
         assert!(
@@ -2264,7 +2264,7 @@ mod tests {
             "running shell command should not render as both live and background: {text:?}"
         );
         assert!(
-            !text.iter().any(|line| line.contains("Background jobs")),
+            !text.iter().any(|line| line.contains("Background commands")),
             "duplicate background shell row should be hidden: {text:?}"
         );
     }
@@ -2288,8 +2288,7 @@ mod tests {
             "background shell headline should show the command, not only the shell id: {text:?}"
         );
         assert!(
-            text.iter()
-                .any(|line| line.contains("shell_33a08c3c") && line.contains("shell job")),
+            text.iter().any(|line| line.contains("shell_33a08c3c")),
             "shell id should remain available as detail: {text:?}"
         );
     }
@@ -2480,7 +2479,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 6));
 
         assert!(
-            text.iter().any(|line| line.contains("[~] wait shell job")),
+            text.iter().any(|line| line.contains("[~] wait command")),
             "shell helper should render as a user-facing activity: {text:?}"
         );
         assert!(
@@ -2514,7 +2513,7 @@ mod tests {
 
         assert_eq!(
             text.iter()
-                .filter(|line| line.contains("[~] wait shell job"))
+                .filter(|line| line.contains("[~] wait command"))
                 .count(),
             1,
             "duplicate waits for the same shell job should collapse: {text:?}"

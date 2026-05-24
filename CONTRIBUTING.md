@@ -116,6 +116,21 @@ instead of the Harvest path, the highest-leverage things you can do are:
    these without prior discussion are unlikely to merge directly even
    when the change is well-implemented.
 
+## Agent-Assisted Improvements
+
+CodeWhale is allowed to help improve CodeWhale, but the contribution still has
+to be shaped for human review. The recommended workflow is the
+[recursive self-improvement prompt](docs/RECURSIVE_SELF_IMPROVEMENT.md): run it
+from a fresh fork or branch, let the agent find exactly one small friction point,
+and stop after one patch. DeepSeek V4 Pro is the first-class path for this loop
+today, but the review shape matters more than the provider.
+
+The useful output is not "ideas for improvement." The useful output is a
+specific reproduction, a minimal diff, focused checks, and a PR description that
+explains the trade-off. Do not use an agent to touch auth, credentials, sandbox
+policy, publishing/release plumbing, provider policy, telemetry, sponsorship,
+branding, or global prompts without prior maintainer sign-off.
+
 ## Project Structure
 
 codewhale is a Cargo workspace. The live runtime and the majority of TUI,

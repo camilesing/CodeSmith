@@ -364,7 +364,6 @@ pub const PLAYFUL_PERSONALITY: &str = include_str!("prompts/personalities/playfu
 /// Mode deltas — permissions, workflow expectations, mode-specific rules.
 pub const AGENT_MODE: &str = include_str!("prompts/modes/agent.md");
 pub const PLAN_MODE: &str = include_str!("prompts/modes/plan.md");
-pub const GOAL_MODE: &str = include_str!("prompts/modes/goal.md");
 pub const YOLO_MODE: &str = include_str!("prompts/modes/yolo.md");
 
 /// Approval-policy overlays — whether tool calls are auto-approved,
@@ -430,7 +429,6 @@ impl Personality {
 fn mode_prompt(mode: AppMode) -> &'static str {
     match mode {
         AppMode::Agent => AGENT_MODE,
-        AppMode::Goal => GOAL_MODE,
         AppMode::Yolo => YOLO_MODE,
         AppMode::Plan => PLAN_MODE,
     }
@@ -438,7 +436,7 @@ fn mode_prompt(mode: AppMode) -> &'static str {
 
 fn default_approval_mode_for_mode(mode: AppMode) -> ApprovalMode {
     match mode {
-        AppMode::Agent | AppMode::Goal => ApprovalMode::Suggest,
+        AppMode::Agent => ApprovalMode::Suggest,
         AppMode::Yolo => ApprovalMode::Auto,
         AppMode::Plan => ApprovalMode::Never,
     }
@@ -448,7 +446,7 @@ fn approval_prompt_for_mode(mode: AppMode, approval_mode: ApprovalMode) -> &'sta
     match mode {
         AppMode::Yolo => AUTO_APPROVAL,
         AppMode::Plan => NEVER_APPROVAL,
-        AppMode::Agent | AppMode::Goal => match approval_mode {
+        AppMode::Agent => match approval_mode {
             ApprovalMode::Auto => AUTO_APPROVAL,
             ApprovalMode::Suggest => SUGGEST_APPROVAL,
             ApprovalMode::Never => NEVER_APPROVAL,
@@ -892,6 +890,28 @@ mod tests {
     }
 
     #[test]
+    fn constitutional_hierarchy_keeps_case_command_above_local_law() {
+        let case_at = BASE_PROMPT
+            .find("2. **Case Command.**")
+            .expect("case command tier present");
+        let statute_at = BASE_PROMPT
+            .find("3. **Statutes.**")
+            .expect("statutes tier present");
+        let local_law_at = BASE_PROMPT
+            .find("5. **Local Law.**")
+            .expect("local law tier present");
+
+        assert!(
+            case_at < statute_at && statute_at < local_law_at,
+            "Article VII must keep the current user request above runtime guidance and local law"
+        );
+        assert!(
+            BASE_PROMPT.contains("actual runtime gates still determine what tools can execute"),
+            "Article VII must distinguish prompt authority from executable runtime gates"
+        );
+    }
+
+    #[test]
     fn base_prompt_contains_model_id_template() {
         assert!(
             BASE_PROMPT.contains("{model_id}"),
@@ -946,22 +966,6 @@ mod tests {
         assert!(
             text.contains("The Constitution of CodeWhale (Articles I-VII) governs your behavior"),
             "authority recap must reference the Constitution"
-        );
-    }
-
-    #[test]
-    fn goal_mode_prompt_does_not_claim_read_only() {
-        assert!(
-            !GOAL_MODE.contains("read-only"),
-            "Goal mode must not claim read-only access — it has full tool access"
-        );
-        assert!(
-            GOAL_MODE.contains("same as Agent mode"),
-            "Goal mode must state it has the same tools as Agent mode"
-        );
-        assert!(
-            GOAL_MODE.contains("Goal Loop"),
-            "Goal mode must describe the auto-persistent goal loop"
         );
     }
 
@@ -1365,6 +1369,20 @@ mod tests {
         assert!(
             mem_at < guide_at,
             "guidance must come after the user memory block"
+        );
+    }
+
+    #[test]
+    fn memory_guidance_matches_constitutional_tier_order() {
+        assert!(
+            MEMORY_GUIDANCE.contains("the user's current request\n(Tier 2)"),
+            "memory guidance must keep the current request above memory and local law"
+        );
+        assert!(
+            MEMORY_GUIDANCE.contains("Statutes (Tier 3)")
+                && MEMORY_GUIDANCE.contains("Local Law (Tier 5)")
+                && MEMORY_GUIDANCE.contains("live evidence (Tier 6)"),
+            "memory guidance must name the updated tier order"
         );
     }
 

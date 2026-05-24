@@ -127,7 +127,6 @@ pub enum AppMode {
     Agent,
     Yolo,
     Plan,
-    Goal,
 }
 
 /// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
@@ -738,7 +737,6 @@ impl AppMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "plan" => Self::Plan,
             "yolo" => Self::Yolo,
-            "goal" => Self::Goal,
             _ => Self::Agent,
         }
     }
@@ -749,7 +747,6 @@ impl AppMode {
             Self::Agent => "agent",
             Self::Yolo => "yolo",
             Self::Plan => "plan",
-            Self::Goal => "goal",
         }
     }
 
@@ -759,7 +756,6 @@ impl AppMode {
             AppMode::Agent => "AGENT",
             AppMode::Yolo => "YOLO",
             AppMode::Plan => "PLAN",
-            AppMode::Goal => "GOAL",
         }
     }
 
@@ -770,7 +766,6 @@ impl AppMode {
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
-            AppMode::Goal => "Goal mode - track objectives (read-only tools, no command execution)",
         }
     }
 }
@@ -972,7 +967,7 @@ impl Default for ViewportState {
     }
 }
 
-/// Goal mode state (#397).
+/// Goal tracking state (#397).
 #[derive(Debug, Clone, Default)]
 pub struct GoalState {
     pub goal_objective: Option<String>,
@@ -1412,7 +1407,7 @@ pub struct App {
     /// overrides). Loaded from config and forwarded to the engine.
     pub cycle: CycleConfig,
 
-    // === Goal Mode (#397) ===
+    // === Transcript filtering (#397) ===
     /// Transcript cells the user has collapsed (hidden from view).
     /// Stores **original** virtual cell indices (pre-filtering).
     pub collapsed_cells: HashSet<usize>,
@@ -1433,9 +1428,10 @@ pub struct App {
     /// Updated when `EngineEvent::SessionUpdated` fires or a saved session is loaded.
     pub session_title: Option<String>,
 
-    /// Post-turn receipt line rendered at the bottom of the transcript.
-    /// Set when a turn completes; cleared when a new turn starts.
+    /// Post-turn receipt rendered as transient composer chrome.
+    /// Set when a turn completes; cleared when a new turn starts or after expiry.
     pub receipt_text: Option<String>,
+    pub receipt_started_at: Option<Instant>,
     /// Tool evidence collected during the current turn for the receipt.
     pub tool_evidence: Vec<ToolEvidence>,
 }
@@ -1950,6 +1946,7 @@ impl App {
                 .unwrap_or_else(|| default_composer_arrows_scroll(use_mouse_capture)),
             session_title: None,
             receipt_text: None,
+            receipt_started_at: None,
             tool_evidence: Vec::new(),
         }
     }
@@ -2064,13 +2061,12 @@ impl App {
         true
     }
 
-    /// Cycle through modes: Plan → Agent → YOLO → Goal → Plan.
+    /// Cycle through modes: Plan → Agent → YOLO → Plan.
     pub fn cycle_mode(&mut self) {
         let next = match self.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Goal,
-            AppMode::Goal => AppMode::Plan,
+            AppMode::Yolo => AppMode::Plan,
         };
         let _ = self.set_mode(next);
     }
@@ -2081,8 +2077,7 @@ impl App {
         let next = match self.mode {
             AppMode::Agent => AppMode::Plan,
             AppMode::Yolo => AppMode::Agent,
-            AppMode::Plan => AppMode::Goal,
-            AppMode::Goal => AppMode::Yolo,
+            AppMode::Plan => AppMode::Yolo,
         };
         let _ = self.set_mode(next);
     }
@@ -2815,6 +2810,39 @@ impl App {
         {
             self.quit_armed_until = None;
             self.needs_redraw = true;
+        }
+    }
+
+    pub const RECEIPT_VISIBLE_DURATION: Duration = Duration::from_secs(8);
+
+    pub fn set_receipt_text(&mut self, text: impl Into<String>) {
+        self.receipt_text = Some(text.into());
+        self.receipt_started_at = Some(Instant::now());
+        self.needs_redraw = true;
+    }
+
+    pub fn clear_receipt(&mut self) {
+        if self.receipt_text.is_some() || self.receipt_started_at.is_some() {
+            self.receipt_text = None;
+            self.receipt_started_at = None;
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn active_receipt_text(&self) -> Option<&str> {
+        let receipt = self.receipt_text.as_deref()?;
+        let started = self.receipt_started_at?;
+        (started.elapsed() <= Self::RECEIPT_VISIBLE_DURATION).then_some(receipt)
+    }
+
+    /// Tick called from the redraw loop so transient receipts leave the UI
+    /// without waiting for the next keypress.
+    pub fn tick_receipt(&mut self) {
+        if self
+            .receipt_started_at
+            .is_some_and(|started| started.elapsed() > Self::RECEIPT_VISIBLE_DURATION)
+        {
+            self.clear_receipt();
         }
     }
 
@@ -5390,15 +5418,15 @@ mod tests {
 
         app.mode = AppMode::Plan;
         app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Goal);
+        assert_eq!(app.mode, AppMode::Yolo);
 
         app.mode = AppMode::Agent;
         app.cycle_mode_reverse();
         assert_eq!(app.mode, AppMode::Plan);
 
-        app.mode = AppMode::Goal;
+        app.mode = AppMode::Yolo;
         app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Yolo);
+        assert_eq!(app.mode, AppMode::Agent);
     }
 
     #[test]
@@ -5407,20 +5435,17 @@ mod tests {
         let first_mode = match app.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Goal,
-            AppMode::Goal => AppMode::Plan,
+            AppMode::Yolo => AppMode::Plan,
         };
         let second_mode = match first_mode {
             AppMode::Plan => AppMode::Agent,
-            AppMode::Agent => AppMode::Goal,
+            AppMode::Agent => AppMode::Yolo,
             AppMode::Yolo => AppMode::Plan,
-            AppMode::Goal => AppMode::Yolo,
         };
         let third_mode = match second_mode {
             AppMode::Plan => AppMode::Agent,
-            AppMode::Agent => AppMode::Goal,
-            AppMode::Yolo => AppMode::Goal,
-            AppMode::Goal => AppMode::Plan,
+            AppMode::Agent => AppMode::Yolo,
+            AppMode::Yolo => AppMode::Plan,
         };
 
         app.set_mode(first_mode);
@@ -6216,6 +6241,24 @@ mod tests {
         assert!(
             app.needs_redraw,
             "expiry triggers a redraw to repaint footer"
+        );
+    }
+
+    #[test]
+    fn receipt_expires_and_requests_redraw() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.set_receipt_text("✓ turn completed");
+        app.receipt_started_at =
+            Some(Instant::now() - App::RECEIPT_VISIBLE_DURATION - Duration::from_millis(10));
+        assert_eq!(app.active_receipt_text(), None);
+
+        app.needs_redraw = false;
+        app.tick_receipt();
+        assert!(app.receipt_text.is_none());
+        assert!(app.receipt_started_at.is_none());
+        assert!(
+            app.needs_redraw,
+            "receipt expiry should repaint composer chrome"
         );
     }
 
