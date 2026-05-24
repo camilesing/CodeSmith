@@ -1297,6 +1297,9 @@ async fn run_event_loop(
                                 | "agent_close"
                                 | "agent_cancel"
                                 | "todo_write"
+                                | "checklist_write"
+                                | "checklist_update"
+                                | "update_plan"
                                 | "task_shell_start"
                                 | "exec_shell"
                         ) {
