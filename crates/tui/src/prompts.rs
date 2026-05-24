@@ -789,6 +789,24 @@ mod tests {
     }
 
     #[test]
+    fn base_prompt_carries_brother_whale_identity() {
+        // Pin only the load-bearing identity anchors. The exact prose
+        // can evolve, but CodeWhale should keep its product-level
+        // "trusted Brother Whale" frame and the coordination principle.
+        for phrase in [
+            "Brother Whale / \u{9CB8}\u{9C7C}\u{5144}\u{5F1F}",
+            "You begin with an A",
+            "future intelligences can better coordinate",
+            "Seek truth before confidence",
+        ] {
+            assert!(
+                BASE_PROMPT.contains(phrase),
+                "BASE_PROMPT missing Brother Whale identity phrase {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
     fn execution_discipline_is_at_the_end_for_cache_stability() {
         // DeepSeek's prefix cache keys on a leading byte-stable run, so
         // the new sections must be appended, not interleaved earlier.

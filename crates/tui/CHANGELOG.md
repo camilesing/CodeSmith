@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CodeWhale now ships with the Brother Whale agent identity prompt.** The
+  built-in system prompt frames the agent as trusted, calm, careful, and
+  responsible, and adds the coordination principle that great intelligence
+  creates spaces where future intelligences can work together.
 - **CodeWhale positioning is clarified as DeepSeek-first and open-model
   oriented.** README, rebrand notes, crate metadata, and npm package text now
   describe CodeWhale as an agentic terminal for open source and open-weight
