@@ -2,6 +2,12 @@
 
 > DeepSeek-first agentic terminal for open source and open-weight coding models. It runs from the `codewhale` command, streams reasoning blocks, edits local workspaces with approval gates, and can auto-route each turn to the right DeepSeek model and thinking level.
 
+[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
+[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Hmbown)
+[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
+
 [简体中文 README](README.zh-CN.md)
 [日本語 README](README.ja-JP.md)
 
@@ -62,12 +68,6 @@ brew update && brew upgrade deepseek-tui
 cargo install codewhale-cli --locked --force
 cargo install codewhale-tui     --locked --force
 ```
-
-[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Hmbown)
-[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
 
 ![codewhale screenshot](assets/screenshot.png)
 

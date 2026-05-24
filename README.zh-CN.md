@@ -2,6 +2,12 @@
 
 > **DeepSeek 优先、面向开源与开放权重编码模型的终端原生编程智能体：100 万 token 上下文、思考模式流式推理、前缀缓存感知。自包含 Rust 二进制发布——开箱即带 MCP 客户端、沙箱和持久化任务队列。**
 
+[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
+[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Hmbown)
+[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
+
 [English README](README.md)
 [日本語 README](README.ja-JP.md)
 
@@ -57,12 +63,6 @@ brew update && brew upgrade deepseek-tui
 cargo install codewhale-cli --locked --force
 cargo install codewhale-tui     --locked --force
 ```
-
-[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Hmbown)
-[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
 
 ![codewhale 截图](assets/screenshot.png)
 

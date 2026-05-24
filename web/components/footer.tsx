@@ -21,7 +21,7 @@ const EN_COLS = [
       { label: "Pull Requests", href: "https://github.com/Hmbown/deepseek-tui/pulls" },
       { label: "Discussions", href: "https://github.com/Hmbown/deepseek-tui/discussions" },
       { label: "Contribute", href: "/contribute" },
-      { label: "Support DeepSeek TUI", href: "https://buymeacoffee.com/hmbown" },
+      { label: "Sponsor CodeWhale", href: "https://github.com/sponsors/Hmbown" },
     ],
   },
   {
@@ -53,7 +53,7 @@ const ZH_COLS = [
       { label: "合并请求", href: "https://github.com/Hmbown/deepseek-tui/pulls" },
       { label: "讨论区", href: "https://github.com/Hmbown/deepseek-tui/discussions" },
       { label: "参与贡献", href: "/zh/contribute" },
-      { label: "支持 DeepSeek TUI", href: "https://buymeacoffee.com/hmbown" },
+      { label: "支持 CodeWhale", href: "https://github.com/sponsors/Hmbown" },
     ],
   },
   {

@@ -53,6 +53,7 @@ const LINK_TARGETS: { url: string; label: string }[] = [
   { url: "https://github.com/Hmbown/deepseek-tui/blob/main/CONTRIBUTING.md", label: "Contributing guide" },
   { url: "https://github.com/Hmbown/deepseek-tui/blob/main/.github/PULL_REQUEST_TEMPLATE.md", label: "PR template" },
   { url: "https://github.com/Hmbown/homebrew-deepseek-tui", label: "Homebrew tap" },
+  { url: "https://github.com/sponsors/Hmbown", label: "Support link (GitHub Sponsors)" },
   { url: "https://buymeacoffee.com/hmbown", label: "Support link (BMC)" },
   { url: "https://registry.npmjs.org/deepseek-tui", label: "npm package (registry API)" },
   // crates.io intentionally not in this list — both their HTML and JSON API return 403 to
