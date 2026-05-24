@@ -187,12 +187,9 @@ fn write_text_with_set_clipboard(text: &str) -> Result<()> {
     )
 }
 
-#[cfg(target_os = "linux")]
-const WLCOPY_BIN: &str = "wl-copy";
-
 #[cfg(all(target_os = "linux", not(test)))]
 fn write_text_with_wlcopy(text: &str) -> Result<()> {
-    write_text_with_wlcopy_using_argv(WLCOPY_BIN, text)
+    write_text_with_wlcopy_using_argv("wl-copy", text)
 }
 
 #[cfg(target_os = "linux")]
