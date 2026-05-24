@@ -117,6 +117,7 @@ codewhale doctor --json
 
 ```bash
 codewhale serve --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN]
+codewhale serve --mobile [--port 7878] [--auth-token TOKEN]
 ```
 
 Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
@@ -124,15 +125,29 @@ Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
 The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
 
-By default, existing local behavior is unchanged and `/v1/*` routes are not
-authenticated. To require a bearer token for `/v1/*` routes, pass
-`--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting the
-server. `/health` remains public for local process supervision and readiness
-checks.
+`/v1/*` routes require a bearer token unless `--insecure` is explicitly set.
+Pass `--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting
+the server. If neither is set, the process generates a one-time token and prints
+it at startup. `/health`, `/mobile`, and `/v1/runtime/info` remain public for
+local supervision and bootstrap.
 
 Authenticated clients can provide the token as `Authorization: Bearer TOKEN`,
 `X-DeepSeek-Runtime-Token: TOKEN`, or `?token=TOKEN` for EventSource-style
 clients that cannot set custom headers.
+
+### Mobile control page
+
+`codewhale serve --mobile` starts the same HTTP/SSE runtime API and serves a
+phone-friendly control page at `/mobile`. When the bind host is left at the
+default, mobile mode binds to `0.0.0.0` and prints local/LAN URLs. If a runtime
+token is generated or supplied, the printed mobile URL includes it as a query
+parameter; the page stores it locally and removes it from the address bar.
+
+The mobile page can list/create threads, send prompts, follow live SSE events,
+steer or interrupt an active turn, and resolve normal tool approvals through
+`POST /v1/approvals/{approval_id}`. It is still a local/LAN convenience surface:
+do not expose it directly to the public internet without TLS and a trusted
+fronting layer.
 
 ### Endpoints
 
@@ -187,6 +202,10 @@ accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
 - `POST /v1/threads/{id}/turns/{turn_id}/steer`
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
 - `POST /v1/threads/{id}/compact` (manual compaction)
+
+**Approvals**
+- `POST /v1/approvals/{approval_id}` with body
+  `{ "decision": "allow" | "deny", "remember": false }`
 
 **Events** (SSE replay + live stream)
 - `GET /v1/threads/{id}/events?since_seq=<u64>`
@@ -306,14 +325,16 @@ The SSE event payload shape:
 Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.lifecycle`, `turn.steered`, `turn.interrupt_requested`,
 `turn.completed`, `item.started`, `item.delta`, `item.completed`,
-`item.failed`, `item.interrupted`, `approval.required`, `sandbox.denied`,
-`coherence.state`.
+`item.failed`, `item.interrupted`, `approval.required`, `approval.decided`,
+`approval.timeout`, `sandbox.denied`, `coherence.state`.
 
 ## Security boundary
 
-- **Localhost only**. The server binds to `127.0.0.1` by default. Set
-  `--host 0.0.0.0` only when you have a reverse-proxy / VPN that
-  authenticates. The runtime does not provide user isolation or TLS.
+- **Localhost by default**. The server binds to `127.0.0.1` by default.
+  `--mobile` binds to `0.0.0.0` when the host is left at the default so phones
+  on the same LAN can reach it. Set a non-loopback host only when you trust the
+  network path or have a reverse-proxy / VPN that authenticates. The runtime
+  does not provide user isolation or TLS.
 - **Optional token guard**. `--auth-token` or `DEEPSEEK_RUNTIME_TOKEN`
   requires a matching bearer token for `/v1/*` routes. This is a local
   convenience guard, not a replacement for TLS, VPN, or a trusted reverse
