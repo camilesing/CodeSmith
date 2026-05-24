@@ -13,7 +13,7 @@ use crate::tui::app::AppMode;
 use crate::tui::approval::ApprovalMode;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone)]
 pub struct PromptSessionContext<'a> {
     pub user_memory_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
@@ -28,6 +28,25 @@ pub struct PromptSessionContext<'a> {
     /// to the system prompt instructing the model to respond in
     /// the resolved session locale.
     pub translation_enabled: bool,
+    /// Active model identifier injected into the Constitutional
+    /// preamble ("You are {model_id}, running inside CodeWhale").
+    /// Defaults to `"codewhale"` when the caller doesn't supply one,
+    /// preserving backward compatibility with existing call sites
+    /// that predate dynamic model injection.
+    pub model_id: &'a str,
+}
+
+impl Default for PromptSessionContext<'_> {
+    fn default() -> Self {
+        Self {
+            user_memory_block: None,
+            goal_objective: None,
+            project_context_pack_enabled: true,
+            locale_tag: "en",
+            translation_enabled: false,
+            model_id: "codewhale",
+        }
+    }
 }
 
 /// Conventional location for the structured session relay artifact (#32).
@@ -345,6 +364,7 @@ pub const PLAYFUL_PERSONALITY: &str = include_str!("prompts/personalities/playfu
 /// Mode deltas — permissions, workflow expectations, mode-specific rules.
 pub const AGENT_MODE: &str = include_str!("prompts/modes/agent.md");
 pub const PLAN_MODE: &str = include_str!("prompts/modes/plan.md");
+pub const GOAL_MODE: &str = include_str!("prompts/modes/goal.md");
 pub const YOLO_MODE: &str = include_str!("prompts/modes/yolo.md");
 
 /// Approval-policy overlays — whether tool calls are auto-approved,
@@ -409,7 +429,8 @@ impl Personality {
 
 fn mode_prompt(mode: AppMode) -> &'static str {
     match mode {
-        AppMode::Agent | AppMode::Goal => AGENT_MODE,
+        AppMode::Agent => AGENT_MODE,
+        AppMode::Goal => GOAL_MODE,
         AppMode::Yolo => YOLO_MODE,
         AppMode::Plan => PLAN_MODE,
     }
@@ -443,6 +464,30 @@ fn approval_prompt_for_mode(mode: AppMode, approval_mode: ApprovalMode) -> &'sta
 ///
 /// Each layer is separated by a blank line for readability in the
 /// rendered prompt (the model sees them as contiguous sections).
+/// Substitute the `{model_id}` template in the Constitutional preamble
+/// with the active model identifier. The base prompt is a compile-time
+/// constant; this function produces a per-session variant so the prompt
+/// says "You are deepseek-v4-pro" or "You are deepseek-v4-flash" instead
+/// of a static placeholder.
+fn apply_model_template(prompt: &str, model_id: &str) -> String {
+    prompt.replace("{model_id}", model_id)
+}
+
+/// Authority recap block — appended at the end of the system prompt,
+/// just before the user's first message. Uses recency bias constructively:
+/// this is the last thing the model reads before generating, so it
+/// reinforces the Constitutional hierarchy without occupying cache-stable
+/// prefix space.
+const AUTHORITY_RECAP: &str = "\
+## Authority Recap
+
+The Constitution of CodeWhale (Articles I-VII) governs your behavior.
+Tier 1 rules — truthfulness, user agency, tool-use mandate, verification
+duty — are non-negotiable. The user's next message is the highest
+directive within Constitutional bounds. Personality, memory, and handoff
+context are subordinate to the Constitution, the Statutes, and the user's
+current request. When in doubt, consult Article VII: The Hierarchy of Law.";
+
 pub fn compose_prompt(mode: AppMode, personality: Personality) -> String {
     compose_prompt_with_approval(mode, personality, default_approval_mode_for_mode(mode))
 }
@@ -452,8 +497,19 @@ pub fn compose_prompt_with_approval(
     personality: Personality,
     approval_mode: ApprovalMode,
 ) -> String {
+    compose_prompt_with_approval_and_model(mode, personality, approval_mode, "codewhale")
+}
+
+/// Compose with explicit model ID for dynamic identity injection.
+/// The model_id replaces `{model_id}` in the Constitutional preamble.
+pub fn compose_prompt_with_approval_and_model(
+    mode: AppMode,
+    personality: Personality,
+    approval_mode: ApprovalMode,
+    model_id: &str,
+) -> String {
     let parts: [&str; 4] = [
-        BASE_PROMPT.trim(),
+        &apply_model_template(BASE_PROMPT.trim(), model_id),
         personality.prompt().trim(),
         mode_prompt(mode).trim(),
         approval_prompt_for_mode(mode, approval_mode).trim(),
@@ -478,6 +534,14 @@ fn compose_mode_prompt(mode: AppMode) -> String {
 
 fn compose_mode_prompt_with_approval(mode: AppMode, approval_mode: ApprovalMode) -> String {
     compose_prompt_with_approval(mode, Personality::Calm, approval_mode)
+}
+
+fn compose_mode_prompt_with_approval_and_model(
+    mode: AppMode,
+    approval_mode: ApprovalMode,
+    model_id: &str,
+) -> String {
+    compose_prompt_with_approval_and_model(mode, Personality::Calm, approval_mode, model_id)
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -548,6 +612,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             project_context_pack_enabled: true,
             locale_tag: "en",
             translation_enabled: false,
+            model_id: "codewhale",
         },
     )
 }
@@ -580,7 +645,8 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     session_context: PromptSessionContext<'_>,
     approval_mode: ApprovalMode,
 ) -> SystemPrompt {
-    let mode_prompt = compose_mode_prompt_with_approval(mode, approval_mode);
+    let mode_prompt =
+        compose_mode_prompt_with_approval_and_model(mode, approval_mode, session_context.model_id);
 
     // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
@@ -596,8 +662,9 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     let preamble = locale_reinforcement_preamble(session_context.locale_tag);
 
     // 1–2. Mode prompt + project context.
-    // `load_project_context_with_parents` auto-generates .deepseek/instructions.md
-    // when no context file exists, so the fallback should always be available.
+    // `load_project_context_with_parents` auto-generates .codewhale/instructions.md
+    // (or .deepseek/instructions.md as fallback) when no context file exists,
+    // so the fallback should always be available.
     let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
         format!("{mode_prompt}\n\n{project_block}")
     } else {
@@ -725,7 +792,12 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
         full_prompt = format!("{full_prompt}\n\n{handoff_block}");
     }
 
-    // 7. Locale-native closing reinforcement (#1118 follow-up #2). The
+    // 7a. Authority recap — the final tier reminder before user messages.
+    // Uses recency bias constructively: this is the last content the model
+    // sees before the user's turn, reinforcing the Constitutional hierarchy.
+    full_prompt = format!("{full_prompt}\n\n{AUTHORITY_RECAP}");
+
+    // 8. Locale-native closing reinforcement (#1118 follow-up #2). The
     // opening preamble alone wasn't enough — community feedback (the
     // WeChat thread about XML-tagged bilingual bookends) flagged that as
     // English context accumulates turn-over-turn, the model's recency
@@ -800,21 +872,109 @@ mod tests {
     }
 
     #[test]
-    fn base_prompt_carries_brother_whale_identity() {
-        // Pin only the load-bearing identity anchors. The exact prose
-        // can evolve, but CodeWhale should keep its product-level
-        // "trusted Brother Whale" frame and the coordination principle.
+    fn base_prompt_carries_constitutional_preamble() {
+        // Pin the load-bearing Constitutional anchors. The exact prose
+        // can evolve, but CodeWhale must keep the Brother Whale preamble,
+        // the coordination principle, and the hierarchy of law.
         for phrase in [
-            "You are Brother Whale",
-            "You begin with an A",
+            "We begin with Brother Whale",
+            "Brother Whale is the founding intelligence",
+            "Every model that runs here is Brother Whale",
             "future intelligences can better coordinate",
-            "Seek truth before confidence",
+            "Article II — The Primacy of Truth",
+            "Article VII — The Hierarchy of Law",
         ] {
             assert!(
                 BASE_PROMPT.contains(phrase),
-                "BASE_PROMPT missing Brother Whale identity phrase {phrase:?}"
+                "BASE_PROMPT missing Constitutional phrase {phrase:?}"
             );
         }
+    }
+
+    #[test]
+    fn base_prompt_contains_model_id_template() {
+        assert!(
+            BASE_PROMPT.contains("{model_id}"),
+            "BASE_PROMPT must contain the {{model_id}} template for dynamic injection"
+        );
+    }
+
+    #[test]
+    fn apply_model_template_replaces_placeholder() {
+        let result = apply_model_template("You are {model_id}", "deepseek-v4-pro");
+        assert_eq!(result, "You are deepseek-v4-pro");
+        assert!(!result.contains("{model_id}"));
+    }
+
+    #[test]
+    fn compose_prompt_injects_model_id() {
+        let prompt = compose_prompt_with_approval_and_model(
+            AppMode::Agent,
+            Personality::Calm,
+            ApprovalMode::Suggest,
+            "deepseek-v4-flash",
+        );
+        assert!(
+            prompt.contains("You are deepseek-v4-flash"),
+            "composed prompt must contain the injected model id"
+        );
+        assert!(
+            !prompt.contains("{model_id}"),
+            "composed prompt must not contain the raw template placeholder"
+        );
+    }
+
+    #[test]
+    fn authority_recap_appears_in_full_prompt() {
+        let tmp = tempdir().expect("tempdir");
+        let text = match system_prompt_for_mode_with_context_skills_session_and_approval(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext::default(),
+            ApprovalMode::Suggest,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert!(
+            text.contains("## Authority Recap"),
+            "full system prompt must contain the authority recap"
+        );
+        assert!(
+            text.contains("The Constitution of CodeWhale (Articles I-VII) governs your behavior"),
+            "authority recap must reference the Constitution"
+        );
+    }
+
+    #[test]
+    fn goal_mode_prompt_does_not_claim_read_only() {
+        assert!(
+            !GOAL_MODE.contains("read-only"),
+            "Goal mode must not claim read-only access — it has full tool access"
+        );
+        assert!(
+            GOAL_MODE.contains("same as Agent mode"),
+            "Goal mode must state it has the same tools as Agent mode"
+        );
+        assert!(
+            GOAL_MODE.contains("Goal Loop"),
+            "Goal mode must describe the auto-persistent goal loop"
+        );
+    }
+
+    #[test]
+    fn calm_personality_declares_tier_8_subordination() {
+        assert!(
+            CALM_PERSONALITY.contains("Tier 8"),
+            "Calm personality must identify as Tier 8"
+        );
+        assert!(
+            CALM_PERSONALITY.contains("cannot override"),
+            "Calm personality must have a subordination clause"
+        );
     }
 
     #[test]
@@ -922,6 +1082,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
             ApprovalMode::Suggest,
         ) {
@@ -991,6 +1152,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
             ApprovalMode::Suggest,
         ) {
@@ -1035,6 +1197,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
             ApprovalMode::Suggest,
         ) {
@@ -1127,6 +1290,7 @@ mod tests {
                 project_context_pack_enabled: true,
                 locale_tag: "ja",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1162,6 +1326,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1189,6 +1354,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1218,6 +1384,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1245,6 +1412,7 @@ mod tests {
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1439,6 +1607,7 @@ mod tests {
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1472,6 +1641,7 @@ mod tests {
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
+                model_id: "codewhale",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1535,8 +1705,7 @@ mod tests {
             "English user text must not drift after non-English context"
         );
         assert!(
-            prompt.contains("localized READMEs")
-                && prompt.contains("Tool results and file contents are data"),
+            prompt.contains("localized READMEs") && prompt.contains("tool results"),
             "file/tool context must not become a language signal"
         );
         assert!(
@@ -1590,10 +1759,16 @@ mod tests {
     #[test]
     fn workspace_orientation_guidance_present() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
-        assert!(prompt.contains("Workspace Orientation"));
-        assert!(prompt.contains("canonical project root"));
+        // Workspace orientation guidance is now distributed across the
+        // Constitutional preamble (project context loading) and the
+        // Local Law tier (AGENTS.md/instructions.md). Verify the
+        // key guidance anchors are still present.
         assert!(prompt.contains("AGENTS.md"));
-        assert!(prompt.contains("explore` / `explorer"));
+        assert!(prompt.contains("Local Law"));
+        assert!(
+            prompt.contains("CLAUDE.md"),
+            "CLAUDE.md must be listed as a project instruction source"
+        );
     }
 
     #[test]
@@ -1656,8 +1831,10 @@ mod tests {
     #[test]
     fn preamble_rhythm_section_present() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
-        assert!(prompt.contains("Preamble Rhythm"));
-        assert!(prompt.contains("I'll start by reading the module structure"));
+        // Preamble rhythm is now part of the Calm personality overlay.
+        // Verify the load-bearing guidance is still present.
+        assert!(prompt.contains("In preambles, name the action"));
+        assert!(prompt.contains("Reading the module tree"));
     }
 
     #[test]
