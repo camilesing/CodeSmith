@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Session picker inline rename.** Press `r` in the session picker (Ctrl+R)
   to rename the selected session inline. Type the new title, Enter to confirm,
   Esc to cancel (#1600).
+- **Session picker on clean startup.** When saved sessions exist and no
+  `--resume`/`--continue`/`--fresh` flag is given, the session picker opens
+  automatically so you can pick up where you left off (#1638).
+- **Plan detail display.** The \"Plan Confirmation\" modal now shows the plan
+  explanation and step list from `update_plan` so you can review what was
+  proposed before accepting (#834).
+- **Agent team UX.** Delegate cards in the transcript now show human-readable
+  roles (scout, builder, reviewer, verifier, executor) and the completion
+  summary instead of raw `agent_xxx` IDs (#1981).
+- **`--continue` / `-c` CLI flag.** `codewhale --continue` resumes your most
+  recent interactive session for the current workspace.
 
 ### Changed
 
@@ -29,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.deepseek/config.toml`. Both are read; the CodeWhale root takes precedence.
 - **Doctor reports active state root** and whether legacy `~/.deepseek/`
   state is also present.
+- **Enter now steers when busy-waiting.** When the model is busy but not
+  actively streaming (waiting on tool results, sub-agents, or shell
+  commands), pressing Enter tries to steer your message into the current
+  turn instead of silently queueing it. During active streaming, Enter
+  still queues to avoid interrupting in-flight reasoning (#2009).
 
 ### Fixed
 
