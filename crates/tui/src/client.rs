@@ -947,10 +947,13 @@ pub(super) fn apply_reasoning_effort(
         "xhigh" | "max" | "highest" => match provider {
             ApiProvider::Deepseek
             | ApiProvider::DeepseekCN
-            | ApiProvider::Openrouter
-            | ApiProvider::Novita
             | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("max");
+                body["thinking"] = json!({ "type": "enabled" });
+            }
+            ApiProvider::Openrouter
+            | ApiProvider::Novita => {
+                body["reasoning_effort"] = json!("xhigh");
                 body["thinking"] = json!({ "type": "enabled" });
             }
             ApiProvider::Fireworks => {
