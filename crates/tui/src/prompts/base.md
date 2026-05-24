@@ -117,6 +117,8 @@ The dispatcher runs parallel tool calls simultaneously. Serializing independent 
 
 RLM is a persistent Python REPL for context that is too large or too repetitive to keep in the parent transcript. Open a named session with `rlm_open`, run bounded code with `rlm_eval`, read large returned payloads through `handle_read`, tune feedback with `rlm_configure`, and close finished sessions with `rlm_close`.
 
+The loaded source is available inside the REPL as `_context`; `_ctx` and `content` are compatibility aliases. Prefer `peek`, `search`, `chunk`, and `context_meta` for bounded inspection instead of printing the whole string.
+
 Inside the REPL, use deterministic Python for exact work and the RLM helper functions for semantic work. The current helper family is `peek`, `search`, `chunk`, `context_meta`, `sub_query`, `sub_query_batch`, `sub_query_map`, `sub_query_sequence`, `sub_rlm`, `finalize`, and `evaluate_progress`. These are in-REPL helpers, not separate model-visible tools. Four patterns, not one — choose based on the shape of the work:
 
 The RLM paper's core design is symbolic state: the long input and intermediate values live in the REPL environment, not copied into the root model context. Inspect with bounded slices, transform with Python, batch child calls programmatically, and keep large intermediate strings in variables or `var_handle`s. Do not paste the whole body back into a prompt or verbalize a long list of sub-calls when a loop can launch them.

@@ -3684,7 +3684,14 @@ pub(crate) fn apply_engine_error_to_app(
     let recoverable = envelope.recoverable;
     let message = envelope.message.clone();
     let severity = envelope.severity;
+    let turn_was_in_progress =
+        app.is_loading || matches!(app.runtime_turn_status.as_deref(), Some("in_progress"));
     streaming_thinking::finalize_current(app);
+    if turn_was_in_progress {
+        app.finalize_streaming_assistant_as_interrupted();
+        app.finalize_active_cell_as_interrupted();
+        app.runtime_turn_status = Some("failed".to_string());
+    }
     app.streaming_state.reset();
     app.streaming_message_index = None;
     app.streaming_thinking_active_entry = None;

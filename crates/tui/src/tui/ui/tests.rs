@@ -5158,6 +5158,45 @@ fn recoverable_engine_error_does_not_enter_offline_mode() {
     let _ = ErrorEnvelope::transient("");
 }
 
+#[test]
+fn stream_error_marks_active_turn_failed_without_waiting_for_turn_complete() {
+    use crate::error_taxonomy::ErrorEnvelope;
+
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.runtime_turn_id = Some("turn_decode_error".to_string());
+    app.runtime_turn_status = Some("in_progress".to_string());
+    handle_tool_call_started(
+        &mut app,
+        "tool-running",
+        "exec_shell",
+        &serde_json::json!({"command": "cargo test --workspace"}),
+    );
+    assert!(app.active_cell.is_some(), "precondition: live tool cell");
+
+    apply_engine_error_to_app(
+        &mut app,
+        ErrorEnvelope::classify("chunk decode error".to_string(), true),
+    );
+
+    assert!(!app.is_loading);
+    assert_eq!(app.runtime_turn_status.as_deref(), Some("failed"));
+    assert!(
+        app.active_cell.is_none(),
+        "stream error should flush live cells so no row stays visually running"
+    );
+    assert!(
+        app.history.iter().any(|cell| {
+            matches!(
+                cell,
+                crate::tui::history::HistoryCell::Error { message, .. }
+                    if message.contains("chunk decode error")
+            )
+        }),
+        "stream decode error should remain visible in transcript"
+    );
+}
+
 /// Hard failures (auth, billing, malformed request) DO need to flip offline
 /// mode so subsequent typed messages get queued instead of silently lost
 /// against a broken upstream.
