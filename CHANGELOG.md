@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Thinking blocks can be collapsed/expanded via keyboard.** Space on an
+  empty composer toggles the focused thinking cell between collapsed and
+  expanded, complementing the existing mouse right-click context menu (#1972).
+- **Sub-agent completion events no longer delayed to the next turn.** The turn
+  loop now drains late-arriving sub-agent completions at the final checkpoint
+  before breaking, so child-agent sentinels surface immediately instead of
+  appearing in the following turn (#1961).
 - **`codewhale doctor` now referenced correctly in SSE timeout errors.**
   The error message shown when SSE streams fail to connect now points users to
   `codewhale doctor` (not the legacy `deepseek doctor`).
