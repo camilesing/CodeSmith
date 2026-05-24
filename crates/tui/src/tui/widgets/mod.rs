@@ -284,7 +284,30 @@ impl ChatWidget {
 
         apply_selection(&mut lines, top, app);
 
-        if app.viewport.transcript_scroll.is_at_tail() {
+        // Post-turn receipt line: rendered at the bottom of the transcript
+        // when a turn has just completed and the viewport is at the tail.
+        if let Some(ref receipt) = app.receipt_text {
+            if app.viewport.transcript_scroll.is_at_tail() {
+                // Make room: if we're already at full height, drop the last
+                // cache line so the receipt doesn't push content off-screen.
+                if lines.len() >= visible_lines {
+                    lines.pop();
+                }
+                // Pad to fill remaining space above the receipt.
+                let pad_target = visible_lines.saturating_sub(1);
+                let pad = pad_target.saturating_sub(lines.len());
+                for _ in 0..pad {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled(
+                    format!("  {receipt}"),
+                    Style::default()
+                        .fg(palette::TEXT_MUTED)
+                        .add_modifier(Modifier::DIM),
+                )));
+                app.viewport.last_transcript_padding_top = 0;
+            }
+        } else if app.viewport.transcript_scroll.is_at_tail() {
             app.viewport.last_transcript_padding_top = visible_lines.saturating_sub(lines.len());
             pad_lines_to_bottom(&mut lines, visible_lines);
         }
@@ -504,6 +527,7 @@ impl<'a> ComposerWidget<'a> {
             AppMode::Agent => palette::MODE_AGENT,
             AppMode::Yolo => palette::MODE_YOLO,
             AppMode::Plan => palette::MODE_PLAN,
+            AppMode::Goal => palette::MODE_GOAL,
         }
     }
 

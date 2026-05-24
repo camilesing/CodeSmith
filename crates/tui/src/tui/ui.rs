@@ -1481,6 +1481,24 @@ async fn run_event_loop(
                             );
                         }
 
+                        // Generate post-turn receipt for completed turns.
+                        if status == crate::core::events::TurnOutcomeStatus::Completed {
+                            let tool_count = app.tool_evidence.len();
+                            let mut receipt = "✓ turn completed".to_string();
+                            if tool_count > 0 {
+                                let _ = write!(receipt, " · {tool_count} tool(s) used");
+                                for evidence in &app.tool_evidence {
+                                    let summary = if evidence.summary.len() > 60 {
+                                        format!("{}…", &evidence.summary[..57])
+                                    } else {
+                                        evidence.summary.clone()
+                                    };
+                                    let _ = write!(receipt, " · {}: {summary}", evidence.tool_name);
+                                }
+                            }
+                            app.receipt_text = Some(receipt);
+                        }
+
                         // Auto-save completed turn and clear crash checkpoint.
                         // Offloaded to the persistence actor so the UI
                         // stays responsive.
@@ -3509,7 +3527,9 @@ async fn run_event_loop(
                 KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let new_mode = match app.mode {
                         AppMode::Plan => AppMode::Agent,
-                        _ => AppMode::Plan,
+                        AppMode::Agent => AppMode::Yolo,
+                        AppMode::Yolo => AppMode::Goal,
+                        AppMode::Goal => AppMode::Plan,
                     };
                     app.set_mode(new_mode);
                 }
@@ -3538,6 +3558,14 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_mode(AppMode::Plan);
+                    continue;
+                }
+                KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Goal);
+                    continue;
+                }
+                KeyCode::Char('G') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Goal);
                     continue;
                 }
                 KeyCode::Char('v') | KeyCode::Char('V')
@@ -4009,6 +4037,9 @@ async fn dispatch_user_message(
     app.runtime_turn_status = None;
     app.last_send_at = Some(dispatch_started_at);
     app.last_submitted_prompt = Some(message.display.clone());
+    // Clear the previous turn's receipt and evidence.
+    app.receipt_text = None;
+    app.tool_evidence.clear();
 
     let cwd = std::env::current_dir().ok();
     let references = crate::tui::file_mention::context_references_from_input(

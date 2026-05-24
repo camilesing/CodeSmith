@@ -5,7 +5,7 @@
 //! reads from `App` snapshots; mutation lives in the main app loop.
 
 use std::fmt::Write;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::{
     Frame,
@@ -167,6 +167,8 @@ struct SidebarWorkStrategyStep {
 struct SidebarWorkSummary {
     goal_objective: Option<String>,
     goal_token_budget: Option<u32>,
+    goal_completed: bool,
+    goal_started_at: Option<Instant>,
     tokens_used: u32,
     cycle_count: u32,
     checklist_completion_pct: u8,
@@ -226,6 +228,8 @@ fn sidebar_work_summary(app: &App) -> SidebarWorkSummary {
     let mut summary = SidebarWorkSummary {
         goal_objective: app.goal.goal_objective.clone(),
         goal_token_budget: app.goal.goal_token_budget,
+        goal_completed: app.goal.goal_completed,
+        goal_started_at: app.goal.goal_started_at,
         tokens_used: app.session.total_conversation_tokens,
         cycle_count: app.cycle_count,
         ..SidebarWorkSummary::default()
@@ -328,15 +332,41 @@ fn push_work_goal_lines(
         return;
     }
 
-    lines.push(Line::from(Span::styled(
-        format!(
-            "◆ {}",
-            truncate_line_to_width(objective, content_width.saturating_sub(2).max(1))
-        ),
+    let icon = if summary.goal_completed { "✓" } else { "◆" };
+    let status_style = if summary.goal_completed {
+        Style::default()
+            .fg(palette::STATUS_SUCCESS)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
         Style::default()
             .fg(palette::STATUS_WARNING)
-            .add_modifier(ratatui::style::Modifier::BOLD),
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    };
+
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{} {}",
+            icon,
+            truncate_line_to_width(objective, content_width.saturating_sub(2).max(1))
+        ),
+        status_style,
     )));
+
+    // Elapsed time
+    if let Some(started) = summary.goal_started_at
+        && lines.len() < max_rows
+    {
+        let elapsed = crate::tui::notifications::humanize_duration(started.elapsed());
+        let elapsed_str = if summary.goal_completed {
+            format!("completed in {elapsed}")
+        } else {
+            format!("elapsed: {elapsed}")
+        };
+        lines.push(Line::from(Span::styled(
+            truncate_line_to_width(&elapsed_str, content_width),
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
 
     if let Some(budget) = summary.goal_token_budget
         && lines.len() < max_rows

@@ -120,11 +120,7 @@ pub(crate) fn stall_reason(app: &App) -> Option<&'static str> {
     if running_agent_count(app) > 0 {
         return Some("sub-agents working");
     }
-    if app
-        .task_panel
-        .iter()
-        .any(|task| task.status == "running")
-    {
+    if app.task_panel.iter().any(|task| task.status == "running") {
         return Some("background jobs running");
     }
     let active = app.active_cell.as_ref()?;
@@ -133,9 +129,10 @@ pub(crate) fn stall_reason(app: &App) -> Option<&'static str> {
             crate::tui::history::ToolCell::Exec(exec) => {
                 exec.status == crate::tui::history::ToolStatus::Running
             }
-            crate::tui::history::ToolCell::Exploring(explore) => {
-                explore.entries.iter().any(|e| e.status == crate::tui::history::ToolStatus::Running)
-            }
+            crate::tui::history::ToolCell::Exploring(explore) => explore
+                .entries
+                .iter()
+                .any(|e| e.status == crate::tui::history::ToolStatus::Running),
             _ => false,
         },
         _ => false,
@@ -143,7 +140,7 @@ pub(crate) fn stall_reason(app: &App) -> Option<&'static str> {
         return Some("tools executing");
     }
     if app.runtime_turn_status.as_deref() == Some("in_progress") {
-        return Some("waiting — no recent activity");
+        return Some("waiting - no recent activity");
     }
     None
 }
@@ -786,6 +783,7 @@ pub(crate) fn footer_mode_style(app: &App) -> (&'static str, ratatui::style::Col
         crate::tui::app::AppMode::Agent => app.ui_theme.mode_agent,
         crate::tui::app::AppMode::Yolo => app.ui_theme.mode_yolo,
         crate::tui::app::AppMode::Plan => app.ui_theme.mode_plan,
+        crate::tui::app::AppMode::Goal => app.ui_theme.mode_goal,
     };
     (label, color)
 }

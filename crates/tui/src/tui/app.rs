@@ -127,6 +127,7 @@ pub enum AppMode {
     Agent,
     Yolo,
     Plan,
+    Goal,
 }
 
 /// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
@@ -737,6 +738,7 @@ impl AppMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "plan" => Self::Plan,
             "yolo" => Self::Yolo,
+            "goal" => Self::Goal,
             _ => Self::Agent,
         }
     }
@@ -747,6 +749,7 @@ impl AppMode {
             Self::Agent => "agent",
             Self::Yolo => "yolo",
             Self::Plan => "plan",
+            Self::Goal => "goal",
         }
     }
 
@@ -756,6 +759,7 @@ impl AppMode {
             AppMode::Agent => "AGENT",
             AppMode::Yolo => "YOLO",
             AppMode::Plan => "PLAN",
+            AppMode::Goal => "GOAL",
         }
     }
 
@@ -766,6 +770,7 @@ impl AppMode {
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
+            AppMode::Goal => "Goal mode - track a persistent objective across turns",
         }
     }
 }
@@ -973,6 +978,7 @@ pub struct GoalState {
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
     pub goal_started_at: Option<Instant>,
+    pub goal_completed: bool,
 }
 
 /// Session cost and token telemetry state.
@@ -1017,6 +1023,13 @@ impl Default for SessionState {
             last_cache_inspection: None,
         }
     }
+}
+
+/// Evidence collected during a turn for the post-turn receipt.
+#[derive(Debug, Clone)]
+pub struct ToolEvidence {
+    pub tool_name: String,
+    pub summary: String,
 }
 
 /// Global UI state for the TUI.
@@ -1416,6 +1429,12 @@ pub struct App {
     /// Derived title for the current session shown in the composer border.
     /// Updated when `EngineEvent::SessionUpdated` fires or a saved session is loaded.
     pub session_title: Option<String>,
+
+    /// Post-turn receipt line rendered at the bottom of the transcript.
+    /// Set when a turn completes; cleared when a new turn starts.
+    pub receipt_text: Option<String>,
+    /// Tool evidence collected during the current turn for the receipt.
+    pub tool_evidence: Vec<ToolEvidence>,
 }
 
 /// Message queued while the engine is busy.
@@ -1926,6 +1945,8 @@ impl App {
                 .and_then(|tui| tui.composer_arrows_scroll)
                 .unwrap_or_else(|| default_composer_arrows_scroll(use_mouse_capture)),
             session_title: None,
+            receipt_text: None,
+            tool_evidence: Vec::new(),
         }
     }
 
@@ -2039,12 +2060,13 @@ impl App {
         true
     }
 
-    /// Cycle through modes: Plan → Agent → YOLO → Plan.
+    /// Cycle through modes: Plan → Agent → YOLO → Goal → Plan.
     pub fn cycle_mode(&mut self) {
         let next = match self.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Yolo => AppMode::Goal,
+            AppMode::Goal => AppMode::Plan,
         };
         let _ = self.set_mode(next);
     }
@@ -2055,7 +2077,8 @@ impl App {
         let next = match self.mode {
             AppMode::Agent => AppMode::Plan,
             AppMode::Yolo => AppMode::Agent,
-            AppMode::Plan => AppMode::Yolo,
+            AppMode::Plan => AppMode::Goal,
+            AppMode::Goal => AppMode::Yolo,
         };
         let _ = self.set_mode(next);
     }
@@ -5362,11 +5385,15 @@ mod tests {
 
         app.mode = AppMode::Plan;
         app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Yolo);
+        assert_eq!(app.mode, AppMode::Goal);
 
         app.mode = AppMode::Agent;
         app.cycle_mode_reverse();
         assert_eq!(app.mode, AppMode::Plan);
+
+        app.mode = AppMode::Goal;
+        app.cycle_mode_reverse();
+        assert_eq!(app.mode, AppMode::Yolo);
     }
 
     #[test]
@@ -5375,17 +5402,20 @@ mod tests {
         let first_mode = match app.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Yolo => AppMode::Goal,
+            AppMode::Goal => AppMode::Plan,
         };
         let second_mode = match first_mode {
-            AppMode::Plan => AppMode::Yolo,
-            AppMode::Agent => AppMode::Plan,
-            AppMode::Yolo => AppMode::Agent,
+            AppMode::Plan => AppMode::Agent,
+            AppMode::Agent => AppMode::Goal,
+            AppMode::Yolo => AppMode::Plan,
+            AppMode::Goal => AppMode::Yolo,
         };
         let third_mode = match second_mode {
-            AppMode::Plan => AppMode::Yolo,
-            AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Plan => AppMode::Agent,
+            AppMode::Agent => AppMode::Goal,
+            AppMode::Yolo => AppMode::Goal,
+            AppMode::Goal => AppMode::Plan,
         };
 
         app.set_mode(first_mode);
