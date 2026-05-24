@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Codex-style CLI facade for DeepSeek workspace architecture"
+description = "DeepSeek-first agentic terminal facade for open coding models"
 
 [[bin]]
 name = "codewhale"

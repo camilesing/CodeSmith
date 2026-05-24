@@ -1,6 +1,6 @@
 # CodeWhale
 
-> Terminal coding agent for DeepSeek V4. It runs from the `codewhale` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
+> DeepSeek-first agentic terminal for open source and open-weight coding models. It runs from the `codewhale` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
 
 [简体中文 README](README.zh-CN.md)
 [日本語 README](README.ja-JP.md)
@@ -72,7 +72,7 @@ cargo install codewhale-tui     --locked --force
 
 ## What Is It?
 
-CodeWhale is a coding agent that runs in your terminal. It can read and edit files, run shell commands, search the web, manage git, and coordinate sub-agents from a keyboard-driven TUI.
+CodeWhale is a DeepSeek-first coding agent for open source and open-weight models that runs in your terminal. It can read and edit files, run shell commands, search the web, manage git, and coordinate sub-agents from a keyboard-driven TUI.
 
 It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), including 1M-token context windows, streaming reasoning blocks, and prefix-cache-aware cost reporting.
 
@@ -245,6 +245,10 @@ Both binaries are required. Cross-compilation and platform-specific notes: [docs
 </details>
 
 ### Other API Providers
+
+Official DeepSeek remains the default and first-class path. Other providers are
+additive, with OpenRouter starting from DeepSeek Pro/Flash before broader
+open-model catalogs are enabled.
 
 ```bash
 # NVIDIA NIM

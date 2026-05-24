@@ -180,7 +180,7 @@ impl HistoryCell {
     /// `transcript_lines`.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
-            HistoryCell::User { content } => render_message(
+            HistoryCell::User { content } => render_plain_message(
                 USER_GLYPH,
                 user_label_style(),
                 user_body_style(),
@@ -284,7 +284,7 @@ impl HistoryCell {
                 lines
             }
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, options.low_motion),
-            HistoryCell::User { content } => render_message(
+            HistoryCell::User { content } => render_plain_message(
                 USER_GLYPH,
                 user_label_style(),
                 user_body_style(),
@@ -316,7 +316,7 @@ impl HistoryCell {
     /// diverge.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
-            HistoryCell::User { content } => render_message(
+            HistoryCell::User { content } => render_plain_message(
                 USER_GLYPH,
                 user_label_style(),
                 user_body_style(),
@@ -2237,6 +2237,56 @@ fn render_message(
     lines
 }
 
+/// Render a plain-text user message: split on newlines, word-wrap each line,
+/// preserve leading whitespace. No markdown interpretation (headings, lists,
+/// code blocks, etc. are rendered as literal text).
+fn render_plain_message(
+    prefix: &str,
+    label_style: Style,
+    body_style: Style,
+    content: &str,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let prefix_width = UnicodeWidthStr::width(prefix);
+    let prefix_width_u16 = u16::try_from(prefix_width.saturating_add(2)).unwrap_or(u16::MAX);
+    let content_width = width.saturating_sub(prefix_width_u16).max(1);
+    let rendered = markdown_render::render_plain_text(content, content_width, body_style);
+    let mut lines = Vec::with_capacity(rendered.len());
+
+    for (idx, line) in rendered.into_iter().enumerate() {
+        if idx == 0 {
+            let mut spans = Vec::new();
+            if !prefix.is_empty() {
+                spans.push(Span::styled(
+                    prefix.to_string(),
+                    label_style.add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" "));
+            }
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        } else {
+            let indent = if prefix.is_empty() {
+                String::new()
+            } else {
+                let mut s = String::with_capacity(prefix_width + 1);
+                s.push('\u{258F}');
+                s.extend(std::iter::repeat_n(' ', prefix_width));
+                s
+            };
+            let rail_style = Style::default().fg(palette::TEXT_DIM);
+            let mut spans = vec![Span::styled(indent, rail_style)];
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
 fn render_command_mode(command: &str, width: u16, mode: RenderMode) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let cap = match mode {
@@ -3788,6 +3838,32 @@ mod tests {
     }
 
     #[test]
+    fn user_cell_renders_plain_text_without_markdown_interpretation() {
+        let cell = HistoryCell::User {
+            content: "  # heading\n- item\n   \nhello    world".to_string(),
+        };
+        let visible: Vec<String> = cell.lines(80).iter().map(line_text).collect();
+
+        assert_eq!(visible[0], format!("{USER_GLYPH}   # heading"));
+        assert!(
+            visible[1].ends_with("- item"),
+            "dash-prefixed text must remain literal: {visible:?}"
+        );
+        assert!(
+            visible[2].ends_with("   "),
+            "whitespace-only lines must survive: {visible:?}"
+        );
+        assert!(
+            visible[3].ends_with("hello    world"),
+            "internal spacing must remain literal: {visible:?}"
+        );
+        assert!(
+            !visible.iter().any(|line| line.contains('\u{2500}')),
+            "plain user heading must not add markdown heading rule: {visible:?}"
+        );
+    }
+
+    #[test]
     fn assistant_cell_renders_with_bullet_glyph_not_literal_label() {
         let cell = HistoryCell::Assistant {
             content: "ready".to_string(),
@@ -3806,6 +3882,28 @@ mod tests {
             "assistant label dropped: {visible:?}"
         );
         assert!(visible.contains("ready"));
+    }
+
+    #[test]
+    fn assistant_cell_still_renders_markdown() {
+        let cell = HistoryCell::Assistant {
+            content: "# Heading\n\n- item".to_string(),
+            streaming: false,
+        };
+        let visible: Vec<String> = cell.lines(80).iter().map(line_text).collect();
+
+        assert!(
+            visible[0].contains("Heading"),
+            "assistant heading text should render: {visible:?}"
+        );
+        assert!(
+            !visible[0].contains("# Heading"),
+            "assistant heading should still be parsed as markdown: {visible:?}"
+        );
+        assert!(
+            visible.iter().any(|line| line.contains('\u{2500}')),
+            "assistant h1 markdown should still add a heading rule: {visible:?}"
+        );
     }
 
     #[test]

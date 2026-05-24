@@ -120,9 +120,11 @@ still verifies.
 ## Why the name change
 
 CodeWhale is a shorter, terminal-friendlier handle for the same terminal
-coding agent. In v0.8.41 it remains centered on DeepSeek V4 while the project
-name, command names, package names, release assets, Docker image, and CNB
-mirror move to CodeWhale.
+coding agent and the longer-term product direction: a DeepSeek-first agentic
+terminal for open source and open-weight coding models. The project name,
+command names, package names, release assets, Docker image, and CNB mirror move
+to CodeWhale; the official DeepSeek provider, model IDs, env vars, and
+`~/.deepseek/` config surface remain first-class.
 
 ## Reporting issues with the rename
 

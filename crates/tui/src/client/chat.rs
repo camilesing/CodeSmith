@@ -2343,6 +2343,24 @@ mod stream_decoder_tests {
     }
 
     #[test]
+    fn decoder_accepts_openrouter_reasoning_delta_with_extra_fields() {
+        let events = decode_chunk(
+            r#"{"id":"or-1","choices":[{"delta":{"reasoning":"openrouter thought","reasoning_details":[{"type":"summary","text":"extra"}],"native_finish_reason":null}}],"usage":{"completion_tokens_details":{"reasoning_tokens":3}}}"#,
+        );
+
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ContentBlockDelta {
+                    delta: Delta::ThinkingDelta { thinking },
+                    ..
+                } if thinking == "openrouter thought"
+            )),
+            "OpenRouter-style reasoning deltas with extra fields should not crash decoding; got {events:?}"
+        );
+    }
+
+    #[test]
     fn decoder_treats_reasoning_content_as_text_when_provider_does_not_support_reasoning() {
         let events = decode_chunk_with_reasoning(
             r#"{"choices":[{"delta":{"reasoning_content":"hello"}}]}"#,

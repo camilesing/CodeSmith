@@ -1,6 +1,7 @@
 # codewhale
 
-Install and run the `codewhale` and `codewhale-tui` binaries from GitHub release artifacts.
+Install and run CodeWhale, a DeepSeek-first agentic terminal for open coding
+models, from GitHub release artifacts.
 
 > Previously published as `deepseek-tui`. See `docs/REBRAND.md` in the upstream
 > repository for the migration notes; the legacy `deepseek-tui` npm package

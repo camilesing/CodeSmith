@@ -9,8 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.42] - 2026-05-24
 
+### Changed
+
+- **CodeWhale positioning is clarified as DeepSeek-first and open-model
+  oriented.** README, rebrand notes, crate metadata, and npm package text now
+  describe CodeWhale as an agentic terminal for open source and open-weight
+  coding models while preserving the official DeepSeek provider as first-class.
+
 ### Fixed
 
+- **User-authored messages render as literal plain text.** Leading whitespace,
+  whitespace-only lines, repeated spaces, and Markdown-looking `#` / `-` text
+  now survive in transcript history, while assistant messages still render
+  Markdown normally.
 - **Stream decode failures no longer leave the turn visually stuck.** The UI
   now marks an active turn failed and flushes live cells as soon as the engine
   emits a stream error, so the sidebar/footer recover without requiring
