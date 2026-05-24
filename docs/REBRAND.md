@@ -62,16 +62,16 @@ Anything that targets the DeepSeek provider API stays exactly as it was:
   will be flipped to the new names in a follow-up.
 - **Docker image**: `ghcr.io/hmbown/codewhale`.
 
-## Deprecation shims (one release cycle)
+## Deprecation shims (through v0.8.x)
 
 To keep existing shell aliases, scripts, and CI working through the rename,
-v0.8.41 ships **deprecation shims** for one cycle:
+v0.8.41 and later v0.8.x releases ship **deprecation shims**:
 
 - A `deepseek` binary that prints a one-line warning to stderr and forwards
   argv to `codewhale`.
 - A `deepseek-tui` binary that does the same for `codewhale-tui`.
-- An `npm` package at `deepseek-tui@0.8.41` with no `bin` and a postinstall
-  that prints a clear "rename" notice.
+- An `npm` package at `deepseek-tui@0.8.x` with no `bin` and a postinstall
+  that prints a clear rename notice.
 
 These shims will be removed in **v0.9.0**. Please migrate before then.
 

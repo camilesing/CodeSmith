@@ -429,13 +429,17 @@ fn selection_to_text_copies_rendered_transcript_block() {
     let selected = selection_to_text(&app).expect("selection text");
     assert!(selected.contains("Note copy system"), "{selected:?}");
     assert!(selected.contains("copy user"), "{selected:?}");
+    // Short completed thinking now renders inline (v0.8.42 thinking-preview
+    // change); it should be selectable/copyable as visible transcript text.
     assert!(
-        !selected.contains("copy thinking"),
-        "raw completed thinking should stay out of live selection text: {selected:?}"
+        selected.contains("copy thinking"),
+        "short completed thinking should be visible inline: {selected:?}"
     );
+    // Short thinking that fits entirely inline doesn't need the Ctrl+O
+    // affordance; only truncated or explicit-summary thinking shows it.
     assert!(
-        selected.contains("Ctrl+O"),
-        "selection should keep the reasoning detail affordance: {selected:?}"
+        !selected.contains("Ctrl+O"),
+        "short completed thinking should not show the detail affordance: {selected:?}"
     );
     assert!(selected.contains("tool output line"), "{selected:?}");
     assert!(selected.contains("copy assistant"), "{selected:?}");

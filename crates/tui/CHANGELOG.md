@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   oriented.** README, rebrand notes, crate metadata, and npm package text now
   describe CodeWhale as an agentic terminal for open source and open-weight
   coding models while preserving the official DeepSeek provider as first-class.
+- **Model auto-routing is documented separately from TUI modes.** README and
+  modes docs now reserve "mode" for Plan / Agent / YOLO, describe
+  `--model auto` as model/thinking routing, and name the fast
+  `deepseek-v4-flash` thinking-off seam as Fin.
+- **Rebrand shim docs now match the v0.8.x transition window.** The npm and
+  migration notes no longer imply the legacy `deepseek-tui` package/shims
+  expired immediately after v0.8.41.
 
 ### Fixed
 
