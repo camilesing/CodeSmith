@@ -5339,7 +5339,8 @@ async fn submit_or_steer_message(
             }
             Ok(())
         }
-        // Steer and QueueFollowUp are now only reached via Ctrl+Enter override.
+        // Steer: reached via Enter when busy-but-waiting (v0.8.44), or
+        // via Ctrl+Enter override in any busy state.
         SubmitDisposition::Steer => {
             if let Err(err) = steer_user_message(app, engine_handle, message.clone()).await {
                 app.queue_message(message);

@@ -4282,13 +4282,17 @@ impl App {
 
     /// Decide how to route a fresh composer submit.
     ///
-    /// #382: default to Queue when busy — the user shouldn't have to distinguish
-    /// "streaming" from "tool execution". Ctrl+Enter overrides to Steer.
+    /// #382 / v0.8.44: when the model is busy but not actively streaming
+    /// (waiting on tool results, sub-agents, or shell commands), Enter tries
+    /// to steer into the current turn. If steering fails, the message queues.
+    /// During active streaming, Enter always queues to avoid interrupting
+    /// in-flight reasoning. Ctrl+Enter forces Steer in all busy states.
     ///
     /// Truth table:
-    ///   offline=F, busy=F → Immediate
-    ///   offline=F, busy=T → Queue  (was Steer for non-streaming; now unified)
-    ///   offline=T, busy=* → Queue
+    ///   offline=F, busy=F           → Immediate
+    ///   offline=F, busy=T+streaming → Queue
+    ///   offline=F, busy=T+waiting   → Steer (fallback Queue)
+    ///   offline=T, busy=*           → Queue
     #[must_use]
     pub fn decide_submit_disposition(&self) -> SubmitDisposition {
         if self.offline_mode {
@@ -4297,7 +4301,13 @@ impl App {
         if !self.is_loading {
             return SubmitDisposition::Immediate;
         }
-        // Busy: always queue. Ctrl+Enter routes through steer_user_message directly.
+        // Busy but not streaming text: model is waiting on tool results or
+        // sub-agents — steer so the new message reaches the engine promptly
+        // instead of sitting in the queue until the current turn finishes.
+        if self.streaming_message_index.is_none() {
+            return SubmitDisposition::Steer;
+        }
+        // Actively streaming: queue to avoid interrupting in-flight reasoning.
         SubmitDisposition::Queue
     }
 
@@ -6300,13 +6310,14 @@ mod tests {
     }
 
     #[test]
-    fn submit_disposition_queue_when_busy_and_online_not_streaming() {
-        // #382: Busy + not streaming → Queue (was Steer; now unified)
+    fn submit_disposition_steer_when_busy_and_online_not_streaming() {
+        // v0.8.44: Busy + not streaming → Steer (Enter reaches engine during
+        // sub-agent/shell waits instead of silently queueing).
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = false;
         // streaming_message_index is None (default) → tool execution phase
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
     }
 
     #[test]
