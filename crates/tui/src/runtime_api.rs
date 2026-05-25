@@ -1055,7 +1055,7 @@ async fn submit_user_input(
         .runtime_threads
         .submit_user_input(&thread_id, &input_id, response)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to submit user input: {e}")))?;
+        .map_err(map_thread_err)?;
     Ok(Json(SubmitUserInputResponse {
         ok: true,
         input_id,
