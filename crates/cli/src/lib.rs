@@ -182,7 +182,7 @@ working-tree diff. `export` only writes the current diff.
     Serve(TuiPassthroughArgs),
     /// Generate shell completions for the TUI binary.
     Completions(TuiPassthroughArgs),
-    /// Save a provider API key to the shared user config file.
+    /// Configure provider credentials.
     Login(LoginArgs),
     /// Remove saved authentication state.
     Logout,
@@ -259,16 +259,10 @@ struct TuiPassthroughArgs {
 
 #[derive(Debug, Args)]
 struct LoginArgs {
-    #[arg(long, value_enum, default_value_t = ProviderArg::Deepseek, hide = true)]
-    provider: ProviderArg,
+    #[arg(long, value_enum, hide = true)]
+    provider: Option<ProviderArg>,
     #[arg(long)]
     api_key: Option<String>,
-    #[arg(long, default_value_t = false, hide = true)]
-    chatgpt: bool,
-    #[arg(long, default_value_t = false, hide = true)]
-    device_code: bool,
-    #[arg(long, hide = true)]
-    token: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -428,6 +422,12 @@ struct AppServerArgs {
     port: u16,
     #[arg(long)]
     config: Option<PathBuf>,
+    #[arg(long = "auth-token")]
+    auth_token: Option<String>,
+    #[arg(long, default_value_t = false)]
+    insecure_no_auth: bool,
+    #[arg(long = "cors-origin")]
+    cors_origin: Vec<String>,
     #[arg(long, default_value_t = false)]
     stdio: bool,
 }
@@ -654,37 +654,8 @@ fn run_login_command_with_secrets(
     args: LoginArgs,
     secrets: &Secrets,
 ) -> Result<()> {
-    let provider: ProviderKind = args.provider.into();
+    let provider: ProviderKind = args.provider.unwrap_or(ProviderArg::Deepseek).into();
     store.config.provider = provider;
-
-    if args.chatgpt {
-        let token = match args.token {
-            Some(token) => token,
-            None => read_api_key_from_stdin()?,
-        };
-        store.config.auth_mode = Some("chatgpt".to_string());
-        store.config.chatgpt_access_token = Some(token);
-        store.config.device_code_session = None;
-        store.save()?;
-        println!("logged in using chatgpt token mode ({})", provider.as_str());
-        return Ok(());
-    }
-
-    if args.device_code {
-        let token = match args.token {
-            Some(token) => token,
-            None => read_api_key_from_stdin()?,
-        };
-        store.config.auth_mode = Some("device_code".to_string());
-        store.config.device_code_session = Some(token);
-        store.config.chatgpt_access_token = None;
-        store.save()?;
-        println!(
-            "logged in using device code session mode ({})",
-            provider.as_str()
-        );
-        return Ok(());
-    }
 
     let api_key = match args.api_key {
         Some(v) => v,
@@ -721,8 +692,6 @@ fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -
     }
     clear_provider_api_key_from_keyring(secrets, active_provider);
     store.config.auth_mode = None;
-    store.config.chatgpt_access_token = None;
-    store.config.device_code_session = None;
     store.save()?;
     println!("logged out");
     Ok(())
@@ -909,6 +878,10 @@ fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
 
     vec![
         format!("provider: {}", provider.as_str()),
+        format!(
+            "auth mode: {}",
+            store.config.auth_mode.as_deref().unwrap_or("api_key")
+        ),
         format!("active source: {active_label}"),
         "lookup order: config -> secret store -> env".to_string(),
         format!(
@@ -1317,7 +1290,16 @@ fn run_app_server_command(args: AppServerArgs) -> Result<()> {
     runtime.block_on(run_app_server(AppServerOptions {
         listen,
         config_path: args.config,
+        auth_token: args.auth_token.or_else(app_server_token_from_env),
+        insecure_no_auth: args.insecure_no_auth,
+        cors_origins: args.cors_origin,
     }))
+}
+
+fn app_server_token_from_env() -> Option<String> {
+    std::env::var("CODEWHALE_APP_SERVER_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("DEEPSEEK_APP_SERVER_TOKEN").ok())
 }
 
 fn run_mcp_server_command(store: &mut ConfigStore) -> Result<()> {
@@ -1484,6 +1466,9 @@ fn build_tui_command(
     cmd.env("DEEPSEEK_MODEL", &resolved_runtime.model);
     cmd.env("DEEPSEEK_BASE_URL", &resolved_runtime.base_url);
     cmd.env("DEEPSEEK_PROVIDER", resolved_runtime.provider.as_str());
+    if let Some(auth_mode) = resolved_runtime.auth_mode.as_ref() {
+        cmd.env("DEEPSEEK_AUTH_MODE", auth_mode);
+    }
     if !resolved_runtime.http_headers.is_empty() {
         let encoded = resolved_runtime
             .http_headers
@@ -2040,11 +2025,8 @@ mod tests {
         run_login_command_with_secrets(
             &mut store,
             LoginArgs {
-                provider: ProviderArg::Deepseek,
+                provider: Some(ProviderArg::Deepseek),
                 api_key: Some("sk-test".to_string()),
-                chatgpt: false,
-                device_code: false,
-                token: None,
             },
             &secrets,
         )
@@ -2566,7 +2548,7 @@ mod tests {
             "--profile",
             "work",
             "--model",
-            "gpt-4.1",
+            "deepseek-v4-pro",
             "--output-mode",
             "json",
             "--log-level",
@@ -2578,7 +2560,7 @@ mod tests {
             "--sandbox-mode",
             "workspace-write",
             "--base-url",
-            "https://api.openai.com/v1",
+            "https://openai-compatible.example/v1",
             "--api-key",
             "sk-test",
             "--workspace",
@@ -2588,19 +2570,22 @@ mod tests {
             "--skip-onboarding",
             "model",
             "resolve",
-            "gpt-4.1",
+            "deepseek-v4-pro",
         ]);
 
         assert!(matches!(cli.provider, Some(ProviderArg::Openai)));
         assert_eq!(cli.config, Some(PathBuf::from("/tmp/deepseek.toml")));
         assert_eq!(cli.profile.as_deref(), Some("work"));
-        assert_eq!(cli.model.as_deref(), Some("gpt-4.1"));
+        assert_eq!(cli.model.as_deref(), Some("deepseek-v4-pro"));
         assert_eq!(cli.output_mode.as_deref(), Some("json"));
         assert_eq!(cli.log_level.as_deref(), Some("debug"));
         assert_eq!(cli.telemetry, Some(true));
         assert_eq!(cli.approval_policy.as_deref(), Some("on-request"));
         assert_eq!(cli.sandbox_mode.as_deref(), Some("workspace-write"));
-        assert_eq!(cli.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(
+            cli.base_url.as_deref(),
+            Some("https://openai-compatible.example/v1")
+        );
         assert_eq!(cli.api_key.as_deref(), Some("sk-test"));
         assert_eq!(cli.workspace, Some(PathBuf::from("/tmp/workspace")));
         assert!(cli.no_alt_screen);
@@ -2667,6 +2652,10 @@ mod tests {
         assert_eq!(
             command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
             Some("keyring")
+        );
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_AUTH_MODE").as_deref(),
+            Some("api_key")
         );
         let args: Vec<String> = cmd
             .get_args()

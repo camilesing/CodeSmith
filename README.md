@@ -279,9 +279,13 @@ codewhale --provider novita --model deepseek/deepseek-v4-pro
 codewhale auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
 codewhale --provider fireworks --model deepseek-v4-pro
 
+# Moonshot/Kimi
+codewhale auth set --provider moonshot --api-key "YOUR_MOONSHOT_OR_KIMI_API_KEY"
+codewhale --provider moonshot --model kimi-k2.6
+
 # Generic OpenAI-compatible endpoint
 codewhale auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
-OPENAI_BASE_URL="https://openai-compatible.example/v4" codewhale --provider openai --model glm-5
+OPENAI_BASE_URL="https://openai-compatible.example/v4" codewhale --provider openai --model deepseek-v4-pro
 
 # Self-hosted SGLang
 SGLANG_BASE_URL="http://localhost:30000/v1" codewhale --provider sglang --model deepseek-v4-flash
@@ -429,11 +433,6 @@ ACP workflows outside the built-in Zed slice.
 | `@path` | Attach file/directory context in composer |
 | `↑` (at composer start) | Select attachment row for removal |
 
-Voice input is available from the command palette (`Ctrl+K`, then search
-`Voice input`) after configuring `voice_input_command`; the helper
-records/transcribes audio, CodeWhale shows a listening status while it runs, and
-the final transcript is inserted into the composer for editing.
-
 Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 ---
@@ -467,14 +466,15 @@ Key environment variables:
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
-| `DEEPSEEK_PROVIDER` | `codewhale` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
+| `DEEPSEEK_PROVIDER` | `codewhale` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`, `novita`, `fireworks`, `moonshot`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
 | `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Allow non-local `http://` API base URLs on trusted networks |
-| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | Generic OpenAI-compatible endpoint and model ID |
 | `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | AtlasCloud endpoint and model override |
 | `WANJIE_ARK_BASE_URL` / `WANJIE_ARK_MODEL` | Wanjie Ark endpoint and model override |
+| `MOONSHOT_BASE_URL` / `KIMI_BASE_URL` / `MOONSHOT_MODEL` / `KIMI_MODEL` | Moonshot/Kimi endpoint and model override |
 | `OPENROUTER_BASE_URL` | OpenRouter endpoint override |
 | `NOVITA_BASE_URL` | Novita endpoint override |
 | `FIREWORKS_BASE_URL` | Fireworks endpoint override |
@@ -604,7 +604,7 @@ This project ships with help from a growing community of contributors:
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — model ID case-sensitivity compatibility report (#729)
 - **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report, Windows clipboard fallback, MCP Streamable HTTP session fixes, and Homebrew tap automation (#738, #850, #1643, #1631)
-- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, Ollama provider support, thinking-block stream finalization, CI cache hardening, streaming wrap, DeepSeek model completions, and help picker selection polish (#863, #870, #921, #1078, #1603, #1628, #1601, #1964)
+- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, Ollama provider support, thinking-block stream finalization, CI cache hardening, streaming wrap, DeepSeek model completions, help picker selection polish, and transcript user-message highlighting (#863, #870, #921, #1078, #1603, #1628, #1601, #1964, #1995)
 - **[cyq1017](https://github.com/cyq1017)** — Unicode `git_status` paths, local/configured skill discovery, and mode-switch toast dedupe (#1953, #1956, #1957)
 - **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
@@ -637,7 +637,7 @@ This project ships with help from a growing community of contributors:
 - **[mdrkrg](https://github.com/mdrkrg)** — first-run onboarding crash fix when the API key is missing (#1598)
 - **[Aitensa](https://github.com/Aitensa)** — CJK wrapping propagation for diff and pager output (#1622)
 - **[qiyan233](https://github.com/qiyan233)** — legacy DeepSeek CN provider alias compatibility (#1645)
-- **[zlh124](https://github.com/zlh124)** — WSL2/headless startup report and clipboard-init fix (#1772, #1773)
+- **[zlh124](https://github.com/zlh124)** — WSL2/headless startup report, clipboard-init fix, and YAML block-scalar frontmatter parsing (#1772, #1773, #1908)
 - **[aboimpinto](https://github.com/aboimpinto)** — Windows alt-screen logging, Home/End composer, and runtime log follow-ups (#1774, #1776, #1748, #1749, #1782, #1783)
 - **[LeoLin990405](https://github.com/LeoLin990405)** — provider model passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes (#1740, #1743, #1742, #1744)
 - **[nightt5879](https://github.com/nightt5879)** — Ctrl+C prompt restore fix (#1764)
@@ -707,6 +707,7 @@ This project ships with help from a growing community of contributors:
 - **[xulongzhe](https://github.com/xulongzhe)** — issue-template and vision-boundary follow-ups (#1530, #1544)
 - **[YaYII](https://github.com/YaYII)** — trusted media path work (#1462)
 - **[47Cid](https://github.com/47Cid)** and **[Jafar Akhondali](https://github.com/JafarAkhondali)** — responsible security disclosures and hardening reports
+- **[gaord](https://github.com/gaord)** — approval-remember live-turn sync fix (#2041)
 
 ---
 
