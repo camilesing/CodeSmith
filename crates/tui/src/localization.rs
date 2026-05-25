@@ -252,6 +252,7 @@ pub enum MessageId {
     CmdChangeTranslationQueued,
     CmdChangeTranslationUnavailable,
     CmdChangePreviousVersion,
+    CmdBalanceDescription,
     CmdClearDescription,
     CmdCompactDescription,
     CmdConfigDescription,
@@ -486,6 +487,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HelpFooterClose,
     MessageId::CmdAnchorDescription,
     MessageId::CmdAttachDescription,
+    MessageId::CmdBalanceDescription,
     MessageId::CmdCacheDescription,
     MessageId::CmdClearDescription,
     MessageId::CmdCompactDescription,
@@ -915,6 +917,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdChangePreviousVersion => {
             "Previous version: {version} — run `/change {version}` to view it"
         }
+        MessageId::CmdBalanceDescription => "Check the active provider account balance",
         MessageId::CmdClearDescription => "Clear conversation history",
         MessageId::CmdCompactDescription => {
             "Trigger context compaction to free up space (legacy; v0.6.6 prefers cycle restart)"
@@ -1294,6 +1297,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdChangePreviousVersion => {
             "前のバージョン: {version} — `/change {version}` で表示"
         }
+        MessageId::CmdBalanceDescription => "アクティブなプロバイダーのアカウント残高を確認",
         MessageId::CmdClearDescription => "会話履歴をクリア",
         MessageId::CmdCompactDescription => {
             "コンテキスト圧縮で容量を確保（旧式：v0.6.6 以降はサイクル再起動を推奨）"
@@ -1648,6 +1652,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdChangePreviousVersion => {
             "上一个版本: {version} —— 输入 `/change {version}` 查看"
         }
+        MessageId::CmdBalanceDescription => "查看当前提供商账户余额",
         MessageId::CmdClearDescription => "清除对话历史",
         MessageId::CmdCompactDescription => {
             "触发上下文压缩以释放空间（旧版命令；v0.6.6 起建议改用循环重启）"
@@ -1962,6 +1967,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdChangePreviousVersion => {
             "Versão anterior: {version} — execute `/change {version}` para visualizar"
         }
+        MessageId::CmdBalanceDescription => "Verificar o saldo da conta do provedor ativo",
         MessageId::CmdClearDescription => "Limpar o histórico da conversa",
         MessageId::CmdCompactDescription => {
             "Compactar o contexto para liberar espaço (legado; a v0.6.6 prefere o reinício de ciclo)"
@@ -2348,6 +2354,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdChangePreviousVersion => {
             "Versión anterior: {version} — ejecuta `/change {version}` para verla"
         }
+        MessageId::CmdBalanceDescription => "Consultar el saldo de la cuenta del proveedor activo",
         MessageId::CmdClearDescription => "Limpiar el historial de la conversación",
         MessageId::CmdCompactDescription => {
             "Compactar el contexto para liberar espacio (heredado; v0.6.6 prefiere reinicio de ciclo)"
