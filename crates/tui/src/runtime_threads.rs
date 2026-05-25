@@ -865,6 +865,15 @@ impl RuntimeThreadManager {
                 err
             );
         }
+
+        {
+            let mut active = self.active.lock().await;
+            if let Some(state) = active.engines.get_mut(thread_id) {
+                if let Some(turn) = state.active_turn.as_mut() {
+                    turn.auto_approve = true;
+                }
+            }
+        }
     }
 
     #[must_use]
@@ -4470,7 +4479,7 @@ mod tests {
         assert!(!manager.store.load_thread(&thread.id)?.auto_approve);
 
         let mut harness = install_mock_engine(&manager, &thread.id).await;
-        let _turn = manager
+        let turn = manager
             .start_turn(
                 &thread.id,
                 StartTurnRequest {
@@ -4513,6 +4522,11 @@ mod tests {
         assert!(
             manager.store.load_thread(&thread.id)?.auto_approve,
             "remember=true should flip thread auto_approve"
+        );
+        assert_eq!(
+            manager.active_turn_flags(&thread.id, &turn.id).await,
+            Some((true, false)),
+            "remember=true should update the active turn used by subsequent approvals"
         );
 
         harness
