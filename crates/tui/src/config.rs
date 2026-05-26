@@ -657,6 +657,10 @@ pub enum SearchProvider {
     Tavily,
     /// Bocha AI Search API (<https://bochaai.com>). Requires api_key.
     Bocha,
+    /// Metaso AI Search API (<https://metaso.cn>). Uses built-in default key
+    /// or `METASO_API_KEY` env var; configurable via `[search] api_key`.
+    #[serde(alias = "metaso")]
+    Metaso,
 }
 
 impl SearchProvider {
@@ -678,6 +682,7 @@ impl SearchProvider {
             Self::DuckDuckGo => "duckduckgo",
             Self::Tavily => "tavily",
             Self::Bocha => "bocha",
+            Self::Metaso => "metaso",
         }
     }
 }
@@ -709,10 +714,11 @@ pub struct SearchProviderResolution {
 /// Web search provider configuration (`[search]` table in config.toml).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SearchConfig {
-    /// Search provider: `bing` | `duckduckgo` | `tavily` | `bocha`. Default: `bing`.
+    /// Search provider: `bing` | `duckduckgo` | `tavily` | `bocha` | `metaso`. Default: `bing`.
     #[serde(default)]
     pub provider: Option<SearchProvider>,
-    /// API key for Tavily or Bocha. Not required for Bing or DuckDuckGo.
+    /// API key for Tavily, Bocha, or Metaso. Not required for Bing or DuckDuckGo.
+    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in default.
     #[serde(default)]
     pub api_key: Option<String>,
 }
