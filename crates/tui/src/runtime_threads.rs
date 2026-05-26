@@ -1611,6 +1611,9 @@ impl RuntimeThreadManager {
         let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
         let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
         let auto_approve = req.auto_approve.unwrap_or(thread.auto_approve);
+        let show_thinking = crate::settings::Settings::load()
+            .unwrap_or_default()
+            .show_thinking;
 
         engine
             .send(Op::SendMessage {
@@ -1625,6 +1628,7 @@ impl RuntimeThreadManager {
                 trust_mode,
                 auto_approve,
                 translation_enabled: false,
+                show_thinking,
                 approval_mode: if auto_approve {
                     crate::tui::approval::ApprovalMode::Auto
                 } else {
@@ -1931,6 +1935,7 @@ impl RuntimeThreadManager {
             .lsp
             .clone()
             .map(crate::config::LspConfigToml::into_runtime);
+        let settings = crate::settings::Settings::load().unwrap_or_default();
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
@@ -1942,6 +1947,7 @@ impl RuntimeThreadManager {
             instructions: self.config.instructions_paths(),
             project_context_pack_enabled: self.config.project_context_pack_enabled(),
             translation_enabled: false,
+            show_thinking: settings.show_thinking,
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
@@ -1982,11 +1988,9 @@ impl RuntimeThreadManager {
             vision_config: self.config.vision_model_config(),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
-            locale_tag: crate::localization::resolve_locale(
-                &crate::settings::Settings::load().unwrap_or_default().locale,
-            )
-            .tag()
-            .to_string(),
+            locale_tag: crate::localization::resolve_locale(&settings.locale)
+                .tag()
+                .to_string(),
             workshop: self.config.workshop.clone(),
             search_provider: self.config.search_provider(),
             search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
