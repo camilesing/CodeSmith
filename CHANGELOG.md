@@ -161,6 +161,14 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   fallback timeout, preventing the TUI from hanging on deep or slow
   filesystems (#2035).
 
+### Community
+
+- **README contributor acknowledgements resynced.** The Thanks list now
+  includes the latest contributor rows for @donglovejava, @encyc,
+  @saieswar237, @sximelon, @nanookclaw, @Sskift, @xin1104, @mrluanma,
+  @Lellansin, and @zhuangbiaowei, while preserving the existing @jeoor
+  acknowledgement in the consolidated list.
+
 ## [0.8.44] - 2026-05-24
 
 ### Added
