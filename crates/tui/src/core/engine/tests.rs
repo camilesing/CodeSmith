@@ -1509,6 +1509,28 @@ fn refresh_system_prompt_is_noop_when_unchanged() {
     assert_eq!(engine.session.system_prompt, first_prompt);
 }
 
+#[test]
+fn engine_prompt_respects_hidden_thinking_config() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        locale_tag: "zh-Hans".to_string(),
+        show_thinking: false,
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+    let prompt = match engine.session.system_prompt.as_ref() {
+        Some(SystemPrompt::Text(text)) => text,
+        Some(SystemPrompt::Blocks(_)) => panic!("expected text system prompt"),
+        None => panic!("expected system prompt"),
+    };
+
+    assert!(prompt.contains("## Hidden Thinking Language"));
+    assert!(prompt.contains("reasoning_content"));
+    assert!(prompt.contains("English"));
+    assert!(!prompt.contains("## 语言再次提醒"));
+}
+
 fn sync_runtime_system_prompt_override(engine: &mut Engine, system_prompt: SystemPrompt) {
     engine.session.compaction_summary_prompt =
         extract_compaction_summary_prompt(Some(system_prompt.clone()));

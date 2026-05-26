@@ -684,6 +684,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         instructions: config.instructions_paths(),
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: app.translation_enabled,
+        show_thinking: app.show_thinking,
         // Effectively unlimited. V4 has a 1M context window and the user
         // wants the model running until it's actually done. The previous cap
         // of 100 hit the ceiling on long multi-step plans (wide refactors,
@@ -4147,6 +4148,7 @@ async fn dispatch_user_message(
                 locale_tag: app.ui_locale.tag(),
                 translation_enabled: app.translation_enabled,
                 model_id: &app.model,
+                show_thinking: app.show_thinking,
             },
         ),
     );
@@ -4243,6 +4245,7 @@ async fn dispatch_user_message(
             auto_approve: app.mode == AppMode::Yolo,
             approval_mode: app.approval_mode,
             translation_enabled: app.translation_enabled,
+            show_thinking: app.show_thinking,
         })
         .await
     {

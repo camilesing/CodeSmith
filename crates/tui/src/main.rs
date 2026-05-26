@@ -5160,6 +5160,7 @@ async fn run_exec_agent(
         .lsp
         .clone()
         .map(crate::config::LspConfigToml::into_runtime);
+    let settings = crate::settings::Settings::load().unwrap_or_default();
 
     let engine_config = EngineConfig {
         model: effective_model.clone(),
@@ -5172,6 +5173,7 @@ async fn run_exec_agent(
         instructions: config.instructions_paths(),
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: false,
+        show_thinking: settings.show_thinking,
         max_steps: 100,
         max_subagents,
         features: config.features(),
@@ -5197,11 +5199,9 @@ async fn run_exec_agent(
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
-        locale_tag: crate::localization::resolve_locale(
-            &crate::settings::Settings::load().unwrap_or_default().locale,
-        )
-        .tag()
-        .to_string(),
+        locale_tag: crate::localization::resolve_locale(&settings.locale)
+            .tag()
+            .to_string(),
         workshop: config.workshop.clone(),
         search_provider: config.search_provider(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
@@ -5260,6 +5260,7 @@ async fn run_exec_agent(
             trust_mode,
             auto_approve,
             translation_enabled: false,
+            show_thinking: settings.show_thinking,
             approval_mode: if auto_approve {
                 crate::tui::approval::ApprovalMode::Auto
             } else {

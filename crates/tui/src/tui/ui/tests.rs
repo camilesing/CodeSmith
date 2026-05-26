@@ -3140,6 +3140,7 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
 #[tokio::test]
 async fn dispatch_user_message_records_prompt_for_cancel_restore() {
     let mut app = create_test_app();
+    app.show_thinking = false;
     let config = Config::default();
     let mut engine = crate::core::engine::mock_engine_handle();
     let queued = crate::tui::app::QueuedMessage::new("fix this typo\nthen retry".to_string(), None);
@@ -3153,8 +3154,16 @@ async fn dispatch_user_message_records_prompt_for_cancel_restore() {
         Some("fix this typo\nthen retry")
     );
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage { content, .. } => {
+        crate::core::ops::Op::SendMessage {
+            content,
+            show_thinking,
+            ..
+        } => {
             assert_eq!(content, "fix this typo\nthen retry");
+            assert!(
+                !show_thinking,
+                "dispatch must carry the user's hidden-thinking setting into the engine"
+            );
         }
         other => panic!("expected SendMessage, got {other:?}"),
     }
