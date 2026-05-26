@@ -115,17 +115,28 @@ impl ToolSpec for GrepFilesTool {
         let exclude_patterns: Vec<String> =
             input.get("exclude").and_then(|v| v.as_array()).map_or_else(
                 || {
-                    // Default exclusions for common non-code directories
+                    // Default exclusions for common non-code directories.
+                    // Bare directory names skip the directory traversal entirely;
+                    // `dir/*` filters files inside if the directory is already
+                    // being walked (belt-and-suspenders — see #2200).
                     vec![
+                        "node_modules".to_string(),
                         "node_modules/*".to_string(),
+                        ".git".to_string(),
                         ".git/*".to_string(),
+                        "target".to_string(),
                         "target/*".to_string(),
                         "*.min.js".to_string(),
                         "*.min.css".to_string(),
+                        "dist".to_string(),
                         "dist/*".to_string(),
+                        "build".to_string(),
                         "build/*".to_string(),
+                        "__pycache__".to_string(),
                         "__pycache__/*".to_string(),
+                        ".venv".to_string(),
                         ".venv/*".to_string(),
+                        "venv".to_string(),
                         "venv/*".to_string(),
                     ]
                 },

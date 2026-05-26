@@ -44,6 +44,13 @@ pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         None
     };
     let toast = quit_prompt.or_else(|| {
+        // Version-update hint takes precedence over ephemeral status toasts
+        // so the user sees it even when status traffic would hide it.
+        app.version_hint.as_ref().map(|hint| FooterToast {
+            text: hint.clone(),
+            color: palette::STATUS_INFO,
+        })
+    }).or_else(|| {
         app.active_status_toast().map(|toast| FooterToast {
             text: toast.text,
             color: status_color(toast.level),
