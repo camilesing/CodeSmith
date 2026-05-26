@@ -893,7 +893,59 @@ async fn run_event_loop(
         .checked_sub(Duration::from_secs(60))
         .unwrap_or_else(Instant::now);
 
+    // Fire-and-forget version check — runs once per session in the
+    // background. On success, `app.version_hint` is set and the footer
+    // renders the update recommendation on the next frame.
+    let mut version_check: Option<tokio::task::JoinHandle<Option<String>>> = Some({
+        let current = env!("CARGO_PKG_VERSION").to_string();
+        tokio::spawn(async move {
+            let client = match reqwest::Client::builder()
+                .user_agent("codewhale-version-check")
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+            {
+                Ok(c) => c,
+                Err(_) => return None,
+            };
+            let resp = client
+                .get("https://api.github.com/repos/Hmbown/CodeWhale/releases/latest")
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+                .ok()?;
+            let json: serde_json::Value = resp.json().await.ok()?;
+            let tag = json["tag_name"].as_str()?;
+            let latest = tag.trim_start_matches('v');
+            // Compare semver so dev builds (e.g. "0.8.46-pre") don't
+            // trigger false hints. Falls back to string compare on
+            // unparseable versions.
+            let newer = match (parse_semver(latest), parse_semver(&current)) {
+                (Some(l), Some(c)) => l > c,
+                _ => latest != current,
+            };
+            if newer {
+                Some(format!(
+                    "v{latest} available — run `codewhale update` and restart"
+                ))
+            } else {
+                None
+            }
+        })
+    });
+
     loop {
+        // Drain the version-check handle once; re-assign None so we
+        // don't poll it again.
+        let mut done = false;
+        if let Some(ref handle) = version_check {
+            done = handle.is_finished();
+        }
+        if done {
+            if let Ok(Some(hint)) = version_check.take().unwrap().await {
+                app.version_hint = Some(hint);
+            }
+        }
+
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
             web_config_session = None;
         }
@@ -7937,6 +7989,16 @@ fn extract_reasoning_header(text: &str) -> Option<String> {
     } else {
         Some(header.to_string())
     }
+}
+
+/// Parse a `major.minor.patch` version string into a comparable tuple.
+/// Returns `None` on any parse failure (non-semver, dev suffixes, etc.).
+fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = v.splitn(3, '.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    let patch = parts.next().unwrap_or("0").parse::<u32>().ok()?;
+    Some((major, minor, patch))
 }
 
 #[cfg(test)]
