@@ -376,6 +376,10 @@ pub const NEVER_APPROVAL: &str = include_str!("prompts/approvals/never.md");
 /// model knows the format to use when writing `.deepseek/handoff.md`.
 pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
 
+/// Goal continuation audit template — injected by the engine when a runtime
+/// goal is active and the assistant tries to end a turn without closing it.
+pub const GOAL_CONTINUATION_PROMPT: &str = include_str!("prompts/continuation.md");
+
 /// Memory hygiene guidance — appended to the system prompt only when the
 /// session has a non-empty user-memory block. Steers the model toward
 /// writing durable memories as declarative facts ("User prefers concise

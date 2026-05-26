@@ -199,6 +199,37 @@ fn engine_initial_prompt_includes_configured_goal() {
 
     assert!(prompt.contains("<session_goal>"));
     assert!(prompt.contains("Fix goal handoff"));
+    assert!(
+        engine
+            .config
+            .goal_state
+            .lock()
+            .expect("goal lock")
+            .is_active()
+    );
+}
+
+#[test]
+fn refresh_system_prompt_uses_runtime_goal_state() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut goal = engine.config.goal_state.lock().expect("goal lock");
+        goal.create("Close the runtime goal loop".to_string(), None);
+    }
+
+    engine.refresh_system_prompt(AppMode::Agent);
+    let prompt = match engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text,
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+
+    assert!(prompt.contains("<session_goal>"));
+    assert!(prompt.contains("Close the runtime goal loop"));
 }
 
 #[test]
@@ -840,6 +871,9 @@ fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
     assert!(!registry.contains("rlm"));
     assert!(!registry.contains("fim_edit"));
     assert!(registry.contains("update_plan"));
+    assert!(registry.contains("create_goal"));
+    assert!(registry.contains("get_goal"));
+    assert!(registry.contains("update_goal"));
     assert!(registry.contains("task_list"));
     assert!(registry.contains("task_read"));
     assert!(registry.contains("handle_read"));
@@ -889,6 +923,28 @@ fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
             registry.contains("recall_archive"),
             "parent {mode:?} registry should expose recall_archive"
         );
+    }
+}
+
+#[test]
+fn parent_turn_registry_includes_goal_tools_for_all_modes() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Yolo] {
+        let registry = engine
+            .build_turn_tool_registry_builder(
+                mode,
+                engine.config.todos.clone(),
+                engine.config.plan_state.clone(),
+            )
+            .build(engine.build_tool_context(mode, false));
+
+        for name in ["create_goal", "get_goal", "update_goal"] {
+            assert!(
+                registry.contains(name),
+                "parent {mode:?} registry should expose {name}"
+            );
+        }
     }
 }
 

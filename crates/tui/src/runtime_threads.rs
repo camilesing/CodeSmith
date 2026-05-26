@@ -1952,6 +1952,7 @@ impl RuntimeThreadManager {
             ),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
+            goal_state: crate::tools::goal::new_shared_goal_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
             snapshots_enabled: self.config.snapshots_config().enabled,

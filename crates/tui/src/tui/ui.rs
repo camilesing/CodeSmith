@@ -700,6 +700,11 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
+        goal_state: crate::tools::goal::new_shared_goal_state_from_host(
+            app.goal.goal_objective.clone(),
+            app.goal.goal_token_budget,
+            app.goal.goal_completed,
+        ),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy: config.network.clone().map(|toml_cfg| {
             crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())

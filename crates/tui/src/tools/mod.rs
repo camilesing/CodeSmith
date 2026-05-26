@@ -24,6 +24,7 @@ pub mod fim;
 pub mod git;
 pub mod git_history;
 pub mod github;
+pub mod goal;
 pub mod handle;
 pub mod image_ocr;
 pub mod js_execution;
