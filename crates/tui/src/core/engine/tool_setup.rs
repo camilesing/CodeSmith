@@ -63,8 +63,15 @@ impl Engine {
             .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_user_input_tool()
             .with_parallel_tool()
-            .with_recall_archive_tool()
-            .with_slop_ledger_tools();
+            .with_recall_archive_tool();
+
+        // SlopLedger: plan mode only gets read-only query + export,
+        // agent/yolo get the full set including append + update.
+        builder = if mode == AppMode::Plan {
+            builder.with_slop_ledger_read_only_tools()
+        } else {
+            builder.with_slop_ledger_tools()
+        };
 
         if mode != AppMode::Plan {
             builder = builder
