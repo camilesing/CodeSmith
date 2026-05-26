@@ -20,12 +20,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line is emitted when AGENTS.md, CLAUDE.md, or another context file is
   successfully loaded into the system prompt, making it easier to verify
   which file was used during prompt assembly (#2227).
+- **State-root migration continues.** Snapshot directory resolution now
+  prefers `~/.codewhale/snapshots` with `~/.deepseek/snapshots` fallback.
+  Skill state storage migrated to `~/.codewhale/skills_state.toml`.
+  Added `resolve_project_state_dir` and `ensure_project_state_dir` to
+  `codewhale-config` for project-local `.codewhale/` vs `.deepseek/`
+  resolution (#2231).
+- **READMEs updated for the CodeWhale rename.** All three READMEs now
+  reference canonical `~/.codewhale` paths for config, skills, and Docker
+  volumes, with legacy `~/.deepseek` noted as a compatibility fallback.
 
 ### Fixed
 
 - **Deadlock when spawning multiple concurrent sub-agents.** Replaced
   `RwLock`-based serialisation with a `Semaphore(1)` in `ToolCallRuntime`,
   preventing re-entrant tool calls from deadlocking on the same lock (#1856).
+- **Steered/queued messages now render in correct transcript order.**
+  `steer_user_message` now flushes the active cell into history before
+  inserting the steer message, so the user's message appears after
+  (below) the thinking content that chronologically preceded it (#2225).
+- **Session save test updated for managed sessions directory.** The
+  `/save` command now writes to `~/.codewhale/sessions` (or legacy
+  `~/.deepseek/sessions`) instead of the workspace root. Test updated
+  to set `CODEWHALE_HOME` and pre-create the sessions directory (#2223).
 
 ### Community
 
