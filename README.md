@@ -85,13 +85,13 @@ DeepSeek V4 helped write parts of this harness. That matters because it means Co
 
 **Constitutional hierarchy.** The system prompt is a conflict-of-laws engine. User intent outranks stale memory. Live evidence outranks assumptions. Verification outranks confidence. Every turn inherits a clear chain of authority, so the model never has to guess which instruction to follow.
 
-**Structured trust.** Three modes with hard boundaries — Plan (read-only), Agent (approval-gated), YOLO (auto-approved in trusted workspaces). OS-level sandboxing backs the boundaries: Seatbelt on macOS, Landlock on Linux, Job Objects on Windows. Dangerous commands are classified and gated regardless of mode.
+**Structured trust.** Three modes with hard boundaries — Plan (read-only), Agent (approval-gated), YOLO (auto-approved in trusted workspaces). OS-level sandboxing backs the boundaries: macOS Seatbelt is the active enforcement path. Linux Landlock support is detected (kernel 5.13+) but not yet enforced; Windows sandboxing is not yet advertised. Dangerous commands are classified and gated regardless of mode.
 
 **Feedback beats.** Failed commands, failing tests, LSP diagnostics — these are not dead ends. They are signals the model can tune against. A non-zero exit code is information. A type error is a correction vector. The harness makes failure legible so the model can recover without the user constantly re-steering.
 
 **Continuity.** Memory persists across sessions. Handoffs survive context compaction. Sessions can be saved, resumed, and forked into sibling paths. The next intelligence — human or machine — picks up where the last one left off without having to re-discover what was already learned.
 
-**Distributed work.** Sub-agents run concurrently, up to 20 at a time. `agent_open` returns immediately so the parent keeps working. Results arrive as structured completion events with bounded handles — no need to flood the parent context with full transcripts. See [docs/SUBAGENTS.md](docs/SUBAGENTS.md).
+**Distributed work.** Sub-agents run concurrently, up to 20 at a time. `agent_open` returns immediately so the parent keeps working. Results arrive inline as completion sentinels with a summary; full transcripts stay behind bounded handles retrievable through `agent_eval`. See [docs/SUBAGENTS.md](docs/SUBAGENTS.md).
 
 **Right-size intelligence.** Fin — cheap Flash with thinking off — handles model auto-routing, RLM child calls, summaries, and coordination. Pro engages for architecture, debugging, and security review. `--model auto` selects both the model and thinking level per turn. The right amount of intelligence for each problem.
 
@@ -115,8 +115,8 @@ CodeWhale can dispatch multiple sub-agents that run in parallel — like a concu
 
 - **Non-blocking launch.** `agent_open` returns immediately. The child gets its own fresh context and tool registry and runs independently. The parent keeps working.
 - **Background execution.** Sub-agents execute concurrently (default cap: 10, configurable to 20). The engine manages the pool — no polling loop needed.
-- **Completion notification.** When a sub-agent finishes, the runtime delivers a structured `<codewhale:subagent.done>` event with a summary, evidence list, and execution metrics. The parent model reads the `summary` field and integrates findings.
-- **Bounded result retrieval.** Large transcripts are parked behind `var_handle` references. The model calls `handle_read` for slices, ranges, or JSONPath projections — keeping the parent context lean.
+- **Completion notification.** When a sub-agent finishes, the runtime injects a `<codewhale:subagent.done>` sentinel into the parent's transcript. The human-readable summary — including the child's findings, changed files, and any risks — sits on the line immediately before the sentinel. The parent model reads that summary and integrates findings without an extra tool call.
+- **Bounded result retrieval.** The full child transcript lives behind a `transcript_handle` accessible through `agent_eval`. When the summary isn't enough, the parent calls `handle_read` for slices, line ranges, or JSONPath projections — keeping the parent context lean without losing access to the details.
 
 See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for the full sub-agent reference.
 
