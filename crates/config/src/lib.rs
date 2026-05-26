@@ -387,11 +387,6 @@ impl ConfigToml {
         if project.tools.is_some() {
             self.tools = project.tools;
         }
-        // Provider is only overridden if explicitly set (non-default).
-        if project.provider != ProviderKind::Deepseek {
-            self.provider = project.provider;
-        }
-
         merge_project_provider_config(&mut self.providers.deepseek, &project.providers.deepseek);
         merge_project_provider_config(
             &mut self.providers.nvidia_nim,

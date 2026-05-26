@@ -32,8 +32,6 @@
 //!
 //! If bwrap is not installed, we fall back to Landlock.
 
-use std::path::PathBuf;
-
 /// Canonical path to the bubblewrap binary.
 #[cfg(target_os = "linux")]
 pub const BWRAP_PATH: &str = "/usr/bin/bwrap";
