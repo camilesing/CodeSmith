@@ -282,7 +282,12 @@ impl SlopLedger {
             });
         }
         let data = fs::read_to_string(path)?;
-        let mut ledger: SlopLedger = serde_json::from_str(&data).unwrap_or_default();
+        let mut ledger: SlopLedger = serde_json::from_str(&data).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse slop ledger JSON: {e}"),
+            )
+        })?;
         ledger.ledger_path = path.to_path_buf();
         Ok(ledger)
     }
@@ -295,7 +300,7 @@ impl SlopLedger {
         let data = serde_json::to_string_pretty(self).map_err(|e| {
             io::Error::new(io::ErrorKind::Other, format!("serialization error: {e}"))
         })?;
-        fs::write(&self.ledger_path, data)
+        crate::utils::write_atomic(&self.ledger_path, data.as_bytes())
     }
 
     /// Append one or more entries. Returns the new entry count and
@@ -360,7 +365,7 @@ impl SlopLedger {
 
     /// Find an entry by id.
     pub fn find_mut(&mut self, id: &str) -> Option<&mut SlopEntry> {
-        self.entries.iter_mut().find(|e| e.id == id)
+        self.entries.iter_mut().find(|e| e.id.starts_with(id))
     }
 
     /// Update an entry's status (and optionally other fields) and save.
@@ -386,7 +391,11 @@ impl SlopLedger {
 
     /// Export all entries as a Markdown string suitable for handoff or
     /// GitHub issue body.
-    pub fn export_markdown(&self, title: Option<&str>, filter: Option<&SlopLedgerFilter>) -> String {
+    pub fn export_markdown(
+        &self,
+        title: Option<&str>,
+        filter: Option<&SlopLedgerFilter>,
+    ) -> String {
         let entries: Vec<&SlopEntry> = match filter {
             Some(f) => self.query(f),
             None => self.entries.iter().collect(),
@@ -418,11 +427,7 @@ impl SlopLedger {
             out.push_str("|---|---|---|---|---|---|\n");
             for e in bucket_entries {
                 let source = e.source_links.first().map(|s| s.as_str()).unwrap_or("-");
-                let title = if e.title.len() > 60 {
-                    format!("{}…", &e.title[..57])
-                } else {
-                    e.title.clone()
-                };
+                let title = truncate_str(&e.title, 60);
                 out.push_str(&format!(
                     "| {} | {:?} | {:?} | {:?} | {title} | {source} |\n",
                     &e.id[..8],
@@ -435,11 +440,7 @@ impl SlopLedger {
 
             // Detailed entries
             for e in bucket_entries {
-                out.push_str(&format!(
-                    "### {} — {}\n\n",
-                    &e.id[..8],
-                    e.title
-                ));
+                out.push_str(&format!("### {} — {}\n\n", &e.id[..8], e.title));
                 out.push_str(&format!("- **Severity**: {:?}\n", e.severity));
                 out.push_str(&format!("- **Confidence**: {:?}\n", e.confidence));
                 out.push_str(&format!("- **Status**: {:?}\n", e.status));
@@ -576,9 +577,8 @@ impl ToolSpec for SlopLedgerAppendTool {
             .and_then(|v| v.as_array())
             .ok_or_else(|| ToolError::invalid_input("'entries' must be a non-empty array"))?;
 
-        let mut ledger = SlopLedger::load().map_err(|e| {
-            ToolError::execution_failed(format!("failed to load slop ledger: {e}"))
-        })?;
+        let mut ledger = SlopLedger::load()
+            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
 
         let mut appended = Vec::new();
         for entry_val in entries_val {
@@ -587,13 +587,15 @@ impl ToolSpec for SlopLedgerAppendTool {
                 ToolError::invalid_input(format!("unknown bucket: '{bucket_str}'"))
             })?;
 
-            let severity = SlopSeverity::from_str(required_str(entry_val, "severity")?).ok_or_else(|| {
-                ToolError::invalid_input("invalid severity (use critical|high|medium|low|info)")
-            })?;
+            let severity = SlopSeverity::from_str(required_str(entry_val, "severity")?)
+                .ok_or_else(|| {
+                    ToolError::invalid_input("invalid severity (use critical|high|medium|low|info)")
+                })?;
 
-            let confidence = SlopConfidence::from_str(required_str(entry_val, "confidence")?).ok_or_else(|| {
-                ToolError::invalid_input("invalid confidence (use certain|high|medium|low)")
-            })?;
+            let confidence = SlopConfidence::from_str(required_str(entry_val, "confidence")?)
+                .ok_or_else(|| {
+                    ToolError::invalid_input("invalid confidence (use certain|high|medium|low)")
+                })?;
 
             let title = required_str(entry_val, "title")?.to_string();
             let description = required_str(entry_val, "description")?.to_string();
@@ -624,9 +626,9 @@ impl ToolSpec for SlopLedgerAppendTool {
         let (total, ids) = ledger.append(appended);
         let appended_count = ids.len();
 
-        ledger.save().map_err(|e| {
-            ToolError::execution_failed(format!("failed to save slop ledger: {e}"))
-        })?;
+        ledger
+            .save()
+            .map_err(|e| ToolError::execution_failed(format!("failed to save slop ledger: {e}")))?;
 
         Ok(ToolResult::success(format!(
             "Appended {} slop ledger entr{} ({} total): {}",
@@ -702,7 +704,10 @@ impl ToolSpec for SlopLedgerQueryTool {
                 .get("status")
                 .and_then(|v| v.as_str())
                 .and_then(SlopEntryStatus::from_str),
-            search: input.get("search").and_then(|v| v.as_str()).map(String::from),
+            search: input
+                .get("search")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             limit: input
                 .get("limit")
                 .and_then(|v| v.as_u64())
@@ -710,9 +715,8 @@ impl ToolSpec for SlopLedgerQueryTool {
                 .or(Some(50)),
         };
 
-        let ledger = SlopLedger::load().map_err(|e| {
-            ToolError::execution_failed(format!("failed to load slop ledger: {e}"))
-        })?;
+        let ledger = SlopLedger::load()
+            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
 
         if ledger.is_empty() {
             return Ok(ToolResult::success("Slop ledger is empty."));
@@ -782,20 +786,20 @@ impl ToolSpec for SlopLedgerUpdateTool {
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let id = required_str(&input, "id")?;
-        let status = SlopEntryStatus::from_str(required_str(&input, "status")?).ok_or_else(|| {
-            ToolError::invalid_input(
-                "invalid status (use open|in_progress|resolved|accepted|wontfix)",
-            )
-        })?;
+        let status =
+            SlopEntryStatus::from_str(required_str(&input, "status")?).ok_or_else(|| {
+                ToolError::invalid_input(
+                    "invalid status (use open|in_progress|resolved|accepted|wontfix)",
+                )
+            })?;
 
         let cleanup = input
             .get("cleanup_recommendation")
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let mut ledger = SlopLedger::load().map_err(|e| {
-            ToolError::execution_failed(format!("failed to load slop ledger: {e}"))
-        })?;
+        let mut ledger = SlopLedger::load()
+            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
 
         match ledger.update_status(id, status, cleanup) {
             Ok(Some(entry)) => Ok(ToolResult::success(format!(
@@ -887,13 +891,23 @@ impl ToolSpec for SlopLedgerExportTool {
             None
         };
 
-        let ledger = SlopLedger::load().map_err(|e| {
-            ToolError::execution_failed(format!("failed to load slop ledger: {e}"))
-        })?;
+        let ledger = SlopLedger::load()
+            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
 
         let markdown = ledger.export_markdown(title, filter.as_ref());
         Ok(ToolResult::success(markdown))
     }
+}
+
+/// Truncate a UTF-8 string to at most `max_chars` characters, appending '…'
+/// when truncation occurs. Operates on char boundaries — never panics on
+/// multi-byte characters.
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{truncated}…")
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -1009,7 +1023,11 @@ mod tests {
         ledger.save().unwrap();
 
         let result = ledger
-            .update_status(&id, SlopEntryStatus::Resolved, Some("Renamed in #1234".into()))
+            .update_status(
+                &id,
+                SlopEntryStatus::Resolved,
+                Some("Renamed in #1234".into()),
+            )
             .unwrap();
         assert!(result.is_some());
 

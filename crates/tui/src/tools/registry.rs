@@ -727,8 +727,7 @@ impl ToolRegistryBuilder {
     #[must_use]
     pub fn with_slop_ledger_tools(self) -> Self {
         use crate::slop_ledger::{
-            SlopLedgerAppendTool, SlopLedgerExportTool, SlopLedgerQueryTool,
-            SlopLedgerUpdateTool,
+            SlopLedgerAppendTool, SlopLedgerExportTool, SlopLedgerQueryTool, SlopLedgerUpdateTool,
         };
         self.with_tool(Arc::new(SlopLedgerAppendTool))
             .with_tool(Arc::new(SlopLedgerQueryTool))

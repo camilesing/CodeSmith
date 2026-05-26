@@ -65,11 +65,11 @@ mod session_manager;
 mod settings;
 mod skill_state;
 mod skills;
+mod slop_ledger;
 mod snapshot;
 mod task_manager;
 #[cfg(test)]
 mod test_support;
-mod slop_ledger;
 mod theme_qa_audit;
 mod tools;
 mod tui;
