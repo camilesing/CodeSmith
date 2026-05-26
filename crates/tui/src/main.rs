@@ -69,6 +69,7 @@ mod snapshot;
 mod task_manager;
 #[cfg(test)]
 mod test_support;
+mod slop_ledger;
 mod theme_qa_audit;
 mod tools;
 mod tui;
