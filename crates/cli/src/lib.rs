@@ -2745,7 +2745,11 @@ mod tests {
 
         // (provider, cli flag, extra env vars that must be forwarded besides DEEPSEEK_API_KEY)
         let cases: &[(ProviderKind, &str, &[&str])] = &[
-            (ProviderKind::Openrouter, "openrouter", &["OPENROUTER_API_KEY"]),
+            (
+                ProviderKind::Openrouter,
+                "openrouter",
+                &["OPENROUTER_API_KEY"],
+            ),
             (ProviderKind::Novita, "novita", &["NOVITA_API_KEY"]),
             (
                 ProviderKind::NvidiaNim,
@@ -2764,7 +2768,11 @@ mod tests {
             (
                 ProviderKind::WanjieArk,
                 "wanjie-ark",
-                &["WANJIE_ARK_API_KEY", "WANJIE_API_KEY", "WANJIE_MAAS_API_KEY"],
+                &[
+                    "WANJIE_ARK_API_KEY",
+                    "WANJIE_API_KEY",
+                    "WANJIE_MAAS_API_KEY",
+                ],
             ),
         ];
 
