@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Composer text selection with copy/cut.** Mouse drag and Shift+Arrow
+  selection in the composer input box, with Ctrl+C copy and Ctrl+X cut
+  support. Home, End, Ctrl+A, and Ctrl+E now clear the selection to prevent
+  accidental deletions on the next keystroke (#2228).
+
+### Fixed
+
+- **Deadlock when spawning multiple concurrent sub-agents.** Replaced
+  `RwLock`-based serialisation with a `Semaphore(1)` in `ToolCallRuntime`,
+  preventing re-entrant tool calls from deadlocking on the same lock (#1856).
+
 ## [0.8.46] - 2026-05-26
 
 ### Added
