@@ -326,7 +326,10 @@ impl ToolSpec for RlmEvalTool {
                     // Store full body as a handle for out-of-band retrieval
                     let name = format!("{tag}_{}", 0); // single counter is fine
                     let handle = store.insert_text(session_id, name, text);
-                    (Some(format!("{} chars; retrieve via handle_read", text.len())), Some(handle))
+                    (
+                        Some(format!("{} chars; retrieve via handle_read", text.len())),
+                        Some(handle),
+                    )
                 }
                 _ => (None, None),
             }

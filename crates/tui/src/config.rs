@@ -3073,9 +3073,7 @@ fn auth_mode_uses_kimi_oauth(mode: &str) -> bool {
 }
 
 fn normalize_auth_mode(mode: &str) -> String {
-    mode.trim()
-        .to_ascii_lowercase()
-        .replace(['-', ' '], "_")
+    mode.trim().to_ascii_lowercase().replace(['-', ' '], "_")
 }
 
 fn base_url_uses_local_host(base_url: &str) -> bool {

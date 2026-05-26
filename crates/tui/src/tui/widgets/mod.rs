@@ -2079,7 +2079,10 @@ pub(crate) fn slash_completion_hints(
                 continue;
             }
             let cmd_lower = cmd.name.to_ascii_lowercase();
-            let alias_match = cmd.aliases.iter().any(|a| a.to_ascii_lowercase().contains(&prefix_lower));
+            let alias_match = cmd
+                .aliases
+                .iter()
+                .any(|a| a.to_ascii_lowercase().contains(&prefix_lower));
             if cmd_lower.contains(&prefix_lower) || alias_match {
                 seen.insert(name.clone());
                 push_command_entry(&mut entries, &name, cmd.name, &prefix_lower, locale);
@@ -2096,7 +2099,10 @@ pub(crate) fn slash_completion_hints(
                 continue;
             }
             let cmd_lower = cmd.name.to_ascii_lowercase();
-            let alias_match = cmd.aliases.iter().any(|a| fuzzy_chars_in_order(&prefix_lower, &a.to_ascii_lowercase()));
+            let alias_match = cmd
+                .aliases
+                .iter()
+                .any(|a| fuzzy_chars_in_order(&prefix_lower, &a.to_ascii_lowercase()));
             if fuzzy_chars_in_order(&prefix_lower, &cmd_lower) || alias_match {
                 seen.insert(name.clone());
                 push_command_entry(&mut entries, &name, cmd.name, &prefix_lower, locale);
@@ -2122,9 +2128,9 @@ pub(crate) fn slash_completion_hints(
         for (skill_name, skill_desc) in cached_skills {
             let skill_name_lower = skill_name.to_ascii_lowercase();
             if skill_name_lower.contains(&skill_prefix)
-                && !entries.iter().any(|e| {
-                    e.name == format!("/skill {skill_name}")
-                })
+                && !entries
+                    .iter()
+                    .any(|e| e.name == format!("/skill {skill_name}"))
             {
                 entries.push(SlashMenuEntry {
                     name: format!("/skill {skill_name}"),
@@ -2201,37 +2207,36 @@ fn push_command_entry(
     prefix_lower: &str,
     locale: crate::localization::Locale,
 ) {
-    let (description, alias_hint) =
-        if let Some(info) = commands::get_command_info(command_key) {
-            let hint = if !command_key.to_ascii_lowercase().starts_with(prefix_lower) {
+    let (description, alias_hint) = if let Some(info) = commands::get_command_info(command_key) {
+        let hint = if !command_key.to_ascii_lowercase().starts_with(prefix_lower) {
+            info.aliases
+                .iter()
+                .find(|a| {
+                    a.to_ascii_lowercase().starts_with(prefix_lower)
+                        || a.to_ascii_lowercase().contains(prefix_lower)
+                        || fuzzy_chars_in_order(prefix_lower, &a.to_ascii_lowercase())
+                })
+                .map(|a| a.to_string())
+        } else {
+            None
+        };
+        let desc = if info.aliases.is_empty() {
+            info.description_for(locale).to_string()
+        } else {
+            format!(
+                "{}  (aliases: {})",
+                info.description_for(locale),
                 info.aliases
                     .iter()
-                    .find(|a| {
-                        a.to_ascii_lowercase().starts_with(prefix_lower)
-                            || a.to_ascii_lowercase().contains(prefix_lower)
-                            || fuzzy_chars_in_order(prefix_lower, &a.to_ascii_lowercase())
-                    })
-                    .map(|a| a.to_string())
-            } else {
-                None
-            };
-            let desc = if info.aliases.is_empty() {
-                info.description_for(locale).to_string()
-            } else {
-                format!(
-                    "{}  (aliases: {})",
-                    info.description_for(locale),
-                    info.aliases
-                        .iter()
-                        .map(|a| format!("/{a}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            };
-            (desc, hint)
-        } else {
-            (String::from("User-defined command"), None)
+                    .map(|a| format!("/{a}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         };
+        (desc, hint)
+    } else {
+        (String::from("User-defined command"), None)
+    };
     entries.push(SlashMenuEntry {
         name: name.to_string(),
         description,

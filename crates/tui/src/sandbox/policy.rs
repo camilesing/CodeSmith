@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::command_safety::SafetyLevel;
 use super::{CommandSpec, ExecEnv};
+use crate::command_safety::SafetyLevel;
 
 /// Determines execution restrictions for shell commands.
 ///

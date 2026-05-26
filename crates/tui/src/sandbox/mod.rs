@@ -433,11 +433,7 @@ impl SandboxManager {
     fn prepare_landlock(&self, spec: &CommandSpec) -> ExecEnv {
         // Check if bwrap passthrough should be used (#2184).
         if self.prefer_bwrap && bwrap::is_available() {
-            let command = bwrap::build_bwrap_command(
-                &spec.cwd,
-                &spec.program,
-                &spec.args,
-            );
+            let command = bwrap::build_bwrap_command(&spec.cwd, &spec.program, &spec.args);
 
             let mut env = spec.env.clone();
             env.insert("DEEPSEEK_SANDBOX".to_string(), "bwrap".to_string());
@@ -767,11 +763,23 @@ mod tests {
 
     #[test]
     fn test_parity_denial_zero_exit_never_denied() {
-        assert!(!SandboxManager::was_denied(SandboxType::None, 0, "anything"));
+        assert!(!SandboxManager::was_denied(
+            SandboxType::None,
+            0,
+            "anything"
+        ));
         #[cfg(target_os = "macos")]
-        assert!(!SandboxManager::was_denied(SandboxType::MacosSeatbelt, 0, ""));
+        assert!(!SandboxManager::was_denied(
+            SandboxType::MacosSeatbelt,
+            0,
+            ""
+        ));
         #[cfg(target_os = "linux")]
-        assert!(!SandboxManager::was_denied(SandboxType::LinuxLandlock, 0, ""));
+        assert!(!SandboxManager::was_denied(
+            SandboxType::LinuxLandlock,
+            0,
+            ""
+        ));
         #[cfg(target_os = "windows")]
         assert!(!SandboxManager::was_denied(SandboxType::Windows, 0, ""));
     }
@@ -779,9 +787,15 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn test_parity_seccomp_sigsys_detected() {
-        assert!(SandboxManager::was_denied(SandboxType::LinuxLandlock, 31, ""));
         assert!(SandboxManager::was_denied(
-            SandboxType::LinuxLandlock, 1, "Bad system call"
+            SandboxType::LinuxLandlock,
+            31,
+            ""
+        ));
+        assert!(SandboxManager::was_denied(
+            SandboxType::LinuxLandlock,
+            1,
+            "Bad system call"
         ));
     }
 
@@ -790,10 +804,14 @@ mod tests {
     fn test_parity_seatbelt_file_write_detected() {
         // Seatbelt patterns use "Sandbox: <cmd> denied <operation>" format.
         assert!(SandboxManager::was_denied(
-            SandboxType::MacosSeatbelt, 1, "Sandbox: ls denied file-write*"
+            SandboxType::MacosSeatbelt,
+            1,
+            "Sandbox: ls denied file-write*"
         ));
         assert!(SandboxManager::was_denied(
-            SandboxType::MacosSeatbelt, 1, "Operation not permitted"
+            SandboxType::MacosSeatbelt,
+            1,
+            "Operation not permitted"
         ));
     }
 

@@ -940,9 +940,7 @@ async fn run_event_loop(
         if let Some(ref handle) = version_check {
             done = handle.is_finished();
         }
-        if done
-            && let Ok(Some(hint)) = version_check.take().unwrap().await
-        {
+        if done && let Ok(Some(hint)) = version_check.take().unwrap().await {
             app.version_hint = Some(hint);
         }
 

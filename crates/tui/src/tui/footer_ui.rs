@@ -43,19 +43,21 @@ pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         None
     };
-    let toast = quit_prompt.or_else(|| {
-        // Version-update hint takes precedence over ephemeral status toasts
-        // so the user sees it even when status traffic would hide it.
-        app.version_hint.as_ref().map(|hint| FooterToast {
-            text: hint.clone(),
-            color: palette::STATUS_INFO,
+    let toast = quit_prompt
+        .or_else(|| {
+            // Version-update hint takes precedence over ephemeral status toasts
+            // so the user sees it even when status traffic would hide it.
+            app.version_hint.as_ref().map(|hint| FooterToast {
+                text: hint.clone(),
+                color: palette::STATUS_INFO,
+            })
         })
-    }).or_else(|| {
-        app.active_status_toast().map(|toast| FooterToast {
-            text: toast.text,
-            color: status_color(toast.level),
-        })
-    });
+        .or_else(|| {
+            app.active_status_toast().map(|toast| FooterToast {
+                text: toast.text,
+                color: status_color(toast.level),
+            })
+        });
 
     // Drive every cluster from the user's configured `status_items`. Mode
     // and Model are always rendered by `FooterProps` itself (their position
@@ -645,8 +647,7 @@ pub(crate) fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'s
         })
         .unwrap_or_default();
 
-    let shell_spans =
-        crate::tui::widgets::footer_shell_chip(active_foreground_shell_running(app));
+    let shell_spans = crate::tui::widgets::footer_shell_chip(active_foreground_shell_running(app));
 
     let parts: Vec<&Vec<Span<'static>>> = [
         &coherence_spans,
