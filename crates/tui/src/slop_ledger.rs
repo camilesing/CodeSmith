@@ -81,6 +81,7 @@ impl SlopBucket {
         }
     }
 
+    #[allow(dead_code)]
     pub fn all_buckets() -> &'static [SlopBucket] {
         &[
             Self::RetainedCompatibility,
@@ -307,6 +308,7 @@ impl SlopLedger {
 
     /// Return the total number of entries.
     #[must_use]
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
