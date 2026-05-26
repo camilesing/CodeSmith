@@ -3774,8 +3774,9 @@ impl App {
     /// Return the (start, end) of the active selection, or `None`.
     /// `start` is inclusive, `end` is exclusive; both are char indices.
     pub fn selection_range(&self) -> Option<(usize, usize)> {
-        let anchor = self.selection_anchor?;
-        let cursor = self.cursor_position;
+        let total = char_count(&self.input);
+        let anchor = self.selection_anchor?.min(total);
+        let cursor = self.cursor_position.min(total);
         if anchor == cursor {
             return None;
         }
@@ -4510,6 +4511,7 @@ impl App {
         self.history_index = Some(new_index);
         self.input = self.input_history[new_index].clone();
         self.cursor_position = char_count(&self.input);
+        self.selection_anchor = None;
         self.selected_attachment_index = None;
         self.slash_menu_hidden = false;
         self.paste_burst.clear_after_explicit_paste();
@@ -4526,6 +4528,7 @@ impl App {
                     self.history_index = Some(i + 1);
                     self.input = self.input_history[i + 1].clone();
                     self.cursor_position = char_count(&self.input);
+                    self.selection_anchor = None;
                     self.selected_attachment_index = None;
                     self.slash_menu_hidden = false;
                     self.paste_burst.clear_after_explicit_paste();
@@ -4534,6 +4537,7 @@ impl App {
                     if let Some(draft) = self.history_navigation_draft.take() {
                         self.input = draft.input;
                         self.cursor_position = draft.cursor.min(char_count(&self.input));
+                        self.selection_anchor = None;
                         self.selected_attachment_index = None;
                         self.slash_menu_hidden = false;
                         self.paste_burst.clear_after_explicit_paste();
@@ -5912,6 +5916,22 @@ mod tests {
         assert_eq!(app.input, "careful current draft");
         assert_eq!(app.cursor_position, "careful".chars().count());
         assert!(app.history_index.is_none());
+    }
+
+    #[test]
+    fn input_history_navigation_clears_stale_selection() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("previous input".to_string());
+        app.input = "hello world".to_string();
+        app.cursor_position = "hello ".chars().count();
+        app.selection_anchor = Some(app.input.chars().count());
+
+        app.history_up();
+        assert_eq!(app.input, "previous input");
+        assert!(app.selection_anchor.is_none());
+
+        app.insert_char('x');
+        assert_eq!(app.input, "previous inputx");
     }
 
     #[test]

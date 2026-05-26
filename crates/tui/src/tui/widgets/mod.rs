@@ -667,12 +667,13 @@ impl Renderable for ComposerWidget<'_> {
                 Style::default().fg(palette::TEXT_MUTED).italic(),
             )));
         } else if let Some((sel_start, sel_end)) = self.app.selection_range() {
-            let line_ranges = visible_line_char_ranges(
-                &self.app.input,
-                &visible_lines,
-                content_width,
-                scroll_offset,
-            );
+            let line_ranges: Vec<(usize, usize)> =
+                wrap_input_lines_for_mouse(&self.app.input, content_width)
+                    .into_iter()
+                    .skip(scroll_offset)
+                    .take(visible_lines.len())
+                    .map(|(start, text)| (start, start + text.chars().count()))
+                    .collect();
             for (line_text, (line_start, line_end)) in visible_lines.iter().zip(line_ranges.iter())
             {
                 let spans = line_spans_with_selection(
@@ -2441,58 +2442,6 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     lines.push(current);
     lines
-}
-
-/// Compute the (char_start, char_end) range for each visible wrapped line.
-/// `char_start` is inclusive, `char_end` is exclusive.
-/// `scroll_offset` is the number of wrapped lines skipped from the top.
-fn visible_line_char_ranges(
-    input: &str,
-    visible_lines: &[String],
-    width: usize,
-    scroll_offset: usize,
-) -> Vec<(usize, usize)> {
-    if input.is_empty() || width == 0 {
-        return vec![(0, 0); visible_lines.len()];
-    }
-
-    let mut ranges = Vec::new();
-    let mut char_idx = 0usize;
-    let mut line_start = 0usize;
-    let mut line_width = 0usize;
-
-    for g in input.graphemes(true) {
-        if g == "\n" {
-            ranges.push((line_start, char_idx));
-            char_idx += 1;
-            line_start = char_idx;
-            line_width = 0;
-            continue;
-        }
-
-        let gw = g.width();
-        if line_width + gw > width && line_width > 0 {
-            ranges.push((line_start, char_idx));
-            line_start = char_idx;
-            line_width = 0;
-        }
-        char_idx += g.chars().count();
-        line_width += gw;
-        if line_width >= width {
-            ranges.push((line_start, char_idx));
-            line_start = char_idx;
-            line_width = 0;
-        }
-    }
-    ranges.push((line_start, char_idx));
-
-    // Use the actual scroll_offset to align with visible_lines.
-    let start = scroll_offset.min(ranges.len());
-    ranges
-        .into_iter()
-        .skip(start)
-        .take(visible_lines.len())
-        .collect()
 }
 
 fn line_spans_with_selection<'a>(
