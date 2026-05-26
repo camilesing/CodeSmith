@@ -297,11 +297,12 @@ impl SlopLedger {
         fs::write(&self.ledger_path, data)
     }
 
-    /// Append one or more entries and save.
-    pub fn append(&mut self, entries: Vec<SlopEntry>) -> &[SlopEntry] {
-        let start = self.entries.len();
+    /// Append one or more entries. Returns the new entry count and
+    /// the short ids of the appended entries (first 8 chars).
+    pub fn append(&mut self, entries: Vec<SlopEntry>) -> (usize, Vec<String>) {
+        let ids: Vec<String> = entries.iter().map(|e| e.id[..8].to_string()).collect();
         self.entries.extend(entries);
-        &self.entries[start..]
+        (self.entries.len(), ids)
     }
 
     /// Return the total number of entries.
@@ -618,17 +619,19 @@ impl ToolSpec for SlopLedgerAppendTool {
             appended.push(entry);
         }
 
-        let saved = ledger.append(appended);
+        let (total, ids) = ledger.append(appended);
+        let appended_count = ids.len();
+
         ledger.save().map_err(|e| {
             ToolError::execution_failed(format!("failed to save slop ledger: {e}"))
         })?;
 
-        let ids: Vec<&str> = saved.iter().map(|e| e.id.as_str()).collect();
         Ok(ToolResult::success(format!(
-            "Appended {} slop ledger entr{}: {}",
-            saved.len(),
-            if saved.len() == 1 { "y" } else { "ies" },
-            ids.iter().map(|id| &id[..8]).collect::<Vec<_>>().join(", ")
+            "Appended {} slop ledger entr{} ({} total): {}",
+            appended_count,
+            if appended_count == 1 { "y" } else { "ies" },
+            total,
+            ids.join(", ")
         )))
     }
 }
@@ -929,7 +932,7 @@ mod tests {
             "The README still references v0.7 APIs.".into(),
         );
 
-        ledger.append(vec![entry]);
+        let _ = ledger.append(vec![entry]);
         assert_eq!(ledger.len(), 1);
         ledger.save().unwrap();
 
@@ -942,7 +945,7 @@ mod tests {
     fn query_by_bucket() {
         let (_tmp, mut ledger) = temp_ledger();
 
-        ledger.append(vec![
+        let _ = ledger.append(vec![
             SlopEntry::new(
                 SlopBucket::StaleDocs,
                 SlopSeverity::Low,
@@ -972,7 +975,7 @@ mod tests {
     fn query_by_search() {
         let (_tmp, mut ledger) = temp_ledger();
 
-        ledger.append(vec![SlopEntry::new(
+        let _ = ledger.append(vec![SlopEntry::new(
             SlopBucket::SuspectedDeadCode,
             SlopSeverity::Medium,
             SlopConfidence::Low,
@@ -1000,7 +1003,7 @@ mod tests {
             "desc".into(),
         );
         let id = entry.id.clone();
-        ledger.append(vec![entry]);
+        let _ = ledger.append(vec![entry]);
         ledger.save().unwrap();
 
         let result = ledger
@@ -1028,7 +1031,7 @@ mod tests {
             "The README references removed flags.".into(),
         );
         entry.source_links = vec!["README.md:42".into()];
-        ledger.append(vec![entry]);
+        let _ = ledger.append(vec![entry]);
 
         let md = ledger.export_markdown(Some("Test Export"), None);
         assert!(md.contains("Test Export"));
@@ -1075,7 +1078,7 @@ mod tests {
         );
         e3.status = SlopEntryStatus::Accepted;
 
-        ledger.append(vec![e1, e2, e3]);
+        let _ = ledger.append(vec![e1, e2, e3]);
 
         let summary = ledger.summary();
         assert!(summary.contains("3 total"));
