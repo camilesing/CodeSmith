@@ -20,12 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line is emitted when AGENTS.md, CLAUDE.md, or another context file is
   successfully loaded into the system prompt, making it easier to verify
   which file was used during prompt assembly (#2227).
-- **State-root migration continues.** Snapshot directory resolution now
-  prefers `~/.codewhale/snapshots` with `~/.deepseek/snapshots` fallback.
-  Skill state storage migrated to `~/.codewhale/skills_state.toml`.
-  Added `resolve_project_state_dir` and `ensure_project_state_dir` to
-  `codewhale-config` for project-local `.codewhale/` vs `.deepseek/`
-  resolution (#2231).
+- **CNB mirror support for China-friendly downloads.** Added
+  `CODEWHALE_RELEASE_BASE_URL` env var and `CODEWHALE_USE_CNB_MIRROR`
+  auto-detection to both the npm install scripts and Rust self-updater.
+  Users in China can set `CODEWHALE_USE_CNB_MIRROR=1` to download
+  binaries from cnb.cool instead of GitHub Releases (#2222).
+- **State-root migration continues.** Migrated these storage paths to
+  prefer `~/.codewhale` with `~/.deepseek` fallback: snapshots, skill
+  state, spillover, memory, logs, crashes, automations, TUI settings,
+  handoff, notes, MCP config, sub-agent state, cycle archives, and
+  anchors. Added `resolve_project_state_dir` and `ensure_project_state_dir`
+  to `codewhale-config` for project-local resolution (#2231).
 - **READMEs updated for the CodeWhale rename.** All three READMEs now
   reference canonical `~/.codewhale` paths for config, skills, and Docker
   volumes, with legacy `~/.deepseek` noted as a compatibility fallback.
