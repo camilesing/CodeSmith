@@ -5384,6 +5384,11 @@ async fn steer_user_message(
     engine_handle.steer(content.clone()).await?;
     app.last_submitted_prompt = Some(message.display.clone());
 
+    // Flush any streaming thinking/tool content into history before
+    // inserting the steer message, so the steer appears after (below)
+    // the content that chronologically preceded it.
+    app.flush_active_cell();
+
     // Mirror steer input in local transcript/session state.
     app.add_message(HistoryCell::User {
         content: format!("+ {}", message.display),
