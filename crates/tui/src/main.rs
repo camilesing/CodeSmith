@@ -61,6 +61,8 @@ mod runtime_threads;
 mod sandbox;
 mod schema_migration;
 mod seam_manager;
+#[allow(dead_code)]
+mod session_failure_classifier;
 mod session_manager;
 mod settings;
 mod skill_state;
