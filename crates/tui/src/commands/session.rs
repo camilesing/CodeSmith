@@ -490,22 +490,36 @@ mod tests {
     }
 
     #[test]
-    fn test_save_with_default_path_uses_workspace() {
+    fn test_save_with_default_path_uses_managed_sessions_dir() {
         let tmpdir = TempDir::new().unwrap();
+        // Set CODEWHALE_HOME so the managed sessions directory lands inside the
+        // temp dir rather than the real user home. Pre-create the directory so
+        // resolve_state_dir picks it up instead of falling back to legacy.
+        let home = tmpdir.path().join("home");
+        let sessions_dir = home.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        // SAFETY: test-only, single-threaded via cargo test
+        unsafe { std::env::set_var("CODEWHALE_HOME", home.to_str().unwrap()) };
         let mut app = create_test_app_with_tmpdir(&tmpdir);
         let result = save(&mut app, None);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        // Should create file in workspace with timestamp name
         // Give it a moment to ensure file is written
         std::thread::sleep(std::time::Duration::from_millis(10));
-        let entries: Vec<_> = std::fs::read_dir(tmpdir.path())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("session_"))
-            .collect();
-        // Test passes if file was created or if save returned success message
-        assert!(!entries.is_empty() || msg.contains("Session saved"));
+        let entries: Vec<_> = if sessions_dir.exists() {
+            std::fs::read_dir(&sessions_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("session_"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Session should be saved to the managed dir, not the workspace root.
+        assert!(
+            !entries.is_empty(),
+            "expected session file in {sessions_dir:?}, got none; msg: {msg}"
+        );
     }
 
     #[test]

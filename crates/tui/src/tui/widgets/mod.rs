@@ -474,7 +474,7 @@ impl<'a> ComposerWidget<'a> {
     /// backend's per-cell write cost makes the layout jitter visible
     /// even though the work is tiny on Unix terminals. See user
     /// feedback in v0.8.8 polish thread.
-    fn active_menu_reserved_rows(&self) -> usize {
+    pub fn active_menu_reserved_rows(&self) -> usize {
         let actual = self.active_menu_row_count();
         if actual == 0 {
             return 0;
@@ -535,8 +535,8 @@ impl Renderable for ComposerWidget<'_> {
         let input_rows_budget =
             composer_input_rows_budget(inner_area.height, menu_lines_for_budget);
         let content_width = usize::from(inner_area.width.max(1));
-        let (visible_lines, _cursor_row, _cursor_col) =
-            layout_input(input_text, input_cursor, content_width, input_rows_budget);
+        let (visible_lines, _cursor_row, _cursor_col, scroll_offset) =
+            layout_input_with_scroll(input_text, input_cursor, content_width, input_rows_budget);
         let is_draft_mode = input_text.contains('\n') || visible_lines.len() > 1;
         if has_panel {
             let border_color = if input_text.trim().is_empty() {
@@ -666,6 +666,26 @@ impl Renderable for ComposerWidget<'_> {
                 placeholder,
                 Style::default().fg(palette::TEXT_MUTED).italic(),
             )));
+        } else if let Some((sel_start, sel_end)) = self.app.selection_range() {
+            let line_ranges: Vec<(usize, usize)> =
+                wrap_input_lines_for_mouse(&self.app.input, content_width)
+                    .into_iter()
+                    .skip(scroll_offset)
+                    .take(visible_lines.len())
+                    .map(|(start, text)| (start, start + text.chars().count()))
+                    .collect();
+            for (line_text, (line_start, line_end)) in visible_lines.iter().zip(line_ranges.iter())
+            {
+                let spans = line_spans_with_selection(
+                    line_text,
+                    *line_start,
+                    *line_end,
+                    sel_start,
+                    sel_end,
+                    self.app.ui_theme.selection_bg,
+                );
+                input_lines.push(Line::from(spans));
+            }
         } else {
             for line in &visible_lines {
                 input_lines.push(Line::from(Span::styled(
@@ -1929,7 +1949,8 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         )),
     ];
 
-    let top_padding = usize::from(area.height.saturating_sub(body.len() as u16) / 3);
+    // Keep the welcome block near the top of the chat pane (header is separate).
+    let top_padding = 2usize;
     let mut lines = Vec::new();
     for _ in 0..top_padding {
         lines.push(Line::from(""));
@@ -1938,7 +1959,7 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     lines
 }
 
-fn composer_input_rows_budget(inner_height: u16, extra_lines: usize) -> usize {
+pub fn composer_input_rows_budget(inner_height: u16, extra_lines: usize) -> usize {
     usize::from(inner_height).saturating_sub(extra_lines).max(1)
 }
 
@@ -2251,6 +2272,17 @@ fn layout_input(
     width: usize,
     max_height: usize,
 ) -> (Vec<String>, usize, usize) {
+    let (visible, visible_cursor_row, visible_cursor_col, _) =
+        layout_input_with_scroll(input, cursor, width, max_height);
+    (visible, visible_cursor_row, visible_cursor_col)
+}
+
+pub fn layout_input_with_scroll(
+    input: &str,
+    cursor: usize,
+    width: usize,
+    max_height: usize,
+) -> (Vec<String>, usize, usize, usize) {
     let mut lines = wrap_input_lines(input, width);
     if lines.is_empty() {
         lines.push(String::new());
@@ -2276,6 +2308,7 @@ fn layout_input(
         visible,
         visible_cursor_row,
         cursor_col.min(width.saturating_sub(1)),
+        start,
     )
 }
 
@@ -2342,6 +2375,34 @@ fn wrap_input_lines(input: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// For mouse coordinate mapping: returns (char_start_of_line, line_text) pairs
+/// matching the wrapping produced by `wrap_input_lines`.
+pub fn wrap_input_lines_for_mouse(input: &str, width: usize) -> Vec<(usize, String)> {
+    if input.is_empty() || width == 0 {
+        return vec![(0, String::new())];
+    }
+
+    let mut result = Vec::new();
+    let mut char_idx = 0usize;
+
+    for raw_line in input.split('\n') {
+        if raw_line.is_empty() {
+            result.push((char_idx, String::new()));
+            char_idx += 1; // the '\n'
+            continue;
+        }
+        let wrapped = wrap_text(raw_line, width);
+        for wrapped_line in &wrapped {
+            let line_char_len: usize = wrapped_line.chars().count();
+            result.push((char_idx, wrapped_line.clone()));
+            char_idx += line_char_len;
+        }
+        char_idx += 1; // the '\n'
+    }
+
+    result
+}
+
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
@@ -2381,6 +2442,56 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     lines.push(current);
     lines
+}
+
+fn line_spans_with_selection<'a>(
+    line: &'a str,
+    line_start: usize,
+    line_end: usize,
+    sel_start: usize,
+    sel_end: usize,
+    highlight_bg: Color,
+) -> Vec<Span<'a>> {
+    let normal_style = Style::default().fg(palette::TEXT_PRIMARY);
+    let sel_style = Style::default().fg(palette::TEXT_PRIMARY).bg(highlight_bg);
+
+    // No overlap between this line and the selection
+    if line_end <= sel_start || line_start >= sel_end {
+        return vec![Span::styled(line, normal_style)];
+    }
+
+    let local_sel_start = sel_start.saturating_sub(line_start);
+    let local_sel_end = sel_end.min(line_end).saturating_sub(line_start);
+
+    // Build a Vec of byte offsets for each char boundary, plus one past the end.
+    let mut byte_offsets: Vec<usize> = line.char_indices().map(|(i, _)| i).collect();
+    byte_offsets.push(line.len());
+
+    let b0 = byte_offsets
+        .get(local_sel_start)
+        .copied()
+        .unwrap_or(line.len());
+    let b1 = byte_offsets
+        .get(local_sel_end)
+        .copied()
+        .unwrap_or(line.len());
+
+    let mut spans = Vec::with_capacity(3);
+
+    // Text before selection
+    if b0 > 0 {
+        spans.push(Span::styled(&line[..b0], normal_style));
+    }
+    // Selected text
+    if b1 > b0 {
+        spans.push(Span::styled(&line[b0..b1], sel_style));
+    }
+    // Text after selection
+    if b1 < line.len() {
+        spans.push(Span::styled(&line[b1..], normal_style));
+    }
+
+    spans
 }
 
 #[cfg(test)]

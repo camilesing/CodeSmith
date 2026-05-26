@@ -15,8 +15,12 @@ const CHECKSUM_MANIFEST_ASSET: &str = "codewhale-artifacts-sha256.txt";
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Hmbown/CodeWhale/releases/latest";
 const RELEASES_URL: &str = "https://api.github.com/repos/Hmbown/CodeWhale/releases?per_page=100";
 const CNB_REPO_URL: &str = "https://cnb.cool/codewhale.net/codewhale";
-const RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_TUI_RELEASE_BASE_URL";
-const LEGACY_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_RELEASE_BASE_URL";
+const RELEASE_BASE_URL_ENV: &str = "CODEWHALE_RELEASE_BASE_URL";
+const LEGACY_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_TUI_RELEASE_BASE_URL";
+const DEEPSEEK_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_RELEASE_BASE_URL";
+const CNB_MIRROR_ENV: &str = "CODEWHALE_USE_CNB_MIRROR";
+/// Base URL for CNB binary release asset downloads (China-friendly mirror).
+const CNB_RELEASE_ASSET_BASE: &str = "https://cnb.cool/Hmbown/CodeWhale/-/releases";
 const UPDATE_VERSION_ENV: &str = "DEEPSEEK_TUI_VERSION";
 const LEGACY_UPDATE_VERSION_ENV: &str = "DEEPSEEK_VERSION";
 const UPDATE_USER_AGENT: &str = "codewhale-updater";
@@ -347,8 +351,8 @@ fn update_http_client() -> Result<reqwest::blocking::Client> {
 
 /// Fetch the latest release metadata from GitHub.
 fn fetch_latest_release(channel: ReleaseChannel) -> Result<FetchedRelease> {
-    if let Some(base_url) = release_base_url_from_env() {
-        let version = update_version_from_env().unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
+    let version = update_version_from_env().unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
+    if let Some(base_url) = release_base_url_from_env(&version) {
         return Ok(FetchedRelease {
             release: release_from_mirror_base_url(
                 &base_url,
@@ -369,12 +373,33 @@ fn fetch_latest_release(channel: ReleaseChannel) -> Result<FetchedRelease> {
     })
 }
 
-fn release_base_url_from_env() -> Option<String> {
-    std::env::var(RELEASE_BASE_URL_ENV)
-        .ok()
-        .or_else(|| std::env::var(LEGACY_RELEASE_BASE_URL_ENV).ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+fn release_base_url_from_env(version: &str) -> Option<String> {
+    // Check canonical env first, then legacy envs
+    for env_name in [
+        RELEASE_BASE_URL_ENV,
+        LEGACY_RELEASE_BASE_URL_ENV,
+        DEEPSEEK_RELEASE_BASE_URL_ENV,
+    ] {
+        if let Ok(value) = std::env::var(env_name) {
+            let trimmed = value.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    // Auto-detect CNB mirror when CODEWHALE_USE_CNB_MIRROR is set
+    if std::env::var(CNB_MIRROR_ENV).is_ok() {
+        return Some(cnb_release_base_url(version));
+    }
+    None
+}
+
+fn cnb_release_base_url(version: &str) -> String {
+    format!(
+        "{}/v{}",
+        CNB_RELEASE_ASSET_BASE.trim_end_matches('/'),
+        version.trim_start_matches('v')
+    )
 }
 
 fn update_version_from_env() -> Option<String> {
@@ -973,6 +998,18 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         assert!(
             select_platform_asset(&release, "codewhale-tui-windows-x64")
                 .is_some_and(|asset| asset.name == "codewhale-tui-windows-x64.exe")
+        );
+    }
+
+    #[test]
+    fn cnb_release_base_url_includes_tag_directory() {
+        assert_eq!(
+            cnb_release_base_url("0.8.47"),
+            "https://cnb.cool/Hmbown/CodeWhale/-/releases/v0.8.47"
+        );
+        assert_eq!(
+            cnb_release_base_url("v0.8.47"),
+            "https://cnb.cool/Hmbown/CodeWhale/-/releases/v0.8.47"
         );
     }
 

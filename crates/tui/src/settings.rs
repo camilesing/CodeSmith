@@ -109,6 +109,10 @@ impl TuiPrefs {
 
         let home = dirs::home_dir()
             .context("Failed to resolve home directory: cannot determine tui.toml path.")?;
+        let primary = home.join(".codewhale").join("tui.toml");
+        if primary.exists() {
+            return Ok(primary);
+        }
         Ok(home.join(".deepseek").join("tui.toml"))
     }
 
@@ -766,6 +770,10 @@ impl Settings {
             ),
             ("show_thinking", "Show model thinking: on/off"),
             ("show_tool_details", "Show detailed tool output: on/off"),
+            (
+                "base_url",
+                "HTTP base URL for DeepSeek-compatible endpoints.",
+            ),
             (
                 "locale",
                 "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR, es-419",
