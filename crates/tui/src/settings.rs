@@ -109,6 +109,10 @@ impl TuiPrefs {
 
         let home = dirs::home_dir()
             .context("Failed to resolve home directory: cannot determine tui.toml path.")?;
+        let primary = home.join(".codewhale").join("tui.toml");
+        if primary.exists() {
+            return Ok(primary);
+        }
         Ok(home.join(".deepseek").join("tui.toml"))
     }
 
