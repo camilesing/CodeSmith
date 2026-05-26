@@ -11,49 +11,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Composer text selection with copy/cut.** Mouse drag and Shift+Arrow
   selection in the composer input box, with Ctrl+C copy and Ctrl+X cut
-  support. Home, End, Ctrl+A, and Ctrl+E now clear the selection to prevent
-  accidental deletions on the next keystroke (#2228).
+  support. Home, End, Ctrl+A, and Ctrl+E now clear the selection (#2228).
+- **Copy transcript without visual-wrap newlines.** Transcript copy now
+  strips visual-wrap column line breaks from paragraphs, producing clean
+  text for pasting into editors or prompts (#1906).
+- **Configurable base URL in /config view.** The `/config` panel now
+  displays the effective DeepSeek base URL (#1967).
+- **CNB mirror support for China-friendly downloads.** Added
+  `CODEWHALE_RELEASE_BASE_URL` and `CODEWHALE_USE_CNB_MIRROR` to
+  both npm install scripts and Rust self-updater (#2222).
+- **[✓] completion markers.** Checklist, plan, and tool completion
+  markers now render as `[✓]` instead of `[x]` (#1935).
 
 ### Changed
 
-- **Project context loading now logs the source file.** A tracing info
-  line is emitted when AGENTS.md, CLAUDE.md, or another context file is
-  successfully loaded into the system prompt, making it easier to verify
-  which file was used during prompt assembly (#2227).
-- **CNB mirror support for China-friendly downloads.** Added
-  `CODEWHALE_RELEASE_BASE_URL` env var and `CODEWHALE_USE_CNB_MIRROR`
-  auto-detection to both the npm install scripts and Rust self-updater.
-  Users in China can set `CODEWHALE_USE_CNB_MIRROR=1` to download
-  binaries from cnb.cool instead of GitHub Releases (#2222).
-- **State-root migration continues.** Migrated these storage paths to
-  prefer `~/.codewhale` with `~/.deepseek` fallback: snapshots, skill
-  state, spillover, memory, logs, crashes, automations, TUI settings,
-  handoff, notes, MCP config, sub-agent state, cycle archives, and
-  anchors. Added `resolve_project_state_dir` and `ensure_project_state_dir`
-  to `codewhale-config` for project-local resolution (#2231).
+- **Project context loading now logs the source file.** (#2227)
+- **macOS onboarding and empty-state layout pinned to top** instead
+  of vertically centered (#1837).
+- **State-root migration continues.** Migrated 15+ storage paths to
+  prefer `~/.codewhale` with `~/.deepseek` fallback (#2231).
 - **READMEs updated for the CodeWhale rename.** All three READMEs now
-  reference canonical `~/.codewhale` paths for config, skills, and Docker
-  volumes, with legacy `~/.deepseek` noted as a compatibility fallback.
+  reference canonical `~/.codewhale` paths.
 
 ### Fixed
 
 - **Deadlock when spawning multiple concurrent sub-agents.** Replaced
-  `RwLock`-based serialisation with a `Semaphore(1)` in `ToolCallRuntime`,
-  preventing re-entrant tool calls from deadlocking on the same lock (#1856).
+  `RwLock`-based serialisation with a `Semaphore(1)` (#1856).
 - **Steered/queued messages now render in correct transcript order.**
-  `steer_user_message` now flushes the active cell into history before
-  inserting the steer message, so the user's message appears after
-  (below) the thinking content that chronologically preceded it (#2225).
-- **Session save test updated for managed sessions directory.** The
-  `/save` command now writes to `~/.codewhale/sessions` (or legacy
-  `~/.deepseek/sessions`) instead of the workspace root. Test updated
-  to set `CODEWHALE_HOME` and pre-create the sessions directory (#2223).
+  `steer_user_message` now flushes the active cell before inserting (#2225).
+- **Session save test updated for managed sessions directory.** (#2223).
+- **Loop guard reports Failed on halt.** Turn outcome correctly reports
+  `Failed` instead of `Completed` when the loop guard trips (#1859).
+- **DEEPSEEK_YOLO env honoured on startup.** The `--yolo` flag is now
+  correctly merged with the `DEEPSEEK_YOLO` environment variable (#1870).
 
 ### Community
 
 Thanks to contributors whose PRs landed in this release:
 **@Fire-dtx** (#1856),
-**@imkingjh999** (#2228).
+**@imkingjh999** (#2228),
+**@harvey2011888** (#1859),
+**@victorcheng2333** (#1870),
+**@IIzzaya** (#1935),
+**@PurplePulse** (#1837),
+**@cyq1017** (#1967),
+**@knqiufan** (#1906).
 
 ## [0.8.46] - 2026-05-26
 
