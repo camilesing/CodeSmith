@@ -2972,7 +2972,11 @@ async fn run_event_loop(
                     let sel = app.selected_text();
                     if !sel.is_empty() {
                         if app.clipboard.write_text(&sel).is_ok() {
-                            app.push_status_toast("Copied to clipboard", StatusToastLevel::Info, None);
+                            app.push_status_toast(
+                                "Copied to clipboard",
+                                StatusToastLevel::Info,
+                                None,
+                            );
                             app.clear_selection();
                         } else {
                             app.push_status_toast("Copy failed", StatusToastLevel::Error, None);

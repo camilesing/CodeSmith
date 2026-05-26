@@ -2371,7 +2371,9 @@ fn default_managed_config_path() -> Option<PathBuf> {
     {
         effective_home_dir().map(|home| {
             let primary = home.join(".codewhale").join("managed_config.toml");
-            if primary.exists() { return primary; }
+            if primary.exists() {
+                return primary;
+            }
             home.join(".deepseek").join("managed_config.toml")
         })
     }
@@ -2386,7 +2388,9 @@ fn default_requirements_path() -> Option<PathBuf> {
     {
         effective_home_dir().map(|home| {
             let primary = home.join(".codewhale").join("requirements.toml");
-            if primary.exists() { return primary; }
+            if primary.exists() {
+                return primary;
+            }
             home.join(".deepseek").join("requirements.toml")
         })
     }
@@ -2415,7 +2419,9 @@ fn default_skills_dir() -> Option<PathBuf> {
 fn default_mcp_config_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
         let primary = home.join(".codewhale").join("mcp.json");
-        if primary.exists() { return primary; }
+        if primary.exists() {
+            return primary;
+        }
         home.join(".deepseek").join("mcp.json")
     })
 }
@@ -2423,7 +2429,9 @@ fn default_mcp_config_path() -> Option<PathBuf> {
 fn default_notes_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
         let primary = home.join(".codewhale").join("notes.txt");
-        if primary.exists() { return primary; }
+        if primary.exists() {
+            return primary;
+        }
         home.join(".deepseek").join("notes.txt")
     })
 }
@@ -2431,7 +2439,9 @@ fn default_notes_path() -> Option<PathBuf> {
 fn default_memory_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
         let primary = home.join(".codewhale").join("memory.md");
-        if primary.exists() { return primary; }
+        if primary.exists() {
+            return primary;
+        }
         home.join(".deepseek").join("memory.md")
     })
 }

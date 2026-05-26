@@ -1624,10 +1624,7 @@ pub fn ensure_state_dir(subdir: &str) -> Result<PathBuf> {
 /// Returns `(true, path)` when the primary `.codewhale/` path is used,
 /// `(false, path)` for the legacy fallback. The boolean helps callers
 /// emit a deprecation notice on legacy paths.
-pub fn resolve_project_state_dir(
-    workspace: &Path,
-    subdir: &str,
-) -> (bool, PathBuf) {
+pub fn resolve_project_state_dir(workspace: &Path, subdir: &str) -> (bool, PathBuf) {
     let primary = workspace.join(CODEWHALE_APP_DIR).join(subdir);
     if primary.exists() {
         return (true, primary);
@@ -1638,10 +1635,7 @@ pub fn resolve_project_state_dir(
 
 /// Ensure a project-local state subdirectory exists under `.codewhale/`,
 /// creating it if necessary. Returns the directory path.
-pub fn ensure_project_state_dir(
-    workspace: &Path,
-    subdir: &str,
-) -> Result<PathBuf> {
+pub fn ensure_project_state_dir(workspace: &Path, subdir: &str) -> Result<PathBuf> {
     let dir = workspace.join(CODEWHALE_APP_DIR).join(subdir);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create {}/", dir.display()))?;

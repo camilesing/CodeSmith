@@ -351,8 +351,8 @@ fn update_http_client() -> Result<reqwest::blocking::Client> {
 
 /// Fetch the latest release metadata from GitHub.
 fn fetch_latest_release(channel: ReleaseChannel) -> Result<FetchedRelease> {
-    if let Some(base_url) = release_base_url_from_env() {
-        let version = update_version_from_env().unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
+    let version = update_version_from_env().unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
+    if let Some(base_url) = release_base_url_from_env(&version) {
         return Ok(FetchedRelease {
             release: release_from_mirror_base_url(
                 &base_url,
@@ -373,7 +373,7 @@ fn fetch_latest_release(channel: ReleaseChannel) -> Result<FetchedRelease> {
     })
 }
 
-fn release_base_url_from_env() -> Option<String> {
+fn release_base_url_from_env(version: &str) -> Option<String> {
     // Check canonical env first, then legacy envs
     for env_name in [
         RELEASE_BASE_URL_ENV,
@@ -389,9 +389,17 @@ fn release_base_url_from_env() -> Option<String> {
     }
     // Auto-detect CNB mirror when CODEWHALE_USE_CNB_MIRROR is set
     if std::env::var(CNB_MIRROR_ENV).is_ok() {
-        return Some(CNB_RELEASE_ASSET_BASE.to_string());
+        return Some(cnb_release_base_url(version));
     }
     None
+}
+
+fn cnb_release_base_url(version: &str) -> String {
+    format!(
+        "{}/v{}",
+        CNB_RELEASE_ASSET_BASE.trim_end_matches('/'),
+        version.trim_start_matches('v')
+    )
 }
 
 fn update_version_from_env() -> Option<String> {
@@ -990,6 +998,18 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         assert!(
             select_platform_asset(&release, "codewhale-tui-windows-x64")
                 .is_some_and(|asset| asset.name == "codewhale-tui-windows-x64.exe")
+        );
+    }
+
+    #[test]
+    fn cnb_release_base_url_includes_tag_directory() {
+        assert_eq!(
+            cnb_release_base_url("0.8.47"),
+            "https://cnb.cool/Hmbown/CodeWhale/-/releases/v0.8.47"
+        );
+        assert_eq!(
+            cnb_release_base_url("v0.8.47"),
+            "https://cnb.cool/Hmbown/CodeWhale/-/releases/v0.8.47"
         );
     }
 

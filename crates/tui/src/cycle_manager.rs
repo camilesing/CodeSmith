@@ -466,13 +466,12 @@ pub struct CycleArchiveHeader {
 /// Resolve the on-disk archive directory: `~/.codewhale/sessions/<id>/cycles`
 /// (or legacy `~/.deepseek/sessions/<id>/cycles`).
 fn archive_dir_for(session_id: &str) -> Result<PathBuf> {
-    let sessions = codewhale_config::resolve_state_dir("sessions")
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".deepseek")
-                .join("sessions")
-        });
+    let sessions = codewhale_config::resolve_state_dir("sessions").unwrap_or_else(|_| {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".deepseek")
+            .join("sessions")
+    });
     Ok(sessions.join(session_id).join("cycles"))
 }
 

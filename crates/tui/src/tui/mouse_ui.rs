@@ -714,10 +714,10 @@ pub(crate) fn copy_active_selection(app: &mut App) {
     if !sel.is_empty() {
         if app.clipboard.write_text(&sel).is_ok() {
             app.status_message = Some("Selection copied".to_string());
+            app.clear_selection();
         } else {
             app.status_message = Some("Copy failed".to_string());
         }
-        app.clear_selection();
         return;
     }
     if !app.viewport.transcript_selection.is_active() {

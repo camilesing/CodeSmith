@@ -513,7 +513,10 @@ mod tests {
             Vec::new()
         };
         // Session should be saved to the managed dir, not the workspace root.
-        assert!(!entries.is_empty(), "expected session file in {sessions_dir:?}, got none; msg: {msg}");
+        assert!(
+            !entries.is_empty(),
+            "expected session file in {sessions_dir:?}, got none; msg: {msg}"
+        );
     }
 
     #[test]
