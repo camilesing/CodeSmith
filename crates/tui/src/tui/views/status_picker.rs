@@ -253,7 +253,7 @@ impl ModalView for StatusPickerView {
             let real_idx = offset + idx;
             let checked = *self.selected.get(real_idx).unwrap_or(&false);
             let is_cursor = real_idx == self.cursor;
-            let mark = if checked { "[x]" } else { "[ ]" };
+            let mark = if checked { "[✓]" } else { "[ ]" };
 
             let row_style = if is_cursor {
                 Style::default()

@@ -858,6 +858,9 @@ fn active_rlm_task_entries(app: &App) -> Vec<TaskPanelEntry> {
         .collect()
 }
 
+/// Minimum interval between balance API fetches to avoid flooding.
+const BALANCE_FETCH_COOLDOWN: Duration = Duration::from_secs(60);
+
 /// Shared `reqwest::Client` for balance fetches so connection pools are
 /// reused across successive background polls.
 static BALANCE_CLIENT: LazyLock<::reqwest::Client> = LazyLock::new(|| {
@@ -871,8 +874,8 @@ static BALANCE_CLIENT: LazyLock<::reqwest::Client> = LazyLock::new(|| {
 ///
 /// Returns `None` on any error (network, auth, parse) — callers should treat
 /// a `None` return as "balance unknown" and keep the previous value.
-async fn fetch_deepseek_balance(api_key: &str) -> Option<crate::pricing::BalanceInfo> {
-    let url = "https://api.deepseek.com/user/balance";
+async fn fetch_deepseek_balance(api_key: &str, base_url: &str) -> Option<crate::pricing::BalanceInfo> {
+    let url = format!("{}/user/balance", base_url.trim_end_matches('/'));
     let client = &*BALANCE_CLIENT;
     let response = client
         .get(url)
@@ -983,9 +986,11 @@ async fn run_event_loop(
     {
         let cell = app.balance_cell.clone();
         let api_key = config.deepseek_api_key().unwrap_or_default();
+        let base_url = config.deepseek_base_url();
         if !api_key.is_empty() {
+            app.last_balance_fetch = Some(Instant::now());
             tokio::spawn(async move {
-                if let Some(info) = fetch_deepseek_balance(&api_key).await
+                if let Some(info) = fetch_deepseek_balance(&api_key, &base_url).await
                     && let Ok(mut guard) = cell.lock()
                 {
                     *guard = Some(info);
@@ -1669,14 +1674,20 @@ async fn run_event_loop(
                         // Refresh DeepSeek account balance after each completed
                         // turn so the footer balance chip stays current without
                         // adding latency to any request path.
-                        if app.api_provider == ApiProvider::Deepseek
-                            || app.api_provider == ApiProvider::DeepseekCN
+                        let balance_cooldown_expired = app
+                            .last_balance_fetch
+                            .map_or(true, |t| t.elapsed() >= BALANCE_FETCH_COOLDOWN);
+                        if balance_cooldown_expired
+                            && (app.api_provider == ApiProvider::Deepseek
+                                || app.api_provider == ApiProvider::DeepseekCN)
                         {
                             let cell = app.balance_cell.clone();
                             let api_key = config.deepseek_api_key().unwrap_or_default();
+                            let base_url = config.deepseek_base_url();
                             if !api_key.is_empty() {
+                                app.last_balance_fetch = Some(Instant::now());
                                 tokio::spawn(async move {
-                                    if let Some(info) = fetch_deepseek_balance(&api_key).await
+                                    if let Some(info) = fetch_deepseek_balance(&api_key, &base_url).await
                                         && let Ok(mut guard) = cell.lock()
                                     {
                                         *guard = Some(info);
@@ -4838,14 +4849,20 @@ async fn apply_command_result(
             AppAction::SwitchProvider { provider, model } => {
                 switch_provider(app, engine_handle, config, provider, model).await;
                 // Refresh balance after provider switch.
-                if app.api_provider == ApiProvider::Deepseek
-                    || app.api_provider == ApiProvider::DeepseekCN
+                let balance_cooldown_expired = app
+                    .last_balance_fetch
+                    .map_or(true, |t| t.elapsed() >= BALANCE_FETCH_COOLDOWN);
+                if balance_cooldown_expired
+                    && (app.api_provider == ApiProvider::Deepseek
+                        || app.api_provider == ApiProvider::DeepseekCN)
                 {
                     let cell = app.balance_cell.clone();
                     let api_key = config.deepseek_api_key().unwrap_or_default();
+                    let base_url = config.deepseek_base_url();
                     if !api_key.is_empty() {
+                        app.last_balance_fetch = Some(Instant::now());
                         tokio::spawn(async move {
-                            if let Some(info) = fetch_deepseek_balance(&api_key).await
+                            if let Some(info) = fetch_deepseek_balance(&api_key, &base_url).await
                                 && let Ok(mut guard) = cell.lock()
                             {
                                 *guard = Some(info);

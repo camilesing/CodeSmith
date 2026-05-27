@@ -1407,6 +1407,8 @@ pub struct App {
     pub balance_cell: std::sync::Arc<std::sync::Mutex<Option<crate::pricing::BalanceInfo>>>,
     /// Tracks whether the initial balance fetch has been attempted for this session.
     pub balance_initiated: bool,
+    /// Timestamp of the last balance fetch, used to debounce rapid requests.
+    pub last_balance_fetch: Option<std::time::Instant>,
     /// Current runtime turn id (if known).
     pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
@@ -1987,6 +1989,7 @@ impl App {
             cumulative_turn_duration: std::time::Duration::ZERO,
             balance_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             balance_initiated: false,
+            last_balance_fetch: None,
             runtime_turn_id: None,
             runtime_turn_status: None,
             dispatch_started_at: None,
