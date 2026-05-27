@@ -744,6 +744,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             app.goal.goal_completed,
         ),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+        allowed_tools: app.active_allowed_tools.clone(),
         network_policy: config.network.clone().map(|toml_cfg| {
             crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
         }),
@@ -1440,6 +1441,7 @@ async fn run_event_loop(
                     } => {
                         let was_locally_cancelled = app.suppress_stream_events_until_turn_complete;
                         app.suppress_stream_events_until_turn_complete = false;
+                        app.active_allowed_tools = None;
                         if !matches!(status, crate::core::events::TurnOutcomeStatus::Completed)
                             || draws_since_last_full_repaint >= PERIODIC_FULL_REPAINT_EVERY_N
                         {
@@ -4463,6 +4465,7 @@ async fn dispatch_user_message(
             approval_mode: app.approval_mode,
             translation_enabled: app.translation_enabled,
             show_thinking: app.show_thinking,
+            allowed_tools: app.active_allowed_tools.clone(),
         })
         .await
     {
