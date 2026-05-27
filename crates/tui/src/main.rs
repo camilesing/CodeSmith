@@ -625,6 +625,21 @@ fn resolve_serve_bind_host(mobile: bool, host: Option<String>) -> ServeBindHost 
     }
 }
 
+fn validate_serve_mode_selection(mcp: bool, http: bool, mobile: bool, acp: bool) -> Result<bool> {
+    if http && mobile {
+        bail!("--http and --mobile are mutually exclusive; choose one");
+    }
+    let http_selected = http || mobile;
+    let selected_modes = [mcp, http_selected, acp]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count();
+    if selected_modes != 1 {
+        bail!("Choose exactly one server mode: --mcp, --http/--mobile, or --acp");
+    }
+    Ok(http_selected)
+}
+
 #[derive(Subcommand, Debug, Clone)]
 enum McpCommand {
     /// List configured MCP servers
@@ -952,14 +967,8 @@ async fn main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                let http_selected = args.http || args.mobile;
-                let selected_modes = [args.mcp, http_selected, args.acp]
-                    .into_iter()
-                    .filter(|selected| *selected)
-                    .count();
-                if selected_modes != 1 {
-                    bail!("Choose exactly one server mode: --mcp, --http/--mobile, or --acp");
-                }
+                let http_selected =
+                    validate_serve_mode_selection(args.mcp, args.http, args.mobile, args.acp)?;
                 if args.mcp {
                     mcp_server::run_mcp_server(workspace)
                 } else if http_selected {
@@ -5639,6 +5648,15 @@ mod serve_bind_host_tests {
                 host: "127.0.0.1".to_string(),
                 mobile_rebound_to_lan: false,
             }
+        );
+    }
+
+    #[test]
+    fn http_and_mobile_are_mutually_exclusive() {
+        let err = validate_serve_mode_selection(false, true, true, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--http and --mobile are mutually exclusive")
         );
     }
 }

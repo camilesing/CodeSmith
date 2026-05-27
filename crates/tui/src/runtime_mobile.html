@@ -275,7 +275,7 @@
     }
 
     function token() {
-      return $("token").value.trim();
+      return $("token").value;
     }
 
     function takeTokenFromUrl() {
@@ -368,7 +368,8 @@
         method: "POST",
         body: JSON.stringify({ decision, remember })
       });
-      container.innerHTML = "<span class='meta'>Decision sent: " + escapeHtml(result.decision) + "</span>";
+      const decided = result?.decision ?? decision;
+      container.innerHTML = "<span class='meta'>Decision sent: " + escapeHtml(decided) + "</span>";
     }
 
     function appendEvent(name, data) {
