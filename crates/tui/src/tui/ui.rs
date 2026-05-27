@@ -974,6 +974,27 @@ async fn run_event_loop(
         })
     });
 
+    // Fire a one-shot initial balance fetch for DeepSeek providers
+    // so the footer chip shows balance on the first frame without
+    // waiting for a turn to complete.
+    if !app.balance_initiated
+        && (app.api_provider == ApiProvider::Deepseek
+            || app.api_provider == ApiProvider::DeepseekCN)
+    {
+        let cell = app.balance_cell.clone();
+        let api_key = config.deepseek_api_key().unwrap_or_default();
+        if !api_key.is_empty() {
+            tokio::spawn(async move {
+                if let Some(info) = fetch_deepseek_balance(&api_key).await
+                    && let Ok(mut guard) = cell.lock()
+                {
+                    *guard = Some(info);
+                }
+            });
+        }
+        app.balance_initiated = true;
+    }
+
     loop {
         // Drain the version-check handle once; re-assign None so we
         // don't poll it again.
@@ -4816,6 +4837,27 @@ async fn apply_command_result(
             }
             AppAction::SwitchProvider { provider, model } => {
                 switch_provider(app, engine_handle, config, provider, model).await;
+                // Refresh balance after provider switch.
+                if app.api_provider == ApiProvider::Deepseek
+                    || app.api_provider == ApiProvider::DeepseekCN
+                {
+                    let cell = app.balance_cell.clone();
+                    let api_key = config.deepseek_api_key().unwrap_or_default();
+                    if !api_key.is_empty() {
+                        tokio::spawn(async move {
+                            if let Some(info) = fetch_deepseek_balance(&api_key).await
+                                && let Ok(mut guard) = cell.lock()
+                            {
+                                *guard = Some(info);
+                            }
+                        });
+                    }
+                } else {
+                    // Clear balance when switching to a non-DeepSeek provider.
+                    if let Ok(mut guard) = app.balance_cell.lock() {
+                        *guard = None;
+                    }
+                }
             }
             AppAction::UpdateCompaction(compaction) => {
                 apply_model_and_compaction_update(engine_handle, compaction).await;
