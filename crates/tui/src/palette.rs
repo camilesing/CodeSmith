@@ -36,18 +36,19 @@ pub const SOLARIZED_BASE03_RGB: (u8, u8, u8) = (0x00, 0x2B, 0x36);
 pub const SOLARIZED_BASE02_RGB: (u8, u8, u8) = (0x07, 0x36, 0x42);
 pub const SOLARIZED_BASE01_RGB: (u8, u8, u8) = (0x58, 0x6E, 0x75);
 pub const SOLARIZED_BASE00_RGB: (u8, u8, u8) = (0x65, 0x7B, 0x83);
-pub const SOLARIZED_BASE0_RGB:  (u8, u8, u8) = (0x83, 0x94, 0x96);
-pub const SOLARIZED_BASE1_RGB:  (u8, u8, u8) = (0x93, 0xA1, 0xA1);
-pub const SOLARIZED_BASE2_RGB:  (u8, u8, u8) = (0xEE, 0xE8, 0xD5);
-pub const SOLARIZED_BASE3_RGB:  (u8, u8, u8) = (0xFD, 0xF6, 0xE3);
+pub const SOLARIZED_BASE0_RGB: (u8, u8, u8) = (0x83, 0x94, 0x96);
+pub const SOLARIZED_BASE1_RGB: (u8, u8, u8) = (0x93, 0xA1, 0xA1);
+#[allow(dead_code)]
+pub const SOLARIZED_BASE2_RGB: (u8, u8, u8) = (0xEE, 0xE8, 0xD5);
+pub const SOLARIZED_BASE3_RGB: (u8, u8, u8) = (0xFD, 0xF6, 0xE3);
 pub const SOLARIZED_YELLOW_RGB: (u8, u8, u8) = (0xB5, 0x89, 0x00);
 pub const SOLARIZED_ORANGE_RGB: (u8, u8, u8) = (0xCB, 0x4B, 0x16);
-pub const SOLARIZED_RED_RGB:    (u8, u8, u8) = (0xDC, 0x32, 0x2F);
-pub const SOLARIZED_BLUE_RGB:   (u8, u8, u8) = (0x26, 0x8B, 0xD2);
-pub const SOLARIZED_CYAN_RGB:   (u8, u8, u8) = (0x2A, 0xA1, 0x98);
-pub const SOLARIZED_GREEN_RGB:  (u8, u8, u8) = (0x85, 0x99, 0x00);
-pub const SOLARIZED_PANEL_RGB:  (u8, u8, u8) = (0xF0, 0xED, 0xE7);
-pub const SOLARIZED_ELEVATED_RGB:(u8, u8, u8)= (0xE4, 0xDF, 0xCF);
+pub const SOLARIZED_RED_RGB: (u8, u8, u8) = (0xDC, 0x32, 0x2F);
+pub const SOLARIZED_BLUE_RGB: (u8, u8, u8) = (0x26, 0x8B, 0xD2);
+pub const SOLARIZED_CYAN_RGB: (u8, u8, u8) = (0x2A, 0xA1, 0x98);
+pub const SOLARIZED_GREEN_RGB: (u8, u8, u8) = (0x85, 0x99, 0x00);
+pub const SOLARIZED_PANEL_RGB: (u8, u8, u8) = (0xF0, 0xED, 0xE7);
+pub const SOLARIZED_ELEVATED_RGB: (u8, u8, u8) = (0xE4, 0xDF, 0xCF);
 pub const SOLARIZED_SELECT_RGB: (u8, u8, u8) = (0xD6, 0xD2, 0xC9);
 
 pub const WHALE_DIFF_ADDED_RGB: (u8, u8, u8) = (87, 199, 133); // #57C785
@@ -88,28 +89,96 @@ pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (100, 116, 139); // #64748B
 pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (30, 41, 59); // #1E293B
 
 // Solarized Light palette colors
-pub const SOLARIZED_TEXT_DIM: Color = Color::Rgb(SOLARIZED_BASE00_RGB.0, SOLARIZED_BASE00_RGB.1, SOLARIZED_BASE00_RGB.2);
-pub const SOLARIZED_TEXT_HINT: Color = Color::Rgb(SOLARIZED_BASE0_RGB.0, SOLARIZED_BASE0_RGB.1, SOLARIZED_BASE0_RGB.2);
-pub const SOLARIZED_TEXT_MUTED: Color = Color::Rgb(SOLARIZED_BASE01_RGB.0, SOLARIZED_BASE01_RGB.1, SOLARIZED_BASE01_RGB.2);
-pub const SOLARIZED_TEXT_BODY: Color = Color::Rgb(SOLARIZED_BASE03_RGB.0, SOLARIZED_BASE03_RGB.1, SOLARIZED_BASE03_RGB.2);
-pub const SOLARIZED_TEXT_SOFT: Color = Color::Rgb(SOLARIZED_BASE02_RGB.0, SOLARIZED_BASE02_RGB.1, SOLARIZED_BASE02_RGB.2);
-pub const SOLARIZED_BORDER: Color = Color::Rgb(SOLARIZED_BASE1_RGB.0, SOLARIZED_BASE1_RGB.1, SOLARIZED_BASE1_RGB.2);
-pub const SOLARIZED_BLUE: Color = Color::Rgb(SOLARIZED_BLUE_RGB.0, SOLARIZED_BLUE_RGB.1, SOLARIZED_BLUE_RGB.2);
-pub const SOLARIZED_CYAN: Color = Color::Rgb(SOLARIZED_CYAN_RGB.0, SOLARIZED_CYAN_RGB.1, SOLARIZED_CYAN_RGB.2);
-pub const SOLARIZED_RED: Color = Color::Rgb(SOLARIZED_RED_RGB.0, SOLARIZED_RED_RGB.1, SOLARIZED_RED_RGB.2);
-pub const SOLARIZED_ORANGE: Color = Color::Rgb(SOLARIZED_ORANGE_RGB.0, SOLARIZED_ORANGE_RGB.1, SOLARIZED_ORANGE_RGB.2);
-pub const SOLARIZED_YELLOW: Color = Color::Rgb(SOLARIZED_YELLOW_RGB.0, SOLARIZED_YELLOW_RGB.1, SOLARIZED_YELLOW_RGB.2);
-pub const SOLARIZED_GREEN: Color = Color::Rgb(SOLARIZED_GREEN_RGB.0, SOLARIZED_GREEN_RGB.1, SOLARIZED_GREEN_RGB.2);
-pub const SOLARIZED_SURFACE: Color = Color::Rgb(SOLARIZED_BASE3_RGB.0, SOLARIZED_BASE3_RGB.1, SOLARIZED_BASE3_RGB.2);
-pub const SOLARIZED_PANEL: Color = Color::Rgb(SOLARIZED_PANEL_RGB.0, SOLARIZED_PANEL_RGB.1, SOLARIZED_PANEL_RGB.2);
-pub const SOLARIZED_ELEVATED: Color = Color::Rgb(SOLARIZED_ELEVATED_RGB.0, SOLARIZED_ELEVATED_RGB.1, SOLARIZED_ELEVATED_RGB.2);
-pub const SOLARIZED_SELECT_BG: Color = Color::Rgb(SOLARIZED_SELECT_RGB.0, SOLARIZED_SELECT_RGB.1, SOLARIZED_SELECT_RGB.2);
+pub const SOLARIZED_TEXT_DIM: Color = Color::Rgb(
+    SOLARIZED_BASE00_RGB.0,
+    SOLARIZED_BASE00_RGB.1,
+    SOLARIZED_BASE00_RGB.2,
+);
+pub const SOLARIZED_TEXT_HINT: Color = Color::Rgb(
+    SOLARIZED_BASE0_RGB.0,
+    SOLARIZED_BASE0_RGB.1,
+    SOLARIZED_BASE0_RGB.2,
+);
+pub const SOLARIZED_TEXT_MUTED: Color = Color::Rgb(
+    SOLARIZED_BASE01_RGB.0,
+    SOLARIZED_BASE01_RGB.1,
+    SOLARIZED_BASE01_RGB.2,
+);
+pub const SOLARIZED_TEXT_BODY: Color = Color::Rgb(
+    SOLARIZED_BASE03_RGB.0,
+    SOLARIZED_BASE03_RGB.1,
+    SOLARIZED_BASE03_RGB.2,
+);
+pub const SOLARIZED_TEXT_SOFT: Color = Color::Rgb(
+    SOLARIZED_BASE02_RGB.0,
+    SOLARIZED_BASE02_RGB.1,
+    SOLARIZED_BASE02_RGB.2,
+);
+pub const SOLARIZED_BORDER: Color = Color::Rgb(
+    SOLARIZED_BASE1_RGB.0,
+    SOLARIZED_BASE1_RGB.1,
+    SOLARIZED_BASE1_RGB.2,
+);
+pub const SOLARIZED_BLUE: Color = Color::Rgb(
+    SOLARIZED_BLUE_RGB.0,
+    SOLARIZED_BLUE_RGB.1,
+    SOLARIZED_BLUE_RGB.2,
+);
+pub const SOLARIZED_CYAN: Color = Color::Rgb(
+    SOLARIZED_CYAN_RGB.0,
+    SOLARIZED_CYAN_RGB.1,
+    SOLARIZED_CYAN_RGB.2,
+);
+pub const SOLARIZED_RED: Color = Color::Rgb(
+    SOLARIZED_RED_RGB.0,
+    SOLARIZED_RED_RGB.1,
+    SOLARIZED_RED_RGB.2,
+);
+pub const SOLARIZED_ORANGE: Color = Color::Rgb(
+    SOLARIZED_ORANGE_RGB.0,
+    SOLARIZED_ORANGE_RGB.1,
+    SOLARIZED_ORANGE_RGB.2,
+);
+pub const SOLARIZED_YELLOW: Color = Color::Rgb(
+    SOLARIZED_YELLOW_RGB.0,
+    SOLARIZED_YELLOW_RGB.1,
+    SOLARIZED_YELLOW_RGB.2,
+);
+pub const SOLARIZED_GREEN: Color = Color::Rgb(
+    SOLARIZED_GREEN_RGB.0,
+    SOLARIZED_GREEN_RGB.1,
+    SOLARIZED_GREEN_RGB.2,
+);
+pub const SOLARIZED_SURFACE: Color = Color::Rgb(
+    SOLARIZED_BASE3_RGB.0,
+    SOLARIZED_BASE3_RGB.1,
+    SOLARIZED_BASE3_RGB.2,
+);
+pub const SOLARIZED_PANEL: Color = Color::Rgb(
+    SOLARIZED_PANEL_RGB.0,
+    SOLARIZED_PANEL_RGB.1,
+    SOLARIZED_PANEL_RGB.2,
+);
+pub const SOLARIZED_ELEVATED: Color = Color::Rgb(
+    SOLARIZED_ELEVATED_RGB.0,
+    SOLARIZED_ELEVATED_RGB.1,
+    SOLARIZED_ELEVATED_RGB.2,
+);
+pub const SOLARIZED_SELECT_BG: Color = Color::Rgb(
+    SOLARIZED_SELECT_RGB.0,
+    SOLARIZED_SELECT_RGB.1,
+    SOLARIZED_SELECT_RGB.2,
+);
 pub const SOLARIZED_DIFF_ADDED_BG: Color = Color::Rgb(0xEA, 0xF2, 0xE0);
 pub const SOLARIZED_DIFF_DELETED_BG: Color = Color::Rgb(0xFD, 0xEE, 0xEB);
 pub const SOLARIZED_ERROR_SURFACE: Color = Color::Rgb(0xFD, 0xEE, 0xEB);
 pub const SOLARIZED_ERROR_TEXT: Color = Color::Rgb(0x8B, 0x00, 0x00);
 pub const SOLARIZED_ERROR_HOVER: Color = Color::Rgb(0xE0, 0x55, 0x52);
-pub const SOLARIZED_COMPOSER: Color = Color::Rgb(SOLARIZED_PANEL_RGB.0, SOLARIZED_PANEL_RGB.1, SOLARIZED_PANEL_RGB.2);
+pub const SOLARIZED_COMPOSER: Color = Color::Rgb(
+    SOLARIZED_PANEL_RGB.0,
+    SOLARIZED_PANEL_RGB.1,
+    SOLARIZED_PANEL_RGB.2,
+);
 
 pub const LIGHT_BORDER_RGB: (u8, u8, u8) = (139, 161, 184); // #8BA1B8
 pub const LIGHT_SELECTION_RGB: (u8, u8, u8) = (207, 224, 247); // #CFE0F7
@@ -181,10 +250,26 @@ pub const LIGHT_SUCCESS: Color = Color::Rgb(
     LIGHT_SUCCESS_RGB.2,
 );
 pub const LIGHT_ERROR: Color = Color::Rgb(LIGHT_ERROR_RGB.0, LIGHT_ERROR_RGB.1, LIGHT_ERROR_RGB.2);
-pub const LIGHT_TEXT_BODY: Color = Color::Rgb(0x00, 0x2B, 0x36); // solarized base03
-pub const LIGHT_TEXT_MUTED: Color = Color::Rgb(0x58, 0x6E, 0x75); // solarized base01
-pub const LIGHT_TEXT_HINT: Color = Color::Rgb(0x83, 0x94, 0x96); // solarized base0
-pub const LIGHT_TEXT_SOFT: Color = Color::Rgb(0x07, 0x36, 0x42); // solarized base02
+pub const LIGHT_TEXT_BODY: Color = Color::Rgb(
+    LIGHT_TEXT_BODY_RGB.0,
+    LIGHT_TEXT_BODY_RGB.1,
+    LIGHT_TEXT_BODY_RGB.2,
+);
+pub const LIGHT_TEXT_MUTED: Color = Color::Rgb(
+    LIGHT_TEXT_MUTED_RGB.0,
+    LIGHT_TEXT_MUTED_RGB.1,
+    LIGHT_TEXT_MUTED_RGB.2,
+);
+pub const LIGHT_TEXT_HINT: Color = Color::Rgb(
+    LIGHT_TEXT_HINT_RGB.0,
+    LIGHT_TEXT_HINT_RGB.1,
+    LIGHT_TEXT_HINT_RGB.2,
+);
+pub const LIGHT_TEXT_SOFT: Color = Color::Rgb(
+    LIGHT_TEXT_SOFT_RGB.0,
+    LIGHT_TEXT_SOFT_RGB.1,
+    LIGHT_TEXT_SOFT_RGB.2,
+);
 pub const LIGHT_BORDER: Color =
     Color::Rgb(LIGHT_BORDER_RGB.0, LIGHT_BORDER_RGB.1, LIGHT_BORDER_RGB.2);
 pub const LIGHT_SELECTION_BG: Color = Color::Rgb(
@@ -1022,7 +1107,9 @@ impl ThemeId {
             Self::TokyoNight => "Deep blue/violet night palette",
             Self::Dracula => "Classic high-contrast purple",
             Self::GruvboxDark => "Vintage warm earth tones",
-            Self::SolarizedLight => "Solarized light — Light, calming palette on warm ivory — easy on the eyes",
+            Self::SolarizedLight => {
+                "Solarized light — Light, calming palette on warm ivory — easy on the eyes"
+            }
         }
     }
 
@@ -1157,7 +1244,7 @@ pub fn adapt_fg_for_palette_mode(color: Color, _bg: Color, mode: PaletteMode) ->
         PaletteMode::Dark => color,
         PaletteMode::Light => adapt_fg_for_light_palette(color),
         PaletteMode::Grayscale => adapt_fg_for_grayscale_palette(color),
-        PaletteMode::SolarizedLight => adapt_fg_for_light_palette(color),
+        PaletteMode::SolarizedLight => adapt_fg_for_solarized_light_palette(color),
     }
 }
 
@@ -1167,7 +1254,7 @@ pub fn adapt_bg_for_palette_mode(color: Color, mode: PaletteMode) -> Color {
         PaletteMode::Dark => color,
         PaletteMode::Light => adapt_bg_for_light_palette(color),
         PaletteMode::Grayscale => adapt_bg_for_grayscale_palette(color),
-        PaletteMode::SolarizedLight => adapt_bg_for_light_palette(color),
+        PaletteMode::SolarizedLight => adapt_bg_for_solarized_light_palette(color),
     }
 }
 
@@ -1228,6 +1315,57 @@ fn adapt_bg_for_light_palette(color: Color) -> Color {
     }
 }
 
+fn adapt_fg_for_solarized_light_palette(color: Color) -> Color {
+    if color == TEXT_BODY || color == SELECTION_TEXT || color == Color::White {
+        SOLARIZED_TEXT_BODY
+    } else if color == TEXT_SECONDARY || color == TEXT_MUTED {
+        SOLARIZED_TEXT_MUTED
+    } else if color == TEXT_HINT || color == TEXT_DIM {
+        SOLARIZED_TEXT_HINT
+    } else if color == TEXT_SOFT || color == TEXT_TOOL_OUTPUT {
+        SOLARIZED_TEXT_SOFT
+    } else if color == BORDER_COLOR {
+        SOLARIZED_BORDER
+    } else if color == TEXT_ACCENT || color == DEEPSEEK_SKY || color == ACCENT_TOOL_LIVE {
+        SOLARIZED_BLUE
+    } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
+        SOLARIZED_ORANGE
+    } else if color == ACCENT_TOOL_ISSUE {
+        SOLARIZED_RED
+    } else if color == DIFF_ADDED || color == USER_BODY {
+        SOLARIZED_GREEN
+    } else {
+        color
+    }
+}
+
+fn adapt_bg_for_solarized_light_palette(color: Color) -> Color {
+    if color == DEEPSEEK_INK || color == BACKGROUND_DARK {
+        SOLARIZED_SURFACE
+    } else if color == DEEPSEEK_SLATE
+        || color == COMPOSER_BG
+        || color == SURFACE_PANEL
+        || color == SURFACE_TOOL
+    {
+        SOLARIZED_PANEL
+    } else if color == SURFACE_ELEVATED || color == SURFACE_TOOL_ACTIVE {
+        SOLARIZED_ELEVATED
+    } else if color == SURFACE_REASONING
+        || color == SURFACE_REASONING_TINT
+        || color == SURFACE_REASONING_ACTIVE
+    {
+        SOLARIZED_PANEL
+    } else if color == SURFACE_SUCCESS || color == DIFF_ADDED_BG {
+        SOLARIZED_DIFF_ADDED_BG
+    } else if color == SURFACE_ERROR || color == DIFF_DELETED_BG {
+        SOLARIZED_ERROR_SURFACE
+    } else if color == SELECTION_BG {
+        SOLARIZED_SELECT_BG
+    } else {
+        color
+    }
+}
+
 // === Community-theme remap ===
 //
 // The vast majority of render sites in this crate reach for `palette::TEXT_*`,
@@ -1274,7 +1412,11 @@ const fn theme_diff_deleted_bg(ui: &UiTheme) -> Color {
 pub const fn theme_remap_active(theme: ThemeId) -> bool {
     matches!(
         theme,
-        ThemeId::CatppuccinMocha | ThemeId::TokyoNight | ThemeId::Dracula | ThemeId::GruvboxDark | ThemeId::SolarizedLight
+        ThemeId::CatppuccinMocha
+            | ThemeId::TokyoNight
+            | ThemeId::Dracula
+            | ThemeId::GruvboxDark
+            | ThemeId::SolarizedLight
     )
 }
 
@@ -1765,13 +1907,14 @@ mod tests {
         DEEPSEEK_SLATE, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED, GRAYSCALE_PANEL, GRAYSCALE_REASONING,
         GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT,
         GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED, LIGHT_PANEL, LIGHT_REASONING,
-        LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode,
-        SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
-        TEXT_TOOL_OUTPUT, UI_THEME, WHALE_REASONING_TEXT_RGB, WHALE_REASONING_TINT_RGB,
-        WHALE_TEXT_BODY_RGB, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
-        adapt_fg_for_palette_mode, blend, luma, nearest_ansi16, normalize_hex_rgb_color,
-        normalize_theme_name, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
-        rgb_to_ansi256, theme_label_for_mode, ui_theme_from_settings,
+        LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_BODY_RGB, LIGHT_TEXT_HINT, LIGHT_UI_THEME,
+        PaletteMode, SOLARIZED_LIGHT_UI_THEME, SOLARIZED_PANEL, SOLARIZED_SURFACE,
+        SOLARIZED_TEXT_BODY, SOLARIZED_TEXT_HINT, SURFACE_REASONING, SURFACE_REASONING_TINT,
+        TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, UI_THEME, WHALE_REASONING_TEXT_RGB,
+        WHALE_REASONING_TINT_RGB, WHALE_TEXT_BODY_RGB, adapt_bg, adapt_bg_for_palette_mode,
+        adapt_color, adapt_fg_for_palette_mode, blend, luma, nearest_ansi16,
+        normalize_hex_rgb_color, normalize_theme_name, parse_hex_rgb_color, pulse_brightness,
+        reasoning_surface_tint, rgb_to_ansi256, theme_label_for_mode, ui_theme_from_settings,
     };
     use ratatui::style::Color;
 
@@ -1851,6 +1994,15 @@ mod tests {
     }
 
     #[test]
+    fn ui_theme_selects_solarized_light_variant() {
+        let theme = super::UiTheme::for_mode(PaletteMode::SolarizedLight);
+        assert_eq!(theme, SOLARIZED_LIGHT_UI_THEME);
+        assert_eq!(theme.surface_bg, SOLARIZED_SURFACE);
+        assert_eq!(theme.panel_bg, SOLARIZED_PANEL);
+        assert_eq!(theme.text_body, SOLARIZED_TEXT_BODY);
+    }
+
+    #[test]
     fn theme_names_normalize_common_grayscale_aliases() {
         assert_eq!(normalize_theme_name("system"), Some("system"));
         assert_eq!(normalize_theme_name("default"), Some("system"));
@@ -1869,6 +2021,19 @@ mod tests {
         assert_eq!(LIGHT_BORDER, Color::Rgb(139, 161, 184));
         assert_ne!(LIGHT_SURFACE, LIGHT_PANEL);
         assert_ne!(LIGHT_PANEL, LIGHT_ELEVATED);
+    }
+
+    #[test]
+    fn solarized_light_does_not_mutate_whale_light_text() {
+        assert_eq!(
+            LIGHT_TEXT_BODY,
+            Color::Rgb(
+                LIGHT_TEXT_BODY_RGB.0,
+                LIGHT_TEXT_BODY_RGB.1,
+                LIGHT_TEXT_BODY_RGB.2
+            )
+        );
+        assert_ne!(LIGHT_TEXT_BODY, SOLARIZED_TEXT_BODY);
     }
 
     #[test]
@@ -1944,6 +2109,26 @@ mod tests {
         assert_eq!(
             adapt_fg_for_palette_mode(TEXT_HINT, LIGHT_SURFACE, PaletteMode::Light),
             LIGHT_TEXT_HINT
+        );
+    }
+
+    #[test]
+    fn solarized_light_palette_maps_dark_surfaces_and_text_to_solarized_roles() {
+        assert_eq!(
+            adapt_bg_for_palette_mode(DEEPSEEK_INK, PaletteMode::SolarizedLight),
+            SOLARIZED_SURFACE
+        );
+        assert_eq!(
+            adapt_bg_for_palette_mode(DEEPSEEK_SLATE, PaletteMode::SolarizedLight),
+            SOLARIZED_PANEL
+        );
+        assert_eq!(
+            adapt_fg_for_palette_mode(Color::White, SOLARIZED_SURFACE, PaletteMode::SolarizedLight),
+            SOLARIZED_TEXT_BODY
+        );
+        assert_eq!(
+            adapt_fg_for_palette_mode(TEXT_HINT, SOLARIZED_SURFACE, PaletteMode::SolarizedLight),
+            SOLARIZED_TEXT_HINT
         );
     }
 
