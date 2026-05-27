@@ -186,7 +186,8 @@ pub fn notify_done_to<W: Write>(
     };
 
     // macOS Notification Center: handled via osascript, not terminal escapes.
-    if Method::MacOS==effective {
+    #[cfg(target_os = "macos")]
+    if Method::MacOS == effective {
         macos_display_notification(msg);
         return;
     }
@@ -396,15 +397,23 @@ fn bell_sound() {
 /// Runs on a dedicated background thread so the caller is not blocked.
 ///
 /// The notification includes:
-/// - **Title**: "DeepSeek TUI"
+/// - **Title**: "CodeWhale"
 /// - **Subtitle**: First line of `msg` (when the message contains a newline,
 ///   e.g. the response preview from a completed turn)
 /// - **Body**: Remaining lines of `msg`, or the full `msg` if single-line
 /// - **Sound**: Default macOS notification sound
 ///
-/// The whole body is capped at 200 **characters** (not bytes) to keep the
-/// bubble readable while correctly handling multi-byte text. Embedded double
-/// quotes are escaped as `\"` so AppleScript tokenises correctly.
+/// The message body is capped at 200 **characters** (not bytes) to keep the
+/// bubble readable while correctly handling multi-byte text.
+///
+/// **Security**: The message is passed to `osascript` as a command-line
+/// argument via `ARGV`, never embedded inline in the AppleScript source.
+/// AppleScript does not treat backslash as an escape inside double-quoted
+/// string literals, so the previous `\"` approach would terminate the
+/// string at the `"` and leave any text between unbalanced quotes
+/// evaluated as raw AppleScript code — a code-injection vector for
+/// AI-generated notification text. Passing via `ARGV` avoids this
+/// entirely because the message is never parsed as AppleScript syntax.
 ///
 /// This is best-effort: if `osascript` is not available (e.g. headless SSH
 /// session) the error is logged via `tracing::warn!` instead of silently
@@ -420,32 +429,55 @@ fn macos_display_notification(msg: &str) {
         .name("osascript-notif".into())
         .spawn(move || {
             // Char-bounded truncation (not byte-bounded) so we don't slice
-            // through a multi-byte sequence and emit invalid UTF-8 to the
-            // AppleScript parser.
+            // through a multi-byte sequence and emit invalid UTF-8.
             let body_str: String = body.chars().take(200).collect();
 
-            // Escape embedded double-quote characters for AppleScript.
-            let escaped = body_str.replace('"', "\\\"");
+            // Build AppleScript that receives the message via ARGV
+            // instead of inline string interpolation. AppleScript does
+            // not treat backslash as an escape inside double-quoted
+            // string literals, so `\"` would terminate the string at
+            // the `"` and leave a dangling `\`. Passing the message as
+            // a command-line argument avoids any injection risk.
+            //
+            // When the message has multiple lines, the first line
+            // becomes the subtitle and the rest becomes the body —
+            // this lets turn notifications show the response preview
+            // in the subtitle and the duration/cost summary in the body.
+            let mut args: Vec<String> = Vec::new();
 
-            // Build the AppleScript command.
-            // When the message has multiple lines, the first line becomes
-            // the subtitle and the rest becomes the body — this lets turn
-            // notifications show the response preview in the subtitle and
-            // the duration/cost summary in the body.
-            let script = if let Some(idx) = escaped.find('\n') {
-                let subtitle = escaped[..idx].trim();
-                let body_text = escaped[idx + 1..].trim();
-                format!(
-                    "display notification \"{body_text}\" with title \"DeepSeek TUI\" subtitle \"{subtitle}\" sound name \"default\""
-                )
+            if let Some(idx) = body_str.find('\n') {
+                let subtitle = body_str[..idx].trim();
+                let body_text = body_str[idx + 1..].trim();
+                args.extend_from_slice(&[
+                    "-e".into(),
+                    "on run argv".into(),
+                    "-e".into(),
+                    "set theBody to item 1 of argv".into(),
+                    "-e".into(),
+                    "set theSubtitle to item 2 of argv".into(),
+                    "-e".into(),
+                    "display notification theBody with title \"CodeWhale\" subtitle theSubtitle sound name \"default\"".into(),
+                    "-e".into(),
+                    "end run".into(),
+                    "--".into(),
+                    body_text.into(),
+                    subtitle.into(),
+                ]);
             } else {
-                format!(
-                    "display notification \"{escaped}\" with title \"DeepSeek TUI\" sound name \"default\""
-                )
-            };
+                args.extend_from_slice(&[
+                    "-e".into(),
+                    "on run argv".into(),
+                    "-e".into(),
+                    "display notification (item 1 of argv) with title \"CodeWhale\" sound name \"default\"".into(),
+                    "-e".into(),
+                    "end run".into(),
+                    "--".into(),
+                    body_str,
+                ]);
+            }
 
             match std::process::Command::new("osascript")
-                .args(["-e", &script])
+                .args(&args)
                 .output()
             {
                 Ok(output) if !output.status.success() => {
