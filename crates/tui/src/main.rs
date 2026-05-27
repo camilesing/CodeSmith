@@ -578,9 +578,9 @@ struct ServeArgs {
     /// Start ACP server over stdio for editor clients such as Zed
     #[arg(long)]
     acp: bool,
-    /// Bind host for HTTP server (default localhost)
-    #[arg(long, default_value = "127.0.0.1")]
-    host: String,
+    /// Bind host for HTTP server (default localhost; --mobile defaults to 0.0.0.0)
+    #[arg(long)]
+    host: Option<String>,
     /// Bind port for HTTP server
     #[arg(long, default_value_t = 7878)]
     port: u16,
@@ -600,6 +600,29 @@ struct ServeArgs {
     /// Disable runtime API auth when no token is configured. Only use on a trusted loopback.
     #[arg(long = "insecure")]
     insecure_no_auth: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServeBindHost {
+    host: String,
+    mobile_rebound_to_lan: bool,
+}
+
+fn resolve_serve_bind_host(mobile: bool, host: Option<String>) -> ServeBindHost {
+    match (mobile, host) {
+        (true, None) => ServeBindHost {
+            host: "0.0.0.0".to_string(),
+            mobile_rebound_to_lan: true,
+        },
+        (_, Some(host)) => ServeBindHost {
+            host,
+            mobile_rebound_to_lan: false,
+        },
+        (false, None) => ServeBindHost {
+            host: "127.0.0.1".to_string(),
+            mobile_rebound_to_lan: false,
+        },
+    }
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -942,16 +965,17 @@ async fn main() -> Result<()> {
                 } else if http_selected {
                     let config = load_config_from_cli(&cli)?;
                     let cors_origins = resolve_cors_origins(&config, &args.cors_origin);
-                    let host = if args.mobile && args.host == "127.0.0.1" {
-                        "0.0.0.0".to_string()
-                    } else {
-                        args.host
-                    };
+                    let bind_host = resolve_serve_bind_host(args.mobile, args.host);
+                    if bind_host.mobile_rebound_to_lan {
+                        println!(
+                            "WARNING: --mobile is binding to 0.0.0.0 so LAN devices can reach the mobile control page. Use --host 127.0.0.1 to keep mobile loopback-only."
+                        );
+                    }
                     runtime_api::run_http_server(
                         config,
                         workspace,
                         runtime_api::RuntimeApiOptions {
-                            host,
+                            host: bind_host.host,
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
@@ -5579,6 +5603,44 @@ async fn run_exec_agent(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod serve_bind_host_tests {
+    use super::*;
+
+    #[test]
+    fn http_defaults_to_loopback() {
+        assert_eq!(
+            resolve_serve_bind_host(false, None),
+            ServeBindHost {
+                host: "127.0.0.1".to_string(),
+                mobile_rebound_to_lan: false,
+            }
+        );
+    }
+
+    #[test]
+    fn mobile_default_rebinds_to_lan_with_warning_flag() {
+        assert_eq!(
+            resolve_serve_bind_host(true, None),
+            ServeBindHost {
+                host: "0.0.0.0".to_string(),
+                mobile_rebound_to_lan: true,
+            }
+        );
+    }
+
+    #[test]
+    fn mobile_respects_explicit_loopback_host() {
+        assert_eq!(
+            resolve_serve_bind_host(true, Some("127.0.0.1".to_string())),
+            ServeBindHost {
+                host: "127.0.0.1".to_string(),
+                mobile_rebound_to_lan: false,
+            }
+        );
+    }
 }
 
 #[cfg(test)]

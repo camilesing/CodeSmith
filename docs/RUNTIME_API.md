@@ -117,7 +117,7 @@ codewhale doctor --json
 
 ```bash
 codewhale serve --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN]
-codewhale serve --mobile [--port 7878] [--auth-token TOKEN]
+codewhale serve --mobile [--host 0.0.0.0] [--port 7878] [--auth-token TOKEN]
 ```
 
 Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
@@ -128,8 +128,10 @@ there is no `[app_server]` config section.
 `/v1/*` routes require a bearer token unless `--insecure` is explicitly set.
 Pass `--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting
 the server. If neither is set, the process generates a one-time token and prints
-it at startup. `/health`, `/mobile`, and `/v1/runtime/info` remain public for
-local supervision and bootstrap.
+it at startup. `/health` and `/v1/runtime/info` remain public for local
+supervision and bootstrap. `/mobile` returns 404 when mobile mode is disabled;
+when mobile mode is enabled and auth is enabled, `/mobile` returns 401 unless
+the request supplies the runtime token.
 
 Authenticated clients can provide the token as `Authorization: Bearer TOKEN`,
 `X-DeepSeek-Runtime-Token: TOKEN`, or `?token=TOKEN` for EventSource-style
@@ -139,9 +141,12 @@ clients that cannot set custom headers.
 
 `codewhale serve --mobile` starts the same HTTP/SSE runtime API and serves a
 phone-friendly control page at `/mobile`. When the bind host is left at the
-default, mobile mode binds to `0.0.0.0` and prints local/LAN URLs. If a runtime
-token is generated or supplied, the printed mobile URL includes it as a query
-parameter; the page stores it locally and removes it from the address bar.
+default, mobile mode binds to `0.0.0.0`, prints a warning, and prints local/LAN
+URLs. Pass `--host 127.0.0.1` to keep the mobile page loopback-only. If a
+runtime token is generated or supplied, the printed mobile URL includes it as a
+query parameter; the page stores it locally and removes it from the address bar.
+The static HTML page contains no secrets, but it is still token-gated when auth
+is enabled so unauthenticated LAN clients cannot fingerprint the mobile surface.
 
 The mobile page can list/create threads, send prompts, follow live SSE events,
 steer or interrupt an active turn, and resolve normal tool approvals through
@@ -331,10 +336,11 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 ## Security boundary
 
 - **Localhost by default**. The server binds to `127.0.0.1` by default.
-  `--mobile` binds to `0.0.0.0` when the host is left at the default so phones
-  on the same LAN can reach it. Set a non-loopback host only when you trust the
-  network path or have a reverse-proxy / VPN that authenticates. The runtime
-  does not provide user isolation or TLS.
+  `--mobile` binds to `0.0.0.0` when no host is supplied so phones on the same
+  LAN can reach it, and the CLI prints a warning for that rebind. Pass
+  `--host 127.0.0.1` for a loopback-only mobile page. Set a non-loopback host
+  only when you trust the network path or have a reverse-proxy / VPN that
+  authenticates. The runtime does not provide user isolation or TLS.
 - **Optional token guard**. `--auth-token` or `DEEPSEEK_RUNTIME_TOKEN`
   requires a matching bearer token for `/v1/*` routes. This is a local
   convenience guard, not a replacement for TLS, VPN, or a trusted reverse

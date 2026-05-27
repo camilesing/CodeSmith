@@ -554,8 +554,17 @@ async fn require_runtime_token(
     let Some(expected) = state.runtime_token.as_deref() else {
         return next.run(req).await;
     };
-    let authorized = req
-        .headers()
+    let authorized = request_has_runtime_token(&req, expected);
+
+    if authorized {
+        next.run(req).await
+    } else {
+        runtime_token_required_response()
+    }
+}
+
+fn request_has_runtime_token(req: &Request, expected: &str) -> bool {
+    req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|raw| raw.strip_prefix("Bearer "))
@@ -565,40 +574,72 @@ async fn require_runtime_token(
             .get("x-deepseek-runtime-token")
             .and_then(|value| value.to_str().ok())
             .is_some_and(|token| token == expected)
-        || token_from_query(req.uri().query()).is_some_and(|token| token == expected);
-
-    if authorized {
-        next.run(req).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": {
-                    "message": "runtime API bearer token required",
-                    "status": StatusCode::UNAUTHORIZED.as_u16(),
-                }
-            })),
-        )
-            .into_response()
-    }
+        || token_from_query(req.uri().query()).is_some_and(|token| token == expected)
 }
 
-fn token_from_query(query: Option<&str>) -> Option<&str> {
+fn runtime_token_required_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "error": {
+                "message": "runtime API bearer token required",
+                "status": StatusCode::UNAUTHORIZED.as_u16(),
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn token_from_query(query: Option<&str>) -> Option<String> {
     query.and_then(|query| {
         query.split('&').find_map(|pair| {
             let (key, value) = pair.split_once('=')?;
-            (key == "token").then_some(value)
+            (key == "token")
+                .then(|| percent_decode_query_component(value))
+                .flatten()
         })
     })
 }
 
-async fn mobile_page(State(state): State<RuntimeApiState>) -> Response {
+fn percent_decode_query_component(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                let hi = *bytes.get(index + 1)?;
+                let lo = *bytes.get(index + 2)?;
+                let hi = (hi as char).to_digit(16)? as u8;
+                let lo = (lo as char).to_digit(16)? as u8;
+                decoded.push((hi << 4) | lo);
+                index += 3;
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+async fn mobile_page(State(state): State<RuntimeApiState>, req: Request) -> Response {
     if !state.mobile_enabled {
         return (
             StatusCode::NOT_FOUND,
             "mobile control is disabled; start with `codewhale serve --mobile`",
         )
             .into_response();
+    }
+    if let Some(expected) = state.runtime_token.as_deref()
+        && !request_has_runtime_token(&req, expected)
+    {
+        return runtime_token_required_response();
     }
     Html(MOBILE_HTML).into_response()
 }
@@ -2033,6 +2074,15 @@ mod tests {
             url_query_component("abc ABC+/?:=&%"),
             "abc%20ABC%2B%2F%3F%3A%3D%26%25"
         );
+    }
+
+    #[test]
+    fn token_from_query_decodes_percent_encoded_token() {
+        assert_eq!(
+            token_from_query(Some("since_seq=0&token=abc%20ABC%2B%2F%3F%3A%3D%26%25")),
+            Some("abc ABC+/?:=&%".to_string())
+        );
+        assert_eq!(token_from_query(Some("token=bad%ZZ")), None);
     }
 
     async fn spawn_test_server_with_root(
@@ -3734,6 +3784,77 @@ mod tests {
         let html = enabled.text().await?;
         assert!(html.contains("CodeWhale Mobile"));
         assert!(html.contains("/v1/approvals/"));
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mobile_page_requires_runtime_token_when_auth_enabled() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().to_path_buf();
+        let sessions_dir = root.join("sessions");
+        let token = "abc ABC+/?:=&%".to_string();
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server_with_root_token_and_mobile(
+            root,
+            sessions_dir,
+            Some(token.clone()),
+            true,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let unauthorized = client.get(format!("http://{addr}/mobile")).send().await?;
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let encoded = url_query_component(&token);
+        let query = client
+            .get(format!("http://{addr}/mobile?token={encoded}"))
+            .send()
+            .await?
+            .error_for_status()?;
+        assert!(query.text().await?.contains("CodeWhale Mobile"));
+
+        let bearer = client
+            .get(format!("http://{addr}/mobile"))
+            .bearer_auth(&token)
+            .send()
+            .await?
+            .error_for_status()?;
+        assert!(bearer.text().await?.contains("CodeWhale Mobile"));
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mobile_insecure_mode_allows_page_and_v1_routes_without_token() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().to_path_buf();
+        let sessions_dir = root.join("sessions");
+        let Some((addr, _runtime_threads, handle)) =
+            spawn_test_server_with_root_token_and_mobile(root, sessions_dir, None, true).await?
+        else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let page = client
+            .get(format!("http://{addr}/mobile"))
+            .send()
+            .await?
+            .error_for_status()?;
+        assert!(page.text().await?.contains("CodeWhale Mobile"));
+
+        let summary = client
+            .get(format!("http://{addr}/v1/threads/summary"))
+            .send()
+            .await?
+            .error_for_status()?;
+        assert_eq!(summary.status(), StatusCode::OK);
 
         handle.abort();
         Ok(())
