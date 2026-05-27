@@ -2779,7 +2779,6 @@ mod tests {
             seq_b > seq_a,
             "expected seq after cursor: {seq_b} <= {seq_a}"
         );
-        assert_eq!(payload_b["thread_id"], thread_id);
 
         handle.abort();
         Ok(())

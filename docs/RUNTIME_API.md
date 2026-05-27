@@ -314,8 +314,9 @@ Compatibility notes:
 - `kind` mirrors `event` in the stable envelope for typed clients.
 - `thread.started`, `turn.started`, and `turn.completed` are emitted as SSE event
   names exactly as before.
-- `created_at` is currently a duplicate of `timestamp` (`timestamp` is the existing
-  canonical field).
+- `timestamp` remains the canonical event time for schema version 1. `created_at`
+  is an equivalent alias for clients that use `created_at` naming elsewhere; do
+  not require both fields to be present.
 
 Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.lifecycle`, `turn.steered`, `turn.interrupt_requested`,

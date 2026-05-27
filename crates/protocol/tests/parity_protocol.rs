@@ -64,6 +64,7 @@ fn runtime_event_envelope_roundtrip() {
         "turn_id": "turn_456",
         "item_id": "item_789",
         "timestamp": "2026-02-11T20:18:49.123Z",
+        "created_at": "2026-02-11T20:18:49.123Z",
         "payload": { "delta": "ok", "kind": "agent_message" },
     });
     let envelope: RuntimeEventEnvelope =
@@ -76,7 +77,17 @@ fn runtime_event_envelope_roundtrip() {
 
     let encoded = serde_json::to_value(&envelope).expect("serialize runtime event envelope");
     assert_eq!(encoded["event"], encoded["kind"]);
+    assert_eq!(encoded["schema_version"], 1);
     assert_eq!(encoded["seq"], 12);
+    assert_eq!(encoded["thread_id"], "thr_123");
+    assert_eq!(encoded["turn_id"], "turn_456");
+    assert_eq!(encoded["item_id"], "item_789");
+    assert_eq!(encoded["timestamp"], "2026-02-11T20:18:49.123Z");
+    assert_eq!(encoded["created_at"], "2026-02-11T20:18:49.123Z");
+    assert_eq!(
+        encoded["payload"],
+        json!({ "delta": "ok", "kind": "agent_message" })
+    );
 }
 
 #[test]
