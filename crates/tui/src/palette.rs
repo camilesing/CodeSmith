@@ -170,8 +170,9 @@ pub const SOLARIZED_SELECT_BG: Color = Color::Rgb(
     SOLARIZED_SELECT_RGB.2,
 );
 pub const SOLARIZED_DIFF_ADDED_BG: Color = Color::Rgb(0xEA, 0xF2, 0xE0);
-pub const SOLARIZED_DIFF_DELETED_BG: Color = Color::Rgb(0xFD, 0xEE, 0xEB);
 pub const SOLARIZED_ERROR_SURFACE: Color = Color::Rgb(0xFD, 0xEE, 0xEB);
+/// Same tone as the error surface; kept as a distinct alias for diff context.
+pub const SOLARIZED_DIFF_DELETED_BG: Color = SOLARIZED_ERROR_SURFACE;
 pub const SOLARIZED_ERROR_TEXT: Color = Color::Rgb(0x8B, 0x00, 0x00);
 pub const SOLARIZED_ERROR_HOVER: Color = Color::Rgb(0xE0, 0x55, 0x52);
 pub const SOLARIZED_COMPOSER: Color = Color::Rgb(
@@ -1357,8 +1358,10 @@ fn adapt_bg_for_solarized_light_palette(color: Color) -> Color {
         SOLARIZED_PANEL
     } else if color == SURFACE_SUCCESS || color == DIFF_ADDED_BG {
         SOLARIZED_DIFF_ADDED_BG
-    } else if color == SURFACE_ERROR || color == DIFF_DELETED_BG {
+    } else if color == SURFACE_ERROR {
         SOLARIZED_ERROR_SURFACE
+    } else if color == DIFF_DELETED_BG {
+        SOLARIZED_DIFF_DELETED_BG
     } else if color == SELECTION_BG {
         SOLARIZED_SELECT_BG
     } else {
