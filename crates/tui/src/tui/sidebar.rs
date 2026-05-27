@@ -1155,9 +1155,21 @@ fn editorial_tool_rows(rows: Vec<SidebarToolRow>, limit: usize) -> Vec<SidebarTo
     let mut ci_poll_groups: Vec<(usize, SidebarToolRow, usize)> = Vec::new();
     let mut shell_wait_groups: Vec<(usize, SidebarToolRow, usize, String)> = Vec::new();
     let mut seen_success: Vec<String> = Vec::new();
+    let mut seen_tool_names_succeeded: Vec<String> = Vec::new();
+    let mut seen_failures: Vec<String> = Vec::new();
+    let mut visible_failure_count: usize = 0;
+    const MAX_VISIBLE_FAILURES: usize = 2;
 
     for (order, mut row) in rows.into_iter().enumerate() {
         if row.status == ToolStatus::Failed {
+            // Deduplicate failures for the same tool name: keep only the most
+            // recent failure per tool. Fixes #1884 — stale failures from
+            // tools that have since succeeded no longer crowd the sidebar.
+            let fail_key = row.name.trim().to_ascii_lowercase();
+            if seen_failures.contains(&fail_key) {
+                continue;
+            }
+            seen_failures.push(fail_key);
             row.summary = failure_summary_with_hint(&row.summary);
         }
 
@@ -1213,10 +1225,40 @@ fn editorial_tool_rows(rows: Vec<SidebarToolRow>, limit: usize) -> Vec<SidebarTo
         }
         if row.status == ToolStatus::Success {
             seen_success.push(key);
+            let normalized = row.name.trim().to_ascii_lowercase();
+            if !seen_tool_names_succeeded.contains(&normalized) {
+                seen_tool_names_succeeded.push(normalized);
+            }
         }
 
+        // When a tool succeeds, remove any prior failure for the same
+        // tool name. Prevents stale `gh issue create (failed)` from
+        // lingering after a successful retry. (#1884)
+        if row.status == ToolStatus::Success {
+            let normalized = row.name.trim().to_ascii_lowercase();
+            candidates.retain(|c| {
+                c.row.name.trim().to_ascii_lowercase() != normalized
+                    || c.row.status != ToolStatus::Failed
+            });
+        }
+
+        // Cap visible failures at MAX_VISIBLE_FAILURES. Excess failures
+        // get demoted to rank 3 so they don't crowd the top of the
+        // sidebar. (#1884)
+        let rank = if row.status == ToolStatus::Failed {
+            if visible_failure_count >= MAX_VISIBLE_FAILURES {
+                visible_failure_count += 1;
+                3
+            } else {
+                visible_failure_count += 1;
+                0
+            }
+        } else {
+            tool_row_rank(&row)
+        };
+
         candidates.push(Candidate {
-            rank: tool_row_rank(&row),
+            rank,
             order,
             row,
         });
