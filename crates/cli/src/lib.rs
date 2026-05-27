@@ -240,6 +240,8 @@ struct UpdateArgs {
     /// Update to the latest beta release instead of the latest stable release.
     #[arg(long)]
     beta: bool,
+    #[arg(long)]
+    proxy: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -569,7 +571,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Update(args)) => update::run_update(args.beta),
+        Some(Commands::Update(args)) => update::run_update(args),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
@@ -1817,13 +1819,19 @@ mod tests {
         let cli = parse_ok(&["codewhale", "update"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Update(UpdateArgs { beta: false }))
+            Some(Commands::Update(UpdateArgs {
+                beta: false,
+                proxy: None
+            }))
         ));
 
         let cli = parse_ok(&["codewhale", "update", "--beta"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Update(UpdateArgs { beta: true }))
+            Some(Commands::Update(UpdateArgs {
+                beta: true,
+                proxy: None
+            }))
         ));
     }
 
@@ -2425,6 +2433,31 @@ mod tests {
         assert!(!output.contains("sk-env-1111"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn udpate_parse_with_proxy() {
+        let cli = parse_ok(&["deepseek", "update", "--proxy", "http:localhost:7897"]);
+
+        let args = match cli.command {
+            Some(Commands::Update(args)) => args,
+            other => panic!("expected Update with proxy, got {other:?}"),
+        };
+        assert_eq!(
+            args.proxy.expect("should have proxy"),
+            "http:localhost:7897"
+        );
+    }
+
+    #[test]
+    fn udpate_parse_without_proxy() {
+        let cli = parse_ok(&["deepseek", "update"]);
+
+        let args = match cli.command {
+            Some(Commands::Update(args)) => args,
+            other => panic!("expected Update, got {other:?}"),
+        };
+        assert!(args.proxy.is_none());
     }
 
     #[test]
