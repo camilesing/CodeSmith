@@ -256,6 +256,41 @@ fn parse_pages_arg(spec: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// Clean PDF-extracted text for TUI display: collapse consecutive blank
+/// lines (more than 1 becomes 1), strip NUL bytes, replace non-breaking
+/// spaces with regular spaces, and trim trailing whitespace on each line.
+/// Produces output that won't clutter the transcript with vertical gaps
+/// or invisible control characters.
+fn clean_pdf_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut blank_run = 0usize;
+    for line in raw.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            blank_run = blank_run.saturating_add(1);
+            if blank_run <= 1 {
+                out.push('\n');
+            }
+        } else {
+            blank_run = 0;
+            // Replace NUL bytes (present in some PDF streams) with a visible
+            // placeholder so they don't truncate the tool output at the first \0.
+            let cleaned: String = trimmed
+                .chars()
+                .map(|c| match c {
+                    '\0' => '\u{FFFD}',
+                    '\u{A0}' => ' ', // non-breaking space → regular space
+                    other => other,
+                })
+                .collect();
+            out.push_str(&cleaned);
+            out.push('\n');
+        }
+    }
+    // Trim leading/trailing blank lines from the whole output.
+    out.trim().to_string()
+}
+
 fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
     // Validate the `pages` spec once, up front, so both extractor paths
     // surface the same error shape on bad input.
@@ -325,7 +360,7 @@ fn read_pdf_via_pdf_extract(
             ))
         })?
     };
-    Ok(ToolResult::success(text))
+    Ok(ToolResult::success(clean_pdf_text(&text)))
 }
 
 fn read_pdf_via_pdftotext(
@@ -382,7 +417,7 @@ fn read_pdf_via_pdftotext(
     }
 
     let text = String::from_utf8_lossy(&output.stdout).to_string();
-    Ok(ToolResult::success(text))
+    Ok(ToolResult::success(clean_pdf_text(&text)))
 }
 
 // === WriteFileTool ===
@@ -1224,6 +1259,36 @@ mod tests {
 
     fn sample_pdf_present() -> bool {
         std::path::Path::new(SAMPLE_PDF_PATH).exists()
+    }
+
+    #[test]
+    fn clean_pdf_text_collapses_consecutive_blank_lines() {
+        let raw = "line1\n\n\n\n\nline2\n\n\nline3";
+        let cleaned = super::clean_pdf_text(raw);
+        assert_eq!(cleaned, "line1\n\nline2\n\nline3");
+    }
+
+    #[test]
+    fn clean_pdf_text_strips_nul_bytes() {
+        let raw = "hello\0world";
+        let cleaned = super::clean_pdf_text(raw);
+        assert!(!cleaned.contains('\0'));
+        assert!(cleaned.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn clean_pdf_text_replaces_non_breaking_spaces() {
+        let raw = "hello\u{A0}world";
+        let cleaned = super::clean_pdf_text(raw);
+        assert!(!cleaned.contains('\u{A0}'));
+        assert_eq!(cleaned, "hello world");
+    }
+
+    #[test]
+    fn clean_pdf_text_trims_trailing_whitespace() {
+        let raw = "hello   ";
+        let cleaned = super::clean_pdf_text(raw);
+        assert_eq!(cleaned, "hello");
     }
 
     #[test]
