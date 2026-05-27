@@ -240,6 +240,7 @@ struct UpdateArgs {
     /// Update to the latest beta release instead of the latest stable release.
     #[arg(long)]
     beta: bool,
+    /// Optional proxy URL to use for all update HTTP requests (e.g. `http://host:port` or `socks5://host:port`).
     #[arg(long)]
     proxy: Option<String>,
 }
@@ -571,7 +572,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Update(args)) => update::run_update(args),
+        Some(Commands::Update(args)) => update::run_update(args.beta, args.proxy),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
@@ -1684,6 +1685,7 @@ fn read_api_key_from_stdin() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::update::validate_and_build_proxy;
     use clap::error::ErrorKind;
     use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
@@ -2436,16 +2438,47 @@ mod tests {
     }
 
     #[test]
-    fn udpate_parse_with_proxy() {
-        let cli = parse_ok(&["deepseek", "update", "--proxy", "http:localhost:7897"]);
+    fn update_parse_with_proxy() {
+        let cli = parse_ok(&["deepseek", "update", "--proxy", "http://localhost:7897"]);
 
         let args = match cli.command {
             Some(Commands::Update(args)) => args,
             other => panic!("expected Update with proxy, got {other:?}"),
         };
+
         assert_eq!(
             args.proxy.expect("should have proxy"),
-            "http:localhost:7897"
+            "http://localhost:7897"
+        );
+
+        // Valid HTTP proxy
+        assert!(
+            validate_and_build_proxy("http://localhost:7897").is_ok(),
+            "valid HTTP proxy should succeed"
+        );
+
+        // Valid HTTPS proxy
+        assert!(
+            validate_and_build_proxy("https://proxy.example.com:8080").is_ok(),
+            "valid HTTPS proxy should succeed"
+        );
+
+        // Valid SOCKS5 proxy
+        assert!(
+            validate_and_build_proxy("socks5://127.0.0.1:1080").is_ok(),
+            "valid SOCKS5 proxy should succeed"
+        );
+
+        // Invalid: empty URL
+        assert!(
+            validate_and_build_proxy("").is_err(),
+            "empty proxy URL should fail"
+        );
+
+        // Invalid: malformed URL
+        assert!(
+            validate_and_build_proxy("not a valid url").is_err(),
+            "malformed proxy URL should fail"
         );
     }
 

@@ -4,10 +4,8 @@
 //! `github.com/Hmbown/CodeWhale/releases/latest`, downloads the
 //! platform-correct binary, verifies its SHA256 checksum, and atomically
 //! replaces the currently running binary.
-use crate::UpdateArgs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use reqwest::Proxy;
@@ -28,16 +26,15 @@ const LEGACY_UPDATE_VERSION_ENV: &str = "DEEPSEEK_VERSION";
 const UPDATE_USER_AGENT: &str = "codewhale-updater";
 
 /// Run the self-update workflow.
-pub fn run_update(args: UpdateArgs) -> Result<()> {
-    let beta = args.beta;
+pub fn run_update(beta: bool, proxy_arg: Option<String>) -> Result<()> {
     let current_exe =
         std::env::current_exe().context("failed to determine current executable path")?;
     let targets = update_targets_for_exe(&current_exe);
     let channel = ReleaseChannel::from_beta_flag(beta);
     let current_version = env!("CARGO_PKG_VERSION");
 
-    let proxy = if let Some(proxy_str) = &args.proxy {
-        validate_and_build_proxy(proxy_str)?
+    let proxy = if let Some(proxy_str) = &proxy_arg {
+        Some(validate_and_build_proxy(proxy_str)?)
     } else {
         None
     };
@@ -184,8 +181,8 @@ enum ReleaseSource {
     Mirror { base_url: String },
 }
 
-// Validate the proxy URL and optionally test connectivity before proceeding.
-fn validate_and_build_proxy(proxy_str: &str) -> Result<Option<Proxy>> {
+/// Validate the proxy URL and optionally test connectivity before proceeding.
+pub(crate) fn validate_and_build_proxy(proxy_str: &str) -> Result<Proxy> {
     let valid_url = reqwest::Url::parse(proxy_str).with_context(|| {
         format!(
             "invalid proxy URL: {proxy_str}\n\
@@ -194,37 +191,7 @@ fn validate_and_build_proxy(proxy_str: &str) -> Result<Option<Proxy>> {
     })?;
 
     let proxy = reqwest::Proxy::all(valid_url)?;
-
-    // Quick connectivity test through the proxy
-    let client = reqwest::blocking::Client::builder()
-        .proxy(proxy.clone())
-        .user_agent(UPDATE_USER_AGENT)
-        .timeout(Duration::from_secs(10))
-        .build()
-        .context("Could not build proxy HTTP client")?;
-
-    match client.head(LATEST_RELEASE_URL).send() {
-        Ok(_) => Ok(Some(proxy)),
-        Err(e) => {
-            // Give a clear actionable error rather than a raw reqwest error
-            let hint = if e.is_timeout() || e.is_connect() {
-                "could not connect to the proxy server"
-            } else if e.is_request() {
-                "the request was sent but no response was received"
-            } else {
-                "an unexpected network error occurred"
-            };
-            bail!(
-                "proxy connectivity failed: {hint}\n\
-                 Proxy URL: {proxy_str}\n\
-                 Details: {e}\n\
-                 Please verify:\n\
-                 - The proxy URL is correct\n\
-                 - The proxy server is running and reachable\n\
-                 - The proxy allows outbound connections to api.github.com"
-            )
-        }
-    }
+    Ok(proxy)
 }
 
 pub(crate) fn release_arch_for_rust_arch(arch: &str) -> &str {
