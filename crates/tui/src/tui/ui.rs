@@ -9,14 +9,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::{
-    event::{
-        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    },
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.
@@ -24,40 +16,48 @@ use crossterm::{
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
+use crossterm::{
+    event::{
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use ratatui::{
-    Frame, Terminal,
-    layout::{Constraint, Direction, Layout, Rect, Size},
-    prelude::Widget,
+    layout::{Constraint, Direction, Layout, Rect, Size}, prelude::Widget,
     style::Style,
     widgets::Block,
+    Frame,
+    Terminal,
 };
 use tracing;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
 use crate::audit::log_sensitive_event;
-use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
-use crate::client::{DeepSeekClient, build_cache_warmup_request};
+use crate::automation_manager::{spawn_scheduler, AutomationManager, AutomationSchedulerConfig};
+use crate::client::{build_cache_warmup_request, DeepSeekClient};
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{
-    ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL, ProviderConfig, ProvidersConfig,
-    save_provider_auth_mode_for,
+    save_provider_auth_mode_for, ApiProvider, Config, ProviderConfig, ProvidersConfig,
+    DEFAULT_NVIDIA_NIM_BASE_URL,
 };
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
-use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
+use crate::core::engine::{spawn_engine, EngineConfig, EngineHandle};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
 use crate::hooks::{HookEvent, HookExecutor};
 use crate::llm_client::LlmClient;
 use crate::models::{
-    ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
+    context_window_for_model, ContentBlock, Message, MessageRequest, SystemPrompt, Usage,
 };
 use crate::palette;
 use crate::prompts;
 use crate::session_manager::{
-    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
-    create_saved_session_with_id_and_mode, create_saved_session_with_mode, update_session,
+    create_saved_session_with_id_and_mode, create_saved_session_with_mode, update_session, OfflineQueueState,
+    QueuedSessionMessage, SavedSession, SessionManager,
 };
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
@@ -67,7 +67,7 @@ use crate::tools::subagent::SubAgentStatus;
 use crate::tui::auto_router;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
-    CommandPaletteView, build_entries as build_command_palette_entries,
+    build_entries as build_command_palette_entries, CommandPaletteView,
 };
 use crate::tui::composer_ui::*;
 use crate::tui::context_inspector::build_context_inspector_text;
@@ -111,16 +111,16 @@ use crate::tui::workspace_context;
 use super::key_actions;
 
 use super::app::{
-    App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
-    StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions,
-    looks_like_slash_command_input,
+    looks_like_slash_command_input, App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort,
+    SidebarFocus, StatusToastLevel, SubmitDisposition, TaskPanelEntry,
+    TuiOptions,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
 };
 use super::history::{
-    HistoryCell, ToolCell, ToolStatus, TranscriptRenderOptions, history_cells_from_message,
-    summarize_tool_output,
+    history_cells_from_message, summarize_tool_output, HistoryCell, ToolCell, ToolStatus,
+    TranscriptRenderOptions,
 };
 use super::slash_menu::{
     apply_slash_menu_selection, partial_inline_skill_mention_at_cursor,
@@ -1997,8 +1997,7 @@ async fn run_event_loop(
                             if let Some((method, _, _)) =
                                 crate::tui::notifications::settings(config)
                             {
-                                let in_tmux =
-                                    std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                                let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
                                 crate::tui::notifications::notify_done(
                                     method,
                                     in_tmux,
@@ -2014,11 +2013,8 @@ async fn run_event_loop(
                     }
                     EngineEvent::UserInputRequired { id, request } => {
                         app.view_stack.push(UserInputView::new(id.clone(), request));
-                        if let Some((method, _, _)) =
-                            crate::tui::notifications::settings(config)
-                        {
-                            let in_tmux =
-                                std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                        if let Some((method, _, _)) = crate::tui::notifications::settings(config) {
+                            let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
                             crate::tui::notifications::notify_done(
                                 method,
                                 in_tmux,
@@ -2085,14 +2081,11 @@ async fn run_event_loop(
                             if let Some((method, _, _)) =
                                 crate::tui::notifications::settings(config)
                             {
-                                let in_tmux =
-                                    std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                                let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
                                 crate::tui::notifications::notify_done(
                                     method,
                                     in_tmux,
-                                    &format!(
-                                        "Sandbox: {denial_reason} for '{tool_name}'"
-                                    ),
+                                    &format!("Sandbox: {denial_reason} for '{tool_name}'"),
                                     Duration::ZERO,
                                     Duration::ZERO,
                                 );
