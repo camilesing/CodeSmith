@@ -3916,9 +3916,19 @@ fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool
             now.saturating_duration_since(started) > TURN_STALL_WATCHDOG_TIMEOUT
         })
     {
+        // Finalize in-flight thinking / assistant / tool cells so the
+        // transcript doesn't show permanent spinners after recovery.
+        streaming_thinking::finalize_current(app);
+        app.finalize_streaming_assistant_as_interrupted();
+        app.finalize_active_cell_as_interrupted();
+        app.streaming_state.reset();
+        app.streaming_message_index = None;
+        app.streaming_thinking_active_entry = None;
+
         app.is_loading = false;
         app.turn_started_at = None;
         app.runtime_turn_status = None;
+        app.runtime_turn_id = None;
         app.dispatch_started_at = None;
         app.push_status_toast(
             "Turn stalled — no completion signal received. Please try again.",
