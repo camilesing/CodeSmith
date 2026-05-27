@@ -909,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     fn auto_detect_picks_bel_for_unknown_on_unix() {
         let _lock = env_lock();
         let prev_tp = std::env::var_os("TERM_PROGRAM");
@@ -992,7 +992,7 @@ mod tests {
     /// `TERM_PROGRAM` but do set `TERM=xterm-ghostty`. The `$TERM`
     /// fallback should catch them.
     #[test]
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     fn auto_detect_picks_osc9_for_xterm_ghostty_term_fallback() {
         let _lock = env_lock();
         let prev_tp = std::env::var_os("TERM_PROGRAM");
@@ -1060,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     fn auto_detect_picks_kitty_from_term_fallback() {
         let _lock = env_lock();
         let prev_tp = std::env::var_os("TERM_PROGRAM");
@@ -1093,8 +1093,11 @@ mod tests {
 
     /// When neither `TERM_PROGRAM` nor `TERM` suggests a known capable
     /// terminal, the fallback on Unix is `Bel`.
+    ///
+    /// On macOS the `MacOS` method takes priority, so this test is
+    /// excluded there.
     #[test]
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     fn auto_detect_falls_back_to_bel_for_unrelated_term() {
         let _lock = env_lock();
         let prev_tp = std::env::var_os("TERM_PROGRAM");
