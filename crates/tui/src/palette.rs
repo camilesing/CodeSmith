@@ -844,23 +844,42 @@ pub const TERMINAL_UI_THEME: UiTheme = UiTheme {
     selection_bg: Color::Reset,
     header_bg: Color::Reset,
     footer_bg: Color::Reset,
-    mode_agent: Color::Blue,
-    mode_yolo: Color::Red,
-    // Magenta keeps Plan visually distinct from `status_warning` (yellow)
-    // so the mode indicator and warning chip don't collide on themes that
-    // render both in the status row.
-    mode_plan: Color::Magenta,
-    // DarkGray gives "Ready" a low-contrast but still distinguishable hue
-    // versus default body text (which is `Color::Reset` on this theme).
-    status_ready: Color::DarkGray,
-    status_working: Color::Cyan,
-    status_warning: Color::Yellow,
     text_dim: Color::Reset,
     text_hint: Color::Reset,
     text_muted: Color::Reset,
     text_body: Color::Reset,
     text_soft: Color::Reset,
     border: Color::Reset,
+    accent_primary: Color::Blue,
+    accent_secondary: Color::Cyan,
+    accent_action: Color::Yellow,
+    error_fg: Color::Red,
+    error_hover: Color::Red,
+    error_surface: Color::Reset,
+    error_border: Color::Red,
+    error_text: Color::Red,
+    warning: Color::Yellow,
+    success: Color::Green,
+    info: Color::Cyan,
+    mode_agent: Color::Blue,
+    mode_yolo: Color::Red,
+    // Magenta keeps Plan visually distinct from `status_warning` (yellow)
+    // so the mode indicator and warning chip don't collide on themes that
+    // render both in the status row.
+    mode_plan: Color::Magenta,
+    mode_goal: Color::Green,
+    // DarkGray gives "Ready" a low-contrast but still distinguishable hue
+    // versus default body text (which is `Color::Reset` on this theme).
+    status_ready: Color::DarkGray,
+    status_working: Color::Cyan,
+    status_warning: Color::Yellow,
+    diff_added_fg: Color::Green,
+    diff_deleted_fg: Color::Red,
+    diff_added_bg: Color::Reset,
+    diff_deleted_bg: Color::Reset,
+    tool_running: Color::Cyan,
+    tool_success: Color::Green,
+    tool_failed: Color::Red,
 };
 
 pub const GRUVBOX_DARK_UI_THEME: UiTheme = UiTheme {
@@ -980,9 +999,7 @@ impl ThemeId {
     pub const fn tagline(self) -> &'static str {
         match self {
             Self::System => "Follow terminal background (COLORFGBG / macOS appearance)",
-            Self::Terminal => {
-                "Inherit terminal colors fully (transparent surfaces, ANSI accents)"
-            }
+            Self::Terminal => "Inherit terminal colors fully (transparent surfaces, ANSI accents)",
             Self::Whale => "Whale dark — deep navy & gold",
             Self::WhaleLight => "DeepSeek light, paper-ish",
             Self::Grayscale => "Color-minimal high contrast",
@@ -1729,14 +1746,15 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        DEEPSEEK_SLATE, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED, GRAYSCALE_PANEL, GRAYSCALE_REASONING,
-        GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT,
-        GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED, LIGHT_PANEL, LIGHT_REASONING,
-        LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode,
-        SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
-        TEXT_TOOL_OUTPUT, UI_THEME, WHALE_REASONING_TEXT_RGB, WHALE_REASONING_TINT_RGB,
-        WHALE_TEXT_BODY_RGB, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
-        adapt_fg_for_palette_mode, blend, luma, nearest_ansi16, normalize_hex_rgb_color,
+        DEEPSEEK_SLATE, DIFF_ADDED, DIFF_ADDED_BG, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED,
+        GRAYSCALE_PANEL, GRAYSCALE_REASONING, GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY,
+        GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT, GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED,
+        LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
+        LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, SURFACE_REASONING_TINT, TERMINAL_UI_THEME,
+        TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, ThemeId, UI_THEME,
+        WHALE_REASONING_TEXT_RGB, WHALE_REASONING_TINT_RGB, WHALE_TEXT_BODY_RGB, adapt_bg,
+        adapt_bg_for_palette_mode, adapt_bg_for_theme, adapt_color, adapt_fg_for_palette_mode,
+        adapt_fg_for_theme, blend, luma, nearest_ansi16, normalize_hex_rgb_color,
         normalize_theme_name, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
         rgb_to_ansi256, theme_label_for_mode, ui_theme_from_settings,
     };
@@ -1822,10 +1840,37 @@ mod tests {
         assert_eq!(normalize_theme_name("system"), Some("system"));
         assert_eq!(normalize_theme_name("default"), Some("system"));
         assert_eq!(normalize_theme_name("whale"), Some("dark"));
+        assert_eq!(normalize_theme_name("transparent"), Some("terminal"));
+        assert_eq!(normalize_theme_name("inherit"), Some("terminal"));
         assert_eq!(normalize_theme_name("black-white"), Some("grayscale"));
         assert_eq!(normalize_theme_name("mono"), Some("grayscale"));
         assert_eq!(normalize_theme_name("solarized"), None);
         assert_eq!(theme_label_for_mode(PaletteMode::Grayscale), "grayscale");
+    }
+
+    #[test]
+    fn terminal_theme_resets_surfaces_and_remaps_direct_palette_constants() {
+        assert_eq!(ThemeId::from_name("terminal"), Some(ThemeId::Terminal));
+        assert_eq!(TERMINAL_UI_THEME.surface_bg, Color::Reset);
+        assert_eq!(TERMINAL_UI_THEME.footer_bg, Color::Reset);
+        assert_eq!(TERMINAL_UI_THEME.text_body, Color::Reset);
+
+        assert_eq!(
+            adapt_bg_for_theme(DEEPSEEK_INK, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_bg_for_theme(DIFF_ADDED_BG, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_fg_for_theme(TEXT_BODY, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_fg_for_theme(DIFF_ADDED, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Green
+        );
     }
 
     #[test]
