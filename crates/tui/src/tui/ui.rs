@@ -22,42 +22,42 @@ use crossterm::{
         EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect, Size}, prelude::Widget,
+    Frame, Terminal,
+    layout::{Constraint, Direction, Layout, Rect, Size},
+    prelude::Widget,
     style::Style,
     widgets::Block,
-    Frame,
-    Terminal,
 };
 use tracing;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
 use crate::audit::log_sensitive_event;
-use crate::automation_manager::{spawn_scheduler, AutomationManager, AutomationSchedulerConfig};
-use crate::client::{build_cache_warmup_request, DeepSeekClient};
+use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
+use crate::client::{DeepSeekClient, build_cache_warmup_request};
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{
-    save_provider_auth_mode_for, ApiProvider, Config, ProviderConfig, ProvidersConfig,
-    DEFAULT_NVIDIA_NIM_BASE_URL,
+    ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL, ProviderConfig, ProvidersConfig,
+    save_provider_auth_mode_for,
 };
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
-use crate::core::engine::{spawn_engine, EngineConfig, EngineHandle};
+use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
 use crate::hooks::{HookEvent, HookExecutor};
 use crate::llm_client::LlmClient;
 use crate::models::{
-    context_window_for_model, ContentBlock, Message, MessageRequest, SystemPrompt, Usage,
+    ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
 };
 use crate::palette;
 use crate::prompts;
 use crate::session_manager::{
-    create_saved_session_with_id_and_mode, create_saved_session_with_mode, update_session, OfflineQueueState,
-    QueuedSessionMessage, SavedSession, SessionManager,
+    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
+    create_saved_session_with_id_and_mode, create_saved_session_with_mode, update_session,
 };
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
@@ -67,7 +67,7 @@ use crate::tools::subagent::SubAgentStatus;
 use crate::tui::auto_router;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
-    build_entries as build_command_palette_entries, CommandPaletteView,
+    CommandPaletteView, build_entries as build_command_palette_entries,
 };
 use crate::tui::composer_ui::*;
 use crate::tui::context_inspector::build_context_inspector_text;
@@ -111,16 +111,16 @@ use crate::tui::workspace_context;
 use super::key_actions;
 
 use super::app::{
-    looks_like_slash_command_input, App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort,
-    SidebarFocus, StatusToastLevel, SubmitDisposition, TaskPanelEntry,
-    TuiOptions,
+    App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
+    StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions,
+    looks_like_slash_command_input,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
 };
 use super::history::{
-    history_cells_from_message, summarize_tool_output, HistoryCell, ToolCell, ToolStatus,
-    TranscriptRenderOptions,
+    HistoryCell, ToolCell, ToolStatus, TranscriptRenderOptions, history_cells_from_message,
+    summarize_tool_output,
 };
 use super::slash_menu::{
     apply_slash_menu_selection, partial_inline_skill_mention_at_cursor,
