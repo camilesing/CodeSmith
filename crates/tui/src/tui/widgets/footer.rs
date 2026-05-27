@@ -376,9 +376,9 @@ impl FooterWidget {
     ///
     /// Priority order (highest to lowest — last to drop):
     /// 1. Mode label (always visible at any width; truncated only as a last resort)
-    /// 2. Model name (always visible; then truncated mid-word once status, balance, & cost are gone)
-    /// 3. Cost chip — drops third (steady cost is more important than balance)
-    /// 4. Balance chip — drops second (after status, before cost)
+    /// 2. Model name (always visible; then truncated mid-word once all hints are gone)
+    /// 3. Balance chip — drops third (account balance is more actionable than session cost)
+    /// 4. Cost chip — drops fourth
     /// 5. Status label (e.g. "working", "draft") — drops first when space is tight
     ///
     /// At every width ≥40 cols the line never wraps mid-hint.
@@ -410,59 +410,59 @@ impl FooterWidget {
 
         let extra_sep = |w: usize| if w > 0 { sep_w } else { 0 };
 
-        // Tier 1: mode · model · cost · balance · status
+        // Tier 1: mode · model · balance · cost · status
         let full_w = mode_w
             + sep_w
             + model_w
-            + extra_sep(cost_w)
-            + cost_w
             + extra_sep(balance_w)
             + balance_w
+            + extra_sep(cost_w)
+            + cost_w
             + extra_sep(status_w)
             + status_w;
-        if (show_cost || show_balance || show_status) && full_w <= max_width {
+        if (show_balance || show_cost || show_status) && full_w <= max_width {
             return self.build_status_line_spans(
                 mode_label,
                 model.to_string(),
-                show_cost.then(|| cost_text.clone()),
                 show_balance.then(|| balance_text.clone()),
+                show_cost.then(|| cost_text.clone()),
                 show_status.then_some(status_label),
             );
         }
 
-        // Tier 2: mode · model · cost · balance — drop status.
-        let with_balance_w = mode_w
+        // Tier 2: mode · model · balance · cost — drop status.
+        let with_cost_w = mode_w
             + sep_w
             + model_w
-            + extra_sep(cost_w)
-            + cost_w
             + extra_sep(balance_w)
-            + balance_w;
-        if (show_cost || show_balance) && with_balance_w <= max_width {
+            + balance_w
+            + extra_sep(cost_w)
+            + cost_w;
+        if (show_balance || show_cost) && with_cost_w <= max_width {
             return self.build_status_line_spans(
                 mode_label,
                 model.to_string(),
-                show_cost.then(|| cost_text.clone()),
                 show_balance.then(|| balance_text.clone()),
+                show_cost.then(|| cost_text.clone()),
                 None,
             );
         }
 
-        // Tier 3: mode · model · cost — drop balance.
-        if show_cost {
-            let with_cost_w = mode_w + sep_w + model_w + sep_w + cost_w;
-            if with_cost_w <= max_width {
+        // Tier 3: mode · model · balance — drop cost.
+        if show_balance {
+            let with_balance_w = mode_w + sep_w + model_w + sep_w + balance_w;
+            if with_balance_w <= max_width {
                 return self.build_status_line_spans(
                     mode_label,
                     model.to_string(),
-                    Some(cost_text.clone()),
+                    Some(balance_text.clone()),
                     None,
                     None,
                 );
             }
         }
 
-        // Tier 4: mode · model — drop cost too.
+        // Tier 4: mode · model — drop balance too.
         let mode_model_w = mode_w + sep_w + model_w;
         if mode_model_w <= max_width {
             return self.build_status_line_spans(mode_label, model.to_string(), None, None, None);
