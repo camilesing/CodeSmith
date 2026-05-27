@@ -564,6 +564,7 @@ without recreating skills the user deliberately deleted.
 
 | Doc | Topic |
 |---|---|
+| [GUIDE.md](docs/GUIDE.md) | First-run user guide |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Codebase internals |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Full config reference |
 | [PROVIDERS.md](docs/PROVIDERS.md) | Provider IDs, auth, model defaults, and capability metadata |
