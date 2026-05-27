@@ -3930,6 +3930,8 @@ fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool
         app.runtime_turn_status = None;
         app.runtime_turn_id = None;
         app.dispatch_started_at = None;
+        // Per-turn scroll lock — clear so the next turn auto-scrolls.
+        app.user_scrolled_during_stream = false;
         app.push_status_toast(
             "Turn stalled — no completion signal received. Please try again.",
             StatusToastLevel::Error,

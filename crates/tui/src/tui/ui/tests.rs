@@ -2040,6 +2040,7 @@ fn turn_liveness_recovers_stalled_in_progress_turn() {
     app.turn_started_at =
         Some(Instant::now() - TURN_STALL_WATCHDOG_TIMEOUT - Duration::from_millis(1));
     app.streaming_message_index = Some(0);
+    app.user_scrolled_during_stream = true;
 
     let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
 
@@ -2051,6 +2052,7 @@ fn turn_liveness_recovers_stalled_in_progress_turn() {
     assert!(app.dispatch_started_at.is_none());
     assert!(app.streaming_message_index.is_none());
     assert!(app.streaming_thinking_active_entry.is_none());
+    assert!(!app.user_scrolled_during_stream);
     let toast = app.status_toasts.back().expect("stall toast");
     assert_eq!(toast.level, StatusToastLevel::Error);
     assert!(toast.text.contains("Turn stalled"));
