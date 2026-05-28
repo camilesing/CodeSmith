@@ -257,13 +257,14 @@ fn parse_pages_arg(spec: &str) -> Option<(u32, u32)> {
 }
 
 /// Clean PDF-extracted text for TUI display: collapse consecutive blank
-/// lines (more than 1 becomes 1), strip NUL bytes, replace non-breaking
-/// spaces with regular spaces, and trim trailing whitespace on each line.
-/// Produces output that won't clutter the transcript with vertical gaps
-/// or invisible control characters.
+/// lines (more than 1 becomes 1), replace NUL bytes with U+FFFD, replace
+/// non-breaking spaces with regular spaces, and trim trailing whitespace
+/// on each line. Produces output that won't clutter the transcript with
+/// vertical gaps or invisible control characters.
 fn clean_pdf_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut blank_run = 0usize;
+    let mut any_content = false;
     for line in raw.lines() {
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
@@ -273,22 +274,29 @@ fn clean_pdf_text(raw: &str) -> String {
             }
         } else {
             blank_run = 0;
-            // Replace NUL bytes (present in some PDF streams) with a visible
-            // placeholder so they don't truncate the tool output at the first \0.
-            let cleaned: String = trimmed
-                .chars()
-                .map(|c| match c {
-                    '\0' => '\u{FFFD}',
-                    '\u{A0}' => ' ', // non-breaking space → regular space
-                    other => other,
-                })
-                .collect();
-            out.push_str(&cleaned);
+            any_content = true;
+            // Push cleaned characters directly — avoids a per-line
+            // temporary String allocation.
+            for c in trimmed.chars() {
+                match c {
+                    '\0' => out.push('\u{FFFD}'),
+                    '\u{A0}' => out.push(' '),
+                    other => out.push(other),
+                }
+            }
             out.push('\n');
         }
     }
-    // Trim leading/trailing blank lines from the whole output.
-    out.trim().to_string()
+    // Trim leading blank lines only — don't use str::trim() which
+    // would also strip intentional indentation (e.g. centred titles).
+    if any_content {
+        let start = out.find(|c: char| c != '\n').unwrap_or(0);
+        // Walk back from end to find the last non-newline character.
+        let end = out.rfind(|c: char| c != '\n').map_or(out.len(), |i| i + 1);
+        out[start..end].to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
@@ -1269,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_pdf_text_strips_nul_bytes() {
+    fn clean_pdf_text_replaces_nul_bytes_with_replacement_char() {
         let raw = "hello\0world";
         let cleaned = super::clean_pdf_text(raw);
         assert!(!cleaned.contains('\0'));
@@ -1289,6 +1297,13 @@ mod tests {
         let raw = "hello   ";
         let cleaned = super::clean_pdf_text(raw);
         assert_eq!(cleaned, "hello");
+    }
+
+    #[test]
+    fn clean_pdf_text_preserves_leading_indentation() {
+        let raw = "   indented line\nregular line";
+        let cleaned = super::clean_pdf_text(raw);
+        assert_eq!(cleaned, "   indented line\nregular line");
     }
 
     #[test]
