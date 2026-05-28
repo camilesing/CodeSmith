@@ -1500,10 +1500,8 @@ async fn run_event_loop(
                                 && ledger.has_open_entries()
                             {
                                 if let Some(gate_msg) = ledger.completion_gate_summary() {
-                                    let short = gate_msg
-                                        .lines()
-                                        .nth(4)
-                                        .unwrap_or("review before done");
+                                    let short =
+                                        gate_msg.lines().nth(4).unwrap_or("review before done");
                                     app.push_status_toast(
                                         format!("⚠️ SlopLedger: {short}"),
                                         crate::tui::app::StatusToastLevel::Warning,
