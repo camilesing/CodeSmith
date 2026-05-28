@@ -10,37 +10,33 @@ use super::CommandResult;
 pub fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
     match arg {
         Some("clear") | Some("reset") => {
-            app.goal.quarry = None;
-            app.goal.token_budget = None;
-            app.goal.started_at = None;
-            app.goal.verdict = HuntVerdict::default();
+            app.hunt.quarry = None;
+            app.hunt.token_budget = None;
+            app.hunt.started_at = None;
+            app.hunt.verdict = HuntVerdict::default();
             CommandResult::message("Hunt cleared.")
         }
         Some("done") | Some("complete") | Some("hunted") => {
-            let prev = app.goal.verdict;
-            app.goal.verdict = HuntVerdict::Hunted;
+            let prev = app.hunt.verdict;
+            app.hunt.verdict = HuntVerdict::Hunted;
             let elapsed = app
-                .goal
+                .hunt
                 .started_at
                 .map(|t| crate::tui::notifications::humanize_duration(t.elapsed()))
                 .unwrap_or_else(|| "unknown".to_string());
             if prev != HuntVerdict::Hunted {
-                if let Err(e) = write_trophy_card(app) {
-                    return CommandResult::error(format!(
-                        "Hunt complete but trophy write failed: {e}"
-                    ));
-                }
+                write_trophy_card(app);
             }
             CommandResult::message(format!("Hunt complete! Elapsed: {elapsed}"))
         }
         Some("wound") | Some("wounded") => {
-            app.goal.verdict = HuntVerdict::Wounded;
-            let _ = write_trophy_card(app);
+            app.hunt.verdict = HuntVerdict::Wounded;
+            write_trophy_card(app);
             CommandResult::message("Hunt wounded — progress saved, can be resumed.")
         }
         Some("escape") | Some("escaped") => {
-            app.goal.verdict = HuntVerdict::Escaped;
-            let _ = write_trophy_card(app);
+            app.hunt.verdict = HuntVerdict::Escaped;
+            write_trophy_card(app);
             CommandResult::message("Hunt escaped — quarry abandoned.")
         }
         Some(text) if !text.is_empty() => {
@@ -48,10 +44,10 @@ pub fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
             if objective.is_empty() || objective.chars().all(|c| c == '|') {
                 return CommandResult::error("Usage: /hunt <quarry> [budget: N]");
             }
-            app.goal.quarry = Some(objective.clone());
-            app.goal.token_budget = budget;
-            app.goal.started_at = Some(std::time::Instant::now());
-            app.goal.verdict = HuntVerdict::Hunting;
+            app.hunt.quarry = Some(objective.clone());
+            app.hunt.token_budget = budget;
+            app.hunt.started_at = Some(std::time::Instant::now());
+            app.hunt.verdict = HuntVerdict::Hunting;
             let budget_str = budget
                 .map(|b| format!(" (budget: {b} tokens)"))
                 .unwrap_or_default();
@@ -61,14 +57,14 @@ pub fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
             )
         }
         _ => {
-            if let Some(ref obj) = app.goal.quarry {
+            if let Some(ref obj) = app.hunt.quarry {
                 let elapsed = app
-                    .goal
+                    .hunt
                     .started_at
                     .map(|t| crate::tui::notifications::humanize_duration(t.elapsed()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let budget_str = app
-                    .goal
+                    .hunt
                     .token_budget
                     .map(|b| {
                         let used = app.session.total_conversation_tokens;
@@ -80,7 +76,7 @@ pub fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
                         format!(" | tokens: {used}/{b} ({pct:.0}%)")
                     })
                     .unwrap_or_default();
-                let verdict_label = match app.goal.verdict {
+                let verdict_label = match app.hunt.verdict {
                     HuntVerdict::Hunting => "[HUNTING]",
                     HuntVerdict::Hunted => "[HUNTED]",
                     HuntVerdict::Wounded => "[WOUNDED]",
@@ -121,38 +117,48 @@ fn parse_hunt_budget(text: &str) -> (String, Option<u32>) {
     }
 }
 
-/// Write a trophy card to `~/.codewhale/trophies/<date>-<slug>.md` for the
-/// current hunt verdict (#2092). Returns the path written on success.
-fn write_trophy_card(app: &mut App) -> Result<std::path::PathBuf, std::io::Error> {
-    let quarry = app.goal.quarry.as_deref().unwrap_or("untitled");
-    let slug = quarry
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
-    let slug = if slug.is_empty() { "untitled" } else { &slug };
+/// Write a trophy card to `~/.codewhale/trophies/<date>-<time>-<slug>.md`
+/// for the current hunt verdict (#2092). Returns `None` when no quarry is
+/// set (nothing to write).
+fn write_trophy_card(app: &App) -> Option<std::path::PathBuf> {
+    let quarry = app.hunt.quarry.as_deref()?;
+    // Collapse consecutive non-alphanumeric chars into a single '-'
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for c in quarry.chars() {
+        if c.is_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        return None;
+    }
     let now = chrono::Local::now();
+    let time = now.format("%H%M%S");
     let date = now.format("%Y-%m-%d");
-    let dir = codewhale_config::resolve_state_dir("trophies")
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    std::fs::create_dir_all(&dir)?;
-    let filename = format!("{date}-{slug}.md");
+    let dir = match codewhale_config::resolve_state_dir("trophies") {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    if let Err(_e) = std::fs::create_dir_all(&dir) {
+        return None;
+    }
+    // Include time in filename to avoid collisions on same-date hunts.
+    let filename = format!("{date}-{time}-{slug}.md");
     let path = dir.join(&filename);
 
     let elapsed = app
-        .goal
+        .hunt
         .started_at
         .as_ref()
         .map(|t| crate::tui::notifications::humanize_duration(t.elapsed()))
         .unwrap_or_else(|| "unknown".to_string());
-    let verdict_str = match app.goal.verdict {
+    let verdict_str = match app.hunt.verdict {
         HuntVerdict::Hunting => "hunting",
         HuntVerdict::Hunted => "hunted",
         HuntVerdict::Wounded => "wounded",
@@ -160,24 +166,27 @@ fn write_trophy_card(app: &mut App) -> Result<std::path::PathBuf, std::io::Error
     };
     let tokens = app.session.total_conversation_tokens;
     let budget_str = app
-        .goal
+        .hunt
         .token_budget
         .map(|b| format!("{b}"))
         .unwrap_or_else(|| "—".to_string());
 
-    let mut f = std::fs::File::create(&path)?;
-    writeln!(f, "# Trophy: {quarry}")?;
-    writeln!(f)?;
-    writeln!(f, "- **Verdict**: {verdict_str}")?;
-    writeln!(f, "- **Date**: {date}")?;
-    writeln!(f, "- **Elapsed**: {elapsed}")?;
-    writeln!(f, "- **Tokens used**: {tokens}")?;
-    writeln!(f, "- **Token budget**: {budget_str}")?;
-    writeln!(f)?;
-    writeln!(f, "_Generated by CodeWhale `/hunt` — {now}_")?;
+    let mut f = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+    let _ = writeln!(f, "# Trophy: {quarry}");
+    let _ = writeln!(f);
+    let _ = writeln!(f, "- **Verdict**: {verdict_str}");
+    let _ = writeln!(f, "- **Date**: {date}");
+    let _ = writeln!(f, "- **Elapsed**: {elapsed}");
+    let _ = writeln!(f, "- **Tokens used**: {tokens}");
+    let _ = writeln!(f, "- **Token budget**: {budget_str}");
+    let _ = writeln!(f);
+    let _ = writeln!(f, "_Generated by CodeWhale `/hunt` — {now}_");
     drop(f);
 
-    Ok(path)
+    Some(path)
 }
 
 #[cfg(test)]
@@ -215,7 +224,7 @@ mod tests {
         let mut app = create_test_app();
         let result = hunt(&mut app, Some("Fix the login bug"));
         assert!(result.message.unwrap().contains("Hunt set"));
-        assert_eq!(app.goal.quarry.as_deref(), Some("Fix the login bug"));
+        assert_eq!(app.hunt.quarry.as_deref(), Some("Fix the login bug"));
         assert!(matches!(
             result.action,
             Some(AppAction::SendMessage(msg)) if msg == "Fix the login bug"
@@ -234,16 +243,16 @@ mod tests {
     fn test_set_hunt_with_budget() {
         let mut app = create_test_app();
         let _ = hunt(&mut app, Some("Refactor auth | budget: 50000"));
-        assert_eq!(app.goal.quarry.as_deref(), Some("Refactor auth"));
-        assert_eq!(app.goal.token_budget, Some(50_000));
-        assert!(app.goal.started_at.is_some());
+        assert_eq!(app.hunt.quarry.as_deref(), Some("Refactor auth"));
+        assert_eq!(app.hunt.token_budget, Some(50_000));
+        assert!(app.hunt.started_at.is_some());
     }
 
     #[test]
     fn test_set_hunt_rejects_budget_only_objective() {
         let mut app = create_test_app();
-        app.goal.quarry = Some("existing objective".to_string());
-        app.goal.token_budget = Some(10_000);
+        app.hunt.quarry = Some("existing objective".to_string());
+        app.hunt.token_budget = Some(10_000);
 
         let result = hunt(&mut app, Some("budget: 50000"));
         assert!(result.is_error);
@@ -254,17 +263,17 @@ mod tests {
                 .unwrap_or_default()
                 .contains("Usage: /hunt")
         );
-        assert_eq!(app.goal.quarry.as_deref(), Some("existing objective"));
-        assert_eq!(app.goal.token_budget, Some(10_000));
+        assert_eq!(app.hunt.quarry.as_deref(), Some("existing objective"));
+        assert_eq!(app.hunt.token_budget, Some(10_000));
     }
 
     #[test]
     fn test_clear_hunt() {
         let mut app = create_test_app();
-        app.goal.quarry = Some("test".to_string());
+        app.hunt.quarry = Some("test".to_string());
         let _ = hunt(&mut app, Some("clear"));
-        assert!(app.goal.quarry.is_none());
-        assert!(app.goal.token_budget.is_none());
+        assert!(app.hunt.quarry.is_none());
+        assert!(app.hunt.token_budget.is_none());
     }
 
     #[test]

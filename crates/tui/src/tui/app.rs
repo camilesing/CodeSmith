@@ -1107,7 +1107,7 @@ pub struct App {
     /// Viewport sub-state (scroll, cache, selection).
     pub viewport: ViewportState,
     /// Goal sub-state.
-    pub goal: HuntState,
+    pub hunt: HuntState,
     /// Session sub-state (cost, tokens, telemetry).
     pub session: SessionState,
     pub history: Vec<HistoryCell>,
@@ -1848,7 +1848,7 @@ impl App {
                 selection_anchor: None,
             },
             viewport: ViewportState::default(),
-            goal: HuntState::default(),
+            hunt: HuntState::default(),
             session: SessionState::default(),
             history: Vec::new(),
             history_version: 0,
