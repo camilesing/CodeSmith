@@ -461,6 +461,7 @@ impl SlopLedger {
             }
         }
 
+        redact_exported_text(&mut out);
         out
     }
 
@@ -491,6 +492,7 @@ impl SlopLedger {
         for (bucket, count) in &by_bucket {
             out.push_str(&format!("  {bucket}: {count}\n"));
         }
+        redact_exported_text(&mut out);
         out
     }
 }
@@ -908,6 +910,109 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     }
     let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
+}
+
+/// Redact sensitive patterns from exported text: API keys and secrets
+/// paths. Scan the output for known key prefixes (`sk-`, `Bearer `, `dsk-`)
+/// and replace the token until a whitespace / punctuation boundary with
+/// `[REDACTED]`. Also normalises fully-qualified secrets directory paths
+/// to the portable `~/.codewhale/secrets` form.
+fn redact_exported_text(text: &mut String) {
+    let prefixes: &[&[u8]] = &[b"sk-", b"Bearer ", b"dsk-", b"deepseek-"];
+    let mut result = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let mut matched = false;
+        for prefix in prefixes {
+            if bytes[i..].len() >= prefix.len()
+                && bytes[i..i + prefix.len()].eq_ignore_ascii_case(prefix)
+            {
+                // Scan forward to first whitespace or delimiter.
+                let end = bytes[i + prefix.len()..]
+                    .iter()
+                    .position(|b| b.is_ascii_whitespace() || *b == b',' || *b == b';')
+                    .map(|p| i + prefix.len() + p)
+                    .unwrap_or(bytes.len());
+                result.push_str("[REDACTED]");
+                i = end;
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            // Advance by one char (preserving multi-byte UTF-8 safety).
+            let ch = text[i..].chars().next().unwrap();
+            result.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    // Normalise secrets directory paths.
+    if let Some(home) = dirs::home_dir() {
+        for leaf in [".codewhale/secrets", ".deepseek/secrets"] {
+            let dir = home.join(leaf);
+            let prefix = dir.to_string_lossy().to_string();
+            result = result.replace(&prefix, "~/.codewhale/secrets");
+        }
+    }
+    *text = result;
+}
+
+impl SlopLedger {
+    /// Completion-gate / verifier hook: returns `true` when there are
+    /// unresolved slop entries (status `Open` or `Investigate`) that the
+    /// agent should review before claiming the task is done.
+    ///
+    /// Tools and engine hooks can call this on claim-of-done to surface
+    /// architectural residue the agent may have overlooked.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn has_open_entries(&self) -> bool {
+        self.entries.iter().any(|e| {
+            matches!(
+                e.status,
+                SlopEntryStatus::Open | SlopEntryStatus::InProgress
+            )
+        })
+    }
+
+    /// Return a concise completion-gate summary suitable for a verifier
+    /// sub-agent or the claim-of-done prompt. Returns `None` when all
+    /// entries are resolved — the caller can then treat the gate as "pass".
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn completion_gate_summary(&self) -> Option<String> {
+        let open: Vec<&SlopEntry> = self
+            .entries
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.status,
+                    SlopEntryStatus::Open | SlopEntryStatus::InProgress
+                )
+            })
+            .collect();
+        if open.is_empty() {
+            return None;
+        }
+        let mut out = format!(
+            "## ⚠️ SlopLedger gate — {} open slop entries\n\n",
+            open.len()
+        );
+        out.push_str("Review these before claiming completion:\n\n");
+        for e in open {
+            out.push_str(&format!(
+                "- **{}** `{}` ({:?}/{:?}): {}\n",
+                e.bucket.as_str(),
+                &e.id[..8],
+                e.severity,
+                e.confidence,
+                truncate_str(&e.title, 80),
+            ));
+        }
+        Some(out)
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
