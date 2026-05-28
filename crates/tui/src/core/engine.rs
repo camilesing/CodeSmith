@@ -1840,8 +1840,23 @@ impl Engine {
             },
             self.session.approval_mode,
         );
-        let stable_prompt =
+        let mut stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
+
+        // SlopLedger completion-gate: inject unresolved slop entries into the
+        // system prompt so the agent can autonomously review them before claiming
+        // the task is done (#2127). Only active when entries actually exist.
+        if let Ok(ledger) = crate::slop_ledger::SlopLedger::load() {
+            if ledger.has_open_entries() {
+                if let Some(gate_block) = ledger.completion_gate_summary() {
+                    if let Some(SystemPrompt::Text(prompt_text)) = &mut stable_prompt {
+                        prompt_text.push_str("\n\n");
+                        prompt_text.push_str(&gate_block);
+                    }
+                }
+            }
+        }
+
         let stable_hash = system_prompt_hash(stable_prompt.as_ref());
         if self.session.system_prompt_override {
             self.session.last_system_prompt_hash = Some(stable_hash);
