@@ -1902,8 +1902,6 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use crate::tui::app::HuntVerdict;
-
     fn create_test_app() -> App {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
