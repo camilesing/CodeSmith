@@ -45,7 +45,6 @@ pub fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
         }
         Some(text) if !text.is_empty() => {
             let (objective, budget) = parse_hunt_budget(text);
-            let objective = objective.trim().to_string();
             if objective.is_empty() || objective.chars().all(|c| c == '|') {
                 return CommandResult::error("Usage: /hunt <quarry> [budget: N]");
             }
@@ -104,22 +103,21 @@ pub fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
 }
 
 /// Parse text like "Implement login | budget: 50000" into (objective, budget).
-fn parse_hunt_budget(text: &str) -> (&str, Option<u32>) {
-    if let Some(pipe_pos) = text.find('|') {
-        let (objective, rest) = text.split_at(pipe_pos);
-        let budget = rest[1..]
+fn parse_hunt_budget(text: &str) -> (String, Option<u32>) {
+    if let Some((obj, rest)) = text.split_once(" | budget:") {
+        let budget = rest
             .split_whitespace()
-            .filter_map(|part| {
-                if part.eq_ignore_ascii_case("budget:") {
-                    None
-                } else {
-                    part.parse::<u32>().ok()
-                }
-            })
-            .next();
-        (objective, budget)
+            .next()
+            .and_then(|s| s.parse::<u32>().ok());
+        (obj.trim().to_string(), budget)
+    } else if let Some((obj, rest)) = text.split_once("budget:") {
+        let budget = rest
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u32>().ok());
+        (obj.trim().to_string(), budget)
     } else {
-        (text, None)
+        (text.trim().to_string(), None)
     }
 }
 
@@ -280,9 +278,15 @@ mod tests {
     fn test_parse_budget() {
         assert_eq!(
             parse_hunt_budget("Do a thing | budget: 50000"),
-            ("Do a thing", Some(50_000))
+            ("Do a thing".to_string(), Some(50_000))
         );
-        assert_eq!(parse_hunt_budget("Simple goal"), ("Simple goal", None));
-        assert_eq!(parse_hunt_budget("Goal budget:1000"), ("Goal", Some(1000)));
+        assert_eq!(
+            parse_hunt_budget("Simple goal"),
+            ("Simple goal".to_string(), None)
+        );
+        assert_eq!(
+            parse_hunt_budget("Goal budget:1000"),
+            ("Goal".to_string(), Some(1000))
+        );
     }
 }
