@@ -219,6 +219,8 @@ fn test_fork() {
         })
         .collect::<Vec<_>>();
 
+    store.upsert_thread(&thread).expect("upsert thread");
+
     store
         .fork_at_message(&ids[2], "foo5", "bar5", None)
         .expect("fork at message");
@@ -264,4 +266,18 @@ fn test_fork() {
         .list_leaf_messages("thread-test-1")
         .expect("list leaf messages");
     assert_eq!(leaves.len(), 2);
+
+    store
+        .clear_messages("thread-test-1")
+        .expect("clear messages");
+    let leaves = store
+        .list_leaf_messages("thread-test-1")
+        .expect("list leaf messages");
+    assert_eq!(leaves.len(), 0);
+    let thread = store
+        .get_thread("thread-test-1")
+        .expect("get thread")
+        .unwrap();
+    dbg!(&thread);
+    assert!(thread.current_leaf_id.is_none());
 }

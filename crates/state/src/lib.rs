@@ -270,6 +270,7 @@ impl StateStore {
         Ok(())
     }
 
+    /// Upsert thread metadata(will not set current_leaf_id)
     pub fn upsert_thread(&self, thread: &ThreadMetadata) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -277,11 +278,11 @@ impl StateStore {
             INSERT INTO threads (
                 id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd,
                 cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at,
-                git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id
+                git_sha, git_branch, git_origin_url, memory_mode
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21, ?22
+                ?18, ?19, ?20, ?21
             )
             ON CONFLICT(id) DO UPDATE SET
                 rollout_path=excluded.rollout_path,
@@ -303,8 +304,7 @@ impl StateStore {
                 git_sha=excluded.git_sha,
                 git_branch=excluded.git_branch,
                 git_origin_url=excluded.git_origin_url,
-                memory_mode=excluded.memory_mode,
-                current_leaf_id=excluded.current_leaf_id
+                memory_mode=excluded.memory_mode
             "#,
             params![
                 thread.id,
@@ -328,7 +328,6 @@ impl StateStore {
                 thread.git_branch,
                 thread.git_origin_url,
                 thread.memory_mode,
-                thread.current_leaf_id,
             ],
         )
         .context("failed to upsert thread metadata")?;
@@ -708,12 +707,32 @@ impl StateStore {
     }
 
     pub fn clear_messages(&self, thread_id: &str) -> Result<usize> {
-        let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM messages WHERE thread_id = ?1",
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .context("failed to begin clear messages transaction")?;
+
+        tx.execute(
+            r#"
+            UPDATE threads
+            SET current_leaf_id = NULL
+            WHERE id = ?1;
+            "#,
             params![thread_id],
         )
-        .with_context(|| format!("failed to clear messages for thread {thread_id}"))
+        .with_context(|| format!("failed to clear messages for thread {thread_id}"))?;
+        let result = tx
+            .execute(
+                r#"
+                DELETE FROM messages WHERE thread_id = ?1
+                "#,
+                params![thread_id],
+            )
+            .with_context(|| format!("failed to clear messages for thread {thread_id}"))?;
+        tx.commit()
+            .context("failed to commit clear messages transaction")?;
+
+        Ok(result)
     }
 
     pub fn save_checkpoint(
