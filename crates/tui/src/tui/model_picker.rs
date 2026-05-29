@@ -74,7 +74,11 @@ impl ModelPickerView {
     #[must_use]
     pub fn new(app: &App) -> Self {
         let hide_deepseek_models = crate::config::provider_passes_model_through(app.api_provider);
-        let show_whale_routes = !hide_deepseek_models;
+        // Whale routes are DeepSeek-specific — only official providers get them.
+        let show_whale_routes = matches!(
+            app.api_provider,
+            crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN
+        );
         let initial_model = if app.auto_model {
             "auto".to_string()
         } else {
@@ -104,11 +108,23 @@ impl ModelPickerView {
             .position(|e| *e == normalized)
             .unwrap_or(2); // default to High if somehow unknown
 
-        // When showing whale routes, find the matching route index.
+        // When showing whale routes, find the matching route by position in the array
+        // (not by sort_order, which happens to match today but is semantically wrong).
         let selected_route_idx = if show_whale_routes {
-            WhaleRoute::for_model_effort(&initial_model, normalized)
-                .map(|r| r.sort_order)
-                .unwrap_or(WHALE_ROUTES.len()) // "auto" or custom falls after routes
+            WHALE_ROUTES
+                .iter()
+                .position(|r| {
+                    r.model.eq_ignore_ascii_case(&initial_model) && r.effort == normalized
+                })
+                .unwrap_or_else(|| {
+                    // No matching whale route — fall back to "auto" (standard model)
+                    // or the custom row (unrecognized model).
+                    if show_custom_model_row {
+                        WHALE_ROUTES.len() + 1 // custom model row
+                    } else {
+                        WHALE_ROUTES.len() // "auto" row
+                    }
+                })
         } else {
             0
         };
@@ -168,8 +184,11 @@ impl ModelPickerView {
     fn resolved_whale_model(&self) -> String {
         if self.selected_route_idx < WHALE_ROUTES.len() {
             WHALE_ROUTES[self.selected_route_idx].model.to_string()
+        } else if self.selected_route_idx == WHALE_ROUTES.len() {
+            // First fallback row: always "auto".
+            "auto".to_string()
         } else {
-            // Past the last whale route: "auto" or custom.
+            // Second fallback row: custom model.
             self.initial_model.clone()
         }
     }
@@ -178,22 +197,23 @@ impl ModelPickerView {
     fn resolved_whale_effort(&self) -> ReasoningEffort {
         if self.selected_route_idx < WHALE_ROUTES.len() {
             WHALE_ROUTES[self.selected_route_idx].effort
-        } else if self
-            .resolved_whale_model()
-            .trim()
-            .eq_ignore_ascii_case("auto")
-        {
+        } else if self.selected_route_idx == WHALE_ROUTES.len() {
+            // First fallback row: "auto".
             ReasoningEffort::Auto
         } else {
-            // Custom model — keep the initial effort.
+            // Second fallback row: custom model — keep the initial effort.
             self.initial_effort
         }
     }
 
-    /// Number of rows in the whale-route list: routes + (auto or custom).
+    /// Number of rows in the whale-route list.
     fn whale_route_row_count(&self) -> usize {
-        // All whale routes + 1 for the fallback row (auto or custom).
-        WHALE_ROUTES.len() + 1
+        let base = WHALE_ROUTES.len() + 1; // routes + auto
+        if self.show_custom_model_row {
+            base + 1
+        } else {
+            base
+        }
     }
 
     fn move_up(&mut self) -> bool {
@@ -368,7 +388,9 @@ impl ModalView for ModelPickerView {
     fn render_whale_routes(&self, area: Rect, buf: &mut Buffer) {
         let popup_width = 62.min(area.width.saturating_sub(4)).max(44);
         let row_count = self.whale_route_row_count();
-        let popup_height = (row_count + 4).min(area.height.saturating_sub(4)).max(8) as u16;
+        let popup_height = (row_count as u16 + 4)
+            .min(area.height.saturating_sub(4))
+            .max(8);
         let popup_area = Rect {
             x: area.x + (area.width.saturating_sub(popup_width)) / 2,
             y: area.y + (area.height.saturating_sub(popup_height)) / 2,
@@ -409,22 +431,19 @@ impl ModalView for ModelPickerView {
             })
             .collect();
 
-        // Fallback row: "auto" if not set, otherwise the current custom model.
-        let fallback_label = if self.initial_model == "auto" {
-            "auto  —  select per turn".to_string()
-        } else if self.show_custom_model_row {
-            format!("{}  —  custom", self.initial_model)
-        } else {
-            "auto  —  select per turn".to_string()
-        };
-        let fallback_hint = if self.initial_model == "auto" {
-            "Let CodeWhale pick the best model each turn".to_string()
-        } else if self.show_custom_model_row {
-            "Current model (not a standard route)".to_string()
-        } else {
-            "Let CodeWhale pick the best model each turn".to_string()
-        };
-        rows.push((fallback_label, fallback_hint));
+        // Fallback row 1: always "auto".
+        rows.push((
+            "auto  —  select per turn".to_string(),
+            "Let CodeWhale pick the best model each turn".to_string(),
+        ));
+
+        // Fallback row 2: custom model when the current model isn't recognized.
+        if self.show_custom_model_row {
+            rows.push((
+                format!("{}  —  custom", self.initial_model),
+                "Current model (not a standard route)".to_string(),
+            ));
+        }
 
         self.render_pane(
             inner,
@@ -746,10 +765,12 @@ mod tests {
         app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::High;
         let view = ModelPickerView::new(&app);
-        // Custom model → fallback row
-        assert_eq!(view.selected_route_idx, WHALE_ROUTES.len());
+        // Custom model → second fallback row (after "auto")
+        assert_eq!(view.selected_route_idx, WHALE_ROUTES.len() + 1);
         assert_eq!(view.resolved_model(), "deepseek-v4-pro-2026-04-XX");
         assert_eq!(view.resolved_effort(), ReasoningEffort::High);
+        // Row count includes routes + auto + custom
+        assert_eq!(view.whale_route_row_count(), WHALE_ROUTES.len() + 2);
     }
 
     #[test]
