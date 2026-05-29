@@ -24,7 +24,7 @@ use ratatui::{
 use crate::palette;
 use crate::tui::app::{App, ReasoningEffort};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
-use crate::tui::whale_routes::{WHALE_ROUTES, WhaleRoute};
+use crate::tui::whale_routes::WHALE_ROUTES;
 
 /// Models the picker exposes by default. Kept short on purpose — power
 /// users can still type `/model <id>` for anything else.

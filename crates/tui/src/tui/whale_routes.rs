@@ -93,6 +93,7 @@ impl WhaleRoute {
     /// Look up the whale route for a given model id and reasoning effort.
     /// Returns `None` for non-DeepSeek models or unrecognized combinations.
     #[must_use]
+    #[allow(dead_code)]
     pub fn for_model_effort(model: &str, effort: ReasoningEffort) -> Option<&'static WhaleRoute> {
         WHALE_ROUTES
             .iter()
