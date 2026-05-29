@@ -383,7 +383,9 @@ impl ModalView for ModelPickerView {
             self.render_classic(area, buf);
         }
     }
+}
 
+impl ModelPickerView {
     /// Single-column whale-route list for DeepSeek providers.
     fn render_whale_routes(&self, area: Rect, buf: &mut Buffer) {
         let popup_width = 62.min(area.width.saturating_sub(4)).max(44);
