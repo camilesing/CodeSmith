@@ -675,8 +675,9 @@ impl SearchProvider {
             "tavily" => Some(Self::Tavily),
             "bocha" => Some(Self::Bocha),
             "metaso" => Some(Self::Metaso),
-            "baidu" | "baidu-search" | "baidu_search" | "baidu-ai-search"
-            | "baidu_ai_search" => Some(Self::Baidu),
+            "baidu" | "baidu-search" | "baidu_search" | "baidu-ai-search" | "baidu_ai_search" => {
+                Some(Self::Baidu)
+            }
             _ => None,
         }
     }

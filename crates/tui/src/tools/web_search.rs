@@ -1182,8 +1182,8 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
 mod tests {
     use super::{
         ERROR_BODY_PREVIEW_BYTES, WebSearchEntry, WebSearchTool, decode_html_entities,
-        extract_search_query, is_likely_spam_results, optional_search_max_results, root_domain,
-        parse_baidu_results, sanitize_error_body, truncate_error_body,
+        extract_search_query, is_likely_spam_results, optional_search_max_results,
+        parse_baidu_results, root_domain, sanitize_error_body, truncate_error_body,
     };
     use serde_json::json;
 
@@ -1452,12 +1452,11 @@ mod tests {
 
     #[test]
     fn sanitize_error_body_redacts_bearer_tokens() {
-        let body =
-            r#"{"error":"bad token","authorization":"Bearer bce-v3/ALTAK-example/secret"}"#;
+        let body = r#"{"error":"bad token","authorization":"Bearer test-token/with+chars="}"#;
 
         let sanitized = sanitize_error_body(body);
 
-        assert!(!sanitized.contains("bce-v3/ALTAK-example/secret"));
+        assert!(!sanitized.contains("test-token/with+chars="));
         assert!(sanitized.contains("Bearer [REDACTED]"));
     }
 
