@@ -688,21 +688,7 @@ impl WebSearchTool {
                 ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
             })?;
 
-        let payload = json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": query,
-                }
-            ],
-            "search_source": "baidu_search",
-            "resource_type_filter": [
-                {
-                    "type": "web",
-                    "top_k": max_results,
-                }
-            ],
-        });
+        let payload = baidu_search_payload(query, max_results);
 
         let resp = client
             .post(BAIDU_ENDPOINT)
@@ -821,6 +807,24 @@ fn baidu_error_message(parsed: &Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown error");
     Some(format!("Baidu search API error (code {code}: {message})"))
+}
+
+fn baidu_search_payload(query: &str, max_results: usize) -> Value {
+    json!({
+        "messages": [
+            {
+                "role": "user",
+                "content": query,
+            }
+        ],
+        "search_source": "baidu_search_v2",
+        "resource_type_filter": [
+            {
+                "type": "web",
+                "top_k": max_results,
+            }
+        ],
+    })
 }
 
 fn extract_search_query(input: &Value) -> Result<String, ToolError> {
@@ -1181,9 +1185,10 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ERROR_BODY_PREVIEW_BYTES, WebSearchEntry, WebSearchTool, decode_html_entities,
-        extract_search_query, is_likely_spam_results, optional_search_max_results,
-        parse_baidu_results, root_domain, sanitize_error_body, truncate_error_body,
+        ERROR_BODY_PREVIEW_BYTES, WebSearchEntry, WebSearchTool, baidu_search_payload,
+        decode_html_entities, extract_search_query, is_likely_spam_results,
+        optional_search_max_results, parse_baidu_results, root_domain, sanitize_error_body,
+        truncate_error_body,
     };
     use serde_json::json;
 
@@ -1510,6 +1515,34 @@ mod tests {
         assert_eq!(results[0].title, "Valid");
         assert_eq!(results[0].url, "https://example.com/valid");
         assert_eq!(results[0].snippet, None);
+    }
+
+    #[test]
+    fn baidu_search_payload_uses_official_search_source() {
+        let payload = baidu_search_payload("Rust cargo workspace", 3);
+
+        assert_eq!(
+            payload.get("search_source").and_then(|v| v.as_str()),
+            Some("baidu_search_v2")
+        );
+        assert_eq!(
+            payload
+                .get("messages")
+                .and_then(|v| v.as_array())
+                .and_then(|messages| messages.first())
+                .and_then(|message| message.get("content"))
+                .and_then(|v| v.as_str()),
+            Some("Rust cargo workspace")
+        );
+        assert_eq!(
+            payload
+                .get("resource_type_filter")
+                .and_then(|v| v.as_array())
+                .and_then(|filters| filters.first())
+                .and_then(|filter| filter.get("top_k"))
+                .and_then(|v| v.as_u64()),
+            Some(3)
+        );
     }
 
     #[tokio::test]
