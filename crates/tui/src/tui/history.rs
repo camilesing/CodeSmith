@@ -255,9 +255,10 @@ impl HistoryCell {
 
     /// Render with an explicit per-cell fold override for thinking cells.
     ///
-    /// When `folded` is `true`, the thinking content is collapsed to a
-    /// summary regardless of the `verbose` flag. This enables per-cell
-    /// folding independent of the global `/verbose` toggle.
+    /// Uses XOR with the `verbose` flag so that pressing Space toggles
+    /// the collapsed state *relative* to the global setting:
+    /// - verbose off (default): thinking is collapsed; Space unfolds it
+    /// - verbose on: thinking is expanded; Space folds it
     pub fn lines_with_options_folded(
         &self,
         width: u16,
@@ -275,7 +276,7 @@ impl HistoryCell {
                 width,
                 *streaming,
                 *duration_secs,
-                folded || !options.verbose,
+                folded ^ !options.verbose,
                 options.low_motion,
             ),
             HistoryCell::Tool(cell) if !options.show_tool_details => {
