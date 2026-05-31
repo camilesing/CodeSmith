@@ -323,6 +323,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdCompactDescription,
     },
     CommandInfo {
+        name: "purge",
+        aliases: &["qingchu"],
+        usage: "/purge",
+        description_id: MessageId::CmdPurgeDescription,
+    },
+    CommandInfo {
         name: "relay",
         aliases: &["batonpass", "接力"],
         usage: "/relay [focus]",
@@ -603,6 +609,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "relay" | "batonpass" | "接力" => relay(app, arg),
         "load" | "jiazai" => session::load(app, arg),
         "compact" | "yasuo" => session::compact(app),
+        "purge" | "qingchu" => session::purge(app),
         "cycles" | "zhouqi" => cycle::list_cycles(app),
         "cycle" => cycle::show_cycle(app, arg),
         "recall" => cycle::recall_archive(app, arg),
