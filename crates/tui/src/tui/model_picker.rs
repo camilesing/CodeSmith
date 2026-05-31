@@ -1,13 +1,9 @@
 //! `/model` picker modal: pick a model and thinking-effort tier (#39, #2026).
 //!
-//! For DeepSeek providers the picker shows whale-sized routes — model + effort
-//! combinations sorted largest → fastest with friendly whale-species labels
-//! (Blue Whale, Fin Whale, …, Beluga).  A single ↑/↓ selection sets both
-//! model and effort at once.  The "auto" option is always available; custom
-//! (unrecognised) model ids appear as a separate row.
-//!
-//! For pass-through providers the picker falls back to the classic two-column
-//! layout (Models | Thinking), with no whale labelling.
+//! The picker intentionally presents model and thinking as independent choices
+//! instead of collapsing them into preset route names. The "auto" option is
+//! always available; custom (unrecognized) model ids appear as a separate row.
+//! Pass-through providers fall back to only "auto" plus the current custom row.
 //!
 //! On apply we emit a [`ViewEvent::ModelPickerApplied`] with the resolved
 //! model id and effort tier.
@@ -24,14 +20,13 @@ use ratatui::{
 use crate::palette;
 use crate::tui::app::{App, ReasoningEffort};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
-use crate::tui::whale_routes::WHALE_ROUTES;
 
 /// Models the picker exposes by default. Kept short on purpose — power
 /// users can still type `/model <id>` for anything else.
 const PICKER_MODELS: &[(&str, &str)] = &[
-    ("auto", "select per turn"),
-    ("deepseek-v4-pro", "flagship"),
-    ("deepseek-v4-flash", "fast / cheap"),
+    ("auto", "choose per turn"),
+    ("deepseek-v4-pro", "larger model"),
+    ("deepseek-v4-flash", "faster model"),
 ];
 
 /// Thinking-effort rows shown in the picker, in the order DeepSeek
@@ -57,29 +52,18 @@ pub struct ModelPickerView {
     selected_model_idx: usize,
     selected_effort_idx: usize,
     focus: Pane,
-    selection_touched: bool,
     /// True when the active model is one we don't list — we still show it
     /// so the picker doesn't quietly forget the user's chosen IDs.
     show_custom_model_row: bool,
     /// When true, hide DeepSeek-specific model rows (pass-through providers
     /// like openai don't support them).
     hide_deepseek_models: bool,
-    /// When true, show whale-sized routes instead of two-column model/effort.
-    show_whale_routes: bool,
-    /// Selected whale-route index (when show_whale_routes is true).
-    selected_route_idx: usize,
 }
 
 impl ModelPickerView {
     #[must_use]
     pub fn new(app: &App) -> Self {
         let hide_deepseek_models = app.accepts_custom_model_ids();
-        // Whale routes are DeepSeek-specific — only official providers get them.
-        let show_whale_routes = !hide_deepseek_models
-            && matches!(
-                app.api_provider,
-                crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN
-            );
         let initial_model = if app.auto_model {
             "auto".to_string()
         } else {
@@ -109,45 +93,14 @@ impl ModelPickerView {
             .position(|e| *e == normalized)
             .unwrap_or(2); // default to High if somehow unknown
 
-        // When showing whale routes, find the matching route by position in the array
-        // (not by sort_order, which happens to match today but is semantically wrong).
-        let (selected_route_idx, show_custom_model_row) = if show_whale_routes {
-            let idx = WHALE_ROUTES
-                .iter()
-                .position(|r| {
-                    r.model.eq_ignore_ascii_case(&initial_model) && r.effort == normalized
-                })
-                .unwrap_or_else(|| {
-                    // No matching whale route — key the fallback on whether the
-                    // current model is actually "auto", not on show_custom_model_row.
-                    // Otherwise a known DeepSeek model (e.g. v4-pro) paired with
-                    // ReasoningEffort::Auto silently falls through to the "auto" row
-                    // and replaces the explicit model on apply.
-                    if initial_model.eq_ignore_ascii_case("auto") {
-                        WHALE_ROUTES.len() // "auto" row
-                    } else {
-                        WHALE_ROUTES.len() + 1 // custom model row
-                    }
-                });
-            // When the whale-route fallback selected the custom row, ensure it is
-            // visible so the user can see their current model in the picker.
-            let show_custom = show_custom_model_row || idx == WHALE_ROUTES.len() + 1;
-            (idx, show_custom)
-        } else {
-            (0, show_custom_model_row)
-        };
-
         Self {
             initial_model,
             initial_effort,
             selected_model_idx,
             selected_effort_idx,
             focus: Pane::Model,
-            selection_touched: false,
             show_custom_model_row,
             hide_deepseek_models,
-            show_whale_routes,
-            selected_route_idx,
         }
     }
 
@@ -165,9 +118,6 @@ impl ModelPickerView {
 
     /// Resolve the currently highlighted row to a model id.
     fn resolved_model(&self) -> String {
-        if self.show_whale_routes {
-            return self.resolved_whale_model();
-        }
         let visible = self.visible_model_ids();
         if self.show_custom_model_row && self.selected_model_idx == visible.len() {
             self.initial_model.clone()
@@ -179,59 +129,13 @@ impl ModelPickerView {
     }
 
     fn resolved_effort(&self) -> ReasoningEffort {
-        if self.show_whale_routes {
-            return self.resolved_whale_effort();
-        }
         if self.resolved_model().trim().eq_ignore_ascii_case("auto") {
             return ReasoningEffort::Auto;
         }
         PICKER_EFFORTS[self.selected_effort_idx]
     }
 
-    /// Resolve model from the whale-route list.
-    fn resolved_whale_model(&self) -> String {
-        if self.selected_route_idx < WHALE_ROUTES.len() {
-            WHALE_ROUTES[self.selected_route_idx].model.to_string()
-        } else if self.selected_route_idx == WHALE_ROUTES.len() {
-            // First fallback row: always "auto".
-            "auto".to_string()
-        } else {
-            // Second fallback row: custom model.
-            self.initial_model.clone()
-        }
-    }
-
-    /// Resolve effort from the whale-route list.
-    fn resolved_whale_effort(&self) -> ReasoningEffort {
-        if self.selected_route_idx < WHALE_ROUTES.len() {
-            WHALE_ROUTES[self.selected_route_idx].effort
-        } else if self.selected_route_idx == WHALE_ROUTES.len() {
-            // First fallback row: "auto".
-            ReasoningEffort::Auto
-        } else {
-            // Second fallback row: custom model — keep the initial effort.
-            self.initial_effort
-        }
-    }
-
-    /// Number of rows in the whale-route list.
-    fn whale_route_row_count(&self) -> usize {
-        let base = WHALE_ROUTES.len() + 1; // routes + auto
-        if self.show_custom_model_row {
-            base + 1
-        } else {
-            base
-        }
-    }
-
     fn move_up(&mut self) -> bool {
-        if self.show_whale_routes {
-            if self.selected_route_idx > 0 {
-                self.selected_route_idx -= 1;
-                return true;
-            }
-            return false;
-        }
         match self.focus {
             Pane::Model => {
                 if self.selected_model_idx > 0 {
@@ -250,14 +154,6 @@ impl ModelPickerView {
     }
 
     fn move_down(&mut self) -> bool {
-        if self.show_whale_routes {
-            let max = self.whale_route_row_count().saturating_sub(1);
-            if self.selected_route_idx < max {
-                self.selected_route_idx += 1;
-                return true;
-            }
-            return false;
-        }
         match self.focus {
             Pane::Model => {
                 let max = self.model_row_count().saturating_sub(1);
@@ -364,20 +260,18 @@ impl ModalView for ModelPickerView {
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         match key.code {
-            KeyCode::Esc => ViewAction::EmitAndClose(self.build_event()),
+            KeyCode::Esc => ViewAction::Close,
             KeyCode::Enter => ViewAction::EmitAndClose(self.build_event()),
             KeyCode::Up => {
-                self.selection_touched |= self.move_up();
+                self.move_up();
                 ViewAction::None
             }
             KeyCode::Down => {
-                self.selection_touched |= self.move_down();
+                self.move_down();
                 ViewAction::None
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Left | KeyCode::BackTab => {
-                if !self.show_whale_routes {
-                    self.toggle_focus();
-                }
+                self.toggle_focus();
                 ViewAction::None
             }
             _ => ViewAction::None,
@@ -385,87 +279,11 @@ impl ModalView for ModelPickerView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        if self.show_whale_routes {
-            self.render_whale_routes(area, buf);
-        } else {
-            self.render_classic(area, buf);
-        }
+        self.render_classic(area, buf);
     }
 }
 
 impl ModelPickerView {
-    /// Single-column whale-route list for DeepSeek providers.
-    fn render_whale_routes(&self, area: Rect, buf: &mut Buffer) {
-        let popup_width = 62.min(area.width.saturating_sub(4)).max(44);
-        let row_count = self.whale_route_row_count();
-        let popup_height = (row_count as u16 + 4)
-            .min(area.height.saturating_sub(4))
-            .max(8);
-        let popup_area = Rect {
-            x: area.x + (area.width.saturating_sub(popup_width)) / 2,
-            y: area.y + (area.height.saturating_sub(popup_height)) / 2,
-            width: popup_width,
-            height: popup_height,
-        };
-
-        Clear.render(popup_area, buf);
-
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                " Whale Routes ",
-                Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .title_bottom(Line::from(vec![
-                Span::styled(" ↑↓ ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::raw("choose "),
-                Span::styled(" Enter ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::raw("apply "),
-                Span::styled(" Esc ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::raw("apply "),
-            ]))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default());
-        let inner = outer.inner(popup_area);
-        outer.render(popup_area, buf);
-
-        let mut rows: Vec<(String, String)> = WHALE_ROUTES
-            .iter()
-            .map(|r| {
-                (
-                    format!("{}  —  {}", r.label, r.hint),
-                    r.description.to_string(),
-                )
-            })
-            .collect();
-
-        // Fallback row 1: always "auto".
-        rows.push((
-            "auto  —  select per turn".to_string(),
-            "Let CodeWhale pick the best model each turn".to_string(),
-        ));
-
-        // Fallback row 2: custom model when the current model isn't recognized.
-        if self.show_custom_model_row {
-            rows.push((
-                format!("{}  —  custom", self.initial_model),
-                "Current model (not a standard route)".to_string(),
-            ));
-        }
-
-        self.render_pane(
-            inner,
-            buf,
-            "Model & thinking",
-            rows,
-            self.selected_route_idx,
-            true,
-        );
-    }
-
-    /// Classic two-column layout for pass-through providers.
     fn render_classic(&self, area: Rect, buf: &mut Buffer) {
         let popup_width = 64.min(area.width.saturating_sub(4)).max(40);
         let popup_height = 14.min(area.height.saturating_sub(4)).max(10);
@@ -494,7 +312,7 @@ impl ModelPickerView {
                 Span::styled(" Enter ", Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("apply "),
                 Span::styled(" Esc ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::raw("apply "),
+                Span::raw("cancel "),
             ]))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
@@ -532,10 +350,10 @@ impl ModelPickerView {
             .map(|effort| {
                 let label = effort.short_label().to_string();
                 let hint = match effort {
-                    ReasoningEffort::Auto => "auto-select per turn".to_string(),
-                    ReasoningEffort::Off => "thinking disabled".to_string(),
-                    ReasoningEffort::High => "thinking enabled (default)".to_string(),
-                    ReasoningEffort::Max => "thinking enabled, max effort".to_string(),
+                    ReasoningEffort::Auto => "choose per turn".to_string(),
+                    ReasoningEffort::Off => "no extra reasoning".to_string(),
+                    ReasoningEffort::High => "deeper reasoning".to_string(),
+                    ReasoningEffort::Max => "maximum reasoning".to_string(),
                     _ => String::new(),
                 };
                 (label, hint)
@@ -684,56 +502,82 @@ mod tests {
         let view = ModelPickerView::new(&app);
 
         assert!(view.hide_deepseek_models);
-        assert!(!view.show_whale_routes);
         assert!(view.show_custom_model_row);
         assert_eq!(view.resolved_model(), "opencode-go/glm-5.1");
     }
 
     #[test]
-    fn arrow_keys_move_within_whale_routes() {
-        let (app, _lock) = create_test_app();
+    fn arrow_keys_move_within_focused_pane() {
+        let (mut app, _lock) = create_test_app();
+        app.model = "deepseek-v4-pro".to_string();
+        app.reasoning_effort = ReasoningEffort::High;
         let mut view = ModelPickerView::new(&app);
-        assert!(view.show_whale_routes);
-        let initial = view.selected_route_idx;
+        assert_eq!(view.selected_model_idx, 1);
         view.handle_key(KeyEvent::new(
             KeyCode::Down,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(view.selected_route_idx, initial + 1);
+        assert_eq!(view.selected_model_idx, 2);
         view.handle_key(KeyEvent::new(
             KeyCode::Up,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(view.selected_route_idx, initial);
-    }
+        assert_eq!(view.selected_model_idx, 1);
 
-    #[test]
-    fn tab_is_noop_in_whale_route_mode() {
-        let (app, _lock) = create_test_app();
-        let mut view = ModelPickerView::new(&app);
-        assert!(view.show_whale_routes);
-        let before = view.selected_route_idx;
         view.handle_key(KeyEvent::new(
             KeyCode::Tab,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(view.selected_route_idx, before);
+        assert_eq!(view.focus, Pane::Effort);
+        assert_eq!(view.selected_effort_idx, 2);
+        view.handle_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(view.selected_effort_idx, 3);
     }
 
     #[test]
-    fn enter_with_whale_routes_emits_apply_event() {
+    fn tab_switches_between_model_and_thinking() {
+        let (app, _lock) = create_test_app();
+        let mut view = ModelPickerView::new(&app);
+        assert_eq!(view.focus, Pane::Model);
+        view.handle_key(KeyEvent::new(
+            KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(view.focus, Pane::Effort);
+        view.handle_key(KeyEvent::new(
+            KeyCode::BackTab,
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        assert_eq!(view.focus, Pane::Model);
+    }
+
+    #[test]
+    fn enter_emits_current_model_and_thinking() {
         let (mut app, _lock) = create_test_app();
         app.reasoning_effort = ReasoningEffort::High;
         app.model = "deepseek-v4-pro".to_string();
         app.auto_model = false;
         let mut view = ModelPickerView::new(&app);
-        // Initial route: Fin Whale (Pro + High, sort_order=1)
-        assert_eq!(view.selected_route_idx, 1);
-        // Move down to Sperm Whale (Pro + Off, sort_order=2)
+        assert_eq!(view.selected_model_idx, 1);
+        assert_eq!(view.selected_effort_idx, 2);
+
+        // Move model from Pro to Flash, then switch to effort and move High to Max.
         view.handle_key(KeyEvent::new(
             KeyCode::Down,
             crossterm::event::KeyModifiers::NONE,
         ));
+        view.handle_key(KeyEvent::new(
+            KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        view.handle_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
         let action = view.handle_key(KeyEvent::new(
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
@@ -745,8 +589,8 @@ mod tests {
                 previous_effort,
                 ..
             }) => {
-                assert_eq!(model, "deepseek-v4-pro");
-                assert_eq!(effort, ReasoningEffort::Off);
+                assert_eq!(model, "deepseek-v4-flash");
+                assert_eq!(effort, ReasoningEffort::Max);
                 assert_eq!(previous_effort, ReasoningEffort::High);
             }
             other => panic!("expected ModelPickerApplied EmitAndClose, got {other:?}"),
@@ -754,106 +598,94 @@ mod tests {
     }
 
     #[test]
-    fn whale_routes_initial_selection_matches_app_state() {
+    fn deepseek_provider_uses_neutral_two_pane_selection() {
         let (mut app, _lock) = create_test_app();
         app.model = "deepseek-v4-flash".to_string();
         app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::Max;
         let view = ModelPickerView::new(&app);
-        // Humpback = Flash + Max, sort_order = 3
-        assert_eq!(view.selected_route_idx, 3);
+        assert_eq!(view.selected_model_idx, 2);
+        assert_eq!(view.selected_effort_idx, 3);
+        assert_eq!(view.focus, Pane::Model);
         assert_eq!(view.resolved_model(), "deepseek-v4-flash");
         assert_eq!(view.resolved_effort(), ReasoningEffort::Max);
     }
 
     #[test]
-    fn whale_routes_known_model_auto_effort_does_not_fall_to_auto() {
-        // Regression: a known DeepSeek model paired with ReasoningEffort::Auto
-        // must NOT fall through to the "auto" row — that would silently replace
-        // the explicit model with "auto" on apply.
+    fn known_model_with_auto_effort_preserves_explicit_model() {
         let (mut app, _lock) = create_test_app();
         app.model = "deepseek-v4-pro".to_string();
         app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::Auto;
         let view = ModelPickerView::new(&app);
-        // Should fall to custom row (WHALE_ROUTES.len() + 1), not auto row.
-        assert_eq!(view.selected_route_idx, WHALE_ROUTES.len() + 1);
+        assert!(!view.show_custom_model_row);
+        assert_eq!(view.selected_model_idx, 1);
+        assert_eq!(view.selected_effort_idx, 0);
         assert_eq!(view.resolved_model(), "deepseek-v4-pro");
         assert_eq!(view.resolved_effort(), ReasoningEffort::Auto);
-        // The custom row must be visible so the user sees their current model.
-        assert!(view.show_custom_model_row);
     }
 
     #[test]
-    fn whale_routes_auto_effort_maps_to_fallback_row() {
+    fn auto_model_selects_auto_row() {
         let (mut app, _lock) = create_test_app();
         app.model = "auto".to_string();
         app.auto_model = true;
         app.reasoning_effort = ReasoningEffort::Auto;
         let view = ModelPickerView::new(&app);
-        // "auto" doesn't match any whale route, falls to fallback row
-        assert_eq!(view.selected_route_idx, WHALE_ROUTES.len());
+        assert_eq!(view.selected_model_idx, 0);
+        assert_eq!(view.selected_effort_idx, 0);
         assert_eq!(view.resolved_model(), "auto");
         assert_eq!(view.resolved_effort(), ReasoningEffort::Auto);
     }
 
     #[test]
-    fn whale_routes_custom_model_falls_back() {
+    fn custom_model_row_preserves_current_model_and_effort() {
         let (mut app, _lock) = create_test_app();
         app.model = "deepseek-v4-pro-2026-04-XX".to_string();
         app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::High;
         let view = ModelPickerView::new(&app);
-        // Custom model → second fallback row (after "auto")
-        assert_eq!(view.selected_route_idx, WHALE_ROUTES.len() + 1);
+        assert!(view.show_custom_model_row);
+        assert_eq!(view.selected_model_idx, 3);
+        assert_eq!(view.selected_effort_idx, 2);
         assert_eq!(view.resolved_model(), "deepseek-v4-pro-2026-04-XX");
         assert_eq!(view.resolved_effort(), ReasoningEffort::High);
-        // Row count includes routes + auto + custom
-        assert_eq!(view.whale_route_row_count(), WHALE_ROUTES.len() + 2);
     }
 
     #[test]
-    fn whale_routes_down_from_last_is_noop() {
+    fn move_down_from_last_model_is_noop() {
         let (app, _lock) = create_test_app();
         let mut view = ModelPickerView::new(&app);
-        // Navigate to the last row
-        view.selected_route_idx = view.whale_route_row_count() - 1;
+        view.selected_model_idx = view.model_row_count() - 1;
         let result = view.move_down();
         assert!(!result);
     }
 
     #[test]
-    fn whale_routes_up_from_first_is_noop() {
+    fn move_up_from_first_model_is_noop() {
         let (app, _lock) = create_test_app();
         let mut view = ModelPickerView::new(&app);
-        view.selected_route_idx = 0;
+        view.selected_model_idx = 0;
         let result = view.move_up();
         assert!(!result);
     }
 
     #[test]
-    fn immediate_esc_applies_current_selection() {
+    fn immediate_esc_closes_without_apply() {
         let (app, _lock) = create_test_app();
         let mut view = ModelPickerView::new(&app);
         let action = view.handle_key(KeyEvent::new(
             KeyCode::Esc,
             crossterm::event::KeyModifiers::NONE,
         ));
-        match action {
-            ViewAction::EmitAndClose(ViewEvent::ModelPickerApplied { model, .. }) => {
-                assert_eq!(model, "deepseek-v4-pro");
-            }
-            other => panic!("expected Esc to apply current selection, got {other:?}"),
-        }
+        assert!(matches!(action, ViewAction::Close));
     }
 
     #[test]
-    fn esc_after_selection_move_applies_highlighted_route() {
+    fn esc_after_selection_move_closes_without_apply() {
         let (mut app, _lock) = create_test_app();
         app.reasoning_effort = ReasoningEffort::High;
         let mut view = ModelPickerView::new(&app);
-        // Initial: Fin Whale (Pro+High), previous_effort=High
-        // Down → Sperm Whale (Pro+Off)
         view.handle_key(KeyEvent::new(
             KeyCode::Down,
             crossterm::event::KeyModifiers::NONE,
@@ -864,19 +696,7 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
 
-        match action {
-            ViewAction::EmitAndClose(ViewEvent::ModelPickerApplied {
-                model,
-                effort,
-                previous_effort,
-                ..
-            }) => {
-                assert_eq!(model, "deepseek-v4-pro");
-                assert_eq!(effort, ReasoningEffort::Off);
-                assert_eq!(previous_effort, ReasoningEffort::High);
-            }
-            other => panic!("expected Esc to apply highlighted route, got {other:?}"),
-        }
+        assert!(matches!(action, ViewAction::Close));
     }
 
     #[test]
