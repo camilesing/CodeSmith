@@ -3773,6 +3773,7 @@ async fn run_event_loop(
                     app.clear_selection();
                     app.move_cursor_end();
                 }
+                _ if handle_composer_alt_word_motion_key(app, key) => {}
                 KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // Ctrl+O: spawn $EDITOR on the composer contents (#91).
                     // Only fires when no modal is active (the !view_stack
@@ -3945,9 +3946,10 @@ async fn run_event_loop(
                 {
                     // absorb — Visual mode not yet fully implemented
                 }
-                KeyCode::Char(c) => {
+                KeyCode::Char(c) if is_plain_char => {
                     app.insert_char(c);
                 }
+                KeyCode::Char(_) => {}
                 _ => {}
             }
 

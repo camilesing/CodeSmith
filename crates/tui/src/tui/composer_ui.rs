@@ -86,6 +86,26 @@ pub(crate) fn is_word_cursor_modifier(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT)
 }
 
+pub(crate) fn handle_composer_alt_word_motion_key(app: &mut App, key: KeyEvent) -> bool {
+    if !key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+
+    match key.code {
+        KeyCode::Char('f') | KeyCode::Char('F') => {
+            app.clear_selection();
+            app.move_cursor_word_forward();
+            true
+        }
+        KeyCode::Char('b') | KeyCode::Char('B') => {
+            app.clear_selection();
+            app.move_cursor_word_backward();
+            true
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn is_composer_newline_key(key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),

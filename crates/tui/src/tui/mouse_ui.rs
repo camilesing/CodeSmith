@@ -25,6 +25,8 @@ use crate::tui::ui::{
     open_details_pager_for_cell, open_pager_for_selection,
 };
 
+const COMPOSER_MOUSE_SCROLL_LINES: usize = 3;
+
 pub(crate) fn should_drop_loading_mouse_motion(app: &App, mouse: MouseEvent) -> bool {
     if !app.is_loading {
         return false;
@@ -79,6 +81,68 @@ fn mouse_pos_to_char_index(app: &App, col: u16, row: u16, inner: Rect) -> Option
     Some(line_start + char_offset)
 }
 
+fn composer_wrapped_cursor_row_col(
+    input: &str,
+    cursor: usize,
+    wrapped: &[(usize, String)],
+) -> (usize, usize) {
+    let total = input.chars().count();
+    let cursor = cursor.min(total);
+
+    for (idx, (line_start, line_text)) in wrapped.iter().enumerate() {
+        let next_start = wrapped
+            .get(idx + 1)
+            .map(|(start, _)| *start)
+            .unwrap_or_else(|| total.saturating_add(1));
+
+        if cursor >= *line_start && cursor < next_start {
+            let line_len = line_text.chars().count();
+            return (idx, cursor.saturating_sub(*line_start).min(line_len));
+        }
+    }
+
+    let row = wrapped.len().saturating_sub(1);
+    let col = wrapped
+        .get(row)
+        .map(|(_, line_text)| line_text.chars().count())
+        .unwrap_or(0);
+    (row, col)
+}
+
+fn move_composer_cursor_by_wrapped_rows(app: &mut App, inner: Rect, rows: isize) {
+    if app.input.is_empty() || rows == 0 {
+        return;
+    }
+
+    let width = inner.width.max(1) as usize;
+    let wrapped = crate::tui::widgets::wrap_input_lines_for_mouse(&app.input, width);
+    if wrapped.len() <= 1 {
+        return;
+    }
+
+    let (current_row, current_col) =
+        composer_wrapped_cursor_row_col(&app.input, app.cursor_position, &wrapped);
+    let max_row = wrapped.len().saturating_sub(1);
+    let target_row = if rows.is_negative() {
+        current_row.saturating_sub(rows.unsigned_abs())
+    } else {
+        current_row.saturating_add(rows as usize).min(max_row)
+    };
+
+    if target_row == current_row {
+        return;
+    }
+
+    let (target_start, target_text) = &wrapped[target_row];
+    let target_len = target_text.chars().count();
+    let total = app.input.chars().count();
+    app.clear_selection();
+    app.cursor_position = target_start
+        .saturating_add(current_col.min(target_len))
+        .min(total);
+    app.needs_redraw = true;
+}
+
 /// Handle mouse events within the composer area.
 /// Returns true if the event was consumed.
 pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent) -> bool {
@@ -97,6 +161,18 @@ pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent) -> bool {
     let inner = app.viewport.last_composer_content.unwrap_or(area);
 
     match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            move_composer_cursor_by_wrapped_rows(
+                app,
+                inner,
+                -(COMPOSER_MOUSE_SCROLL_LINES as isize),
+            );
+            true
+        }
+        MouseEventKind::ScrollDown => {
+            move_composer_cursor_by_wrapped_rows(app, inner, COMPOSER_MOUSE_SCROLL_LINES as isize);
+            true
+        }
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(pos) = mouse_pos_to_char_index(app, mouse.column, mouse.row, inner) {
                 app.cursor_position = pos;
