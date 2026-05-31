@@ -25,8 +25,11 @@ const DEFAULT_ATLASCLOUD_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 const DEFAULT_ATLASCLOUD_BASE_URL: &str = "https://api.atlascloud.ai/v1";
 const DEFAULT_WANJIE_ARK_MODEL: &str = "deepseek-reasoner";
 const DEFAULT_WANJIE_ARK_BASE_URL: &str = "https://maas-openapi.wanjiedata.com/api/v1";
+const DEFAULT_VOLCENGINE_MODEL: &str = "DeepSeek-V4-Pro";
+const DEFAULT_VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
 const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
 const DEFAULT_OPENROUTER_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
+const DEFAULT_XIAOMI_MIMO_MODEL: &str = "mimo-v2.5-pro";
 const DEFAULT_NOVITA_MODEL: &str = "deepseek/deepseek-v4-pro";
 const DEFAULT_NOVITA_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 const DEFAULT_FIREWORKS_MODEL: &str = "accounts/fireworks/models/deepseek-v4-pro";
@@ -37,6 +40,7 @@ const DEFAULT_KIMI_CODE_BASE_URL: &str = "https://api.kimi.com/coding/v1";
 const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const DEFAULT_XIAOMI_MIMO_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
 const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
 const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
@@ -70,7 +74,11 @@ pub enum ProviderKind {
         alias = "wanjie_maas"
     )]
     WanjieArk,
+    #[serde(alias = "volcengine-ark", alias = "volcengine_ark", alias = "ark")]
+    Volcengine,
     Openrouter,
+    #[serde(alias = "mimo", alias = "xiaomi", alias = "xiaomi_mimo")]
+    XiaomiMimo,
     Novita,
     Fireworks,
     Moonshot,
@@ -88,7 +96,9 @@ impl ProviderKind {
             Self::Openai => "openai",
             Self::Atlascloud => "atlascloud",
             Self::WanjieArk => "wanjie-ark",
+            Self::Volcengine => "volcengine",
             Self::Openrouter => "openrouter",
+            Self::XiaomiMimo => "xiaomi-mimo",
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
             Self::Moonshot => "moonshot",
@@ -108,7 +118,12 @@ impl ProviderKind {
             "atlascloud" | "atlas-cloud" | "atlas_cloud" | "atlas" => Some(Self::Atlascloud),
             "wanjie" | "wanjie-ark" | "wanjie_ark" | "ark-wanjie" | "ark_wanjie" | "wanjieark"
             | "wanjie-maas" | "wanjie_maas" | "wanjiemaas" => Some(Self::WanjieArk),
+            "volcengine" | "volcengine-ark" | "volcengine_ark" | "ark" | "volc-ark"
+            | "volcengineark" => Some(Self::Volcengine),
             "openrouter" | "open_router" => Some(Self::Openrouter),
+            "xiaomi-mimo" | "xiaomi_mimo" | "xiaomimimo" | "mimo" | "xiaomi" => {
+                Some(Self::XiaomiMimo)
+            }
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "moonshot" | "moonshot-ai" | "kimi" | "kimi-k2" => Some(Self::Moonshot),
@@ -143,7 +158,11 @@ pub struct ProvidersToml {
     #[serde(default)]
     pub wanjie_ark: ProviderConfigToml,
     #[serde(default)]
+    pub volcengine: ProviderConfigToml,
+    #[serde(default)]
     pub openrouter: ProviderConfigToml,
+    #[serde(default)]
+    pub xiaomi_mimo: ProviderConfigToml,
     #[serde(default)]
     pub novita: ProviderConfigToml,
     #[serde(default)]
@@ -167,7 +186,9 @@ impl ProvidersToml {
             ProviderKind::Openai => &self.openai,
             ProviderKind::Atlascloud => &self.atlascloud,
             ProviderKind::WanjieArk => &self.wanjie_ark,
+            ProviderKind::Volcengine => &self.volcengine,
             ProviderKind::Openrouter => &self.openrouter,
+            ProviderKind::XiaomiMimo => &self.xiaomi_mimo,
             ProviderKind::Novita => &self.novita,
             ProviderKind::Fireworks => &self.fireworks,
             ProviderKind::Moonshot => &self.moonshot,
@@ -184,7 +205,9 @@ impl ProvidersToml {
             ProviderKind::Openai => &mut self.openai,
             ProviderKind::Atlascloud => &mut self.atlascloud,
             ProviderKind::WanjieArk => &mut self.wanjie_ark,
+            ProviderKind::Volcengine => &mut self.volcengine,
             ProviderKind::Openrouter => &mut self.openrouter,
+            ProviderKind::XiaomiMimo => &mut self.xiaomi_mimo,
             ProviderKind::Novita => &mut self.novita,
             ProviderKind::Fireworks => &mut self.fireworks,
             ProviderKind::Moonshot => &mut self.moonshot,
@@ -405,6 +428,10 @@ impl ConfigToml {
             &mut self.providers.openrouter,
             &project.providers.openrouter,
         );
+        merge_project_provider_config(
+            &mut self.providers.xiaomi_mimo,
+            &project.providers.xiaomi_mimo,
+        );
         merge_project_provider_config(&mut self.providers.novita, &project.providers.novita);
         merge_project_provider_config(&mut self.providers.fireworks, &project.providers.fireworks);
         merge_project_provider_config(&mut self.providers.sglang, &project.providers.sglang);
@@ -455,6 +482,9 @@ impl ConfigToml {
             "providers.wanjie_ark.api_key" => self.providers.wanjie_ark.api_key.clone(),
             "providers.wanjie_ark.base_url" => self.providers.wanjie_ark.base_url.clone(),
             "providers.wanjie_ark.model" => self.providers.wanjie_ark.model.clone(),
+            "providers.volcengine.api_key" => self.providers.volcengine.api_key.clone(),
+            "providers.volcengine.base_url" => self.providers.volcengine.base_url.clone(),
+            "providers.volcengine.model" => self.providers.volcengine.model.clone(),
             "providers.wanjie_ark.http_headers" => {
                 serialize_http_headers(&self.providers.wanjie_ark.http_headers)
             }
@@ -463,6 +493,12 @@ impl ConfigToml {
             "providers.openrouter.model" => self.providers.openrouter.model.clone(),
             "providers.openrouter.http_headers" => {
                 serialize_http_headers(&self.providers.openrouter.http_headers)
+            }
+            "providers.xiaomi_mimo.api_key" => self.providers.xiaomi_mimo.api_key.clone(),
+            "providers.xiaomi_mimo.base_url" => self.providers.xiaomi_mimo.base_url.clone(),
+            "providers.xiaomi_mimo.model" => self.providers.xiaomi_mimo.model.clone(),
+            "providers.xiaomi_mimo.http_headers" => {
+                serialize_http_headers(&self.providers.xiaomi_mimo.http_headers)
             }
             "providers.novita.api_key" => self.providers.novita.api_key.clone(),
             "providers.novita.base_url" => self.providers.novita.base_url.clone(),
@@ -582,6 +618,15 @@ impl ConfigToml {
             "providers.wanjie_ark.model" => {
                 self.providers.wanjie_ark.model = Some(value.to_string());
             }
+            "providers.volcengine.api_key" => {
+                self.providers.volcengine.api_key = Some(value.to_string());
+            }
+            "providers.volcengine.base_url" => {
+                self.providers.volcengine.base_url = Some(value.to_string());
+            }
+            "providers.volcengine.model" => {
+                self.providers.volcengine.model = Some(value.to_string());
+            }
             "providers.wanjie_ark.http_headers" => {
                 self.providers.wanjie_ark.http_headers = parse_http_headers(value)?;
             }
@@ -608,6 +653,18 @@ impl ConfigToml {
             }
             "providers.openrouter.http_headers" => {
                 self.providers.openrouter.http_headers = parse_http_headers(value)?;
+            }
+            "providers.xiaomi_mimo.api_key" => {
+                self.providers.xiaomi_mimo.api_key = Some(value.to_string());
+            }
+            "providers.xiaomi_mimo.base_url" => {
+                self.providers.xiaomi_mimo.base_url = Some(value.to_string());
+            }
+            "providers.xiaomi_mimo.model" => {
+                self.providers.xiaomi_mimo.model = Some(value.to_string());
+            }
+            "providers.xiaomi_mimo.http_headers" => {
+                self.providers.xiaomi_mimo.http_headers = parse_http_headers(value)?;
             }
             "providers.novita.api_key" => {
                 self.providers.novita.api_key = Some(value.to_string());
@@ -733,6 +790,9 @@ impl ConfigToml {
             "providers.wanjie_ark.api_key" => self.providers.wanjie_ark.api_key = None,
             "providers.wanjie_ark.base_url" => self.providers.wanjie_ark.base_url = None,
             "providers.wanjie_ark.model" => self.providers.wanjie_ark.model = None,
+            "providers.volcengine.api_key" => self.providers.volcengine.api_key = None,
+            "providers.volcengine.base_url" => self.providers.volcengine.base_url = None,
+            "providers.volcengine.model" => self.providers.volcengine.model = None,
             "providers.wanjie_ark.http_headers" => {
                 self.providers.wanjie_ark.http_headers.clear();
             }
@@ -744,6 +804,12 @@ impl ConfigToml {
             "providers.openrouter.base_url" => self.providers.openrouter.base_url = None,
             "providers.openrouter.model" => self.providers.openrouter.model = None,
             "providers.openrouter.http_headers" => self.providers.openrouter.http_headers.clear(),
+            "providers.xiaomi_mimo.api_key" => self.providers.xiaomi_mimo.api_key = None,
+            "providers.xiaomi_mimo.base_url" => self.providers.xiaomi_mimo.base_url = None,
+            "providers.xiaomi_mimo.model" => self.providers.xiaomi_mimo.model = None,
+            "providers.xiaomi_mimo.http_headers" => {
+                self.providers.xiaomi_mimo.http_headers.clear();
+            }
             "providers.novita.api_key" => self.providers.novita.api_key = None,
             "providers.novita.base_url" => self.providers.novita.base_url = None,
             "providers.novita.model" => self.providers.novita.model = None,
@@ -850,6 +916,15 @@ impl ConfigToml {
         if let Some(v) = serialize_http_headers(&self.providers.atlascloud.http_headers) {
             out.insert("providers.atlascloud.http_headers".to_string(), v);
         }
+        if let Some(v) = self.providers.volcengine.api_key.as_ref() {
+            out.insert("providers.volcengine.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.volcengine.base_url.as_ref() {
+            out.insert("providers.volcengine.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.volcengine.model.as_ref() {
+            out.insert("providers.volcengine.model".to_string(), v.clone());
+        }
         if let Some(v) = self.providers.wanjie_ark.api_key.as_ref() {
             out.insert("providers.wanjie_ark.api_key".to_string(), redact_secret(v));
         }
@@ -858,6 +933,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.wanjie_ark.model.as_ref() {
             out.insert("providers.wanjie_ark.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.volcengine.http_headers) {
+            out.insert("providers.volcengine.http_headers".to_string(), v);
         }
         if let Some(v) = serialize_http_headers(&self.providers.wanjie_ark.http_headers) {
             out.insert("providers.wanjie_ark.http_headers".to_string(), v);
@@ -885,6 +963,21 @@ impl ConfigToml {
         }
         if let Some(v) = serialize_http_headers(&self.providers.openrouter.http_headers) {
             out.insert("providers.openrouter.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.xiaomi_mimo.api_key.as_ref() {
+            out.insert(
+                "providers.xiaomi_mimo.api_key".to_string(),
+                redact_secret(v),
+            );
+        }
+        if let Some(v) = self.providers.xiaomi_mimo.base_url.as_ref() {
+            out.insert("providers.xiaomi_mimo.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.xiaomi_mimo.model.as_ref() {
+            out.insert("providers.xiaomi_mimo.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.xiaomi_mimo.http_headers) {
+            out.insert("providers.xiaomi_mimo.http_headers".to_string(), v);
         }
         if let Some(v) = self.providers.novita.api_key.as_ref() {
             out.insert("providers.novita.api_key".to_string(), redact_secret(v));
@@ -1022,7 +1115,9 @@ impl ConfigToml {
                 ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL.to_string(),
                 ProviderKind::Atlascloud => DEFAULT_ATLASCLOUD_BASE_URL.to_string(),
                 ProviderKind::WanjieArk => DEFAULT_WANJIE_ARK_BASE_URL.to_string(),
+                ProviderKind::Volcengine => DEFAULT_VOLCENGINE_BASE_URL.to_string(),
                 ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL.to_string(),
+                ProviderKind::XiaomiMimo => DEFAULT_XIAOMI_MIMO_BASE_URL.to_string(),
                 ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL.to_string(),
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
                 ProviderKind::Moonshot => {
@@ -1225,7 +1320,11 @@ pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
 fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
     if matches!(
         provider,
-        ProviderKind::Atlascloud | ProviderKind::WanjieArk | ProviderKind::Ollama
+        ProviderKind::Atlascloud
+            | ProviderKind::WanjieArk
+            | ProviderKind::Volcengine
+            | ProviderKind::XiaomiMimo
+            | ProviderKind::Ollama
     ) {
         return model.to_string();
     }
@@ -1287,7 +1386,9 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Openai => DEFAULT_OPENAI_MODEL,
         ProviderKind::Atlascloud => DEFAULT_ATLASCLOUD_MODEL,
         ProviderKind::WanjieArk => DEFAULT_WANJIE_ARK_MODEL,
+        ProviderKind::Volcengine => DEFAULT_VOLCENGINE_MODEL,
         ProviderKind::Openrouter => DEFAULT_OPENROUTER_MODEL,
+        ProviderKind::XiaomiMimo => DEFAULT_XIAOMI_MIMO_MODEL,
         ProviderKind::Novita => DEFAULT_NOVITA_MODEL,
         ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL,
         ProviderKind::Moonshot => DEFAULT_MOONSHOT_MODEL,
@@ -1304,7 +1405,9 @@ fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL,
         ProviderKind::Atlascloud => DEFAULT_ATLASCLOUD_BASE_URL,
         ProviderKind::WanjieArk => DEFAULT_WANJIE_ARK_BASE_URL,
+        ProviderKind::Volcengine => DEFAULT_VOLCENGINE_BASE_URL,
         ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
+        ProviderKind::XiaomiMimo => DEFAULT_XIAOMI_MIMO_BASE_URL,
         ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL,
         ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
         ProviderKind::Moonshot => DEFAULT_MOONSHOT_BASE_URL,
@@ -1798,8 +1901,10 @@ fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
 struct EnvRuntimeOverrides {
     provider: Option<ProviderKind>,
     model: Option<String>,
+    volcengine_model: Option<String>,
     wanjie_ark_model: Option<String>,
     moonshot_model: Option<String>,
+    xiaomi_mimo_model: Option<String>,
     output_mode: Option<String>,
     auth_mode: Option<String>,
     log_level: Option<String>,
@@ -1812,8 +1917,10 @@ struct EnvRuntimeOverrides {
     nvidia_base_url: Option<String>,
     openai_base_url: Option<String>,
     atlascloud_base_url: Option<String>,
+    volcengine_base_url: Option<String>,
     wanjie_ark_base_url: Option<String>,
     openrouter_base_url: Option<String>,
+    xiaomi_mimo_base_url: Option<String>,
     novita_base_url: Option<String>,
     fireworks_base_url: Option<String>,
     moonshot_base_url: Option<String>,
@@ -1834,6 +1941,10 @@ impl EnvRuntimeOverrides {
                 .or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            volcengine_model: std::env::var("VOLCENGINE_MODEL")
+                .or_else(|_| std::env::var("VOLCENGINE_ARK_MODEL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             wanjie_ark_model: std::env::var("WANJIE_ARK_MODEL")
                 .or_else(|_| std::env::var("WANJIE_MODEL"))
                 .or_else(|_| std::env::var("WANJIE_MAAS_MODEL"))
@@ -1842,6 +1953,10 @@ impl EnvRuntimeOverrides {
             moonshot_model: std::env::var("MOONSHOT_MODEL")
                 .or_else(|_| std::env::var("KIMI_MODEL_NAME"))
                 .or_else(|_| std::env::var("KIMI_MODEL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            xiaomi_mimo_model: std::env::var("XIAOMI_MIMO_MODEL")
+                .or_else(|_| std::env::var("MIMO_MODEL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             output_mode: std::env::var("DEEPSEEK_OUTPUT_MODE").ok(),
@@ -1874,12 +1989,21 @@ impl EnvRuntimeOverrides {
             atlascloud_base_url: std::env::var("ATLASCLOUD_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            volcengine_base_url: std::env::var("VOLCENGINE_BASE_URL")
+                .or_else(|_| std::env::var("VOLCENGINE_ARK_BASE_URL"))
+                .or_else(|_| std::env::var("ARK_BASE_URL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             wanjie_ark_base_url: std::env::var("WANJIE_ARK_BASE_URL")
                 .or_else(|_| std::env::var("WANJIE_BASE_URL"))
                 .or_else(|_| std::env::var("WANJIE_MAAS_BASE_URL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             openrouter_base_url: std::env::var("OPENROUTER_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            xiaomi_mimo_base_url: std::env::var("XIAOMI_MIMO_BASE_URL")
+                .or_else(|_| std::env::var("MIMO_BASE_URL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             novita_base_url: std::env::var("NOVITA_BASE_URL")
@@ -1913,7 +2037,9 @@ impl EnvRuntimeOverrides {
             ProviderKind::Openai => self.openai_base_url.clone(),
             ProviderKind::Atlascloud => self.atlascloud_base_url.clone(),
             ProviderKind::WanjieArk => self.wanjie_ark_base_url.clone(),
+            ProviderKind::Volcengine => self.volcengine_base_url.clone(),
             ProviderKind::Openrouter => self.openrouter_base_url.clone(),
+            ProviderKind::XiaomiMimo => self.xiaomi_mimo_base_url.clone(),
             ProviderKind::Novita => self.novita_base_url.clone(),
             ProviderKind::Fireworks => self.fireworks_base_url.clone(),
             ProviderKind::Moonshot => self.moonshot_base_url.clone(),
@@ -1926,7 +2052,9 @@ impl EnvRuntimeOverrides {
     fn model_for(&self, provider: ProviderKind) -> Option<String> {
         match provider {
             ProviderKind::WanjieArk => self.wanjie_ark_model.clone(),
+            ProviderKind::Volcengine => self.volcengine_model.clone(),
             ProviderKind::Moonshot => self.moonshot_model.clone(),
+            ProviderKind::XiaomiMimo => self.xiaomi_mimo_model.clone(),
             _ => None,
         }
     }
@@ -1975,10 +2103,17 @@ mod tests {
         nvidia_nim_base_url: Option<OsString>,
         openrouter_api_key: Option<OsString>,
         openrouter_base_url: Option<OsString>,
+        xiaomi_mimo_api_key: Option<OsString>,
+        mimo_api_key: Option<OsString>,
+        xiaomi_mimo_base_url: Option<OsString>,
+        mimo_base_url: Option<OsString>,
+        xiaomi_mimo_model: Option<OsString>,
+        mimo_model: Option<OsString>,
         wanjie_ark_api_key: Option<OsString>,
         wanjie_ark_base_url: Option<OsString>,
         wanjie_base_url: Option<OsString>,
         wanjie_maas_base_url: Option<OsString>,
+        volcengine_model: Option<OsString>,
         wanjie_ark_model: Option<OsString>,
         wanjie_model: Option<OsString>,
         wanjie_maas_model: Option<OsString>,
@@ -2024,10 +2159,17 @@ mod tests {
                 nvidia_nim_base_url: env::var_os("NVIDIA_NIM_BASE_URL"),
                 openrouter_api_key: env::var_os("OPENROUTER_API_KEY"),
                 openrouter_base_url: env::var_os("OPENROUTER_BASE_URL"),
+                xiaomi_mimo_api_key: env::var_os("XIAOMI_MIMO_API_KEY"),
+                mimo_api_key: env::var_os("MIMO_API_KEY"),
+                xiaomi_mimo_base_url: env::var_os("XIAOMI_MIMO_BASE_URL"),
+                mimo_base_url: env::var_os("MIMO_BASE_URL"),
+                xiaomi_mimo_model: env::var_os("XIAOMI_MIMO_MODEL"),
+                mimo_model: env::var_os("MIMO_MODEL"),
                 wanjie_ark_api_key: env::var_os("WANJIE_ARK_API_KEY"),
                 wanjie_ark_base_url: env::var_os("WANJIE_ARK_BASE_URL"),
                 wanjie_base_url: env::var_os("WANJIE_BASE_URL"),
                 wanjie_maas_base_url: env::var_os("WANJIE_MAAS_BASE_URL"),
+                volcengine_model: env::var_os("VOLCENGINE_MODEL"),
                 wanjie_ark_model: env::var_os("WANJIE_ARK_MODEL"),
                 wanjie_model: env::var_os("WANJIE_MODEL"),
                 wanjie_maas_model: env::var_os("WANJIE_MAAS_MODEL"),
@@ -2068,6 +2210,12 @@ mod tests {
                 env::remove_var("NVIDIA_NIM_BASE_URL");
                 env::remove_var("OPENROUTER_API_KEY");
                 env::remove_var("OPENROUTER_BASE_URL");
+                env::remove_var("XIAOMI_MIMO_API_KEY");
+                env::remove_var("MIMO_API_KEY");
+                env::remove_var("XIAOMI_MIMO_BASE_URL");
+                env::remove_var("MIMO_BASE_URL");
+                env::remove_var("XIAOMI_MIMO_MODEL");
+                env::remove_var("MIMO_MODEL");
                 env::remove_var("WANJIE_ARK_API_KEY");
                 env::remove_var("WANJIE_ARK_BASE_URL");
                 env::remove_var("WANJIE_BASE_URL");
@@ -2129,10 +2277,17 @@ mod tests {
                 Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
                 Self::restore_var("OPENROUTER_API_KEY", self.openrouter_api_key.take());
                 Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
+                Self::restore_var("XIAOMI_MIMO_API_KEY", self.xiaomi_mimo_api_key.take());
+                Self::restore_var("MIMO_API_KEY", self.mimo_api_key.take());
+                Self::restore_var("XIAOMI_MIMO_BASE_URL", self.xiaomi_mimo_base_url.take());
+                Self::restore_var("MIMO_BASE_URL", self.mimo_base_url.take());
+                Self::restore_var("XIAOMI_MIMO_MODEL", self.xiaomi_mimo_model.take());
+                Self::restore_var("MIMO_MODEL", self.mimo_model.take());
                 Self::restore_var("WANJIE_ARK_API_KEY", self.wanjie_ark_api_key.take());
                 Self::restore_var("WANJIE_ARK_BASE_URL", self.wanjie_ark_base_url.take());
                 Self::restore_var("WANJIE_BASE_URL", self.wanjie_base_url.take());
                 Self::restore_var("WANJIE_MAAS_BASE_URL", self.wanjie_maas_base_url.take());
+                Self::restore_var("VOLCENGINE_MODEL", self.volcengine_model.take());
                 Self::restore_var("WANJIE_ARK_MODEL", self.wanjie_ark_model.take());
                 Self::restore_var("WANJIE_MODEL", self.wanjie_model.take());
                 Self::restore_var("WANJIE_MAAS_MODEL", self.wanjie_maas_model.take());
@@ -2712,6 +2867,14 @@ mod tests {
             ProviderKind::parse("OPEN_ROUTER"),
             Some(ProviderKind::Openrouter)
         );
+        assert_eq!(
+            ProviderKind::parse("xiaomi-mimo"),
+            Some(ProviderKind::XiaomiMimo)
+        );
+        assert_eq!(
+            ProviderKind::parse("xiaomi"),
+            Some(ProviderKind::XiaomiMimo)
+        );
         assert_eq!(ProviderKind::parse("novita"), Some(ProviderKind::Novita));
         assert_eq!(ProviderKind::parse("Novita"), Some(ProviderKind::Novita));
         assert_eq!(
@@ -2775,6 +2938,22 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Openrouter);
         assert_eq!(resolved.base_url, DEFAULT_OPENROUTER_BASE_URL);
         assert_eq!(resolved.model, DEFAULT_OPENROUTER_MODEL);
+    }
+
+    #[test]
+    fn xiaomi_mimo_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::XiaomiMimo,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::XiaomiMimo);
+        assert_eq!(resolved.base_url, DEFAULT_XIAOMI_MIMO_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_XIAOMI_MIMO_MODEL);
     }
 
     #[test]
@@ -3179,6 +3358,27 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Openrouter);
         assert_eq!(resolved.api_key.as_deref(), Some("or-env-key"));
         assert_eq!(resolved.base_url, DEFAULT_OPENROUTER_BASE_URL);
+    }
+
+    #[test]
+    fn xiaomi_mimo_env_overrides_provider_key_base_url_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "xiaomi-mimo");
+            env::set_var("MIMO_API_KEY", "mimo-env-key");
+            env::set_var("MIMO_BASE_URL", "https://mimo-gateway.example/v1");
+            env::set_var("MIMO_MODEL", "mimo-v2.5");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::XiaomiMimo);
+        assert_eq!(resolved.api_key.as_deref(), Some("mimo-env-key"));
+        assert_eq!(resolved.base_url, "https://mimo-gateway.example/v1");
+        assert_eq!(resolved.model, "mimo-v2.5");
     }
 
     #[test]
