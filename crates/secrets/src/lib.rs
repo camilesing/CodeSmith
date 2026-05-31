@@ -525,6 +525,9 @@ pub fn env_for(name: &str) -> Option<String> {
     let candidates: &[&str] = match name.to_ascii_lowercase().as_str() {
         "deepseek" => &["DEEPSEEK_API_KEY"],
         "openrouter" => &["OPENROUTER_API_KEY"],
+        "xiaomi-mimo" | "xiaomi_mimo" | "xiaomimimo" | "mimo" | "xiaomi" => {
+            &["XIAOMI_MIMO_API_KEY", "MIMO_API_KEY"]
+        }
         "novita" => &["NOVITA_API_KEY"],
         // NVIDIA NIM falls back to `DEEPSEEK_API_KEY` last because the
         // catalog endpoint accepts the same DeepSeek-issued key when no
@@ -539,6 +542,12 @@ pub fn env_for(name: &str) -> Option<String> {
         "ollama" | "ollama-local" => &["OLLAMA_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
         "atlascloud" | "atlas-cloud" | "atlas_cloud" | "atlas" => &["ATLASCLOUD_API_KEY"],
+        "volcengine" | "volcengine-ark" | "volcengine_ark" | "ark" | "volc-ark"
+        | "volcengineark" => &[
+            "VOLCENGINE_API_KEY",
+            "VOLCENGINE_ARK_API_KEY",
+            "ARK_API_KEY",
+        ],
         "wanjie" | "wanjie-ark" | "wanjie_ark" | "ark-wanjie" | "ark_wanjie" | "wanjieark"
         | "wanjie-maas" | "wanjie_maas" | "wanjiemaas" => &[
             "WANJIE_ARK_API_KEY",
@@ -587,6 +596,8 @@ mod tests {
             "WANJIE_ARK_API_KEY",
             "WANJIE_API_KEY",
             "WANJIE_MAAS_API_KEY",
+            "XIAOMI_MIMO_API_KEY",
+            "MIMO_API_KEY",
             SECRET_BACKEND_ENV,
         ] {
             // Safety: tests serialise on env_lock(); the broader
@@ -760,6 +771,20 @@ mod tests {
         assert_eq!(env_for("wanjie-ark").as_deref(), Some("wanjie-key"));
         assert_eq!(env_for("ark_wanjie").as_deref(), Some("wanjie-key"));
         assert_eq!(env_for("wanjie-maas").as_deref(), Some("wanjie-key"));
+
+        clear_known_envs();
+    }
+
+    #[test]
+    fn xiaomi_mimo_env_aliases_resolve() {
+        let _guard = env_lock();
+        clear_known_envs();
+        unsafe { std::env::set_var("MIMO_API_KEY", "mimo-key") };
+
+        assert_eq!(env_for("xiaomi-mimo").as_deref(), Some("mimo-key"));
+        assert_eq!(env_for("xiaomimimo").as_deref(), Some("mimo-key"));
+        assert_eq!(env_for("mimo").as_deref(), Some("mimo-key"));
+        assert_eq!(env_for("xiaomi").as_deref(), Some("mimo-key"));
 
         clear_known_envs();
     }

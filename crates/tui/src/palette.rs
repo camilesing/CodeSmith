@@ -81,6 +81,16 @@ pub const GRAYSCALE_TEXT_SOFT_RGB: (u8, u8, u8) = (220, 220, 220); // #DCDCDC
 pub const GRAYSCALE_BORDER_RGB: (u8, u8, u8) = (96, 96, 96); // #606060
 pub const GRAYSCALE_SELECTION_RGB: (u8, u8, u8) = (62, 62, 62); // #3E3E3E
 
+pub const MATRIX_SURFACE_RGB: (u8, u8, u8) = (0, 10, 0); // #000A00
+pub const MATRIX_ELEVATED_RGB: (u8, u8, u8) = (0, 51, 0); // #003300
+pub const MATRIX_SELECTION_RGB: (u8, u8, u8) = (0, 51, 0); // #003300
+pub const MATRIX_TEXT_BODY_RGB: (u8, u8, u8) = (136, 255, 136); // #88FF88
+pub const MATRIX_TEXT_MUTED_RGB: (u8, u8, u8) = (0, 85, 0); // #005500
+pub const MATRIX_TEXT_HINT_RGB: (u8, u8, u8) = (0, 102, 0); // #006600
+pub const MATRIX_TEXT_SOFT_RGB: (u8, u8, u8) = (221, 255, 221); // #DDFFDD
+pub const MATRIX_TEXT_DIM_RGB: (u8, u8, u8) = (0, 68, 0); // #004400
+pub const MATRIX_BORDER_RGB: (u8, u8, u8) = (0, 204, 0); // #00CC00
+
 // New semantic colors
 pub const BORDER_COLOR_RGB: (u8, u8, u8) = WHALE_BORDER_RGB; // #2A4A7F
 
@@ -825,6 +835,63 @@ pub const DRACULA_UI_THEME: UiTheme = UiTheme {
     tool_failed: Color::Rgb(0xff, 0x55, 0x55),  // red
 };
 
+/// "Terminal" theme: lets the host terminal's color scheme show through
+/// instead of painting any RGB surface. Backgrounds use `Color::Reset`
+/// (the terminal's own default bg) and most text uses `Color::Reset`
+/// (terminal's own default fg). Accents are ANSI named colors so they
+/// also inherit the user's terminal palette (Solarized, Nord, custom
+/// schemes, etc.) rather than DeepSeek brand RGB.
+pub const TERMINAL_UI_THEME: UiTheme = UiTheme {
+    name: "terminal",
+    // Mode is reported as Dark to avoid the dark→light cell remap kicking
+    // in; the terminal-theme cell remap already normalizes everything to
+    // `Color::Reset`, and we never want a second pass overwriting that.
+    mode: PaletteMode::Dark,
+    surface_bg: Color::Reset,
+    panel_bg: Color::Reset,
+    elevated_bg: Color::Reset,
+    composer_bg: Color::Reset,
+    selection_bg: Color::Reset,
+    header_bg: Color::Reset,
+    footer_bg: Color::Reset,
+    text_dim: Color::Reset,
+    text_hint: Color::Reset,
+    text_muted: Color::Reset,
+    text_body: Color::Reset,
+    text_soft: Color::Reset,
+    border: Color::Reset,
+    accent_primary: Color::Blue,
+    accent_secondary: Color::Cyan,
+    accent_action: Color::Yellow,
+    error_fg: Color::Red,
+    error_hover: Color::Red,
+    error_surface: Color::Reset,
+    error_border: Color::Red,
+    error_text: Color::Red,
+    warning: Color::Yellow,
+    success: Color::Green,
+    info: Color::Cyan,
+    mode_agent: Color::Blue,
+    mode_yolo: Color::Red,
+    // Magenta keeps Plan visually distinct from `status_warning` (yellow)
+    // so the mode indicator and warning chip don't collide on themes that
+    // render both in the status row.
+    mode_plan: Color::Magenta,
+    mode_goal: Color::Green,
+    // DarkGray gives "Ready" a low-contrast but still distinguishable hue
+    // versus default body text (which is `Color::Reset` on this theme).
+    status_ready: Color::DarkGray,
+    status_working: Color::Cyan,
+    status_warning: Color::Yellow,
+    diff_added_fg: Color::Green,
+    diff_deleted_fg: Color::Red,
+    diff_added_bg: Color::Reset,
+    diff_deleted_bg: Color::Reset,
+    tool_running: Color::Cyan,
+    tool_success: Color::Green,
+    tool_failed: Color::Red,
+};
+
 pub const GRUVBOX_DARK_UI_THEME: UiTheme = UiTheme {
     name: "gruvbox-dark",
     mode: PaletteMode::Dark,
@@ -868,12 +935,116 @@ pub const GRUVBOX_DARK_UI_THEME: UiTheme = UiTheme {
     tool_failed: Color::Rgb(0xfb, 0x49, 0x34),  // red
 };
 
+pub const MATRIX_UI_THEME: UiTheme = UiTheme {
+    name: "matrix",
+    mode: PaletteMode::Dark,
+    surface_bg: Color::Rgb(
+        MATRIX_SURFACE_RGB.0,
+        MATRIX_SURFACE_RGB.1,
+        MATRIX_SURFACE_RGB.2,
+    ),
+    panel_bg: Color::Rgb(
+        MATRIX_SURFACE_RGB.0,
+        MATRIX_SURFACE_RGB.1,
+        MATRIX_SURFACE_RGB.2,
+    ),
+    elevated_bg: Color::Rgb(
+        MATRIX_ELEVATED_RGB.0,
+        MATRIX_ELEVATED_RGB.1,
+        MATRIX_ELEVATED_RGB.2,
+    ),
+    composer_bg: Color::Rgb(
+        MATRIX_SURFACE_RGB.0,
+        MATRIX_SURFACE_RGB.1,
+        MATRIX_SURFACE_RGB.2,
+    ),
+    selection_bg: Color::Rgb(
+        MATRIX_SELECTION_RGB.0,
+        MATRIX_SELECTION_RGB.1,
+        MATRIX_SELECTION_RGB.2,
+    ),
+    header_bg: Color::Rgb(
+        MATRIX_SURFACE_RGB.0,
+        MATRIX_SURFACE_RGB.1,
+        MATRIX_SURFACE_RGB.2,
+    ),
+    footer_bg: Color::Rgb(
+        MATRIX_SURFACE_RGB.0,
+        MATRIX_SURFACE_RGB.1,
+        MATRIX_SURFACE_RGB.2,
+    ),
+    text_dim: Color::Rgb(
+        MATRIX_TEXT_DIM_RGB.0,
+        MATRIX_TEXT_DIM_RGB.1,
+        MATRIX_TEXT_DIM_RGB.2,
+    ),
+    text_hint: Color::Rgb(
+        MATRIX_TEXT_HINT_RGB.0,
+        MATRIX_TEXT_HINT_RGB.1,
+        MATRIX_TEXT_HINT_RGB.2,
+    ),
+    text_muted: Color::Rgb(
+        MATRIX_TEXT_MUTED_RGB.0,
+        MATRIX_TEXT_MUTED_RGB.1,
+        MATRIX_TEXT_MUTED_RGB.2,
+    ),
+    text_body: Color::Rgb(
+        MATRIX_TEXT_BODY_RGB.0,
+        MATRIX_TEXT_BODY_RGB.1,
+        MATRIX_TEXT_BODY_RGB.2,
+    ),
+    text_soft: Color::Rgb(
+        MATRIX_TEXT_SOFT_RGB.0,
+        MATRIX_TEXT_SOFT_RGB.1,
+        MATRIX_TEXT_SOFT_RGB.2,
+    ),
+    border: Color::Rgb(
+        MATRIX_BORDER_RGB.0,
+        MATRIX_BORDER_RGB.1,
+        MATRIX_BORDER_RGB.2,
+    ),
+    accent_primary: Color::Rgb(
+        MATRIX_BORDER_RGB.0,
+        MATRIX_BORDER_RGB.1,
+        MATRIX_BORDER_RGB.2,
+    ),
+    accent_secondary: Color::Rgb(0, 153, 0),
+    accent_action: Color::Rgb(0x88, 0xff, 0x88),
+    error_fg: Color::Rgb(0xb4, 0, 0),
+    error_hover: Color::Rgb(0xe0, 0, 0),
+    error_surface: Color::Rgb(0x1a, 0x0d, 0x0d),
+    error_border: Color::Rgb(0xb4, 0, 0),
+    error_text: Color::Rgb(0xff, 0x44, 0x44),
+    warning: Color::Rgb(204, 204, 0),
+    success: Color::Rgb(0x88, 0xff, 0x88),
+    info: Color::Rgb(0, 204, 0),
+    mode_agent: Color::Rgb(0, 153, 0),
+    mode_yolo: Color::Rgb(255, 100, 100),
+    mode_plan: Color::Rgb(255, 170, 60),
+    mode_goal: Color::Rgb(170, 255, 170),
+    status_ready: Color::Rgb(0, 85, 0),
+    status_working: Color::Rgb(
+        MATRIX_TEXT_BODY_RGB.0,
+        MATRIX_TEXT_BODY_RGB.1,
+        MATRIX_TEXT_BODY_RGB.2,
+    ),
+    status_warning: Color::Rgb(204, 204, 0),
+    diff_added_fg: Color::Rgb(0x88, 0xff, 0x88),
+    diff_deleted_fg: Color::Rgb(0xb4, 0, 0),
+    diff_added_bg: Color::Rgb(0x0d, 0x1a, 0x0d),
+    diff_deleted_bg: Color::Rgb(0x1a, 0x0d, 0x0d),
+    tool_running: Color::Rgb(0x88, 0xff, 0x88),
+    tool_success: Color::Rgb(0, 102, 0),
+    tool_failed: Color::Rgb(0xb4, 0, 0),
+};
+
 /// Stable identifiers for the named themes the user can select. `System`
 /// defers to `PaletteMode::detect()` (terminal-driven dark/light). Each
 /// dark/light id resolves to a single fixed `UiTheme`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeId {
     System,
+    Terminal,
     Whale,
     WhaleLight,
     Grayscale,
@@ -881,6 +1052,7 @@ pub enum ThemeId {
     TokyoNight,
     Dracula,
     GruvboxDark,
+    Matrix,
 }
 
 impl ThemeId {
@@ -891,6 +1063,7 @@ impl ThemeId {
     pub fn from_name(value: &str) -> Option<Self> {
         match normalize_theme_name(value)? {
             "system" => Some(Self::System),
+            "terminal" => Some(Self::Terminal),
             "dark" => Some(Self::Whale),
             "light" => Some(Self::WhaleLight),
             "grayscale" => Some(Self::Grayscale),
@@ -898,6 +1071,7 @@ impl ThemeId {
             "tokyo-night" => Some(Self::TokyoNight),
             "dracula" => Some(Self::Dracula),
             "gruvbox-dark" => Some(Self::GruvboxDark),
+            "matrix" => Some(Self::Matrix),
             _ => None,
         }
     }
@@ -908,6 +1082,7 @@ impl ThemeId {
     pub const fn name(self) -> &'static str {
         match self {
             Self::System => "system",
+            Self::Terminal => "terminal",
             Self::Whale => "dark",
             Self::WhaleLight => "light",
             Self::Grayscale => "grayscale",
@@ -915,6 +1090,7 @@ impl ThemeId {
             Self::TokyoNight => "tokyo-night",
             Self::Dracula => "dracula",
             Self::GruvboxDark => "gruvbox-dark",
+            Self::Matrix => "matrix",
         }
     }
 
@@ -923,6 +1099,7 @@ impl ThemeId {
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::System => "System",
+            Self::Terminal => "Terminal",
             Self::Whale => "Whale (Dark)",
             Self::WhaleLight => "Whale Light",
             Self::Grayscale => "Grayscale",
@@ -930,6 +1107,7 @@ impl ThemeId {
             Self::TokyoNight => "Tokyo Night",
             Self::Dracula => "Dracula",
             Self::GruvboxDark => "Gruvbox Dark",
+            Self::Matrix => "Matrix",
         }
     }
 
@@ -938,6 +1116,7 @@ impl ThemeId {
     pub const fn tagline(self) -> &'static str {
         match self {
             Self::System => "Follow terminal background (COLORFGBG / macOS appearance)",
+            Self::Terminal => "Inherit terminal colors fully (transparent surfaces, ANSI accents)",
             Self::Whale => "Whale dark — deep navy & gold",
             Self::WhaleLight => "DeepSeek light, paper-ish",
             Self::Grayscale => "Color-minimal high contrast",
@@ -945,6 +1124,7 @@ impl ThemeId {
             Self::TokyoNight => "Deep blue/violet night palette",
             Self::Dracula => "Classic high-contrast purple",
             Self::GruvboxDark => "Vintage warm earth tones",
+            Self::Matrix => "The Matrix films inspired theme",
         }
     }
 
@@ -956,6 +1136,7 @@ impl ThemeId {
     pub fn ui_theme(self) -> UiTheme {
         match self {
             Self::System => UiTheme::detect(),
+            Self::Terminal => TERMINAL_UI_THEME,
             Self::Whale => UI_THEME,
             Self::WhaleLight => LIGHT_UI_THEME,
             Self::Grayscale => GRAYSCALE_UI_THEME,
@@ -963,6 +1144,7 @@ impl ThemeId {
             Self::TokyoNight => TOKYO_NIGHT_UI_THEME,
             Self::Dracula => DRACULA_UI_THEME,
             Self::GruvboxDark => GRUVBOX_DARK_UI_THEME,
+            Self::Matrix => MATRIX_UI_THEME,
         }
     }
 }
@@ -970,6 +1152,7 @@ impl ThemeId {
 /// Themes shown in the `/theme` picker, in display order.
 pub const SELECTABLE_THEMES: &[ThemeId] = &[
     ThemeId::System,
+    ThemeId::Terminal,
     ThemeId::Whale,
     ThemeId::WhaleLight,
     ThemeId::Grayscale,
@@ -977,6 +1160,7 @@ pub const SELECTABLE_THEMES: &[ThemeId] = &[
     ThemeId::TokyoNight,
     ThemeId::Dracula,
     ThemeId::GruvboxDark,
+    ThemeId::Matrix,
 ];
 
 impl UiTheme {
@@ -1012,6 +1196,7 @@ impl UiTheme {
 pub fn normalize_theme_name(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "auto" | "system" | "default" => Some("system"),
+        "terminal" | "term" | "transparent" | "follow-terminal" | "inherit" => Some("terminal"),
         "dark" | "whale" | "whale-dark" => Some("dark"),
         "light" | "whale-light" => Some("light"),
         "grayscale" | "greyscale" | "gray" | "grey" | "mono" | "monochrome" | "black-white"
@@ -1020,6 +1205,7 @@ pub fn normalize_theme_name(value: &str) -> Option<&'static str> {
         "tokyo-night" | "tokyonight" | "tokyo" => Some("tokyo-night"),
         "dracula" => Some("dracula"),
         "gruvbox-dark" | "gruvbox" => Some("gruvbox-dark"),
+        "matrix" | "hacker" => Some("matrix"),
         _ => None,
     }
 }
@@ -1189,7 +1375,12 @@ const fn theme_diff_deleted_bg(ui: &UiTheme) -> Color {
 pub const fn theme_remap_active(theme: ThemeId) -> bool {
     matches!(
         theme,
-        ThemeId::CatppuccinMocha | ThemeId::TokyoNight | ThemeId::Dracula | ThemeId::GruvboxDark
+        ThemeId::Terminal
+            | ThemeId::CatppuccinMocha
+            | ThemeId::TokyoNight
+            | ThemeId::Dracula
+            | ThemeId::GruvboxDark
+            | ThemeId::Matrix
     )
 }
 
@@ -1223,7 +1414,11 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     } else if color == TEXT_ACCENT || color == DEEPSEEK_SKY || color == ACCENT_TOOL_LIVE {
         ui.status_working
     } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
-        ui.mode_plan
+        if theme == ThemeId::Matrix {
+            Color::Rgb(0x00, 0x55, 0x00) // #005500
+        } else {
+            ui.mode_plan
+        }
     } else if color == ACCENT_TOOL_ISSUE {
         ui.mode_yolo
     } else if color == STATUS_WARNING {
@@ -1677,14 +1872,15 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        DEEPSEEK_SLATE, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED, GRAYSCALE_PANEL, GRAYSCALE_REASONING,
-        GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT,
-        GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED, LIGHT_PANEL, LIGHT_REASONING,
-        LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode,
-        SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
-        TEXT_TOOL_OUTPUT, UI_THEME, WHALE_REASONING_TEXT_RGB, WHALE_REASONING_TINT_RGB,
-        WHALE_TEXT_BODY_RGB, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
-        adapt_fg_for_palette_mode, blend, luma, nearest_ansi16, normalize_hex_rgb_color,
+        DEEPSEEK_SLATE, DIFF_ADDED, DIFF_ADDED_BG, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED,
+        GRAYSCALE_PANEL, GRAYSCALE_REASONING, GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY,
+        GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT, GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED,
+        LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
+        LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, SURFACE_REASONING_TINT, TERMINAL_UI_THEME,
+        TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, ThemeId, UI_THEME,
+        WHALE_REASONING_TEXT_RGB, WHALE_REASONING_TINT_RGB, WHALE_TEXT_BODY_RGB, adapt_bg,
+        adapt_bg_for_palette_mode, adapt_bg_for_theme, adapt_color, adapt_fg_for_palette_mode,
+        adapt_fg_for_theme, blend, luma, nearest_ansi16, normalize_hex_rgb_color,
         normalize_theme_name, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
         rgb_to_ansi256, theme_label_for_mode, ui_theme_from_settings,
     };
@@ -1770,10 +1966,37 @@ mod tests {
         assert_eq!(normalize_theme_name("system"), Some("system"));
         assert_eq!(normalize_theme_name("default"), Some("system"));
         assert_eq!(normalize_theme_name("whale"), Some("dark"));
+        assert_eq!(normalize_theme_name("transparent"), Some("terminal"));
+        assert_eq!(normalize_theme_name("inherit"), Some("terminal"));
         assert_eq!(normalize_theme_name("black-white"), Some("grayscale"));
         assert_eq!(normalize_theme_name("mono"), Some("grayscale"));
         assert_eq!(normalize_theme_name("solarized"), None);
         assert_eq!(theme_label_for_mode(PaletteMode::Grayscale), "grayscale");
+    }
+
+    #[test]
+    fn terminal_theme_resets_surfaces_and_remaps_direct_palette_constants() {
+        assert_eq!(ThemeId::from_name("terminal"), Some(ThemeId::Terminal));
+        assert_eq!(TERMINAL_UI_THEME.surface_bg, Color::Reset);
+        assert_eq!(TERMINAL_UI_THEME.footer_bg, Color::Reset);
+        assert_eq!(TERMINAL_UI_THEME.text_body, Color::Reset);
+
+        assert_eq!(
+            adapt_bg_for_theme(DEEPSEEK_INK, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_bg_for_theme(DIFF_ADDED_BG, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_fg_for_theme(TEXT_BODY, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_fg_for_theme(DIFF_ADDED, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Green
+        );
     }
 
     #[test]
