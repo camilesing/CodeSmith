@@ -295,6 +295,45 @@ fn word_cursor_modifier_accepts_control_and_alt() {
     assert!(!is_word_cursor_modifier(KeyModifiers::SHIFT));
 }
 
+#[test]
+fn alt_f_and_alt_b_move_by_word_without_inserting_text() {
+    let mut app = create_test_app();
+    app.input = "alpha beta gamma".to_string();
+    app.cursor_position = 0;
+
+    assert!(handle_composer_alt_word_motion_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+    ));
+    assert_eq!(app.input, "alpha beta gamma");
+    assert_eq!(app.cursor_position, "alpha ".chars().count());
+
+    app.selection_anchor = Some(0);
+    assert!(handle_composer_alt_word_motion_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+    ));
+    assert_eq!(app.input, "alpha beta gamma");
+    assert_eq!(app.cursor_position, 0);
+    assert!(app.selection_anchor.is_none());
+}
+
+#[test]
+fn alt_word_motion_helper_ignores_altgr_style_control_alt() {
+    let mut app = create_test_app();
+    app.input = "alpha beta".to_string();
+    app.cursor_position = 0;
+
+    assert!(!handle_composer_alt_word_motion_key(
+        &mut app,
+        KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        ),
+    ));
+    assert_eq!(app.cursor_position, 0);
+}
+
 fn select_full_transcript(app: &mut App) {
     app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
         line_index: 0,
@@ -1139,6 +1178,70 @@ fn mouse_events_do_not_mutate_transcript_behind_modal() {
     assert!(events.is_empty());
     assert_eq!(app.viewport.pending_scroll_delta, 0);
     assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Help));
+}
+
+#[test]
+fn composer_mouse_wheel_scrolls_wrapped_draft_not_transcript() {
+    let mut app = create_test_app();
+    app.input = "alpha beta gamma delta epsilon".to_string();
+    app.cursor_position = 0;
+    app.viewport.last_composer_area = Some(Rect {
+        x: 0,
+        y: 10,
+        width: 12,
+        height: 5,
+    });
+    app.viewport.last_composer_content = Some(Rect {
+        x: 1,
+        y: 11,
+        width: 5,
+        height: 3,
+    });
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 2,
+            row: 12,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert_eq!(app.viewport.pending_scroll_delta, 0);
+    assert!(app.cursor_position > 0);
+}
+
+#[test]
+fn composer_mouse_wheel_up_moves_within_wrapped_draft() {
+    let mut app = create_test_app();
+    app.input = "alpha beta gamma delta epsilon".to_string();
+    app.cursor_position = app.input.chars().count();
+    app.viewport.last_composer_area = Some(Rect {
+        x: 0,
+        y: 10,
+        width: 12,
+        height: 5,
+    });
+    app.viewport.last_composer_content = Some(Rect {
+        x: 1,
+        y: 11,
+        width: 5,
+        height: 3,
+    });
+
+    assert!(handle_composer_mouse(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 2,
+            row: 12,
+            modifiers: KeyModifiers::NONE,
+        },
+    ));
+
+    assert!(app.cursor_position < app.input.chars().count());
 }
 
 #[test]
