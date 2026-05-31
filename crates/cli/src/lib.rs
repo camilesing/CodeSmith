@@ -247,6 +247,9 @@ struct UpdateArgs {
     /// Only check the latest release; do not download or replace binaries.
     #[arg(long)]
     check: bool,
+    /// Proxy URL to use for update HTTP requests.
+    #[arg(long, value_name = "URL")]
+    proxy: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -576,7 +579,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Update(args)) => update::run_update(args.beta, args.check),
+        Some(Commands::Update(args)) => update::run_update(args.beta, args.check, args.proxy),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
@@ -1840,7 +1843,8 @@ mod tests {
             cli.command,
             Some(Commands::Update(UpdateArgs {
                 beta: false,
-                check: false
+                check: false,
+                proxy: None
             }))
         ));
 
@@ -1849,7 +1853,8 @@ mod tests {
             cli.command,
             Some(Commands::Update(UpdateArgs {
                 beta: true,
-                check: false
+                check: false,
+                proxy: None
             }))
         ));
 
@@ -1858,9 +1863,18 @@ mod tests {
             cli.command,
             Some(Commands::Update(UpdateArgs {
                 beta: false,
-                check: true
+                check: true,
+                proxy: None
             }))
         ));
+
+        let cli = parse_ok(&["codewhale", "update", "--proxy", "socks5://127.0.0.1:1080"]);
+        let Some(Commands::Update(args)) = cli.command else {
+            panic!("expected update command");
+        };
+        assert!(!args.beta);
+        assert!(!args.check);
+        assert_eq!(args.proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
     }
 
     #[test]
