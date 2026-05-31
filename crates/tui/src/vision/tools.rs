@@ -70,7 +70,18 @@ impl ImageAnalyzeTool {
         self.config.api_key.clone().unwrap_or_default()
     }
 
-    fn uses_max_completion_tokens(base_url: &str) -> bool {
+    fn is_xiaomi_mimo_model(model: &str) -> bool {
+        let normalized = model.trim().to_ascii_lowercase();
+        let normalized = normalized.strip_prefix("xiaomi/").unwrap_or(&normalized);
+        normalized.starts_with("mimo-")
+    }
+
+    fn uses_max_completion_tokens(config: &VisionModelConfig) -> bool {
+        if Self::is_xiaomi_mimo_model(&config.model) {
+            return true;
+        }
+
+        let base_url = config.base_url.as_deref().unwrap_or_default();
         let Ok(url) = reqwest::Url::parse(base_url) else {
             return false;
         };
@@ -102,7 +113,7 @@ impl ImageAnalyzeTool {
             "temperature": 0.7
         });
 
-        let token_limit_field = if Self::uses_max_completion_tokens(&self.base_url()) {
+        let token_limit_field = if Self::uses_max_completion_tokens(&self.config) {
             "max_completion_tokens"
         } else {
             "max_tokens"
@@ -306,6 +317,22 @@ mod tests {
         let mut config = fake_config();
         config.model = "mimo-v2.5".to_string();
         config.base_url = Some("https://api.xiaomimimo.com/v1".to_string());
+        let tool = ImageAnalyzeTool::new(config);
+
+        let payload = tool.request_payload("describe", "abc123", "image/png");
+
+        assert_eq!(
+            payload.get("max_completion_tokens").and_then(Value::as_u64),
+            Some(u64::from(DEFAULT_VISION_MAX_OUTPUT_TOKENS))
+        );
+        assert!(payload.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn xiaomi_mimo_vision_payload_uses_max_completion_tokens_with_custom_proxy() {
+        let mut config = fake_config();
+        config.model = "mimo-v2.5".to_string();
+        config.base_url = Some("https://vision-proxy.example.invalid/v1".to_string());
         let tool = ImageAnalyzeTool::new(config);
 
         let payload = tool.request_payload("describe", "abc123", "image/png");
