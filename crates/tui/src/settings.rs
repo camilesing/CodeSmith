@@ -193,6 +193,13 @@ pub struct Settings {
     /// Enable rapid-key paste-burst detection for terminals that do not emit
     /// bracketed-paste events. Independent from `bracketed_paste`.
     pub paste_burst_detection: bool,
+    /// Maximum number of file-mention popup candidates retained before the
+    /// composer renders its visible window. The widget paginates by terminal
+    /// height, so this is a data-side cap rather than a visible-row budget.
+    pub mention_menu_limit: usize,
+    /// Maximum workspace depth for `@`-mention completion walks. `0` means
+    /// unlimited depth; use with care in very large repositories.
+    pub mention_walk_depth: usize,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
     /// Show detailed tool output
@@ -297,6 +304,8 @@ impl Default for Settings {
             fancy_animations: true,
             bracketed_paste: true,
             paste_burst_detection: true,
+            mention_menu_limit: 128,
+            mention_walk_depth: 6,
             show_thinking: true,
             show_tool_details: true,
             locale: "auto".to_string(),
@@ -503,6 +512,12 @@ impl Settings {
             "paste_burst_detection" | "paste_burst" => {
                 self.paste_burst_detection = parse_bool(value)?;
             }
+            "mention_menu_limit" | "mention_limit" => {
+                self.mention_menu_limit = parse_usize_setting("mention_menu_limit", value)?;
+            }
+            "mention_walk_depth" | "mention_depth" | "completions_walk_depth" => {
+                self.mention_walk_depth = parse_usize_setting("mention_walk_depth", value)?;
+            }
             "show_thinking" | "thinking" => {
                 self.show_thinking = parse_bool(value)?;
             }
@@ -694,6 +709,8 @@ impl Settings {
             "  paste_burst_detect: {}",
             self.paste_burst_detection
         ));
+        lines.push(format!("  mention_menu_limit: {}", self.mention_menu_limit));
+        lines.push(format!("  mention_walk_depth: {}", self.mention_walk_depth));
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
         lines.push(format!("  locale:            {}", self.locale));
@@ -767,6 +784,14 @@ impl Settings {
             (
                 "paste_burst_detection",
                 "Fallback rapid-key paste detection: on/off",
+            ),
+            (
+                "mention_menu_limit",
+                "Maximum @-mention popup candidates retained before rendering (default 128)",
+            ),
+            (
+                "mention_walk_depth",
+                "Maximum @-mention workspace walk depth; 0 means unlimited (default 6)",
             ),
             ("show_thinking", "Show model thinking: on/off"),
             ("show_tool_details", "Show detailed tool output: on/off"),
@@ -897,6 +922,14 @@ fn parse_bool(value: &str) -> Result<bool> {
             anyhow::bail!("Failed to parse boolean '{value}': expected on/off, true/false, yes/no.")
         }
     }
+}
+
+fn parse_usize_setting(key: &str, value: &str) -> Result<usize> {
+    value.trim().parse::<usize>().map_err(|_| {
+        anyhow::anyhow!(
+            "Failed to update setting: invalid {key} '{value}'. Expected 0 or a positive integer."
+        )
+    })
 }
 
 fn normalize_mode(value: &str) -> &str {
@@ -1117,6 +1150,28 @@ mod tests {
             .expect("disable bracketed paste");
         assert!(!settings.bracketed_paste);
         assert!(!settings.paste_burst_detection);
+    }
+
+    #[test]
+    fn mention_completion_caps_are_configurable() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.mention_menu_limit, 128);
+        assert_eq!(settings.mention_walk_depth, 6);
+
+        settings
+            .set("mention_menu_limit", "256")
+            .expect("set mention menu limit");
+        settings
+            .set("mention_walk_depth", "0")
+            .expect("allow unlimited walk depth");
+
+        assert_eq!(settings.mention_menu_limit, 256);
+        assert_eq!(settings.mention_walk_depth, 0);
+
+        let err = settings
+            .set("mention_walk_depth", "deep")
+            .expect_err("non-numeric depth should fail");
+        assert!(err.to_string().contains("invalid mention_walk_depth"));
     }
 
     #[test]

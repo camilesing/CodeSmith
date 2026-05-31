@@ -462,6 +462,12 @@ Common settings keys:
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
   detection for terminals that do not emit bracketed-paste events. This is
   independent of terminal bracketed-paste mode.
+- `mention_menu_limit` (integer, default `128`): maximum number of
+  `@`-mention popup candidates retained before the composer renders the
+  visible window. The visible rows still depend on terminal height.
+- `mention_walk_depth` (integer, default `6`): maximum workspace depth for
+  `@`-mention completion walks. Set to `0` for unlimited depth in deeply
+  nested workspaces; keep the default in very large repos unless needed.
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
 - `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`; default `auto`): UI chrome

@@ -882,6 +882,9 @@ pub struct MentionCompletionCache {
     pub partial: String,
     /// Candidate limit used for this completion walk.
     pub limit: usize,
+    /// Workspace depth limit used for this completion walk. Included so live
+    /// config changes invalidate cached popup results.
+    pub walk_depth: usize,
     /// Cached completion entries.
     pub entries: Vec<String>,
 }
@@ -1198,6 +1201,12 @@ pub struct App {
     /// sequences (e.g. Windows CMD without `WT_SESSION`) get page-scrolling
     /// without any explicit config (#1443).
     pub composer_arrows_scroll: bool,
+    /// Data-side cap for the `@`-mention popup. The renderer still limits the
+    /// visible rows to available terminal height.
+    pub mention_menu_limit: usize,
+    /// Maximum workspace depth for `@`-mention completion walks. `0` means
+    /// unlimited depth.
+    pub mention_walk_depth: usize,
     pub use_bracketed_paste: bool,
     pub use_paste_burst_detection: bool,
     /// Set to `true` the first time a real `Event::Paste` arrives during a
@@ -2087,6 +2096,8 @@ impl App {
                 .as_ref()
                 .and_then(|tui| tui.composer_arrows_scroll)
                 .unwrap_or_else(|| default_composer_arrows_scroll(use_mouse_capture)),
+            mention_menu_limit: settings.mention_menu_limit,
+            mention_walk_depth: settings.mention_walk_depth,
             session_title: None,
             receipt_text: None,
             receipt_started_at: None,

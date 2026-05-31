@@ -578,6 +578,16 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 app.paste_burst.clear_after_explicit_paste();
             }
         }
+        "mention_menu_limit" | "mention_limit" => {
+            app.mention_menu_limit = settings.mention_menu_limit;
+            app.composer.mention_completion_cache = None;
+            app.needs_redraw = true;
+        }
+        "mention_walk_depth" | "mention_depth" | "completions_walk_depth" => {
+            app.mention_walk_depth = settings.mention_walk_depth;
+            app.composer.mention_completion_cache = None;
+            app.needs_redraw = true;
+        }
         "transcript_spacing" | "spacing" => {
             app.transcript_spacing =
                 crate::tui::app::TranscriptSpacing::from_setting(&settings.transcript_spacing);
