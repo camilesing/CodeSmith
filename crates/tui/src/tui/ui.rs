@@ -1687,16 +1687,14 @@ async fn run_event_loop(
                             // required — so the agent can't forget to check.
                             if let Ok(ledger) = crate::slop_ledger::SlopLedger::load()
                                 && ledger.has_open_entries()
+                                && let Some(gate_msg) = ledger.completion_gate_summary()
                             {
-                                if let Some(gate_msg) = ledger.completion_gate_summary() {
-                                    let short =
-                                        gate_msg.lines().nth(4).unwrap_or("review before done");
-                                    app.push_status_toast(
-                                        format!("⚠️ SlopLedger: {short}"),
-                                        crate::tui::app::StatusToastLevel::Warning,
-                                        Some(12_000),
-                                    );
-                                }
+                                let short = gate_msg.lines().nth(4).unwrap_or("review before done");
+                                app.push_status_toast(
+                                    format!("⚠️ SlopLedger: {short}"),
+                                    crate::tui::app::StatusToastLevel::Warning,
+                                    Some(12_000),
+                                );
                             }
 
                             let tool_count = app.tool_evidence.len();
@@ -1739,7 +1737,7 @@ async fn run_event_loop(
                         // adding latency to any request path.
                         let balance_cooldown_expired = app
                             .last_balance_fetch
-                            .map_or(true, |t| t.elapsed() >= BALANCE_FETCH_COOLDOWN);
+                            .is_none_or(|t| t.elapsed() >= BALANCE_FETCH_COOLDOWN);
                         if balance_cooldown_expired && should_fetch_deepseek_balance(app) {
                             let cell = app.balance_cell.clone();
                             let api_key = config.deepseek_api_key().unwrap_or_default();
@@ -4889,6 +4887,7 @@ async fn switch_provider(
     let new_model = config.default_model();
     let cache_scope_changed = previous_provider != target || previous_model != new_model;
     app.api_provider = target;
+    app.model_ids_passthrough = config.model_ids_pass_through();
     app.set_model_selection(new_model.clone());
     app.update_model_compaction_budget();
     if cache_scope_changed {
@@ -5112,7 +5111,7 @@ async fn apply_command_result(
                 // Refresh balance after provider switch.
                 let balance_cooldown_expired = app
                     .last_balance_fetch
-                    .map_or(true, |t| t.elapsed() >= BALANCE_FETCH_COOLDOWN);
+                    .is_none_or(|t| t.elapsed() >= BALANCE_FETCH_COOLDOWN);
                 if balance_cooldown_expired && should_fetch_deepseek_balance(app) {
                     let cell = app.balance_cell.clone();
                     let api_key = config.deepseek_api_key().unwrap_or_default();

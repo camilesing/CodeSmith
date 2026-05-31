@@ -1832,10 +1832,10 @@ impl McpConnection {
             // IDs, but accept numeric echoes for compatibility with older
             // servers and tests.
             if response_id_matches(value.get("id"), &expected_id) {
-                if let Some(error) = value.get("error") {
-                    if is_mcp_stale_session_body(&error.to_string()) {
-                        anyhow::bail!("MCP session expired: {error}");
-                    }
+                if let Some(error) = value.get("error")
+                    && is_mcp_stale_session_body(&error.to_string())
+                {
+                    anyhow::bail!("MCP session expired: {error}");
                 }
                 return Ok(value);
             }
