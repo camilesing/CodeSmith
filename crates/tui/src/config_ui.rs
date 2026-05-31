@@ -66,6 +66,10 @@ pub struct SettingsSection {
     pub composer_density: ComposerDensityValue,
     pub composer_border: bool,
     pub composer_vim_mode: ComposerVimModeValue,
+    #[schemars(range(min = 0))]
+    pub mention_menu_limit: usize,
+    #[schemars(range(min = 0))]
+    pub mention_walk_depth: usize,
     pub transcript_spacing: TranscriptSpacingValue,
     pub status_indicator: StatusIndicatorValue,
     pub synchronized_output: SynchronizedOutputValue,
@@ -327,6 +331,8 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             composer_density: settings.composer_density.as_str().into(),
             composer_border: settings.composer_border,
             composer_vim_mode: settings.composer_vim_mode.as_str().into(),
+            mention_menu_limit: settings.mention_menu_limit,
+            mention_walk_depth: settings.mention_walk_depth,
             transcript_spacing: settings.transcript_spacing.as_str().into(),
             status_indicator: settings.status_indicator.as_str().into(),
             synchronized_output: settings.synchronized_output.as_str().into(),
@@ -502,6 +508,14 @@ pub fn apply_document(
         (
             "composer_vim_mode",
             doc.settings.composer_vim_mode.as_setting(),
+        ),
+        (
+            "mention_menu_limit",
+            &doc.settings.mention_menu_limit.to_string(),
+        ),
+        (
+            "mention_walk_depth",
+            &doc.settings.mention_walk_depth.to_string(),
         ),
         (
             "transcript_spacing",
