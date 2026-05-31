@@ -436,10 +436,10 @@ pub fn scan_plugin_dir(dir: &Path) -> Vec<(PathBuf, PluginMetadata)> {
         if path.is_dir() {
             continue;
         }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') || name == "README.md" {
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && (name.starts_with('.') || name == "README.md")
+        {
+            continue;
         }
 
         // Try to parse frontmatter
