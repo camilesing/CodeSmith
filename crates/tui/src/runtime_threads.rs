@@ -4217,6 +4217,7 @@ mod tests {
                 tool_name: "exec_command".to_string(),
                 description: "stale approval".to_string(),
                 input: serde_json::json!({}),
+                intent_summary: None,
             })
             .await?;
 
@@ -4291,6 +4292,7 @@ mod tests {
                 tool_name: "exec_command".to_string(),
                 description: "external allow".to_string(),
                 input: serde_json::json!({}),
+                intent_summary: None,
             })
             .await?;
 
@@ -4369,6 +4371,7 @@ mod tests {
                 tool_name: "exec_command".to_string(),
                 description: "external deny".to_string(),
                 input: serde_json::json!({}),
+                intent_summary: None,
             })
             .await?;
 
@@ -4556,6 +4559,7 @@ mod tests {
                 tool_name: "exec_command".to_string(),
                 description: "remember=true".to_string(),
                 input: serde_json::json!({}),
+                intent_summary: None,
             })
             .await?;
 

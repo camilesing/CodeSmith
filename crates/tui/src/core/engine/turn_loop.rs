@@ -1344,6 +1344,27 @@ impl Engine {
             }
             active_tool_names.extend(deferred_tools_hydrated_this_batch);
 
+            // --- Intent summary for write tools (#2381) ---
+            // When the model invokes write tools, extract its preceding text
+            // as an "intent summary" so the approval view can show *why* the
+            // change is being made, not just *what* will change.
+            let has_write_tools = plans.iter().any(|p| {
+                !p.read_only
+                    && p.approval_required
+                    && p.blocked_error.is_none()
+                    && p.guard_result.is_none()
+            });
+            let intent_summary: Option<String> = if has_write_tools {
+                let text = current_text_visible.trim();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text.to_string())
+                }
+            } else {
+                None
+            };
+
             let plan_count = plans.len();
             let batches = plan_tool_execution_batches(plans);
             let parallel_chunks = batches
@@ -1702,6 +1723,7 @@ impl Engine {
                                     description: plan.approval_description.clone(),
                                     approval_key,
                                     approval_grouping_key,
+                                    intent_summary: intent_summary.clone(),
                                 })
                                 .await;
 

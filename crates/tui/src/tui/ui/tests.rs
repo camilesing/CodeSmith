@@ -5529,6 +5529,7 @@ fn approval_prompt_uses_event_input_after_message_complete_drain() {
         "Run cargo tests",
         &event_input,
         "approval-key",
+        None,
     );
 
     let mut view = app.view_stack.pop().expect("approval view");
