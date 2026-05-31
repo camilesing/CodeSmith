@@ -192,14 +192,14 @@ pub fn try_dispatch_user_command(app: &mut App, input: &str) -> Option<CommandRe
     for (name, content) in &user_commands {
         if name == command {
             let (metadata, body) = parse_frontmatter(content);
-            app.goal.goal_objective = None;
-            app.goal.goal_started_at = None;
+            app.hunt.quarry = None;
+            app.hunt.started_at = None;
             app.active_allowed_tools = None;
             for (key, value) in &metadata {
                 match key.as_str() {
                     "description" => {
-                        app.goal.goal_objective = Some(value.clone());
-                        app.goal.goal_started_at = Some(std::time::Instant::now());
+                        app.hunt.quarry = Some(value.clone());
+                        app.hunt.started_at = Some(std::time::Instant::now());
                     }
                     "allowed-tools" => {
                         app.active_allowed_tools = Some(parse_allowed_tools(value));
@@ -603,13 +603,13 @@ mod tests {
 
         let mut app = App::new(test_options(ws), &Config::default());
         let _ = try_dispatch_user_command(&mut app, "/described").unwrap();
-        assert_eq!(app.goal.goal_objective.as_deref(), Some("Scan repos"));
-        assert!(app.goal.goal_started_at.is_some());
+        assert_eq!(app.hunt.quarry.as_deref(), Some("Scan repos"));
+        assert!(app.hunt.started_at.is_some());
         assert_eq!(app.active_allowed_tools, Some(vec!["bash".to_string()]));
 
         let _ = try_dispatch_user_command(&mut app, "/plain").unwrap();
-        assert_eq!(app.goal.goal_objective, None);
-        assert_eq!(app.goal.goal_started_at, None);
+        assert_eq!(app.hunt.quarry, None);
+        assert_eq!(app.hunt.started_at, None);
         assert_eq!(app.active_allowed_tools, None);
     }
 
@@ -628,7 +628,7 @@ mod tests {
         let mut app = App::new(test_options(ws.clone()), &Config::default());
         let _ = try_dispatch_user_command(&mut app, "/git-scan").unwrap();
         assert_eq!(
-            app.goal.goal_objective.as_deref(),
+            app.hunt.quarry.as_deref(),
             Some("Scan nested git repositories")
         );
         let commands = load_user_commands(Some(&ws));
