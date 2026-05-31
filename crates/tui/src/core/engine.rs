@@ -91,11 +91,15 @@ pub struct EngineConfig {
     pub mcp_config_path: PathBuf,
     /// Directory containing discoverable skills.
     pub skills_dir: PathBuf,
-    /// Additional instruction files concatenated into the system
-    /// prompt (#454). Loaded in declared order from the user's
-    /// `instructions = [...]` config (or the per-project override).
-    /// Resolved via `expand_path` so `~` works.
-    pub instructions: Vec<PathBuf>,
+    /// Sources injected as `<instructions source="…">` blocks in the system
+    /// prompt (#454). Each entry is either a disk path (read at render time)
+    /// or an inline string. Loaded in declared order from the user's
+    /// `instructions = [...]` config or constructed by embedders.
+    ///
+    /// Generalized from `Vec<PathBuf>` so embedders can inject inline content
+    /// without staging a disk file. `From<PathBuf>` impl keeps existing callers
+    /// working with `.into()` at the call site.
+    pub instructions: Vec<crate::prompts::InstructionSource>,
     pub project_context_pack_enabled: bool,
     /// When true, the model is instructed to respond in the current locale
     /// and a post-hoc translation layer replaces remaining English output.
@@ -158,6 +162,9 @@ pub struct EngineConfig {
     pub memory_path: PathBuf,
     pub vision_config: Option<crate::config::VisionModelConfig>,
     pub goal_objective: Option<String>,
+    /// Tool restriction from custom slash command frontmatter.
+    /// `None` means the current turn may use the normal tool set.
+    pub allowed_tools: Option<Vec<String>>,
     /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
     /// for the `## Environment` block in the system prompt. The
     /// caller resolves this from `Settings` once at engine
@@ -170,8 +177,9 @@ pub struct EngineConfig {
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
     /// Which search backend `web_search` should use. Default: DuckDuckGo.
     pub search_provider: crate::config::SearchProvider,
-    /// API key for Tavily, Bocha, or Metaso. `None` for Bing or DuckDuckGo.
+    /// API key for Tavily, Bocha, Metaso, or Baidu. `None` for Bing or DuckDuckGo.
     /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
+    /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
     pub search_api_key: Option<String>,
     /// Per-step DeepSeek API timeout for sub-agent `create_message` requests.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800)
@@ -223,6 +231,7 @@ impl Default for EngineConfig {
             vision_config: None,
             strict_tool_mode: false,
             goal_objective: None,
+            allowed_tools: None,
             locale_tag: "en".to_string(),
             workshop: None,
             search_provider: crate::config::SearchProvider::default(),
@@ -387,6 +396,7 @@ impl Engine {
             ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
             ApiProvider::WanjieArk => "WANJIE_ARK_API_KEY/WANJIE_API_KEY/WANJIE_MAAS_API_KEY",
             ApiProvider::Openrouter => "OPENROUTER_API_KEY",
+            ApiProvider::XiaomiMimo => "XIAOMI_MIMO_API_KEY/MIMO_API_KEY",
             ApiProvider::Novita => "NOVITA_API_KEY",
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
             ApiProvider::Moonshot => "MOONSHOT_API_KEY/KIMI_API_KEY",
@@ -626,6 +636,7 @@ impl Engine {
                     approval_mode,
                     translation_enabled,
                     show_thinking,
+                    allowed_tools,
                 } => {
                     self.handle_send_message(
                         content,
@@ -641,6 +652,7 @@ impl Engine {
                         approval_mode,
                         translation_enabled,
                         show_thinking,
+                        allowed_tools,
                     )
                     .await;
                 }
@@ -848,6 +860,7 @@ impl Engine {
                         self.session.approval_mode,
                         self.config.translation_enabled,
                         self.config.show_thinking,
+                        self.config.allowed_tools.clone(),
                     )
                     .await;
                 }
@@ -937,6 +950,7 @@ impl Engine {
         approval_mode: crate::tui::approval::ApprovalMode,
         translation_enabled: bool,
         show_thinking: bool,
+        allowed_tools: Option<Vec<String>>,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
@@ -1034,6 +1048,7 @@ impl Engine {
                 false,
             );
         }
+        self.config.allowed_tools = allowed_tools;
         self.session.reasoning_effort = reasoning_effort;
         self.session.reasoning_effort_auto = reasoning_effort_auto;
         self.session.auto_model = auto_model;
@@ -2085,6 +2100,10 @@ mod tool_execution;
 mod tool_setup;
 mod turn_loop;
 
+pub(crate) fn default_active_native_tool_names() -> &'static [&'static str] {
+    tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS
+}
+
 use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};
 #[cfg(test)]
 use self::dispatch::should_parallelize_tool_batch;
@@ -2115,7 +2134,7 @@ use self::tool_catalog::{
 };
 #[cfg(test)]
 use self::tool_catalog::{
-    TOOL_SEARCH_BM25_NAME, maybe_activate_requested_deferred_tool,
+    TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME, maybe_activate_requested_deferred_tool,
     preflight_requested_deferred_tool, should_default_defer_tool,
 };
 use self::tool_execution::emit_tool_audit;
