@@ -13,7 +13,8 @@ If you just want the short version, see the
 ## 1. Supported platforms
 
 CodeWhale ships matched `codewhale` and `codewhale-tui` prebuilt binaries for
-these platform/architecture combinations from v0.8.8 onward:
+these platform/architecture combinations. Linux ARM64 is available from
+v0.8.8 onward; Linux RISC-V starts with the first release after v0.8.47.
 
 | Platform     | Architecture | npm install | `cargo install` | GitHub release asset                                  |
 | ------------ | ------------ | :---------: | :-------------: | ----------------------------------------------------- |

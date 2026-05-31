@@ -77,7 +77,7 @@ jobs:
             else
               # Tag doesn't exist yet — build from HEAD
               sha="${GITHUB_SHA}"
-              source_ref="${GITHUB_REF_NAME}"
+              source_ref="${GITHUB_SHA}"
               echo "Tag ${tag} not found; building from ${source_ref} @ ${sha}"
             fi
           else
