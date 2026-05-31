@@ -303,6 +303,7 @@ pub enum MessageId {
     CmdSettingsDescription,
     CmdSkillDescription,
     CmdSkillsDescription,
+    CmdSlopDescription,
     CmdStashDescription,
     CmdStatusDescription,
     CmdStatuslineDescription,
@@ -563,6 +564,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSettingsDescription,
     MessageId::CmdSkillDescription,
     MessageId::CmdSkillsDescription,
+    MessageId::CmdSlopDescription,
     MessageId::CmdStashDescription,
     MessageId::CmdStatusDescription,
     MessageId::CmdStatuslineDescription,
@@ -1046,6 +1048,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdSkillsDescription => {
             "List local skills (filter by `/skills <prefix>`; --remote browses the curated registry)"
         }
+        MessageId::CmdSlopDescription => "Inspect or export the SlopLedger",
         MessageId::CmdStashDescription => {
             "Park or restore a composer draft (Ctrl+S to push, /stash list/pop)"
         }
@@ -1457,6 +1460,7 @@ fn vietnamese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => {
             "Liệt kê các kỹ năng cục bộ (lọc bằng `/skills <tiền_tố>`; --remote để duyệt kho lưu trữ được kiểm duyệt)"
         }
+        MessageId::CmdSlopDescription => "Kiểm tra hoặc xuất SlopLedger",
         MessageId::CmdStashDescription => {
             "Tạm cất hoặc khôi phục bản nháp (Ctrl+S để cất, /stash list/pop để xem/lấy ra)"
         }
@@ -1880,6 +1884,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => {
             "ローカルスキルを一覧表示（`/skills <prefix>` で絞り込み、--remote で精選レジストリを参照）"
         }
+        MessageId::CmdSlopDescription => "Inspect or export the SlopLedger",
         MessageId::CmdStashDescription => {
             "コンポーザーの下書きを退避／復元（Ctrl+S で退避、/stash list|pop）"
         }
@@ -2248,6 +2253,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => {
             "列出本地技能（用 `/skills <prefix>` 按名称前缀过滤，--remote 浏览精选注册表）"
         }
+        MessageId::CmdSlopDescription => "Inspect or export the SlopLedger",
         MessageId::CmdStashDescription => "暂存或恢复输入草稿（Ctrl+S 暂存，/stash list|pop）",
         MessageId::CmdStatusDescription => "显示当前运行状态",
         MessageId::CmdStatuslineDescription => "配置底栏要显示哪些条目",
@@ -2612,6 +2618,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => {
             "Listar skills locais (filtre com `/skills <prefixo>`; --remote navega pelo registro curado)"
         }
+        MessageId::CmdSlopDescription => "Inspect or export the SlopLedger",
         MessageId::CmdStashDescription => {
             "Estacionar ou restaurar rascunho do compositor (Ctrl+S estaciona, /stash list|pop)"
         }
@@ -3030,6 +3037,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => {
             "Listar skills locales (filtra con `/skills <prefijo>`; --remote navega el registro curado)"
         }
+        MessageId::CmdSlopDescription => "Inspect or export the SlopLedger",
         MessageId::CmdStashDescription => {
             "Estacionar o restaurar borrador del compositor (Ctrl+S estaciona, /stash list|pop)"
         }
