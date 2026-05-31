@@ -474,6 +474,7 @@ mod tests {
                 "OpenAI-compatible",
                 "AtlasCloud",
                 "Wanjie Ark",
+                "Volcengine Ark",
                 "OpenRouter",
                 "Xiaomi MiMo",
                 "Novita AI",
