@@ -1940,12 +1940,8 @@ async fn run_event_loop(
                         } else {
                             let tool_input = input;
 
-                            if tool_name == "apply_patch" {
-                                maybe_add_patch_preview(app, &tool_input);
-                            }
-
-                            // Create approval request and show overlay
-                            let request = ApprovalRequest::new(
+                            push_approval_request_view(
+                                app,
                                 &id,
                                 &tool_name,
                                 &description,
@@ -1961,8 +1957,6 @@ async fn run_event_loop(
                                     "mode": app.mode.label(),
                                 }),
                             );
-                            app.view_stack
-                                .push(ApprovalView::new_for_locale(request, app.ui_locale));
                             app.status_message = Some(format!(
                                 "Approval required for '{tool_name}': {description}"
                             ));
@@ -6397,6 +6391,23 @@ async fn handle_view_events(
     }
 
     Ok(false)
+}
+
+fn push_approval_request_view(
+    app: &mut App,
+    id: &str,
+    tool_name: &str,
+    description: &str,
+    tool_input: &serde_json::Value,
+    approval_key: &str,
+) {
+    if tool_name == "apply_patch" {
+        maybe_add_patch_preview(app, tool_input);
+    }
+
+    let request = ApprovalRequest::new(id, tool_name, description, tool_input, approval_key);
+    app.view_stack
+        .push(ApprovalView::new_for_locale(request, app.ui_locale));
 }
 
 struct ApprovalDecisionEvent {
