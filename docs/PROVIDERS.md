@@ -30,8 +30,8 @@ Sources to keep in sync:
 The canonical provider IDs are:
 
 `deepseek`, `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`,
-`xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`,
-`vllm`, and `ollama`.
+`openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`,
+`sglang`, `vllm`, and `ollama`.
 
 Use any of these surfaces to select a provider:
 

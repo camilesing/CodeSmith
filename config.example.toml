@@ -41,8 +41,8 @@ base_url = "https://api.deepseek.com/beta"
 #   deepseek-reasoner               — default Wanjie Ark model ID
 #   mimo-v2.5-pro                   — default Xiaomi MiMo model ID
 #   accounts/fireworks/models/deepseek-v4-pro — Fireworks AI Pro model ID
-#   deepseek-ai/DeepSeek-V4-Pro    — SiliconFlow Pro model ID
-#   deepseek-ai/DeepSeek-V4-Flash  — SiliconFlow Flash model ID
+#   deepseek-ai/DeepSeek-V4-Pro    — SiliconFlow hosted Pro model ID
+#   deepseek-ai/DeepSeek-V4-Flash  — SiliconFlow hosted Flash model ID
 #   deepseek-ai/DeepSeek-V4-Pro    — SGLang self-hosted Pro model ID
 #   deepseek-ai/DeepSeek-V4-Flash  — SGLang self-hosted Flash model ID
 default_text_model = "deepseek-v4-pro"
