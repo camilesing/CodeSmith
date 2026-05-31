@@ -250,6 +250,20 @@ impl HistoryCell {
         width: u16,
         options: TranscriptRenderOptions,
     ) -> Vec<Line<'static>> {
+        self.lines_with_options_folded(width, options, false)
+    }
+
+    /// Render with an explicit per-cell fold override for thinking cells.
+    ///
+    /// When `folded` is `true`, the thinking content is collapsed to a
+    /// summary regardless of the `verbose` flag. This enables per-cell
+    /// folding independent of the global `/verbose` toggle.
+    pub fn lines_with_options_folded(
+        &self,
+        width: u16,
+        options: TranscriptRenderOptions,
+        folded: bool,
+    ) -> Vec<Line<'static>> {
         match self {
             HistoryCell::Thinking { .. } if !options.show_thinking => Vec::new(),
             HistoryCell::Thinking {
@@ -261,7 +275,7 @@ impl HistoryCell {
                 width,
                 *streaming,
                 *duration_secs,
-                !options.verbose,
+                folded || !options.verbose,
                 options.low_motion,
             ),
             HistoryCell::Tool(cell) if !options.show_tool_details => {
@@ -303,10 +317,20 @@ impl HistoryCell {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn lines_with_copy_metadata(
         &self,
         width: u16,
         options: TranscriptRenderOptions,
+    ) -> Vec<RenderedTranscriptLine> {
+        self.lines_with_copy_metadata_folded(width, options, false)
+    }
+
+    pub(crate) fn lines_with_copy_metadata_folded(
+        &self,
+        width: u16,
+        options: TranscriptRenderOptions,
+        folded: bool,
     ) -> Vec<RenderedTranscriptLine> {
         match self {
             HistoryCell::User { content } => render_message_with_copy_metadata(
@@ -332,7 +356,7 @@ impl HistoryCell {
                     width,
                 )
             }
-            _ => hard_break_copy_lines(self.lines_with_options(width, options)),
+            _ => hard_break_copy_lines(self.lines_with_options_folded(width, options, folded)),
         }
     }
 
@@ -2215,7 +2239,7 @@ fn render_thinking(
         let label = if streaming {
             "More reasoning in Ctrl+O"
         } else {
-            "Full reasoning in Ctrl+O"
+            "Space to expand · Full reasoning in Ctrl+O"
         };
         lines.push(Line::from(vec![
             Span::styled(REASONING_RAIL.to_string(), rail_style),

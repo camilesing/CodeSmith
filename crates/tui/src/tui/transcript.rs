@@ -16,6 +16,7 @@
 //! Width or render-option changes still bust the entire cache (correct: wrap
 //! layout depends on width and which cells are visible at all).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use ratatui::{
@@ -122,19 +123,23 @@ impl TranscriptViewCache {
         width: u16,
         options: TranscriptRenderOptions,
     ) {
-        self.ensure_split(&[cells], cell_revisions, width, options);
+        self.ensure_split(&[cells], cell_revisions, width, options, &HashSet::new());
     }
 
     /// Ensure cached lines match the provided cell shards (logically
     /// concatenated) plus per-cell revisions. Avoids the
     /// `concat-into-Vec<HistoryCell>` clone the caller would otherwise pay
     /// every frame on long transcripts.
+    ///
+    /// `folded_cells` contains original virtual indices of thinking cells
+    /// that should render in their folded (summary) form.
     pub fn ensure_split(
         &mut self,
         cell_shards: &[&[HistoryCell]],
         cell_revisions: &[u64],
         width: u16,
         options: TranscriptRenderOptions,
+        folded_cells: &HashSet<usize>,
     ) {
         let total_cells: usize = cell_shards.iter().map(|s| s.len()).sum();
 
@@ -190,7 +195,8 @@ impl TranscriptViewCache {
                 } else {
                     width
                 };
-                let rendered = cell.lines_with_copy_metadata(render_width, options);
+                let folded = folded_cells.contains(&idx);
+                let rendered = cell.lines_with_copy_metadata_folded(render_width, options, folded);
                 let mut lines = Vec::with_capacity(rendered.len());
                 let mut copy_separators = Vec::with_capacity(rendered.len());
                 let mut copy_prefix_widths = Vec::with_capacity(rendered.len());
