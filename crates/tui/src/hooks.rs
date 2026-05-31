@@ -1026,7 +1026,10 @@ fn parse_message_submit_stdout(stdout: &str) -> MessageSubmitStdout {
 }
 
 fn message_submit_continue_warning(result: &HookResult) -> Option<String> {
-    result.error.as_deref().and_then(first_non_empty_line)
+    message_submit_stdout_reason(&result.stdout)
+        .or_else(|| first_non_empty_line(&result.stderr))
+        .or_else(|| first_non_empty_line(&result.stdout))
+        .or_else(|| result.error.as_deref().and_then(first_non_empty_line))
 }
 
 fn message_submit_block_reason(result: &HookResult, fallback: &str) -> String {
@@ -1567,6 +1570,7 @@ printf '%s\n' '{"text":"recovered"}'
         assert_eq!(
             executor.execute_message_submit_transform(&submit_context(&dir), "original"),
             MessageSubmitOutcome::replaced("recovered".to_string())
+                .with_warning(Some("soft failure".to_string()))
         );
     }
 

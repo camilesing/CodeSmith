@@ -2160,6 +2160,48 @@ printf '%s\n' '{"text":"after timeout"}'
 
 #[cfg(not(windows))]
 #[tokio::test]
+async fn dispatch_user_message_surfaces_continued_message_submit_stderr() {
+    let dir = TempDir::new().expect("tempdir");
+    let failing = write_message_submit_hook(
+        &dir,
+        "fail.sh",
+        r#"#!/bin/sh
+printf '%s\n' 'soft failure' >&2
+exit 9
+"#,
+    );
+    let replacing = write_message_submit_hook(
+        &dir,
+        "replace.sh",
+        r#"#!/bin/sh
+printf '%s\n' '{"text":"after soft failure"}'
+"#,
+    );
+    let mut app = create_test_app();
+    configure_message_submit_hooks(&mut app, &dir, vec![failing, replacing]);
+    let mut engine = crate::core::engine::mock_engine_handle();
+    let config = Config::default();
+
+    dispatch_user_message(
+        &mut app,
+        &config,
+        &engine.handle,
+        QueuedMessage::new("hello".to_string(), None),
+    )
+    .await
+    .expect("dispatch user message");
+
+    assert_eq!(app.status_message.as_deref(), Some("soft failure"));
+    match engine.rx_op.recv().await.expect("send message op") {
+        crate::core::ops::Op::SendMessage { content, .. } => {
+            assert_eq!(content, "after soft failure");
+        }
+        other => panic!("expected SendMessage, got {other:?}"),
+    }
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
 async fn dispatch_user_message_uses_transformed_message_submit_text() {
     let dir = TempDir::new().expect("tempdir");
     let command = write_message_submit_hook(
