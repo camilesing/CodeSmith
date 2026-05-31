@@ -28,7 +28,9 @@ enum ProviderArg {
     Openai,
     Atlascloud,
     WanjieArk,
+    Volcengine,
     Openrouter,
+    XiaomiMimo,
     Novita,
     Fireworks,
     Moonshot,
@@ -45,7 +47,9 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Openai => ProviderKind::Openai,
             ProviderArg::Atlascloud => ProviderKind::Atlascloud,
             ProviderArg::WanjieArk => ProviderKind::WanjieArk,
+            ProviderArg::Volcengine => ProviderKind::Volcengine,
             ProviderArg::Openrouter => ProviderKind::Openrouter,
+            ProviderArg::XiaomiMimo => ProviderKind::XiaomiMimo,
             ProviderArg::Novita => ProviderKind::Novita,
             ProviderArg::Fireworks => ProviderKind::Fireworks,
             ProviderArg::Moonshot => ProviderKind::Moonshot,
@@ -240,8 +244,11 @@ struct UpdateArgs {
     /// Update to the latest beta release instead of the latest stable release.
     #[arg(long)]
     beta: bool,
-    /// Optional proxy URL to use for all update HTTP requests (e.g. `http://host:port` or `socks5://host:port`).
+    /// Only check the latest release; do not download or replace binaries.
     #[arg(long)]
+    check: bool,
+    /// Proxy URL to use for update HTTP requests.
+    #[arg(long, value_name = "URL")]
     proxy: Option<String>,
 }
 
@@ -572,7 +579,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Update(args)) => update::run_update(args.beta, args.proxy),
+        Some(Commands::Update(args)) => update::run_update(args.beta, args.check, args.proxy),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
@@ -720,7 +727,9 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Openai => "openai",
         ProviderKind::Atlascloud => "atlascloud",
         ProviderKind::WanjieArk => "wanjie-ark",
+        ProviderKind::Volcengine => "volcengine",
         ProviderKind::Openrouter => "openrouter",
+        ProviderKind::XiaomiMimo => "xiaomi-mimo",
         ProviderKind::Novita => "novita",
         ProviderKind::Fireworks => "fireworks",
         ProviderKind::Moonshot => "moonshot",
@@ -731,13 +740,15 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 12] = [
+const PROVIDER_LIST: [ProviderKind; 14] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openai,
     ProviderKind::Atlascloud,
     ProviderKind::WanjieArk,
+    ProviderKind::Volcengine,
     ProviderKind::Openrouter,
+    ProviderKind::XiaomiMimo,
     ProviderKind::Novita,
     ProviderKind::Fireworks,
     ProviderKind::Moonshot,
@@ -792,6 +803,7 @@ fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
     match provider {
         ProviderKind::Deepseek => &["DEEPSEEK_API_KEY"],
         ProviderKind::Openrouter => &["OPENROUTER_API_KEY"],
+        ProviderKind::XiaomiMimo => &["XIAOMI_MIMO_API_KEY", "MIMO_API_KEY"],
         ProviderKind::Novita => &["NOVITA_API_KEY"],
         ProviderKind::NvidiaNim => &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"],
         ProviderKind::Fireworks => &["FIREWORKS_API_KEY"],
@@ -801,6 +813,11 @@ fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
         ProviderKind::Ollama => &["OLLAMA_API_KEY"],
         ProviderKind::Openai => &["OPENAI_API_KEY"],
         ProviderKind::Atlascloud => &["ATLASCLOUD_API_KEY"],
+        ProviderKind::Volcengine => &[
+            "VOLCENGINE_API_KEY",
+            "VOLCENGINE_ARK_API_KEY",
+            "ARK_API_KEY",
+        ],
         ProviderKind::WanjieArk => &[
             "WANJIE_ARK_API_KEY",
             "WANJIE_API_KEY",
@@ -1476,6 +1493,7 @@ fn build_tui_command(
             | ProviderKind::Atlascloud
             | ProviderKind::WanjieArk
             | ProviderKind::Openrouter
+            | ProviderKind::XiaomiMimo
             | ProviderKind::Novita
             | ProviderKind::Fireworks
             | ProviderKind::Moonshot
@@ -1484,7 +1502,7 @@ fn build_tui_command(
             | ProviderKind::Ollama
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Novita, Fireworks, Moonshot/Kimi, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `codewhale model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Xiaomi MiMo, Novita, Fireworks, Moonshot/Kimi, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `codewhale model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
@@ -1544,6 +1562,9 @@ fn build_tui_command(
         }
         if resolved_runtime.provider == ProviderKind::WanjieArk {
             cmd.env("WANJIE_ARK_API_KEY", api_key);
+        }
+        if resolved_runtime.provider == ProviderKind::Volcengine {
+            cmd.env("VOLCENGINE_API_KEY", api_key);
         }
         cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
     }
@@ -1685,7 +1706,6 @@ fn read_api_key_from_stdin() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::update::validate_and_build_proxy;
     use clap::error::ErrorKind;
     use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
@@ -1823,6 +1843,7 @@ mod tests {
             cli.command,
             Some(Commands::Update(UpdateArgs {
                 beta: false,
+                check: false,
                 proxy: None
             }))
         ));
@@ -1832,9 +1853,28 @@ mod tests {
             cli.command,
             Some(Commands::Update(UpdateArgs {
                 beta: true,
+                check: false,
                 proxy: None
             }))
         ));
+
+        let cli = parse_ok(&["codewhale", "update", "--check"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Update(UpdateArgs {
+                beta: false,
+                check: true,
+                proxy: None
+            }))
+        ));
+
+        let cli = parse_ok(&["codewhale", "update", "--proxy", "socks5://127.0.0.1:1080"]);
+        let Some(Commands::Update(args)) = cli.command else {
+            panic!("expected update command");
+        };
+        assert!(!args.beta);
+        assert!(!args.check);
+        assert_eq!(args.proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
     }
 
     #[test]
@@ -2438,62 +2478,6 @@ mod tests {
     }
 
     #[test]
-    fn update_parse_with_proxy() {
-        let cli = parse_ok(&["deepseek", "update", "--proxy", "http://localhost:7897"]);
-
-        let args = match cli.command {
-            Some(Commands::Update(args)) => args,
-            other => panic!("expected Update with proxy, got {other:?}"),
-        };
-
-        assert_eq!(
-            args.proxy.expect("should have proxy"),
-            "http://localhost:7897"
-        );
-
-        // Valid HTTP proxy
-        assert!(
-            validate_and_build_proxy("http://localhost:7897").is_ok(),
-            "valid HTTP proxy should succeed"
-        );
-
-        // Valid HTTPS proxy
-        assert!(
-            validate_and_build_proxy("https://proxy.example.com:8080").is_ok(),
-            "valid HTTPS proxy should succeed"
-        );
-
-        // Valid SOCKS5 proxy
-        assert!(
-            validate_and_build_proxy("socks5://127.0.0.1:1080").is_ok(),
-            "valid SOCKS5 proxy should succeed"
-        );
-
-        // Invalid: empty URL
-        assert!(
-            validate_and_build_proxy("").is_err(),
-            "empty proxy URL should fail"
-        );
-
-        // Invalid: malformed URL
-        assert!(
-            validate_and_build_proxy("not a valid url").is_err(),
-            "malformed proxy URL should fail"
-        );
-    }
-
-    #[test]
-    fn udpate_parse_without_proxy() {
-        let cli = parse_ok(&["deepseek", "update"]);
-
-        let args = match cli.command {
-            Some(Commands::Update(args)) => args,
-            other => panic!("expected Update, got {other:?}"),
-        };
-        assert!(args.proxy.is_none());
-    }
-
-    #[test]
     fn dispatch_keyring_recovery_self_heals_into_config_file() {
         use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
@@ -2945,6 +2929,11 @@ mod tests {
                 "openrouter",
                 &["OPENROUTER_API_KEY"],
             ),
+            (
+                ProviderKind::XiaomiMimo,
+                "xiaomi-mimo",
+                &["XIAOMI_MIMO_API_KEY", "MIMO_API_KEY"],
+            ),
             (ProviderKind::Novita, "novita", &["NOVITA_API_KEY"]),
             (
                 ProviderKind::NvidiaNim,
@@ -3024,11 +3013,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_prompt_flag_for_canonical_one_shot() {
+    fn parses_top_level_prompt_flag_for_interactive_startup_prompt() {
         let cli = parse_ok(&["deepseek", "-p", "Reply with exactly OK."]);
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
         assert!(cli.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "Reply with exactly OK.".to_string()]
+        );
     }
 
     #[test]
@@ -3042,7 +3035,7 @@ mod tests {
     }
 
     #[test]
-    fn top_level_continue_rejects_one_shot_prompt() {
+    fn top_level_continue_rejects_startup_prompt() {
         let cli = parse_ok(&["codewhale", "--continue", "-p", "follow up"]);
 
         let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
@@ -3058,6 +3051,10 @@ mod tests {
 
         assert_eq!(cli.prompt, vec!["hello", "world"]);
         assert!(cli.command.is_none());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "hello world".to_string()]
+        );
     }
 
     #[test]
@@ -3066,6 +3063,10 @@ mod tests {
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("hello"));
         assert_eq!(cli.prompt, vec!["world"]);
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "hello world".to_string()]
+        );
     }
 
     #[test]
