@@ -4093,6 +4093,7 @@ fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool
     {
         app.is_loading = false;
         app.dispatch_started_at = None;
+        app.turn_started_at = None;
         app.push_status_toast(
             "Turn dispatch timed out; the engine may have stopped. Please try again.",
             StatusToastLevel::Error,
@@ -4112,6 +4113,7 @@ fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool
     {
         app.is_loading = false;
         app.dispatch_started_at = None;
+        app.turn_started_at = None;
         app.push_status_toast(
             "Recovered from an inconsistent busy state.",
             StatusToastLevel::Warning,
