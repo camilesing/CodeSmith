@@ -552,6 +552,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/cache [count|inspect|stats|warmup]",
         description_id: MessageId::CmdCacheDescription,
     },
+    // Slop Ledger (#2127)
+    CommandInfo {
+        name: "slop",
+        aliases: &["canzha"],
+        usage: "/slop [query|export]",
+        description_id: MessageId::CmdSlopDescription,
+    },
 ];
 
 /// Execute a slash command
@@ -627,6 +634,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "cost" => debug::cost(app),
         "balance" => balance::balance(app),
         "cache" => debug::cache(app, arg),
+
+        // Slop ledger (#2127)
+        "slop" | "canzha" => config::slop(app, arg),
 
         // ChangeLog command
         "change" => change::change(app, arg),

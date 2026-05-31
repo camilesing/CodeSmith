@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,7 +40,6 @@ use crate::runtime_threads::{
 };
 use crate::session_manager::{SavedSession, SessionManager, SessionMetadata, default_sessions_dir};
 use crate::skill_state::SkillStateStore;
-use crate::skills::SkillRegistry;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
 };
@@ -261,11 +260,13 @@ struct SkillEntry {
     description: String,
     path: PathBuf,
     enabled: bool,
+    is_bundled: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct SkillsResponse {
     directory: PathBuf,
+    directories: Vec<PathBuf>,
     warnings: Vec<String>,
     skills: Vec<SkillEntry>,
 }
@@ -960,7 +961,7 @@ async fn list_skills(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<SkillsResponse>, ApiError> {
     let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
-    let registry = SkillRegistry::discover(&skills_dir);
+    let (registry, directories) = discover_skills_for_runtime_api(&state.workspace, &skills_dir);
     let skill_state = state.skill_state.lock().await;
     let skills = registry
         .list()
@@ -968,12 +969,14 @@ async fn list_skills(
         .map(|skill| SkillEntry {
             name: skill.name.clone(),
             description: skill.description.clone(),
-            path: skills_dir.join(&skill.name).join("SKILL.md"),
+            path: skill.path.clone(),
             enabled: skill_state.is_enabled(&skill.name),
+            is_bundled: skill_entry_is_bundled(skill, &skills_dir),
         })
         .collect();
     Ok(Json(SkillsResponse {
         directory: skills_dir,
+        directories,
         warnings: registry.warnings().to_vec(),
         skills,
     }))
@@ -985,12 +988,12 @@ async fn set_skill_enabled(
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
     let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
-    let registry = SkillRegistry::discover(&skills_dir);
+    let (registry, directories) = discover_skills_for_runtime_api(&state.workspace, &skills_dir);
     let exists = registry.list().iter().any(|skill| skill.name == name);
     if !exists {
         return Err(ApiError::not_found(format!(
-            "skill '{name}' not found under {}",
-            skills_dir.display()
+            "skill '{name}' not found in searched directories: {}",
+            format_skill_search_paths(&directories)
         )));
     }
 
@@ -1764,6 +1767,50 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
         }
     }
     config.skills_dir()
+}
+
+fn skills_search_directories(workspace: &FsPath, skills_dir: &FsPath) -> Vec<PathBuf> {
+    let mut directories = crate::skills::skills_directories(workspace);
+    if skills_dir.is_dir() && !directories.iter().any(|path| path == skills_dir) {
+        directories.push(skills_dir.to_path_buf());
+    }
+    directories
+}
+
+fn discover_skills_for_runtime_api(
+    workspace: &FsPath,
+    skills_dir: &FsPath,
+) -> (crate::skills::SkillRegistry, Vec<PathBuf>) {
+    let directories = skills_search_directories(workspace, skills_dir);
+    let registry = crate::skills::discover_from_directories(directories.clone());
+    (registry, directories)
+}
+
+fn skill_entry_is_bundled(skill: &crate::skills::Skill, skills_dir: &FsPath) -> bool {
+    if !crate::skills::is_bundled_skill_name(&skill.name) {
+        return false;
+    }
+
+    let expected_path = skills_dir.join(&skill.name).join("SKILL.md");
+    paths_refer_to_same_file(&skill.path, &expected_path)
+}
+
+fn paths_refer_to_same_file(left: &FsPath, right: &FsPath) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn format_skill_search_paths(directories: &[PathBuf]) -> String {
+    if directories.is_empty() {
+        return "<none>".to_string();
+    }
+    directories
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn load_mcp_config_or_default(path: &std::path::Path) -> Result<McpConfig, ApiError> {
@@ -3883,6 +3930,71 @@ mod tests {
 
         let expected = fs::canonicalize(&local_skills).expect("canonical local skills");
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn skills_search_directories_includes_custom_skills_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let custom_skills = tmp.path().join("custom-skills");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&custom_skills).expect("create custom skills");
+
+        let directories = skills_search_directories(&workspace, &custom_skills);
+
+        assert!(
+            directories.iter().any(|dir| dir == &custom_skills),
+            "custom skills_dir must be reported when discovery searches it"
+        );
+        let message = format_skill_search_paths(&directories);
+        assert!(message.contains("custom-skills"));
+    }
+
+    #[test]
+    fn skill_entry_is_bundled_requires_configured_bundle_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bundled_skills_dir = tmp.path().join("bundled-skills");
+        let bundled_skill_path = bundled_skills_dir.join("delegate").join("SKILL.md");
+        let override_skill_path = tmp
+            .path()
+            .join("workspace")
+            .join(".agents")
+            .join("skills")
+            .join("delegate")
+            .join("SKILL.md");
+        fs::create_dir_all(bundled_skill_path.parent().expect("bundled parent"))
+            .expect("create bundled skill dir");
+        fs::create_dir_all(override_skill_path.parent().expect("override parent"))
+            .expect("create override skill dir");
+        fs::write(
+            &bundled_skill_path,
+            "---\nname: delegate\ndescription: bundled\n---\n",
+        )
+        .expect("write bundled skill");
+        fs::write(
+            &override_skill_path,
+            "---\nname: delegate\ndescription: override\n---\n",
+        )
+        .expect("write override skill");
+
+        let bundled_skill = crate::skills::Skill {
+            name: "delegate".to_string(),
+            description: String::new(),
+            body: String::new(),
+            path: bundled_skill_path,
+        };
+        let override_skill = crate::skills::Skill {
+            name: "delegate".to_string(),
+            description: String::new(),
+            body: String::new(),
+            path: override_skill_path,
+        };
+
+        assert!(skill_entry_is_bundled(&bundled_skill, &bundled_skills_dir));
+        assert!(!skill_entry_is_bundled(
+            &override_skill,
+            &bundled_skills_dir
+        ));
     }
 
     /// A `skills` symlink that points outside the workspace must NOT be
