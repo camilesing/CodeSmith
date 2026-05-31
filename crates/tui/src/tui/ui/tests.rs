@@ -3324,6 +3324,28 @@ fn inline_skill_slash_popup_filters_partial_without_leaking_to_command_position(
 }
 
 #[test]
+fn inline_skill_slash_popup_does_not_open_inside_command_arguments() {
+    let mut app = create_test_app();
+    app.cached_skills = vec![
+        (
+            "config-doctor".to_string(),
+            "Diagnose configuration".to_string(),
+        ),
+        ("cargo-ci-fixer".to_string(), "Fix CI failures".to_string()),
+    ];
+    app.input = "/attach /".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries = visible_slash_menu_entries(&app, 128);
+
+    assert!(
+        entries.is_empty(),
+        "command argument paths should not show inline skill entries: {:?}",
+        entries.iter().map(|entry| &entry.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn apply_slash_menu_selection_splices_inline_skill_mention() {
     let mut app = create_test_app();
     app.input = "please use /se here".to_string();
