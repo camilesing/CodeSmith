@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::models::Tool;
-use crate::tools::spec::{ToolError, ToolResult, required_str};
+use crate::tools::spec::{ToolError, ToolResult, optional_u64, required_str};
 use crate::tui::app::AppMode;
 
 pub(super) const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
@@ -20,71 +20,70 @@ pub(super) const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
 pub(super) const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 const CODE_EXECUTION_TOOL_TYPE: &str = "code_execution_20250825";
 pub(super) use crate::tools::js_execution::JS_EXECUTION_TOOL_NAME;
-const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
+pub(super) const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
 const TOOL_SEARCH_REGEX_TYPE: &str = "tool_search_tool_regex_20251119";
 pub(super) const TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
 const TOOL_SEARCH_BM25_TYPE: &str = "tool_search_tool_bm25_20251119";
+const TOOL_SEARCH_DEFAULT_MAX_RESULTS: usize = 20;
+const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 100;
 
 pub(super) fn is_tool_search_tool(name: &str) -> bool {
     matches!(name, TOOL_SEARCH_REGEX_NAME | TOOL_SEARCH_BM25_NAME)
 }
 
-pub(super) fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
-    if mode == AppMode::Yolo {
+pub(super) const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
+    "agent_open",
+    "apply_patch",
+    "checklist_write",
+    "edit_file",
+    "exec_interact",
+    "exec_shell",
+    "exec_shell_interact",
+    "exec_shell_wait",
+    "exec_wait",
+    "fetch_url",
+    "file_search",
+    "git_diff",
+    "git_status",
+    "grep_files",
+    "list_dir",
+    "read_file",
+    "run_tests",
+    "task_create",
+    "task_list",
+    "task_read",
+    "task_shell_start",
+    "task_shell_wait",
+    "update_plan",
+    "web_search",
+    "write_file",
+];
+
+pub(super) fn should_default_defer_tool(
+    name: &str,
+    _mode: AppMode,
+    always_load: &HashSet<String>,
+) -> bool {
+    if always_load.contains(name) {
         return false;
     }
 
-    // Shell exec tools are kept active in Agent so the model can run
-    // verification commands (build/test/git/cargo) without first having to
-    // discover them through ToolSearch. Plan mode does not register shell
-    // execution tools.
-    let always_loaded_in_action_modes = matches!(mode, AppMode::Agent)
-        && matches!(
-            name,
-            "exec_shell"
-                | "exec_shell_wait"
-                | "exec_shell_interact"
-                | "exec_wait"
-                | "exec_interact"
-        );
-    if always_loaded_in_action_modes {
+    if is_tool_search_tool(name) {
         return false;
     }
 
-    !matches!(
-        name,
-        "read_file"
-            | "write_file"
-            | "list_dir"
-            | "grep_files"
-            | "file_search"
-            | "diagnostics"
-            | "rlm_open"
-            | "rlm_eval"
-            | "rlm_configure"
-            | "rlm_close"
-            | "handle_read"
-            | "recall_archive"
-            | "notify"
-            | MULTI_TOOL_PARALLEL_NAME
-            | "update_plan"
-            | "checklist_write"
-            | "todo_write"
-            | "task_create"
-            | "task_list"
-            | "task_read"
-            | "task_gate_run"
-            | "task_shell_start"
-            | "task_shell_wait"
-            | "github_issue_context"
-            | "github_pr_context"
-            | REQUEST_USER_INPUT_NAME
-    )
+    !DEFAULT_ACTIVE_NATIVE_TOOLS
+        .iter()
+        .any(|core_tool| core_tool == &name)
 }
 
-pub(super) fn apply_native_tool_deferral(catalog: &mut [Tool], mode: AppMode) {
+pub(super) fn apply_native_tool_deferral(
+    catalog: &mut [Tool],
+    mode: AppMode,
+    always_load: &HashSet<String>,
+) {
     for tool in catalog {
-        tool.defer_loading = Some(should_default_defer_tool(&tool.name, mode));
+        tool.defer_loading = Some(should_default_defer_tool(&tool.name, mode, always_load));
     }
 }
 
@@ -110,8 +109,9 @@ pub(super) fn build_model_tool_catalog(
     mut native_tools: Vec<Tool>,
     mut mcp_tools: Vec<Tool>,
     mode: AppMode,
+    always_load: &HashSet<String>,
 ) -> Vec<Tool> {
-    apply_native_tool_deferral(&mut native_tools, mode);
+    apply_native_tool_deferral(&mut native_tools, mode, always_load);
     apply_mcp_tool_deferral(&mut mcp_tools, mode);
     // Sort each partition by name for prefix-cache stability (#263). The
     // upstream `to_api_tools()` already sorts the registry's HashMap output;
@@ -125,7 +125,11 @@ pub(super) fn build_model_tool_catalog(
     native_tools
 }
 
-pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
+pub(super) fn ensure_advanced_tooling(
+    catalog: &mut Vec<Tool>,
+    mode: AppMode,
+    always_load: &HashSet<String>,
+) {
     // code_execution depends on a locally-installed Python interpreter
     // (python3 / python / py -3). Before v0.8.31, the tool was always
     // advertised and would fail at execution time on Windows where
@@ -149,7 +153,11 @@ pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
                 "required": ["code"]
             }),
             allowed_callers: Some(vec!["direct".to_string()]),
-            defer_loading: Some(false),
+            defer_loading: Some(should_default_defer_tool(
+                CODE_EXECUTION_TOOL_NAME,
+                mode,
+                always_load,
+            )),
             input_examples: None,
             strict: None,
             cache_control: None,
@@ -165,7 +173,9 @@ pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
         && !catalog.iter().any(|t| t.name == JS_EXECUTION_TOOL_NAME)
         && crate::dependencies::resolve_node().is_some()
     {
-        catalog.push(crate::tools::js_execution::js_execution_tool_definition());
+        let mut tool = crate::tools::js_execution::js_execution_tool_definition();
+        tool.defer_loading = Some(should_default_defer_tool(&tool.name, mode, always_load));
+        catalog.push(tool);
     }
 
     if !catalog.iter().any(|t| t.name == TOOL_SEARCH_REGEX_NAME) {
@@ -176,7 +186,14 @@ pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Regex pattern to search tool names/descriptions/schema." }
+                    "query": { "type": "string", "description": "Regex pattern to search tool names/descriptions/schema." },
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": TOOL_SEARCH_MAX_RESULTS_LIMIT,
+                        "default": TOOL_SEARCH_DEFAULT_MAX_RESULTS,
+                        "description": "Maximum number of matching tool references to return."
+                    }
                 },
                 "required": ["query"]
             }),
@@ -196,7 +213,14 @@ pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Natural language query for tool discovery." }
+                    "query": { "type": "string", "description": "Natural language query for tool discovery." },
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": TOOL_SEARCH_MAX_RESULTS_LIMIT,
+                        "default": TOOL_SEARCH_DEFAULT_MAX_RESULTS,
+                        "description": "Maximum number of matching tool references to return."
+                    }
                 },
                 "required": ["query"]
             }),
@@ -278,7 +302,11 @@ fn tool_search_haystack(tool: &Tool) -> String {
     )
 }
 
-fn discover_tools_with_regex(catalog: &[Tool], query: &str) -> Result<Vec<String>, ToolError> {
+fn discover_tools_with_regex(
+    catalog: &[Tool],
+    query: &str,
+    max_results: usize,
+) -> Result<Vec<String>, ToolError> {
     let regex = regex::Regex::new(query)
         .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))?;
 
@@ -291,14 +319,14 @@ fn discover_tools_with_regex(catalog: &[Tool], query: &str) -> Result<Vec<String
         if regex.is_match(&hay) {
             matches.push(tool.name.clone());
         }
-        if matches.len() >= 5 {
+        if matches.len() >= max_results {
             break;
         }
     }
     Ok(matches)
 }
 
-fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str) -> Vec<String> {
+fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usize) -> Vec<String> {
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|term| term.trim().to_lowercase())
@@ -328,7 +356,11 @@ fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str) -> Vec<String> {
         }
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.into_iter().take(5).map(|(_, name)| name).collect()
+    scored
+        .into_iter()
+        .take(max_results)
+        .map(|(_, name)| name)
+        .collect()
 }
 
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -643,10 +675,17 @@ pub(super) fn execute_tool_search(
     active_tools: &mut HashSet<String>,
 ) -> Result<ToolResult, ToolError> {
     let query = required_str(input, "query")?;
+    let max_results = usize::try_from(optional_u64(
+        input,
+        "max_results",
+        TOOL_SEARCH_DEFAULT_MAX_RESULTS as u64,
+    ))
+    .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
+    .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
     let discovered = if tool_name == TOOL_SEARCH_REGEX_NAME {
-        discover_tools_with_regex(catalog, query)?
+        discover_tools_with_regex(catalog, query, max_results)?
     } else {
-        discover_tools_with_bm25_like(catalog, query)
+        discover_tools_with_bm25_like(catalog, query, max_results)
     };
 
     for name in &discovered {

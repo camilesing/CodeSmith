@@ -12,17 +12,19 @@ If you just want the short version, see the
 
 ## 1. Supported platforms
 
-`codewhale-tui` ships prebuilt binaries for these
-platform/architecture combinations from v0.8.8 onward:
+CodeWhale ships matched `codewhale` and `codewhale-tui` prebuilt binaries for
+these platform/architecture combinations. Linux ARM64 is available from
+v0.8.8 onward; Linux RISC-V starts with the first release after v0.8.47.
 
 | Platform     | Architecture | npm install | `cargo install` | GitHub release asset                                  |
 | ------------ | ------------ | :---------: | :-------------: | ----------------------------------------------------- |
 | Linux        | x64 (x86_64) |     ✅      |       ✅        | `codewhale-linux-x64`, `codewhale-tui-linux-x64`        |
 | Linux        | arm64        |     ✅      |       ✅        | `codewhale-linux-arm64`, `codewhale-tui-linux-arm64`    |
+| Linux        | riscv64      |     ✅      |       ✅        | `codewhale-linux-riscv64`, `codewhale-tui-linux-riscv64`|
 | macOS        | x64          |     ✅      |       ✅        | `codewhale-macos-x64`, `codewhale-tui-macos-x64`        |
 | macOS        | arm64 (M-series) | ✅      |       ✅        | `codewhale-macos-arm64`, `codewhale-tui-macos-arm64`    |
 | Windows      | x64          |     ✅      |       ✅        | `codewhale-windows-x64.exe`, `codewhale-tui-windows-x64.exe` |
-| Other Linux (musl, riscv64, …) | — |   ❌¹    |       ✅²       | build from source                                     |
+| Other Linux (musl, other architectures) | — |   ❌¹    |       ✅²       | build from source                                     |
 | FreeBSD / OpenBSD              | — |   ❌      |       ✅²       | build from source                                     |
 
 ¹ The npm package will exit with a clear error and point you here.
@@ -49,7 +51,7 @@ systems such as Alpine should use [Build from source](#7-build-from-source).
 
 Official release binaries are published only from
 `https://github.com/Hmbown/CodeWhale/releases` and the npm package named
-`codewhale-tui`. Do not install release assets from look-alike repositories,
+`codewhale`. Do not install release assets from look-alike repositories,
 archives, or search-result mirrors unless you deliberately trust that mirror.
 
 Every GitHub release includes `codewhale-artifacts-sha256.txt`. If you download
@@ -266,6 +268,13 @@ chmod +x ~/.local/bin/codewhale ~/.local/bin/codewhale-tui
 codewhale --version
 ```
 
+> **macOS Gatekeeper note.** If you downloaded the binaries with a browser,
+> macOS may block them with "Apple cannot verify" warnings. Clear the quarantine
+> attribute on both binaries and retry:
+> ```bash
+> xattr -d com.apple.quarantine ~/.local/bin/codewhale ~/.local/bin/codewhale-tui 2>/dev/null || true
+> ```
+
 Verify integrity against the per-release SHA-256 manifest:
 
 ```bash
@@ -282,7 +291,7 @@ The `codewhale` package is listed in Scoop's main bucket:
 
 ```powershell
 scoop update
-scoop install deepseek-tui
+scoop install codewhale
 codewhale --version
 ```
 
@@ -471,6 +480,9 @@ Cargo mirror setup in [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 `codewhale update` normally contacts GitHub Releases for metadata and binary
 assets. On networks where GitHub is blocked or unreliable, use the CNB source
 mirror instead and install both binaries from the release tag:
+
+To check the latest release without downloading or replacing binaries, run
+`codewhale update --check`.
 
 ```bash
 cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-cli --locked --force

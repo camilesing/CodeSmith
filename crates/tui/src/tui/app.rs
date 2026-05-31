@@ -86,6 +86,9 @@ pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
     let Some(rest) = input.trim_start().strip_prefix('/') else {
         return false;
     };
+    if rest.chars().next().is_some_and(|ch| ch.is_whitespace()) {
+        return false;
+    }
     let Some(command) = rest.split_whitespace().next() else {
         return rest.is_empty();
     };
@@ -368,7 +371,7 @@ pub(crate) struct InputHistoryDraft {
     cursor: usize,
 }
 
-fn char_count(text: &str) -> usize {
+pub(crate) fn char_count(text: &str) -> usize {
     text.chars().count()
 }
 
@@ -811,7 +814,19 @@ pub struct TuiOptions {
     /// Used by `deepseek pr <N>` (#451) to drop the model into a
     /// session with the PR context already typed — the user can edit
     /// before sending or hit Enter to fire as-is.
-    pub initial_input: Option<String>,
+    pub initial_input: Option<InitialInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InitialInput {
+    /// Pre-populate the composer and wait for the user to press Enter.
+    ///
+    /// Used by `codewhale pr <N>` (#451) to drop the model into a session
+    /// with the PR context already typed so the user can edit before sending.
+    Prefill(String),
+    /// Pre-populate the composer, submit it once startup is ready, then keep
+    /// the interactive session open for follow-up messages (#2370).
+    Submit(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -881,6 +896,7 @@ pub struct ComposerState {
     pub paste_burst: PasteBurst,
     pub input_history: Vec<String>,
     pub draft_history: VecDeque<String>,
+    pub clear_undo_buffer: Option<String>,
     pub history_index: Option<usize>,
     pub(crate) history_navigation_draft: Option<InputHistoryDraft>,
     pub composer_history_search: Option<ComposerHistorySearch>,
@@ -901,6 +917,10 @@ pub struct ComposerState {
     /// user presses `d` in Normal mode; cleared on the next key (either `d`
     /// to complete `dd`, or any other key to cancel).
     pub vim_pending_d: bool,
+    /// When set, the cursor is the active end of a text selection and
+    /// `selection_anchor` is the fixed end.  Both are char-indexed.
+    /// `None` means no selection is active.
+    pub selection_anchor: Option<usize>,
 }
 
 impl Default for ComposerState {
@@ -912,6 +932,7 @@ impl Default for ComposerState {
             paste_burst: PasteBurst::default(),
             input_history: Vec::new(),
             draft_history: VecDeque::new(),
+            clear_undo_buffer: None,
             history_index: None,
             history_navigation_draft: None,
             composer_history_search: None,
@@ -924,6 +945,7 @@ impl Default for ComposerState {
             vim_enabled: false,
             vim_mode: VimMode::Normal,
             vim_pending_d: false,
+            selection_anchor: None,
         }
     }
 }
@@ -938,11 +960,21 @@ pub struct ViewportState {
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub transcript_scrollbar_dragging: bool,
     pub last_transcript_area: Option<Rect>,
+    pub last_composer_area: Option<Rect>,
     pub last_transcript_top: usize,
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
     pub last_transcript_padding_top: usize,
     pub jump_to_latest_button_area: Option<Rect>,
+    /// Inner content rect of the composer (excluding border/padding),
+    /// stored at render time for mouse coordinate mapping.
+    pub last_composer_content: Option<Rect>,
+    /// Number of rendered text lines scrolled off the top of the composer,
+    /// stored at render time for mouse coordinate mapping.
+    pub last_composer_scroll_offset: usize,
+    /// Vertical padding above the first text line in the composer,
+    /// stored at render time for mouse coordinate mapping.
+    pub last_composer_top_padding: usize,
 }
 
 impl Default for ViewportState {
@@ -956,21 +988,26 @@ impl Default for ViewportState {
             selection_autoscroll: None,
             transcript_scrollbar_dragging: false,
             last_transcript_area: None,
+            last_composer_area: None,
             last_transcript_top: 0,
             last_transcript_visible: 0,
             last_transcript_total: 0,
             last_transcript_padding_top: 0,
             jump_to_latest_button_area: None,
+            last_composer_content: None,
+            last_composer_scroll_offset: 0,
+            last_composer_top_padding: 0,
         }
     }
 }
 
-/// Goal mode state (#397).
+/// Goal tracking state (#397).
 #[derive(Debug, Clone, Default)]
 pub struct GoalState {
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
     pub goal_started_at: Option<Instant>,
+    pub goal_completed: bool,
 }
 
 /// Session cost and token telemetry state.
@@ -990,8 +1027,29 @@ pub struct SessionState {
     pub last_reasoning_replay_tokens: Option<u32>,
     pub total_tokens: u32,
     pub total_conversation_tokens: u32,
+    /// Accumulated token breakdown for the session.
+    pub total_input_tokens: u32,
+    pub total_cache_hit_tokens: u32,
+    pub total_cache_miss_tokens: u32,
+    pub total_output_tokens: u32,
     pub turn_cache_history: VecDeque<TurnCacheRecord>,
     pub last_cache_inspection: Option<PromptInspection>,
+}
+
+/// Sidebar hover state for mouse tooltip support.
+#[derive(Debug, Clone, Default)]
+pub struct SidebarHoverState {
+    /// Rendered sections with their areas and full-text lines.
+    pub sections: Vec<SidebarHoverSection>,
+}
+
+/// Per-section metadata for sidebar hover detection.
+#[derive(Debug, Clone)]
+pub struct SidebarHoverSection {
+    /// Content area within the section (inside border + padding).
+    pub content_area: Rect,
+    /// Full original text for each content line rendered.
+    pub lines: Vec<String>,
 }
 
 impl Default for SessionState {
@@ -1011,10 +1069,31 @@ impl Default for SessionState {
             last_reasoning_replay_tokens: None,
             total_tokens: 0,
             total_conversation_tokens: 0,
+            total_input_tokens: 0,
+            total_cache_hit_tokens: 0,
+            total_cache_miss_tokens: 0,
+            total_output_tokens: 0,
             turn_cache_history: VecDeque::new(),
             last_cache_inspection: None,
         }
     }
+}
+
+impl SessionState {
+    /// Reset the accumulated token breakdown fields to zero.
+    pub fn reset_token_breakdown(&mut self) {
+        self.total_input_tokens = 0;
+        self.total_cache_hit_tokens = 0;
+        self.total_cache_miss_tokens = 0;
+        self.total_output_tokens = 0;
+    }
+}
+
+/// Evidence collected during a turn for the post-turn receipt.
+#[derive(Debug, Clone)]
+pub struct ToolEvidence {
+    pub tool_name: String,
+    pub summary: String,
 }
 
 /// Global UI state for the TUI.
@@ -1029,6 +1108,9 @@ pub struct App {
     pub goal: GoalState,
     /// Session sub-state (cost, tokens, telemetry).
     pub session: SessionState,
+    /// Active tool restriction from custom slash command frontmatter.
+    /// `None` means the current turn may use the normal tool set.
+    pub active_allowed_tools: Option<Vec<String>>,
     pub history: Vec<HistoryCell>,
     pub history_version: u64,
     /// Per-cell revision counter, kept in lockstep with `history`.
@@ -1132,10 +1214,19 @@ pub struct App {
     pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
+    /// Sidebar hover state for mouse tooltip support.
+    pub sidebar_hover: SidebarHoverState,
+    /// Current hover tooltip text, if any.
+    pub sidebar_hover_tooltip: Option<String>,
+    /// Last known mouse position for tooltip placement.
+    pub last_mouse_pos: Option<(u16, u16)>,
     /// Whether the session-context panel is enabled (#504).
     pub context_panel: bool,
     /// File-tree pane state. `None` when hidden; `Some` when visible.
     pub file_tree: Option<crate::tui::file_tree::FileTreeState>,
+    /// Whether the file-tree pane was actually rendered in the last frame.
+    /// Set false when the terminal is too narrow to show the tree.
+    pub file_tree_visible: bool,
     #[allow(dead_code)]
     pub compact_threshold: usize,
     pub max_input_history: usize,
@@ -1340,6 +1431,9 @@ pub struct App {
     pub workspace_context_refreshed_at: Option<Instant>,
     /// Cached background tasks for sidebar rendering.
     pub task_panel: Vec<TaskPanelEntry>,
+    /// Active decision card (v0.8.43 truth-surface). When set, keyboard input
+    /// is routed through the card navigation instead of the composer.
+    pub decision_card: Option<crate::tui::widgets::decision_card::DecisionCard>,
     /// Wall-clock time when this TUI session started. Used by the Work
     /// sidebar projection to hide completed durable tasks that finished
     /// before the current session (bug #1913).
@@ -1361,6 +1455,8 @@ pub struct App {
     /// Most recent user prompt accepted for an active engine turn. Ctrl+C can
     /// restore this into an empty composer after cancelling that turn.
     pub last_submitted_prompt: Option<String>,
+    /// Startup prompt should be submitted automatically after the engine is ready.
+    pub auto_submit_initial_input: bool,
     /// Two-tap quit confirmation. When set, a prior Ctrl+C in idle state has
     /// armed the quit shortcut; a second Ctrl+C before this `Instant` exits
     /// the app, while expiry silently re-arms the prompt for next time.
@@ -1386,15 +1482,23 @@ pub struct App {
     pub prefix_stability_pct: Option<u32>,
     /// Description of the last prefix change, if any.
     pub last_prefix_change_desc: Option<String>,
+    /// Current pinned prefix combined hash (SHA-256, 64 hex chars).
+    /// Updated per-turn via PrefixCacheChange events; surfaced by
+    /// `/cache stats` for cache-hit debugging.
+    pub last_pinned_prefix_hash: Option<String>,
 
     /// Active cycle configuration (token threshold, briefing cap, per-model
     /// overrides). Loaded from config and forwarded to the engine.
     pub cycle: CycleConfig,
 
-    // === Goal Mode (#397) ===
+    // === Transcript filtering (#397) ===
     /// Transcript cells the user has collapsed (hidden from view).
     /// Stores **original** virtual cell indices (pre-filtering).
     pub collapsed_cells: HashSet<usize>,
+    /// Thinking cells the user has folded (showing summary instead of full
+    /// content). Stores **original** virtual cell indices. Toggled by Space
+    /// when the composer is empty and the cursor is on a thinking cell.
+    pub folded_thinking: HashSet<usize>,
     /// Mapping from filtered cell index → original virtual index.
     /// Populated during `ChatWidget::new` by filtering out collapsed cells.
     /// Used by `build_context_menu_entries` to convert line-meta indices
@@ -1411,6 +1515,13 @@ pub struct App {
     /// Derived title for the current session shown in the composer border.
     /// Updated when `EngineEvent::SessionUpdated` fires or a saved session is loaded.
     pub session_title: Option<String>,
+
+    /// Post-turn receipt rendered as transient composer chrome.
+    /// Set when a turn completes; cleared when a new turn starts or after expiry.
+    pub receipt_text: Option<String>,
+    pub receipt_started_at: Option<Instant>,
+    /// Tool evidence collected during the current turn for the receipt.
+    pub tool_evidence: Vec<ToolEvidence>,
 }
 
 /// Message queued while the engine is busy.
@@ -1512,8 +1623,8 @@ fn default_composer_arrows_scroll(use_mouse_capture: bool) -> bool {
     default_composer_arrows_scroll_for_platform(use_mouse_capture, cfg!(windows))
 }
 
-fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, is_windows: bool) -> bool {
-    is_windows || !use_mouse_capture
+fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, _is_windows: bool) -> bool {
+    !use_mouse_capture
 }
 
 impl App {
@@ -1537,6 +1648,7 @@ impl App {
         self.session.last_prompt_cache_miss_tokens = None;
         self.session.last_reasoning_replay_tokens = None;
         self.session.turn_cache_history.clear();
+        self.last_pinned_prefix_hash = None;
     }
 
     pub fn tr(&self, id: MessageId) -> &'static str {
@@ -1708,17 +1820,22 @@ impl App {
         let cached_skills = Self::discover_cached_skills(&workspace, &skills_dir);
 
         let input_history = crate::composer_history::load_history();
-        let (initial_input_text, initial_input_cursor) = match initial_input {
-            // #451: pre-populate the composer when invoked via
-            // `deepseek pr <N>` (or any future caller that wants to
-            // drop the model into a session with context already
-            // typed). Cursor lands at the end so Enter sends as-is.
-            Some(text) if !text.is_empty() => {
-                let cursor = text.len();
-                (text, cursor)
-            }
-            _ => (String::new(), 0),
-        };
+        let (initial_input_text, initial_input_cursor, auto_submit_initial_input) =
+            match initial_input {
+                // #451: pre-populate the composer when invoked via
+                // `deepseek pr <N>` (or any future caller that wants to
+                // drop the model into a session with context already
+                // typed). Cursor lands at the end so Enter sends as-is.
+                Some(InitialInput::Prefill(text)) if !text.is_empty() => {
+                    let cursor = text.chars().count();
+                    (text, cursor, false)
+                }
+                Some(InitialInput::Submit(text)) if !text.is_empty() => {
+                    let cursor = text.chars().count();
+                    (text, cursor, true)
+                }
+                _ => (String::new(), 0, false),
+            };
         Self {
             mode: initial_mode,
             composer: ComposerState {
@@ -1728,6 +1845,7 @@ impl App {
                 paste_burst: PasteBurst::default(),
                 input_history,
                 draft_history: VecDeque::new(),
+                clear_undo_buffer: None,
                 history_index: None,
                 history_navigation_draft: None,
                 composer_history_search: None,
@@ -1740,10 +1858,12 @@ impl App {
                 vim_enabled: composer_vim_enabled,
                 vim_mode: VimMode::Normal,
                 vim_pending_d: false,
+                selection_anchor: None,
             },
             viewport: ViewportState::default(),
             goal: GoalState::default(),
             session: SessionState::default(),
+            active_allowed_tools: None,
             history: Vec::new(),
             history_version: 0,
             history_revisions: Vec::new(),
@@ -1791,8 +1911,12 @@ impl App {
             transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
+            sidebar_hover: SidebarHoverState::default(),
+            sidebar_hover_tooltip: None,
+            last_mouse_pos: None,
             context_panel: settings.context_panel,
             file_tree: None,
+            file_tree_visible: false,
             compact_threshold,
             max_input_history,
             allow_shell,
@@ -1893,6 +2017,7 @@ impl App {
             workspace_context_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),
+            decision_card: None,
             session_started_at: chrono::Utc::now(),
             needs_redraw: true,
             thinking_started_at: None,
@@ -1901,6 +2026,7 @@ impl App {
             coherence_state: CoherenceState::default(),
             last_send_at: None,
             last_submitted_prompt: None,
+            auto_submit_initial_input,
             quit_armed_until: None,
             cycle_count: 0,
             cycle_briefings: Vec::new(),
@@ -1908,8 +2034,10 @@ impl App {
             prefix_checks_total: 0,
             prefix_stability_pct: None,
             last_prefix_change_desc: None,
+            last_pinned_prefix_hash: None,
             cycle: CycleConfig::default(),
             collapsed_cells: HashSet::new(),
+            folded_thinking: HashSet::new(),
             collapsed_cell_map: Vec::new(),
             edit_in_progress: false,
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
@@ -1919,6 +2047,9 @@ impl App {
                 .and_then(|tui| tui.composer_arrows_scroll)
                 .unwrap_or_else(|| default_composer_arrows_scroll(use_mouse_capture)),
             session_title: None,
+            receipt_text: None,
+            receipt_started_at: None,
+            tool_evidence: Vec::new(),
         }
     }
 
@@ -2151,6 +2282,9 @@ impl App {
         metadata.cost.subagent_cost_cny = self.session.subagent_cost_cny;
         metadata.cost.displayed_cost_high_water_usd = self.session.displayed_cost_high_water;
         metadata.cost.displayed_cost_high_water_cny = self.session.displayed_cost_high_water_cny;
+        // Persist cumulative turn duration so the footer "worked" chip
+        // survives session save/restore (#2038).
+        metadata.cumulative_turn_secs = self.cumulative_turn_duration.as_secs();
     }
 
     /// Recompute the displayed cost high-water mark. Called any time a cost
@@ -2208,6 +2342,18 @@ impl App {
 
     pub fn format_cost_amount_precise(&self, amount: f64) -> String {
         crate::pricing::format_cost_amount_precise(amount, self.cost_currency)
+    }
+
+    /// Estimated cost saved by the last turn's cache-hit tokens in the
+    /// configured display currency.  Returns `None` when the model's pricing
+    /// is unknown or there were no cache hits.
+    pub fn last_turn_cache_savings(&self) -> Option<f64> {
+        let hit_tokens = self.session.last_prompt_cache_hit_tokens?;
+        let estimate = crate::pricing::calculate_cache_savings(&self.model, hit_tokens)?;
+        Some(match self.cost_currency {
+            crate::pricing::CostCurrency::Usd => estimate.usd,
+            crate::pricing::CostCurrency::Cny => estimate.cny,
+        })
     }
 
     /// Fold the oldest [`Self::HISTORY_FOLD_BATCH`] cells into a single
@@ -2531,7 +2677,8 @@ impl App {
     }
 
     /// Whether a virtual transcript cell can open a meaningful Alt+V detail
-    /// view.
+    /// view. Thinking cells render their own raw text inline so there is no
+    /// separate "raw" target — only tool / sub-agent cells get the hint.
     #[must_use]
     pub fn cell_has_detail_target(&self, index: usize) -> bool {
         self.tool_detail_record_for_cell(index).is_some()
@@ -2783,6 +2930,39 @@ impl App {
         }
     }
 
+    pub const RECEIPT_VISIBLE_DURATION: Duration = Duration::from_secs(8);
+
+    pub fn set_receipt_text(&mut self, text: impl Into<String>) {
+        self.receipt_text = Some(text.into());
+        self.receipt_started_at = Some(Instant::now());
+        self.needs_redraw = true;
+    }
+
+    pub fn clear_receipt(&mut self) {
+        if self.receipt_text.is_some() || self.receipt_started_at.is_some() {
+            self.receipt_text = None;
+            self.receipt_started_at = None;
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn active_receipt_text(&self) -> Option<&str> {
+        let receipt = self.receipt_text.as_deref()?;
+        let started = self.receipt_started_at?;
+        (started.elapsed() <= Self::RECEIPT_VISIBLE_DURATION).then_some(receipt)
+    }
+
+    /// Tick called from the redraw loop so transient receipts leave the UI
+    /// without waiting for the next keypress.
+    pub fn tick_receipt(&mut self) {
+        if self
+            .receipt_started_at
+            .is_some_and(|started| started.elapsed() > Self::RECEIPT_VISIBLE_DURATION)
+        {
+            self.clear_receipt();
+        }
+    }
+
     pub fn set_sticky_status(
         &mut self,
         text: impl Into<String>,
@@ -2997,6 +3177,7 @@ impl App {
         if text.is_empty() {
             return;
         }
+        self.delete_selection();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -3018,14 +3199,11 @@ impl App {
             self.insert_str(&normalized);
         }
         self.paste_burst.clear_after_explicit_paste();
-        // Visible-before-submit consolidation: when the post-paste input
-        // is over the cap, swap it for an @paste-…md mention immediately
-        // (instead of waiting until the user presses Enter and getting
-        // surprised by an auto-sent @mention). The same logic runs as a
-        // safety-net at submit time so any other code path that fills
-        // self.input above the cap still consolidates rather than
-        // silently truncating.
-        self.consolidate_large_input_if_oversized();
+        // Large pasted input stays editable and visible until submit. The
+        // submit-time safety net consolidates oversized composer content into
+        // an @paste-...md mention before dispatch, so no path silently
+        // truncates user input.
+        // self.consolidate_large_input_if_oversized(); // deferred to submit time
     }
 
     pub fn insert_media_attachment(&mut self, kind: &str, path: &Path, description: Option<&str>) {
@@ -3259,6 +3437,7 @@ impl App {
 
     pub fn insert_char(&mut self, c: char) {
         self.clear_input_history_navigation();
+        self.delete_selection();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -3285,6 +3464,9 @@ impl App {
 
     pub fn delete_char(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
@@ -3302,6 +3484,9 @@ impl App {
 
     pub fn delete_char_forward(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         if self.input.is_empty() {
             return;
@@ -3320,6 +3505,9 @@ impl App {
     /// Delete the word before the cursor.
     pub fn delete_word_backward(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
@@ -3361,6 +3549,9 @@ impl App {
     /// Delete from the cursor to the start of the line.
     pub fn delete_to_start_of_line(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
@@ -3386,6 +3577,9 @@ impl App {
     /// Delete the word after the cursor.
     pub fn delete_word_forward(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
         if cursor_byte >= self.input.len() {
@@ -3430,6 +3624,13 @@ impl App {
     /// Returns `true` when bytes were moved into the kill buffer.
     pub fn kill_to_end_of_line(&mut self) -> bool {
         self.clear_input_history_navigation();
+        if let Some((start, end)) = self.selection_range() {
+            let sb = byte_index_at_char(&self.input, start);
+            let eb = byte_index_at_char(&self.input, end);
+            self.kill_buffer = self.input[sb..eb].to_string();
+            self.delete_selection();
+            return true;
+        }
         let total_chars = char_count(&self.input);
         let cursor = self.cursor_position.min(total_chars);
         let start_byte = byte_index_at_char(&self.input, cursor);
@@ -3475,6 +3676,7 @@ impl App {
         if self.kill_buffer.is_empty() {
             return false;
         }
+        self.delete_selection();
         self.clear_input_history_navigation();
         let text = self.kill_buffer.clone();
         let cursor = self.cursor_position.min(char_count(&self.input));
@@ -3598,6 +3800,59 @@ impl App {
         }
         self.cursor_position = pos;
         self.needs_redraw = true;
+    }
+
+    // === Selection helpers ===
+
+    /// Return the (start, end) of the active selection, or `None`.
+    /// `start` is inclusive, `end` is exclusive; both are char indices.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let total = char_count(&self.input);
+        let anchor = self.selection_anchor?.min(total);
+        let cursor = self.cursor_position.min(total);
+        if anchor == cursor {
+            return None;
+        }
+        Some(if anchor < cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        })
+    }
+
+    /// Return the selected text, or empty string if no selection.
+    pub fn selected_text(&self) -> String {
+        self.selection_range()
+            .map(|(s, e)| {
+                let sb = byte_index_at_char(&self.input, s);
+                let eb = byte_index_at_char(&self.input, e);
+                self.input[sb..eb].to_string()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Delete the selected text, place cursor at the start of the deleted range.
+    /// Returns true if a selection was deleted.
+    pub fn delete_selection(&mut self) -> bool {
+        let Some((start, end)) = self.selection_range() else {
+            return false;
+        };
+        let sb = byte_index_at_char(&self.input, start);
+        let eb = byte_index_at_char(&self.input, end);
+        self.input.replace_range(sb..eb, "");
+        self.cursor_position = start;
+        self.selection_anchor = None;
+        self.clear_input_history_navigation();
+        self.slash_menu_hidden = false;
+        self.mention_menu_hidden = false;
+        self.mention_menu_selected = 0;
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Clear the selection without moving the cursor.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
     }
 
     // === Vim composer mode helpers ===
@@ -3782,6 +4037,7 @@ impl App {
         self.clear_input_history_navigation();
         self.input.clear();
         self.cursor_position = 0;
+        self.selection_anchor = None;
         self.selected_attachment_index = None;
         self.slash_menu_selected = 0;
         self.slash_menu_hidden = false;
@@ -3796,6 +4052,11 @@ impl App {
 
     pub fn stash_current_input_for_recovery(&mut self) {
         let draft = self.input.clone();
+        if draft.trim().is_empty() {
+            self.clear_undo_buffer = None;
+            return;
+        }
+        self.clear_undo_buffer = Some(draft.clone());
         self.remember_draft_for_recovery(draft);
     }
 
@@ -4033,6 +4294,28 @@ impl App {
         true
     }
 
+    /// Restore the last cleared input if the composer is empty.
+    /// Returns `true` if the input was restored.
+    pub fn restore_last_cleared_input_if_empty(&mut self) -> bool {
+        if !self.input.is_empty() {
+            return false;
+        }
+        let Some(saved) = self.clear_undo_buffer.take().filter(|s| !s.is_empty()) else {
+            return false;
+        };
+
+        self.input = saved;
+        self.cursor_position = char_count(&self.input);
+        self.history_index = None;
+        self.history_navigation_draft = None;
+        self.selected_attachment_index = None;
+        self.slash_menu_selected = 0;
+        self.slash_menu_hidden = false;
+        self.needs_redraw = true;
+        self.clear_undo_buffer = None;
+        true
+    }
+
     /// Composer-Enter dispatch. Returns `Some(input)` when the press should
     /// fire a submit; `None` when Enter was absorbed (paste-burst Enter
     /// suppression — see #1073).
@@ -4125,7 +4408,7 @@ impl App {
         self.input = format!("@{rel_path}");
         self.cursor_position = char_count(&self.input);
         self.push_status_toast(
-            "Large paste consolidated — sent as @mention",
+            "Large paste consolidated — auto-wrote to file and replaced with @mention. The text is still fully accessible to the model.",
             StatusToastLevel::Info,
             Some(5_000),
         );
@@ -4192,13 +4475,17 @@ impl App {
 
     /// Decide how to route a fresh composer submit.
     ///
-    /// #382: default to Queue when busy — the user shouldn't have to distinguish
-    /// "streaming" from "tool execution". Ctrl+Enter overrides to Steer.
+    /// #382 / v0.8.44: when the model is busy but not actively streaming
+    /// (waiting on tool results, sub-agents, or shell commands), Enter tries
+    /// to steer into the current turn. If steering fails, the message queues.
+    /// During active streaming, Enter always queues to avoid interrupting
+    /// in-flight reasoning. Ctrl+Enter forces Steer in all busy states.
     ///
     /// Truth table:
-    ///   offline=F, busy=F → Immediate
-    ///   offline=F, busy=T → Queue  (was Steer for non-streaming; now unified)
-    ///   offline=T, busy=* → Queue
+    ///   offline=F, busy=F           → Immediate
+    ///   offline=F, busy=T+streaming → Queue
+    ///   offline=F, busy=T+waiting   → Steer (fallback Queue)
+    ///   offline=T, busy=*           → Queue
     #[must_use]
     pub fn decide_submit_disposition(&self) -> SubmitDisposition {
         if self.offline_mode {
@@ -4207,7 +4494,13 @@ impl App {
         if !self.is_loading {
             return SubmitDisposition::Immediate;
         }
-        // Busy: always queue. Ctrl+Enter routes through steer_user_message directly.
+        // Busy but not streaming text: model is waiting on tool results or
+        // sub-agents — steer so the new message reaches the engine promptly
+        // instead of sitting in the queue until the current turn finishes.
+        if self.streaming_message_index.is_none() {
+            return SubmitDisposition::Steer;
+        }
+        // Actively streaming: queue to avoid interrupting in-flight reasoning.
         SubmitDisposition::Queue
     }
 
@@ -4251,6 +4544,7 @@ impl App {
         self.history_index = Some(new_index);
         self.input = self.input_history[new_index].clone();
         self.cursor_position = char_count(&self.input);
+        self.selection_anchor = None;
         self.selected_attachment_index = None;
         self.slash_menu_hidden = false;
         self.paste_burst.clear_after_explicit_paste();
@@ -4267,6 +4561,7 @@ impl App {
                     self.history_index = Some(i + 1);
                     self.input = self.input_history[i + 1].clone();
                     self.cursor_position = char_count(&self.input);
+                    self.selection_anchor = None;
                     self.selected_attachment_index = None;
                     self.slash_menu_hidden = false;
                     self.paste_burst.clear_after_explicit_paste();
@@ -4275,6 +4570,7 @@ impl App {
                     if let Some(draft) = self.history_navigation_draft.take() {
                         self.input = draft.input;
                         self.cursor_position = draft.cursor.min(char_count(&self.input));
+                        self.selection_anchor = None;
                         self.selected_attachment_index = None;
                         self.slash_menu_hidden = false;
                         self.paste_burst.clear_after_explicit_paste();
@@ -4340,6 +4636,10 @@ impl App {
         };
         self.auto_model = auto_model;
         self.last_effective_model = None;
+        self.last_effective_reasoning_effort = None;
+        if auto_model {
+            self.reasoning_effort = ReasoningEffort::Auto;
+        }
     }
 
     pub fn model_selection_for_persistence(&self) -> String {
@@ -4529,6 +4829,7 @@ pub enum McpUiAction {
     AddHttp {
         name: String,
         url: String,
+        transport: Option<String>,
     },
     Enable {
         name: String,
@@ -4580,6 +4881,35 @@ mod tests {
     }
 
     #[test]
+    fn initial_input_prefill_waits_for_manual_submit() {
+        let mut options = test_options(false);
+        options.initial_input = Some(InitialInput::Prefill("review this PR".to_string()));
+
+        let app = App::new(options, &Config::default());
+
+        assert_eq!(app.input, "review this PR");
+        assert_eq!(app.cursor_position, "review this PR".chars().count());
+        assert!(!app.auto_submit_initial_input);
+    }
+
+    #[test]
+    fn initial_input_submit_marks_startup_dispatch() {
+        let mut options = test_options(false);
+        options.initial_input = Some(InitialInput::Submit(
+            "阅读项目 and wait for instructions".to_string(),
+        ));
+
+        let app = App::new(options, &Config::default());
+
+        assert_eq!(app.input, "阅读项目 and wait for instructions");
+        assert_eq!(
+            app.cursor_position,
+            "阅读项目 and wait for instructions".chars().count()
+        );
+        assert!(app.auto_submit_initial_input);
+    }
+
+    #[test]
     fn composer_arrows_scroll_default_is_true_without_mouse_capture() {
         assert!(default_composer_arrows_scroll_for_platform(false, false));
     }
@@ -4590,8 +4920,13 @@ mod tests {
     }
 
     #[test]
-    fn composer_arrows_scroll_default_is_true_on_windows_even_with_mouse_capture() {
-        assert!(default_composer_arrows_scroll_for_platform(true, true));
+    fn composer_arrows_scroll_default_is_false_with_mouse_capture_on_windows() {
+        assert!(!default_composer_arrows_scroll_for_platform(true, true));
+    }
+
+    #[test]
+    fn composer_arrows_scroll_default_is_true_without_mouse_capture_on_windows() {
+        assert!(default_composer_arrows_scroll_for_platform(false, true));
     }
 
     #[test]
@@ -4738,6 +5073,8 @@ mod tests {
         assert!(looks_like_slash_command_input("/"));
         assert!(looks_like_slash_command_input("/help"));
         assert!(looks_like_slash_command_input("/model deepseek-v4-pro"));
+        assert!(!looks_like_slash_command_input("/ hello"));
+        assert!(!looks_like_slash_command_input("  / hello"));
         assert!(!looks_like_slash_command_input(
             "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？"
         ));
@@ -5155,12 +5492,10 @@ mod tests {
     }
 
     #[test]
-    fn paste_consolidates_oversized_text_into_paste_file_visibly() {
-        // Visible-before-submit consolidation (paste UX): when a single
-        // bracketed paste exceeds the safety cap, the @mention must
-        // replace the input *immediately*, so the user sees what's
-        // about to be sent before pressing Enter — not as a side effect
-        // of submit.
+    fn paste_defers_oversized_text_consolidation_until_submit() {
+        // #2168: a large paste stays inline so the user can still edit it.
+        // Submit-time consolidation then writes the paste file and sends the
+        // @mention instead of the raw oversized content.
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let mut opts = test_options(false);
         opts.workspace = tmp.path().to_path_buf();
@@ -5169,26 +5504,35 @@ mod tests {
 
         app.insert_paste_text(&full_content);
 
-        // Composer should now contain the @mention, not the full text.
-        assert!(
-            app.input.starts_with("@.deepseek/pastes/paste-") && app.input.ends_with(".md"),
-            "expected @mention in composer after large paste, got: {}",
-            app.input
-        );
-        // The cursor moves to the end of the @mention.
+        assert_eq!(app.input, full_content);
         assert_eq!(app.cursor_position, app.input.chars().count());
-        // The paste file must exist with the full content.
-        let rel_path = &app.input[1..];
+        let pastes_dir = tmp.path().join(".deepseek/pastes");
+        assert!(
+            !pastes_dir.exists() || std::fs::read_dir(&pastes_dir).unwrap().next().is_none(),
+            "paste file should not be written before submit"
+        );
+        assert!(
+            app.status_toasts
+                .iter()
+                .all(|toast| !toast.text.contains("consolidated")),
+            "consolidation toast should not appear before submit"
+        );
+
+        let submitted = app.submit_input().expect("expected submitted input");
+        assert!(
+            submitted.starts_with("@.deepseek/pastes/paste-") && submitted.ends_with(".md"),
+            "expected @mention after submit, got: {submitted}"
+        );
+        let rel_path = &submitted[1..];
         let abs = tmp.path().join(rel_path);
         assert!(abs.is_file(), "paste file must exist at {abs:?}");
         let written = std::fs::read_to_string(&abs).expect("read");
         assert_eq!(written, full_content);
-        // A toast confirms what happened so the user isn't surprised.
         assert!(
             app.status_toasts
                 .iter()
-                .any(|t| t.text.contains("consolidated")),
-            "expected consolidation toast"
+                .any(|toast| toast.text.contains("consolidated")),
+            "expected consolidation toast after submit"
         );
     }
 
@@ -5333,6 +5677,10 @@ mod tests {
         app.mode = AppMode::Agent;
         app.cycle_mode_reverse();
         assert_eq!(app.mode, AppMode::Plan);
+
+        app.mode = AppMode::Yolo;
+        app.cycle_mode_reverse();
+        assert_eq!(app.mode, AppMode::Agent);
     }
 
     #[test]
@@ -5344,12 +5692,12 @@ mod tests {
             AppMode::Yolo => AppMode::Plan,
         };
         let second_mode = match first_mode {
-            AppMode::Plan => AppMode::Yolo,
-            AppMode::Agent => AppMode::Plan,
-            AppMode::Yolo => AppMode::Agent,
+            AppMode::Plan => AppMode::Agent,
+            AppMode::Agent => AppMode::Yolo,
+            AppMode::Yolo => AppMode::Plan,
         };
         let third_mode = match second_mode {
-            AppMode::Plan => AppMode::Yolo,
+            AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
             AppMode::Yolo => AppMode::Plan,
         };
@@ -5640,6 +5988,22 @@ mod tests {
     }
 
     #[test]
+    fn input_history_navigation_clears_stale_selection() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("previous input".to_string());
+        app.input = "hello world".to_string();
+        app.cursor_position = "hello ".chars().count();
+        app.selection_anchor = Some(app.input.chars().count());
+
+        app.history_up();
+        assert_eq!(app.input, "previous input");
+        assert!(app.selection_anchor.is_none());
+
+        app.insert_char('x');
+        assert_eq!(app.input, "previous inputx");
+    }
+
+    #[test]
     fn input_history_restores_empty_draft_at_end_of_navigation() {
         let mut app = App::new(test_options(false), &Config::default());
         app.input_history.push("previous prompt".to_string());
@@ -5764,6 +6128,50 @@ mod tests {
             app.history_search_matches(),
             vec!["recover this".to_string()]
         );
+    }
+
+    #[test]
+    fn clear_undo_buffer_is_set_on_clear_input_recoverable() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello".to_string();
+        app.cursor_position = 5;
+
+        app.clear_input_recoverable();
+
+        assert!(app.input.is_empty());
+        assert_eq!(app.clear_undo_buffer.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn clear_undo_buffer_is_none_when_clearing_empty_input() {
+        let mut app = App::new(test_options(false), &Config::default());
+        assert!(app.input.is_empty());
+
+        app.clear_input_recoverable();
+
+        assert!(app.clear_undo_buffer.is_none());
+    }
+
+    #[test]
+    fn restore_last_cleared_input_restores_saved_draft() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "previous".to_string();
+        app.cursor_position = 8;
+        app.clear_input_recoverable();
+        assert!(app.input.is_empty());
+
+        let restored = app.restore_last_cleared_input_if_empty();
+        assert!(restored);
+        assert_eq!(app.input, "previous");
+        assert!(app.clear_undo_buffer.is_none());
+    }
+
+    #[test]
+    fn restore_last_cleared_input_does_nothing_when_composer_not_empty() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.clear_undo_buffer = Some("old".to_string());
+        app.input = "current".to_string();
+        assert!(!app.restore_last_cleared_input_if_empty());
     }
 
     #[test]
@@ -6107,6 +6515,24 @@ mod tests {
     }
 
     #[test]
+    fn receipt_expires_and_requests_redraw() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.set_receipt_text("✓ turn completed");
+        app.receipt_started_at =
+            Some(Instant::now() - App::RECEIPT_VISIBLE_DURATION - Duration::from_millis(10));
+        assert_eq!(app.active_receipt_text(), None);
+
+        app.needs_redraw = false;
+        app.tick_receipt();
+        assert!(app.receipt_text.is_none());
+        assert!(app.receipt_started_at.is_none());
+        assert!(
+            app.needs_redraw,
+            "receipt expiry should repaint composer chrome"
+        );
+    }
+
+    #[test]
     fn quit_armed_tick_is_noop_within_window() {
         let mut app = App::new(test_options(false), &Config::default());
         app.arm_quit();
@@ -6144,13 +6570,14 @@ mod tests {
     }
 
     #[test]
-    fn submit_disposition_queue_when_busy_and_online_not_streaming() {
-        // #382: Busy + not streaming → Queue (was Steer; now unified)
+    fn submit_disposition_steer_when_busy_and_online_not_streaming() {
+        // v0.8.44: Busy + not streaming → Steer (Enter reaches engine during
+        // sub-agent/shell waits instead of silently queueing).
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = false;
         // streaming_message_index is None (default) → tool execution phase
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
     }
 
     #[test]
@@ -6421,5 +6848,108 @@ mod tests {
         assert!(app.yank());
         assert_eq!(app.input, "café 你好");
         assert_eq!(app.cursor_position, 7);
+    }
+
+    #[test]
+    fn selection_range_returns_none_when_no_anchor() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = None;
+        assert!(app.selection_range().is_none());
+    }
+
+    #[test]
+    fn selection_range_returns_ordered_range() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        assert_eq!(app.selection_range(), Some((2, 5)));
+    }
+
+    #[test]
+    fn selection_range_normalizes_order() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 2;
+        app.selection_anchor = Some(5);
+        assert_eq!(app.selection_range(), Some((2, 5)));
+    }
+
+    #[test]
+    fn selection_range_returns_none_when_anchor_equals_cursor() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello".to_string();
+        app.cursor_position = 3;
+        app.selection_anchor = Some(3);
+        assert!(app.selection_range().is_none());
+    }
+
+    #[test]
+    fn delete_selection_removes_selected_text() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        assert!(app.delete_selection());
+        assert_eq!(app.input, "he world");
+        assert_eq!(app.cursor_position, 2);
+        assert!(app.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn insert_char_replaces_selection() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        app.insert_char('X');
+        assert_eq!(app.input, "heX world");
+        assert_eq!(app.cursor_position, 3);
+        assert!(app.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn delete_char_removes_selection_instead_of_single_char() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        app.delete_char();
+        assert_eq!(app.input, "he world");
+        assert_eq!(app.cursor_position, 2);
+    }
+
+    #[test]
+    fn selected_text_returns_correct_substring() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        assert_eq!(app.selected_text(), "llo");
+    }
+
+    #[test]
+    fn insert_str_replaces_selection() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        app.insert_str("yo");
+        assert_eq!(app.input, "heyo world");
+        assert_eq!(app.cursor_position, 4);
+        assert!(app.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn delete_selection_noop_when_no_selection() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello".to_string();
+        app.cursor_position = 3;
+        app.selection_anchor = None;
+        assert!(!app.delete_selection());
+        assert_eq!(app.input, "hello");
+        assert_eq!(app.cursor_position, 3);
     }
 }

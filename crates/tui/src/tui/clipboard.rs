@@ -14,7 +14,10 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 #[cfg(any(
     all(test, unix),
-    all(any(target_os = "macos", target_os = "windows"), not(test))
+    all(
+        any(target_os = "macos", target_os = "windows", target_os = "linux"),
+        not(test)
+    )
 ))]
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -136,6 +139,11 @@ impl ClipboardHandler {
 
         #[cfg(not(test))]
         {
+            #[cfg(target_os = "linux")]
+            if write_text_with_wlcopy(text).is_ok() {
+                return Ok(());
+            }
+
             self.ensure_clipboard();
             if let Some(clipboard) = self.clipboard.as_mut()
                 && clipboard.set_text(text.to_string()).is_ok()
@@ -177,6 +185,34 @@ fn write_text_with_set_clipboard(text: &str) -> Result<()> {
         text,
         "Set-Clipboard",
     )
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn write_text_with_wlcopy(text: &str) -> Result<()> {
+    write_text_with_wlcopy_using_argv("wl-copy", text)
+}
+
+#[cfg(target_os = "linux")]
+fn write_text_with_wlcopy_using_argv(program: &str, text: &str) -> Result<()> {
+    let mut child = Command::new(program)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to run {program}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to write to {program}: {e}"))?;
+    }
+    // stdin is dropped here, closing the pipe so wl-copy flushes.
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("Failed to wait on {program}: {e}"))?;
+    if !status.success() {
+        bail!("{program} exited with {status}");
+    }
+    Ok(())
 }
 
 #[cfg(any(
@@ -243,7 +279,7 @@ fn osc52_sequence(text: &str, in_tmux: bool) -> Result<String> {
 /// `<workspace>/clipboard-images/` if the home dir is unavailable.
 pub(crate) fn clipboard_images_dir(workspace: &Path) -> PathBuf {
     if let Some(home) = dirs::home_dir() {
-        return home.join(".deepseek").join("clipboard-images");
+        return home.join(".codewhale").join("clipboard-images");
     }
     workspace.join("clipboard-images")
 }
@@ -386,6 +422,33 @@ mod tests {
         };
         assert_eq!(p.short_label(), "1024x768 PNG");
         assert_eq!(p.size_label(), "235KB");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wlcopy_helper_errors_when_binary_missing() {
+        let result =
+            write_text_with_wlcopy_using_argv("/nonexistent/path/to/wlcopy_binary_xyz", "test");
+        assert!(result.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wlcopy_helper_errors_when_binary_exits_nonzero() {
+        let result = write_text_with_wlcopy_using_argv("false", "test");
+        assert!(result.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wlcopy_helper_succeeds_when_binary_returns_zero() {
+        // Use `cat` instead of `true` because `true` exits immediately
+        // without reading stdin, causing EPIPE before we can check the
+        // exit status.  `cat` consumes stdin until EOF (when we drop the
+        // pipe) and then exits 0, faithfully modelling a successful
+        // wl-copy invocation.
+        let result = write_text_with_wlcopy_using_argv("cat", "test");
+        assert!(result.is_ok());
     }
 
     #[test]

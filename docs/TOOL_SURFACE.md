@@ -35,7 +35,7 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 |---|---|
 | `grep_files` | Regex search file contents within the workspace; structured matches + context lines. Pure-Rust (`regex` crate), no `rg`/`grep` shell-out. |
 | `file_search` | Fuzzy-match filenames (not contents). Use when you know roughly the name. |
-| `web_search` | Bing by default; DuckDuckGo, Tavily, and Bocha are selectable in config. Ranked snippets + `ref_id` for citation. |
+| `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, Bocha, Metaso, and Baidu are selectable in config. Ranked snippets + `ref_id` for citation. |
 | `fetch_url` | Direct HTTP GET on a known URL. Faster than `web_search` when the link is already known. HTML stripped to text by default. |
 
 ### Shell
@@ -90,7 +90,7 @@ to the model, such as `mcp_<server>_<tool>`.
 
 | Tool | Niche |
 |---|---|
-| `update_plan` | Structured checklist for complex multi-step work. |
+| `update_plan` | Optional high-level strategy metadata for complex multi-phase work; keep `checklist_write` as the primary progress surface. |
 | `task_create` | Create/enqueue a durable background task through `TaskManager`. This is the real executable work object for long-running agent work. |
 | `task_list` | List durable tasks with status and linked runtime ids. |
 | `task_read` | Read durable task detail: thread/turn linkage, timeline, checklist, gates, artifacts, PR attempts, GitHub events. |
@@ -169,10 +169,19 @@ RLM is now persistent as well:
 
 | Tool | Niche |
 |---|---|
+| `rlm_session_objects` | List compact cards for the active prompt, session metadata, transcript, latest user message, and per-message refs. |
 | `rlm_open` | Open a named Python REPL over a file, inline content, or URL. |
 | `rlm_eval` | Run bounded Python against that session, using deterministic code and in-REPL semantic helpers such as `sub_query_batch`. |
 | `rlm_configure` | Adjust output feedback, child-query timeout/depth, and session-sharing settings. |
 | `rlm_close` | Shut down the Python runtime and return final session stats. |
+
+`rlm_open` also accepts `session_object`, a stable ref returned by
+`rlm_session_objects`, such as `session://active/system_prompt`,
+`session://active/transcript`, or `session://active/messages/0`. This loads
+the selected object into the RLM REPL and returns only metadata to the parent
+transcript. Transcript objects keep thinking blocks and large tool results as
+compact metadata; inspect large payloads through returned `var_handle` values
+and `handle_read`, not by asking the parent transcript to paste the raw text.
 
 Large RLM outputs should come back as `var_handle`s. Use `handle_read` for
 bounded text slices, line ranges, counts, or JSONPath projections instead of
