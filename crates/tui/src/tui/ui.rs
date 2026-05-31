@@ -1926,6 +1926,7 @@ async fn run_event_loop(
                         id,
                         tool_name,
                         description,
+                        input,
                         approval_key,
                         approval_grouping_key,
                     } => {
@@ -1970,19 +1971,10 @@ async fn run_event_loop(
                             app.status_message =
                                 Some(format!("Blocked tool '{tool_name}' (approval_mode=never)"));
                         } else {
-                            let tool_input = app
-                                .pending_tool_uses
-                                .iter()
-                                .find(|(tool_id, _, _)| tool_id == &id)
-                                .map(|(_, _, input)| input.clone())
-                                .unwrap_or_else(|| serde_json::json!({}));
+                            let tool_input = input;
 
-                            if tool_name == "apply_patch" {
-                                maybe_add_patch_preview(app, &tool_input);
-                            }
-
-                            // Create approval request and show overlay
-                            let request = ApprovalRequest::new(
+                            push_approval_request_view(
+                                app,
                                 &id,
                                 &tool_name,
                                 &description,
@@ -1998,8 +1990,6 @@ async fn run_event_loop(
                                     "mode": app.mode.label(),
                                 }),
                             );
-                            app.view_stack
-                                .push(ApprovalView::new_for_locale(request, app.ui_locale));
                             if let Some((method, _, _)) =
                                 crate::tui::notifications::settings(config)
                             {
@@ -5942,6 +5932,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Atlascloud => Some("Atlas"),
             crate::config::ApiProvider::WanjieArk => Some("Wanjie"),
             crate::config::ApiProvider::Openrouter => Some("OR"),
+            crate::config::ApiProvider::XiaomiMimo => Some("MiMo"),
             crate::config::ApiProvider::Novita => Some("Novita"),
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
             crate::config::ApiProvider::Moonshot => Some("Kimi"),
@@ -6598,6 +6589,23 @@ async fn handle_view_events(
     Ok(false)
 }
 
+fn push_approval_request_view(
+    app: &mut App,
+    id: &str,
+    tool_name: &str,
+    description: &str,
+    tool_input: &serde_json::Value,
+    approval_key: &str,
+) {
+    if tool_name == "apply_patch" {
+        maybe_add_patch_preview(app, tool_input);
+    }
+
+    let request = ApprovalRequest::new(id, tool_name, description, tool_input, approval_key);
+    app.view_stack
+        .push(ApprovalView::new_for_locale(request, app.ui_locale));
+}
+
 struct ApprovalDecisionEvent {
     tool_id: String,
     tool_name: String,
@@ -6843,6 +6851,7 @@ async fn apply_provider_picker_api_key(
             ApiProvider::Atlascloud => &mut providers.atlascloud,
             ApiProvider::WanjieArk => &mut providers.wanjie_ark,
             ApiProvider::Openrouter => &mut providers.openrouter,
+            ApiProvider::XiaomiMimo => &mut providers.xiaomi_mimo,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
             ApiProvider::Moonshot => &mut providers.moonshot,
@@ -6895,6 +6904,7 @@ fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, 
         ApiProvider::Atlascloud => &mut providers.atlascloud,
         ApiProvider::WanjieArk => &mut providers.wanjie_ark,
         ApiProvider::Openrouter => &mut providers.openrouter,
+        ApiProvider::XiaomiMimo => &mut providers.xiaomi_mimo,
         ApiProvider::Novita => &mut providers.novita,
         ApiProvider::Fireworks => &mut providers.fireworks,
         ApiProvider::Moonshot => &mut providers.moonshot,
