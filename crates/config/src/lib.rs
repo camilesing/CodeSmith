@@ -272,8 +272,23 @@ pub struct ConfigToml {
     /// applies the defaults documented in [`LspConfigToml`].
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
+    /// App-server hook sink configuration. Kept separate from the TUI
+    /// lifecycle `[hooks]` table so config rewrites preserve existing hooks.
+    #[serde(default)]
+    pub hook_sinks: Option<HookSinksToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
+}
+
+/// On-disk schema for the `[hook_sinks]` table.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HookSinksToml {
+    /// Unix domain socket path used by the app-server event sink.
+    ///
+    /// When unset, no Unix socket sink is registered. There is deliberately no
+    /// shared `/tmp` default because socket ownership should be explicit.
+    #[serde(default)]
+    pub unix_socket_path: Option<PathBuf>,
 }
 
 /// On-disk schema for the `[skills]` table (#140). See `config.example.toml`
@@ -470,6 +485,11 @@ impl ConfigToml {
             "approval_policy" => self.approval_policy.clone(),
             "sandbox_mode" => self.sandbox_mode.clone(),
             "tools.always_load" => self.tools.as_ref().map(|tools| tools.always_load.join(",")),
+            "hook_sinks.unix_socket_path" => self
+                .hook_sinks
+                .as_ref()
+                .and_then(|sinks| sinks.unix_socket_path.as_ref())
+                .map(|path| path.display().to_string()),
             "providers.deepseek.api_key" => self.providers.deepseek.api_key.clone(),
             "providers.deepseek.base_url" => self.providers.deepseek.base_url.clone(),
             "providers.deepseek.model" => self.providers.deepseek.model.clone(),
@@ -592,6 +612,11 @@ impl ConfigToml {
             }
             "approval_policy" => self.approval_policy = Some(value.to_string()),
             "sandbox_mode" => self.sandbox_mode = Some(value.to_string()),
+            "hook_sinks.unix_socket_path" => {
+                self.hook_sinks
+                    .get_or_insert_with(HookSinksToml::default)
+                    .unix_socket_path = Some(PathBuf::from(value));
+            }
             "providers.deepseek.api_key" => {
                 let value = value.to_string();
                 self.providers.deepseek.api_key = Some(value.clone());
@@ -796,6 +821,11 @@ impl ConfigToml {
             "telemetry" => self.telemetry = None,
             "approval_policy" => self.approval_policy = None,
             "sandbox_mode" => self.sandbox_mode = None,
+            "hook_sinks.unix_socket_path" => {
+                if let Some(sinks) = self.hook_sinks.as_mut() {
+                    sinks.unix_socket_path = None;
+                }
+            }
             "providers.deepseek.api_key" => {
                 self.providers.deepseek.api_key = None;
                 self.api_key = None;
@@ -918,6 +948,16 @@ impl ConfigToml {
         }
         if let Some(v) = self.sandbox_mode.as_ref() {
             out.insert("sandbox_mode".to_string(), v.clone());
+        }
+        if let Some(v) = self
+            .hook_sinks
+            .as_ref()
+            .and_then(|sinks| sinks.unix_socket_path.as_ref())
+        {
+            out.insert(
+                "hook_sinks.unix_socket_path".to_string(),
+                v.display().to_string(),
+            );
         }
         if let Some(v) = self.providers.deepseek.api_key.as_ref() {
             out.insert("providers.deepseek.api_key".to_string(), redact_secret(v));
@@ -2728,6 +2768,88 @@ mod tests {
             config.get_display_value("model").as_deref(),
             Some("deepseek-v4-pro")
         );
+    }
+
+    #[test]
+    fn hook_sinks_config_uses_separate_table_from_lifecycle_hooks() -> Result<()> {
+        let raw = r#"
+[hooks]
+enabled = true
+default_timeout_secs = 20
+
+[[hooks.hooks]]
+event = "message_submit"
+command = "echo ok"
+
+[hook_sinks]
+unix_socket_path = "/tmp/cw-hooks.sock"
+"#;
+
+        let config: ConfigToml = toml::from_str(raw)?;
+
+        assert_eq!(
+            config.get_value("hook_sinks.unix_socket_path").as_deref(),
+            Some("/tmp/cw-hooks.sock")
+        );
+        assert!(
+            config.extras.contains_key("hooks"),
+            "legacy lifecycle hooks table must remain an opaque extra"
+        );
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: ConfigToml = toml::from_str(&serialized)?;
+        let hooks = round_tripped
+            .extras
+            .get("hooks")
+            .and_then(toml::Value::as_table)
+            .expect("hooks table preserved");
+
+        assert_eq!(
+            hooks.get("enabled").and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            hooks
+                .get("default_timeout_secs")
+                .and_then(toml::Value::as_integer),
+            Some(20)
+        );
+        assert!(
+            hooks.get("hooks").and_then(toml::Value::as_array).is_some(),
+            "nested lifecycle hooks array must survive config rewrites"
+        );
+        assert_eq!(
+            round_tripped
+                .get_value("hook_sinks.unix_socket_path")
+                .as_deref(),
+            Some("/tmp/cw-hooks.sock")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn hook_sinks_unix_socket_path_round_trips_through_key_value_api() -> Result<()> {
+        let mut config = ConfigToml::default();
+
+        config.set_value("hook_sinks.unix_socket_path", "/tmp/cw-events.sock")?;
+
+        assert_eq!(
+            config.get_value("hook_sinks.unix_socket_path").as_deref(),
+            Some("/tmp/cw-events.sock")
+        );
+        assert_eq!(
+            config
+                .list_values()
+                .get("hook_sinks.unix_socket_path")
+                .map(String::as_str),
+            Some("/tmp/cw-events.sock")
+        );
+
+        config.unset_value("hook_sinks.unix_socket_path")?;
+        assert_eq!(config.get_value("hook_sinks.unix_socket_path"), None);
+
+        Ok(())
     }
 
     /// End-to-end smoke for the preferred Kimi Code setup path:
