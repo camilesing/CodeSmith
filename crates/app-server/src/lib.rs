@@ -13,7 +13,7 @@ use codewhale_agent::ModelRegistry;
 use codewhale_config::{CliRuntimeOverrides, ConfigStore};
 use codewhale_core::Runtime;
 use codewhale_execpolicy::ExecPolicyEngine;
-use codewhale_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink};
+use codewhale_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink, UnixSocketHookSink};
 use codewhale_mcp::McpManager;
 use codewhale_protocol::{
     AppRequest, AppResponse, PromptRequest, PromptResponse, ThreadRequest, ThreadResponse,
@@ -313,6 +313,15 @@ fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Resu
         .and_then(|p| p.parent().map(|parent| parent.join("events.jsonl")))
         .unwrap_or_else(|| PathBuf::from(".deepseek/events.jsonl"));
     hooks.add_sink(Arc::new(JsonlHookSink::new(hook_log_path)));
+
+    if let Some(socket_path) = config
+        .hook_sinks
+        .as_ref()
+        .and_then(|sinks| sinks.unix_socket_path.as_ref())
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        hooks.add_sink(Arc::new(UnixSocketHookSink::new(socket_path.clone())));
+    }
 
     let runtime = Runtime::new(
         config.clone(),
