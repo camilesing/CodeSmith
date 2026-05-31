@@ -3,6 +3,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use std::cell::{Cell, RefCell};
 use std::fmt;
 
+use crate::config::Config;
 use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::settings::Settings;
@@ -574,6 +575,7 @@ pub struct ConfigView {
     filter: String,
     status: Option<String>,
     locale: Locale,
+    effective_cost_currency: String,
     last_visible_rows: Cell<usize>,
     last_row_hitboxes: RefCell<Vec<(u16, usize)>>,
 }
@@ -611,6 +613,15 @@ impl ConfigView {
                     .as_deref()
                     .unwrap_or("(config/default)")
                     .to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Model,
+                key: "base_url".to_string(),
+                value: Config::load(app.config_path.clone(), app.config_profile.as_deref())
+                    .map(|config| config.deepseek_base_url())
+                    .unwrap_or_else(|_| "(unavailable)".to_string()),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -809,6 +820,7 @@ impl ConfigView {
             filter: String::new(),
             status: None,
             locale: app.ui_locale,
+            effective_cost_currency: cost_currency_config_value(app),
             last_visible_rows: Cell::new(0),
             last_row_hitboxes: RefCell::new(Vec::new()),
         }
@@ -831,7 +843,7 @@ impl ConfigView {
 
         let section = row.section.label().to_lowercase();
         let key = row.key.to_lowercase();
-        let value = row.value.to_lowercase();
+        let value = self.row_display_value(row).to_lowercase();
         let scope = row.scope.label().to_lowercase();
 
         filter.split_whitespace().all(|term| {
@@ -1110,6 +1122,27 @@ impl ConfigView {
 
         self.update_filter(|filter| filter.clear());
     }
+
+    fn row_display_value(&self, row: &ConfigRow) -> String {
+        if row.key == "cost_currency" && row.scope == ConfigScope::Saved {
+            let saved_cost_currency = crate::pricing::CostCurrency::from_setting(&row.value);
+            let effective_cost_currency =
+                crate::pricing::CostCurrency::from_setting(&self.effective_cost_currency);
+            if saved_cost_currency != effective_cost_currency {
+                return format!("{} (effective {})", row.value, self.effective_cost_currency);
+            }
+        }
+
+        row.value.clone()
+    }
+}
+
+fn cost_currency_config_value(app: &App) -> String {
+    match app.cost_currency {
+        crate::pricing::CostCurrency::Usd => "usd",
+        crate::pricing::CostCurrency::Cny => "cny",
+    }
+    .to_string()
 }
 
 fn config_hint_for_key(key: &str) -> &'static str {
@@ -1127,6 +1160,8 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "theme" => "system | dark | light | grayscale",
         "locale" => "auto | en | ja | zh-Hans | pt-BR",
         "background_color" => "#RRGGBB | default",
+        "base_url" => "save user config; e.g. https://api.deepseek.com/beta or https://gateway/v1",
+        "cost_currency" => "usd | cny",
         "default_mode" => "agent | plan | yolo",
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | work | tasks | agents | context | hidden",
@@ -1434,7 +1469,10 @@ impl ModalView for ConfigView {
                         } else {
                             Style::default().fg(palette::TEXT_PRIMARY)
                         };
-                        let value = truncate_view_text(&row.value, CONFIG_VALUE_COLUMN_WIDTH);
+                        let value = truncate_view_text(
+                            &self.row_display_value(row),
+                            CONFIG_VALUE_COLUMN_WIDTH,
+                        );
                         let mut line = Line::from(format!(
                             "  {:<key_width$} {:<value_width$} {}",
                             row.key,
@@ -2013,7 +2051,52 @@ mod tests {
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::{buffer::Buffer, layout::Rect};
+    use std::ffi::OsString;
+    use std::fs;
     use std::path::PathBuf;
+    use std::sync::MutexGuard;
+    use tempfile::TempDir;
+
+    struct ConfigSettingsEnvGuard {
+        _tmp: TempDir,
+        previous_config_path: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ConfigSettingsEnvGuard {
+        fn new(settings_toml: &str) -> Self {
+            let lock = crate::test_support::lock_test_env();
+            let tmp = TempDir::new().expect("settings tempdir");
+            let config_path = tmp.path().join(".deepseek").join("config.toml");
+            let settings_path = config_path
+                .parent()
+                .expect("settings parent")
+                .join("settings.toml");
+            std::fs::create_dir_all(config_path.parent().expect("config parent"))
+                .expect("config dir");
+            std::fs::write(&settings_path, settings_toml).expect("settings file");
+            let previous_config_path = std::env::var_os("DEEPSEEK_CONFIG_PATH");
+            unsafe {
+                std::env::set_var("DEEPSEEK_CONFIG_PATH", &config_path);
+            }
+            Self {
+                _tmp: tmp,
+                previous_config_path,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ConfigSettingsEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.previous_config_path.take() {
+                    Some(previous) => std::env::set_var("DEEPSEEK_CONFIG_PATH", previous),
+                    None => std::env::remove_var("DEEPSEEK_CONFIG_PATH"),
+                }
+            }
+        }
+    }
 
     fn create_test_app() -> App {
         let options = TuiOptions {
@@ -2038,6 +2121,26 @@ mod tests {
             initial_input: None,
         };
         App::new(options, &Config::default())
+    }
+
+    fn cost_currency_row_for_settings(
+        settings_toml: &str,
+    ) -> (String, String, crate::pricing::CostCurrency, Locale) {
+        let _guard = ConfigSettingsEnvGuard::new(settings_toml);
+        let app = create_test_app();
+        let view = ConfigView::new_for_app(&app);
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.key == "cost_currency")
+            .expect("cost_currency row");
+
+        (
+            row.value.clone(),
+            view.row_display_value(row),
+            app.cost_currency,
+            app.ui_locale,
+        )
     }
 
     fn type_filter(view: &mut ConfigView, text: &str) {
@@ -2175,6 +2278,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(keys.contains(&"model"));
         assert!(keys.contains(&"reasoning_effort"));
+        assert!(keys.contains(&"base_url"));
         assert!(keys.contains(&"approval_mode"));
         assert!(keys.contains(&"theme"));
         assert!(keys.contains(&"locale"));
@@ -2191,6 +2295,88 @@ mod tests {
         assert!(keys.contains(&"prefer_external_pdftotext"));
         assert!(keys.contains(&"mcp_config_path"));
         assert!(view.rows.iter().all(|row| row.editable));
+    }
+
+    #[test]
+    fn config_view_base_url_reflects_app_config_path() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "deepseek-tui-base-url-view-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let config_path = temp_root.join("config.toml");
+        fs::write(
+            &config_path,
+            "base_url = \"https://ui-config-view.local/v1\"\n",
+        )
+        .unwrap();
+
+        let mut app = create_test_app();
+        app.config_path = Some(config_path.clone());
+        let view = ConfigView::new_for_app(&app);
+
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.key == "base_url")
+            .expect("base_url row missing");
+        assert_eq!(row.value, "https://ui-config-view.local/v1");
+    }
+
+    #[test]
+    fn config_view_cost_currency_shows_saved_and_effective_runtime_currency() {
+        let _guard = ConfigSettingsEnvGuard::new("locale = \"zh-Hans\"\ncost_currency = \"usd\"\n");
+        let app = create_test_app();
+        assert_eq!(app.ui_locale, Locale::ZhHans);
+        assert_eq!(app.cost_currency, crate::pricing::CostCurrency::Cny);
+
+        let view = ConfigView::new_for_app(&app);
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.key == "cost_currency")
+            .expect("cost_currency row");
+
+        assert_eq!(row.value, "usd");
+        assert_eq!(view.row_display_value(row), "usd (effective cny)");
+        assert_eq!(Settings::load().expect("settings").cost_currency, "usd");
+    }
+
+    #[test]
+    fn config_view_cost_currency_aliases_matching_effective_currency_are_silent() {
+        for alias in ["rmb", "yuan", "¥"] {
+            let (saved_value, display_value, effective_currency, locale) =
+                cost_currency_row_for_settings(&format!(
+                    "locale = \"zh-Hans\"\ncost_currency = \"{alias}\"\n"
+                ));
+
+            assert_eq!(locale, Locale::ZhHans);
+            assert_eq!(effective_currency, crate::pricing::CostCurrency::Cny);
+            assert_eq!(saved_value, alias);
+            assert_eq!(display_value, alias);
+        }
+    }
+
+    #[test]
+    fn config_view_cost_currency_matching_cny_setting_is_silent() {
+        let (saved_value, display_value, effective_currency, locale) =
+            cost_currency_row_for_settings("locale = \"zh-Hans\"\ncost_currency = \"cny\"\n");
+
+        assert_eq!(locale, Locale::ZhHans);
+        assert_eq!(effective_currency, crate::pricing::CostCurrency::Cny);
+        assert_eq!(saved_value, "cny");
+        assert_eq!(display_value, "cny");
+    }
+
+    #[test]
+    fn config_view_cost_currency_non_zh_hans_locale_uses_saved_currency() {
+        let (saved_value, display_value, effective_currency, locale) =
+            cost_currency_row_for_settings("locale = \"en\"\ncost_currency = \"cny\"\n");
+
+        assert_eq!(locale, Locale::En);
+        assert_eq!(effective_currency, crate::pricing::CostCurrency::Cny);
+        assert_eq!(saved_value, "cny");
+        assert_eq!(display_value, "cny");
     }
 
     #[test]

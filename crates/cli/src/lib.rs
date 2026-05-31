@@ -29,6 +29,7 @@ enum ProviderArg {
     Atlascloud,
     WanjieArk,
     Openrouter,
+    XiaomiMimo,
     Novita,
     Fireworks,
     Moonshot,
@@ -46,6 +47,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Atlascloud => ProviderKind::Atlascloud,
             ProviderArg::WanjieArk => ProviderKind::WanjieArk,
             ProviderArg::Openrouter => ProviderKind::Openrouter,
+            ProviderArg::XiaomiMimo => ProviderKind::XiaomiMimo,
             ProviderArg::Novita => ProviderKind::Novita,
             ProviderArg::Fireworks => ProviderKind::Fireworks,
             ProviderArg::Moonshot => ProviderKind::Moonshot,
@@ -232,7 +234,17 @@ The command prints the completion script to stdout; redirect it to a path your s
     /// Print a usage rollup from the audit log and session store.
     Metrics(MetricsArgs),
     /// Check for and apply updates to the `codewhale` binary.
-    Update,
+    Update(UpdateArgs),
+}
+
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    /// Update to the latest beta release instead of the latest stable release.
+    #[arg(long)]
+    beta: bool,
+    /// Only check the latest release; do not download or replace binaries.
+    #[arg(long)]
+    check: bool,
 }
 
 #[derive(Debug, Args)]
@@ -377,6 +389,11 @@ enum ThreadCommand {
     SetName {
         thread_id: String,
         name: String,
+    },
+    /// Remove the custom name from a thread, restoring the default
+    /// `(unnamed)` rendering in `thread list`.
+    ClearName {
+        thread_id: String,
     },
 }
 
@@ -557,7 +574,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Update) => update::run_update(),
+        Some(Commands::Update(args)) => update::run_update(args.beta, args.check),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
@@ -706,6 +723,7 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Atlascloud => "atlascloud",
         ProviderKind::WanjieArk => "wanjie-ark",
         ProviderKind::Openrouter => "openrouter",
+        ProviderKind::XiaomiMimo => "xiaomi-mimo",
         ProviderKind::Novita => "novita",
         ProviderKind::Fireworks => "fireworks",
         ProviderKind::Moonshot => "moonshot",
@@ -716,13 +734,14 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 12] = [
+const PROVIDER_LIST: [ProviderKind; 13] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openai,
     ProviderKind::Atlascloud,
     ProviderKind::WanjieArk,
     ProviderKind::Openrouter,
+    ProviderKind::XiaomiMimo,
     ProviderKind::Novita,
     ProviderKind::Fireworks,
     ProviderKind::Moonshot,
@@ -777,6 +796,7 @@ fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
     match provider {
         ProviderKind::Deepseek => &["DEEPSEEK_API_KEY"],
         ProviderKind::Openrouter => &["OPENROUTER_API_KEY"],
+        ProviderKind::XiaomiMimo => &["XIAOMI_MIMO_API_KEY", "MIMO_API_KEY"],
         ProviderKind::Novita => &["NOVITA_API_KEY"],
         ProviderKind::NvidiaNim => &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"],
         ProviderKind::Fireworks => &["FIREWORKS_API_KEY"],
@@ -1251,6 +1271,16 @@ fn run_thread_command(command: ThreadCommand) -> Result<()> {
             println!("renamed {thread_id}");
             Ok(())
         }
+        ThreadCommand::ClearName { thread_id } => {
+            let mut thread = state
+                .get_thread(&thread_id)?
+                .with_context(|| format!("thread not found: {thread_id}"))?;
+            thread.name = None;
+            thread.updated_at = chrono::Utc::now().timestamp();
+            state.upsert_thread(&thread)?;
+            println!("cleared name for {thread_id}");
+            Ok(())
+        }
     }
 }
 
@@ -1451,6 +1481,7 @@ fn build_tui_command(
             | ProviderKind::Atlascloud
             | ProviderKind::WanjieArk
             | ProviderKind::Openrouter
+            | ProviderKind::XiaomiMimo
             | ProviderKind::Novita
             | ProviderKind::Fireworks
             | ProviderKind::Moonshot
@@ -1459,38 +1490,33 @@ fn build_tui_command(
             | ProviderKind::Ollama
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Novita, Fireworks, Moonshot/Kimi, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `codewhale model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Xiaomi MiMo, Novita, Fireworks, Moonshot/Kimi, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `codewhale model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
 
-    cmd.env("DEEPSEEK_MODEL", &resolved_runtime.model);
-    cmd.env("DEEPSEEK_BASE_URL", &resolved_runtime.base_url);
-    cmd.env("DEEPSEEK_PROVIDER", resolved_runtime.provider.as_str());
-    if let Some(auth_mode) = resolved_runtime.auth_mode.as_ref() {
-        cmd.env("DEEPSEEK_AUTH_MODE", auth_mode);
+    if let Some(provider) = cli.provider {
+        let provider: ProviderKind = provider.into();
+        cmd.env("DEEPSEEK_PROVIDER", provider.as_str());
     }
-    if !resolved_runtime.http_headers.is_empty() {
-        let encoded = resolved_runtime
-            .http_headers
-            .iter()
-            .map(|(name, value)| format!("{}={}", name.trim(), value.trim()))
-            .collect::<Vec<_>>()
-            .join(",");
-        cmd.env("DEEPSEEK_HTTP_HEADERS", encoded);
-    }
-    if let Some(api_key) = resolved_runtime.api_key.as_ref() {
+    if matches!(
+        resolved_runtime.api_key_source,
+        Some(RuntimeApiKeySource::Keyring)
+    ) && let Some(api_key) = resolved_runtime.api_key.as_ref()
+    {
+        // TUI reloads auth_mode from config/profile, but it does not re-query the
+        // platform keyring on normal startup. Bridge only the recovered secret;
+        // replaying auth_mode here would turn it back into a profile override.
         cmd.env("DEEPSEEK_API_KEY", api_key);
         for var in provider_env_vars(resolved_runtime.provider) {
             if *var != "DEEPSEEK_API_KEY" {
                 cmd.env(var, api_key);
             }
         }
-        let source = resolved_runtime
-            .api_key_source
-            .unwrap_or(RuntimeApiKeySource::Env)
-            .as_env_value();
-        cmd.env("DEEPSEEK_API_KEY_SOURCE", source);
+        cmd.env(
+            "DEEPSEEK_API_KEY_SOURCE",
+            RuntimeApiKeySource::Keyring.as_env_value(),
+        );
     }
 
     if let Some(model) = cli.model.as_ref() {
@@ -1796,6 +1822,36 @@ mod tests {
     }
 
     #[test]
+    fn parses_update_beta_flag() {
+        let cli = parse_ok(&["codewhale", "update"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Update(UpdateArgs {
+                beta: false,
+                check: false
+            }))
+        ));
+
+        let cli = parse_ok(&["codewhale", "update", "--beta"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Update(UpdateArgs {
+                beta: true,
+                check: false
+            }))
+        ));
+
+        let cli = parse_ok(&["codewhale", "update", "--check"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Update(UpdateArgs {
+                beta: false,
+                check: true
+            }))
+        ));
+    }
+
+    #[test]
     fn parses_model_command_matrix() {
         let cli = parse_ok(&["deepseek", "model", "list"]);
         assert!(matches!(
@@ -1907,6 +1963,14 @@ mod tests {
                     ref name
                 }
             })) if thread_id == "thread-6" && name == "My Thread"
+        ));
+
+        let cli = parse_ok(&["deepseek", "thread", "clear-name", "thread-7"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Thread(ThreadArgs {
+                command: ThreadCommand::ClearName { ref thread_id }
+            })) if thread_id == "thread-7"
         ));
     }
 
@@ -2631,14 +2695,6 @@ mod tests {
             Some("openai")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_MODEL").as_deref(),
-            Some("glm-5")
-        );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
-            Some("https://openai-compatible.example/v4")
-        );
-        assert_eq!(
             command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
             Some("resolved-openai-key")
         );
@@ -2650,10 +2706,7 @@ mod tests {
             command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
             Some("keyring")
         );
-        assert_eq!(
-            command_env(&cmd, "DEEPSEEK_AUTH_MODE").as_deref(),
-            Some("api_key")
-        );
+        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
         let args: Vec<String> = cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -2662,6 +2715,55 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["--workspace", "/tmp/codewhale-workspace"]),
             "expected workspace forwarding in args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_tui_command_does_not_export_default_runtime_overrides_for_profiles() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let custom = dir
+            .path()
+            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&custom, b"").unwrap();
+        let custom_str = custom.to_string_lossy().into_owned();
+        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+
+        let cli = parse_ok(&["deepseek", "--profile", "google"]);
+        let mut resolved_headers = std::collections::BTreeMap::new();
+        resolved_headers.insert("X-From-Base".to_string(), "base".to_string());
+        let resolved = ResolvedRuntimeOptions {
+            provider: ProviderKind::Deepseek,
+            model: "deepseek-v4-pro".to_string(),
+            api_key: Some("config-file-key".to_string()),
+            api_key_source: Some(RuntimeApiKeySource::ConfigFile),
+            base_url: "https://api.deepseek.com/beta".to_string(),
+            auth_mode: Some("api_key".to_string()),
+            output_mode: None,
+            log_level: None,
+            telemetry: false,
+            approval_policy: None,
+            sandbox_mode: None,
+            yolo: None,
+            http_headers: resolved_headers,
+        };
+
+        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
+
+        assert_eq!(command_env(&cmd, "DEEPSEEK_PROVIDER"), None);
+        assert_eq!(command_env(&cmd, "DEEPSEEK_MODEL"), None);
+        assert_eq!(command_env(&cmd, "DEEPSEEK_BASE_URL"), None);
+        assert_eq!(command_env(&cmd, "DEEPSEEK_API_KEY"), None);
+        assert_eq!(command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE"), None);
+        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
+        assert_eq!(command_env(&cmd, "DEEPSEEK_HTTP_HEADERS"), None);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.windows(2).any(|pair| pair == ["--profile", "google"]),
+            "expected profile forwarding in args: {args:?}"
         );
     }
 
@@ -2689,7 +2791,7 @@ mod tests {
             provider: ProviderKind::Moonshot,
             model: "kimi-k2.6".to_string(),
             api_key: Some("resolved-kimi-key".to_string()),
-            api_key_source: Some(RuntimeApiKeySource::Env),
+            api_key_source: Some(RuntimeApiKeySource::Keyring),
             base_url: "https://api.moonshot.ai/v1".to_string(),
             auth_mode: Some("api_key".to_string()),
             output_mode: None,
@@ -2711,10 +2813,6 @@ mod tests {
             Some("kimi-k2.6")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
-            Some("https://api.moonshot.ai/v1")
-        );
-        assert_eq!(
             command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
             Some("resolved-kimi-key")
         );
@@ -2728,12 +2826,67 @@ mod tests {
         );
         assert_eq!(
             command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
-            Some("env")
+            Some("keyring")
+        );
+        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
+    }
+
+    #[test]
+    fn build_tui_command_exports_explicit_provider_model_and_base_url() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let custom = dir
+            .path()
+            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&custom, b"").unwrap();
+        let custom_str = custom.to_string_lossy().into_owned();
+        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+
+        let cli = parse_ok(&[
+            "deepseek",
+            "--profile",
+            "google",
+            "--provider",
+            "openai",
+            "--model",
+            "glm-5",
+            "--base-url",
+            "https://openai-compatible.example/v4",
+        ]);
+        let resolved = ResolvedRuntimeOptions {
+            provider: ProviderKind::Openai,
+            model: "glm-5".to_string(),
+            api_key: None,
+            api_key_source: None,
+            base_url: "https://openai-compatible.example/v4".to_string(),
+            auth_mode: None,
+            output_mode: None,
+            log_level: None,
+            telemetry: false,
+            approval_policy: None,
+            sandbox_mode: None,
+            yolo: None,
+            http_headers: std::collections::BTreeMap::new(),
+        };
+
+        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
+
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_MODEL").as_deref(),
+            Some("glm-5")
+        );
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
+            Some("https://openai-compatible.example/v4")
         );
     }
 
     #[test]
-    fn build_tui_command_forwards_provider_env_vars_for_all_providers() {
+    fn build_tui_command_forwards_provider_keyring_env_vars_for_all_providers() {
         let _lock = env_lock();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let custom = dir
@@ -2749,6 +2902,11 @@ mod tests {
                 ProviderKind::Openrouter,
                 "openrouter",
                 &["OPENROUTER_API_KEY"],
+            ),
+            (
+                ProviderKind::XiaomiMimo,
+                "xiaomi-mimo",
+                &["XIAOMI_MIMO_API_KEY", "MIMO_API_KEY"],
             ),
             (ProviderKind::Novita, "novita", &["NOVITA_API_KEY"]),
             (
@@ -2788,7 +2946,7 @@ mod tests {
                 provider,
                 model: "test-model".to_string(),
                 api_key: Some("test-key".to_string()),
-                api_key_source: Some(RuntimeApiKeySource::Env),
+                api_key_source: Some(RuntimeApiKeySource::Keyring),
                 base_url: "http://localhost:8000/v1".to_string(),
                 auth_mode: Some("api_key".to_string()),
                 output_mode: None,
@@ -2815,15 +2973,29 @@ mod tests {
                     "{flag}: {var} not forwarded"
                 );
             }
+            assert_eq!(
+                command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
+                Some("keyring"),
+                "{flag}: expected keyring source bridge"
+            );
+            assert_eq!(
+                command_env(&cmd, "DEEPSEEK_AUTH_MODE"),
+                None,
+                "{flag}: auth mode should come from config/profile, not env handoff"
+            );
         }
     }
 
     #[test]
-    fn parses_top_level_prompt_flag_for_canonical_one_shot() {
+    fn parses_top_level_prompt_flag_for_interactive_startup_prompt() {
         let cli = parse_ok(&["deepseek", "-p", "Reply with exactly OK."]);
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
         assert!(cli.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "Reply with exactly OK.".to_string()]
+        );
     }
 
     #[test]
@@ -2837,7 +3009,7 @@ mod tests {
     }
 
     #[test]
-    fn top_level_continue_rejects_one_shot_prompt() {
+    fn top_level_continue_rejects_startup_prompt() {
         let cli = parse_ok(&["codewhale", "--continue", "-p", "follow up"]);
 
         let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
@@ -2853,6 +3025,10 @@ mod tests {
 
         assert_eq!(cli.prompt, vec!["hello", "world"]);
         assert!(cli.command.is_none());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "hello world".to_string()]
+        );
     }
 
     #[test]
@@ -2861,6 +3037,10 @@ mod tests {
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("hello"));
         assert_eq!(cli.prompt, vec!["world"]);
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "hello world".to_string()]
+        );
     }
 
     #[test]
@@ -2932,6 +3112,7 @@ mod tests {
                     "archive",
                     "unarchive",
                     "set-name",
+                    "clear-name",
                 ],
             ),
             ("sandbox", vec!["check"]),

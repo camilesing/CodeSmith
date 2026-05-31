@@ -20,6 +20,11 @@ impl Engine {
         mode: AppMode,
         force_update_plan_first: bool,
     ) -> (TurnOutcomeStatus, Option<String>) {
+        // Signal to the terminal / taskbar that a turn is in progress
+        // (OSC 9 ; 4 indeterminate progress + title spinner).
+        crate::tui::notifications::set_taskbar_progress_busy();
+        crate::tui::notifications::start_title_animation("CodeWhale");
+
         let client = self
             .deepseek_client
             .clone()
@@ -30,10 +35,11 @@ impl Engine {
         let mut context_recovery_attempts = 0u8;
         let mut tool_catalog = tools.unwrap_or_default();
         if !tool_catalog.is_empty() {
-            ensure_advanced_tooling(&mut tool_catalog, mode);
+            ensure_advanced_tooling(&mut tool_catalog, mode, &self.config.tools_always_load);
         }
         let mut active_tool_names = initial_active_tools(&tool_catalog);
         let mut loop_guard = LoopGuard::default();
+        let mut goal_continuations_this_turn = 0u32;
 
         // Transparent stream-retry counter: when the chunked-transfer
         // connection dies mid-stream and we got nothing useful out of it
@@ -243,6 +249,10 @@ impl Engine {
                 let tools_ref: Option<&[crate::models::Tool]> = active_tools.as_deref();
                 match pm.check_and_update(&system_text, tools_ref) {
                     Err(change) => {
+                        let pinned_hash = pm
+                            .pinned_fingerprint()
+                            .map(|fp| fp.combined_sha256.clone())
+                            .unwrap_or_default();
                         tracing::debug!(
                             target: "prefix_cache",
                             "{}",
@@ -256,10 +266,15 @@ impl Engine {
                                 tools_changed: change.tools_changed,
                                 stability_pct: (pm.stability_ratio() * 100.0).round() as u32,
                                 changed: true,
+                                pinned_combined_hash: pinned_hash,
                             })
                             .await;
                     }
                     Ok(_) => {
+                        let pinned_hash = pm
+                            .pinned_fingerprint()
+                            .map(|fp| fp.combined_sha256.clone())
+                            .unwrap_or_default();
                         // Stable check — keep the TUI counter in sync.
                         let _ = self
                             .tx_event
@@ -269,6 +284,7 @@ impl Engine {
                                 tools_changed: false,
                                 stability_pct: (pm.stability_ratio() * 100.0).round() as u32,
                                 changed: false,
+                                pinned_combined_hash: pinned_hash,
                             })
                             .await;
                     }
@@ -1111,6 +1127,21 @@ impl Engine {
                     continue;
                 }
 
+                if let Some(continuation) = self
+                    .goal_continuation_message_if_needed(
+                        tool_registry,
+                        &mut goal_continuations_this_turn,
+                    )
+                    .await
+                {
+                    self.add_session_message(
+                        self.user_text_message_with_turn_metadata(continuation),
+                    )
+                    .await;
+                    turn.next_step();
+                    continue;
+                }
+
                 if thinking_only_no_sendable {
                     let holding_for_subagents = {
                         let running = {
@@ -1167,6 +1198,13 @@ impl Engine {
                     "Planning tool '{tool_name}' with input: {tool_input:?}"
                 ));
 
+                let requested_tool_name = tool_name.clone();
+                let tool_def =
+                    resolve_tool_definition(&mut tool_name, &tool_catalog, tool_registry);
+                if requested_tool_name != tool_name {
+                    tool.name = tool_name.clone();
+                }
+
                 let interactive = (tool_name == "exec_shell"
                     && tool_input
                         .get("interactive")
@@ -1198,25 +1236,10 @@ impl Engine {
                     )));
                 }
 
-                let requested_tool_name = tool_name.clone();
-                let mut tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
-
-                // Resolve hallucinated tool names when the model emits a
-                // non-canonical variant (Read_file, readFile, read-file, etc.).
-                if tool_def.is_none()
-                    && let Some(registry) = tool_registry
-                    && let Some(canonical) = registry.resolve(&tool_name)
-                {
-                    crate::logging::info(format!(
-                        "Resolved hallucinated tool name '{tool_name}' -> '{canonical}'"
-                    ));
-                    tool_def = tool_catalog.iter().find(|d| d.name == canonical);
-                    if tool_def.is_some() {
-                        tool_name = canonical.to_string();
-                        // Update the tool_uses entry so the result is
-                        // attributed to the canonical name.
-                        tool.name = tool_name.clone();
-                    }
+                if !command_allows_tool(self.config.allowed_tools.as_deref(), &tool_name) {
+                    blocked_error = Some(ToolError::permission_denied(format!(
+                        "Tool '{tool_name}' is not in the allowed-tools list for the current command"
+                    )));
                 }
 
                 if !caller_allowed_for_tool(tool_caller.as_ref(), tool_def) {
@@ -1675,6 +1698,7 @@ impl Engine {
                                 .send(Event::ApprovalRequired {
                                     id: tool_id.clone(),
                                     tool_name: tool_name.clone(),
+                                    input: tool_input.clone(),
                                     description: plan.approval_description.clone(),
                                     approval_key,
                                     approval_grouping_key,
@@ -1939,7 +1963,9 @@ impl Engine {
 
             if let Some(message) = loop_guard_halt {
                 crate::logging::warn(message.clone());
-                let _ = self.tx_event.send(Event::status(message)).await;
+                let _ = self.tx_event.send(Event::status(message.clone())).await;
+                // 设置 turn_error 以确保最终返回 TurnOutcomeStatus::Failed 而非 Completed
+                turn_error = Some(message);
                 break;
             }
 
@@ -2001,6 +2027,55 @@ impl Engine {
         (TurnOutcomeStatus::Completed, None)
     }
 
+    async fn goal_continuation_message_if_needed(
+        &self,
+        tool_registry: Option<&crate::tools::ToolRegistry>,
+        continuations_this_turn: &mut u32,
+    ) -> Option<String> {
+        let registry = tool_registry?;
+        if !registry.contains("update_goal") {
+            return None;
+        }
+
+        let snapshot = match self.config.goal_state.lock() {
+            Ok(state) => state.snapshot(),
+            Err(err) => {
+                tracing::warn!("goal state lock poisoned during continuation check: {err}");
+                return None;
+            }
+        };
+
+        if !snapshot.is_active() {
+            return None;
+        }
+
+        let max = crate::tools::goal::MAX_GOAL_CONTINUATIONS_PER_TURN;
+        if *continuations_this_turn >= max {
+            let _ = self
+                .tx_event
+                .send(Event::status(format!(
+                    "Goal remains active after {max} continuation pass(es); ending turn to avoid a runaway loop."
+                )))
+                .await;
+            return None;
+        }
+
+        *continuations_this_turn = (*continuations_this_turn).saturating_add(1);
+        let _ = self
+            .tx_event
+            .send(Event::status(format!(
+                "Continuing active goal audit ({}/{max})",
+                *continuations_this_turn
+            )))
+            .await;
+
+        Some(crate::tools::goal::render_continuation_prompt(
+            &snapshot,
+            *continuations_this_turn,
+            max,
+        ))
+    }
+
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
         // `<turn_meta>` is stored on user-text messages when the message is
         // appended. Do not rewrite historical messages at request time: doing
@@ -2038,6 +2113,40 @@ XML unless the user explicitly asks to debug sub-agent internals.\n\n\
 
 fn should_hold_turn_for_subagents(queued_completions: usize, running_children: usize) -> bool {
     queued_completions > 0 || running_children > 0
+}
+
+fn command_allows_tool(allowed_tools: Option<&[String]>, tool_name: &str) -> bool {
+    let Some(allowed_tools) = allowed_tools else {
+        return true;
+    };
+    allowed_tools.contains(&tool_name.to_ascii_lowercase())
+}
+
+fn resolve_tool_definition<'a>(
+    tool_name: &mut String,
+    tool_catalog: &'a [Tool],
+    tool_registry: Option<&crate::tools::ToolRegistry>,
+) -> Option<&'a Tool> {
+    let mut tool_def = tool_catalog
+        .iter()
+        .find(|def| def.name.as_str() == tool_name.as_str());
+
+    // Resolve hallucinated tool names before policy gates run, so aliases like
+    // ReadFile are checked against the canonical registered tool name.
+    if tool_def.is_none()
+        && let Some(registry) = tool_registry
+        && let Some(canonical) = registry.resolve(tool_name.as_str())
+    {
+        crate::logging::info(format!(
+            "Resolved hallucinated tool name '{tool_name}' -> '{canonical}'"
+        ));
+        tool_def = tool_catalog.iter().find(|d| d.name == canonical);
+        if tool_def.is_some() {
+            *tool_name = canonical.to_string();
+        }
+    }
+
+    tool_def
 }
 
 /// Issue #1727: decide whether to surface a "thinking-only, no output" status.
@@ -2310,5 +2419,46 @@ mod tests {
             Some("high".to_string()),
             "auto thinking should classify the user request, not stored metadata"
         );
+    }
+
+    #[test]
+    fn allowed_tools_gate_blocks_unlisted_tool() {
+        let allowed = vec!["bash".to_string(), "grep".to_string()];
+        assert!(!command_allows_tool(Some(&allowed), "read"));
+    }
+
+    #[test]
+    fn allowed_tools_gate_allows_listed_tool_case_insensitively() {
+        let allowed = vec!["bash".to_string(), "read".to_string()];
+        assert!(command_allows_tool(Some(&allowed), "Read"));
+    }
+
+    #[test]
+    fn allowed_tools_gate_allows_all_tools_when_not_set() {
+        assert!(command_allows_tool(None, "write"));
+    }
+
+    #[test]
+    fn review_regression_allowed_tools_gate_blocks_all_tools_when_empty() {
+        let allowed = Vec::new();
+        assert!(!command_allows_tool(Some(&allowed), "bash"));
+    }
+
+    #[test]
+    fn review_regression_allowed_tools_gate_checks_canonical_tool_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = crate::tools::spec::ToolContext::new(tmp.path().to_path_buf());
+        let registry = crate::tools::ToolRegistryBuilder::new()
+            .with_file_tools()
+            .build(context);
+        let catalog = registry.to_api_tools();
+        let mut tool_name = "ReadFile".to_string();
+
+        let tool_def = resolve_tool_definition(&mut tool_name, &catalog, Some(&registry));
+
+        assert!(tool_def.is_some());
+        assert_eq!(tool_name, "read_file");
+        let allowed = vec!["read_file".to_string()];
+        assert!(command_allows_tool(Some(&allowed), &tool_name));
     }
 }

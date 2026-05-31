@@ -4,17 +4,17 @@ use ratatui::style::Color;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
-// v0.8.45 Whale dark palette — refreshed ocean/navy identity.
-pub const WHALE_BG_RGB: (u8, u8, u8) = (13, 21, 37); // #0D1525 Deep Navy
-pub const WHALE_PANEL_RGB: (u8, u8, u8) = (19, 29, 48); // #131D30
-pub const WHALE_ELEVATED_RGB: (u8, u8, u8) = (26, 40, 64); // #1A2840
-pub const WHALE_SELECTION_RGB: (u8, u8, u8) = (30, 50, 82); // #1E3252
+// v0.8.46 Whale dark palette — improved contrast and layer separation.
+pub const WHALE_BG_RGB: (u8, u8, u8) = (10, 17, 32); // #0A1120 Deep Navy
+pub const WHALE_PANEL_RGB: (u8, u8, u8) = (22, 34, 56); // #162238
+pub const WHALE_ELEVATED_RGB: (u8, u8, u8) = (36, 52, 78); // #24344E
+pub const WHALE_SELECTION_RGB: (u8, u8, u8) = (40, 56, 84); // #283854 — darker to avoid bright pop on deep navy
 pub const WHALE_TEXT_BODY_RGB: (u8, u8, u8) = (246, 242, 232); // #F6F2E8 Whale Ivory
 pub const WHALE_TEXT_SOFT_RGB: (u8, u8, u8) = (217, 224, 234); // #D9E0EA
 pub const WHALE_TEXT_MUTED_RGB: (u8, u8, u8) = (169, 180, 199); // #A9B4C7 Mist Gray
-pub const WHALE_TEXT_HINT_RGB: (u8, u8, u8) = (122, 134, 158); // #7A869E
+pub const WHALE_TEXT_HINT_RGB: (u8, u8, u8) = (138, 150, 174); // #8A96AE
 #[allow(dead_code)]
-pub const WHALE_TEXT_DIM_RGB: (u8, u8, u8) = (107, 120, 146); // #6B7892
+pub const WHALE_TEXT_DIM_RGB: (u8, u8, u8) = (118, 130, 156); // #76829C
 pub const WHALE_ACCENT_PRIMARY_RGB: (u8, u8, u8) = (246, 196, 83); // #F6C453 Signal Gold
 pub const WHALE_ACCENT_SECONDARY_RGB: (u8, u8, u8) = (79, 209, 197); // #4FD1C5 Seafoam
 pub const WHALE_ACCENT_ACTION_RGB: (u8, u8, u8) = (255, 122, 89); // #FF7A59 Coral Spark
@@ -26,10 +26,10 @@ pub const WHALE_ERROR_TEXT_RGB: (u8, u8, u8) = (255, 214, 222); // #FFD6DE Error
 pub const WHALE_WARNING_RGB: (u8, u8, u8) = (240, 160, 48); // #F0A030
 pub const WHALE_SUCCESS_RGB: (u8, u8, u8) = (79, 209, 197); // #4FD1C5 Seafoam
 pub const WHALE_INFO_RGB: (u8, u8, u8) = (106, 174, 242); // #6AAEF2 Sky
-pub const WHALE_BORDER_RGB: (u8, u8, u8) = (42, 74, 127); // #2A4A7F
+pub const WHALE_BORDER_RGB: (u8, u8, u8) = (52, 88, 145); // #345891
 pub const WHALE_REASONING_TEXT_RGB: (u8, u8, u8) = (224, 153, 72); // #E09948
 pub const WHALE_REASONING_SURFACE_RGB: (u8, u8, u8) = (42, 34, 24); // #2A2218
-pub const WHALE_REASONING_TINT_RGB: (u8, u8, u8) = (20, 30, 42); // #141E2A
+pub const WHALE_REASONING_TINT_RGB: (u8, u8, u8) = (24, 36, 52); // #182434
 pub const WHALE_DIFF_ADDED_RGB: (u8, u8, u8) = (87, 199, 133); // #57C785
 #[allow(dead_code)]
 pub const WHALE_DIFF_DELETED_RGB: (u8, u8, u8) = (255, 92, 122); // #FF5C7A Rose Red
@@ -39,11 +39,11 @@ pub const WHALE_MODE_AGENT_RGB: (u8, u8, u8) = (80, 150, 255); // #5096FF
 pub const WHALE_MODE_YOLO_RGB: (u8, u8, u8) = (255, 100, 100); // #FF6464
 pub const WHALE_MODE_PLAN_RGB: (u8, u8, u8) = (246, 196, 83); // #F6C453 Signal Gold
 pub const WHALE_MODE_GOAL_RGB: (u8, u8, u8) = (100, 220, 160); // #64DCA0
-pub const WHALE_TOOL_LIVE_RGB: (u8, u8, u8) = (133, 184, 234); // #85B8EA
-pub const WHALE_TOOL_ISSUE_RGB: (u8, u8, u8) = (192, 143, 153); // #C08F99
+pub const WHALE_TOOL_LIVE_RGB: (u8, u8, u8) = (140, 190, 238); // #8CBEEE
+pub const WHALE_TOOL_ISSUE_RGB: (u8, u8, u8) = (198, 150, 160); // #C696A0
 pub const WHALE_TOOL_OUTPUT_RGB: (u8, u8, u8) = (194, 208, 224); // #C2D0E0
-pub const WHALE_TOOL_SURFACE_RGB: (u8, u8, u8) = (24, 34, 53); // #182235
-pub const WHALE_TOOL_ACTIVE_RGB: (u8, u8, u8) = (31, 45, 69); // #1F2D45
+pub const WHALE_TOOL_SURFACE_RGB: (u8, u8, u8) = (28, 40, 62); // #1C283E
+pub const WHALE_TOOL_ACTIVE_RGB: (u8, u8, u8) = (38, 54, 80); // #263650
 
 // Backward-compatible aliases for existing call sites.
 pub const DEEPSEEK_BLUE_RGB: (u8, u8, u8) = WHALE_ACCENT_PRIMARY_RGB;
@@ -244,7 +244,11 @@ pub const TEXT_ACCENT: Color = Color::Rgb(
     WHALE_ACCENT_SECONDARY_RGB.1,
     WHALE_ACCENT_SECONDARY_RGB.2,
 );
-pub const SELECTION_TEXT: Color = Color::White;
+pub const SELECTION_TEXT: Color = Color::Rgb(
+    WHALE_TEXT_BODY_RGB.0,
+    WHALE_TEXT_BODY_RGB.1,
+    WHALE_TEXT_BODY_RGB.2,
+); // Ivory — softer than pure white
 pub const TEXT_SOFT: Color = Color::Rgb(
     WHALE_TEXT_SOFT_RGB.0,
     WHALE_TEXT_SOFT_RGB.1,
@@ -821,6 +825,63 @@ pub const DRACULA_UI_THEME: UiTheme = UiTheme {
     tool_failed: Color::Rgb(0xff, 0x55, 0x55),  // red
 };
 
+/// "Terminal" theme: lets the host terminal's color scheme show through
+/// instead of painting any RGB surface. Backgrounds use `Color::Reset`
+/// (the terminal's own default bg) and most text uses `Color::Reset`
+/// (terminal's own default fg). Accents are ANSI named colors so they
+/// also inherit the user's terminal palette (Solarized, Nord, custom
+/// schemes, etc.) rather than DeepSeek brand RGB.
+pub const TERMINAL_UI_THEME: UiTheme = UiTheme {
+    name: "terminal",
+    // Mode is reported as Dark to avoid the dark→light cell remap kicking
+    // in; the terminal-theme cell remap already normalizes everything to
+    // `Color::Reset`, and we never want a second pass overwriting that.
+    mode: PaletteMode::Dark,
+    surface_bg: Color::Reset,
+    panel_bg: Color::Reset,
+    elevated_bg: Color::Reset,
+    composer_bg: Color::Reset,
+    selection_bg: Color::Reset,
+    header_bg: Color::Reset,
+    footer_bg: Color::Reset,
+    text_dim: Color::Reset,
+    text_hint: Color::Reset,
+    text_muted: Color::Reset,
+    text_body: Color::Reset,
+    text_soft: Color::Reset,
+    border: Color::Reset,
+    accent_primary: Color::Blue,
+    accent_secondary: Color::Cyan,
+    accent_action: Color::Yellow,
+    error_fg: Color::Red,
+    error_hover: Color::Red,
+    error_surface: Color::Reset,
+    error_border: Color::Red,
+    error_text: Color::Red,
+    warning: Color::Yellow,
+    success: Color::Green,
+    info: Color::Cyan,
+    mode_agent: Color::Blue,
+    mode_yolo: Color::Red,
+    // Magenta keeps Plan visually distinct from `status_warning` (yellow)
+    // so the mode indicator and warning chip don't collide on themes that
+    // render both in the status row.
+    mode_plan: Color::Magenta,
+    mode_goal: Color::Green,
+    // DarkGray gives "Ready" a low-contrast but still distinguishable hue
+    // versus default body text (which is `Color::Reset` on this theme).
+    status_ready: Color::DarkGray,
+    status_working: Color::Cyan,
+    status_warning: Color::Yellow,
+    diff_added_fg: Color::Green,
+    diff_deleted_fg: Color::Red,
+    diff_added_bg: Color::Reset,
+    diff_deleted_bg: Color::Reset,
+    tool_running: Color::Cyan,
+    tool_success: Color::Green,
+    tool_failed: Color::Red,
+};
+
 pub const GRUVBOX_DARK_UI_THEME: UiTheme = UiTheme {
     name: "gruvbox-dark",
     mode: PaletteMode::Dark,
@@ -870,6 +931,7 @@ pub const GRUVBOX_DARK_UI_THEME: UiTheme = UiTheme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeId {
     System,
+    Terminal,
     Whale,
     WhaleLight,
     Grayscale,
@@ -887,6 +949,7 @@ impl ThemeId {
     pub fn from_name(value: &str) -> Option<Self> {
         match normalize_theme_name(value)? {
             "system" => Some(Self::System),
+            "terminal" => Some(Self::Terminal),
             "dark" => Some(Self::Whale),
             "light" => Some(Self::WhaleLight),
             "grayscale" => Some(Self::Grayscale),
@@ -904,6 +967,7 @@ impl ThemeId {
     pub const fn name(self) -> &'static str {
         match self {
             Self::System => "system",
+            Self::Terminal => "terminal",
             Self::Whale => "dark",
             Self::WhaleLight => "light",
             Self::Grayscale => "grayscale",
@@ -919,6 +983,7 @@ impl ThemeId {
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::System => "System",
+            Self::Terminal => "Terminal",
             Self::Whale => "Whale (Dark)",
             Self::WhaleLight => "Whale Light",
             Self::Grayscale => "Grayscale",
@@ -934,6 +999,7 @@ impl ThemeId {
     pub const fn tagline(self) -> &'static str {
         match self {
             Self::System => "Follow terminal background (COLORFGBG / macOS appearance)",
+            Self::Terminal => "Inherit terminal colors fully (transparent surfaces, ANSI accents)",
             Self::Whale => "Whale dark — deep navy & gold",
             Self::WhaleLight => "DeepSeek light, paper-ish",
             Self::Grayscale => "Color-minimal high contrast",
@@ -952,6 +1018,7 @@ impl ThemeId {
     pub fn ui_theme(self) -> UiTheme {
         match self {
             Self::System => UiTheme::detect(),
+            Self::Terminal => TERMINAL_UI_THEME,
             Self::Whale => UI_THEME,
             Self::WhaleLight => LIGHT_UI_THEME,
             Self::Grayscale => GRAYSCALE_UI_THEME,
@@ -966,6 +1033,7 @@ impl ThemeId {
 /// Themes shown in the `/theme` picker, in display order.
 pub const SELECTABLE_THEMES: &[ThemeId] = &[
     ThemeId::System,
+    ThemeId::Terminal,
     ThemeId::Whale,
     ThemeId::WhaleLight,
     ThemeId::Grayscale,
@@ -1008,6 +1076,7 @@ impl UiTheme {
 pub fn normalize_theme_name(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "auto" | "system" | "default" => Some("system"),
+        "terminal" | "term" | "transparent" | "follow-terminal" | "inherit" => Some("terminal"),
         "dark" | "whale" | "whale-dark" => Some("dark"),
         "light" | "whale-light" => Some("light"),
         "grayscale" | "greyscale" | "gray" | "grey" | "mono" | "monochrome" | "black-white"
@@ -1185,7 +1254,11 @@ const fn theme_diff_deleted_bg(ui: &UiTheme) -> Color {
 pub const fn theme_remap_active(theme: ThemeId) -> bool {
     matches!(
         theme,
-        ThemeId::CatppuccinMocha | ThemeId::TokyoNight | ThemeId::Dracula | ThemeId::GruvboxDark
+        ThemeId::Terminal
+            | ThemeId::CatppuccinMocha
+            | ThemeId::TokyoNight
+            | ThemeId::Dracula
+            | ThemeId::GruvboxDark
     )
 }
 
@@ -1673,14 +1746,15 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        DEEPSEEK_SLATE, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED, GRAYSCALE_PANEL, GRAYSCALE_REASONING,
-        GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT,
-        GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED, LIGHT_PANEL, LIGHT_REASONING,
-        LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode,
-        SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
-        TEXT_TOOL_OUTPUT, UI_THEME, WHALE_REASONING_TEXT_RGB, WHALE_REASONING_TINT_RGB,
-        WHALE_TEXT_BODY_RGB, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
-        adapt_fg_for_palette_mode, blend, luma, nearest_ansi16, normalize_hex_rgb_color,
+        DEEPSEEK_SLATE, DIFF_ADDED, DIFF_ADDED_BG, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED,
+        GRAYSCALE_PANEL, GRAYSCALE_REASONING, GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY,
+        GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT, GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED,
+        LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
+        LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, SURFACE_REASONING_TINT, TERMINAL_UI_THEME,
+        TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, ThemeId, UI_THEME,
+        WHALE_REASONING_TEXT_RGB, WHALE_REASONING_TINT_RGB, WHALE_TEXT_BODY_RGB, adapt_bg,
+        adapt_bg_for_palette_mode, adapt_bg_for_theme, adapt_color, adapt_fg_for_palette_mode,
+        adapt_fg_for_theme, blend, luma, nearest_ansi16, normalize_hex_rgb_color,
         normalize_theme_name, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
         rgb_to_ansi256, theme_label_for_mode, ui_theme_from_settings,
     };
@@ -1766,10 +1840,37 @@ mod tests {
         assert_eq!(normalize_theme_name("system"), Some("system"));
         assert_eq!(normalize_theme_name("default"), Some("system"));
         assert_eq!(normalize_theme_name("whale"), Some("dark"));
+        assert_eq!(normalize_theme_name("transparent"), Some("terminal"));
+        assert_eq!(normalize_theme_name("inherit"), Some("terminal"));
         assert_eq!(normalize_theme_name("black-white"), Some("grayscale"));
         assert_eq!(normalize_theme_name("mono"), Some("grayscale"));
         assert_eq!(normalize_theme_name("solarized"), None);
         assert_eq!(theme_label_for_mode(PaletteMode::Grayscale), "grayscale");
+    }
+
+    #[test]
+    fn terminal_theme_resets_surfaces_and_remaps_direct_palette_constants() {
+        assert_eq!(ThemeId::from_name("terminal"), Some(ThemeId::Terminal));
+        assert_eq!(TERMINAL_UI_THEME.surface_bg, Color::Reset);
+        assert_eq!(TERMINAL_UI_THEME.footer_bg, Color::Reset);
+        assert_eq!(TERMINAL_UI_THEME.text_body, Color::Reset);
+
+        assert_eq!(
+            adapt_bg_for_theme(DEEPSEEK_INK, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_bg_for_theme(DIFF_ADDED_BG, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_fg_for_theme(TEXT_BODY, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_fg_for_theme(DIFF_ADDED, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            Color::Green
+        );
     }
 
     #[test]

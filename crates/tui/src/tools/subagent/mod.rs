@@ -62,7 +62,12 @@ fn release_resident_leases_for(agent_id: &str) {
     }
 }
 
-const DEFAULT_MAX_STEPS: u32 = 100;
+/// Default maximum steps for sub-agent loops. Set to `u32::MAX` to remove the
+/// arbitrary fixed cap (#2034). Sub-agents run until they produce a final text
+/// response (no tool calls), are cancelled by the parent, or hit a configured
+/// explicit budget. Callers that want a hard bound can override `max_steps` on
+/// the `SubAgentManager`.
+const DEFAULT_MAX_STEPS: u32 = u32::MAX;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-step LLM API call timeout. Each `create_message` request must complete
 /// within this window or the step is treated as timed out. Prevents a single
@@ -1840,6 +1845,11 @@ async fn subagent_session_projection(
 }
 
 fn default_state_path(workspace: &Path) -> PathBuf {
+    // Prefer .codewhale, fall back to .deepseek for project-local state
+    let primary = workspace.join(".codewhale").join("state");
+    if primary.exists() {
+        return primary.join(SUBAGENT_STATE_FILE);
+    }
     workspace
         .join(".deepseek")
         .join("state")
@@ -4978,7 +4988,9 @@ const SUBAGENT_OUTPUT_FORMAT: &str = include_str!("../../prompts/subagent_output
 const GENERAL_AGENT_INTRO: &str = concat!(
     "You are a general-purpose sub-agent spawned to handle a specific task autonomously.\n",
     "Stay inside the assigned scope; put adjacent work under RISKS/BLOCKERS.\n",
-    "Plan multi-step work with `checklist_write`; add `update_plan` for complex strategy.\n\n"
+    "Plan multi-step work with `checklist_write`; add `update_plan` for complex strategy.\n",
+    "**Stop quickly on failure**: if the same tool call fails 2 times in a row, stop retrying and return what you have so far with a one-line note explaining what's missing. Do not loop on impossible queries (e.g. external API unreachable, rate-limited, or returning empty).\n",
+    "**Bounded effort**: prefer one focused attempt over many speculative retries. If you cannot complete the task with available data within 3-5 tool calls, return your current partial findings — the parent agent can compensate with its own knowledge.\n\n"
 );
 
 const EXPLORE_AGENT_INTRO: &str = concat!(

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,7 +40,6 @@ use crate::runtime_threads::{
 };
 use crate::session_manager::{SavedSession, SessionManager, SessionMetadata, default_sessions_dir};
 use crate::skill_state::SkillStateStore;
-use crate::skills::SkillRegistry;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
 };
@@ -261,11 +260,13 @@ struct SkillEntry {
     description: String,
     path: PathBuf,
     enabled: bool,
+    is_bundled: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct SkillsResponse {
     directory: PathBuf,
+    directories: Vec<PathBuf>,
     warnings: Vec<String>,
     skills: Vec<SkillEntry>,
 }
@@ -293,6 +294,25 @@ struct DecideApprovalResponse {
     ok: bool,
     approval_id: String,
     decision: String,
+    delivered: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubmitUserInputBody {
+    answers: Vec<UserInputAnswerBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserInputAnswerBody {
+    id: String,
+    label: String,
+    value: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SubmitUserInputResponse {
+    ok: bool,
+    input_id: String,
     delivered: bool,
 }
 
@@ -500,6 +520,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/threads/{id}/compact", post(compact_thread))
         .route("/v1/threads/{id}/events", get(stream_thread_events))
         .route("/v1/approvals/{approval_id}", post(decide_approval))
+        .route(
+            "/v1/user-input/{thread_id}/{input_id}",
+            post(submit_user_input),
+        )
         .route("/v1/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/{id}", get(get_task))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
@@ -707,7 +731,38 @@ fn session_to_detail(session: SavedSession) -> SessionDetailResponse {
                     crate::models::ContentBlock::Thinking { thinking, .. } => {
                         json!({ "type": "thinking", "text": thinking })
                     }
-                    _ => json!({ "type": "other" }),
+                    crate::models::ContentBlock::ToolUse { id, name, input, caller } => {
+                        let mut obj =
+                            json!({ "type": "tool_use", "id": id, "name": name, "input": input });
+                        if let Some(caller) = caller {
+                            obj["caller"] = json!(caller);
+                        }
+                        obj
+                    }
+                    crate::models::ContentBlock::ToolResult { tool_use_id, content, is_error, content_blocks, .. } => {
+                        let mut obj = json!({ "type": "tool_result", "tool_use_id": tool_use_id });
+                        if let Some(cbs) = content_blocks {
+                            obj["content_blocks"] = json!(cbs);
+                            if !content.is_empty() {
+                                obj["content"] = json!(content);
+                            }
+                        } else {
+                            obj["content"] = json!(content);
+                        }
+                        if let Some(e) = is_error {
+                            obj["is_error"] = json!(e);
+                        }
+                        obj
+                    }
+                    crate::models::ContentBlock::ServerToolUse { id, name, input } => {
+                        json!({ "type": "tool_use", "id": id, "name": name, "input": input })
+                    }
+                    crate::models::ContentBlock::ToolSearchToolResult { tool_use_id, content } => {
+                        json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content })
+                    }
+                    crate::models::ContentBlock::CodeExecutionToolResult { tool_use_id, content } => {
+                        json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content })
+                    }
                 })
                 .collect();
             json!({
@@ -906,7 +961,7 @@ async fn list_skills(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<SkillsResponse>, ApiError> {
     let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
-    let registry = SkillRegistry::discover(&skills_dir);
+    let (registry, directories) = discover_skills_for_runtime_api(&state.workspace, &skills_dir);
     let skill_state = state.skill_state.lock().await;
     let skills = registry
         .list()
@@ -914,12 +969,14 @@ async fn list_skills(
         .map(|skill| SkillEntry {
             name: skill.name.clone(),
             description: skill.description.clone(),
-            path: skills_dir.join(&skill.name).join("SKILL.md"),
+            path: skill.path.clone(),
             enabled: skill_state.is_enabled(&skill.name),
+            is_bundled: skill_entry_is_bundled(skill, &skills_dir),
         })
         .collect();
     Ok(Json(SkillsResponse {
         directory: skills_dir,
+        directories,
         warnings: registry.warnings().to_vec(),
         skills,
     }))
@@ -931,12 +988,12 @@ async fn set_skill_enabled(
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
     let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
-    let registry = SkillRegistry::discover(&skills_dir);
+    let (registry, directories) = discover_skills_for_runtime_api(&state.workspace, &skills_dir);
     let exists = registry.list().iter().any(|skill| skill.name == name);
     if !exists {
         return Err(ApiError::not_found(format!(
-            "skill '{name}' not found under {}",
-            skills_dir.display()
+            "skill '{name}' not found in searched directories: {}",
+            format_skill_search_paths(&directories)
         )));
     }
 
@@ -980,6 +1037,34 @@ async fn decide_approval(
         ok: true,
         approval_id,
         decision: req.decision,
+        delivered,
+    }))
+}
+
+async fn submit_user_input(
+    State(state): State<RuntimeApiState>,
+    Path((thread_id, input_id)): Path<(String, String)>,
+    Json(req): Json<SubmitUserInputBody>,
+) -> Result<Json<SubmitUserInputResponse>, ApiError> {
+    use crate::tools::user_input::{UserInputAnswer, UserInputResponse};
+    let answers: Vec<UserInputAnswer> = req
+        .answers
+        .into_iter()
+        .map(|a| UserInputAnswer {
+            id: a.id,
+            label: a.label,
+            value: a.value,
+        })
+        .collect();
+    let response = UserInputResponse { answers };
+    let delivered = state
+        .runtime_threads
+        .submit_user_input(&thread_id, &input_id, response)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(SubmitUserInputResponse {
+        ok: true,
+        input_id,
         delivered,
     }))
 }
@@ -1684,6 +1769,50 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
     config.skills_dir()
 }
 
+fn skills_search_directories(workspace: &FsPath, skills_dir: &FsPath) -> Vec<PathBuf> {
+    let mut directories = crate::skills::skills_directories(workspace);
+    if skills_dir.is_dir() && !directories.iter().any(|path| path == skills_dir) {
+        directories.push(skills_dir.to_path_buf());
+    }
+    directories
+}
+
+fn discover_skills_for_runtime_api(
+    workspace: &FsPath,
+    skills_dir: &FsPath,
+) -> (crate::skills::SkillRegistry, Vec<PathBuf>) {
+    let directories = skills_search_directories(workspace, skills_dir);
+    let registry = crate::skills::discover_from_directories(directories.clone());
+    (registry, directories)
+}
+
+fn skill_entry_is_bundled(skill: &crate::skills::Skill, skills_dir: &FsPath) -> bool {
+    if !crate::skills::is_bundled_skill_name(&skill.name) {
+        return false;
+    }
+
+    let expected_path = skills_dir.join(&skill.name).join("SKILL.md");
+    paths_refer_to_same_file(&skill.path, &expected_path)
+}
+
+fn paths_refer_to_same_file(left: &FsPath, right: &FsPath) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn format_skill_search_paths(directories: &[PathBuf]) -> String {
+    if directories.is_empty() {
+        return "<none>".to_string();
+    }
+    directories
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn load_mcp_config_or_default(path: &std::path::Path) -> Result<McpConfig, ApiError> {
     crate::mcp::load_config(path)
         .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e:#}")))
@@ -1904,6 +2033,78 @@ mod tests {
                 error: None,
             }
         }
+    }
+
+    fn saved_session_with_blocks(blocks: Vec<crate::models::ContentBlock>) -> SavedSession {
+        SavedSession {
+            schema_version: 1,
+            metadata: SessionMetadata {
+                id: "session-1".to_string(),
+                title: "test session".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                message_count: 1,
+                total_tokens: 0,
+                model: "test-model".to_string(),
+                workspace: PathBuf::from("."),
+                mode: None,
+                cost: Default::default(),
+                parent_session_id: None,
+                forked_from_message_count: None,
+                cumulative_turn_secs: 0,
+            },
+            messages: vec![crate::models::Message {
+                role: "assistant".to_string(),
+                content: blocks,
+            }],
+            system_prompt: None,
+            context_references: Vec::new(),
+            artifacts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn session_detail_tool_use_preserves_caller_metadata() {
+        let detail = session_to_detail(saved_session_with_blocks(vec![
+            crate::models::ContentBlock::ToolUse {
+                id: "tool-1".to_string(),
+                name: "task_shell_start".to_string(),
+                input: json!({ "cmd": "cargo test" }),
+                caller: Some(crate::models::ToolCaller {
+                    caller_type: "subagent".to_string(),
+                    tool_id: Some("parent-tool".to_string()),
+                }),
+            },
+        ]));
+
+        let block = &detail.messages[0]["content"][0];
+        assert_eq!(block["type"].as_str(), Some("tool_use"));
+        assert_eq!(block["caller"]["type"].as_str(), Some("subagent"));
+        assert_eq!(block["caller"]["tool_id"].as_str(), Some("parent-tool"));
+    }
+
+    #[test]
+    fn session_detail_tool_result_keeps_fallback_content_with_blocks() {
+        let detail = session_to_detail(saved_session_with_blocks(vec![
+            crate::models::ContentBlock::ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                content: "fallback text".to_string(),
+                is_error: Some(false),
+                content_blocks: Some(vec![json!({
+                    "type": "text",
+                    "text": "structured text"
+                })]),
+            },
+        ]));
+
+        let block = &detail.messages[0]["content"][0];
+        assert_eq!(block["type"].as_str(), Some("tool_result"));
+        assert_eq!(block["content"].as_str(), Some("fallback text"));
+        assert_eq!(
+            block["content_blocks"][0]["text"].as_str(),
+            Some("structured text")
+        );
+        assert_eq!(block["is_error"].as_bool(), Some(false));
     }
 
     #[test]
@@ -3729,6 +3930,71 @@ mod tests {
 
         let expected = fs::canonicalize(&local_skills).expect("canonical local skills");
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn skills_search_directories_includes_custom_skills_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let custom_skills = tmp.path().join("custom-skills");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&custom_skills).expect("create custom skills");
+
+        let directories = skills_search_directories(&workspace, &custom_skills);
+
+        assert!(
+            directories.iter().any(|dir| dir == &custom_skills),
+            "custom skills_dir must be reported when discovery searches it"
+        );
+        let message = format_skill_search_paths(&directories);
+        assert!(message.contains("custom-skills"));
+    }
+
+    #[test]
+    fn skill_entry_is_bundled_requires_configured_bundle_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bundled_skills_dir = tmp.path().join("bundled-skills");
+        let bundled_skill_path = bundled_skills_dir.join("delegate").join("SKILL.md");
+        let override_skill_path = tmp
+            .path()
+            .join("workspace")
+            .join(".agents")
+            .join("skills")
+            .join("delegate")
+            .join("SKILL.md");
+        fs::create_dir_all(bundled_skill_path.parent().expect("bundled parent"))
+            .expect("create bundled skill dir");
+        fs::create_dir_all(override_skill_path.parent().expect("override parent"))
+            .expect("create override skill dir");
+        fs::write(
+            &bundled_skill_path,
+            "---\nname: delegate\ndescription: bundled\n---\n",
+        )
+        .expect("write bundled skill");
+        fs::write(
+            &override_skill_path,
+            "---\nname: delegate\ndescription: override\n---\n",
+        )
+        .expect("write override skill");
+
+        let bundled_skill = crate::skills::Skill {
+            name: "delegate".to_string(),
+            description: String::new(),
+            body: String::new(),
+            path: bundled_skill_path,
+        };
+        let override_skill = crate::skills::Skill {
+            name: "delegate".to_string(),
+            description: String::new(),
+            body: String::new(),
+            path: override_skill_path,
+        };
+
+        assert!(skill_entry_is_bundled(&bundled_skill, &bundled_skills_dir));
+        assert!(!skill_entry_is_bundled(
+            &override_skill,
+            &bundled_skills_dir
+        ));
     }
 
     /// A `skills` symlink that points outside the workspace must NOT be

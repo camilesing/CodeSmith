@@ -7,8 +7,8 @@
 //! - Proper cancellation support
 //! - Tool execution orchestration
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -42,6 +42,7 @@ use crate::models::{
 };
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
+use crate::tools::goal::{SharedGoalState, new_shared_goal_state};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
@@ -90,15 +91,22 @@ pub struct EngineConfig {
     pub mcp_config_path: PathBuf,
     /// Directory containing discoverable skills.
     pub skills_dir: PathBuf,
-    /// Additional instruction files concatenated into the system
-    /// prompt (#454). Loaded in declared order from the user's
-    /// `instructions = [...]` config (or the per-project override).
-    /// Resolved via `expand_path` so `~` works.
-    pub instructions: Vec<PathBuf>,
+    /// Sources injected as `<instructions source="…">` blocks in the system
+    /// prompt (#454). Each entry is either a disk path (read at render time)
+    /// or an inline string. Loaded in declared order from the user's
+    /// `instructions = [...]` config or constructed by embedders.
+    ///
+    /// Generalized from `Vec<PathBuf>` so embedders can inject inline content
+    /// without staging a disk file. `From<PathBuf>` impl keeps existing callers
+    /// working with `.into()` at the call site.
+    pub instructions: Vec<crate::prompts::InstructionSource>,
     pub project_context_pack_enabled: bool,
     /// When true, the model is instructed to respond in the current locale
     /// and a post-hoc translation layer replaces remaining English output.
     pub translation_enabled: bool,
+    /// Whether user-visible transcript rendering shows thinking blocks.
+    /// Prompt assembly uses this to avoid localizing hidden reasoning.
+    pub show_thinking: bool,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -122,6 +130,8 @@ pub struct EngineConfig {
     pub todos: SharedTodoList,
     /// Shared Plan state.
     pub plan_state: SharedPlanState,
+    /// Shared runtime goal state for model-visible goal tools.
+    pub goal_state: SharedGoalState,
     /// Maximum sub-agent recursion depth (default 3). See
     /// `SubAgentRuntime::max_spawn_depth`. Override via
     /// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
@@ -152,6 +162,9 @@ pub struct EngineConfig {
     pub memory_path: PathBuf,
     pub vision_config: Option<crate::config::VisionModelConfig>,
     pub goal_objective: Option<String>,
+    /// Tool restriction from custom slash command frontmatter.
+    /// `None` means the current turn may use the normal tool set.
+    pub allowed_tools: Option<Vec<String>>,
     /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
     /// for the `## Environment` block in the system prompt. The
     /// caller resolves this from `Settings` once at engine
@@ -162,15 +175,24 @@ pub struct EngineConfig {
     pub strict_tool_mode: bool,
     /// Workshop / large-tool-output routing (#548). `None` disables routing.
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
-    /// Which search backend `web_search` should use. Default: Bing.
+    /// Which search backend `web_search` should use. Default: DuckDuckGo.
     pub search_provider: crate::config::SearchProvider,
-    /// API key for Tavily or Bocha. `None` for Bing or DuckDuckGo.
+    /// API key for Tavily, Bocha, Metaso, or Baidu. `None` for Bing or DuckDuckGo.
+    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
+    /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
     pub search_api_key: Option<String>,
     /// Per-step DeepSeek API timeout for sub-agent `create_message` requests.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800)
     /// once at engine construction, then threaded onto every
     /// `SubAgentRuntime` the engine builds (#1806, #1808).
     pub subagent_api_timeout: Duration,
+    /// Native tools that should stay in the model-visible catalog even when
+    /// they are outside the small default core surface (#2076).
+    pub tools_always_load: HashSet<String>,
+    /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
+    /// through bubblewrap instead of relying solely on Landlock (#2184).
+    #[allow(dead_code)] // Wired through ShellManager in follow-up PR
+    pub prefer_bwrap: bool,
 }
 
 impl Default for EngineConfig {
@@ -186,6 +208,7 @@ impl Default for EngineConfig {
             instructions: Vec::new(),
             project_context_pack_enabled: true,
             translation_enabled: false,
+            show_thinking: true,
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
@@ -194,6 +217,7 @@ impl Default for EngineConfig {
             capacity: CapacityControllerConfig::default(),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
+            goal_state: new_shared_goal_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,
@@ -207,6 +231,7 @@ impl Default for EngineConfig {
             vision_config: None,
             strict_tool_mode: false,
             goal_objective: None,
+            allowed_tools: None,
             locale_tag: "en".to_string(),
             workshop: None,
             search_provider: crate::config::SearchProvider::default(),
@@ -214,6 +239,8 @@ impl Default for EngineConfig {
             subagent_api_timeout: Duration::from_secs(
                 crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS,
             ),
+            tools_always_load: HashSet::new(),
+            prefer_bwrap: false,
         }
     }
 }
@@ -373,6 +400,7 @@ impl Engine {
             ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
             ApiProvider::WanjieArk => "WANJIE_ARK_API_KEY/WANJIE_API_KEY/WANJIE_MAAS_API_KEY",
             ApiProvider::Openrouter => "OPENROUTER_API_KEY",
+            ApiProvider::XiaomiMimo => "XIAOMI_MIMO_API_KEY/MIMO_API_KEY",
             ApiProvider::Novita => "NOVITA_API_KEY",
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
             ApiProvider::Moonshot => "MOONSHOT_API_KEY/KIMI_API_KEY",
@@ -404,6 +432,10 @@ impl Engine {
 
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
+        if let Some(objective) = normalized_goal_objective(config.goal_objective.as_deref()) {
+            sync_goal_state_from_host(&config.goal_state, Some(&objective), None, false);
+        }
+
         let (tx_op, rx_op) = mpsc::channel(32);
         let (tx_event, rx_event) = mpsc::channel(256);
         let (tx_approval, rx_approval) = mpsc::channel(64);
@@ -435,6 +467,8 @@ impl Engine {
         // message at request time so file churn does not rewrite this prefix.
         let user_memory_block =
             crate::memory::compose_block(config.memory_enabled, &config.memory_path);
+        let prompt_goal_objective =
+            goal_objective_for_prompt(config.goal_objective.as_deref(), &config.goal_state);
         let system_prompt =
             prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
                 AppMode::Agent,
@@ -444,11 +478,12 @@ impl Engine {
                 Some(&config.instructions),
                 prompts::PromptSessionContext {
                     user_memory_block: user_memory_block.as_deref(),
-                    goal_objective: config.goal_objective.as_deref(),
+                    goal_objective: prompt_goal_objective.as_deref(),
                     project_context_pack_enabled: config.project_context_pack_enabled,
                     locale_tag: &config.locale_tag,
                     translation_enabled: config.translation_enabled,
                     model_id: &config.model,
+                    show_thinking: config.show_thinking,
                 },
                 session.approval_mode,
             );
@@ -605,6 +640,8 @@ impl Engine {
                     auto_approve,
                     approval_mode,
                     translation_enabled,
+                    show_thinking,
+                    allowed_tools,
                 } => {
                     self.handle_send_message(
                         content,
@@ -619,6 +656,8 @@ impl Engine {
                         auto_approve,
                         approval_mode,
                         translation_enabled,
+                        show_thinking,
+                        allowed_tools,
                     )
                     .await;
                 }
@@ -825,6 +864,8 @@ impl Engine {
                         self.session.auto_approve,
                         self.session.approval_mode,
                         self.config.translation_enabled,
+                        self.config.show_thinking,
+                        self.config.allowed_tools.clone(),
                     )
                     .await;
                 }
@@ -913,6 +954,8 @@ impl Engine {
         auto_approve: bool,
         approval_mode: crate::tui::approval::ApprovalMode,
         translation_enabled: bool,
+        show_thinking: bool,
+        allowed_tools: Option<Vec<String>>,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
@@ -995,9 +1038,22 @@ impl Engine {
         let user_msg = self.user_text_message_with_turn_metadata(content);
         self.session.add_message(user_msg);
 
+        let previous_goal_objective = self.config.goal_objective.clone();
+
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
-        self.config.goal_objective = goal_objective;
+        self.config.goal_objective = goal_objective.clone();
+        if normalized_goal_objective(previous_goal_objective.as_deref())
+            != normalized_goal_objective(goal_objective.as_deref())
+        {
+            sync_goal_state_from_host(
+                &self.config.goal_state,
+                normalized_goal_objective(goal_objective.as_deref()).as_deref(),
+                None,
+                false,
+            );
+        }
+        self.config.allowed_tools = allowed_tools;
         self.session.reasoning_effort = reasoning_effort;
         self.session.reasoning_effort_auto = reasoning_effort_auto;
         self.session.auto_model = auto_model;
@@ -1006,6 +1062,7 @@ impl Engine {
         self.session.trust_mode = trust_mode;
         self.config.trust_mode = trust_mode;
         self.config.translation_enabled = translation_enabled;
+        self.config.show_thinking = show_thinking;
         self.session.auto_approve = auto_approve;
         self.session.approval_mode = if auto_approve {
             crate::tui::approval::ApprovalMode::Auto
@@ -1130,7 +1187,12 @@ impl Engine {
             Vec::new()
         };
         let tools = tool_registry.as_ref().map(|registry| {
-            build_model_tool_catalog(registry.to_api_tools_with_cache(true), mcp_tools, mode)
+            build_model_tool_catalog(
+                registry.to_api_tools_with_cache(true),
+                mcp_tools,
+                mode,
+                &self.config.tools_always_load,
+            )
         });
 
         // Main turn loop
@@ -1829,6 +1891,10 @@ impl Engine {
     fn refresh_system_prompt(&mut self, mode: AppMode) {
         let user_memory_block =
             crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
+        let prompt_goal_objective = goal_objective_for_prompt(
+            self.config.goal_objective.as_deref(),
+            &self.config.goal_state,
+        );
         let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
             mode,
             &self.config.workspace,
@@ -1837,11 +1903,12 @@ impl Engine {
             Some(&self.config.instructions),
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
-                goal_objective: self.config.goal_objective.as_deref(),
+                goal_objective: prompt_goal_objective.as_deref(),
                 project_context_pack_enabled: self.config.project_context_pack_enabled,
                 locale_tag: &self.config.locale_tag,
                 translation_enabled: self.config.translation_enabled,
                 model_id: &self.config.model,
+                show_thinking: self.config.show_thinking,
             },
             self.session.approval_mode,
         );
@@ -1931,6 +1998,45 @@ fn system_prompt_hash(prompt: Option<&SystemPrompt>) -> u64 {
         }
     }
     hasher.finish()
+}
+
+fn normalized_goal_objective(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn sync_goal_state_from_host(
+    goal_state: &SharedGoalState,
+    objective: Option<&str>,
+    token_budget: Option<u32>,
+    completed: bool,
+) {
+    match goal_state.lock() {
+        Ok(mut state) => state.sync_from_host(objective, token_budget, completed),
+        Err(err) => tracing::warn!("goal state lock poisoned while syncing host goal: {err}"),
+    }
+}
+
+fn goal_objective_for_prompt(
+    configured_goal: Option<&str>,
+    goal_state: &SharedGoalState,
+) -> Option<String> {
+    match goal_state.lock() {
+        Ok(state) => {
+            if state.objective().is_some() {
+                return state.is_active().then(|| {
+                    state
+                        .objective()
+                        .expect("checked goal objective")
+                        .to_string()
+                });
+            }
+        }
+        Err(err) => tracing::warn!("goal state lock poisoned while building prompt: {err}"),
+    }
+    normalized_goal_objective(configured_goal)
 }
 
 /// Spawn the engine in a background task
@@ -2036,6 +2142,10 @@ mod tool_execution;
 mod tool_setup;
 mod turn_loop;
 
+pub(crate) fn default_active_native_tool_names() -> &'static [&'static str] {
+    tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS
+}
+
 use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};
 #[cfg(test)]
 use self::dispatch::should_parallelize_tool_batch;
@@ -2048,7 +2158,7 @@ use self::dispatch::{
 };
 use self::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 #[cfg(test)]
-use self::lsp_hooks::{edited_paths_for_tool, parse_patch_paths};
+use self::lsp_hooks::edited_paths_for_tool;
 #[cfg(test)]
 use self::streaming::TOOL_CALL_START_MARKERS;
 use self::streaming::{
@@ -2066,7 +2176,7 @@ use self::tool_catalog::{
 };
 #[cfg(test)]
 use self::tool_catalog::{
-    TOOL_SEARCH_BM25_NAME, maybe_activate_requested_deferred_tool,
+    TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME, maybe_activate_requested_deferred_tool,
     preflight_requested_deferred_tool, should_default_defer_tool,
 };
 use self::tool_execution::emit_tool_audit;
