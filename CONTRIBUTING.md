@@ -139,8 +139,8 @@ dependent layers. For those changes, use this workflow:
    what is explicitly out of scope, which issues it references, and which local
    commands were run.
 6. Use `Closes #...` only when the slice fully satisfies an issue. Use
-   `Refs #...` or `Partial #...` when the PR advances a broad issue but leaves
-   follow-up work.
+   `Refs #...` with a short `(partial)` note when the PR advances a broad issue
+   but leaves follow-up work.
 7. Structured commits are fine during review. Maintainers may squash or harvest
    at merge time, with contributor credit preserved through authorship,
    co-author trailers, changelog entries, or PR/issue comments.
