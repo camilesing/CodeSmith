@@ -2058,6 +2058,7 @@ async fn run_event_loop(
                         input,
                         approval_key,
                         approval_grouping_key,
+                        intent_summary,
                     } => {
                         let session_approved =
                             is_session_approved_for_tool(app, &tool_name, &approval_grouping_key);
@@ -2109,6 +2110,7 @@ async fn run_event_loop(
                                 &description,
                                 &tool_input,
                                 &approval_key,
+                                intent_summary.as_deref(),
                             );
                             log_sensitive_event(
                                 "tool.approval.prompted",
@@ -6806,12 +6808,20 @@ fn push_approval_request_view(
     description: &str,
     tool_input: &serde_json::Value,
     approval_key: &str,
+    intent_summary: Option<&str>,
 ) {
     if tool_name == "apply_patch" {
         maybe_add_patch_preview(app, tool_input);
     }
 
-    let request = ApprovalRequest::new(id, tool_name, description, tool_input, approval_key);
+    let request = ApprovalRequest::new_with_intent(
+        id,
+        tool_name,
+        description,
+        tool_input,
+        approval_key,
+        intent_summary,
+    );
     app.view_stack
         .push(ApprovalView::new_for_locale(request, app.ui_locale));
 }
