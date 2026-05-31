@@ -156,6 +156,8 @@ impl ChatWidget {
                 &cell_revisions,
                 content_area.width.max(1),
                 render_options,
+                &app.folded_thinking,
+                None,
             );
         } else {
             // Slow path: clone non-collapsed cells into filtered vecs so
@@ -203,6 +205,8 @@ impl ChatWidget {
                 &filtered_revs,
                 content_area.width.max(1),
                 render_options,
+                &app.folded_thinking,
+                Some(&app.collapsed_cell_map),
             );
         }
 

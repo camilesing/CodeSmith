@@ -3831,6 +3831,8 @@ fn open_tool_details_pager_supports_active_virtual_tool_cell() {
         &[1],
         100,
         app.transcript_render_options(),
+        &app.folded_thinking,
+        None,
     );
     app.viewport.last_transcript_top = 0;
     app.viewport.last_transcript_visible = 4;
