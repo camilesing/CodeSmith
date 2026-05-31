@@ -5,7 +5,7 @@ use crate::models::SystemBlock;
 use crate::test_support::lock_test_env;
 use crate::tools::spec::ToolCapability;
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -113,6 +113,52 @@ fn config_auth_error_does_not_blame_env() {
         engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
 
     assert_eq!(message, "Authentication failed: invalid API key");
+}
+
+#[test]
+fn plugin_tools_dir_honors_missing_custom_directory_without_fallback() {
+    let missing = PathBuf::from("definitely-missing-codewhale-plugin-dir");
+    let tools_config = crate::config::ToolsConfig {
+        plugin_dir: Some(missing.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    assert_eq!(plugin_tools_dir(Some(&tools_config)), missing);
+}
+
+#[test]
+fn configure_plugin_tools_applies_overrides_after_discovered_plugins() {
+    let tmp = tempdir().expect("tempdir");
+    let plugin_dir = tmp.path().join("tools");
+    fs::create_dir(&plugin_dir).expect("plugin dir");
+    fs::write(
+        plugin_dir.join("same-name.sh"),
+        "# name: same_tool\n# description: discovered plugin\n",
+    )
+    .expect("plugin script");
+
+    let mut overrides = HashMap::new();
+    overrides.insert(
+        "same_tool".to_string(),
+        crate::config::ToolOverride::Command {
+            command: "configured-command".to_string(),
+            args: None,
+        },
+    );
+    let tools_config = crate::config::ToolsConfig {
+        plugin_dir: Some(plugin_dir.to_string_lossy().to_string()),
+        overrides: Some(overrides),
+        ..Default::default()
+    };
+
+    let ctx = crate::tools::ToolContext::new(tmp.path().to_path_buf());
+    let mut registry = crate::tools::ToolRegistry::new(ctx);
+
+    let plugin_names = configure_plugin_tools(&mut registry, Some(&tools_config));
+
+    let tool = registry.get("same_tool").expect("same_tool registered");
+    assert!(tool.description().contains("configured-command"));
+    assert!(plugin_names.contains("same_tool"));
 }
 
 fn make_plan(
