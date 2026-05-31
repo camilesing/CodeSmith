@@ -475,6 +475,7 @@ mod tests {
                 "OpenAI-compatible",
                 "AtlasCloud",
                 "Wanjie Ark",
+                "Volcengine Ark",
                 "OpenRouter",
                 "Xiaomi MiMo",
                 "Novita AI",
@@ -640,7 +641,7 @@ mod tests {
         let config = Config::default();
         let picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
 
-        let rendered = render_text(&picker, 80, 20);
+        let rendered = render_text(&picker, 80, 21);
 
         assert!(rendered.contains("DeepSeek *"));
         assert!(rendered.contains("Ollama"));
