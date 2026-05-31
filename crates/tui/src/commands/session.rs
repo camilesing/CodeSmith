@@ -292,6 +292,14 @@ pub fn compact(_app: &mut App) -> CommandResult {
     )
 }
 
+/// Trigger agent-driven context purging.
+pub fn purge(_app: &mut App) -> CommandResult {
+    CommandResult::with_message_and_action(
+        "Agent context purge triggered...".to_string(),
+        AppAction::PurgeContext,
+    )
+}
+
 /// Export conversation to markdown
 pub fn export(app: &mut App, path: Option<&str>) -> CommandResult {
     let export_path = path.map_or_else(
