@@ -28,6 +28,7 @@ enum ProviderArg {
     Openai,
     Atlascloud,
     WanjieArk,
+    Volcengine,
     Openrouter,
     XiaomiMimo,
     Novita,
@@ -46,6 +47,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Openai => ProviderKind::Openai,
             ProviderArg::Atlascloud => ProviderKind::Atlascloud,
             ProviderArg::WanjieArk => ProviderKind::WanjieArk,
+            ProviderArg::Volcengine => ProviderKind::Volcengine,
             ProviderArg::Openrouter => ProviderKind::Openrouter,
             ProviderArg::XiaomiMimo => ProviderKind::XiaomiMimo,
             ProviderArg::Novita => ProviderKind::Novita,
@@ -245,6 +247,9 @@ struct UpdateArgs {
     /// Only check the latest release; do not download or replace binaries.
     #[arg(long)]
     check: bool,
+    /// Proxy URL to use for update HTTP requests.
+    #[arg(long, value_name = "URL")]
+    proxy: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -574,7 +579,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Update(args)) => update::run_update(args.beta, args.check),
+        Some(Commands::Update(args)) => update::run_update(args.beta, args.check, args.proxy),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
@@ -722,6 +727,7 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Openai => "openai",
         ProviderKind::Atlascloud => "atlascloud",
         ProviderKind::WanjieArk => "wanjie-ark",
+        ProviderKind::Volcengine => "volcengine",
         ProviderKind::Openrouter => "openrouter",
         ProviderKind::XiaomiMimo => "xiaomi-mimo",
         ProviderKind::Novita => "novita",
@@ -734,12 +740,13 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 13] = [
+const PROVIDER_LIST: [ProviderKind; 14] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openai,
     ProviderKind::Atlascloud,
     ProviderKind::WanjieArk,
+    ProviderKind::Volcengine,
     ProviderKind::Openrouter,
     ProviderKind::XiaomiMimo,
     ProviderKind::Novita,
@@ -806,6 +813,11 @@ fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
         ProviderKind::Ollama => &["OLLAMA_API_KEY"],
         ProviderKind::Openai => &["OPENAI_API_KEY"],
         ProviderKind::Atlascloud => &["ATLASCLOUD_API_KEY"],
+        ProviderKind::Volcengine => &[
+            "VOLCENGINE_API_KEY",
+            "VOLCENGINE_ARK_API_KEY",
+            "ARK_API_KEY",
+        ],
         ProviderKind::WanjieArk => &[
             "WANJIE_ARK_API_KEY",
             "WANJIE_API_KEY",
@@ -1551,6 +1563,9 @@ fn build_tui_command(
         if resolved_runtime.provider == ProviderKind::WanjieArk {
             cmd.env("WANJIE_ARK_API_KEY", api_key);
         }
+        if resolved_runtime.provider == ProviderKind::Volcengine {
+            cmd.env("VOLCENGINE_API_KEY", api_key);
+        }
         cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
     }
     if let Some(base_url) = cli.base_url.as_ref() {
@@ -1828,7 +1843,8 @@ mod tests {
             cli.command,
             Some(Commands::Update(UpdateArgs {
                 beta: false,
-                check: false
+                check: false,
+                proxy: None
             }))
         ));
 
@@ -1837,7 +1853,8 @@ mod tests {
             cli.command,
             Some(Commands::Update(UpdateArgs {
                 beta: true,
-                check: false
+                check: false,
+                proxy: None
             }))
         ));
 
@@ -1846,9 +1863,18 @@ mod tests {
             cli.command,
             Some(Commands::Update(UpdateArgs {
                 beta: false,
-                check: true
+                check: true,
+                proxy: None
             }))
         ));
+
+        let cli = parse_ok(&["codewhale", "update", "--proxy", "socks5://127.0.0.1:1080"]);
+        let Some(Commands::Update(args)) = cli.command else {
+            panic!("expected update command");
+        };
+        assert!(!args.beta);
+        assert!(!args.check);
+        assert_eq!(args.proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
     }
 
     #[test]

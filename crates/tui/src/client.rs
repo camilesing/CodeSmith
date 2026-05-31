@@ -884,7 +884,8 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::XiaomiMimo
             | ApiProvider::Novita
-            | ApiProvider::Sglang => {
+            | ApiProvider::Sglang
+            | ApiProvider::Volcengine => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
             ApiProvider::Fireworks => {}
@@ -915,7 +916,10 @@ pub(super) fn apply_reasoning_effort(
         },
         "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
             // DeepSeek compatibility: low/medium both map to high
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::Sglang => {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Sglang
+            | ApiProvider::Volcengine => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
@@ -963,7 +967,10 @@ pub(super) fn apply_reasoning_effort(
             }
         },
         "xhigh" | "max" | "highest" => match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::Sglang => {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Sglang
+            | ApiProvider::Volcengine => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }

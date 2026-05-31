@@ -1968,7 +1968,7 @@ fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>
 }
 
 fn should_render_empty_state(app: &App) -> bool {
-    app.history.is_empty() && !app.is_loading && !app.is_compacting
+    app.history.is_empty() && !app.is_loading && !app.is_compacting && !app.is_purging
 }
 
 fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {

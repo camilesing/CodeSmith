@@ -5,8 +5,8 @@ CodeWhale codebase. It is intentionally conservative: shipped entries are
 limited to provider IDs, config keys, auth paths, base URLs, model resolution,
 and capability metadata that the code already knows about.
 
-DeepSeek remains the first-class default provider. NVIDIA NIM, OpenRouter,
-Xiaomi MiMo, Novita, Fireworks, generic OpenAI-compatible endpoints,
+DeepSeek remains the first-class default provider. NVIDIA NIM, Volcengine Ark,
+OpenRouter, Xiaomi MiMo, Novita, Fireworks, generic OpenAI-compatible endpoints,
 self-hosted runtimes, and Moonshot/Kimi are additive routes for running the
 same terminal harness against other hosted or local model endpoints. Hugging
 Face Inference Providers are a planned additive open-model routing layer; they
@@ -29,9 +29,9 @@ Sources to keep in sync:
 
 The canonical provider IDs are:
 
-`deepseek`, `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`,
-`xiaomi-mimo`, `novita`, `fireworks`, `moonshot`, `sglang`, `vllm`, and
-`ollama`.
+`deepseek`, `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`,
+`openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `moonshot`, `sglang`,
+`vllm`, and `ollama`.
 
 Use any of these surfaces to select a provider:
 
@@ -116,6 +116,7 @@ endpoint.
 | `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`; default `https://api.openai.com/v1` | Registry entries: `deepseek-v4-pro`, `deepseek-v4-flash`; default config model `deepseek-v4-pro` | Generic OpenAI-compatible route for gateways and custom endpoints. Use this for explicit third-party OpenAI-compatible routes instead of inventing a new provider ID. `OPENAI_MODEL` is accepted. |
 | `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`; default `https://api.atlascloud.ai/v1` | Default config model `deepseek-ai/deepseek-v4-flash` | OpenAI-compatible hosted route. `ATLASCLOUD_MODEL` is accepted by the TUI config path. The static `ModelRegistry` does not currently list AtlasCloud rows. |
 | `wanjie-ark` | `[providers.wanjie_ark]` | `WANJIE_ARK_API_KEY`, `WANJIE_API_KEY`, `WANJIE_MAAS_API_KEY` | `WANJIE_ARK_BASE_URL`, `WANJIE_BASE_URL`, `WANJIE_MAAS_BASE_URL`; default `https://maas-openapi.wanjiedata.com/api/v1` | `deepseek-reasoner` | OpenAI-compatible hosted route. `WANJIE_ARK_MODEL`, `WANJIE_MODEL`, and `WANJIE_MAAS_MODEL` are accepted. |
+| `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`, `VOLCENGINE_ARK_API_KEY`, `ARK_API_KEY` | `VOLCENGINE_BASE_URL`, `VOLCENGINE_ARK_BASE_URL`, `ARK_BASE_URL`; default `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`, `DeepSeek-V4-Flash` | Volcengine/Volcano Engine Ark OpenAI-compatible coding endpoint. `VOLCENGINE_MODEL` and `VOLCENGINE_ARK_MODEL` are accepted. |
 | `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`; default `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | Additive open-model routing layer. It does not replace DeepSeek; it lets users route supported model IDs through OpenRouter when they choose it. |
 | `xiaomi-mimo` | `[providers.xiaomi_mimo]` | `XIAOMI_MIMO_API_KEY`, `MIMO_API_KEY` | `XIAOMI_MIMO_BASE_URL`, `MIMO_BASE_URL`; default `https://api.xiaomimimo.com/v1` | `mimo-v2.5-pro`, `mimo-v2.5` | Xiaomi MiMo OpenAI-compatible chat completions route. It sends `max_completion_tokens` and uses MiMo's `thinking` field for reasoning control. |
 | `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`; default `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | OpenAI-compatible hosted route for DeepSeek model IDs. Use config or `CODEWHALE_MODEL` / `DEEPSEEK_MODEL` for model overrides. |
@@ -147,6 +148,7 @@ endpoint when the endpoint supports model listing.
 | `nvidia-nim` | `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash` | yes | yes |
 | `openai` | `deepseek-v4-pro`, `deepseek-v4-flash` | yes | yes |
 | `wanjie-ark` | `deepseek-reasoner` | yes | yes |
+| `volcengine` | `DeepSeek-V4-Pro`, `DeepSeek-V4-Flash` | yes | yes |
 | `openrouter` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | yes | yes |
 | `xiaomi-mimo` | `mimo-v2.5-pro`, `mimo-v2.5` | yes | yes |
 | `novita` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | yes | yes |
@@ -175,7 +177,7 @@ All shipped providers use the Chat Completions request payload mode today.
 | DeepSeek V4 (`deepseek-v4-pro`, `deepseek-v4-flash`) | 1,000,000 | 384,000 | yes | yes | DeepSeek beta only |
 | DeepSeek compatibility aliases (`deepseek-chat`, `deepseek-reasoner`) | 1,000,000 | 384,000 | yes | yes | DeepSeek beta only |
 | NVIDIA NIM V4 registry models | 1,000,000 | 384,000 | yes | yes | not documented in code |
-| OpenRouter, Novita, Fireworks, SGLang, and vLLM V4 model IDs | 1,000,000 | 384,000 | yes | no | not documented in code |
+| OpenRouter, Novita, Fireworks, Volcengine Ark, SGLang, and vLLM V4 model IDs | 1,000,000 | 384,000 | yes | Volcengine only | not documented in code |
 | Xiaomi MiMo models | 1,000,000 | 128,000 | yes | no | not documented in code |
 | Wanjie Ark `reasoner` / `r1` model IDs | 128,000 | 4,096 | yes | no | not documented in code |
 | Generic `openai`, AtlasCloud, and Moonshot/Kimi | 128,000 | 4,096 | no in doctor capability metadata | no | not documented in code |

@@ -13,12 +13,12 @@
 # `[providers.*]` sections near the bottom of
 # this file — keeping both stored at once means `/provider deepseek` and
 # `/provider nvidia-nim` (or `--provider openai`, `--provider wanjie-ark`,
-# `--provider xiaomi-mimo`, `--provider fireworks`, `/provider sglang`,
+# `--provider volcengine`, `--provider xiaomi-mimo`, `--provider fireworks`, `/provider sglang`,
 # `/provider vllm`, `/provider ollama`) toggle without having to re-enter keys.
 # Top-level `api_key` / `base_url` are
 # still read as DeepSeek defaults when `[providers.deepseek]` is absent
 # (backward compatibility).
-provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | atlascloud | wanjie-ark | openrouter | xiaomi-mimo | novita | fireworks | sglang | vllm | ollama
+provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | xiaomi-mimo | novita | fireworks | sglang | vllm | ollama
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com/beta"
 # provider = "deepseek-cn"                       # legacy alias (official host is still https://api.deepseek.com)
@@ -240,6 +240,12 @@ max_subagents = 10 # optional (1-20)
 # api_key = "YOUR_WANJIE_API_KEY"
 # base_url = "https://maas-openapi.wanjiedata.com/api/v1"
 # model = "deepseek-reasoner"                # or the exact model ID enabled on your Wanjie account
+
+# Volcengine / Volcano Engine Ark Coding API
+[providers.volcengine]
+# api_key = "YOUR_VOLCENGINE_API_KEY"
+# base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
+# model = "DeepSeek-V4-Pro"                  # or DeepSeek-V4-Flash
 
 # OpenRouter — multi-provider gateway (https://openrouter.ai)
 [providers.openrouter]

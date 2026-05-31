@@ -114,6 +114,29 @@ pub enum Event {
         messages_after: Option<usize>,
     },
 
+    /// Context purge started.
+    PurgeStarted {
+        /// Status message for display.
+        message: String,
+    },
+
+    /// Context purge completed.
+    PurgeCompleted {
+        /// Number of messages before purge.
+        messages_before: usize,
+        /// Number of messages after purge.
+        messages_after: usize,
+        /// How many messages were removed.
+        removed_count: usize,
+        /// How many replace operations were applied.
+        replaced_count: usize,
+        /// Summary message for display.
+        message: String,
+    },
+
+    /// Context purge failed.
+    PurgeFailed { message: String },
+
     /// Context compaction failed.
     CompactionFailed {
         id: String,
