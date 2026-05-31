@@ -175,7 +175,14 @@ impl ApprovalRequest {
             params: params.clone(),
             approval_key: approval_key.to_string(),
             approval_grouping_key,
-            intent_summary: intent_summary.map(std::string::ToString::to_string),
+            intent_summary: intent_summary.and_then(|summary| {
+                let summary = summary.trim();
+                if summary.is_empty() {
+                    None
+                } else {
+                    Some(summary.to_string())
+                }
+            }),
         }
     }
 
