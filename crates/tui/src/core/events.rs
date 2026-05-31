@@ -226,6 +226,9 @@ pub enum Event {
         id: String,
         tool_name: String,
         description: String,
+        /// Tool parameters for approval display. Carried on the event so the
+        /// TUI does not need to reconstruct them from `pending_tool_uses`.
+        input: Value,
         /// Exact-argument fingerprint, used to scope *denials* (#1617).
         approval_key: String,
         /// Lossy / arity-aware fingerprint, used to scope *approvals* so an
@@ -281,6 +284,10 @@ pub enum Event {
         /// True when the prefix actually changed (cache invalidated).
         /// False for routine stable-check heartbeats.
         changed: bool,
+        /// Current pinned prefix combined hash (SHA-256, 64 hex chars).
+        /// Carried so `/cache stats` can surface it without reaching
+        /// into the engine's PrefixStabilityManager.
+        pinned_combined_hash: String,
     },
 }
 

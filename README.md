@@ -4,6 +4,8 @@
 
 [简体中文 README](README.zh-CN.md)
 [日本語 README](README.ja-JP.md)
+[Tiếng Việt README](README.vi.md)
+
 
 ## Install
 
@@ -140,10 +142,10 @@ transcripts stay behind bounded handles through `agent_eval`. See
 [docs/SUBAGENTS.md](docs/SUBAGENTS.md).
 
 The rest of the surface: LSP diagnostics after every edit (rust-analyzer,
-pyright, typescript-language-server, gopls, clangd), RLM sessions for
-batched analysis, MCP protocol, HTTP/SSE runtime API, persistent task
-queue, ACP adapter for Zed, SWE-bench export, and live cost tracking with
-cache hit/miss breakdowns.
+pyright, typescript-language-server, gopls, clangd, jdtls,
+vue-language-server), RLM sessions for batched analysis, MCP protocol,
+HTTP/SSE runtime API, persistent task queue, ACP adapter for Zed,
+SWE-bench export, and live cost tracking with cache hit/miss breakdowns.
 
 ---
 
@@ -311,6 +313,10 @@ codewhale --provider wanjie-ark --model deepseek-reasoner
 codewhale auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
 codewhale --provider openrouter --model deepseek/deepseek-v4-pro
 
+# Xiaomi MiMo
+codewhale auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_MIMO_API_KEY"
+codewhale --provider xiaomi-mimo --model mimo-v2.5-pro
+
 # Novita
 codewhale auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
 codewhale --provider novita --model deepseek/deepseek-v4-pro
@@ -322,6 +328,11 @@ codewhale --provider fireworks --model deepseek-v4-pro
 # Generic OpenAI-compatible endpoint
 codewhale auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
 OPENAI_BASE_URL="https://openai-compatible.example/v4" codewhale --provider openai --model glm-5
+
+# Custom DeepSeek-compatible endpoint
+DEEPSEEK_BASE_URL="https://your-provider.example/v1" \
+  DEEPSEEK_MODEL="deepseek-ai/DeepSeek-V4-Pro" \
+  codewhale --provider deepseek
 
 # Self-hosted SGLang
 SGLANG_BASE_URL="http://localhost:30000/v1" codewhale --provider sglang --model deepseek-v4-flash
@@ -468,6 +479,12 @@ Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 User config: `~/.codewhale/config.toml` (legacy `~/.deepseek/config.toml` fallback). Project overlay: `<workspace>/.codewhale/config.toml` (legacy `<workspace>/.deepseek/config.toml`) (denied: `api_key`, `base_url`, `provider`, `mcp_config_path`). [config.example.toml](config.example.toml) has every option.
 
+Custom DeepSeek-compatible endpoints usually do not need a new provider. Keep
+`provider = "deepseek"` and set `[providers.deepseek].base_url` / `model`, or
+use `provider = "openai"` for generic OpenAI-compatible gateways. Keep
+`provider`, `api_key`, and `base_url` in user config or environment variables;
+project overlays cannot set them.
+
 Key environment variables:
 
 | Variable | Purpose |
@@ -477,15 +494,16 @@ Key environment variables:
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
-| `CODEWHALE_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`, `novita`, `fireworks`, `moonshot`, `sglang`, `vllm`, `ollama` |
+| `CODEWHALE_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `moonshot`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
 | `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Allow non-local `http://` API base URLs on trusted networks |
-| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `OPENROUTER_API_KEY` / `XIAOMI_MIMO_API_KEY` / `MIMO_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | Generic OpenAI-compatible endpoint and model ID |
 | `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | AtlasCloud endpoint and model override |
 | `WANJIE_ARK_BASE_URL` / `WANJIE_ARK_MODEL` | Wanjie Ark endpoint and model override |
 | `OPENROUTER_BASE_URL` | OpenRouter endpoint override |
+| `XIAOMI_MIMO_BASE_URL` / `MIMO_BASE_URL` / `XIAOMI_MIMO_MODEL` / `MIMO_MODEL` | Xiaomi MiMo endpoint and model override |
 | `NOVITA_BASE_URL` | Novita endpoint override |
 | `FIREWORKS_BASE_URL` | Fireworks endpoint override |
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
@@ -553,8 +571,10 @@ without recreating skills the user deliberately deleted.
 
 | Doc | Topic |
 |---|---|
+| [GUIDE.md](docs/GUIDE.md) | First-run user guide |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Codebase internals |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Full config reference |
+| [PROVIDERS.md](docs/PROVIDERS.md) | Provider IDs, auth, model defaults, and capability metadata |
 | [MODES.md](docs/MODES.md) | Plan / Agent / YOLO modes |
 | [MCP.md](docs/MCP.md) | Model Context Protocol integration |
 | [RUNTIME_API.md](docs/RUNTIME_API.md) | HTTP/SSE API server |
