@@ -759,7 +759,14 @@ pub enum SearchProvider {
     /// Free tier: 20K queries/month per API key. Falls back to
     /// `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`
     /// env vars when `[search] api_key` is not set.
-    #[serde(alias = "volcengine", alias = "ark", alias = "volc")]
+    #[serde(
+        alias = "volcengine",
+        alias = "ark",
+        alias = "volc",
+        alias = "volcengine-ark",
+        alias = "volcengine_ark",
+        alias = "volc-ark"
+    )]
     Volcengine,
 }
 
@@ -4684,6 +4691,31 @@ mod tests {
         assert_eq!(
             SearchProvider::parse("baidu_ai_search"),
             Some(SearchProvider::Baidu)
+        );
+    }
+
+    #[test]
+    fn volcengine_search_provider_aliases_parse_and_deserialize() {
+        assert_eq!(
+            SearchProvider::parse("volcengine"),
+            Some(SearchProvider::Volcengine)
+        );
+        assert_eq!(
+            SearchProvider::parse("volcengine-ark"),
+            Some(SearchProvider::Volcengine)
+        );
+
+        let config: Config = toml::from_str(
+            r#"
+            [search]
+            provider = "volcengine-ark"
+            "#,
+        )
+        .expect("volcengine search config");
+
+        assert_eq!(
+            config.search.and_then(|search| search.provider),
+            Some(SearchProvider::Volcengine)
         );
     }
 
