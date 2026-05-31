@@ -826,11 +826,11 @@ fn build_relay_instruction(app: &App, focus: Option<&str>) -> String {
     if let Some(focus) = focus {
         let _ = writeln!(out, "- Requested relay focus: {focus}");
     }
-    if let Some(goal) = app.hunt.quarry.as_deref() {
-        let _ = writeln!(out, "- Goal: {goal}");
+    if let Some(quarry) = app.hunt.quarry.as_deref() {
+        let _ = writeln!(out, "- Hunt quarry: {quarry}");
     }
     if let Some(budget) = app.hunt.token_budget {
-        let _ = writeln!(out, "- Goal token budget: {budget}");
+        let _ = writeln!(out, "- Hunt token budget: {budget}");
     }
     if app.cycle_count > 0 {
         let _ = writeln!(out, "- Cycle count: {}", app.cycle_count);
@@ -1200,8 +1200,8 @@ mod tests {
         assert!(message.contains("Write or update `.deepseek/handoff.md`"));
         assert!(message.contains("# Session relay"));
         assert!(message.contains("Requested relay focus: verify install"));
-        assert!(message.contains("Goal: Unify the work surface"));
-        assert!(message.contains("Goal token budget: 12000"));
+        assert!(message.contains("Hunt quarry: Unify the work surface"));
+        assert!(message.contains("Hunt token budget: 12000"));
         assert!(message.contains("Cycle count: 2"));
         assert!(message.contains("Work checklist (primary progress surface, 50% complete)"));
         assert!(message.contains("#1 [completed] inspect workspace"));
