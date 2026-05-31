@@ -1,12 +1,12 @@
 //! Web search tool backed by multiple providers: Bing HTML scrape, DuckDuckGo
 //! (HTML scrape with Bing fallback), Tavily API, Bocha (博查) API,
-//! Metaso API (<https://metaso.cn>), and Baidu AI Search.
+//! Metaso API (<https://metaso.cn>), Baidu AI Search, and Volcengine Ark.
 //!
 //! This is the primary web search surface for agents. For browsing workflows
 //! (page open, click, screenshot) use a direct URL approach instead.
 //!
 //! Set `[search]` in config.toml to switch providers:
-//!   provider = "duckduckgo"  # or tavily/bocha/metaso/baidu
+//!   provider = "duckduckgo"  # or tavily/bocha/metaso/baidu/volcengine
 //!   api_key = "tvly-..."
 
 use super::spec::{
@@ -28,6 +28,7 @@ const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 const BOCHA_ENDPOINT: &str = "https://api.bochaai.com/v1/ai/search";
 const METASO_ENDPOINT: &str = "https://metaso.cn/api/v1";
 const BAIDU_ENDPOINT: &str = "https://qianfan.baidubce.com/v2/ai_search/web_search";
+const VOLCENGINE_RESPONSES_ENDPOINT: &str = "https://ark.cn-beijing.volces.com/api/v3/responses";
 /// Intentionally public default key provided by Metaso for open-source/community use.
 /// Last-resort fallback after config and env var. Rate-limited to ~100 searches/day.
 const METASO_DEFAULT_API_KEY: &str = "mk-E384C1DD5E8501BB7EFE27C949AFDE5B";
@@ -224,6 +225,13 @@ impl ToolSpec for WebSearchTool {
                 check_policy(decider, "qianfan.baidubce.com")?;
                 return self
                     .run_baidu_search(&query, max_results, timeout_ms, context)
+                    .await;
+            }
+            SearchProvider::Volcengine => {
+                let decider = context.network_policy.as_ref();
+                check_policy(decider, "ark.cn-beijing.volces.com")?;
+                return self
+                    .run_volcengine_search(&query, max_results, timeout_ms, context)
                     .await;
             }
             SearchProvider::Bing | SearchProvider::DuckDuckGo => {}
@@ -728,6 +736,84 @@ impl WebSearchTool {
         let results = parse_baidu_results(&parsed, max_results);
         search_tool_result(query.to_string(), "baidu", results, None)
     }
+
+    /// Search via Volcengine Ark Responses API web_search tool.
+    /// Uses strict JSON prompt constraints to extract structured results
+    /// from the model's search-augmented response.
+    async fn run_volcengine_search(
+        &self,
+        query: &str,
+        max_results: usize,
+        timeout_ms: u64,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let volc_key = std::env::var("VOLCENGINE_API_KEY").ok();
+        let volc_ark_key = std::env::var("VOLCENGINE_ARK_API_KEY").ok();
+        let ark_key = std::env::var("ARK_API_KEY").ok();
+        let api_key = context
+            .search_api_key
+            .as_deref()
+            .or(volc_key.as_deref())
+            .or(volc_ark_key.as_deref())
+            .or(ark_key.as_deref())
+            .ok_or_else(|| {
+                ToolError::execution_failed(
+                    "Volcengine search requires an API key. Set `[search] api_key`, \
+                     or VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY env var.",
+                )
+            })?;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
+
+        let payload = volcengine_search_payload(query, max_results);
+
+        let resp = client
+            .post(VOLCENGINE_RESPONSES_ENDPOINT)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Volcengine search request failed: {e}"))
+            })?;
+
+        let status = resp.status();
+        let body = resp.text().await.map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read Volcengine response: {e}"))
+        })?;
+
+        if !status.is_success() {
+            let msg = match status.as_u16() {
+                401 | 403 => "Volcengine API key rejected — check VOLCENGINE_API_KEY or `[search] api_key` in config.toml".to_string(),
+                429 => "Volcengine API rate-limited — wait and retry, or check your quota".to_string(),
+                _ => {
+                    let truncated = truncate_error_body(&body);
+                    format!("Volcengine search failed: HTTP {} — {truncated}", status.as_u16())
+                }
+            };
+            return Err(ToolError::execution_failed(msg));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to parse Volcengine response: {e}"))
+        })?;
+
+        if let Some(error) = volcengine_error_message(&parsed) {
+            return Err(ToolError::execution_failed(error));
+        }
+
+        let response_text = volcengine_extract_text(&parsed).ok_or_else(|| {
+            ToolError::execution_failed("Volcengine response contains no output text")
+        })?;
+
+        let results = parse_volcengine_results(&response_text, max_results);
+        search_tool_result(query.to_string(), "volcengine", results, None)
+    }
 }
 
 fn truncate_error_body(body: &str) -> String {
@@ -824,6 +910,116 @@ fn baidu_search_payload(query: &str, max_results: usize) -> Value {
             }
         ],
     })
+}
+
+fn volcengine_search_payload(query: &str, max_results: usize) -> Value {
+    json!({
+        "model": "doubao-seed-1-6-250615",
+        "stream": false,
+        "tools": [{"type": "web_search"}],
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": format!(
+                    "Search the web for: {query}\n\n\
+                     CRITICAL: Respond ONLY with a valid JSON object. No markdown, no explanation.\n\
+                     Schema: {{\"results\":[{{\"title\":\"...\",\"url\":\"https://...\",\"snippet\":\"...\"}}]}}\n\
+                     - results: 1-{max_results} most relevant pages\n\
+                     - title: page title (required)\n\
+                     - url: full URL starting with https:// (required)\n\
+                     - snippet: 1-2 sentence factual summary (required)\n\
+                     - If zero results: {{\"results\":[]}}\n\
+                     - Your entire response must be valid, parseable JSON."
+                )
+            }]
+        }]
+    })
+}
+
+/// Extracts the model's text response from a Volcengine Responses API output.
+fn volcengine_extract_text(parsed: &Value) -> Option<String> {
+    parsed
+        .get("output")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flat_map(|arr| arr.iter().rev())
+        .find(|item| item.get("type").and_then(|t| t.as_str()) == Some("message"))
+        .and_then(|msg| msg.get("content").and_then(|c| c.as_array()))
+        .and_then(|content| {
+            content
+                .iter()
+                .find(|c| c.get("text").and_then(|t| t.as_str()).is_some())
+        })
+        .and_then(|c| c.get("text").and_then(|t| t.as_str()))
+        .map(|s| s.to_string())
+}
+
+/// Checks for business-logic errors in a Volcengine Responses API response.
+fn volcengine_error_message(parsed: &Value) -> Option<String> {
+    let error = parsed.get("error")?;
+    let code = error
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let message = error
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("no details");
+    Some(format!("Volcengine API error (code {code}: {message})"))
+}
+
+/// Parses Volcengine model-generated JSON results into `WebSearchEntry` items.
+fn parse_volcengine_results(response_text: &str, max_results: usize) -> Vec<WebSearchEntry> {
+    let json_text = extract_json_block(response_text).unwrap_or(response_text);
+
+    let parsed: Value = match serde_json::from_str(json_text) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    parsed
+        .get("results")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flat_map(|arr| arr.iter())
+        .filter_map(|item| {
+            let title = item.get("title").and_then(|s| s.as_str())?.trim();
+            let url = item.get("url").and_then(|s| s.as_str())?.trim();
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            let snippet = item
+                .get("snippet")
+                .and_then(|s| s.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+            Some(WebSearchEntry {
+                title: title.to_string(),
+                url: url.to_string(),
+                snippet,
+            })
+        })
+        .take(max_results)
+        .collect()
+}
+
+/// Attempts to extract a JSON block from text that may be wrapped in
+/// markdown fences (```json ... ```) or contain surrounding commentary.
+fn extract_json_block(text: &str) -> Option<&str> {
+    if let Some(start) = text.find("```json") {
+        let inner = &text[start + 7..];
+        if let Some(end) = inner.find("```") {
+            return Some(inner[..end].trim());
+        }
+    }
+    if let Some(start) = text.find('{')
+        && let Some(end) = text.rfind('}')
+    {
+        return Some(&text[start..=end]);
+    }
+    None
 }
 
 fn extract_search_query(input: &Value) -> Result<String, ToolError> {
@@ -1195,7 +1391,7 @@ mod tests {
         ERROR_BODY_PREVIEW_BYTES, WebSearchEntry, WebSearchTool, baidu_search_payload,
         decode_html_entities, extract_search_query, is_likely_spam_results, normalize_bing_url,
         optional_search_max_results, parse_baidu_results, root_domain, sanitize_error_body,
-        truncate_error_body,
+        truncate_error_body, volcengine_extract_text,
     };
     use serde_json::json;
 
@@ -1563,6 +1759,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn volcengine_extract_text_skips_non_text_content_blocks() {
+        let body = json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "reasoning", "summary": "thinking first"},
+                        {"type": "output_text", "text": "{\"results\":[]}"}
+                    ]
+                }
+            ]
+        });
+
+        assert_eq!(
+            volcengine_extract_text(&body).as_deref(),
+            Some("{\"results\":[]}")
+        );
+    }
+
     #[tokio::test]
     async fn tavily_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
         // Trust-boundary pin: if a user has opted into Tavily but
@@ -1636,6 +1852,50 @@ mod tests {
             msg.contains("Baidu") && msg.contains("API key"),
             "error must name the provider and missing key; got `{msg}`"
         );
+    }
+
+    #[tokio::test]
+    async fn volcengine_provider_without_api_key_lists_supported_env_fallbacks() {
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+
+        let prev_volc = std::env::var_os("VOLCENGINE_API_KEY");
+        let prev_volc_ark = std::env::var_os("VOLCENGINE_ARK_API_KEY");
+        let prev_ark = std::env::var_os("ARK_API_KEY");
+        unsafe {
+            std::env::remove_var("VOLCENGINE_API_KEY");
+            std::env::remove_var("VOLCENGINE_ARK_API_KEY");
+            std::env::remove_var("ARK_API_KEY");
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::Volcengine;
+        ctx.search_api_key = None;
+        let err = WebSearchTool
+            .execute(json!({"query": "anything"}), &ctx)
+            .await
+            .expect_err("missing api_key must surface as ToolError");
+
+        match prev_volc {
+            Some(value) => unsafe { std::env::set_var("VOLCENGINE_API_KEY", value) },
+            None => unsafe { std::env::remove_var("VOLCENGINE_API_KEY") },
+        }
+        match prev_volc_ark {
+            Some(value) => unsafe { std::env::set_var("VOLCENGINE_ARK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("VOLCENGINE_ARK_API_KEY") },
+        }
+        match prev_ark {
+            Some(value) => unsafe { std::env::set_var("ARK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("ARK_API_KEY") },
+        }
+
+        let msg = err.to_string();
+        assert!(msg.contains("Volcengine") && msg.contains("API key"));
+        assert!(msg.contains("VOLCENGINE_API_KEY"));
+        assert!(msg.contains("VOLCENGINE_ARK_API_KEY"));
+        assert!(msg.contains("ARK_API_KEY"));
+        assert!(!msg.contains("DEEPSEEK_SEARCH_API_KEY"));
     }
 
     #[tokio::test]
