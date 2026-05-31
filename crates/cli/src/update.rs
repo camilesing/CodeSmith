@@ -364,9 +364,8 @@ fn update_http_client(proxy: Option<&Proxy>) -> Result<reqwest::blocking::Client
 }
 
 fn latest_release_tag(channel: ReleaseChannel, proxy: Option<&Proxy>) -> Result<String> {
-    match fetch_latest_release(channel, proxy)? {
-        FetchedRelease { release, .. } => Ok(release.tag_name),
-    }
+    let FetchedRelease { release, .. } = fetch_latest_release(channel, proxy)?;
+    Ok(release.tag_name)
 }
 
 /// Fetch the latest release metadata from GitHub.

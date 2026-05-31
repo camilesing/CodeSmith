@@ -164,7 +164,7 @@ async fn upload_gist(path: &Path) -> Result<String, String> {
             "gist",
             "create",
             "--public",
-            &path_owned.to_string_lossy().to_string(),
+            path_owned.to_string_lossy().as_ref(),
             "--filename",
             "session-export.html",
             "--desc",
