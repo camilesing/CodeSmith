@@ -128,7 +128,14 @@ impl TranscriptViewCache {
         width: u16,
         options: TranscriptRenderOptions,
     ) {
-        self.ensure_split(&[cells], cell_revisions, width, options, &HashSet::new(), None);
+        self.ensure_split(
+            &[cells],
+            cell_revisions,
+            width,
+            options,
+            &HashSet::new(),
+            None,
+        );
     }
 
     /// Ensure cached lines match the provided cell shards (logically
@@ -1095,15 +1102,9 @@ mod tests {
 
         // No collapsing, no folding — baseline.
         let mut cache = TranscriptViewCache::new();
-        cache.ensure_split(
-            &[&cells],
-            &revisions,
-            width,
-            options,
-            &HashSet::new(),
-            None,
-        );
+        cache.ensure_split(&[&cells], &revisions, width, options, &HashSet::new(), None);
         let baseline = cache.total_lines();
+        assert!(baseline > 0, "baseline render should contain visible lines");
 
         // Collapse cell 0, fold cell 1. The filtered list has only cell 1
         // at filtered index 0, but it maps to original index 1.

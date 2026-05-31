@@ -2961,12 +2961,10 @@ async fn run_event_loop(
                         if is_thinking {
                             if app.folded_thinking.contains(&idx) {
                                 app.folded_thinking.remove(&idx);
-                                app.status_message =
-                                    Some("Thinking block expanded".to_string());
+                                app.status_message = Some("Thinking block expanded".to_string());
                             } else {
                                 app.folded_thinking.insert(idx);
-                                app.status_message =
-                                    Some("Thinking block folded".to_string());
+                                app.status_message = Some("Thinking block folded".to_string());
                             }
                         } else if app.collapsed_cells.contains(&idx) {
                             app.collapsed_cells.remove(&idx);
