@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -961,10 +961,9 @@ async fn list_skills(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<SkillsResponse>, ApiError> {
     let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
-    let registry =
-        crate::skills::discover_for_workspace_and_dir(&state.workspace, &skills_dir);
+    let registry = crate::skills::discover_for_workspace_and_dir(&state.workspace, &skills_dir);
     let skill_state = state.skill_state.lock().await;
-    let directories = crate::skills::skills_directories(&state.workspace);
+    let directories = skills_search_directories(&state.workspace, &skills_dir);
     let skills = registry
         .list()
         .iter()
@@ -990,12 +989,12 @@ async fn set_skill_enabled(
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
     let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
-    let registry =
-        crate::skills::discover_for_workspace_and_dir(&state.workspace, &skills_dir);
+    let registry = crate::skills::discover_for_workspace_and_dir(&state.workspace, &skills_dir);
     let exists = registry.list().iter().any(|skill| skill.name == name);
     if !exists {
         return Err(ApiError::not_found(format!(
-            "skill '{name}' not found"
+            "skill '{name}' not found in searched directories: {}",
+            format_skill_search_paths(&skills_search_directories(&state.workspace, &skills_dir))
         )));
     }
 
@@ -1769,6 +1768,25 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
         }
     }
     config.skills_dir()
+}
+
+fn skills_search_directories(workspace: &FsPath, skills_dir: &FsPath) -> Vec<PathBuf> {
+    let mut directories = crate::skills::skills_directories(workspace);
+    if skills_dir.is_dir() && !directories.iter().any(|path| path == skills_dir) {
+        directories.push(skills_dir.to_path_buf());
+    }
+    directories
+}
+
+fn format_skill_search_paths(directories: &[PathBuf]) -> String {
+    if directories.is_empty() {
+        return "<none>".to_string();
+    }
+    directories
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn load_mcp_config_or_default(path: &std::path::Path) -> Result<McpConfig, ApiError> {
@@ -3888,6 +3906,24 @@ mod tests {
 
         let expected = fs::canonicalize(&local_skills).expect("canonical local skills");
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn skills_search_directories_includes_custom_skills_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let custom_skills = tmp.path().join("custom-skills");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&custom_skills).expect("create custom skills");
+
+        let directories = skills_search_directories(&workspace, &custom_skills);
+
+        assert!(
+            directories.iter().any(|dir| dir == &custom_skills),
+            "custom skills_dir must be reported when discovery searches it"
+        );
+        let message = format_skill_search_paths(&directories);
+        assert!(message.contains("custom-skills"));
     }
 
     /// A `skills` symlink that points outside the workspace must NOT be
