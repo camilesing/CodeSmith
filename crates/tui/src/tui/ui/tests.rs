@@ -5505,6 +5505,49 @@ fn message_complete_drain_preserves_thinking_when_thinking_complete_lost() {
 }
 
 #[test]
+fn approval_prompt_uses_event_input_after_message_complete_drain() {
+    let mut app = create_test_app();
+    app.pending_tool_uses.push((
+        "tool-1".to_string(),
+        "exec_shell".to_string(),
+        serde_json::json!({"command": "stale value from drained list"}),
+    ));
+
+    // Mirror the old race: MessageComplete drains pending tool uses before
+    // ApprovalRequired is handled. The approval modal must still show the
+    // non-empty input carried directly on the ApprovalRequired event.
+    app.pending_tool_uses.clear();
+
+    let event_input = serde_json::json!({
+        "command": "cargo test -p codewhale-tui approval",
+        "workdir": "/repo",
+    });
+    push_approval_request_view(
+        &mut app,
+        "tool-1",
+        "exec_shell",
+        "Run cargo tests",
+        &event_input,
+        "approval-key",
+    );
+
+    let mut view = app.view_stack.pop().expect("approval view");
+    let approval = view
+        .as_any_mut()
+        .downcast_mut::<ApprovalView>()
+        .expect("approval view");
+    let action = approval.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = action else {
+        panic!("expected approval params pager");
+    };
+
+    assert!(content.contains("cargo test -p codewhale-tui approval"));
+    assert!(content.contains("/repo"));
+    assert!(!content.contains("stale value from drained list"));
+    assert_ne!(content.trim(), "{}");
+}
+
+#[test]
 fn second_thinking_block_appends_new_entry_in_same_active_cell() {
     // Real V4 turns can emit Thinking → Tool → Thinking → Tool before any
     // prose; the second thinking block should land as a fresh entry inside
