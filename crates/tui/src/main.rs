@@ -52,6 +52,7 @@ mod pricing;
 mod project_context;
 mod project_doc;
 mod prompts;
+mod purge;
 pub mod repl;
 mod retry_status;
 pub mod rlm;

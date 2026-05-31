@@ -259,6 +259,7 @@ pub enum MessageId {
     CmdBalanceDescription,
     CmdClearDescription,
     CmdCompactDescription,
+    CmdPurgeDescription,
     CmdConfigDescription,
     CmdContextDescription,
     CmdCostDescription,
@@ -523,6 +524,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdCacheDescription,
     MessageId::CmdClearDescription,
     MessageId::CmdCompactDescription,
+    MessageId::CmdPurgeDescription,
     MessageId::CmdConfigDescription,
     MessageId::CmdContextDescription,
     MessageId::CmdCostDescription,
@@ -990,6 +992,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdCompactDescription => {
             "Trigger context compaction to free up space (legacy; v0.6.6 prefers cycle restart)"
         }
+        MessageId::CmdPurgeDescription => {
+            "Let the agent surgically prune conversation history to free context space"
+        }
         MessageId::CmdConfigDescription => "Open interactive configuration editor",
         MessageId::CmdContextDescription => "Open compact session context inspector",
         MessageId::CmdCostDescription => "Show session cost breakdown",
@@ -1385,6 +1390,9 @@ fn vietnamese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdClearDescription => "Xóa lịch sử trò chuyện",
         MessageId::CmdCompactDescription => {
             "Kích hoạt nén ngữ cảnh để giải phóng không gian (cũ; v0.6.6 ưu tiên khởi động lại chu kỳ)"
+        }
+        MessageId::CmdPurgeDescription => {
+            "Cho agent cắt gọn lịch sử trò chuyện để giải phóng ngữ cảnh"
         }
         MessageId::CmdConfigDescription => "Mở trình chỉnh sửa cấu hình tương tác",
         MessageId::CmdContextDescription => "Mở trình kiểm tra ngữ cảnh phiên thu gọn",
@@ -1818,6 +1826,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCompactDescription => {
             "コンテキスト圧縮で容量を確保（旧式：v0.6.6 以降はサイクル再起動を推奨）"
         }
+        MessageId::CmdPurgeDescription => {
+            "エージェントに会話履歴を分析させ、不要なメッセージを削除・要約"
+        }
         MessageId::CmdConfigDescription => "インタラクティブな設定エディタを開く",
         MessageId::CmdContextDescription => "コンパクトなセッションコンテキスト検査ツールを開く",
         MessageId::CmdCostDescription => "セッションのコスト内訳を表示",
@@ -2201,6 +2212,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCompactDescription => {
             "触发上下文压缩以释放空间（旧版命令；v0.6.6 起建议改用循环重启）"
         }
+        MessageId::CmdPurgeDescription => "让 Agent 分析对话历史，精确保留有用信息并移除冗余内容",
         MessageId::CmdConfigDescription => "打开交互式配置编辑器",
         MessageId::CmdContextDescription => "打开紧凑会话上下文检查器",
         MessageId::CmdCostDescription => "显示本次会话的费用明细",
@@ -2543,6 +2555,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdClearDescription => "Limpar o histórico da conversa",
         MessageId::CmdCompactDescription => {
             "Compactar o contexto para liberar espaço (legado; a v0.6.6 prefere o reinício de ciclo)"
+        }
+        MessageId::CmdPurgeDescription => {
+            "Deixe o agente podar cirurgicamente o histórico para liberar espaço de contexto"
         }
         MessageId::CmdConfigDescription => "Abrir o editor interativo de configuração",
         MessageId::CmdContextDescription => "Abrir o inspetor compacto de contexto da sessão",
@@ -2958,6 +2973,9 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdClearDescription => "Limpiar el historial de la conversación",
         MessageId::CmdCompactDescription => {
             "Compactar el contexto para liberar espacio (heredado; v0.6.6 prefiere reinicio de ciclo)"
+        }
+        MessageId::CmdPurgeDescription => {
+            "Permite al agente eliminar quirúrgicamente historial innecesario para liberar espacio de contexto"
         }
         MessageId::CmdConfigDescription => "Abrir el editor interactivo de configuración",
         MessageId::CmdContextDescription => "Abrir el inspector compacto de contexto de la sesión",

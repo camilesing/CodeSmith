@@ -167,7 +167,11 @@ pub(crate) fn stall_reason(app: &App) -> Option<&'static str> {
 /// though the agent is still working.
 pub(crate) fn footer_working_strip_active(app: &App) -> bool {
     let turn_in_progress = app.runtime_turn_status.as_deref() == Some("in_progress");
-    app.is_loading || app.is_compacting || running_agent_count(app) > 0 || turn_in_progress
+    app.is_loading
+        || app.is_compacting
+        || app.is_purging
+        || running_agent_count(app) > 0
+        || turn_in_progress
 }
 
 pub(crate) fn footer_working_label_frame(now_ms: u64, fancy_animations: bool) -> u64 {
@@ -810,6 +814,9 @@ pub(crate) fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<
 pub(crate) fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
     if app.is_compacting {
         return ("compacting \u{238B}", app.ui_theme.status_warning);
+    }
+    if app.is_purging {
+        return ("purging \u{238B}", app.ui_theme.status_warning);
     }
     // Note: we deliberately do NOT show a "thinking" label for `is_loading`.
     // The animated water-spout strip in the footer's spacer is the visual

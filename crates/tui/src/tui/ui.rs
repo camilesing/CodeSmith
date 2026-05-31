@@ -64,6 +64,7 @@ use crate::task_manager::{
 };
 use crate::tools::spec::{RuntimeToolServices, ToolResult};
 use crate::tools::subagent::SubAgentStatus;
+use crate::tui::app::HuntVerdict;
 use crate::tui::auto_router;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
@@ -743,9 +744,9 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
         goal_state: crate::tools::goal::new_shared_goal_state_from_host(
-            app.goal.goal_objective.clone(),
-            app.goal.goal_token_budget,
-            app.goal.goal_completed,
+            app.hunt.quarry.clone(),
+            app.hunt.token_budget,
+            app.hunt.verdict == HuntVerdict::Hunted,
         ),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         allowed_tools: app.active_allowed_tools.clone(),
@@ -769,7 +770,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         memory_path: config.memory_path(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
-        goal_objective: app.goal.goal_objective.clone(),
+        goal_objective: app.hunt.quarry.clone(),
         locale_tag: app.ui_locale.tag().to_string(),
         workshop: config.workshop.clone(),
         search_provider: config.search_provider(),
@@ -1727,7 +1728,7 @@ async fn run_event_loop(
                         }
                         app.update_model_compaction_budget();
                         app.workspace = workspace;
-                        if (app.is_loading || app.is_compacting)
+                        if (app.is_loading || app.is_compacting || app.is_purging)
                             && let Ok(manager) = SessionManager::default_location()
                         {
                             let session = build_session_snapshot(app, &manager);
@@ -1761,6 +1762,18 @@ async fn run_event_loop(
                     }
                     EngineEvent::CompactionFailed { message, .. } => {
                         app.is_compacting = false;
+                        app.status_message = Some(message);
+                    }
+                    EngineEvent::PurgeStarted { message } => {
+                        app.is_purging = true;
+                        app.status_message = Some(message);
+                    }
+                    EngineEvent::PurgeCompleted { message, .. } => {
+                        app.is_purging = false;
+                        app.status_message = Some(message);
+                    }
+                    EngineEvent::PurgeFailed { message } => {
+                        app.is_purging = false;
                         app.status_message = Some(message);
                     }
                     EngineEvent::CycleAdvanced { from, to, briefing } => {
@@ -2180,7 +2193,7 @@ async fn run_event_loop(
         if reconcile_turn_liveness(app, Instant::now(), has_running_agents) {
             app.needs_redraw = true;
         }
-        if (app.is_loading || has_running_agents || app.is_compacting)
+        if (app.is_loading || has_running_agents || app.is_compacting || app.is_purging)
             && last_status_frame.elapsed()
                 >= Duration::from_millis(status_animation_interval_ms(app))
         {
@@ -2242,7 +2255,7 @@ async fn run_event_loop(
         // long passage can be selected in one drag (#1163).
         tick_selection_autoscroll(app);
         let allow_workspace_context_refresh =
-            !app.is_loading && !has_running_agents && !app.is_compacting;
+            !app.is_loading && !has_running_agents && !app.is_compacting && !app.is_purging;
         workspace_context::refresh_if_needed(app, now, allow_workspace_context_refresh);
 
         // Draw is gated by the frame-rate limiter (120 FPS cap). When a
@@ -2274,11 +2287,12 @@ async fn run_event_loop(
             app.needs_redraw = false;
         }
 
-        let mut poll_timeout = if app.is_loading || has_running_agents || app.is_compacting {
-            Duration::from_millis(active_poll_ms(app))
-        } else {
-            Duration::from_millis(idle_poll_ms(app))
-        };
+        let mut poll_timeout =
+            if app.is_loading || has_running_agents || app.is_compacting || app.is_purging {
+                Duration::from_millis(active_poll_ms(app))
+            } else {
+                Duration::from_millis(idle_poll_ms(app))
+            };
         if let Some(until_flush) = app.paste_burst_next_flush_delay_if_enabled(now) {
             poll_timeout = poll_timeout.min(until_flush);
         }
@@ -3960,6 +3974,7 @@ fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool
         && app.runtime_turn_status.is_none()
         && !has_running_agents
         && !app.is_compacting
+        && !app.is_purging
         && app.dispatch_started_at.is_some_and(|started| {
             now.saturating_duration_since(started) > DISPATCH_WATCHDOG_TIMEOUT
         })
@@ -3981,6 +3996,7 @@ fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool
         )
         && !has_running_agents
         && !app.is_compacting
+        && !app.is_purging
     {
         app.is_loading = false;
         app.dispatch_started_at = None;
@@ -4389,7 +4405,7 @@ async fn dispatch_user_message(
             None,
             prompts::PromptSessionContext {
                 user_memory_block: None,
-                goal_objective: app.goal.goal_objective.as_deref(),
+                goal_objective: app.hunt.quarry.as_deref(),
                 project_context_pack_enabled: config.project_context_pack_enabled(),
                 locale_tag: app.ui_locale.tag(),
                 translation_enabled: app.translation_enabled,
@@ -4482,7 +4498,7 @@ async fn dispatch_user_message(
             content,
             mode: app.mode,
             model: effective_model,
-            goal_objective: app.goal.goal_objective.clone(),
+            goal_objective: app.hunt.quarry.clone(),
             reasoning_effort: effective_reasoning_effort,
             reasoning_effort_auto: auto_controls_reasoning,
             auto_model: app.auto_model,
@@ -5100,6 +5116,10 @@ async fn apply_command_result(
             AppAction::CompactContext => {
                 app.status_message = Some("Compacting context...".to_string());
                 let _ = engine_handle.send(Op::CompactContext).await;
+            }
+            AppAction::PurgeContext => {
+                app.status_message = Some("Agent purging context...".to_string());
+                let _ = engine_handle.send(Op::PurgeContext).await;
             }
             AppAction::TaskAdd { prompt } => {
                 let request = NewTaskRequest {

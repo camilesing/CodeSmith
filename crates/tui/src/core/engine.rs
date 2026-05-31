@@ -41,6 +41,7 @@ use crate::models::{
     MessageRequest, StreamEvent, SystemPrompt, Tool, Usage,
 };
 use crate::prompts;
+use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, run_purge};
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::goal::{SharedGoalState, new_shared_goal_state};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -833,6 +834,9 @@ impl Engine {
                 Op::CompactContext => {
                     self.handle_manual_compaction().await;
                 }
+                Op::PurgeContext => {
+                    self.handle_purge().await;
+                }
                 Op::EditLastTurn { new_message } => {
                     // #383: /edit — remove the last user+assistant exchange
                     // from the session, then re-send with the new content.
@@ -1350,6 +1354,83 @@ impl Engine {
                 usage: zero_usage,
                 status: turn_status,
                 error: turn_error,
+            })
+            .await;
+    }
+
+    async fn handle_purge(&mut self) {
+        let zero_usage = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            ..Usage::default()
+        };
+        let Some(client) = self.deepseek_client.clone() else {
+            let message = "Purge unavailable: API client not configured".to_string();
+            emit_purge_failed(&self.tx_event, message.clone()).await;
+            let _ = self
+                .tx_event
+                .send(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
+                .await;
+            let _ = self
+                .tx_event
+                .send(Event::TurnComplete {
+                    usage: zero_usage,
+                    status: TurnOutcomeStatus::Failed,
+                    error: Some(message),
+                })
+                .await;
+            return;
+        };
+
+        emit_purge_started(
+            &self.tx_event,
+            "Agent context purge in progress\u{2026}".to_string(),
+        )
+        .await;
+        let messages_before = self.session.messages.len();
+
+        let (status, error) = match run_purge(
+            &client,
+            &self.session.messages,
+            &self.session.model,
+            self.session.reasoning_effort.clone(),
+            effective_max_output_tokens(&self.session.model),
+        )
+        .await
+        {
+            Ok(result) => {
+                let messages_after = result.messages.len();
+                self.session.messages = result.messages;
+                self.emit_session_updated().await;
+
+                let summary = format!(
+                    "Purge complete: {messages_before} → {messages_after} messages \
+                         ({} removed, {} condensed)",
+                    result.removed_count, result.replaced_count,
+                );
+                emit_purge_completed(
+                    &self.tx_event,
+                    messages_before,
+                    messages_after,
+                    result.removed_count,
+                    result.replaced_count,
+                    summary,
+                )
+                .await;
+                (TurnOutcomeStatus::Completed, None)
+            }
+            Err(e) => {
+                emit_purge_failed(&self.tx_event, e.clone()).await;
+                (TurnOutcomeStatus::Failed, Some(e))
+            }
+        };
+
+        let _ = self
+            .tx_event
+            .send(Event::TurnComplete {
+                usage: zero_usage,
+                status,
+                error,
             })
             .await;
     }
