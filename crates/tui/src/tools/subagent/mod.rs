@@ -62,7 +62,12 @@ fn release_resident_leases_for(agent_id: &str) {
     }
 }
 
-const DEFAULT_MAX_STEPS: u32 = 100;
+/// Default maximum steps for sub-agent loops. Set to `u32::MAX` to remove the
+/// arbitrary fixed cap (#2034). Sub-agents run until they produce a final text
+/// response (no tool calls), are cancelled by the parent, or hit a configured
+/// explicit budget. Callers that want a hard bound can override `max_steps` on
+/// the `SubAgentManager`.
+const DEFAULT_MAX_STEPS: u32 = u32::MAX;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-step LLM API call timeout. Each `create_message` request must complete
 /// within this window or the step is treated as timed out. Prevents a single
@@ -1840,6 +1845,11 @@ async fn subagent_session_projection(
 }
 
 fn default_state_path(workspace: &Path) -> PathBuf {
+    // Prefer .codewhale, fall back to .deepseek for project-local state
+    let primary = workspace.join(".codewhale").join("state");
+    if primary.exists() {
+        return primary.join(SUBAGENT_STATE_FILE);
+    }
     workspace
         .join(".deepseek")
         .join("state")
@@ -3510,12 +3520,6 @@ async fn run_subagent_task(task: SubAgentTask) {
     )
     .await;
 
-    let mut manager = task.manager_handle.write().await;
-    match &result {
-        Ok(res) => manager.update_from_result(&task.agent_id, res.clone()),
-        Err(err) => manager.update_failed(&task.agent_id, err.to_string()),
-    }
-
     // Emit BOTH a human-friendly summary (rendered in the parent's
     // sidebar / cell) AND a structured sentinel the model can recognize
     // on its next turn. Format: human summary on the first line,
@@ -3548,16 +3552,24 @@ async fn run_subagent_task(task: SubAgentTask) {
     }
 
     let payload = format!("{summary}\n{sentinel}");
+    let agent_id = task.agent_id.clone();
 
     // Wake the engine's parent turn loop if this is one of its direct
-    // children (issue #756). Gating by `spawn_depth == 1` means the parent
-    // only sees completions for agents it directly orchestrated, not for
-    // grandchildren spawned recursively inside its children.
-    emit_parent_completion(&task.runtime, &task.agent_id, &payload);
+    // children (issue #756). Issue #1961 also requires emit to happen
+    // before marking the manager terminal state so the parent can observe the
+    // completion while its "running children" gate is still open. If we
+    // update first, the parent can finalize before the completion arrives.
+    emit_parent_completion(&task.runtime, &agent_id, &payload);
+
+    let mut manager = task.manager_handle.write().await;
+    match &result {
+        Ok(res) => manager.update_from_result(&agent_id, res.clone()),
+        Err(err) => manager.update_failed(&agent_id, err.to_string()),
+    }
 
     if let Some(event_tx) = task.runtime.event_tx {
         let _ = event_tx.try_send(Event::AgentComplete {
-            id: task.agent_id,
+            id: agent_id.clone(),
             result: payload,
         });
     }
@@ -4976,7 +4988,9 @@ const SUBAGENT_OUTPUT_FORMAT: &str = include_str!("../../prompts/subagent_output
 const GENERAL_AGENT_INTRO: &str = concat!(
     "You are a general-purpose sub-agent spawned to handle a specific task autonomously.\n",
     "Stay inside the assigned scope; put adjacent work under RISKS/BLOCKERS.\n",
-    "Plan multi-step work with `checklist_write`; add `update_plan` for complex strategy.\n\n"
+    "Plan multi-step work with `checklist_write`; add `update_plan` for complex strategy.\n",
+    "**Stop quickly on failure**: if the same tool call fails 2 times in a row, stop retrying and return what you have so far with a one-line note explaining what's missing. Do not loop on impossible queries (e.g. external API unreachable, rate-limited, or returning empty).\n",
+    "**Bounded effort**: prefer one focused attempt over many speculative retries. If you cannot complete the task with available data within 3-5 tool calls, return your current partial findings — the parent agent can compensate with its own knowledge.\n\n"
 );
 
 const EXPLORE_AGENT_INTRO: &str = concat!(

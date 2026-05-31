@@ -256,6 +256,49 @@ fn parse_pages_arg(spec: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// Clean PDF-extracted text for TUI display: collapse consecutive blank
+/// lines (more than 1 becomes 1), replace NUL bytes with U+FFFD, replace
+/// non-breaking spaces with regular spaces, and trim trailing whitespace
+/// on each line. Produces output that won't clutter the transcript with
+/// vertical gaps or invisible control characters.
+fn clean_pdf_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut blank_run = 0usize;
+    let mut any_content = false;
+    for line in raw.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            blank_run = blank_run.saturating_add(1);
+            if blank_run <= 1 {
+                out.push('\n');
+            }
+        } else {
+            blank_run = 0;
+            any_content = true;
+            // Push cleaned characters directly — avoids a per-line
+            // temporary String allocation.
+            for c in trimmed.chars() {
+                match c {
+                    '\0' => out.push('\u{FFFD}'),
+                    '\u{A0}' => out.push(' '),
+                    other => out.push(other),
+                }
+            }
+            out.push('\n');
+        }
+    }
+    // Trim leading blank lines only — don't use str::trim() which
+    // would also strip intentional indentation (e.g. centred titles).
+    if any_content {
+        let start = out.find(|c: char| c != '\n').unwrap_or(0);
+        // Walk back from end to find the last non-newline character.
+        let end = out.rfind(|c: char| c != '\n').map_or(out.len(), |i| i + 1);
+        out[start..end].to_string()
+    } else {
+        String::new()
+    }
+}
+
 fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
     // Validate the `pages` spec once, up front, so both extractor paths
     // surface the same error shape on bad input.
@@ -325,7 +368,7 @@ fn read_pdf_via_pdf_extract(
             ))
         })?
     };
-    Ok(ToolResult::success(text))
+    Ok(ToolResult::success(clean_pdf_text(&text)))
 }
 
 fn read_pdf_via_pdftotext(
@@ -382,7 +425,7 @@ fn read_pdf_via_pdftotext(
     }
 
     let text = String::from_utf8_lossy(&output.stdout).to_string();
-    Ok(ToolResult::success(text))
+    Ok(ToolResult::success(clean_pdf_text(&text)))
 }
 
 // === WriteFileTool ===
@@ -496,7 +539,7 @@ impl ToolSpec for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default, including whitespace and indentation; set `fuzz: true` to tolerate leading-indentation differences. Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead."
+        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries with leading-whitespace-tolerant fuzzy matching automatically. The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead."
     }
 
     fn input_schema(&self) -> Value {
@@ -517,7 +560,7 @@ impl ToolSpec for EditFileTool {
                 },
                 "fuzz": {
                     "type": "boolean",
-                    "description": "When true, tolerate leading whitespace differences on each searched line (default false)"
+                    "description": "Deprecated: fuzzy fallback is now automatic. Accepted for backward compatibility but ignored."
                 }
             },
             "required": ["path", "search", "replace"]
@@ -540,7 +583,7 @@ impl ToolSpec for EditFileTool {
         let path_str = required_str(&input, "path")?;
         let search = required_str(&input, "search")?;
         let replace = required_str(&input, "replace")?;
-        let fuzz = optional_bool(&input, "fuzz", false);
+        let _fuzz = optional_bool(&input, "fuzz", false);
 
         if search == replace {
             return Err(ToolError::invalid_input(
@@ -555,7 +598,7 @@ impl ToolSpec for EditFileTool {
         })?;
 
         let count = contents.matches(search).count();
-        let (updated, count, fuzz_kind) = if count == 0 && fuzz {
+        let (updated, count, fuzz_kind) = if count == 0 {
             // First fallback: tolerate indentation differences.
             let indent_matches = leading_whitespace_fuzzy_matches(&contents, search);
             match indent_matches.as_slice() {
@@ -600,11 +643,6 @@ impl ToolSpec for EditFileTool {
                     )));
                 }
             }
-        } else if count == 0 {
-            return Err(ToolError::execution_failed(format!(
-                "Search string not found in {}",
-                file_path.display()
-            )));
         } else {
             (contents.replace(search, replace), count, None)
         };
@@ -1232,6 +1270,43 @@ mod tests {
     }
 
     #[test]
+    fn clean_pdf_text_collapses_consecutive_blank_lines() {
+        let raw = "line1\n\n\n\n\nline2\n\n\nline3";
+        let cleaned = super::clean_pdf_text(raw);
+        assert_eq!(cleaned, "line1\n\nline2\n\nline3");
+    }
+
+    #[test]
+    fn clean_pdf_text_replaces_nul_bytes_with_replacement_char() {
+        let raw = "hello\0world";
+        let cleaned = super::clean_pdf_text(raw);
+        assert!(!cleaned.contains('\0'));
+        assert!(cleaned.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn clean_pdf_text_replaces_non_breaking_spaces() {
+        let raw = "hello\u{A0}world";
+        let cleaned = super::clean_pdf_text(raw);
+        assert!(!cleaned.contains('\u{A0}'));
+        assert_eq!(cleaned, "hello world");
+    }
+
+    #[test]
+    fn clean_pdf_text_trims_trailing_whitespace() {
+        let raw = "hello   ";
+        let cleaned = super::clean_pdf_text(raw);
+        assert_eq!(cleaned, "hello");
+    }
+
+    #[test]
+    fn clean_pdf_text_preserves_leading_indentation() {
+        let raw = "   indented line\nregular line";
+        let cleaned = super::clean_pdf_text(raw);
+        assert_eq!(cleaned, "   indented line\nregular line");
+    }
+
+    #[test]
     fn read_pdf_via_pdf_extract_finds_known_title() {
         // Skip when the fixture isn't checked out (sparse clones, shallow
         // worktrees). Local dev + CI both have it.
@@ -1478,6 +1553,41 @@ mod tests {
         // Verify edit was applied
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "hi world hi");
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_accepts_omitted_and_explicit_fuzz() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = EditFileTool;
+
+        for (file_name, fuzz) in [
+            ("fuzz_omitted.txt", None),
+            ("fuzz_false.txt", Some(false)),
+            ("fuzz_true.txt", Some(true)),
+        ] {
+            let test_file = tmp.path().join(file_name);
+            fs::write(&test_file, "hello world").expect("write");
+
+            let mut input = serde_json::Map::from_iter([
+                ("path".to_string(), json!(file_name)),
+                ("search".to_string(), json!("hello")),
+                ("replace".to_string(), json!("hi")),
+            ]);
+            if let Some(fuzz) = fuzz {
+                input.insert("fuzz".to_string(), json!(fuzz));
+            }
+
+            let result = tool
+                .execute(Value::Object(input), &ctx)
+                .await
+                .expect("execute");
+
+            assert!(result.success, "{file_name}: {}", result.content);
+            assert!(result.content.contains("Replaced 1 occurrence"));
+            let edited = fs::read_to_string(&test_file).expect("read");
+            assert_eq!(edited, "hi world");
+        }
     }
 
     #[tokio::test]
@@ -1832,7 +1942,13 @@ mod tests {
             .get("required")
             .and_then(|value| value.as_array())
             .expect("edit schema should include required array");
-        assert_eq!(required.len(), 3);
+        let required_fields: Vec<_> = required.iter().filter_map(|value| value.as_str()).collect();
+        assert_eq!(required_fields, vec!["path", "search", "replace"]);
+        assert!(!required_fields.contains(&"fuzz"));
+        assert_eq!(
+            edit_schema["properties"]["fuzz"]["type"].as_str(),
+            Some("boolean")
+        );
         let search_desc = edit_schema["properties"]["search"]["description"]
             .as_str()
             .expect("search description");

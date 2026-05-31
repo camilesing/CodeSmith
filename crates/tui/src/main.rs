@@ -52,6 +52,7 @@ mod pricing;
 mod project_context;
 mod project_doc;
 mod prompts;
+mod purge;
 pub mod repl;
 mod retry_status;
 pub mod rlm;
@@ -61,22 +62,29 @@ mod runtime_threads;
 mod sandbox;
 mod schema_migration;
 mod seam_manager;
+#[allow(dead_code)]
+mod session_failure_classifier;
 mod session_manager;
 mod settings;
+mod shell_dispatcher;
 mod skill_state;
 mod skills;
+mod slop_ledger;
 mod snapshot;
 mod task_manager;
 #[cfg(test)]
 mod test_support;
+mod theme_qa_audit;
+mod tool_output_receipts;
 mod tools;
 mod tui;
 mod utils;
 mod vision;
 mod working_set;
+mod workspace_discovery;
 mod workspace_trust;
 
-use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
+use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
@@ -116,7 +124,7 @@ struct Cli {
     #[command(flatten)]
     feature_toggles: FeatureToggles,
 
-    /// Send a one-shot prompt (non-interactive)
+    /// Initial prompt to submit in the interactive TUI. Use `exec` for non-interactive runs.
     #[arg(short, long, value_name = "PROMPT", num_args = 1..)]
     prompt: Vec<String>,
 
@@ -422,6 +430,10 @@ fn join_prompt_parts(parts: &[String]) -> String {
     parts.join(" ")
 }
 
+fn top_level_prompt_initial_input(parts: &[String]) -> Option<tui::InitialInput> {
+    (!parts.is_empty()).then(|| tui::InitialInput::Submit(join_prompt_parts(parts)))
+}
+
 fn resolve_exec_resume_session_id(args: &ExecArgs, workspace: &Path) -> Result<Option<String>> {
     if let Some(id) = args.resume.as_ref().or(args.session_id.as_ref()) {
         return Ok(Some(id.clone()));
@@ -568,12 +580,15 @@ struct ServeArgs {
     /// Start runtime HTTP/SSE API server
     #[arg(long)]
     http: bool,
+    /// Start runtime HTTP/SSE API server with the built-in mobile control page
+    #[arg(long)]
+    mobile: bool,
     /// Start ACP server over stdio for editor clients such as Zed
     #[arg(long)]
     acp: bool,
-    /// Bind host for HTTP server (default localhost)
-    #[arg(long, default_value = "127.0.0.1")]
-    host: String,
+    /// Bind host for HTTP server (default localhost; --mobile defaults to 0.0.0.0)
+    #[arg(long)]
+    host: Option<String>,
     /// Bind port for HTTP server
     #[arg(long, default_value_t = 7878)]
     port: u16,
@@ -593,6 +608,44 @@ struct ServeArgs {
     /// Disable runtime API auth when no token is configured. Only use on a trusted loopback.
     #[arg(long = "insecure")]
     insecure_no_auth: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServeBindHost {
+    host: String,
+    mobile_rebound_to_lan: bool,
+}
+
+fn resolve_serve_bind_host(mobile: bool, host: Option<String>) -> ServeBindHost {
+    match (mobile, host) {
+        (true, None) => ServeBindHost {
+            host: "0.0.0.0".to_string(),
+            mobile_rebound_to_lan: true,
+        },
+        (_, Some(host)) => ServeBindHost {
+            host,
+            mobile_rebound_to_lan: false,
+        },
+        (false, None) => ServeBindHost {
+            host: "127.0.0.1".to_string(),
+            mobile_rebound_to_lan: false,
+        },
+    }
+}
+
+fn validate_serve_mode_selection(mcp: bool, http: bool, mobile: bool, acp: bool) -> Result<bool> {
+    if http && mobile {
+        bail!("--http and --mobile are mutually exclusive; choose one");
+    }
+    let http_selected = http || mobile;
+    let selected_modes = [mcp, http_selected, acp]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count();
+    if selected_modes != 1 {
+        bail!("Choose exactly one server mode: --mcp, --http/--mobile, or --acp");
+    }
+    Ok(http_selected)
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -627,6 +680,9 @@ enum McpCommand {
         /// URL for streamable HTTP/SSE server
         #[arg(long, conflicts_with = "command")]
         url: Option<String>,
+        /// Explicit URL transport override. Use "sse" for legacy SSE endpoints.
+        #[arg(long, requires = "url")]
+        transport: Option<String>,
         /// Arguments for command-based servers
         #[arg(long = "arg")]
         args: Vec<String>,
@@ -731,6 +787,11 @@ enum SandboxCommand {
 async fn main() -> Result<()> {
     configure_windows_console_utf8();
 
+    // ── Process hardening (#2183) ─────────────────────────────────────────
+    // MUST run before Tokio is booted and before any threads are spawned.
+    // See crates/tui/src/sandbox/process_hardening.rs for ordering rationale.
+    crate::sandbox::process_hardening::apply_process_hardening();
+
     // Set up process panic hook before anything else — writes crash dumps
     // to ~/.deepseek/crashes/ even if the panic happens before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's
@@ -833,8 +894,12 @@ async fn main() -> Result<()> {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
                 let resume_session_id = resolve_exec_resume_session_id(&args, &workspace)?;
+                // The `deepseek` launcher forwards `--yolo` to this binary via
+                // the DEEPSEEK_YOLO env var (which the config loader folds into
+                // `config.yolo`), not as a CLI flag. Honour either source.
+                let yolo = cli.yolo || config.yolo.unwrap_or(false);
                 let needs_engine = args.auto
-                    || cli.yolo
+                    || yolo
                     || resume_session_id.is_some()
                     || args.output_format == ExecOutputFormat::StreamJson;
                 if needs_engine {
@@ -842,7 +907,7 @@ async fn main() -> Result<()> {
                         || config.max_subagents(),
                         |value| value.clamp(1, MAX_SUBAGENTS),
                     );
-                    let auto_mode = args.auto || cli.yolo;
+                    let auto_mode = args.auto || yolo;
                     run_exec_agent(
                         &config,
                         &model,
@@ -913,28 +978,30 @@ async fn main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                let selected_modes = [args.mcp, args.http, args.acp]
-                    .into_iter()
-                    .filter(|selected| *selected)
-                    .count();
-                if selected_modes != 1 {
-                    bail!("Choose exactly one server mode: --mcp, --http, or --acp");
-                }
+                let http_selected =
+                    validate_serve_mode_selection(args.mcp, args.http, args.mobile, args.acp)?;
                 if args.mcp {
-                    mcp_server::run_mcp_server(workspace)
-                } else if args.http {
+                    tokio::task::block_in_place(|| mcp_server::run_mcp_server(workspace))
+                } else if http_selected {
                     let config = load_config_from_cli(&cli)?;
                     let cors_origins = resolve_cors_origins(&config, &args.cors_origin);
+                    let bind_host = resolve_serve_bind_host(args.mobile, args.host);
+                    if bind_host.mobile_rebound_to_lan {
+                        println!(
+                            "WARNING: --mobile is binding to 0.0.0.0 so LAN devices can reach the mobile control page. Use --host 127.0.0.1 to keep mobile loopback-only."
+                        );
+                    }
                     runtime_api::run_http_server(
                         config,
                         workspace,
                         runtime_api::RuntimeApiOptions {
-                            host: args.host,
+                            host: bind_host.host,
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
                             auth_token: args.auth_token,
                             insecure_no_auth: args.insecure_no_auth,
+                            mobile: args.mobile,
                         },
                     )
                     .await
@@ -961,12 +1028,12 @@ async fn main() -> Result<()> {
         };
     }
 
-    // One-shot prompt mode
+    // Top-level prompt mode: submit the initial prompt, then keep the TUI alive
+    // for follow-up messages. Use `codewhale exec` for explicit non-interactive
+    // one-shot behavior (#2370).
     let config = load_config_from_cli(&cli)?;
-    if !cli.prompt.is_empty() {
-        let prompt = join_prompt_parts(&cli.prompt);
-        let model = config.default_model();
-        return run_one_shot(&config, &model, &prompt).await;
+    if let Some(initial_input) = top_level_prompt_initial_input(&cli.prompt) {
+        return run_interactive(&cli, &config, None, Some(initial_input)).await;
     }
 
     // Handle session resume. Plain `codewhale` starts fresh: interrupted
@@ -1404,6 +1471,7 @@ fn mcp_template_json() -> Result<String> {
             args: vec!["./path/to/your-mcp-server.js".to_string()],
             env: std::collections::HashMap::new(),
             url: None,
+            transport: None,
             connect_timeout: None,
             execute_timeout: None,
             read_timeout: None,
@@ -1853,6 +1921,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "OPENROUTER_API_KEY",
                     "codewhale auth set --provider openrouter --api-key \"...\"",
                 ),
+                crate::config::ApiProvider::XiaomiMimo => (
+                    "XIAOMI_MIMO_API_KEY/MIMO_API_KEY",
+                    "codewhale auth set --provider xiaomi-mimo --api-key \"...\"",
+                ),
                 crate::config::ApiProvider::Novita => (
                     "NOVITA_API_KEY",
                     "codewhale auth set --provider novita --api-key \"...\"",
@@ -1860,6 +1932,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                 crate::config::ApiProvider::Fireworks => (
                     "FIREWORKS_API_KEY",
                     "codewhale auth set --provider fireworks --api-key \"...\"",
+                ),
+                crate::config::ApiProvider::Moonshot => (
+                    "MOONSHOT_API_KEY/KIMI_API_KEY",
+                    "codewhale auth set --provider moonshot --api-key \"...\"",
                 ),
                 crate::config::ApiProvider::Sglang => (
                     "SGLANG_API_KEY",
@@ -1872,6 +1948,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                 crate::config::ApiProvider::Ollama => {
                     ("OLLAMA_API_KEY", "codewhale auth set --provider ollama")
                 }
+                crate::config::ApiProvider::Volcengine => (
+                    "VOLCENGINE_API_KEY",
+                    "codewhale auth set --provider volcengine",
+                ),
                 crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "codewhale auth set --provider deepseek")
                 }
@@ -1884,9 +1964,12 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Openai => "openai",
                     crate::config::ApiProvider::Atlascloud => "atlascloud",
                     crate::config::ApiProvider::WanjieArk => "wanjie_ark",
+                    crate::config::ApiProvider::Volcengine => "volcengine",
                     crate::config::ApiProvider::Openrouter => "openrouter",
+                    crate::config::ApiProvider::XiaomiMimo => "xiaomi_mimo",
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
+                    crate::config::ApiProvider::Moonshot => "moonshot",
                     crate::config::ApiProvider::Sglang => "sglang",
                     crate::config::ApiProvider::Vllm => "vllm",
                     crate::config::ApiProvider::Ollama => "ollama",
@@ -2047,6 +2130,51 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("  rust: {}", rustc_version());
     println!();
 
+    println!("{}", "Updates:".bold());
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("  · current: v{current_version}");
+    match codewhale_release::latest_release_tag_async(codewhale_release::ReleaseChannel::Stable)
+        .await
+    {
+        Ok(latest_tag) => {
+            match codewhale_release::compare_release_versions(current_version, &latest_tag) {
+                Ok(std::cmp::Ordering::Less) => {
+                    println!(
+                        "  {} latest: {latest_tag}",
+                        "!".truecolor(sky_r, sky_g, sky_b)
+                    );
+                    println!("    Update available. Run `codewhale update` to install.");
+                }
+                Ok(std::cmp::Ordering::Equal) => {
+                    println!(
+                        "  {} latest: {latest_tag}",
+                        "✓".truecolor(aqua_r, aqua_g, aqua_b)
+                    );
+                    println!("    Already up to date.");
+                }
+                Ok(std::cmp::Ordering::Greater) => {
+                    println!("  {} latest: {latest_tag}", "·".dimmed());
+                    println!("    Current build is newer than the latest published release.");
+                }
+                Err(err) => {
+                    println!(
+                        "  {} latest: {latest_tag}",
+                        "!".truecolor(sky_r, sky_g, sky_b)
+                    );
+                    println!("    Version comparison failed: {err}");
+                }
+            }
+        }
+        Err(err) => {
+            println!(
+                "  {} latest release check failed: {err}",
+                "!".truecolor(sky_r, sky_g, sky_b)
+            );
+            println!("    Run `codewhale update --check` to retry.");
+        }
+    }
+    println!();
+
     // Configuration summary
     println!("{}", "Configuration:".bold());
     let config_path = config_path_override
@@ -2072,6 +2200,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         );
     }
     println!("  workspace: {}", crate::utils::display_path(workspace));
+    println!("  {}", doctor_search_provider_line(config));
 
     // State root (v0.8.44)
     println!();
@@ -2145,6 +2274,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             &["OPENROUTER_API_KEY"][..],
         ),
         (
+            crate::config::ApiProvider::XiaomiMimo,
+            "xiaomi-mimo",
+            &["XIAOMI_MIMO_API_KEY", "MIMO_API_KEY"][..],
+        ),
+        (
             crate::config::ApiProvider::Novita,
             "novita",
             &["NOVITA_API_KEY"][..],
@@ -2153,6 +2287,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             crate::config::ApiProvider::Fireworks,
             "fireworks",
             &["FIREWORKS_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::Moonshot,
+            "moonshot",
+            &["MOONSHOT_API_KEY", "KIMI_API_KEY"][..],
         ),
         (
             crate::config::ApiProvider::Sglang,
@@ -3031,6 +3170,7 @@ fn run_doctor_json(
             "message": strict_tool_mode.message,
             "recommended_base_url": strict_tool_mode.recommended_base_url,
         },
+        "search_provider": doctor_search_provider_json(config),
         "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
@@ -3137,6 +3277,38 @@ fn provider_capability_report(config: &Config) -> serde_json::Value {
         "cache_telemetry_supported": cap.cache_telemetry_supported,
         "request_payload_mode": serde_json::to_value(cap.request_payload_mode).unwrap_or_default(),
         "alias_deprecation": cap.alias_deprecation,
+    })
+}
+
+fn doctor_search_provider_line(config: &Config) -> String {
+    let search_provider = config.search_provider_resolution();
+    let switch_hint = if matches!(
+        (search_provider.provider, search_provider.source),
+        (
+            crate::config::SearchProvider::DuckDuckGo,
+            crate::config::SearchProviderSource::Default
+        )
+    ) {
+        "; set [search] provider = \"bing\" | \"tavily\" | \"bocha\" to switch"
+    } else {
+        ""
+    };
+
+    format!(
+        "search_provider: {} (source: {}{})",
+        search_provider.provider.as_str(),
+        search_provider.source.as_str(),
+        switch_hint
+    )
+}
+
+fn doctor_search_provider_json(config: &Config) -> serde_json::Value {
+    use serde_json::json;
+
+    let search_provider = config.search_provider_resolution();
+    json!({
+        "provider": search_provider.provider.as_str(),
+        "source": search_provider.source.as_str(),
     })
 }
 
@@ -3725,7 +3897,13 @@ async fn run_pr(
     } else {
         cli.resume.clone()
     };
-    run_interactive(cli, config, resume_session_id, Some(prompt)).await
+    run_interactive(
+        cli,
+        config,
+        resume_session_id,
+        Some(tui::InitialInput::Prefill(prompt)),
+    )
+    .await
 }
 
 /// Return true if `name` resolves to an executable on the current `PATH`.
@@ -4074,10 +4252,16 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
             name,
             command,
             url,
+            transport,
             args,
         } => {
             if command.is_none() && url.is_none() {
                 bail!("Provide either --command or --url for `mcp add`.");
+            }
+            if let Some(transport) = transport.as_deref() {
+                if !transport.trim().eq_ignore_ascii_case("sse") {
+                    bail!("Unsupported MCP transport '{transport}'. Supported values: sse");
+                }
             }
             let mut cfg = load_mcp_config(&config_path)?;
             cfg.servers.insert(
@@ -4087,6 +4271,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                     args,
                     env: std::collections::HashMap::new(),
                     url,
+                    transport,
                     connect_timeout: None,
                     execute_timeout: None,
                     read_timeout: None,
@@ -4173,6 +4358,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                     args,
                     env: std::collections::HashMap::new(),
                     url: None,
+                    transport: None,
                     connect_timeout: None,
                     execute_timeout: None,
                     read_timeout: None,
@@ -4600,6 +4786,20 @@ fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) 
 /// Only explicitly set fields in the project file are applied; everything
 /// else falls back to the global value.
 fn merge_project_config(config: &mut Config, workspace: &Path) {
+    // When the workspace is the user's home directory, the project-scope
+    // config file is also the global config file. Skip the merge to avoid
+    // redundant processing and a misleading "project-scope config key
+    // ignored" warning on every launch from ~.
+    if let Some(home) = effective_home_dir()
+        && let (Ok(w), Ok(h)) = (
+            std::fs::canonicalize(workspace),
+            std::fs::canonicalize(&home),
+        )
+        && w == h
+    {
+        return;
+    }
+
     // v0.8.44: prefer .codewhale/config.toml, fall back to .deepseek/
     let path = workspace
         .join(codewhale_config::CODEWHALE_APP_DIR)
@@ -4651,38 +4851,46 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
 
     // String fields a project may legitimately override (model,
     // approval/sandbox tightening, notes path, reasoning effort).
-    // Loosening *values* like `approval_policy = "auto"` and
-    // `sandbox_mode = "danger-full-access"` are denied unconditionally
-    // — those are pure escalation regardless of the user's prior
-    // value. Sub-tightening comparisons (e.g. user `"never"` →
-    // project `"on-request"`) stay v0.8.9 follow-up because they
-    // need a richer ordering check.
     for (key, field) in [
         ("model", &mut config.default_text_model),
         ("reasoning_effort", &mut config.reasoning_effort),
-        ("approval_policy", &mut config.approval_policy),
-        ("sandbox_mode", &mut config.sandbox_mode),
         ("notes_path", &mut config.notes_path),
     ] {
         if let Some(v) = table.get(key).and_then(toml::Value::as_str)
             && !v.is_empty()
         {
-            // #417 escalation deny: project cannot push the session
-            // to the loosest values. Other strings flow through the
-            // existing config validator on load.
-            let is_escalation = matches!(
-                (key, v),
-                ("approval_policy", "auto") | ("sandbox_mode", "danger-full-access")
-            );
-            if is_escalation {
-                eprintln!(
-                    "warning: project-scope `{key} = \"{v}\"` is ignored — \
-                     project config cannot escalate to the loosest value. \
-                     (See #417.)"
-                );
-                continue;
-            }
             *field = Some(v.to_string());
+        }
+    }
+
+    if let Some(v) = table.get("approval_policy").and_then(toml::Value::as_str)
+        && !v.is_empty()
+    {
+        if codewhale_config::project_approval_policy_is_allowed(
+            config.approval_policy.as_deref(),
+            v,
+        ) {
+            config.approval_policy = Some(v.to_string());
+        } else {
+            eprintln!(
+                "warning: project-scope `approval_policy = \"{v}\"` is ignored — \
+                 project config can only tighten the user's approval policy. \
+                 (See #417.)"
+            );
+        }
+    }
+
+    if let Some(v) = table.get("sandbox_mode").and_then(toml::Value::as_str)
+        && !v.is_empty()
+    {
+        if codewhale_config::project_sandbox_mode_is_allowed(config.sandbox_mode.as_deref(), v) {
+            config.sandbox_mode = Some(v.to_string());
+        } else {
+            eprintln!(
+                "warning: project-scope `sandbox_mode = \"{v}\"` is ignored — \
+                 project config can only tighten the user's sandbox mode. \
+                 (See #417.)"
+            );
         }
     }
 
@@ -4715,7 +4923,7 @@ async fn run_interactive(
     cli: &Cli,
     config: &Config,
     resume_session_id: Option<String>,
-    initial_input: Option<String>,
+    initial_input: Option<tui::InitialInput>,
 ) -> Result<()> {
     let workspace = cli
         .workspace
@@ -4797,6 +5005,10 @@ async fn run_interactive(
         let _ = manager.cleanup_old_sessions();
     }
 
+    // The `deepseek` launcher forwards `--yolo` to this binary via the
+    // DEEPSEEK_YOLO env var (config.yolo), not as a CLI flag. Honour either.
+    let yolo = cli.yolo || config.yolo.unwrap_or(false);
+
     tui::run_tui(
         config,
         tui::TuiOptions {
@@ -4804,7 +5016,7 @@ async fn run_interactive(
             workspace,
             config_path: cli.config.clone(),
             config_profile: cli.profile.clone(),
-            allow_shell: cli.yolo || config.allow_shell(),
+            allow_shell: yolo || config.allow_shell(),
             use_alt_screen,
             use_mouse_capture,
             use_bracketed_paste,
@@ -4813,9 +5025,9 @@ async fn run_interactive(
             notes_path: config.notes_path(),
             mcp_config_path: config.mcp_config_path(),
             use_memory: config.memory_enabled(),
-            start_in_agent_mode: cli.yolo,
+            start_in_agent_mode: yolo,
             skip_onboarding: cli.skip_onboarding,
-            yolo: cli.yolo, // YOLO mode auto-approves all tool executions
+            yolo, // YOLO mode auto-approves all tool executions
             resume_session_id,
             initial_input,
             max_subagents,
@@ -5088,6 +5300,7 @@ async fn run_exec_agent(
         .lsp
         .clone()
         .map(crate::config::LspConfigToml::into_runtime);
+    let settings = crate::settings::Settings::load().unwrap_or_default();
 
     let engine_config = EngineConfig {
         model: effective_model.clone(),
@@ -5097,9 +5310,14 @@ async fn run_exec_agent(
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         skills_dir: config.skills_dir(),
-        instructions: config.instructions_paths(),
+        instructions: config
+            .instructions_paths()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: false,
+        show_thinking: settings.show_thinking,
         max_steps: 100,
         max_subagents,
         features: config.features(),
@@ -5108,6 +5326,7 @@ async fn run_exec_agent(
         capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),
+        goal_state: crate::tools::goal::new_shared_goal_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy,
         snapshots_enabled: config.snapshots_config().enabled,
@@ -5119,23 +5338,20 @@ async fn run_exec_agent(
         runtime_services: crate::tools::spec::RuntimeToolServices::default(),
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
-        locale_tag: crate::localization::resolve_locale(
-            &crate::settings::Settings::load().unwrap_or_default().locale,
-        )
-        .tag()
-        .to_string(),
+        allowed_tools: None,
+        locale_tag: crate::localization::resolve_locale(&settings.locale)
+            .tag()
+            .to_string(),
         workshop: config.workshop.clone(),
-        search_provider: config
-            .search
-            .as_ref()
-            .and_then(|s| s.provider)
-            .unwrap_or_default(),
+        search_provider: config.search_provider(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        tools_always_load: config.tools_always_load(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);
@@ -5183,6 +5399,7 @@ async fn run_exec_agent(
             mode,
             model: effective_model.clone(),
             goal_objective: None,
+            allowed_tools: None,
             reasoning_effort: effective_reasoning_effort,
             reasoning_effort_auto: auto_model,
             auto_model,
@@ -5190,6 +5407,7 @@ async fn run_exec_agent(
             trust_mode,
             auto_approve,
             translation_enabled: false,
+            show_thinking: settings.show_thinking,
             approval_mode: if auto_approve {
                 crate::tui::approval::ApprovalMode::Auto
             } else {
@@ -5489,6 +5707,53 @@ async fn run_exec_agent(
 }
 
 #[cfg(test)]
+mod serve_bind_host_tests {
+    use super::*;
+
+    #[test]
+    fn http_defaults_to_loopback() {
+        assert_eq!(
+            resolve_serve_bind_host(false, None),
+            ServeBindHost {
+                host: "127.0.0.1".to_string(),
+                mobile_rebound_to_lan: false,
+            }
+        );
+    }
+
+    #[test]
+    fn mobile_default_rebinds_to_lan_with_warning_flag() {
+        assert_eq!(
+            resolve_serve_bind_host(true, None),
+            ServeBindHost {
+                host: "0.0.0.0".to_string(),
+                mobile_rebound_to_lan: true,
+            }
+        );
+    }
+
+    #[test]
+    fn mobile_respects_explicit_loopback_host() {
+        assert_eq!(
+            resolve_serve_bind_host(true, Some("127.0.0.1".to_string())),
+            ServeBindHost {
+                host: "127.0.0.1".to_string(),
+                mobile_rebound_to_lan: false,
+            }
+        );
+    }
+
+    #[test]
+    fn http_and_mobile_are_mutually_exclusive() {
+        let err = validate_serve_mode_selection(false, true, true, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--http and --mobile are mutually exclusive")
+        );
+    }
+}
+
+#[cfg(test)]
 mod doctor_endpoint_tests {
     use super::*;
 
@@ -5631,6 +5896,87 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
+    fn doctor_search_provider_line_includes_duckduckgo_default_source_and_switch_hint() {
+        let _guard = crate::test_support::lock_test_env();
+        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
+        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
+
+        let line = doctor_search_provider_line(&Config::default());
+
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
+        }
+        assert!(line.contains("search_provider: duckduckgo"));
+        assert!(line.contains("source: default"));
+        assert!(line.contains("[search] provider"));
+        assert!(line.contains("provider = \"bing\""));
+    }
+
+    #[test]
+    fn doctor_search_provider_json_reports_config_source() {
+        let _guard = crate::test_support::lock_test_env();
+        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
+        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
+        let config = Config {
+            search: Some(crate::config::SearchConfig {
+                provider: Some(crate::config::SearchProvider::DuckDuckGo),
+                api_key: None,
+            }),
+            ..Default::default()
+        };
+
+        let report = doctor_search_provider_json(&config);
+
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
+        }
+        assert_eq!(report["provider"], "duckduckgo");
+        assert_eq!(report["source"], "config");
+    }
+
+    #[test]
+    fn doctor_search_provider_json_reports_env_override_source() {
+        let _guard = crate::test_support::lock_test_env();
+        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
+        unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", "tavily") };
+
+        let report = doctor_search_provider_json(&Config::default());
+
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
+        }
+        assert_eq!(report["provider"], "tavily");
+        assert_eq!(report["source"], "env override");
+    }
+
+    #[test]
+    fn doctor_search_provider_line_omits_switch_hint_when_bing_is_configured() {
+        let _guard = crate::test_support::lock_test_env();
+        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
+        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
+        let config = Config {
+            search: Some(crate::config::SearchConfig {
+                provider: Some(crate::config::SearchProvider::Bing),
+                api_key: None,
+            }),
+            ..Default::default()
+        };
+
+        let line = doctor_search_provider_line(&config);
+
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
+        }
+        assert!(line.contains("search_provider: bing"));
+        assert!(line.contains("source: config"));
+        assert!(!line.contains("[search] provider"));
+    }
+
+    #[test]
     fn timeout_recovery_keeps_default_deepseek_users_on_default_endpoint() {
         let config = Config::default();
 
@@ -5671,6 +6017,16 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["codewhale", "-p", "hello", "world"]);
 
         assert_eq!(cli.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn prompt_flag_starts_interactive_submit_input() {
+        let cli = parse_cli(&["codewhale", "-p", "read", "the", "project"]);
+
+        assert_eq!(
+            top_level_prompt_initial_input(&cli.prompt),
+            Some(tui::InitialInput::Submit("read the project".to_string()))
+        );
     }
 
     #[test]
@@ -6156,6 +6512,54 @@ mod project_config_tests {
         tmp
     }
 
+    fn with_home_dir<T>(home: &Path, f: impl FnOnce() -> T) -> T {
+        let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+        }
+        let result = f();
+        unsafe {
+            match prev_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn project_overlay_skips_when_workspace_is_home_directory() {
+        let _guard = crate::test_support::lock_test_env();
+        let tmp = tempdir().expect("tempdir");
+        let project_dir = tmp.path().join(codewhale_config::CODEWHALE_APP_DIR);
+        fs::create_dir_all(&project_dir).expect("mkdir .codewhale");
+        fs::write(
+            project_dir.join("config.toml"),
+            r#"model = "project-override-model""#,
+        )
+        .expect("write project config");
+
+        with_home_dir(tmp.path(), || {
+            let mut config = Config {
+                default_text_model: Some("deepseek-v4-flash".to_string()),
+                ..Config::default()
+            };
+
+            merge_project_config(&mut config, tmp.path());
+
+            assert_eq!(
+                config.default_text_model.as_deref(),
+                Some("deepseek-v4-flash")
+            );
+        });
+    }
+
     #[test]
     fn project_overlay_overrides_model_but_denies_provider() {
         // #417: `provider` is on the deny-list; only the `model`
@@ -6287,6 +6691,42 @@ approval_policy = "auto"
             Some("never"),
             "user's strict approval_policy must survive a project escalation attempt"
         );
+    }
+
+    #[test]
+    fn project_overlay_preserves_user_policy_when_project_tries_intermediate_loosening() {
+        let tmp = workspace_with_project_config(
+            r#"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+"#,
+        );
+        let mut config = Config {
+            approval_policy: Some("never".to_string()),
+            sandbox_mode: Some("read-only".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.approval_policy.as_deref(), Some("never"));
+        assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+    }
+
+    #[test]
+    fn project_overlay_can_tighten_user_policy() {
+        let tmp = workspace_with_project_config(
+            r#"
+approval_policy = "never"
+sandbox_mode = "read-only"
+"#,
+        );
+        let mut config = Config {
+            approval_policy: Some("on-request".to_string()),
+            sandbox_mode: Some("workspace-write".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.approval_policy.as_deref(), Some("never"));
+        assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
     }
 
     #[test]
@@ -6470,6 +6910,7 @@ mod doctor_mcp_tests {
             args: args.iter().map(|s| s.to_string()).collect(),
             env: std::collections::HashMap::new(),
             url: url.map(String::from),
+            transport: None,
             connect_timeout: None,
             execute_timeout: None,
             read_timeout: None,

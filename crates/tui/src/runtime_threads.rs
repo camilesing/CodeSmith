@@ -833,6 +833,30 @@ impl RuntimeThreadManager {
         }
     }
 
+    pub async fn submit_user_input(
+        &self,
+        thread_id: &str,
+        input_id: &str,
+        response: crate::tools::user_input::UserInputResponse,
+    ) -> Result<bool> {
+        let active = self.active.lock().await;
+        let Some(state) = active.engines.get(thread_id) else {
+            bail!("thread '{thread_id}' not found");
+        };
+        state.engine.submit_user_input(input_id, response).await?;
+        Ok(true)
+    }
+
+    #[allow(dead_code)]
+    pub async fn cancel_user_input(&self, thread_id: &str, input_id: &str) -> Result<bool> {
+        let active = self.active.lock().await;
+        let Some(state) = active.engines.get(thread_id) else {
+            bail!("thread '{thread_id}' not found");
+        };
+        state.engine.cancel_user_input(input_id).await?;
+        Ok(true)
+    }
+
     #[allow(dead_code)]
     pub fn pending_approvals_count(&self) -> usize {
         self.pending_approvals
@@ -868,10 +892,10 @@ impl RuntimeThreadManager {
 
         {
             let mut active = self.active.lock().await;
-            if let Some(state) = active.engines.get_mut(thread_id) {
-                if let Some(turn) = state.active_turn.as_mut() {
-                    turn.auto_approve = true;
-                }
+            if let Some(state) = active.engines.get_mut(thread_id)
+                && let Some(turn) = state.active_turn.as_mut()
+            {
+                turn.auto_approve = true;
             }
         }
     }
@@ -1434,7 +1458,7 @@ impl RuntimeThreadManager {
 
             if let Some(assistant_text) = assistant_text {
                 let asst_summary = if assistant_text.len() > SUMMARY_LIMIT {
-                    format!("{}...", &assistant_text[..SUMMARY_LIMIT.saturating_sub(3)])
+                    crate::utils::truncate_with_ellipsis(&assistant_text, SUMMARY_LIMIT, "...")
                 } else {
                     assistant_text.clone()
                 };
@@ -1611,6 +1635,9 @@ impl RuntimeThreadManager {
         let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
         let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
         let auto_approve = req.auto_approve.unwrap_or(thread.auto_approve);
+        let show_thinking = crate::settings::Settings::load()
+            .unwrap_or_default()
+            .show_thinking;
 
         engine
             .send(Op::SendMessage {
@@ -1625,6 +1652,8 @@ impl RuntimeThreadManager {
                 trust_mode,
                 auto_approve,
                 translation_enabled: false,
+                show_thinking,
+                allowed_tools: None,
                 approval_mode: if auto_approve {
                     crate::tui::approval::ApprovalMode::Auto
                 } else {
@@ -1931,6 +1960,7 @@ impl RuntimeThreadManager {
             .lsp
             .clone()
             .map(crate::config::LspConfigToml::into_runtime);
+        let settings = crate::settings::Settings::load().unwrap_or_default();
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
@@ -1939,9 +1969,15 @@ impl RuntimeThreadManager {
             notes_path: self.config.notes_path(),
             mcp_config_path: self.config.mcp_config_path(),
             skills_dir: self.config.skills_dir(),
-            instructions: self.config.instructions_paths(),
+            instructions: self
+                .config
+                .instructions_paths()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             project_context_pack_enabled: self.config.project_context_pack_enabled(),
             translation_enabled: false,
+            show_thinking: settings.show_thinking,
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
@@ -1952,6 +1988,7 @@ impl RuntimeThreadManager {
             ),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
+            goal_state: crate::tools::goal::new_shared_goal_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
             snapshots_enabled: self.config.snapshots_config().enabled,
@@ -1976,24 +2013,20 @@ impl RuntimeThreadManager {
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),
             ),
+            prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             vision_config: self.config.vision_model_config(),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
-            locale_tag: crate::localization::resolve_locale(
-                &crate::settings::Settings::load().unwrap_or_default().locale,
-            )
-            .tag()
-            .to_string(),
+            allowed_tools: None,
+            locale_tag: crate::localization::resolve_locale(&settings.locale)
+                .tag()
+                .to_string(),
             workshop: self.config.workshop.clone(),
-            search_provider: self
-                .config
-                .search
-                .as_ref()
-                .and_then(|s| s.provider)
-                .unwrap_or_default(),
+            search_provider: self.config.search_provider(),
             search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
+            tools_always_load: self.config.tools_always_load(),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);
@@ -2781,6 +2814,19 @@ impl RuntimeThreadManager {
                             let _ = engine.deny_tool_call(tool_id).await;
                         }
                     }
+                }
+                EngineEvent::UserInputRequired { id, request } => {
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "user_input.required",
+                        json!({
+                            "id": id,
+                            "request": request,
+                        }),
+                    )
+                    .await?;
                 }
                 EngineEvent::Status { message } => {
                     let item = TurnItemRecord {
@@ -4170,6 +4216,7 @@ mod tests {
                 id: "tool_stale".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "stale approval".to_string(),
+                input: serde_json::json!({}),
             })
             .await?;
 
@@ -4243,6 +4290,7 @@ mod tests {
                 id: "tool_external_allow".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "external allow".to_string(),
+                input: serde_json::json!({}),
             })
             .await?;
 
@@ -4320,6 +4368,7 @@ mod tests {
                 id: "tool_external_deny".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "external deny".to_string(),
+                input: serde_json::json!({}),
             })
             .await?;
 
@@ -4506,6 +4555,7 @@ mod tests {
                 id: "tool_remember".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "remember=true".to_string(),
+                input: serde_json::json!({}),
             })
             .await?;
 

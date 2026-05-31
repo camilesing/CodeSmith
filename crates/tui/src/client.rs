@@ -882,8 +882,10 @@ pub(super) fn apply_reasoning_effort(
             ApiProvider::Deepseek
             | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
+            | ApiProvider::XiaomiMimo
             | ApiProvider::Novita
-            | ApiProvider::Sglang => {
+            | ApiProvider::Sglang
+            | ApiProvider::Volcengine => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
             ApiProvider::Fireworks => {}
@@ -904,6 +906,7 @@ pub(super) fn apply_reasoning_effort(
             ApiProvider::Openai
             | ApiProvider::Atlascloud
             | ApiProvider::WanjieArk
+            | ApiProvider::Moonshot
             | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
@@ -913,7 +916,10 @@ pub(super) fn apply_reasoning_effort(
         },
         "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
             // DeepSeek compatibility: low/medium both map to high
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::Sglang => {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Sglang
+            | ApiProvider::Volcengine => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
@@ -929,6 +935,9 @@ pub(super) fn apply_reasoning_effort(
                 body["reasoning_effort"] = json!(value);
                 body["thinking"] = json!({ "type": "enabled" });
             }
+            ApiProvider::XiaomiMimo => {
+                body["thinking"] = json!({ "type": "enabled" });
+            }
             ApiProvider::Fireworks => {
                 body["reasoning_effort"] = json!("high");
             }
@@ -936,11 +945,19 @@ pub(super) fn apply_reasoning_effort(
                 body["chat_template_kwargs"] = json!({
                     "enable_thinking": true,
                 });
-                body["reasoning_effort"] = json!("high");
+                // vLLM supports low/medium/high natively — pass through the
+                // user-chosen value instead of hard-coding "high".
+                let value = match normalized.as_str() {
+                    "low" | "minimal" => "low",
+                    "medium" | "mid" => "medium",
+                    _ => "high",
+                };
+                body["reasoning_effort"] = json!(value);
             }
             ApiProvider::Openai
             | ApiProvider::Atlascloud
             | ApiProvider::WanjieArk
+            | ApiProvider::Moonshot
             | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
@@ -950,12 +967,18 @@ pub(super) fn apply_reasoning_effort(
             }
         },
         "xhigh" | "max" | "highest" => match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::Sglang => {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Sglang
+            | ApiProvider::Volcengine => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }
             ApiProvider::Openrouter | ApiProvider::Novita => {
                 body["reasoning_effort"] = json!("xhigh");
+                body["thinking"] = json!({ "type": "enabled" });
+            }
+            ApiProvider::XiaomiMimo => {
                 body["thinking"] = json!({ "type": "enabled" });
             }
             ApiProvider::Fireworks => {
@@ -965,11 +988,14 @@ pub(super) fn apply_reasoning_effort(
                 body["chat_template_kwargs"] = json!({
                     "enable_thinking": true,
                 });
-                body["reasoning_effort"] = json!("max");
+                // vLLM only supports none/low/medium/high — downgrade
+                // "max" to "high" instead of sending an invalid value.
+                body["reasoning_effort"] = json!("high");
             }
             ApiProvider::Openai
             | ApiProvider::Atlascloud
             | ApiProvider::WanjieArk
+            | ApiProvider::Moonshot
             | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
@@ -1112,6 +1138,23 @@ mod tests {
         ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, Tool,
     };
     use serde_json::json;
+
+    fn test_tool(name: &str) -> Tool {
+        Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: format!("{name} test tool"),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+            }),
+            allowed_callers: None,
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        }
+    }
 
     #[test]
     fn tool_name_roundtrip_dot() {
@@ -1286,7 +1329,7 @@ mod tests {
         // and DOES replay reasoning_content — see
         // `deepseek_model_on_openai_provider_still_replays_reasoning_content`.
         let request = MessageRequest {
-            model: "gpt-4o".to_string(),
+            model: "qwen3-coder".to_string(),
             messages: vec![Message {
                 role: "assistant".to_string(),
                 content: vec![
@@ -1799,6 +1842,49 @@ mod tests {
     }
 
     #[test]
+    fn prompt_inspect_tracks_tool_catalog_in_static_prefix_hash() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Current task".to_string(),
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text("Base policy".to_string())),
+            tools: Some(vec![test_tool("read_file")]),
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let first = inspect_prompt_for_request(&request);
+        let mut changed_tools = request.clone();
+        changed_tools.tools = Some(vec![test_tool("read_file"), test_tool("grep_files")]);
+        let second = inspect_prompt_for_request(&changed_tools);
+
+        assert!(
+            first.layers.iter().any(|layer| {
+                layer.name == "Tool catalog" && layer.stability.label() == "static"
+            })
+        );
+        assert_ne!(
+            first.base_static_prefix_hash, second.base_static_prefix_hash,
+            "tool schema changes must be visible to cache-inspect base prefix diagnostics"
+        );
+        assert_ne!(
+            first.full_request_prefix_hash, second.full_request_prefix_hash,
+            "tool schema changes must be visible to full reusable-prefix diagnostics"
+        );
+    }
+
+    #[test]
     fn cache_warmup_request_reuses_stable_prefix_and_fixed_user_tail() {
         let request = MessageRequest {
             model: "deepseek-v4-pro".to_string(),
@@ -1823,7 +1909,7 @@ mod tests {
                 "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nStable project rules\n</project_instructions>\n\n## Previous Session Relay\n\nDynamic relay"
                     .to_string(),
             )),
-            tools: None,
+            tools: Some(vec![test_tool("read_file")]),
             tool_choice: None,
             metadata: None,
             thinking: None,
@@ -1838,6 +1924,8 @@ mod tests {
         assert_eq!(warmup.max_tokens, 8);
         assert_eq!(warmup.temperature, Some(0.0));
         assert_eq!(warmup.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(warmup.tools.as_ref().map(Vec::len), Some(1));
+        assert_eq!(warmup.tool_choice, Some(json!("none")));
         assert_eq!(warmup.messages.len(), 2);
         assert_eq!(warmup.messages[0].role, "assistant");
         assert_eq!(warmup.messages[1].role, "user");
@@ -1968,6 +2056,29 @@ mod tests {
                 Some("enabled")
             );
         }
+    }
+
+    #[test]
+    fn reasoning_effort_uses_xiaomi_mimo_thinking_parameter_only() {
+        for input in ["low", "medium", "max", "xhigh"] {
+            let mut body = json!({});
+            apply_reasoning_effort(&mut body, Some(input), ApiProvider::XiaomiMimo);
+
+            assert_eq!(
+                body.pointer("/thinking/type").and_then(Value::as_str),
+                Some("enabled"),
+                "MiMo thinking mapping for {input}"
+            );
+            assert!(body.get("reasoning_effort").is_none());
+        }
+
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("off"), ApiProvider::XiaomiMimo);
+        assert_eq!(
+            body.pointer("/thinking/type").and_then(Value::as_str),
+            Some("disabled")
+        );
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -2745,7 +2856,7 @@ mod tests {
         // DeepSeek reasoning model on the openai provider still gets sanitized
         // (see chat.rs `deepseek_model_on_openai_provider_still_replays_*`).
         let mut body = json!({
-            "model": "gpt-4o",
+            "model": "qwen3-coder",
             "messages": [
                 { "role": "user", "content": "hi" },
                 {
@@ -2756,8 +2867,12 @@ mod tests {
             ]
         });
 
-        let result =
-            sanitize_thinking_mode_messages(&mut body, "gpt-4o", Some("max"), ApiProvider::Openai);
+        let result = sanitize_thinking_mode_messages(
+            &mut body,
+            "qwen3-coder",
+            Some("max"),
+            ApiProvider::Openai,
+        );
 
         assert!(result.is_none());
         let assistant = body["messages"]
@@ -2846,6 +2961,10 @@ mod tests {
 
     #[test]
     fn base_url_security_rejects_insecure_non_local_http() {
+        let _lock = ALLOW_INSECURE_HTTP_ENV_LOCK.lock().unwrap();
+        let _guard = AllowInsecureHttpEnvGuard::capture();
+        unsafe { std::env::remove_var(ALLOW_INSECURE_HTTP_ENV) };
+
         let err = validate_base_url_security("http://api.deepseek.com")
             .expect_err("non-local insecure HTTP should be rejected");
         assert!(err.to_string().contains("Refusing insecure base URL"));
@@ -2853,8 +2972,44 @@ mod tests {
 
     #[test]
     fn base_url_security_allows_localhost_http() {
+        let _lock = ALLOW_INSECURE_HTTP_ENV_LOCK.lock().unwrap();
+        let _guard = AllowInsecureHttpEnvGuard::capture();
+        unsafe { std::env::remove_var(ALLOW_INSECURE_HTTP_ENV) };
+
         assert!(validate_base_url_security("http://localhost:8080").is_ok());
         assert!(validate_base_url_security("http://127.0.0.1:8080").is_ok());
+    }
+
+    #[test]
+    fn base_url_security_allows_non_local_http_with_explicit_opt_in() {
+        let _lock = ALLOW_INSECURE_HTTP_ENV_LOCK.lock().unwrap();
+        let _guard = AllowInsecureHttpEnvGuard::capture();
+        unsafe { std::env::set_var(ALLOW_INSECURE_HTTP_ENV, "1") };
+
+        assert!(validate_base_url_security("http://192.168.0.110:8000/v1").is_ok());
+    }
+
+    /// Serialize tests that mutate `DEEPSEEK_ALLOW_INSECURE_HTTP`; env vars are
+    /// process-global and would otherwise leak across security checks.
+    static ALLOW_INSECURE_HTTP_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct AllowInsecureHttpEnvGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+    impl AllowInsecureHttpEnvGuard {
+        fn capture() -> Self {
+            Self {
+                prior: std::env::var_os(ALLOW_INSECURE_HTTP_ENV),
+            }
+        }
+    }
+    impl Drop for AllowInsecureHttpEnvGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => unsafe { std::env::set_var(ALLOW_INSECURE_HTTP_ENV, v) },
+                None => unsafe { std::env::remove_var(ALLOW_INSECURE_HTTP_ENV) },
+            }
+        }
     }
 
     #[test]
