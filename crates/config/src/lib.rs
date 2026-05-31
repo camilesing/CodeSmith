@@ -1525,9 +1525,13 @@ fn canonical_openrouter_recent_model_id(model: &str) -> Option<&'static str> {
         OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL
         | "nemotron-3-nano-omni"
         | "nemotron-3-nano-omni-reasoning" => Some(OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL),
-        OPENROUTER_QWEN_3_7_MAX_MODEL | "qwen3.7-max" | "qwen-3.7-max" | "qwen3-7-max" => {
-            Some(OPENROUTER_QWEN_3_7_MAX_MODEL)
-        }
+        OPENROUTER_QWEN_3_7_MAX_MODEL
+        | "qwen3.7"
+        | "qwen-3.7"
+        | "qwen3-7"
+        | "qwen3.7-max"
+        | "qwen-3.7-max"
+        | "qwen3-7-max" => Some(OPENROUTER_QWEN_3_7_MAX_MODEL),
         OPENROUTER_QWEN_3_6_35B_A3B_MODEL
         | "qwen3.6-35b-a3b"
         | "qwen-3.6-35b-a3b"
@@ -3841,6 +3845,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
                 "trinity-large-thinking",
                 OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL,
             ),
+            ("qwen3.7", OPENROUTER_QWEN_3_7_MAX_MODEL),
             ("qwen3.7-max", OPENROUTER_QWEN_3_7_MAX_MODEL),
             ("qwen3.6-35b-a3b", OPENROUTER_QWEN_3_6_35B_A3B_MODEL),
             ("mimo-v2.5-pro", OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL),
