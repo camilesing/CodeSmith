@@ -2291,12 +2291,14 @@ fn turn_liveness_watchdog_clears_stale_dispatch() {
     app.is_loading = true;
     app.dispatch_started_at =
         Some(Instant::now() - DISPATCH_WATCHDOG_TIMEOUT - Duration::from_millis(1));
+    app.turn_started_at = Some(Instant::now());
 
     let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
 
     assert!(recovered);
     assert!(!app.is_loading);
     assert!(app.dispatch_started_at.is_none());
+    assert!(app.turn_started_at.is_none());
     let toast = app.status_toasts.back().expect("watchdog toast");
     assert_eq!(toast.level, StatusToastLevel::Error);
     assert!(toast.text.contains("Turn dispatch timed out"));
@@ -2308,12 +2310,14 @@ fn turn_liveness_reconciles_completed_busy_state() {
     app.is_loading = true;
     app.runtime_turn_status = Some("completed".to_string());
     app.dispatch_started_at = Some(Instant::now());
+    app.turn_started_at = Some(Instant::now());
 
     let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
 
     assert!(recovered);
     assert!(!app.is_loading);
     assert!(app.dispatch_started_at.is_none());
+    assert!(app.turn_started_at.is_none());
     let toast = app.status_toasts.back().expect("reconciliation toast");
     assert_eq!(toast.level, StatusToastLevel::Warning);
     assert!(
