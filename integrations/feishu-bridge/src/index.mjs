@@ -16,6 +16,7 @@ import {
   parseList,
   parseApprovalDecisionArgs,
   parseTextContent,
+  preservedChatStateFields,
   splitMessage,
   stripGroupPrefix
 } from "./lib.mjs";
@@ -266,6 +267,7 @@ async function ensureThread(chatId, { forceNew = false } = {}) {
   });
 
   const state = {
+    ...preservedChatStateFields(existing),
     threadId: thread.id,
     lastSeq: 0,
     activeTurnId: null,
@@ -505,7 +507,9 @@ async function resumeThread(chatId, args) {
     return;
   }
   const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(threadId)}`);
+  const existing = await threadStore.getChat(chatId);
   await threadStore.setChat(chatId, {
+    ...preservedChatStateFields(existing),
     threadId,
     lastSeq: Number(detail.latest_seq || 0),
     activeTurnId: null,
@@ -601,22 +605,28 @@ async function sendText(chatId, text) {
     throw new Error("Lark SDK client does not expose im message create API");
   }
 
+  let canReply = Boolean(replyMessage);
   for (const chunk of splitMessage(text, config.maxReplyChars)) {
     const body = {
       msg_type: "text",
       content: JSON.stringify({ text: chunk })
     };
-    if (replyMessage) {
-      await replyMessage({
-        path: { message_id: replyToMessageId },
-        data: body
-      });
-    } else {
-      await createMessage({
-        params: { receive_id_type: "chat_id" },
-        data: { ...body, receive_id: chatId }
-      });
+    if (canReply) {
+      try {
+        await replyMessage({
+          path: { message_id: replyToMessageId },
+          data: body
+        });
+        continue;
+      } catch (error) {
+        canReply = false;
+        console.warn("Feishu reply API failed; falling back to message create", error);
+      }
     }
+    await createMessage({
+      params: { receive_id_type: "chat_id" },
+      data: { ...body, receive_id: chatId }
+    });
   }
 }
 
