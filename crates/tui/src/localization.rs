@@ -1460,6 +1460,7 @@ fn vietnamese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => {
             "Liệt kê các kỹ năng cục bộ (lọc bằng `/skills <tiền_tố>`; --remote để duyệt kho lưu trữ được kiểm duyệt)"
         }
+        MessageId::CmdSlopDescription => "Kiểm tra hoặc xuất SlopLedger",
         MessageId::CmdStashDescription => {
             "Tạm cất hoặc khôi phục bản nháp (Ctrl+S để cất, /stash list/pop để xem/lấy ra)"
         }
