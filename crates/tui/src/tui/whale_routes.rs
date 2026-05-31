@@ -12,7 +12,7 @@
 //! 3. Sperm Whale  — Pro + no thinking
 //! 4. Humpback     — Flash + max thinking
 //! 5. Minke Whale  — Flash + high thinking
-//! 6. Porpoise     — Flash + no thinking (smallest, fastest)
+//! 6. Beluga       — Flash + no thinking (smallest, fastest)
 //!
 //! Unknown or non-DeepSeek models fall back to the raw model id without
 //! fake whale labeling.
@@ -80,7 +80,7 @@ pub const WHALE_ROUTES: &[WhaleRoute] = &[
         description: "Fast model, moderate reasoning — tool execution, read-only scouting",
     },
     WhaleRoute {
-        label: "Porpoise",
+        label: "Beluga",
         model: "deepseek-v4-flash",
         effort: ReasoningEffort::Off,
         sort_order: 5,
@@ -135,10 +135,10 @@ mod tests {
     }
 
     #[test]
-    fn lookup_porpoise_for_flash_off() {
+    fn lookup_beluga_for_flash_off() {
         let route = WhaleRoute::for_model_effort("deepseek-v4-flash", ReasoningEffort::Off)
-            .expect("porpoise route exists");
-        assert_eq!(route.label, "Porpoise");
+            .expect("beluga route exists");
+        assert_eq!(route.label, "Beluga");
         assert_eq!(route.sort_order, 5);
     }
 
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn by_sort_order_finds_correct_routes() {
         assert_eq!(WhaleRoute::by_sort_order(0).unwrap().label, "Blue Whale");
-        assert_eq!(WhaleRoute::by_sort_order(5).unwrap().label, "Porpoise");
+        assert_eq!(WhaleRoute::by_sort_order(5).unwrap().label, "Beluga");
         assert!(WhaleRoute::by_sort_order(99).is_none());
     }
 

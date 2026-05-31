@@ -2,7 +2,7 @@
 //!
 //! For DeepSeek providers the picker shows whale-sized routes — model + effort
 //! combinations sorted largest → fastest with friendly whale-species labels
-//! (Blue Whale, Fin Whale, …, Porpoise).  A single ↑/↓ selection sets both
+//! (Blue Whale, Fin Whale, …, Beluga).  A single ↑/↓ selection sets both
 //! model and effort at once.  The "auto" option is always available; custom
 //! (unrecognised) model ids appear as a separate row.
 //!
@@ -110,23 +110,30 @@ impl ModelPickerView {
 
         // When showing whale routes, find the matching route by position in the array
         // (not by sort_order, which happens to match today but is semantically wrong).
-        let selected_route_idx = if show_whale_routes {
-            WHALE_ROUTES
+        let (selected_route_idx, show_custom_model_row) = if show_whale_routes {
+            let idx = WHALE_ROUTES
                 .iter()
                 .position(|r| {
                     r.model.eq_ignore_ascii_case(&initial_model) && r.effort == normalized
                 })
                 .unwrap_or_else(|| {
-                    // No matching whale route — fall back to "auto" (standard model)
-                    // or the custom row (unrecognized model).
-                    if show_custom_model_row {
-                        WHALE_ROUTES.len() + 1 // custom model row
-                    } else {
+                    // No matching whale route — key the fallback on whether the
+                    // current model is actually "auto", not on show_custom_model_row.
+                    // Otherwise a known DeepSeek model (e.g. v4-pro) paired with
+                    // ReasoningEffort::Auto silently falls through to the "auto" row
+                    // and replaces the explicit model on apply.
+                    if initial_model.eq_ignore_ascii_case("auto") {
                         WHALE_ROUTES.len() // "auto" row
+                    } else {
+                        WHALE_ROUTES.len() + 1 // custom model row
                     }
-                })
+                });
+            // When the whale-route fallback selected the custom row, ensure it is
+            // visible so the user can see their current model in the picker.
+            let show_custom = show_custom_model_row || idx == WHALE_ROUTES.len() + 1;
+            (idx, show_custom)
         } else {
-            0
+            (0, show_custom_model_row)
         };
 
         Self {
@@ -621,12 +628,7 @@ mod tests {
         app.auto_model = true;
         app.reasoning_effort = ReasoningEffort::Off;
 
-        let mut view = ModelPickerView::new(&app);
-        view.selected_model_idx = 0;
-        view.selected_effort_idx = PICKER_EFFORTS
-            .iter()
-            .position(|effort| *effort == ReasoningEffort::Max)
-            .expect("max effort row");
+        let view = ModelPickerView::new(&app);
 
         assert_eq!(view.resolved_model(), "auto");
         assert_eq!(view.resolved_effort(), ReasoningEffort::Auto);
@@ -745,6 +747,24 @@ mod tests {
         assert_eq!(view.selected_route_idx, 3);
         assert_eq!(view.resolved_model(), "deepseek-v4-flash");
         assert_eq!(view.resolved_effort(), ReasoningEffort::Max);
+    }
+
+    #[test]
+    fn whale_routes_known_model_auto_effort_does_not_fall_to_auto() {
+        // Regression: a known DeepSeek model paired with ReasoningEffort::Auto
+        // must NOT fall through to the "auto" row — that would silently replace
+        // the explicit model with "auto" on apply.
+        let (mut app, _lock) = create_test_app();
+        app.model = "deepseek-v4-pro".to_string();
+        app.auto_model = false;
+        app.reasoning_effort = ReasoningEffort::Auto;
+        let view = ModelPickerView::new(&app);
+        // Should fall to custom row (WHALE_ROUTES.len() + 1), not auto row.
+        assert_eq!(view.selected_route_idx, WHALE_ROUTES.len() + 1);
+        assert_eq!(view.resolved_model(), "deepseek-v4-pro");
+        assert_eq!(view.resolved_effort(), ReasoningEffort::Auto);
+        // The custom row must be visible so the user sees their current model.
+        assert!(view.show_custom_model_row);
     }
 
     #[test]
