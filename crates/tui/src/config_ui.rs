@@ -280,6 +280,7 @@ pub enum StatusItemValue {
     LastToolElapsed,
     RateLimit,
     Tokens,
+    Balance,
 }
 
 pub fn parse_mode(arg: Option<&str>) -> Result<ConfigUiMode, String> {
@@ -1005,6 +1006,7 @@ impl From<StatusItem> for StatusItemValue {
             StatusItem::LastToolElapsed => Self::LastToolElapsed,
             StatusItem::RateLimit => Self::RateLimit,
             StatusItem::Tokens => Self::Tokens,
+            StatusItem::Balance => Self::Balance,
         }
     }
 }
@@ -1026,6 +1028,7 @@ impl From<StatusItemValue> for StatusItem {
             StatusItemValue::LastToolElapsed => Self::LastToolElapsed,
             StatusItemValue::RateLimit => Self::RateLimit,
             StatusItemValue::Tokens => Self::Tokens,
+            StatusItemValue::Balance => Self::Balance,
         }
     }
 }
