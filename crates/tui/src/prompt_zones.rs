@@ -84,6 +84,7 @@ pub struct FrozenPrefix {
     pub(crate) combined_sha256: String,
 }
 
+#[allow(dead_code)]
 impl FrozenPrefix {
     /// Verify that `current_system_text` and `current_tools` match the frozen
     /// prefix. Returns `Ok(())` when stable, `Err(PrefixDrift)` on mismatch.
@@ -139,6 +140,7 @@ pub struct PinnedPrefix {
     tools: Vec<Tool>,
 }
 
+#[allow(dead_code)]
 impl PinnedPrefix {
     #[must_use]
     pub fn new(system: Option<&SystemPrompt>, tools: Vec<Tool>) -> Self {
