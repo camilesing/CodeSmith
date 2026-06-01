@@ -549,7 +549,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "cache",
         aliases: &[],
-        usage: "/cache [count|inspect|stats|warmup]",
+        usage: "/cache [count|inspect|stats|zones|warmup]",
         description_id: MessageId::CmdCacheDescription,
     },
     // Slop Ledger (#2127)

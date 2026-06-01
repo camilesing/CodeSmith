@@ -53,6 +53,7 @@ mod prefix_cache;
 mod pricing;
 mod project_context;
 mod project_doc;
+mod prompt_zones;
 mod prompts;
 mod purge;
 pub mod repl;
