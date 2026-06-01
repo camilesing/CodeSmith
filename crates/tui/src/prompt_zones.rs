@@ -26,12 +26,14 @@ use sha2::{Digest, Sha256};
 
 // ── helpers ────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
 }
 
+#[allow(dead_code)]
 fn system_text(system: Option<&SystemPrompt>) -> String {
     match system {
         Some(SystemPrompt::Text(text)) => text.clone(),
@@ -48,6 +50,7 @@ fn system_text(system: Option<&SystemPrompt>) -> String {
 }
 
 /// Serialize tools to a deterministic, sorted JSON string for hashing.
+#[allow(dead_code)]
 fn tool_catalog_digest(tools: &[Tool]) -> String {
     let mut serialized: Vec<String> = tools
         .iter()
@@ -57,6 +60,7 @@ fn tool_catalog_digest(tools: &[Tool]) -> String {
     serialized.join("\n")
 }
 
+#[allow(dead_code)]
 fn combined_hash(system_text: &str, tools: &[Tool]) -> String {
     let system_sha = sha256_hex(system_text.as_bytes());
     let tools_digest = tool_catalog_digest(tools);
@@ -73,6 +77,7 @@ fn combined_hash(system_text: &str, tools: &[Tool]) -> String {
 ///
 /// Use [`PinnedPrefix::freeze`] to produce one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct FrozenPrefix {
     pub(crate) system_text: String,
     pub(crate) tool_catalog: String,
@@ -128,6 +133,7 @@ impl FrozenPrefix {
 /// A mutable prefix builder. Construct from the system prompt and tool
 /// catalog, then call [`freeze`](Self::freeze) to produce a [`FrozenPrefix`].
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PinnedPrefix {
     system_text: String,
     tools: Vec<Tool>,
@@ -160,6 +166,7 @@ impl PinnedPrefix {
 
 /// Describes how the current prefix differs from the frozen baseline.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct PrefixDrift {
     pub system_changed: bool,
     pub tools_changed: bool,
