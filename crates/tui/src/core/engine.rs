@@ -2136,6 +2136,13 @@ impl Engine {
         loaded
     }
 
+    /// Merge a compaction summary into the system prompt.
+    ///
+    /// **Zone affiliation (#2264)**: this mutates the system prompt, which is
+    /// part of the `PinnedPrefix` zone in the three-zone contract. Compaction
+    /// is the one intentional mid-session prefix mutation — the engine
+    /// intentionally accepts the cache-invalidation cost because the
+    /// context-reduction benefit outweighs it.
     fn merge_compaction_summary(&mut self, summary_prompt: Option<SystemPrompt>) {
         if summary_prompt.is_none() {
             return;
