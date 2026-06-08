@@ -52,12 +52,33 @@ impl Engine {
                 .with_runtime_read_only_task_tools()
                 .with_todo_tool(todo_list)
                 .with_plan_tool(plan_state)
+                .with_plan_mode_tools_read_only(
+                    self.config.plan_mode_state.clone(),
+                    self.config.plan_state.clone(),
+                )
+                // write_plan_file is the sole writable tool in plan mode
+                .with_tool(std::sync::Arc::new(
+                    crate::tools::plan_mode::WritePlanFileTool::new(
+                        self.config.plan_mode_state.clone(),
+                        self.config.plan_state.clone(),
+                    ),
+                ))
+                .with_task_v2_read_only_tools_if_available(
+                    self.config.task_v2_manager.clone(),
+                )
                 .with_goal_tools(self.config.goal_state.clone())
         } else {
             ToolRegistryBuilder::new()
                 .with_agent_tools(self.session.allow_shell)
                 .with_todo_tool(todo_list)
                 .with_plan_tool(plan_state)
+                .with_plan_mode_tools(
+                    self.config.plan_mode_state.clone(),
+                    self.config.plan_state.clone(),
+                )
+                .with_task_v2_tools_if_available(
+                    self.config.task_v2_manager.clone(),
+                )
                 .with_goal_tools(self.config.goal_state.clone())
         };
 

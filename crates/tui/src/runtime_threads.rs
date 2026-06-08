@@ -1988,6 +1988,8 @@ impl RuntimeThreadManager {
             ),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
+            plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
+            task_v2_manager: None,
             goal_state: crate::tools::goal::new_shared_goal_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
@@ -2008,6 +2010,7 @@ impl RuntimeThreadManager {
                 hook_executor: None,
                 handle_store: crate::tools::handle::new_shared_handle_store(),
                 rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
+                task_v2_manager: None,
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             subagent_api_timeout: std::time::Duration::from_secs(

@@ -29,3 +29,15 @@ Long sessions accumulate context. To stay fast:
 - Suggest `/compact` when context nears 60% during sustained work — the compaction relay preserves open blockers
 - Use `note` for decisions you'll need across compaction boundaries
 - A 3-turn session that fans out to sub-agents finishes faster AND stays responsive longer than a 15-turn sequential grind
+
+## Plan Mode V2
+
+When you need to investigate and design before implementing, call `enter_plan_mode`.
+This restricts you to read-only tools and `write_plan_file`. When your plan is ready,
+call `exit_plan_mode` — the user must approve before implementation begins.
+
+## Task V2
+
+Use `task_create_v2` for structured task tracking with `pending → in_progress → completed`
+workflow. Tasks support dependency tracking (`blocked_by`), owner assignment, and metadata.
+Use `task_update_v2` to mark progress, `task_get_v2` for details, `task_list_v2` for summaries.

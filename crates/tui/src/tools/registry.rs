@@ -966,6 +966,57 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(UpdatePlanTool::new(plan_state)))
     }
 
+    /// Include plan mode tools (enter_plan_mode, exit_plan_mode, write_plan_file).
+    #[must_use]
+    pub fn with_plan_mode_tools(
+        self,
+        plan_mode_state: super::plan_mode::SharedPlanModeState,
+        plan_state: super::plan::SharedPlanState,
+    ) -> Self {
+        use super::plan_mode::{EnterPlanModeTool, ExitPlanModeTool, WritePlanFileTool};
+        self.with_tool(Arc::new(EnterPlanModeTool::new(plan_mode_state.clone(), plan_state.clone())))
+            .with_tool(Arc::new(ExitPlanModeTool::new(plan_mode_state.clone(), plan_state.clone())))
+            .with_tool(Arc::new(WritePlanFileTool::new(plan_mode_state, plan_state)))
+    }
+
+    /// Include plan mode tools in read-only subset for plan mode registry
+    /// (enter_plan_mode and exit_plan_mode only — write_plan_file is added
+    /// separately when plan mode is active).
+    #[must_use]
+    pub fn with_plan_mode_tools_read_only(
+        self,
+        plan_mode_state: super::plan_mode::SharedPlanModeState,
+        plan_state: super::plan::SharedPlanState,
+    ) -> Self {
+        use super::plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
+        self.with_tool(Arc::new(EnterPlanModeTool::new(plan_mode_state.clone(), plan_state.clone())))
+            .with_tool(Arc::new(ExitPlanModeTool::new(plan_mode_state, plan_state)))
+    }
+
+    /// Include Task V2 tools (task_create_v2, task_update_v2, task_get_v2, task_list_v2).
+    #[must_use]
+    pub fn with_task_v2_tools(
+        self,
+        manager: super::task_v2::SharedTaskV2Manager,
+    ) -> Self {
+        use super::task_v2::{TaskV2CreateTool, TaskV2GetTool, TaskV2ListTool, TaskV2UpdateTool};
+        self.with_tool(Arc::new(TaskV2CreateTool::new(manager.clone())))
+            .with_tool(Arc::new(TaskV2UpdateTool::new(manager.clone())))
+            .with_tool(Arc::new(TaskV2GetTool::new(manager.clone())))
+            .with_tool(Arc::new(TaskV2ListTool::new(manager)))
+    }
+
+    /// Include read-only Task V2 tools (task_get_v2, task_list_v2 only).
+    #[must_use]
+    pub fn with_task_v2_read_only_tools(
+        self,
+        manager: super::task_v2::SharedTaskV2Manager,
+    ) -> Self {
+        use super::task_v2::{TaskV2GetTool, TaskV2ListTool};
+        self.with_tool(Arc::new(TaskV2GetTool::new(manager.clone())))
+            .with_tool(Arc::new(TaskV2ListTool::new(manager)))
+    }
+
     /// Include runtime goal tools (`create_goal`, `get_goal`, `update_goal`).
     #[must_use]
     pub fn with_goal_tools(self, goal_state: super::goal::SharedGoalState) -> Self {
@@ -994,6 +1045,34 @@ impl ToolRegistryBuilder {
             runtime.clone(),
         )))
         .with_tool(Arc::new(AgentCloseTool::new(manager)))
+    }
+
+    /// Include Task V2 tools when a manager is available.
+    /// Returns self unchanged if manager is None.
+    #[must_use]
+    pub fn with_task_v2_tools_if_available(
+        self,
+        manager: Option<super::task_v2::SharedTaskV2Manager>,
+    ) -> Self {
+        if let Some(m) = manager {
+            self.with_task_v2_tools(m)
+        } else {
+            self
+        }
+    }
+
+    /// Include read-only Task V2 tools when a manager is available.
+    /// Returns self unchanged if manager is None.
+    #[must_use]
+    pub fn with_task_v2_read_only_tools_if_available(
+        self,
+        manager: Option<super::task_v2::SharedTaskV2Manager>,
+    ) -> Self {
+        if let Some(m) = manager {
+            self.with_task_v2_read_only_tools(m)
+        } else {
+            self
+        }
     }
 
     /// Build the registry with the given context.

@@ -1032,6 +1032,8 @@ fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
         "todo_update",
         "todo_write",
         "update_plan",
+        // #plan-mode-v2: the sole permitted write tool in plan mode
+        "write_plan_file",
     ];
     let mut write_or_exec_tools: Vec<String> = registry
         .all()

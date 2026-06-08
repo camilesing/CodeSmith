@@ -1207,6 +1207,8 @@ impl Engine {
             let active_tools_at_batch_start = active_tool_names.clone();
             let mut deferred_tools_hydrated_this_batch: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
+            // Check if model-initiated plan mode is active to apply gate restrictions.
+            let plan_mode_active = self.config.plan_mode_state.lock().await.active;
             let mut plans: Vec<ToolExecutionPlan> = Vec::with_capacity(tool_uses.len());
             for (index, tool) in tool_uses.iter_mut().enumerate() {
                 let tool_id = tool.id.clone();
@@ -1253,6 +1255,36 @@ impl Engine {
                     blocked_error = Some(ToolError::permission_denied(format!(
                         "'{tool_name}' is not available in Plan mode — switch to Agent, Goal, or YOLO mode to run commands and code."
                     )));
+                }
+
+                // Model-initiated plan mode gate check (#plan-mode-v2):
+                // When plan_mode_state.active is true (set by enter_plan_mode tool),
+                // block all non-read-only tools except write_plan_file and
+                // exit_plan_mode/enter_plan_mode. This preserves prefix-cache
+                // stability by not rebuilding the registry — instead the dispatch
+                // layer rejects prohibited tools with a descriptive error.
+                if plan_mode_active && blocked_error.is_none() {
+                    let allowed = matches!(
+                        tool_name.as_str(),
+                        "write_plan_file" | "exit_plan_mode" | "enter_plan_mode"
+                    );
+                    if !allowed {
+                        // Check tool capabilities from the registry
+                        let tool_caps = tool_registry
+                            .and_then(|r| r.get(&tool_name))
+                            .map(|t| t.capabilities())
+                            .unwrap_or_default();
+                        let is_read_only_tool = tool_caps.contains(&crate::tools::spec::ToolCapability::ReadOnly)
+                            && !tool_caps.contains(&crate::tools::spec::ToolCapability::WritesFiles)
+                            && !tool_caps.contains(&crate::tools::spec::ToolCapability::ExecutesCode);
+                        if !is_read_only_tool {
+                            blocked_error = Some(ToolError::permission_denied(format!(
+                                "Tool '{tool_name}' is blocked in plan mode. Only read-only tools \
+                                 and write_plan_file are available. Call exit_plan_mode to resume \
+                                 full capabilities."
+                            )));
+                        }
+                    }
                 }
 
                 if !command_allows_tool(self.config.allowed_tools.as_deref(), &tool_name) {

@@ -131,6 +131,8 @@ pub struct EngineConfig {
     pub todos: SharedTodoList,
     /// Shared Plan state.
     pub plan_state: SharedPlanState,
+    /// Shared plan mode state for model-initiated plan transitions.
+    pub plan_mode_state: crate::tools::plan_mode::SharedPlanModeState,
     /// Shared runtime goal state for model-visible goal tools.
     pub goal_state: SharedGoalState,
     /// Maximum sub-agent recursion depth (default 3). See
@@ -152,6 +154,8 @@ pub struct EngineConfig {
     pub lsp_config: Option<crate::lsp::LspConfig>,
     /// Durable runtime services exposed to model-visible tools.
     pub runtime_services: RuntimeToolServices,
+    /// Task V2 manager for conversation-scoped task tracking.
+    pub task_v2_manager: Option<crate::tools::task_v2::SharedTaskV2Manager>,
     /// Per-role/type sub-agent model overrides already resolved from config.
     pub subagent_model_overrides: HashMap<String, String>,
     /// Whether the user-memory feature is enabled (#489). When `true` the
@@ -222,6 +226,7 @@ impl Default for EngineConfig {
             capacity: CapacityControllerConfig::default(),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
+            plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
             goal_state: new_shared_goal_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
@@ -230,6 +235,7 @@ impl Default for EngineConfig {
                 crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT,
             lsp_config: None,
             runtime_services: RuntimeToolServices::default(),
+            task_v2_manager: None,
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),

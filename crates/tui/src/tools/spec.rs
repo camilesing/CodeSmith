@@ -45,6 +45,8 @@ pub struct RuntimeToolServices {
     /// tool-side hook events. `None` outside the live engine — test
     /// contexts that don't care about hooks get a no-op.
     pub hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
+    /// Task V2 manager for conversation-scoped task tracking.
+    pub task_v2_manager: Option<crate::tools::task_v2::SharedTaskV2Manager>,
     /// Per-session backing store for `var_handle` payloads. Cloned tool
     /// contexts share this Arc so handles survive across turns.
     pub handle_store: SharedHandleStore,
@@ -62,6 +64,7 @@ impl Default for RuntimeToolServices {
             active_task_id: None,
             active_thread_id: None,
             hook_executor: None,
+            task_v2_manager: None,
             handle_store: new_shared_handle_store(),
             rlm_sessions: new_shared_rlm_session_store(),
         }
@@ -78,6 +81,7 @@ impl std::fmt::Debug for RuntimeToolServices {
             .field("active_task_id", &self.active_task_id)
             .field("active_thread_id", &self.active_thread_id)
             .field("hook_executor", &self.hook_executor.is_some())
+            .field("task_v2_manager", &self.task_v2_manager.is_some())
             .field("handle_store", &true)
             .field("rlm_sessions", &true)
             .finish()
