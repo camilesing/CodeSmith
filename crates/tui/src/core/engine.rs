@@ -1162,6 +1162,8 @@ impl Engine {
                 system: self.session.system_prompt.clone(),
                 messages: self.messages_with_turn_metadata(),
                 structured_state_block: state.to_system_block(),
+                current_assistant_text: None,
+                current_turn_tool_calls: None,
             })
         } else {
             None

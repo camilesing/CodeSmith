@@ -740,6 +740,22 @@ pub struct SubAgentForkContext {
     pub system: Option<SystemPrompt>,
     pub messages: Vec<Message>,
     pub structured_state_block: Option<String>,
+    /// The parent's current (in-progress) assistant message text at the
+    /// point where the Agent tool was invoked. Used to build "forked messages"
+    /// that preserve the exact byte prefix up to the tool call for cache hits.
+    pub current_assistant_text: Option<String>,
+    /// Tool call IDs and names from the parent's current turn. Used to
+    /// construct placeholder tool_results in the forked messages.
+    pub current_turn_tool_calls: Option<Vec<ForkedToolCall>>,
+}
+
+/// A tool call from the parent's current turn that should be represented
+/// as a placeholder in the forked child context, preserving the byte prefix
+/// for DeepSeek prompt-cache reuse.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForkedToolCall {
+    pub id: String,
+    pub name: String,
 }
 
 /// Runtime configuration for spawning sub-agents.
@@ -2464,6 +2480,433 @@ impl ToolSpec for AgentSpawnTool {
     }
 }
 
+// === Sync foreground sub-agent (agent_run) ===
+
+/// Request parameters for the `agent_run` tool.
+#[derive(Debug, Clone)]
+struct AgentRunRequest {
+    prompt: String,
+    agent_type: SubAgentType,
+    assignment: SubAgentAssignment,
+    allowed_tools: Option<Vec<String>>,
+    model: Option<String>,
+    cwd: Option<PathBuf>,
+    fork_context: bool,
+    run_in_background: bool,
+    max_depth: Option<u32>,
+}
+
+fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
+    let prompt = parse_text_or_items(input, &["prompt", "message", "objective", "description"], "items", "prompt")?;
+
+    let type_input = optional_input_str(input, &["type", "agent_type", "subagent_type", "agent_name"]);
+    let role_input = optional_input_str(input, &["role", "agent_role"]);
+
+    let parsed_type = type_input
+        .map(|kind| {
+            SubAgentType::from_str(kind).ok_or_else(|| {
+                ToolError::invalid_input(format!(
+                    "Invalid sub-agent type '{kind}'. Use: {VALID_SUBAGENT_TYPES}"
+                ))
+            })
+        })
+        .transpose()?;
+
+    let parsed_role_type = role_input
+        .map(|role| {
+            SubAgentType::from_str(role).ok_or_else(|| {
+                ToolError::invalid_input(format!(
+                    "Invalid role alias '{role}'. Use: worker, explorer, awaiter, default"
+                ))
+            })
+        })
+        .transpose()?;
+
+    if let (Some(type_kind), Some(role_kind)) = (&parsed_type, &parsed_role_type)
+        && type_kind != role_kind
+    {
+        return Err(ToolError::invalid_input(
+            "Conflicting type/agent_type and role/agent_role values".to_string(),
+        ));
+    }
+
+    let agent_type = parsed_type
+        .or(parsed_role_type)
+        .unwrap_or(SubAgentType::General);
+
+    if let Some(role) = role_input
+        && normalize_role_alias(role).is_none()
+    {
+        return Err(ToolError::invalid_input(format!(
+            "Invalid role alias '{role}'. Use: worker, explorer, awaiter, default"
+        )));
+    }
+
+    let role = role_input
+        .and_then(normalize_role_alias)
+        .or_else(|| type_input.and_then(normalize_role_alias))
+        .map(str::to_string);
+
+    let allowed_tools = input
+        .get("allowed_tools")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            let mut tools = Vec::new();
+            for item in items {
+                if let Some(tool) = item.as_str() {
+                    let trimmed = tool.trim();
+                    if !trimmed.is_empty() && !tools.iter().any(|existing| existing == trimmed) {
+                        tools.push(trimmed.to_string());
+                    }
+                }
+            }
+            tools
+        });
+
+    let cwd = parse_optional_cwd(input)?;
+    let model = parse_optional_subagent_model(input, "model")?;
+    let fork_context = parse_optional_bool(input, &["fork_context", "forkContext", "inherit_context"])
+        .unwrap_or(false);
+    let run_in_background = parse_optional_bool(input, &["run_in_background", "runInBackground", "background"])
+        .unwrap_or(false);
+    let max_depth = input
+        .get("max_depth")
+        .or_else(|| input.get("maxDepth"))
+        .or_else(|| input.get("max_spawn_depth"))
+        .and_then(Value::as_u64)
+        .map(|depth| {
+            u32::try_from(depth)
+                .map_err(|_| ToolError::invalid_input("max_depth must be between 0 and 3"))
+                .and_then(|depth| {
+                    if depth <= 3 {
+                        Ok(depth)
+                    } else {
+                        Err(ToolError::invalid_input(
+                            "max_depth must be between 0 and 3",
+                        ))
+                    }
+                })
+        })
+        .transpose()?;
+
+    Ok(AgentRunRequest {
+        prompt: prompt.clone(),
+        agent_type,
+        assignment: SubAgentAssignment::new(prompt, role),
+        allowed_tools,
+        model,
+        cwd,
+        fork_context,
+        run_in_background,
+        max_depth,
+    })
+}
+
+/// Run a sub-agent synchronously (foreground) or asynchronously (background).
+///
+/// Sync mode: the parent turn blocks until the child finishes and returns
+/// the result inline as a `ToolResult`. This is the Claude Code `Agent` tool
+/// pattern — tight feedback loop for the model.
+///
+/// Background mode: delegates to `AgentSpawnTool` and returns an agent_id
+/// immediately, same as `agent_spawn`.
+pub struct SubagentRunTool {
+    manager: SharedSubAgentManager,
+    runtime: SubAgentRuntime,
+}
+
+impl SubagentRunTool {
+    #[must_use]
+    pub fn new(manager: SharedSubAgentManager, runtime: SubAgentRuntime) -> Self {
+        Self { manager, runtime }
+    }
+
+    /// Validate cwd: must canonicalize inside the parent workspace.
+    fn validate_cwd(requested_cwd: &PathBuf, parent_workspace: &Path) -> Result<PathBuf, ToolError> {
+        let resolved = if requested_cwd.is_absolute() {
+            requested_cwd.clone()
+        } else {
+            parent_workspace.join(requested_cwd)
+        };
+        let canonical = resolved.canonicalize().map_err(|e| {
+            ToolError::invalid_input(format!(
+                "Invalid cwd '{}': {e} (path may not exist yet — create the worktree first)",
+                requested_cwd.display()
+            ))
+        })?;
+        let workspace_canonical = parent_workspace
+            .canonicalize()
+            .unwrap_or_else(|_| parent_workspace.to_path_buf());
+        if !canonical.starts_with(&workspace_canonical) {
+            return Err(ToolError::invalid_input(format!(
+                "cwd must be inside the parent workspace: {} is not under {}",
+                canonical.display(),
+                workspace_canonical.display()
+            )));
+        }
+        Ok(canonical)
+    }
+
+    /// Run a sub-agent synchronously to completion, blocking the parent turn
+    /// until the child finishes, is cancelled, or hits an error. Returns the
+    /// final result inline as a `ToolResult`.
+    async fn execute_sync(
+        &self,
+        request: AgentRunRequest,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let validated_cwd = if let Some(ref requested_cwd) = request.cwd {
+            Some(Self::validate_cwd(requested_cwd, &self.runtime.context.workspace)?)
+        } else {
+            None
+        };
+
+        // Build child runtime with linked cancellation (parent cancel → child cancel)
+        let mut child_runtime = self.runtime.child_runtime();
+        if let Some(max_depth) = request.max_depth {
+            child_runtime.max_spawn_depth = child_runtime.spawn_depth.saturating_add(max_depth);
+        }
+        if let Some(cwd) = validated_cwd {
+            child_runtime.context.workspace = cwd;
+        }
+
+        // Fork guard: no forks inside forks
+        if request.fork_context && self.runtime.spawn_depth > 0 {
+            return Err(ToolError::execution_failed(
+                "Cannot fork inside a forked agent. Set fork_context=false or use run_in_background=true.",
+            ));
+        }
+
+        // Resolve model
+        let configured_model = match request.model.clone() {
+            Some(model) => Some(model),
+            None => configured_model_for_role_or_type(
+                &self.runtime,
+                request.assignment.role.as_deref(),
+                &request.agent_type,
+            )?,
+        };
+        let route = resolve_subagent_assignment_route(
+            &self.runtime,
+            configured_model,
+            &request.prompt,
+            &request.agent_type,
+        )
+        .await;
+        child_runtime.model = route.model.clone();
+        child_runtime.reasoning_effort = route.reasoning_effort.clone();
+        child_runtime.reasoning_effort_auto = false;
+
+        // Empty input channel — sync agents don't accept follow-up inputs
+        let (_input_tx, input_rx) = mpsc::unbounded_channel();
+
+        let agent_id = format!("agent_run_{}", &Uuid::new_v4().to_string()[..8]);
+        let started_at = Instant::now();
+
+        // Run sub-agent loop directly, blocking until completion
+        let result = run_subagent(
+            &child_runtime,
+            agent_id.clone(),
+            request.agent_type.clone(),
+            request.prompt.clone(),
+            request.assignment.clone(),
+            request.allowed_tools.clone(),
+            request.fork_context,
+            started_at,
+            DEFAULT_MAX_STEPS,
+            input_rx,
+        )
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Sub-agent failed: {e}")))?;
+
+        // Format the result for inline return
+        let final_text = result.result.unwrap_or_else(|| {
+            format!(
+                "Sub-agent completed (status: {}, steps: {}, duration: {}ms)",
+                subagent_status_name(&result.status),
+                result.steps_taken,
+                result.duration_ms,
+            )
+        });
+
+        // Truncate if too long to avoid context overflow
+        let max_result_chars = 50_000;
+        let truncated = if final_text.len() > max_result_chars {
+            let truncation_notice = format!(
+                "\n\n[Result truncated: {} chars → {} chars. Use agent_eval with id '{}' for full transcript.]",
+                final_text.len(),
+                max_result_chars,
+                result.agent_id,
+            );
+            format!("{}{}", &final_text[..max_result_chars], truncation_notice)
+        } else {
+            final_text
+        };
+
+        let mut tool_result = ToolResult::success(truncated);
+        tool_result.metadata = Some(json!({
+            "agent_id": result.agent_id,
+            "agent_type": result.agent_type.as_str(),
+            "status": subagent_status_name(&result.status),
+            "context_mode": result.context_mode,
+            "fork_context": result.fork_context,
+            "model": result.model,
+            "steps_taken": result.steps_taken,
+            "duration_ms": result.duration_ms,
+            "terminal": true,
+        }));
+        Ok(tool_result)
+    }
+
+    /// Background execution — delegates to existing AgentSpawnTool.
+    async fn execute_background(
+        &self,
+        request: AgentRunRequest,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let spawn_input = json!({
+            "prompt": request.prompt,
+            "type": request.agent_type.as_str(),
+            "fork_context": request.fork_context,
+            "allowed_tools": request.allowed_tools,
+            "model": request.model,
+            "cwd": request.cwd.map(|p| p.display().to_string()),
+            "max_depth": request.max_depth,
+            "role": request.assignment.role,
+        });
+        let spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
+        spawn_tool.execute(spawn_input, context).await
+    }
+}
+
+#[async_trait]
+impl ToolSpec for SubagentRunTool {
+    fn name(&self) -> &'static str {
+        "agent_run"
+    }
+
+    fn description(&self) -> &'static str {
+        concat!(
+            "Run a sub-agent and wait for its result inline (foreground), or spawn it in the background. ",
+            "Foreground mode (run_in_background=false, default): the parent turn blocks until the child finishes, and the final result is returned directly in the tool output. ",
+            "Use this for tight feedback loops — simple exploration, verification, quick lookups, or focused one-shot tasks where you need the answer now.\n\n",
+            "Background mode (run_in_background=true): equivalent to agent_spawn — returns an agent_id immediately; follow up with agent_eval to retrieve results later.\n\n",
+            "Context control: fork_context=false (default) gives the child an independent fresh context; ",
+            "fork_context=true inherits the parent's system prompt and conversation prefix for DeepSeek prefix-cache reuse. ",
+            "Fork is blocked inside a forked agent (spawn_depth > 0).\n\n",
+            "Sub-agent results are self-reports. Re-verify claimed side effects (file edits, commands, network writes, tests, git operations) before reporting them as facts."
+        )
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "Task for the sub-agent"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Short 3-5 word task summary (alias for prompt context)"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Alias for prompt"
+                },
+                "objective": {
+                    "type": "string",
+                    "description": "Alias for prompt"
+                },
+                "items": {
+                    "type": "array",
+                    "description": "Structured input items (text, mention, skill, local_image, image)",
+                    "items": { "type": "object" }
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": "Sub-agent type: general, explore, plan, review, implementer, verifier, custom"
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Alias for subagent_type"
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Alias for subagent_type"
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Role alias: worker, explorer, awaiter, default"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional DeepSeek model id override"
+                },
+                "fork_context": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Inherit parent context for cache optimization. Blocked inside a forked agent."
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "true = background spawn (returns agent_id), false = foreground (returns result inline)"
+                },
+                "allowed_tools": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Explicit tool allowlist (required for custom type)"
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Recursive child-agent budget"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory inside parent workspace"
+                }
+            },
+            "required": ["prompt"]
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![
+            ToolCapability::ExecutesCode,
+            ToolCapability::RequiresApproval,
+        ]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Required
+    }
+
+    fn supports_parallel(&self) -> bool {
+        false
+    }
+
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let request = parse_run_request(&input)?;
+
+        if self.runtime.would_exceed_depth() {
+            return Err(ToolError::execution_failed(format!(
+                "Sub-agent depth limit reached (current depth {}, max {}). \
+                 Increase via [runtime] max_spawn_depth in config.toml.",
+                self.runtime.spawn_depth, self.runtime.max_spawn_depth
+            )));
+        }
+
+        if request.run_in_background {
+            self.execute_background(request, context).await
+        } else {
+            self.execute_sync(request, context).await
+        }
+    }
+}
+
 /// Evaluate/fetch a child session boundary for the v0.8.33 sub-agent API.
 #[allow(dead_code)] // Registered by the adjacent v0.8.33 registry surface update.
 pub struct AgentEvalTool {
@@ -3459,6 +3902,16 @@ fn build_initial_subagent_messages(
     agent_type: &SubAgentType,
     fork_context: Option<&SubAgentForkContext>,
 ) -> Vec<Message> {
+    // When fork context carries a current-assistant-turn snapshot, use the
+    // enhanced forked-messages builder that clones the parent's partial
+    // assistant message and injects placeholder tool_results for maximum
+    // prefix-cache reuse (Claude Code forkSubagent pattern).
+    if let Some(context) = fork_context {
+        if context.current_assistant_text.is_some() || context.current_turn_tool_calls.is_some() {
+            return build_forked_messages(context, prompt, assignment, agent_type);
+        }
+    }
+
     let mut messages = fork_context
         .map(|context| context.messages.clone())
         .unwrap_or_default();
@@ -3481,6 +3934,76 @@ fn build_initial_subagent_messages(
         )));
     }
 
+    messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: build_assignment_prompt(prompt, assignment, agent_type),
+            cache_control: None,
+        }],
+    });
+
+    messages
+}
+
+/// Build forked messages that maximize prefix cache reuse.
+///
+/// Strategy (matching Claude Code's forkSubagent.ts):
+/// 1. Clone all parent messages (including fork_state and subagent_context)
+/// 2. If the parent has a partial assistant message with tool calls, construct
+///    placeholder tool_results for all sibling tool calls
+/// 3. Append the child directive as a user message
+fn build_forked_messages(
+    fork_context: &SubAgentForkContext,
+    prompt: &str,
+    assignment: &SubAgentAssignment,
+    agent_type: &SubAgentType,
+) -> Vec<Message> {
+    let mut messages = fork_context.messages.clone();
+
+    // 1. Inject fork_state and subagent_context (same as existing logic)
+    if let Some(state) = fork_context
+        .structured_state_block
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        messages.push(system_text_message(format!(
+            "<codewhale:fork_state>\n{state}\n</codewhale:fork_state>"
+        )));
+    }
+    messages.push(system_text_message(format!(
+        "<codewhale:subagent_context>\n{}\n</codewhale:subagent_context>",
+        build_subagent_system_prompt(agent_type, assignment)
+    )));
+
+    // 2. Clone parent assistant turn and inject placeholder tool_results
+    //    This preserves the byte prefix up to the point where the Agent
+    //    tool was invoked, maximizing DeepSeek prefix cache hits.
+    if let Some(ref assistant_text) = fork_context.current_assistant_text {
+        let mut content = vec![ContentBlock::Text {
+            text: assistant_text.clone(),
+            cache_control: None,
+        }];
+        if let Some(ref tool_calls) = fork_context.current_turn_tool_calls {
+            for tc in tool_calls {
+                content.push(ContentBlock::ToolResult {
+                    tool_use_id: tc.id.clone(),
+                    content: format!(
+                        "[Result of {} from parent context — available if needed]",
+                        tc.name
+                    ),
+                    is_error: Some(false),
+                    content_blocks: None,
+                });
+            }
+        }
+        messages.push(Message {
+            role: "assistant".to_string(),
+            content,
+        });
+    }
+
+    // 3. Child directive as user message
     messages.push(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -3699,6 +4222,8 @@ async fn run_subagent(
         system: Some(request_system.clone()),
         messages: messages.clone(),
         structured_state_block: None,
+        current_assistant_text: None,
+        current_turn_tool_calls: None,
     });
     let tool_registry = SubAgentToolRegistry::new(
         runtime_for_tools,
@@ -4824,10 +5349,11 @@ impl SubAgentToolRegistry {
         let disallowed = match agent_type {
             // Review and tool-executor agents should not spawn or manage
             // sub-agents recursively (#1489, fast-lane executor).
-            SubAgentType::Review => &["agent_spawn", "agent_open", "agent_eval", "agent_close"][..],
+            SubAgentType::Review => &["agent_spawn", "agent_open", "agent_run", "agent_eval", "agent_close"][..],
             SubAgentType::ToolAgent => &[
                 "agent_spawn",
                 "agent_open",
+                "agent_run",
                 "agent_eval",
                 "agent_close",
                 "tool_agent",

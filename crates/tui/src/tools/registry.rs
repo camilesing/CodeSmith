@@ -1033,7 +1033,7 @@ impl ToolRegistryBuilder {
         manager: super::subagent::SharedSubAgentManager,
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
-        use super::subagent::{AgentCloseTool, AgentEvalTool, AgentOpenTool, ToolAgentTool};
+        use super::subagent::{AgentCloseTool, AgentEvalTool, AgentOpenTool, SubagentRunTool, ToolAgentTool};
 
         self.with_tool(Arc::new(AgentOpenTool::new(
             manager.clone(),
@@ -1044,6 +1044,7 @@ impl ToolRegistryBuilder {
             manager.clone(),
             runtime.clone(),
         )))
+        .with_tool(Arc::new(SubagentRunTool::new(manager.clone(), runtime.clone())))
         .with_tool(Arc::new(AgentCloseTool::new(manager)))
     }
 
