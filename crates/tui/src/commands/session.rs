@@ -281,11 +281,48 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
 }
 
 /// Trigger context compaction
-pub fn compact(_app: &mut App) -> CommandResult {
-    // Trigger immediate compaction via engine
+pub fn compact(app: &mut App, arg: Option<&str>) -> CommandResult {
+    use crate::core::ops::CompactMode;
+
+    let mode = match arg {
+        Some("memory") | Some("kod") => CompactMode::Memory,
+        Some(s) if s.starts_with("from=") => {
+            let idx: usize = s.strip_prefix("from=").unwrap_or(s).parse().unwrap_or(0);
+            if idx == 0 {
+                return CommandResult::error("Invalid from index. Usage: /compact from=N".to_string());
+            }
+            CompactMode::From { pivot_index: idx }
+        }
+        Some(s) if s.starts_with("up_to=") => {
+            let idx: usize = s.strip_prefix("up_to=").unwrap_or(s).parse().unwrap_or(0);
+            if idx == 0 {
+                return CommandResult::error("Invalid up_to index. Usage: /compact up_to=N".to_string());
+            }
+            CompactMode::UpTo { pivot_index: idx }
+        }
+        Some(other) => {
+            return CommandResult::error(
+                format!("Unknown compact mode: '{other}'. Usage: /compact [memory|from=N|up_to=N]")
+            );
+        }
+        None => CompactMode::Full,
+    };
+
+    let label: String = match &mode {
+        CompactMode::Full => "full".to_string(),
+        CompactMode::From { pivot_index } => format!("from={pivot_index}"),
+        CompactMode::UpTo { pivot_index } => format!("up_to={pivot_index}"),
+        CompactMode::Memory => "memory".to_string(),
+    };
+
+    let action = match mode {
+        CompactMode::Full => AppAction::CompactContext,
+        other => AppAction::CompactContextWithMode { mode: other },
+    };
+
     CommandResult::with_message_and_action(
-        "Context compaction triggered...".to_string(),
-        AppAction::CompactContext,
+        format!("Context compaction ({label}) triggered..."),
+        action,
     )
 }
 
@@ -890,7 +927,7 @@ mod tests {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
 
-        let result = compact(&mut app);
+        let result = compact(&mut app, None);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("compaction") || msg.contains("Compact"));

@@ -4822,6 +4822,7 @@ pub enum AppAction {
     UpdateCompaction(CompactionConfig),
     OpenContextInspector,
     CompactContext,
+    CompactContextWithMode { mode: crate::core::ops::CompactMode },
     PurgeContext,
     TaskAdd {
         prompt: String,

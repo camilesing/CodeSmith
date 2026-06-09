@@ -5307,6 +5307,16 @@ async fn apply_command_result(
                 app.status_message = Some("Compacting context...".to_string());
                 let _ = engine_handle.send(Op::CompactContext).await;
             }
+            AppAction::CompactContextWithMode { mode } => {
+                let label: String = match &mode {
+                    crate::core::ops::CompactMode::Full => "full".to_string(),
+                    crate::core::ops::CompactMode::From { pivot_index } => format!("from={pivot_index}"),
+                    crate::core::ops::CompactMode::UpTo { pivot_index } => format!("up_to={pivot_index}"),
+                    crate::core::ops::CompactMode::Memory => "memory".to_string(),
+                };
+                app.status_message = Some(format!("Compacting context ({label})..."));
+                let _ = engine_handle.send(Op::CompactContextWithMode { mode }).await;
+            }
             AppAction::PurgeContext => {
                 app.status_message = Some("Agent purging context...".to_string());
                 let _ = engine_handle.send(Op::PurgeContext).await;

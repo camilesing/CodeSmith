@@ -9,6 +9,19 @@ use crate::tui::app::AppMode;
 use crate::tui::approval::ApprovalMode;
 use std::path::PathBuf;
 
+/// Compaction mode for manual /compact commands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompactMode {
+    /// Full compaction (default behavior).
+    Full,
+    /// Partial compaction preserving prefix cache (From direction).
+    From { pivot_index: usize },
+    /// Partial compaction sacrificing prefix cache (UpTo direction).
+    UpTo { pivot_index: usize },
+    /// Session-memory-based compaction (KoD/MEMORY.md summary).
+    Memory,
+}
+
 /// Operations that can be submitted to the engine.
 #[derive(Debug, Clone)]
 pub enum Op {
@@ -77,8 +90,11 @@ pub enum Op {
         workspace: PathBuf,
     },
 
-    /// Run context compaction immediately.
+    /// Run context compaction immediately (default full mode).
     CompactContext,
+
+    /// Run context compaction with a specific mode.
+    CompactContextWithMode { mode: CompactMode },
 
     /// Run agent-driven context purging.
     PurgeContext,

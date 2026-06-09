@@ -655,6 +655,12 @@ impl WorkingSet {
         }
     }
 
+    /// Force-rebuild: clear all entries so they get re-derived on next observation.
+    /// Used after compaction removes messages that may have contributed stale paths.
+    pub fn force_rebuild(&mut self) {
+        self.entries.clear();
+    }
+
     /// Rebuild the working set from existing messages (best effort).
     ///
     /// This is used when syncing a resumed session.

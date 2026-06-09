@@ -608,7 +608,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "sessions" | "resume" => session::sessions(app, arg),
         "relay" | "batonpass" | "接力" => relay(app, arg),
         "load" | "jiazai" => session::load(app, arg),
-        "compact" | "yasuo" => session::compact(app),
+        "compact" | "yasuo" => session::compact(app, arg),
         "purge" | "qingchu" => session::purge(app),
         "cycles" | "zhouqi" => cycle::list_cycles(app),
         "cycle" => cycle::show_cycle(app, arg),

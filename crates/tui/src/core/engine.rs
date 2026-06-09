@@ -1039,7 +1039,10 @@ impl Engine {
                         .await;
                 }
                 Op::CompactContext => {
-                    self.handle_manual_compaction().await;
+                    self.handle_manual_compaction(crate::core::ops::CompactMode::Full).await;
+                }
+                Op::CompactContextWithMode { mode } => {
+                    self.handle_manual_compaction(mode).await;
                 }
                 Op::PurgeContext => {
                     self.handle_purge().await;
@@ -1536,7 +1539,7 @@ impl Engine {
         }
     }
 
-    async fn handle_manual_compaction(&mut self) {
+    async fn handle_manual_compaction(&mut self, mode: crate::core::ops::CompactMode) {
         let id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let zero_usage = Usage {
             input_tokens: 0,
@@ -1754,6 +1757,92 @@ impl Engine {
         let before_tokens = self.estimated_input_tokens();
         let before_count = self.session.messages.len();
 
+        // Phase 1: Responsive compact cascade — try cheapest recovery first.
+        use crate::compaction::responsive_compact::{ResponsiveCompactAction, next_recovery_action};
+        let mut responsive_state = self.session.responsive_compact_state.clone();
+        let mut recovery_attempt = 0u32;
+
+        loop {
+            let action = next_recovery_action(&responsive_state, recovery_attempt);
+            match action {
+                ResponsiveCompactAction::MicroCompact => {
+                    let mut messages = self.session.messages.clone();
+                    let bytes = crate::compaction::micro_compact::micro_compact_messages(
+                        &mut messages,
+                        &mut self.session.micro_compact_state,
+                    );
+                    if bytes > 0 {
+                        self.session.messages = messages;
+                        if self.estimated_input_tokens() <= target_budget {
+                            crate::compaction::post_compact_cleanup::post_compact_cleanup(&mut self.session);
+                            let _ = self.tx_event.send(Event::status(
+                                "Emergency recovery: micro-compaction cleared enough context".to_string()
+                            )).await;
+                            self.emit_compaction_completed(id.clone(), true, "Micro-compaction recovery".to_string(), Some(before_count), Some(self.session.messages.len())).await;
+                            return true;
+                        }
+                    }
+                    responsive_state.record_overflow();
+                }
+                ResponsiveCompactAction::PartialFrom | ResponsiveCompactAction::PartialUpTo => {
+                    let direction = if action == ResponsiveCompactAction::PartialFrom {
+                        crate::compaction::partial_compact::PartialCompactDirection::From
+                    } else {
+                        crate::compaction::partial_compact::PartialCompactDirection::UpTo
+                    };
+                    let pivot = crate::compaction::partial_compact::find_pivot_for_budget(
+                        &self.session.messages,
+                        direction,
+                        target_budget / 2,
+                    );
+                    let request = crate::compaction::partial_compact::PartialCompactRequest {
+                        direction,
+                        pivot_index: pivot,
+                        model: self.config.compaction.model.clone(),
+                        user_feedback: Some(reason.to_string()),
+                    };
+                    match crate::compaction::partial_compact::partial_compact(
+                        client,
+                        &self.session.messages,
+                        &request,
+                        self.config.compaction.cache_summary,
+                    ).await {
+                        Ok(result) => {
+                            if !result.messages.is_empty() {
+                                self.session.messages = result.messages;
+                                self.merge_compaction_summary(result.summary_prompt);
+                                if self.estimated_input_tokens() <= target_budget {
+                                    crate::compaction::post_compact_cleanup::post_compact_cleanup(&mut self.session);
+                                    let _ = self.tx_event.send(Event::status(
+                                        format!("Emergency recovery: partial compaction ({}) succeeded", if direction == crate::compaction::partial_compact::PartialCompactDirection::From { "From" } else { "UpTo" })
+                                    )).await;
+                                    self.emit_compaction_completed(id.clone(), true, "Partial compaction recovery".to_string(), Some(before_count), Some(self.session.messages.len())).await;
+                                    return true;
+                                }
+                            }
+                            responsive_state.record_overflow();
+                        }
+                        Err(_) => {
+                            responsive_state.record_overflow();
+                        }
+                    }
+                }
+                ResponsiveCompactAction::FullCompact => {
+                    break; // Fall through to existing full compact logic below.
+                }
+                ResponsiveCompactAction::Fail => {
+                    break; // No more recovery attempts — fall through to trim.
+                }
+            }
+            recovery_attempt += 1;
+            if responsive_state.is_exhausted() {
+                break;
+            }
+        }
+
+        self.session.responsive_compact_state = responsive_state;
+
+        // Phase 2: Full LLM compaction (existing logic).
         let mut retries_used = 0u32;
         let mut summary_prompt = None;
         let mut compacted_messages = self.session.messages.clone();

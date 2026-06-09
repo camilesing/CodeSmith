@@ -2,6 +2,10 @@
 //!
 //! Tracks conversation history, token usage, and session metadata.
 
+use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
+use crate::compaction::micro_compact::MicroCompactState;
+use crate::compaction::responsive_compact::ResponsiveCompactState;
+use crate::compaction::session_memory_compact::SessionMemoryCompactConfig;
 use crate::cycle_manager::CycleBriefing;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::prefix_cache::PrefixStabilityManager;
@@ -91,6 +95,15 @@ pub struct Session {
     /// Tracks the immutable prefix fingerprint and detects drift across turns.
     /// Set during engine construction; None until the first system prompt assembly.
     pub prefix_stability: Option<PrefixStabilityManager>,
+
+    /// Micro-compact state tracking (time triggers, bytes cleared).
+    pub micro_compact_state: MicroCompactState,
+    /// Session memory compact configuration (token retention bounds).
+    pub session_memory_compact_config: SessionMemoryCompactConfig,
+    /// Circuit breaker for auto-compaction (prevents infinite retry loops).
+    pub circuit_breaker: CompactionCircuitBreaker,
+    /// Responsive compact state (consecutive overflow tracking).
+    pub responsive_compact_state: ResponsiveCompactState,
 }
 
 /// Cumulative usage statistics for a session.
@@ -166,6 +179,10 @@ impl Session {
             current_cycle_started: Utc::now(),
             cycle_briefings: Vec::new(),
             prefix_stability: None,
+            micro_compact_state: MicroCompactState::default(),
+            session_memory_compact_config: SessionMemoryCompactConfig::default(),
+            circuit_breaker: CompactionCircuitBreaker::new(),
+            responsive_compact_state: ResponsiveCompactState::new(),
         }
     }
 

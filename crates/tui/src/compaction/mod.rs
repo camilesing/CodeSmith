@@ -1,5 +1,14 @@
 //! Context compaction for long conversations.
 
+pub mod attachment_reinject;
+pub mod circuit_breaker;
+pub mod compact_prompt;
+pub mod micro_compact;
+pub mod partial_compact;
+pub mod post_compact_cleanup;
+pub mod responsive_compact;
+pub mod session_memory_compact;
+
 use anyhow::Result;
 use regex::Regex;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -229,7 +238,7 @@ fn looks_repo_relative(path: &str) -> bool {
         || (path.contains('/') && path.rsplit('.').next().is_some())
 }
 
-fn extract_paths_from_text(text: &str, workspace: Option<&Path>) -> Vec<String> {
+pub(crate) fn extract_paths_from_text(text: &str, workspace: Option<&Path>) -> Vec<String> {
     path_regex()
         .captures_iter(text)
         .filter_map(|caps| {
@@ -242,7 +251,7 @@ fn extract_paths_from_text(text: &str, workspace: Option<&Path>) -> Vec<String> 
         .collect()
 }
 
-fn extract_paths_from_tool_input(
+pub(crate) fn extract_paths_from_tool_input(
     input: &serde_json::Value,
     workspace: Option<&Path>,
 ) -> Vec<String> {
@@ -304,7 +313,7 @@ fn is_user_text_query(msg: &Message) -> bool {
             .any(|block| matches!(block, ContentBlock::Text { .. }))
 }
 
-fn extract_paths_from_message(message: &Message, workspace: Option<&Path>) -> Vec<String> {
+pub(crate) fn extract_paths_from_message(message: &Message, workspace: Option<&Path>) -> Vec<String> {
     let mut paths = Vec::new();
     for block in &message.content {
         let candidates = match block {

@@ -121,7 +121,29 @@ impl Engine {
                 .pinned_message_indices(&self.session.messages, &self.session.workspace);
             let compaction_paths = self.session.working_set.top_paths(24);
 
+            // Phase 1: Micro-compaction (cheap, no API call).
+            // Clear old tool results before considering full compaction.
+            if crate::compaction::micro_compact::should_trigger_micro_compact(
+                &self.session.messages,
+                &self.session.micro_compact_state,
+                false, // not in subagent
+            ) {
+                let mut messages = self.session.messages.clone();
+                let bytes_cleared = crate::compaction::micro_compact::micro_compact_messages(
+                    &mut messages,
+                    &mut self.session.micro_compact_state,
+                );
+                if bytes_cleared > 0 {
+                    self.session.messages = messages;
+                    crate::logging::info(format!(
+                        "Micro-compaction cleared {bytes_cleared} bytes from tool results"
+                    ));
+                }
+            }
+
+            // Phase 2: Auto-compaction (LLM summary) — only if circuit breaker allows.
             if self.config.compaction.enabled
+                && self.session.circuit_breaker.should_attempt()
                 && should_compact(
                     &self.session.messages,
                     &self.config.compaction,
@@ -158,6 +180,8 @@ impl Engine {
                             let auto_messages_after = result.messages.len();
                             self.session.messages = result.messages;
                             self.merge_compaction_summary(result.summary_prompt);
+                            self.session.circuit_breaker.record_success();
+                            crate::compaction::post_compact_cleanup::post_compact_cleanup(&mut self.session);
                             self.emit_session_updated().await;
                             let removed = auto_messages_before.saturating_sub(auto_messages_after);
                             let status = if result.retries_used > 0 {
@@ -192,6 +216,7 @@ impl Engine {
                     }
                     Err(err) => {
                         // Log error but continue with original messages (never corrupt)
+                        self.session.circuit_breaker.record_failure();
                         let message = format!("Auto-compaction failed: {err}");
                         self.emit_compaction_failed(compaction_id, true, message.clone())
                             .await;
