@@ -14,6 +14,7 @@ use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
 
+mod background_task;
 mod acp_server;
 mod artifacts;
 mod audit;

@@ -106,4 +106,38 @@ pub enum Op {
 
     /// Shutdown the engine
     Shutdown,
+
+    // === Background Task Operations ===
+
+    /// Start a shell command in background.
+    #[allow(dead_code)]
+    StartBackgroundShell {
+        command: String,
+        cwd: Option<PathBuf>,
+        timeout_secs: Option<u64>,
+    },
+
+    /// Cancel a background task by unified id.
+    #[allow(dead_code)]
+    CancelBackgroundTask { id: String },
+
+    /// List all background tasks across all subsystems.
+    #[allow(dead_code)]
+    ListBackgroundTasks,
+
+    /// Poll a specific background task for incremental output.
+    #[allow(dead_code)]
+    PollBackgroundTask { id: String },
+
+    /// Background the currently foreground shell task.
+    #[allow(dead_code)]
+    BackgroundCurrentShell,
+
+    /// Background all foreground tasks.
+    #[allow(dead_code)]
+    BackgroundAll,
+
+    /// Trigger a memory consolidation (dream) task.
+    #[allow(dead_code)]
+    StartDreamTask { memory_path: Option<PathBuf> },
 }

@@ -2218,6 +2218,13 @@ async fn run_event_loop(
                                 Some(format!("Sandbox blocked {tool_name}: {denial_reason}"));
                         }
                     }
+                    // Background task events — UI stubs for Phase 8 integration
+                    EngineEvent::BackgroundTaskStarted { .. } => {}
+                    EngineEvent::BackgroundTaskProgress { .. } => {}
+                    EngineEvent::BackgroundTaskComplete { .. } => {}
+                    EngineEvent::BackgroundTaskFailed { .. } => {}
+                    EngineEvent::BackgroundTaskNotification { .. } => {}
+                    EngineEvent::BackgroundTaskList { .. } => {}
                 }
             }
         }

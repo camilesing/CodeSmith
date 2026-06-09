@@ -386,6 +386,9 @@ pub struct Engine {
     /// Knowledge On Demand prefetch orchestrator. Tracks already-surfaced
     /// memory paths and session byte budget across turns.
     knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch,
+    /// Unified background task registry bridging ShellManager, SubAgentManager,
+    /// and TaskManager into a single lifecycle surface.
+    bg_registry: crate::background_task::SharedBackgroundTaskRegistry,
 }
 
 // === Internal tool helpers ===
@@ -778,6 +781,18 @@ impl Engine {
             })
             .map(std::sync::Arc::from);
 
+        let bg_registry_shell = shell_manager.clone();
+        let bg_registry_agent = subagent_manager.clone();
+        let bg_data_dir = dirs::home_dir().map_or_else(|| PathBuf::from(".codewhale"), |h| h.join(".codewhale"));
+        let bg_registry = std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::background_task::BackgroundTaskRegistry::new(
+                bg_registry_shell,
+                bg_registry_agent,
+                None,
+                bg_data_dir,
+            )
+        ));
+
         let mut engine = Engine {
             config,
             deepseek_client,
@@ -808,6 +823,7 @@ impl Engine {
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),
             workshop_vars,
             sandbox_backend,
+            bg_registry,
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -827,6 +843,47 @@ impl Engine {
     /// Run the engine event loop
     #[allow(clippy::too_many_lines)]
     pub async fn run(mut self) {
+        // Spawn background task poller — polls registry every 2s for status
+        // changes, stalls, and completion notifications.
+        {
+            let bg_registry = self.bg_registry.clone();
+            let tx_event = self.tx_event.clone();
+            let cancel_token = self.cancel_token.clone();
+            spawn_supervised(
+                "bg-task-poller",
+                std::panic::Location::caller(),
+                async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+                    loop {
+                        interval.tick().await;
+                        if cancel_token.is_cancelled() { break; }
+                        let mut registry = bg_registry.lock().await;
+                        let poll_results = registry.poll_tasks().await;
+                        for result in poll_results {
+                            if result.stall_detected {
+                                let _ = tx_event.send(Event::BackgroundTaskProgress {
+                                    id: result.task_id.clone(),
+                                    output_delta: result.output_delta.clone().unwrap_or_default(),
+                                    stall_detected: true,
+                                }).await;
+                            }
+                            if result.old_status != result.new_status && result.new_status.is_terminal() {
+                                // Terminal transition — notification will be drained below
+                            }
+                        }
+                        // Drain notifications and emit as events
+                        let notifications = registry.drain_notifications();
+                        for notification in notifications {
+                            let _ = tx_event.send(Event::BackgroundTaskNotification {
+                                notification,
+                            }).await;
+                        }
+                        registry.evict_notified();
+                    }
+                },
+            );
+        }
+
         while let Some(op) = self.rx_op.recv().await {
             match op {
                 Op::SendMessage {
@@ -1086,6 +1143,36 @@ impl Engine {
                 }
                 Op::Shutdown => {
                     break;
+                }
+
+                // Background task operations — stubs for Phase 7 engine integration
+                #[allow(dead_code)]
+                Op::StartBackgroundShell { command, cwd, timeout_secs } => {
+                    // TODO: delegate to ShellManager + BackgroundTaskRegistry
+                }
+                #[allow(dead_code)]
+                Op::CancelBackgroundTask { id } => {
+                    // TODO: delegate to BackgroundTaskRegistry::cancel_task
+                }
+                #[allow(dead_code)]
+                Op::ListBackgroundTasks => {
+                    // TODO: delegate to BackgroundTaskRegistry::list_tasks
+                }
+                #[allow(dead_code)]
+                Op::PollBackgroundTask { id } => {
+                    // TODO: delegate to BackgroundTaskRegistry::read_output_delta
+                }
+                #[allow(dead_code)]
+                Op::BackgroundCurrentShell => {
+                    // TODO: delegate to BackgroundTaskRegistry::background_all
+                }
+                #[allow(dead_code)]
+                Op::BackgroundAll => {
+                    // TODO: delegate to BackgroundTaskRegistry::background_all
+                }
+                #[allow(dead_code)]
+                Op::StartDreamTask { memory_path } => {
+                    // TODO: spawn DreamTaskRunner via BackgroundTaskRegistry
                 }
             }
         }

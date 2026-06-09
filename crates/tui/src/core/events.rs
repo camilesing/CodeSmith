@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use serde_json::Value;
 
+use crate::background_task::{BackgroundTaskType, BackgroundTaskNotification, BackgroundTaskSummary};
 use crate::core::coherence::CoherenceState;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Tool, Usage};
@@ -319,6 +320,56 @@ pub enum Event {
         /// Carried so `/cache stats` can surface it without reaching
         /// into the engine's PrefixStabilityManager.
         pinned_combined_hash: String,
+    },
+
+    // === Background Task Events ===
+    /// A background task has been registered and started.
+    #[allow(dead_code)]
+    BackgroundTaskStarted {
+        id: String,
+        task_type: BackgroundTaskType,
+        description: String,
+    },
+
+    /// Incremental output from a background task.
+    #[allow(dead_code)]
+    BackgroundTaskProgress {
+        id: String,
+        output_delta: String,
+        /// True if a stall was detected on this progress update.
+        stall_detected: bool,
+    },
+
+    /// A background task completed successfully.
+    #[allow(dead_code)]
+    BackgroundTaskComplete {
+        id: String,
+        task_type: BackgroundTaskType,
+        description: String,
+        result_summary: Option<String>,
+        duration_ms: Option<u64>,
+    },
+
+    /// A background task failed or was killed.
+    #[allow(dead_code)]
+    BackgroundTaskFailed {
+        id: String,
+        task_type: BackgroundTaskType,
+        description: String,
+        error: String,
+    },
+
+    /// Background task notification ready for injection into
+    /// the conversation as a synthetic message.
+    #[allow(dead_code)]
+    BackgroundTaskNotification {
+        notification: BackgroundTaskNotification,
+    },
+
+    /// Background task listing result.
+    #[allow(dead_code)]
+    BackgroundTaskList {
+        tasks: Vec<BackgroundTaskSummary>,
     },
 }
 
