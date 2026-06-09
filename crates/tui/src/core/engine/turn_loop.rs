@@ -44,6 +44,10 @@ impl Engine {
         crate::tui::notifications::set_taskbar_progress_busy();
         crate::tui::notifications::start_title_animation("CodeWhale");
 
+        // KoD prefetch: spawn at turn start so the side-query runs
+        // concurrently with streaming and tool execution.
+        self.kod_prefetch_spawn();
+
         let client = self
             .deepseek_client
             .clone()
@@ -97,6 +101,11 @@ impl Engine {
 
             // Ensure system prompt is up to date with latest session states
             self.refresh_system_prompt(mode);
+
+            // KoD prefetch: collect surfaced memories from the async
+            // prefetch task spawned at turn start. Injects them as
+            // <system-reminder> before the next API call.
+            self.kod_prefetch_collect().await;
 
             if turn.at_max_steps() {
                 let _ = self

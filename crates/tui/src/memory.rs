@@ -113,6 +113,18 @@ pub fn compose_block(enabled: bool, path: &Path) -> Option<String> {
     as_system_block(&content, path)
 }
 
+/// Compose the KoD `<knowledge_memory>` block for the system prompt.
+///
+/// When Knowledge On Demand is enabled, this replaces the legacy
+/// `<user_memory>` block. It loads the MEMORY.md entrypoint from the
+/// memory directory and wraps it with KoD-specific behavioral guidance.
+///
+/// Returns `None` when the MEMORY.md entrypoint is missing or empty.
+#[must_use]
+pub fn compose_kod_block(memory_dir: &Path) -> Option<String> {
+    crate::knowledge::entrypoint::compose_knowledge_block(memory_dir)
+}
+
 /// Append `entry` to the memory file at `path`, creating it (and its
 /// parent directory) if needed. The entry is timestamped so the user can
 /// later see when each note was added. The leading `#` from a `# foo`

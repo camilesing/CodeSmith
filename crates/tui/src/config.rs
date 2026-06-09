@@ -815,6 +815,16 @@ pub struct MemoryConfig {
     /// `# foo` typed in the composer to append to that file. Default `false`.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// When `true`, evolve memory from a single file to a directory-based
+    /// Knowledge On Demand system with frontmatter-parsed `.md` files,
+    /// an entrypoint (`MEMORY.md`), and async prefetch per turn.
+    /// Requires `enabled = true` and the `knowledge_on_demand` feature flag.
+    #[serde(default)]
+    pub kod_enabled: Option<bool>,
+    /// Override path for the memory directory. When unset, defaults to
+    /// the parent of `Config::memory_path()` with `/memory/` appended.
+    #[serde(default)]
+    pub directory: Option<String>,
 }
 
 impl SnapshotsConfig {
@@ -2375,6 +2385,39 @@ impl Config {
             .as_ref()
             .and_then(|m| m.enabled)
             .unwrap_or(false)
+    }
+
+    /// Whether Knowledge On Demand is enabled. Requires both `memory.enabled = true`
+    /// and `memory.kod_enabled = true` in config, plus the `knowledge_on_demand`
+    /// feature flag must be active.
+    #[must_use]
+    pub fn kod_enabled(&self) -> bool {
+        self.memory_enabled()
+            && self
+                .memory
+                .as_ref()
+                .and_then(|m| m.kod_enabled)
+                .unwrap_or(false)
+    }
+
+    /// Override path for the memory directory (from `[memory] directory` config).
+    #[must_use]
+    pub fn memory_dir_override(&self) -> Option<&str> {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.directory.as_deref())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Resolve the memory directory path. When KoD is enabled, this is the
+    /// directory containing frontmatter-parsed `.md` memory files.
+    #[must_use]
+    pub fn memory_dir(&self) -> PathBuf {
+        crate::knowledge::paths::resolve_memory_dir(
+            &self.memory_path(),
+            self.memory_dir_override(),
+        )
     }
 
     /// Return the configured vision model config, inheriting api_key from main config.

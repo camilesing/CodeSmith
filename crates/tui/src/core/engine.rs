@@ -165,6 +165,13 @@ pub struct EngineConfig {
     /// Path to the user memory file (#489). Always populated; only
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
+    /// Whether Knowledge On Demand is enabled. When `true`, the engine
+    /// uses a directory-based memory system with frontmatter-parsed files
+    /// and async prefetch, replacing the legacy single-file `<user_memory>`.
+    pub kod_enabled: bool,
+    /// Path to the memory directory for KoD. Only consulted when
+    /// `kod_enabled` is `true`.
+    pub memory_dir: PathBuf,
     pub vision_config: Option<crate::config::VisionModelConfig>,
     pub goal_objective: Option<String>,
     /// Tool restriction from custom slash command frontmatter.
@@ -239,6 +246,8 @@ impl Default for EngineConfig {
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
+            kod_enabled: false,
+            memory_dir: PathBuf::from("./memory"),
             vision_config: None,
             strict_tool_mode: false,
             goal_objective: None,
@@ -374,6 +383,9 @@ pub struct Engine {
     /// This keeps prompt refreshes cheap while still noticing append/update
     /// writes from slop ledger tools during the same session.
     slop_ledger_gate_cache: Option<(Option<SystemTime>, Option<String>)>,
+    /// Knowledge On Demand prefetch orchestrator. Tracks already-surfaced
+    /// memory paths and session byte budget across turns.
+    knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch,
 }
 
 // === Internal tool helpers ===
@@ -390,12 +402,171 @@ impl Engine {
                 *poisoned.into_inner() = token;
             }
         }
-        // Fresh turn → clear any latched cancellation reason from the
-        // previous turn so a downstream "request cancelled" message
-        // doesn't inherit a stale cause.
         match self.cancel_reason.lock() {
             Ok(mut slot) => *slot = None,
             Err(poisoned) => *poisoned.into_inner() = None,
+        }
+    }
+
+    // === Knowledge On Demand helpers ===
+
+    /// Spawn a KoD prefetch task for the current turn.
+    ///
+    /// Extracts the user query from session messages, clones the DeepSeek
+    /// client for the side-query, and spawns the full prefetch pipeline
+    /// (scan → rank → read → truncate) as a tokio task. The JoinHandle
+    /// is stored in `self.knowledge_prefetch` for collection after tool
+    /// execution.
+    fn kod_prefetch_spawn(&mut self) {
+        if !self.config.kod_enabled {
+            return;
+        }
+
+        let client = match self.deepseek_client.clone() {
+            Some(c) => c,
+            None => return, // No client → no prefetch
+        };
+
+        // Extract user query from the last real user message in session.
+        let user_query = self
+            .session
+            .messages
+            .iter()
+            .rev()
+            .find_map(|msg| {
+                if msg.role == "user" {
+                    msg.content
+                        .iter()
+                        .find_map(|block| match block {
+                            crate::models::ContentBlock::Text { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        // Skip prefetch for trivially short queries.
+        if user_query.trim().len() < 5 {
+            return;
+        }
+
+        let memory_dir = self.config.memory_dir.clone();
+        let already_surfaced = self.knowledge_prefetch.already_surfaced_paths();
+        let session_budget = self.knowledge_prefetch.session_budget();
+        let cancel_token = self.cancel_token.clone();
+        let model = self.config.model.clone();
+
+        // Build the side_query_fn closure that wraps DeepSeek API calls.
+        let side_query_fn = |system_prompt: String, user_message: String| {
+            let request = crate::models::MessageRequest {
+                model,
+                messages: vec![crate::models::Message {
+                    role: "user".to_string(),
+                    content: vec![crate::models::ContentBlock::Text {
+                        text: user_message,
+                        cache_control: None,
+                    }],
+                }],
+                max_tokens: 256,
+                system: Some(crate::models::SystemPrompt::Text(system_prompt)),
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: None,
+                stream: Some(false),
+                temperature: Some(0.0), // Deterministic ranking
+                top_p: None,
+            };
+
+            Box::pin(async move {
+                let result = client
+                    .create_message(request)
+                    .await
+                    .map_err(|e| format!("side-query API error: {e}"))?;
+
+                // Extract text from response content blocks.
+                let text = result
+                    .content
+                    .iter()
+                    .find_map(|block| match block {
+                        crate::models::ContentBlock::Text { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+
+                Ok(text)
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        };
+
+        let handle = tokio::spawn(async move {
+            crate::knowledge::prefetch::run_prefetch(
+                &user_query,
+                &memory_dir,
+                already_surfaced,
+                session_budget,
+                cancel_token,
+                &[], // recent_tools — empty for now, can be wired later
+                side_query_fn,
+            )
+            .await
+            .unwrap_or_else(|_| crate::knowledge::prefetch::PrefetchResult {
+                surfaced: vec![],
+                scan_headers: vec![],
+                duration_ms: 0,
+            })
+        });
+
+        self.knowledge_prefetch.set_prefetch_handle(handle);
+    }
+
+    /// Collect KoD prefetch results and inject surfaced memories into context.
+    ///
+    /// Polls the prefetch JoinHandle with a 10-second timeout. If the
+    /// prefetch completed, deduplicates against tool result file paths,
+    /// enforces session byte budget, and injects surfaced memories as
+    /// a `<system-reminder>` message. On timeout or error, silently skips.
+    async fn kod_prefetch_collect(&mut self) {
+        let handle = match self.knowledge_prefetch.take_prefetch_handle() {
+            Some(h) => h,
+            None => return, // No prefetch was spawned this turn
+        };
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), handle).await;
+
+        match result {
+            Ok(Ok(prefetch_result)) => {
+                if prefetch_result.surfaced.is_empty() {
+                    return; // No relevant memories found
+                }
+
+                // Mark surfaced memories in tracking state.
+                self.knowledge_prefetch
+                    .mark_surfaced(&prefetch_result.surfaced)
+                    .await;
+
+                // Format surfaced memories for injection.
+                let content =
+                    crate::knowledge::prefetch::format_surfaced_memories(&prefetch_result.surfaced);
+
+                // Inject as <system-reminder> synthetic user message.
+                self.add_session_message(crate::models::Message {
+                    role: "user".to_string(),
+                    content: vec![crate::models::ContentBlock::Text {
+                        text: format!(
+                            "<system-reminder>\n{content}\n</system-reminder>"
+                        ),
+                        cache_control: None,
+                    }],
+                })
+                .await;
+            }
+            Ok(Err(_)) | Err(_) => {
+                // Prefetch task failed or timed out — silently skip.
+                // No prefetch is better than a blocked turn.
+            }
         }
     }
 
@@ -479,8 +650,23 @@ impl Engine {
         // Set up stable system prompt with project context (default to agent mode).
         // Per-turn working-set metadata is injected into the latest user
         // message at request time so file churn does not rewrite this prefix.
-        let user_memory_block =
-            crate::memory::compose_block(config.memory_enabled, &config.memory_path);
+        let (user_memory_block, knowledge_prompt_block) = if config.kod_enabled {
+            let kod_block = crate::memory::compose_kod_block(&config.memory_dir);
+            // When KoD is enabled, use knowledge block; fallback to legacy
+            // memory block if MEMORY.md is empty but memory file exists.
+            match kod_block {
+                Some(block) => (None, Some(block)),
+                None => (
+                    crate::memory::compose_block(config.memory_enabled, &config.memory_path),
+                    None,
+                ),
+            }
+        } else {
+            (
+                crate::memory::compose_block(config.memory_enabled, &config.memory_path),
+                None,
+            )
+        };
         let prompt_goal_objective =
             goal_objective_for_prompt(config.goal_objective.as_deref(), &config.goal_state);
         let system_prompt =
@@ -492,6 +678,7 @@ impl Engine {
                 Some(&config.instructions),
                 prompts::PromptSessionContext {
                     user_memory_block: user_memory_block.as_deref(),
+                    knowledge_prompt_block: knowledge_prompt_block.as_deref(),
                     goal_objective: prompt_goal_objective.as_deref(),
                     project_context_pack_enabled: config.project_context_pack_enabled,
                     locale_tag: &config.locale_tag,
@@ -618,6 +805,7 @@ impl Engine {
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
             slop_ledger_gate_cache: None,
+            knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),
             workshop_vars,
             sandbox_backend,
         };
@@ -1692,6 +1880,9 @@ impl Engine {
         if self.config.memory_enabled {
             ctx.memory_path = Some(self.config.memory_path.clone());
         }
+        if self.config.kod_enabled {
+            ctx.memory_dir = Some(self.config.memory_dir.clone());
+        }
 
         if let Some(decider) = self.config.network_policy.as_ref() {
             ctx = ctx.with_network_policy(decider.clone());
@@ -2071,8 +2262,21 @@ impl Engine {
 
     /// Refresh the system prompt based on current mode and context.
     fn refresh_system_prompt(&mut self, mode: AppMode) {
-        let user_memory_block =
-            crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
+        let (user_memory_block, knowledge_prompt_block) = if self.config.kod_enabled {
+            let kod_block = crate::memory::compose_kod_block(&self.config.memory_dir);
+            match kod_block {
+                Some(block) => (None, Some(block)),
+                None => (
+                    crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path),
+                    None,
+                ),
+            }
+        } else {
+            (
+                crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path),
+                None,
+            )
+        };
         let prompt_goal_objective = goal_objective_for_prompt(
             self.config.goal_objective.as_deref(),
             &self.config.goal_state,
@@ -2085,6 +2289,7 @@ impl Engine {
             Some(&self.config.instructions),
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
+                knowledge_prompt_block: knowledge_prompt_block.as_deref(),
                 goal_objective: prompt_goal_objective.as_deref(),
                 project_context_pack_enabled: self.config.project_context_pack_enabled,
                 locale_tag: &self.config.locale_tag,

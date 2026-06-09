@@ -775,6 +775,8 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        kod_enabled: config.kod_enabled(),
+        memory_dir: config.memory_dir(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.hunt.quarry.clone(),
@@ -4556,6 +4558,7 @@ async fn dispatch_user_message(
             None,
             prompts::PromptSessionContext {
                 user_memory_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: app.hunt.quarry.as_deref(),
                 project_context_pack_enabled: config.project_context_pack_enabled(),
                 locale_tag: app.ui_locale.tag(),

@@ -46,6 +46,9 @@ pub enum Feature {
     ExecPolicy,
     /// Enable vision model for image analysis.
     VisionModel,
+    /// Enable Knowledge On Demand — directory-based memory system with
+    /// async prefetch, frontmatter parsing, and side-query ranking.
+    KnowledgeOnDemand,
 }
 
 impl fmt::Display for Stage {
@@ -213,6 +216,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::VisionModel,
         key: "vision_model",
         stage: Stage::Experimental,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::KnowledgeOnDemand,
+        key: "knowledge_on_demand",
+        stage: Stage::Beta,
         default_enabled: false,
     },
 ];

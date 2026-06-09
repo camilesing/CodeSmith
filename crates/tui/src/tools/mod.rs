@@ -28,6 +28,7 @@ pub mod goal;
 pub mod handle;
 pub mod image_ocr;
 pub mod js_execution;
+pub mod knowledge_recall;
 pub mod large_output_router;
 pub mod notify;
 pub mod pandoc;

@@ -2019,6 +2019,8 @@ impl RuntimeThreadManager {
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
+            kod_enabled: self.config.kod_enabled(),
+            memory_dir: self.config.memory_dir(),
             vision_config: self.config.vision_model_config(),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,

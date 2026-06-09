@@ -39,6 +39,7 @@ mod execpolicy;
 mod features;
 mod handoff;
 mod hooks;
+mod knowledge;
 mod llm_client;
 mod localization;
 mod logging;
@@ -5373,6 +5374,8 @@ async fn run_exec_agent(
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        kod_enabled: config.kod_enabled(),
+        memory_dir: config.memory_dir(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,

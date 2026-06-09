@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct PromptSessionContext<'a> {
     pub user_memory_block: Option<&'a str>,
+    /// KoD knowledge block — when set, replaces `user_memory_block` in the
+    /// system prompt assembly. Contains the MEMORY.md entrypoint wrapped
+    /// in `<knowledge_memory>` with type taxonomy guidance.
+    pub knowledge_prompt_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
     pub project_context_pack_enabled: bool,
     /// Resolved BCP-47 locale tag for the `## Environment` block in
@@ -44,6 +48,7 @@ impl Default for PromptSessionContext<'_> {
     fn default() -> Self {
         Self {
             user_memory_block: None,
+            knowledge_prompt_block: None,
             goal_objective: None,
             project_context_pack_enabled: true,
             locale_tag: "en",
@@ -608,6 +613,10 @@ pub const GOAL_CONTINUATION_PROMPT: &str = include_str!("prompts/continuation.md
 /// can override the user's current request (#725).
 pub const MEMORY_GUIDANCE: &str = include_str!("prompts/memory_guidance.md");
 
+/// KoD-specific guidance prompt — type taxonomy, save instructions,
+/// staleness warnings, and constitutional tier placement.
+pub const KNOWLEDGE_GUIDANCE: &str = include_str!("prompts/knowledge_guidance.md");
+
 // ── Legacy prompt constants (kept for backwards compatibility) ────────
 
 /// Legacy base prompt (agent.txt — now decomposed into base.md + overlays).
@@ -843,6 +852,7 @@ pub fn system_prompt_for_mode_with_context(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -870,6 +880,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
     skills_dir: Option<&Path>,
     instructions: Option<&[InstructionSource]>,
     user_memory_block: Option<&str>,
+    knowledge_prompt_block: Option<&str>,
 ) -> SystemPrompt {
     system_prompt_for_mode_with_context_skills_and_session(
         mode,
@@ -879,6 +890,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         instructions,
         PromptSessionContext {
             user_memory_block,
+            knowledge_prompt_block,
             goal_objective: None,
             project_context_pack_enabled: true,
             locale_tag: "en",
@@ -1048,11 +1060,14 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
         full_prompt = format!("{full_prompt}\n\n{block}");
     }
 
-    // 6b. User memory block (#489). Placed below the volatile boundary
-    // because memory entries are editable mid-session via `/memory` or
-    // `# foo` quick-add. When they change, they only invalidate the
-    // trailing relay block — the static prefix above stays cached.
-    if let Some(memory_block) = session_context.user_memory_block
+    // 6b. Knowledge On Demand block — when KoD is enabled, this replaces
+    // the legacy <user_memory> block. Same volatile position so prefix
+    // cache stays intact when KoD is toggled (one invalidation per toggle).
+    if let Some(knowledge_block) = session_context.knowledge_prompt_block
+        && !knowledge_block.trim().is_empty()
+    {
+        full_prompt = format!("{full_prompt}\n\n{knowledge_block}\n\n{KNOWLEDGE_GUIDANCE}");
+    } else if let Some(memory_block) = session_context.user_memory_block
         && !memory_block.trim().is_empty()
     {
         full_prompt = format!("{full_prompt}\n\n{memory_block}\n\n{MEMORY_GUIDANCE}");
@@ -1449,6 +1464,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
@@ -1520,6 +1536,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
@@ -1564,6 +1581,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
@@ -1618,6 +1636,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
@@ -1723,6 +1742,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: true,
                 locale_tag: "ja",
@@ -1760,6 +1780,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
@@ -1789,6 +1810,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: Some(block),
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
@@ -1847,6 +1869,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
@@ -1876,6 +1899,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: true,
                 locale_tag: "en",
@@ -2072,6 +2096,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: Some("Fix transcript corruption"),
                 project_context_pack_enabled: true,
                 locale_tag: "en",
@@ -2107,6 +2132,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+            knowledge_prompt_block: None,
                 goal_objective: Some("   "),
                 project_context_pack_enabled: true,
                 locale_tag: "en",
@@ -2615,6 +2641,7 @@ mod tests {
             None,
             None,
             Some(std::slice::from_ref(&extra_source)),
+            None,
             None,
         ) {
             SystemPrompt::Text(text) => text,

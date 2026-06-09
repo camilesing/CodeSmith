@@ -819,6 +819,14 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RememberTool))
     }
 
+    /// Include KoD knowledge tools — `knowledge_recall` for explicit
+    /// memory search. Only register when KoD is enabled.
+    #[must_use]
+    pub fn with_knowledge_tools(self) -> Self {
+        use super::knowledge_recall::KnowledgeRetrievalTool;
+        self.with_tool(Arc::new(KnowledgeRetrievalTool))
+    }
+
     /// Include the slop ledger tools (#2127) — durable tracking of
     /// unresolved architectural residue: append, query, update, export.
     /// Registered unconditionally; the ledger JSON file is auto-created
