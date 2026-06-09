@@ -15,6 +15,8 @@ mod team_delete;
 mod send_message;
 mod teammate_lifecycle;
 mod team_discovery;
+mod inbox_poller;
+mod protocol_handlers;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,7 +34,7 @@ pub use team_file::{
     active_teammates, active_teammate_count,
 };
 pub use teammate_mailbox::{
-    TeammateMessage, StructuredProtocolMessage,
+    TeammateMessage, StructuredProtocolMessage, IdleReason,
     read_mailbox, write_to_mailbox, read_unread_messages,
     mark_messages_as_read, clear_mailbox, parse_structured_protocol,
     is_structured_protocol_message,
@@ -44,6 +46,20 @@ pub use teammate_lifecycle::{
     TeammateState, TeammateResult, TeammateRuntime,
     process_inbox_messages, send_idle_notification,
     handle_shutdown_request, run_teammate_loop, poll_leader_inbox,
+};
+pub use inbox_poller::{
+    InboxClassification, InboxDispatch, TeamInboxTx, TeamInboxRx,
+    classify_inbox_messages, run_leader_inbox_poller,
+};
+pub use protocol_handlers::{
+    PermissionRequestRegistry, PermissionDecision, SharedPermissionRequestRegistry,
+    handle_shutdown_request as proto_shutdown_request,
+    handle_shutdown_approval as proto_shutdown_approval,
+    handle_shutdown_rejection as proto_shutdown_rejection,
+    handle_plan_approval_auto_approve as proto_plan_approve,
+    handle_plan_approval_rejection as proto_plan_reject,
+    handle_permission_request as proto_permission_request,
+    handle_permission_response as proto_permission_response,
 };
 pub use team_discovery::{
     read_team_config, write_team_config,

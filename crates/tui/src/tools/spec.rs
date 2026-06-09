@@ -56,6 +56,8 @@ pub struct RuntimeToolServices {
     pub task_mailbox: Option<Arc<crate::tools::subagent::mailbox::Mailbox>>,
     /// Team context for multi-agent coordination.
     pub team_context: Option<crate::tools::team::SharedTeamContext>,
+    /// Permission request registry for team permission delegation.
+    pub permission_request_registry: Option<crate::tools::team::SharedPermissionRequestRegistry>,
 }
 
 impl Default for RuntimeToolServices {
@@ -73,6 +75,7 @@ impl Default for RuntimeToolServices {
             rlm_sessions: new_shared_rlm_session_store(),
             task_mailbox: None,
             team_context: None,
+            permission_request_registry: None,
         }
     }
 }

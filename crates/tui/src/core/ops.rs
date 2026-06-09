@@ -140,4 +140,9 @@ pub enum Op {
     /// Trigger a memory consolidation (dream) task.
     #[allow(dead_code)]
     StartDreamTask { memory_path: Option<PathBuf> },
+
+    /// Team inbox dispatch received from the inbox poller.
+    TeamInboxDispatch {
+        dispatch: crate::tools::team::InboxDispatch,
+    },
 }

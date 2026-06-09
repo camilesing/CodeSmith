@@ -2013,6 +2013,7 @@ impl RuntimeThreadManager {
                 task_v2_manager: None,
                 task_mailbox: None,
                 team_context: None,
+                permission_request_registry: None,
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             subagent_api_timeout: std::time::Duration::from_secs(

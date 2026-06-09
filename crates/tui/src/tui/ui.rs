@@ -518,6 +518,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         task_v2_manager: None,
         task_mailbox: None,
         team_context: None,
+        permission_request_registry: None,
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 

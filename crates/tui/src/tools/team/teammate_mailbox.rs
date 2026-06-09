@@ -37,6 +37,18 @@ fn default_timestamp() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Idle reason variants — why a teammate went idle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleReason {
+    /// Turn completed normally, available for new work.
+    Available,
+    /// Interrupted by external signal (cancel, etc).
+    Interrupted,
+    /// Failed during turn execution.
+    Failed,
+}
+
 /// Structured protocol messages carried inside TeammateMessage.text as JSON.
 /// Parsed when `is_structured_protocol_message()` returns true.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +66,8 @@ pub enum StructuredProtocolMessage {
     ShutdownApproved {
         request_id: String,
         from: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        backend_type: Option<String>,
         timestamp: String,
     },
     /// Teammate rejected shutdown request.
@@ -68,11 +82,13 @@ pub enum StructuredProtocolMessage {
         from: String,
         timestamp: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        idle_reason: Option<String>,
+        idle_reason: Option<IdleReason>,
         #[serde(skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         completed_task_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        completed_status: Option<String>,
     },
     /// Leader assigns a task to a teammate.
     TaskAssignment {
@@ -110,7 +126,38 @@ pub enum StructuredProtocolMessage {
         approved: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         feedback: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<String>,
         timestamp: String,
+    },
+    /// Leader pushes permission rule updates to a worker.
+    TeamPermissionUpdate {
+        from: String,
+        allowed_tools: Vec<String>,
+        denied_tools: Vec<String>,
+        timestamp: String,
+    },
+    /// Leader changes a worker's permission mode. Only valid from team-lead.
+    ModeSetRequest {
+        from: String,
+        permission_mode: String,
+        timestamp: String,
+    },
+    /// Worker requests network access permission (sandbox).
+    SandboxPermissionRequest {
+        request_id: String,
+        agent_id: String,
+        tool_name: String,
+        tool_use_id: String,
+        domain: String,
+        description: String,
+    },
+    /// Leader responds to sandbox permission request.
+    SandboxPermissionResponse {
+        request_id: String,
+        subtype: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 }
 
@@ -135,6 +182,10 @@ pub fn is_structured_protocol_message(text: &str) -> bool {
                     | "permission_response"
                     | "plan_approval_request"
                     | "plan_approval_response"
+                    | "team_permission_update"
+                    | "mode_set_request"
+                    | "sandbox_permission_request"
+                    | "sandbox_permission_response"
             );
         }
     }

@@ -1178,6 +1178,9 @@ impl Engine {
                 Op::StartDreamTask { memory_path } => {
                     // TODO: spawn DreamTaskRunner via BackgroundTaskRegistry
                 }
+                Op::TeamInboxDispatch { dispatch } => {
+                    self.handle_team_inbox_dispatch(dispatch).await;
+                }
             }
         }
 
@@ -2759,6 +2762,7 @@ mod tool_catalog;
 mod tool_execution;
 mod tool_setup;
 mod turn_loop;
+mod team_inbox;
 
 pub(crate) fn default_active_native_tool_names() -> &'static [&'static str] {
     tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS
