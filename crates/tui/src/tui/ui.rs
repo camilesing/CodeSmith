@@ -3883,7 +3883,8 @@ async fn run_event_loop(
                         let new_mode = match app.mode {
                             AppMode::Plan => AppMode::Agent,
                             AppMode::Agent => AppMode::Yolo,
-                            AppMode::Yolo => AppMode::Plan,
+                            AppMode::Yolo => AppMode::Coordinator,
+                            AppMode::Coordinator => AppMode::Plan,
                         };
                         app.set_mode(new_mode);
                     }

@@ -509,6 +509,7 @@ impl<'a> ComposerWidget<'a> {
             AppMode::Agent => palette::MODE_AGENT,
             AppMode::Yolo => palette::MODE_YOLO,
             AppMode::Plan => palette::MODE_PLAN,
+            AppMode::Coordinator => palette::MODE_YOLO,
         }
     }
 

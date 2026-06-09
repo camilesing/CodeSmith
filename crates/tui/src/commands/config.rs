@@ -752,6 +752,7 @@ fn mode_display_name(mode: AppMode) -> &'static str {
         AppMode::Agent => "Agent",
         AppMode::Plan => "Plan",
         AppMode::Yolo => "YOLO",
+        AppMode::Coordinator => "Coordinator",
     }
 }
 

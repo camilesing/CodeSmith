@@ -590,6 +590,7 @@ pub const PLAYFUL_PERSONALITY: &str = include_str!("prompts/personalities/playfu
 pub const AGENT_MODE: &str = include_str!("prompts/modes/agent.md");
 pub const PLAN_MODE: &str = include_str!("prompts/modes/plan.md");
 pub const YOLO_MODE: &str = include_str!("prompts/modes/yolo.md");
+pub const COORDINATOR_MODE: &str = include_str!("prompts/modes/coordinator.md");
 
 /// Approval-policy overlays — whether tool calls are auto-approved,
 /// require confirmation, or are blocked.
@@ -664,6 +665,7 @@ fn mode_prompt(mode: AppMode) -> &'static str {
         AppMode::Agent => AGENT_MODE,
         AppMode::Yolo => YOLO_MODE,
         AppMode::Plan => PLAN_MODE,
+        AppMode::Coordinator => COORDINATOR_MODE,
     }
 }
 
@@ -672,12 +674,13 @@ fn default_approval_mode_for_mode(mode: AppMode) -> ApprovalMode {
         AppMode::Agent => ApprovalMode::Suggest,
         AppMode::Yolo => ApprovalMode::Auto,
         AppMode::Plan => ApprovalMode::Never,
+        AppMode::Coordinator => ApprovalMode::Auto,
     }
 }
 
 fn approval_prompt_for_mode(mode: AppMode, approval_mode: ApprovalMode) -> &'static str {
     match mode {
-        AppMode::Yolo => AUTO_APPROVAL,
+        AppMode::Yolo | AppMode::Coordinator => AUTO_APPROVAL,
         AppMode::Plan => NEVER_APPROVAL,
         AppMode::Agent => match approval_mode {
             ApprovalMode::Auto => AUTO_APPROVAL,

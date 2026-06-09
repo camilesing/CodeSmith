@@ -17,6 +17,7 @@ use crate::config::{
 };
 use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;
+use crate::features::Feature;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{Locale, MessageId, resolve_locale, tr};
@@ -131,6 +132,9 @@ pub enum AppMode {
     Agent,
     Yolo,
     Plan,
+    /// Coordinator mode — LLM acts as orchestrator only, delegates work to
+    /// worker sub-agents. Cannot directly read/write files or run commands.
+    Coordinator,
 }
 
 /// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
@@ -741,6 +745,7 @@ impl AppMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "plan" => Self::Plan,
             "yolo" => Self::Yolo,
+            "coordinator" | "coordinator_mode" => Self::Coordinator,
             _ => Self::Agent,
         }
     }
@@ -751,6 +756,7 @@ impl AppMode {
             Self::Agent => "agent",
             Self::Yolo => "yolo",
             Self::Plan => "plan",
+            Self::Coordinator => "coordinator",
         }
     }
 
@@ -760,6 +766,7 @@ impl AppMode {
             AppMode::Agent => "AGENT",
             AppMode::Yolo => "YOLO",
             AppMode::Plan => "PLAN",
+            AppMode::Coordinator => "COORDINATOR",
         }
     }
 
@@ -770,6 +777,7 @@ impl AppMode {
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
+            AppMode::Coordinator => "Coordinator mode - orchestrator only, delegates work to workers",
         }
     }
 }
@@ -1820,6 +1828,10 @@ impl App {
             AppMode::Yolo
         } else if start_in_agent_mode {
             AppMode::Agent
+        } else if std::env::var("CODESMITH_COORDINATOR_MODE").is_ok()
+            && config.features().enabled(Feature::CoordinatorMode)
+        {
+            AppMode::Coordinator
         } else {
             preferred_mode
         };
@@ -2180,8 +2192,19 @@ impl App {
 
         let entering_yolo = mode == AppMode::Yolo && previous_mode != AppMode::Yolo;
         let leaving_yolo = previous_mode == AppMode::Yolo && mode != AppMode::Yolo;
+        let entering_coordinator = mode == AppMode::Coordinator && previous_mode != AppMode::Coordinator;
+        let leaving_coordinator = previous_mode == AppMode::Coordinator && mode != AppMode::Coordinator;
         self.mode = mode;
         self.status_message = Some(format!("Switched to {} mode", mode.label()));
+
+        if entering_coordinator {
+            // Coordinator mode requires auto-approve so workers can execute
+            // their tools without prompting the user for each one.
+            self.approval_mode = ApprovalMode::Auto;
+        } else if leaving_coordinator {
+            // Restore suggest mode when leaving coordinator.
+            self.approval_mode = ApprovalMode::Suggest;
+        }
 
         if entering_yolo {
             self.yolo_restore = Some(YoloRestoreState {
@@ -2220,7 +2243,8 @@ impl App {
         let next = match self.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Yolo => AppMode::Coordinator,
+            AppMode::Coordinator => AppMode::Plan,
         };
         let _ = self.set_mode(next);
     }
@@ -2231,7 +2255,8 @@ impl App {
         let next = match self.mode {
             AppMode::Agent => AppMode::Plan,
             AppMode::Yolo => AppMode::Agent,
-            AppMode::Plan => AppMode::Yolo,
+            AppMode::Plan => AppMode::Coordinator,
+            AppMode::Coordinator => AppMode::Yolo,
         };
         let _ = self.set_mode(next);
     }
@@ -5731,7 +5756,7 @@ mod tests {
 
         app.mode = AppMode::Plan;
         app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Yolo);
+        assert_eq!(app.mode, AppMode::Coordinator);
 
         app.mode = AppMode::Agent;
         app.cycle_mode_reverse();
@@ -5748,17 +5773,20 @@ mod tests {
         let first_mode = match app.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Yolo => AppMode::Coordinator,
+            AppMode::Coordinator => AppMode::Plan,
         };
         let second_mode = match first_mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Yolo => AppMode::Coordinator,
+            AppMode::Coordinator => AppMode::Plan,
         };
         let third_mode = match second_mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
+            AppMode::Yolo => AppMode::Coordinator,
+            AppMode::Coordinator => AppMode::Plan,
         };
 
         app.set_mode(first_mode);

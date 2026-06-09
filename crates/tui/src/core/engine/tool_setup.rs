@@ -14,6 +14,8 @@ use crate::sandbox::SandboxPolicy;
 ///   files inside the workspace because it whitelisted the workspace as
 ///   writable. Plan mode is investigation only; if the user wants to change
 ///   files they should switch to Agent.
+/// - **Coordinator**: `ReadOnly` — same rationale as Plan; the coordinator
+///   cannot directly execute or write, so no sandbox writes needed.
 /// - **Agent**: `WorkspaceWrite` with workspace as writable root and network
 ///   on. Approval flow gates risky individual commands; the sandbox handles
 ///   the rest. Network is allowed because cargo / npm / curl-style commands
@@ -21,7 +23,7 @@ use crate::sandbox::SandboxPolicy;
 /// - **YOLO**: `DangerFullAccess` — explicit no-guardrails contract.
 pub(crate) fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> SandboxPolicy {
     match mode {
-        AppMode::Plan => SandboxPolicy::ReadOnly,
+        AppMode::Plan | AppMode::Coordinator => SandboxPolicy::ReadOnly,
         AppMode::Agent => SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![workspace.to_path_buf()],
             network_access: true,
@@ -67,6 +69,12 @@ impl Engine {
                     self.config.task_v2_manager.clone(),
                 )
                 .with_goal_tools(self.config.goal_state.clone())
+        } else if mode == AppMode::Coordinator {
+            // Coordinator mode: empty builder. Subagent + send_message tools
+            // are added in engine.rs. User_input + recall_archive are added
+            // in the common section below. Review, parallel, rlm, fim, patch,
+            // web, slop_ledger are all excluded — coordinator only orchestrates.
+            ToolRegistryBuilder::new()
         } else {
             ToolRegistryBuilder::new()
                 .with_agent_tools(self.session.allow_shell)
@@ -82,30 +90,41 @@ impl Engine {
                 .with_goal_tools(self.config.goal_state.clone())
         };
 
+        // Review + parallel are NOT added for coordinator — it delegates
+        // all work to workers and doesn't need review/parallel capabilities.
+        if mode != AppMode::Coordinator {
+            builder = builder
+                .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
+                .with_parallel_tool();
+        }
+
+        // User input and recall archive are needed for all modes.
         builder = builder
-            .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_user_input_tool()
-            .with_parallel_tool()
             .with_recall_archive_tool();
 
-        // SlopLedger: plan mode only gets read-only query + export,
-        // agent/yolo get the full set including append + update.
-        builder = if mode == AppMode::Plan {
-            builder.with_slop_ledger_read_only_tools()
-        } else {
-            builder.with_slop_ledger_tools()
-        };
+        // SlopLedger: plan gets read-only, agent/yolo get the full set.
+        // Coordinator skips slop_ledger entirely — it has no direct tools.
+        if mode == AppMode::Plan {
+            builder = builder.with_slop_ledger_read_only_tools();
+        } else if mode != AppMode::Coordinator {
+            builder = builder.with_slop_ledger_tools();
+        }
 
-        if mode != AppMode::Plan {
+        if mode != AppMode::Plan && mode != AppMode::Coordinator {
             builder = builder
                 .with_rlm_tool(self.deepseek_client.clone(), self.session.model.clone())
                 .with_fim_tool(self.deepseek_client.clone(), self.session.model.clone());
         }
 
-        if self.config.features.enabled(Feature::ApplyPatch) && mode != AppMode::Plan {
+        if self.config.features.enabled(Feature::ApplyPatch)
+            && mode != AppMode::Plan && mode != AppMode::Coordinator
+        {
             builder = builder.with_patch_tools();
         }
-        if self.config.features.enabled(Feature::WebSearch) {
+        if self.config.features.enabled(Feature::WebSearch)
+            && mode != AppMode::Coordinator
+        {
             builder = builder.with_web_tools();
         }
         // Shell tools (exec_shell, task_shell_start, etc.) are already gated
@@ -125,7 +144,11 @@ impl Engine {
         }
 
         // Register Agent Teams tools when the feature is enabled.
-        if self.config.features.enabled(Feature::AgentTeams) {
+        // Coordinator mode gets send_message only (added in engine.rs),
+        // so skip the full team_tools here for coordinator.
+        if self.config.features.enabled(Feature::AgentTeams)
+            && mode != AppMode::Coordinator
+        {
             builder = builder.with_team_tools_if_available(
                 self.config.team_context.clone(),
             );

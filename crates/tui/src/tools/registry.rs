@@ -1109,6 +1109,18 @@ impl ToolRegistryBuilder {
         }
     }
 
+    /// Include only the send_message tool from the team module.
+    /// Used by coordinator mode, which needs messaging but not
+    /// team_create/team_delete.
+    #[must_use]
+    pub fn with_send_message_tool(
+        self,
+        team_context: super::team::SharedTeamContext,
+    ) -> Self {
+        use super::team::SendMessageTool;
+        self.with_tool(Arc::new(SendMessageTool::new(team_context)))
+    }
+
     /// Build the registry with the given context.
     #[must_use]
     pub fn build(self, context: ToolContext) -> ToolRegistry {

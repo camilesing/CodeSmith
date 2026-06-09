@@ -376,6 +376,10 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
             let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeTip));
             let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeChecklistTip));
         }
+        AppMode::Coordinator => {
+            let _ = writeln!(stats, "Coordinator mode - orchestrator only, delegates work to workers");
+            let _ = writeln!(stats, "Use agent_spawn/agent_run to delegate tasks to worker sub-agents");
+        }
     }
 
     CommandResult::message(stats)

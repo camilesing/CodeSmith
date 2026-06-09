@@ -310,11 +310,13 @@ fn mode_style(app: &App) -> (&'static str, Color) {
         AppMode::Agent => "agent",
         AppMode::Yolo => "yolo",
         AppMode::Plan => "plan",
+        AppMode::Coordinator => "coordinator",
     };
     let color = match app.mode {
         AppMode::Agent => app.ui_theme.mode_agent,
         AppMode::Yolo => app.ui_theme.mode_yolo,
         AppMode::Plan => app.ui_theme.mode_plan,
+        AppMode::Coordinator => app.ui_theme.mode_yolo, // Use yolo color for coordinator (yellow/attention)
     };
     (label, color)
 }

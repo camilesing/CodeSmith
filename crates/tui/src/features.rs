@@ -51,6 +51,9 @@ pub enum Feature {
     KnowledgeOnDemand,
     /// Enable multi-agent team coordination (swarm mode).
     AgentTeams,
+    /// Enable coordinator mode — LLM acts as orchestrator only,
+    /// delegating all work to worker sub-agents.
+    CoordinatorMode,
 }
 
 impl fmt::Display for Stage {
@@ -229,6 +232,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::AgentTeams,
         key: "agent_teams",
+        stage: Stage::Experimental,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::CoordinatorMode,
+        key: "coordinator_mode",
         stage: Stage::Experimental,
         default_enabled: false,
     },

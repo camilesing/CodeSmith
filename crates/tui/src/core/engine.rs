@@ -1430,7 +1430,7 @@ impl Engine {
         let plan_state = self.config.plan_state.clone();
 
         let tool_context = self.build_tool_context(mode, auto_approve);
-        let builder = self.build_turn_tool_registry_builder(mode, todo_list, plan_state);
+        let mut builder = self.build_turn_tool_registry_builder(mode, todo_list, plan_state);
 
         let fork_context_for_runtime = if self.config.features.enabled(Feature::Subagents) {
             let state = StructuredState::capture(
@@ -1537,6 +1537,52 @@ impl Engine {
                 } else {
                     Some(builder.build(tool_context))
                 }
+            }
+            AppMode::Coordinator => {
+                // Coordinator mode requires subagents — it must be able to
+                // spawn worker agents. Add subagent + send_message tools.
+                if self.config.features.enabled(Feature::Subagents)
+                    && let Some(client) = self.deepseek_client.clone()
+                {
+                    let mut rt = SubAgentRuntime::new(
+                        client,
+                        self.session.model.clone(),
+                        tool_context.clone(),
+                        true, // Coordinator workers need shell access
+                        Some(self.tx_event.clone()),
+                        Arc::clone(&self.subagent_manager),
+                    )
+                    .with_role_models(self.config.subagent_model_overrides.clone())
+                    .with_auto_model(self.session.auto_model)
+                    .with_reasoning_effort(
+                        self.session.reasoning_effort.clone(),
+                        self.session.reasoning_effort_auto,
+                    )
+                    .with_max_spawn_depth(self.config.max_spawn_depth)
+                    .with_step_api_timeout(self.config.subagent_api_timeout)
+                    .with_mcp_pool(mcp_pool.clone())
+                    .with_parent_completion_tx(self.tx_subagent_completion.clone());
+                    if let Some(context) = fork_context_for_runtime.clone() {
+                        rt = rt.with_fork_context(context);
+                    }
+                    if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
+                        rt = rt
+                            .with_mailbox(mailbox.clone())
+                            .with_cancel_token(cancel_token.clone());
+                    }
+                    builder = builder.with_subagent_tools(
+                        self.subagent_manager.clone(),
+                        rt,
+                    );
+                }
+                // send_message — coordinator needs messaging but NOT
+                // team_create/team_delete.
+                if self.config.features.enabled(Feature::AgentTeams)
+                    && let Some(tc) = self.config.team_context.clone()
+                {
+                    builder = builder.with_send_message_tool(tc);
+                }
+                Some(builder.build(tool_context))
             }
             _ => Some(builder.build(tool_context)),
         };
@@ -2041,7 +2087,7 @@ impl Engine {
             self.session.trust_mode,
             self.session.notes_path.clone(),
             self.session.mcp_config_path.clone(),
-            mode == AppMode::Yolo || auto_approve,
+            mode == AppMode::Yolo || mode == AppMode::Coordinator || auto_approve,
         )
         .with_state_namespace(self.session.id.clone())
         .with_features(self.config.features.clone())

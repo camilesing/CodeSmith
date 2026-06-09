@@ -218,6 +218,7 @@ pub enum DefaultModeValue {
     Agent,
     Plan,
     Yolo,
+    Coordinator,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -798,6 +799,7 @@ impl DefaultModeValue {
             Self::Agent => "agent",
             Self::Plan => "plan",
             Self::Yolo => "yolo",
+            Self::Coordinator => "coordinator",
         }
     }
 }
@@ -909,6 +911,7 @@ impl From<&str> for DefaultModeValue {
             AppMode::Agent => Self::Agent,
             AppMode::Plan => Self::Plan,
             AppMode::Yolo => Self::Yolo,
+            AppMode::Coordinator => Self::Coordinator,
         }
     }
 }

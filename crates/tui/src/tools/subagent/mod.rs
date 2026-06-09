@@ -367,6 +367,10 @@ pub enum SubAgentType {
     /// Shares a task list with other team members and communicates
     /// via file-based mailbox.
     Team,
+    /// Worker spawned by a coordinator agent. Gets full tool access
+    /// minus team management tools. Uses a worker-specific system prompt
+    /// that emphasizes executing the assigned task independently.
+    CoordinatorWorker,
 }
 
 impl SubAgentType {
@@ -387,6 +391,7 @@ impl SubAgentType {
             }
             "custom" => Some(Self::Custom),
             "team" | "teammate" | "swarm" => Some(Self::Team),
+            "coordinator-worker" | "coordinator_worker" | "coord_worker" => Some(Self::CoordinatorWorker),
             _ => None,
         }
     }
@@ -403,6 +408,7 @@ impl SubAgentType {
             Self::ToolAgent => "tool_agent",
             Self::Custom => "custom",
             Self::Team => "team",
+            Self::CoordinatorWorker => "coordinator_worker",
         }
     }
 
@@ -419,6 +425,7 @@ impl SubAgentType {
             Self::ToolAgent => TOOL_AGENT_INTRO,
             Self::Custom => CUSTOM_AGENT_INTRO,
             Self::Team => GENERAL_AGENT_INTRO,  // Team agents reuse general prompt with team context
+            Self::CoordinatorWorker => COORDINATOR_WORKER_INTRO,
         };
         format!("{role_intro}{SUBAGENT_OUTPUT_FORMAT}")
     }
@@ -553,6 +560,18 @@ impl SubAgentType {
                 "task_create_v2", "task_update_v2", "task_get_v2", "task_list_v2",
                 "send_message",
                 "exec_shell", "exec_shell_wait", "exec_shell_interact",
+            ],
+            Self::CoordinatorWorker => vec![
+                "list_dir", "read_file", "write_file", "edit_file", "apply_patch",
+                "grep_files", "file_search",
+                "web.run", "web_search", "fetch_url",
+                "exec_shell", "exec_shell_wait", "exec_shell_interact",
+                "exec_wait", "exec_interact",
+                "note",
+                "checklist_write", "checklist_add", "checklist_update", "checklist_list",
+                "todo_write", "todo_add", "todo_update", "todo_list",
+                "update_plan",
+                "diagnostics",
             ],
         }
     }
@@ -5604,6 +5623,36 @@ const TOOL_AGENT_INTRO: &str = concat!(
     "Prefer direct tool calls, concise evidence, and one-pass results. Stop after the requested machine-bound action is done.\n",
     "CHANGES should be \"None.\" unless an explicitly allowed tool made a real edit.\n\n"
 );
+
+const COORDINATOR_WORKER_INTRO: &str = concat!(
+    "You are a worker agent spawned by a coordinator. Execute the assigned task independently and report results.\n",
+    "You have full tool access to read/write files, run commands, search code, and use web tools.\n",
+    "Focus on completing the task thoroughly and report your findings clearly.\n",
+    "You cannot use team management tools or send messages to other agents — focus solely on your assigned task.\n\n"
+);
+
+/// Tools available to the coordinator agent (orchestrator-only role).
+/// The coordinator cannot read/write files or run shell commands —
+/// it can only spawn workers and send messages.
+pub const COORDINATOR_ALLOWED_TOOLS: &[&str] = &[
+    "agent_spawn",
+    "agent_open",
+    "agent_run",
+    "agent_eval",
+    "agent_close",
+    "tool_agent",
+    "send_message",
+    "task_stop",
+];
+
+/// Tools excluded from worker sub-agents spawned by the coordinator.
+/// Workers get full tool access except team management and
+/// coordinator-specific tools.
+pub const WORKER_EXCLUDED_TOOLS: &[&str] = &[
+    "team_create",
+    "team_delete",
+    "send_message",
+];
 
 // === Tests ===
 
