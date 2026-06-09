@@ -1991,6 +1991,7 @@ impl RuntimeThreadManager {
             plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
             task_v2_manager: None,
             goal_state: crate::tools::goal::new_shared_goal_state(),
+            worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
             snapshots_enabled: self.config.snapshots_config().enabled,

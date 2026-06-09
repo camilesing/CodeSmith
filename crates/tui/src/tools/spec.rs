@@ -110,8 +110,11 @@ pub enum SandboxPolicy {
 /// Context passed to tools during execution.
 #[derive(Clone)]
 pub struct ToolContext {
-    /// The workspace root directory
+    /// The workspace root directory (canonical git root — never changes mid-session).
     pub workspace: PathBuf,
+    /// Effective working directory for path resolution. Normally equal to
+    /// `workspace`, but shifts to a worktree path after `enter_worktree`.
+    pub cwd: PathBuf,
     /// Shared shell manager for background tasks and streaming IO.
     pub shell_manager: SharedShellManager,
     /// Whether to allow paths outside workspace
@@ -206,8 +209,10 @@ impl ToolContext {
         // Prefer .codewhale, fall back to .deepseek for project-local state
         let notes_path = codewhale_config::resolve_project_state_dir(&workspace, "notes.md").1;
         let mcp_config_path = codewhale_config::resolve_project_state_dir(&workspace, "mcp.json").1;
+        let cwd = workspace.clone();
         Self {
             workspace,
+            cwd,
             shell_manager,
             trust_mode: false,
             sandbox_policy: SandboxPolicy::None,
@@ -244,8 +249,10 @@ impl ToolContext {
     ) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
+        let cwd = workspace.clone();
         Self {
             workspace,
+            cwd,
             shell_manager,
             trust_mode,
             sandbox_policy: SandboxPolicy::None,
@@ -282,8 +289,10 @@ impl ToolContext {
     ) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
+        let cwd = workspace.clone();
         Self {
             workspace,
+            cwd,
             shell_manager,
             trust_mode,
             sandbox_policy: SandboxPolicy::None,
@@ -383,7 +392,7 @@ impl ToolContext {
         let candidate = if std::path::Path::new(raw).is_absolute() {
             PathBuf::from(raw)
         } else {
-            self.workspace.join(raw)
+            self.cwd.join(raw)  // resolve relative to effective cwd (worktree-aware)
         };
 
         // In trust mode, allow any path without validation
@@ -500,6 +509,15 @@ impl ToolContext {
     #[allow(dead_code)]
     pub fn with_trust_mode(mut self, trust: bool) -> Self {
         self.trust_mode = trust;
+        self
+    }
+
+    /// Set the effective working directory. Defaults to `workspace`;
+    /// `enter_worktree` shifts this to the worktree path so all
+    /// relative path resolution lands inside the isolated tree.
+    #[must_use]
+    pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
+        self.cwd = cwd;
         self
     }
 

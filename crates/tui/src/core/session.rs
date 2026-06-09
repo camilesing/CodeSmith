@@ -34,6 +34,10 @@ pub struct Session {
     /// Workspace directory
     pub workspace: PathBuf,
 
+    /// Effective working directory. Normally equal to `workspace`,
+    /// but shifts to a worktree path after `enter_worktree`.
+    pub cwd: PathBuf,
+
     /// System prompt (optional)
     pub system_prompt: Option<SystemPrompt>,
     /// True when `system_prompt` came from an explicit runtime API override
@@ -155,7 +159,8 @@ impl Session {
             reasoning_effort: None,
             reasoning_effort_auto: false,
             auto_model: false,
-            workspace,
+            workspace: workspace.clone(),
+            cwd: workspace,
             system_prompt: None,
             system_prompt_override: false,
             compaction_summary_prompt: None,

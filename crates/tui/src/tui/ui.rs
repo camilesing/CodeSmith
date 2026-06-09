@@ -758,6 +758,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             app.hunt.token_budget,
             app.hunt.verdict == HuntVerdict::Hunted,
         ),
+        worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         allowed_tools: app.active_allowed_tools.clone(),
         network_policy: config.network.clone().map(|toml_cfg| {

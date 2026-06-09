@@ -135,6 +135,8 @@ pub struct EngineConfig {
     pub plan_mode_state: crate::tools::plan_mode::SharedPlanModeState,
     /// Shared runtime goal state for model-visible goal tools.
     pub goal_state: SharedGoalState,
+    /// Shared worktree isolation state for enter_worktree/exit_worktree tools.
+    pub worktree_state: crate::tools::worktree::SharedWorktreeSessionState,
     /// Maximum sub-agent recursion depth (default 3). See
     /// `SubAgentRuntime::max_spawn_depth`. Override via
     /// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
@@ -238,6 +240,7 @@ impl Default for EngineConfig {
             plan_state: new_shared_plan_state(),
             plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
             goal_state: new_shared_goal_state(),
+            worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,
@@ -1632,6 +1635,16 @@ impl Engine {
             )
             .await;
 
+        // Sync session.cwd from worktree state after each turn.
+        {
+            let wt_state = self.config.worktree_state.lock().unwrap();
+            if wt_state.active && wt_state.worktree_path.is_some() {
+                self.session.cwd = wt_state.worktree_path.clone().unwrap();
+            } else {
+                self.session.cwd = self.session.workspace.clone();
+            }
+        }
+
         // Checkpoint-restart cycle boundary (issue #124). Run BEFORE
         // TurnComplete so the engine loop doesn't block the terminal after
         // the turn signal (#234). The status chip ("↻ context refreshing...")
@@ -2102,6 +2115,17 @@ impl Engine {
         ))
         .with_cancel_token(self.cancel_token.clone())
         .with_trusted_external_paths(trusted_external_paths);
+
+        // Set effective cwd: if a worktree session is active, shift cwd
+        // to the worktree path so relative paths resolve inside it.
+        {
+            let wt_state = self.config.worktree_state.lock().unwrap();
+            if wt_state.active && wt_state.worktree_path.is_some() {
+                ctx = ctx.with_cwd(wt_state.worktree_path.clone().unwrap());
+            } else {
+                ctx = ctx.with_cwd(self.session.cwd.clone());
+            }
+        }
 
         // Hand the user-memory path to tools so the model-callable
         // `remember` tool can append entries (#489). `None` when the

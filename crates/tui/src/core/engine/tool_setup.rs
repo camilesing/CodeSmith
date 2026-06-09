@@ -88,6 +88,7 @@ impl Engine {
                     self.config.task_v2_manager.clone(),
                 )
                 .with_goal_tools(self.config.goal_state.clone())
+                .with_worktree_tools(self.config.worktree_state.clone())
         };
 
         // Review + parallel are NOT added for coordinator — it delegates

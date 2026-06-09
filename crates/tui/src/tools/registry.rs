@@ -1034,6 +1034,17 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(UpdateGoalTool::new(goal_state)))
     }
 
+    /// Include worktree isolation tools (`enter_worktree`, `exit_worktree`).
+    #[must_use]
+    pub fn with_worktree_tools(
+        self,
+        worktree_state: super::worktree::SharedWorktreeSessionState,
+    ) -> Self {
+        use super::worktree::{EnterWorktreeTool, ExitWorktreeTool};
+        self.with_tool(Arc::new(EnterWorktreeTool::new(worktree_state.clone())))
+            .with_tool(Arc::new(ExitWorktreeTool::new(worktree_state)))
+    }
+
     /// Include sub-agent management tools.
     #[must_use]
     pub fn with_subagent_tools(
