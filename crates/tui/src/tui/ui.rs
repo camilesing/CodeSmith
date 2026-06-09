@@ -516,6 +516,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         handle_store: app.runtime_services.handle_store.clone(),
         rlm_sessions: app.runtime_services.rlm_sessions.clone(),
         task_v2_manager: None,
+        task_mailbox: None,
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 

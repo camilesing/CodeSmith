@@ -69,6 +69,13 @@ pub enum MailboxMessage {
         /// Provider usage payload, including cache-hit/cache-miss fields.
         usage: Usage,
     },
+    /// A task has been assigned to an agent via TaskV2 update.
+    /// Used for swarm/team notification of ownership changes.
+    TaskAssigned {
+        agent_id: String,
+        task_id: String,
+        task_subject: String,
+    },
 }
 
 impl MailboxMessage {
@@ -84,7 +91,8 @@ impl MailboxMessage {
             | Self::Completed { agent_id, .. }
             | Self::Failed { agent_id, .. }
             | Self::Cancelled { agent_id }
-            | Self::TokenUsage { agent_id, .. } => agent_id,
+            | Self::TokenUsage { agent_id, .. }
+            | Self::TaskAssigned { agent_id, .. } => agent_id,
             Self::ChildSpawned { child_id, .. } => child_id,
         }
     }

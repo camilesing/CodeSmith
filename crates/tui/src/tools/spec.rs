@@ -52,6 +52,8 @@ pub struct RuntimeToolServices {
     pub handle_store: SharedHandleStore,
     /// Per-session persistent RLM kernels, keyed by caller-chosen context name.
     pub rlm_sessions: SharedRlmSessionStore,
+    /// Sub-agent mailbox for task assignment notifications.
+    pub task_mailbox: Option<Arc<crate::tools::subagent::mailbox::Mailbox>>,
 }
 
 impl Default for RuntimeToolServices {
@@ -67,6 +69,7 @@ impl Default for RuntimeToolServices {
             task_v2_manager: None,
             handle_store: new_shared_handle_store(),
             rlm_sessions: new_shared_rlm_session_store(),
+            task_mailbox: None,
         }
     }
 }
@@ -84,6 +87,7 @@ impl std::fmt::Debug for RuntimeToolServices {
             .field("task_v2_manager", &self.task_v2_manager.is_some())
             .field("handle_store", &true)
             .field("rlm_sessions", &true)
+            .field("task_mailbox", &self.task_mailbox.is_some())
             .finish()
     }
 }

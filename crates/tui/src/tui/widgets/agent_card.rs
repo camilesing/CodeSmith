@@ -443,6 +443,11 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
             // this arm in practice.
             return false;
         }
+        MailboxMessage::TaskAssigned { .. } => {
+            // Task assignment notifications are informational; no delegate
+            // card state change required.
+            return false;
+        }
     }
     true
 }
@@ -488,6 +493,11 @@ pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
             // Cost accumulation happens in handle_subagent_mailbox (ui.rs)
             // before this apply function is called; TokenUsage never reaches
             // this arm in practice.
+            true
+        }
+        MailboxMessage::TaskAssigned { .. } => {
+            // Task assignment notifications are informational; no fanout
+            // card state change required.
             true
         }
     }

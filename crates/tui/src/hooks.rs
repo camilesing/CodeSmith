@@ -48,6 +48,12 @@ pub enum HookEvent {
     /// fail or time out are logged but do *not* abort the shell call; they
     /// simply contribute no env vars.
     ShellEnv,
+    /// Triggered after a TaskV2 task is created. Hooks can block creation
+    /// by exiting with code 2.
+    TaskCreated,
+    /// Triggered when a TaskV2 task status transitions to completed.
+    /// Observer-only; cannot block completion.
+    TaskCompleted,
 }
 
 impl HookEvent {
@@ -63,6 +69,8 @@ impl HookEvent {
             HookEvent::ModeChange => "mode_change",
             HookEvent::OnError => "on_error",
             HookEvent::ShellEnv => "shell_env",
+            HookEvent::TaskCreated => "task_created",
+            HookEvent::TaskCompleted => "task_completed",
         }
     }
 }
@@ -253,6 +261,12 @@ pub struct HookContext {
     pub total_tokens: Option<u32>,
     /// Session cost in USD
     pub session_cost: Option<f64>,
+    /// Task ID (for TaskCreated/TaskCompleted)
+    pub task_id: Option<String>,
+    /// Task subject (for TaskCreated/TaskCompleted)
+    pub task_subject: Option<String>,
+    /// Task status (for TaskCreated/TaskCompleted)
+    pub task_status: Option<String>,
 }
 
 impl HookContext {
@@ -330,6 +344,24 @@ impl HookContext {
         self
     }
 
+    #[allow(dead_code)] // Public builder API
+    pub fn with_task_id(mut self, id: &str) -> Self {
+        self.task_id = Some(id.to_string());
+        self
+    }
+
+    #[allow(dead_code)] // Public builder API
+    pub fn with_task_subject(mut self, subject: &str) -> Self {
+        self.task_subject = Some(subject.to_string());
+        self
+    }
+
+    #[allow(dead_code)] // Public builder API
+    pub fn with_task_status(mut self, status: &str) -> Self {
+        self.task_status = Some(status.to_string());
+        self
+    }
+
     /// Convert to environment variables
     pub fn to_env_vars(&self) -> HashMap<String, String> {
         let mut env = HashMap::new();
@@ -399,6 +431,15 @@ impl HookContext {
         }
         if let Some(cost) = self.session_cost {
             env.insert("DEEPSEEK_SESSION_COST".to_string(), format!("{cost:.6}"));
+        }
+        if let Some(ref task_id) = self.task_id {
+            env.insert("DEEPSEEK_TASK_ID".to_string(), task_id.clone());
+        }
+        if let Some(ref task_subject) = self.task_subject {
+            env.insert("DEEPSEEK_TASK_SUBJECT".to_string(), task_subject.clone());
+        }
+        if let Some(ref task_status) = self.task_status {
+            env.insert("DEEPSEEK_TASK_STATUS".to_string(), task_status.clone());
         }
 
         env

@@ -2011,6 +2011,7 @@ impl RuntimeThreadManager {
                 handle_store: crate::tools::handle::new_shared_handle_store(),
                 rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
                 task_v2_manager: None,
+                task_mailbox: None,
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             subagent_api_timeout: std::time::Duration::from_secs(

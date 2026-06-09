@@ -139,6 +139,8 @@ fn event_label(event: HookEvent) -> &'static str {
         HookEvent::ModeChange => "mode_change",
         HookEvent::OnError => "on_error",
         HookEvent::ShellEnv => "shell_env",
+        HookEvent::TaskCreated => "task_created",
+        HookEvent::TaskCompleted => "task_completed",
     }
 }
 
