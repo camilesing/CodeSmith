@@ -517,6 +517,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         rlm_sessions: app.runtime_services.rlm_sessions.clone(),
         task_v2_manager: None,
         task_mailbox: None,
+        team_context: None,
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
@@ -787,6 +788,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
+        team_context: None,
     }
 }
 

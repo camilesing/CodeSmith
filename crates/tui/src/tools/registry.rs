@@ -1084,6 +1084,31 @@ impl ToolRegistryBuilder {
         }
     }
 
+    /// Include Agent Teams tools (team_create, team_delete, send_message).
+    #[must_use]
+    pub fn with_team_tools(
+        self,
+        team_context: super::team::SharedTeamContext,
+    ) -> Self {
+        use super::team::{TeamCreateTool, TeamDeleteTool, SendMessageTool};
+        self.with_tool(Arc::new(TeamCreateTool::new(team_context.clone())))
+            .with_tool(Arc::new(TeamDeleteTool::new(team_context.clone())))
+            .with_tool(Arc::new(SendMessageTool::new(team_context)))
+    }
+
+    /// Include Agent Teams tools when team context is available.
+    #[must_use]
+    pub fn with_team_tools_if_available(
+        self,
+        team_context: Option<super::team::SharedTeamContext>,
+    ) -> Self {
+        if let Some(tc) = team_context {
+            self.with_team_tools(tc)
+        } else {
+            self
+        }
+    }
+
     /// Build the registry with the given context.
     #[must_use]
     pub fn build(self, context: ToolContext) -> ToolRegistry {

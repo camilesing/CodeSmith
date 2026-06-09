@@ -54,6 +54,8 @@ pub struct RuntimeToolServices {
     pub rlm_sessions: SharedRlmSessionStore,
     /// Sub-agent mailbox for task assignment notifications.
     pub task_mailbox: Option<Arc<crate::tools::subagent::mailbox::Mailbox>>,
+    /// Team context for multi-agent coordination.
+    pub team_context: Option<crate::tools::team::SharedTeamContext>,
 }
 
 impl Default for RuntimeToolServices {
@@ -70,6 +72,7 @@ impl Default for RuntimeToolServices {
             handle_store: new_shared_handle_store(),
             rlm_sessions: new_shared_rlm_session_store(),
             task_mailbox: None,
+            team_context: None,
         }
     }
 }
@@ -88,6 +91,7 @@ impl std::fmt::Debug for RuntimeToolServices {
             .field("handle_store", &true)
             .field("rlm_sessions", &true)
             .field("task_mailbox", &self.task_mailbox.is_some())
+            .field("team_context", &self.team_context.is_some())
             .finish()
     }
 }

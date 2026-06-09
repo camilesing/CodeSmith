@@ -2012,6 +2012,7 @@ impl RuntimeThreadManager {
                 rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
                 task_v2_manager: None,
                 task_mailbox: None,
+                team_context: None,
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             subagent_api_timeout: std::time::Duration::from_secs(
@@ -2034,6 +2035,7 @@ impl RuntimeThreadManager {
             search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
             tools_always_load: self.config.tools_always_load(),
             tools: self.config.tools.clone(),
+            team_context: None,
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

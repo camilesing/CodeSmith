@@ -448,6 +448,14 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
             // card state change required.
             return false;
         }
+        MailboxMessage::MessageReceived { .. }
+        | MailboxMessage::ShutdownRequested { .. }
+        | MailboxMessage::ShutdownCompleted { .. }
+        | MailboxMessage::IdleNotification { .. } => {
+            // Team protocol messages are informational; no delegate
+            // card state change required.
+            return false;
+        }
     }
     true
 }
@@ -498,6 +506,13 @@ pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
         MailboxMessage::TaskAssigned { .. } => {
             // Task assignment notifications are informational; no fanout
             // card state change required.
+            true
+        }
+        MailboxMessage::MessageReceived { .. }
+        | MailboxMessage::ShutdownRequested { .. }
+        | MailboxMessage::ShutdownCompleted { .. }
+        | MailboxMessage::IdleNotification { .. } => {
+            // Team protocol messages are informational.
             true
         }
     }

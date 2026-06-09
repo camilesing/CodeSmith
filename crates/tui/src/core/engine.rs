@@ -209,6 +209,9 @@ pub struct EngineConfig {
     /// Applied to the per-turn tool registry after built-in tools are registered.
     /// When `None`, no overrides or plugin loading occurs.
     pub tools: Option<crate::config::ToolsConfig>,
+    /// Shared team context for multi-agent coordination.
+    /// None when AgentTeams feature is disabled or no team exists.
+    pub team_context: Option<crate::tools::team::SharedTeamContext>,
 }
 
 impl Default for EngineConfig {
@@ -262,6 +265,7 @@ impl Default for EngineConfig {
             tools_always_load: HashSet::new(),
             prefer_bwrap: false,
             tools: None,
+            team_context: None,
         }
     }
 }

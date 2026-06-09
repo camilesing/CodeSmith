@@ -124,6 +124,13 @@ impl Engine {
             builder = builder.with_knowledge_tools();
         }
 
+        // Register Agent Teams tools when the feature is enabled.
+        if self.config.features.enabled(Feature::AgentTeams) {
+            builder = builder.with_team_tools_if_available(
+                self.config.team_context.clone(),
+            );
+        }
+
         // Register image_analyze tool when vision_model is configured and feature enabled.
         if self.config.features.enabled(Feature::VisionModel)
             && let Some(ref vision_config) = self.config.vision_config

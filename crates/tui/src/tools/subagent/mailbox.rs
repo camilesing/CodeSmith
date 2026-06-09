@@ -76,6 +76,34 @@ pub enum MailboxMessage {
         task_id: String,
         task_subject: String,
     },
+    /// A teammate received a message from another agent.
+    MessageReceived {
+        agent_id: String,
+        from: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
+    /// Leader requested teammate shutdown.
+    ShutdownRequested {
+        agent_id: String,
+        request_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Teammate completed shutdown (approved or rejected).
+    ShutdownCompleted {
+        agent_id: String,
+        request_id: String,
+        approved: bool,
+    },
+    /// Teammate finished a turn and is idle.
+    IdleNotification {
+        agent_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        idle_reason: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        completed_task_id: Option<String>,
+    },
 }
 
 impl MailboxMessage {
@@ -92,7 +120,11 @@ impl MailboxMessage {
             | Self::Failed { agent_id, .. }
             | Self::Cancelled { agent_id }
             | Self::TokenUsage { agent_id, .. }
-            | Self::TaskAssigned { agent_id, .. } => agent_id,
+            | Self::TaskAssigned { agent_id, .. }
+            | Self::MessageReceived { agent_id, .. }
+            | Self::ShutdownRequested { agent_id, .. }
+            | Self::ShutdownCompleted { agent_id, .. }
+            | Self::IdleNotification { agent_id, .. } => agent_id,
             Self::ChildSpawned { child_id, .. } => child_id,
         }
     }

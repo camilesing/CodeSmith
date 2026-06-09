@@ -49,6 +49,8 @@ pub enum Feature {
     /// Enable Knowledge On Demand — directory-based memory system with
     /// async prefetch, frontmatter parsing, and side-query ranking.
     KnowledgeOnDemand,
+    /// Enable multi-agent team coordination (swarm mode).
+    AgentTeams,
 }
 
 impl fmt::Display for Stage {
@@ -222,6 +224,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::KnowledgeOnDemand,
         key: "knowledge_on_demand",
         stage: Stage::Beta,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::AgentTeams,
+        key: "agent_teams",
+        stage: Stage::Experimental,
         default_enabled: false,
     },
 ];

@@ -53,6 +53,7 @@ pub mod spec;
 pub mod subagent;
 pub mod task_v2;
 pub mod tasks;
+pub mod team;
 pub mod test_runner;
 pub mod todo;
 pub mod tool_result_retrieval;

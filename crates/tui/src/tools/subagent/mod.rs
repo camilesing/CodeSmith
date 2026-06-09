@@ -363,6 +363,10 @@ pub enum SubAgentType {
     ToolAgent,
     /// Custom tool access defined at spawn time.
     Custom,
+    /// Team member — an in-process teammate running in swarm mode.
+    /// Shares a task list with other team members and communicates
+    /// via file-based mailbox.
+    Team,
 }
 
 impl SubAgentType {
@@ -382,6 +386,7 @@ impl SubAgentType {
                 Some(Self::ToolAgent)
             }
             "custom" => Some(Self::Custom),
+            "team" | "teammate" | "swarm" => Some(Self::Team),
             _ => None,
         }
     }
@@ -397,6 +402,7 @@ impl SubAgentType {
             Self::Verifier => "verifier",
             Self::ToolAgent => "tool_agent",
             Self::Custom => "custom",
+            Self::Team => "team",
         }
     }
 
@@ -412,6 +418,7 @@ impl SubAgentType {
             Self::Verifier => VERIFIER_AGENT_INTRO,
             Self::ToolAgent => TOOL_AGENT_INTRO,
             Self::Custom => CUSTOM_AGENT_INTRO,
+            Self::Team => GENERAL_AGENT_INTRO,  // Team agents reuse general prompt with team context
         };
         format!("{role_intro}{SUBAGENT_OUTPUT_FORMAT}")
     }
@@ -540,6 +547,13 @@ impl SubAgentType {
                 "handle_read",
             ],
             Self::Custom => vec![], // Must be provided by caller.
+            Self::Team => vec![
+                "list_dir", "read_file", "write_file", "edit_file",
+                "grep_files", "file_search",
+                "task_create_v2", "task_update_v2", "task_get_v2", "task_list_v2",
+                "send_message",
+                "exec_shell", "exec_shell_wait", "exec_shell_interact",
+            ],
         }
     }
 }
@@ -1022,6 +1036,8 @@ pub struct SubAgent {
     /// against the manager's `current_session_boot_id` to classify the
     /// agent as in-session vs prior-session at list time.
     pub session_boot_id: String,
+    /// Team name this agent belongs to. `None` for non-team agents.
+    pub team_name: Option<String>,
     input_tx: Option<mpsc::UnboundedSender<SubAgentInput>>,
     task_handle: Option<JoinHandle<()>>,
 }
@@ -1058,6 +1074,7 @@ impl SubAgent {
             started_at: Instant::now(),
             allowed_tools,
             session_boot_id,
+            team_name: None,
             input_tx: Some(input_tx),
             task_handle: None,
         }
@@ -1246,6 +1263,7 @@ impl SubAgentManager {
                 // manager treats that the same as a non-matching id —
                 // i.e. agent classified as prior-session.
                 session_boot_id: persisted.session_boot_id,
+                team_name: None,
                 input_tx: None,
                 task_handle: None,
             };

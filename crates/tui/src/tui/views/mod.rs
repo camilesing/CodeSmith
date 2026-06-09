@@ -2001,6 +2001,7 @@ fn agent_type_order(agent_type: &SubAgentType) -> u8 {
         SubAgentType::Review => 5,
         SubAgentType::ToolAgent => 6,
         SubAgentType::Custom => 7,
+        SubAgentType::Team => 8,
     }
 }
 
