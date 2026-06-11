@@ -80,3 +80,85 @@ impl BackgroundTaskOutputManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn output_path_for_constructs_correct_path() {
+        let mgr = BackgroundTaskOutputManager::new(PathBuf::from("/tmp/bg"));
+        let path = mgr.output_path_for("task-1");
+        assert_eq!(path, PathBuf::from("/tmp/bg/task-1/output.txt"));
+    }
+
+    #[test]
+    fn append_output_creates_file_and_writes() {
+        let tmp = tempdir().expect("tempdir");
+        let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
+        mgr.append_output("t1", "hello").expect("append");
+        let path = mgr.output_path_for("t1");
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn append_output_appends_to_existing() {
+        let tmp = tempdir().expect("tempdir");
+        let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
+        mgr.append_output("t1", "hello").expect("append1");
+        mgr.append_output("t1", " world").expect("append2");
+        let path = mgr.output_path_for("t1");
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn read_from_offset_reads_from_position() {
+        let tmp = tempdir().expect("tempdir");
+        let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
+        mgr.append_output("t1", "0123456789").expect("write");
+        let path = mgr.output_path_for("t1");
+        let (content, new_offset) = mgr.read_from_offset(&path, 5).expect("read");
+        assert_eq!(content, "56789");
+        assert_eq!(new_offset, 10);
+    }
+
+    #[test]
+    fn read_from_offset_returns_empty_for_missing_file() {
+        let tmp = tempdir().expect("tempdir");
+        let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
+        let path = mgr.output_path_for("nonexistent");
+        let (content, offset) = mgr.read_from_offset(&path, 0).expect("read");
+        assert_eq!(content, "");
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn read_from_offset_returns_empty_when_offset_at_end() {
+        let tmp = tempdir().expect("tempdir");
+        let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
+        mgr.append_output("t1", "short").expect("write");
+        let path = mgr.output_path_for("t1");
+        let (content, _) = mgr.read_from_offset(&path, 5).expect("read");
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn output_size_returns_zero_for_missing() {
+        let tmp = tempdir().expect("tempdir");
+        let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
+        assert_eq!(mgr.output_size("nonexistent").expect("size"), 0);
+    }
+
+    #[test]
+    fn remove_output_deletes_directory() {
+        let tmp = tempdir().expect("tempdir");
+        let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
+        mgr.append_output("t1", "data").expect("write");
+        assert!(mgr.output_path_for("t1").exists());
+        mgr.remove_output("t1").expect("remove");
+        assert!(!mgr.output_path_for("t1").parent().unwrap().exists());
+    }
+}

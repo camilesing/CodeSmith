@@ -118,6 +118,67 @@ pub fn generate_random_slug() -> String {
     format!("{}-{}-{}", adjectives[adj_idx], nouns[noun_idx], suffix)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_worktree_slug_accepts_valid_names() {
+        assert!(validate_worktree_slug("my-feature").is_ok());
+        assert!(validate_worktree_slug("v2.0").is_ok());
+        assert!(validate_worktree_slug("user/feature").is_ok());
+        assert!(validate_worktree_slug("a_b_c").is_ok());
+    }
+
+    #[test]
+    fn validate_worktree_slug_rejects_too_long() {
+        let long = "x".repeat(65);
+        assert!(validate_worktree_slug(&long).is_err());
+    }
+
+    #[test]
+    fn validate_worktree_slug_rejects_dot_dot_segments() {
+        assert!(validate_worktree_slug("../traversal").is_err());
+        assert!(validate_worktree_slug("..").is_err());
+        assert!(validate_worktree_slug("valid/..").is_err());
+    }
+
+    #[test]
+    fn validate_worktree_slug_rejects_empty_segment() {
+        assert!(validate_worktree_slug("a//b").is_err());
+    }
+
+    #[test]
+    fn validate_worktree_slug_rejects_special_chars() {
+        assert!(validate_worktree_slug("name with spaces").is_err());
+        assert!(validate_worktree_slug("name!").is_err());
+    }
+
+    #[test]
+    fn flatten_slug_replaces_slashes() {
+        assert_eq!(flatten_slug("user/feature"), "user+feature");
+        assert_eq!(flatten_slug("simple"), "simple");
+    }
+
+    #[test]
+    fn worktree_branch_name_composes_correctly() {
+        assert_eq!(worktree_branch_name("feat"), "worktree-feat");
+        assert_eq!(worktree_branch_name("a/b"), "worktree-a+b");
+    }
+
+    #[test]
+    fn worktree_path_for_constructs_path() {
+        let path = worktree_path_for(Path::new("/repo"), "my-feature");
+        assert_eq!(path, PathBuf::from("/repo/.codewhale/worktrees/my-feature"));
+    }
+
+    #[test]
+    fn worktrees_dir_constructs_path() {
+        let dir = worktrees_dir(Path::new("/repo"));
+        assert_eq!(dir, PathBuf::from("/repo/.codewhale/worktrees"));
+    }
+}
+
 // ── Git helpers ───────────────────────────────────────────────────────────
 
 /// Run a git command with no-credential-prompt env vars.

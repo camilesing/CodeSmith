@@ -126,3 +126,62 @@ pub fn find_recent_plan() -> Result<Option<(String, String)>> {
 
     Ok(most_recent.map(|(slug, _, content)| (slug, content)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{lock_test_env, ScopedCodeWhaleHome};
+
+    #[test]
+    fn generate_plan_slug_starts_with_prefix() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        let slug = generate_plan_slug().expect("slug");
+        assert!(slug.starts_with("plan_"));
+    }
+
+    #[test]
+    fn generate_plan_slug_is_unique_on_consecutive_calls() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        let s1 = generate_plan_slug().expect("slug1");
+        let s2 = generate_plan_slug().expect("slug2");
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn write_plan_file_creates_and_reads_back() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        let slug = generate_plan_slug().expect("slug");
+        write_plan_file(&slug, "# My plan\nStep 1").expect("write");
+        let content = read_plan_file(&slug).expect("read");
+        assert_eq!(content, Some("# My plan\nStep 1".to_string()));
+    }
+
+    #[test]
+    fn read_plan_file_returns_none_for_missing() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        let result = read_plan_file("plan_nonexistent").expect("read");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn delete_plan_file_removes_file() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        let slug = generate_plan_slug().expect("slug");
+        write_plan_file(&slug, "content").expect("write");
+        delete_plan_file(&slug).expect("delete");
+        assert_eq!(read_plan_file(&slug).expect("read"), None);
+    }
+
+    #[test]
+    fn plans_dir_creates_directory() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        let dir = plans_dir().expect("dir");
+        assert!(dir.exists());
+    }
+}

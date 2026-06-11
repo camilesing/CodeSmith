@@ -38,7 +38,7 @@ fn default_timestamp() -> String {
 }
 
 /// Idle reason variants — why a teammate went idle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum IdleReason {
     /// Turn completed normally, available for new work.
@@ -51,7 +51,7 @@ pub enum IdleReason {
 
 /// Structured protocol messages carried inside TeammateMessage.text as JSON.
 /// Parsed when `is_structured_protocol_message()` returns true.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StructuredProtocolMessage {
     /// Leader requests teammate shutdown; model decides approve/reject.
@@ -308,4 +308,162 @@ pub fn clear_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
         fs::write(&path, "[]")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{lock_test_env, ScopedCodeWhaleHome};
+    use crate::tools::team::team_file::{create_team_file, TeamFile, TeamMember, format_lead_agent_id, team_lead_name};
+
+    fn make_team_file(name: &str) -> TeamFile {
+        TeamFile {
+            name: name.to_string(),
+            description: None,
+            created_at: 0,
+            lead_agent_id: format_lead_agent_id(name),
+            lead_session_id: None,
+            team_allowed_paths: None,
+            members: vec![],
+        }
+    }
+
+    fn make_message(from: &str, text: &str) -> TeammateMessage {
+        TeammateMessage {
+            from: from.to_string(),
+            text: text.to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            read: false,
+            color: None,
+            summary: None,
+        }
+    }
+
+    #[test]
+    fn is_structured_protocol_message_true_for_known_types() {
+        let types = [
+            "shutdown_request", "shutdown_approved", "shutdown_rejected",
+            "idle_notification", "task_assignment",
+            "permission_request", "permission_response",
+            "plan_approval_request", "plan_approval_response",
+            "team_permission_update", "mode_set_request",
+            "sandbox_permission_request", "sandbox_permission_response",
+        ];
+        for t in types {
+            let json = format!("{{\"type\":\"{t}\"}}");
+            assert!(is_structured_protocol_message(&json), "expected true for {t}");
+        }
+    }
+
+    #[test]
+    fn is_structured_protocol_message_false_for_plain_text() {
+        assert!(!is_structured_protocol_message("hello teammate"));
+        assert!(!is_structured_protocol_message(""));
+    }
+
+    #[test]
+    fn is_structured_protocol_message_false_for_json_without_type() {
+        assert!(!is_structured_protocol_message("{\"from\":\"x\"}"));
+    }
+
+    #[test]
+    fn parse_structured_protocol_roundtrips_shutdown_request() {
+        let msg = StructuredProtocolMessage::ShutdownRequest {
+            request_id: "req-1".to_string(),
+            from: "leader".to_string(),
+            reason: None,
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let text = serde_json::to_string(&msg).expect("serialize");
+        let parsed = parse_structured_protocol(&text).expect("parse");
+        assert!(matches!(parsed, StructuredProtocolMessage::ShutdownRequest { .. }));
+    }
+
+    #[test]
+    fn parse_structured_protocol_returns_none_for_garbage() {
+        assert_eq!(parse_structured_protocol("{bad json"), None);
+        assert_eq!(parse_structured_protocol("plain text"), None);
+    }
+
+    #[test]
+    fn read_mailbox_returns_empty_for_missing_file() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        create_team_file(&make_team_file("mb-test")).expect("team");
+
+        let msgs = read_mailbox("nonexistent-agent", "mb-test").expect("read");
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn write_to_mailbox_creates_and_appends() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        create_team_file(&make_team_file("mb-write")).expect("team");
+
+        write_to_mailbox("worker1", "mb-write", make_message("leader", "hello")).expect("write1");
+        write_to_mailbox("worker1", "mb-write", make_message("leader", "world")).expect("write2");
+
+        let msgs = read_mailbox("worker1", "mb-write").expect("read");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].text, "hello");
+        assert_eq!(msgs[1].text, "world");
+    }
+
+    #[test]
+    fn write_to_mailbox_concurrent_no_message_loss() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        create_team_file(&make_team_file("mb-concurrent")).expect("team");
+
+        let team_name = "mb-concurrent".to_string();
+        let threads: Vec<std::thread::JoinHandle<()>> = (0..5)
+            .map(|i| {
+                let tn = team_name.clone();
+                std::thread::spawn(move || {
+                    let msg = TeammateMessage {
+                        from: format!("t{i}"),
+                        text: format!("msg-{i}"),
+                        timestamp: "2026-01-01T00:00:00Z".to_string(),
+                        read: false,
+                        color: None,
+                        summary: None,
+                    };
+                    write_to_mailbox("target", &tn, msg).expect("write");
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("thread join");
+        }
+
+        let msgs = read_mailbox("target", "mb-concurrent").expect("read");
+        assert_eq!(msgs.len(), 5, "no messages lost in concurrent writes");
+    }
+
+    #[test]
+    fn mark_messages_as_read_marks_all() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        create_team_file(&make_team_file("mb-read")).expect("team");
+
+        write_to_mailbox("worker1", "mb-read", make_message("leader", "msg1")).expect("write");
+        mark_messages_as_read("worker1", "mb-read").expect("mark read");
+
+        let msgs = read_mailbox("worker1", "mb-read").expect("read");
+        assert!(msgs.iter().all(|m| m.read));
+    }
+
+    #[test]
+    fn clear_mailbox_empties_inbox() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        create_team_file(&make_team_file("mb-clear")).expect("team");
+
+        write_to_mailbox("worker1", "mb-clear", make_message("leader", "msg1")).expect("write");
+        clear_mailbox("worker1", "mb-clear").expect("clear");
+
+        let msgs = read_mailbox("worker1", "mb-clear").expect("read");
+        assert!(msgs.is_empty());
+    }
 }

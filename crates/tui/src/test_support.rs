@@ -90,6 +90,30 @@ pub(crate) fn first_divergence(a: &str, b: &str) -> Option<(usize, String, Strin
     None
 }
 
+/// Redirect `CODEWHALE_HOME` to a temporary directory for tests that write
+/// team files, mailbox data, or plan files. Drop restores the original value.
+///
+/// Callers must hold [`lock_test_env`] while this guard is alive.
+pub(crate) struct ScopedCodeWhaleHome {
+    _env_guard: EnvVarGuard,
+    _tempdir: tempfile::TempDir,
+}
+
+impl ScopedCodeWhaleHome {
+    pub(crate) fn new() -> Self {
+        let tempdir = tempfile::tempdir().expect("tempdir for CODEWHALE_HOME");
+        let env_guard = EnvVarGuard::set("CODEWHALE_HOME", tempdir.path());
+        Self {
+            _env_guard: env_guard,
+            _tempdir: tempdir,
+        }
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        self._tempdir.path()
+    }
+}
+
 /// Assert two strings are byte-identical, panicking with a windowed diff
 /// around the first divergence when they aren't. Used by the prefix-cache
 /// stability harness (#263, #280) to pin construction surfaces that land in

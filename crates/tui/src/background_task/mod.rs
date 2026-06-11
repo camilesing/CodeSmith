@@ -633,3 +633,66 @@ fn summarize_prompt(prompt: &str, max_len: usize) -> String {
         format!("{}…", &first_line[..max_len])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summarize_command_short_command_unchanged() {
+        assert_eq!(summarize_command("ls", 80), "ls");
+    }
+
+    #[test]
+    fn summarize_command_long_command_truncated() {
+        let long = "a".repeat(100);
+        let result = summarize_command(&long, 50);
+        assert!(result.len() <= 53); // 50 chars + "…" (may be multi-byte)
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_prompt_uses_first_line() {
+        let multi = "first line\nsecond line";
+        assert_eq!(summarize_prompt(multi, 80), "first line");
+    }
+
+    #[test]
+    fn summarize_prompt_truncates_long_first_line() {
+        let long = "b".repeat(100);
+        let result = summarize_prompt(&long, 50);
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn background_task_status_is_terminal() {
+        assert!(BackgroundTaskStatus::Completed.is_terminal());
+        assert!(BackgroundTaskStatus::Failed.is_terminal());
+        assert!(BackgroundTaskStatus::Killed.is_terminal());
+        assert!(BackgroundTaskStatus::Cancelled.is_terminal());
+        assert!(!BackgroundTaskStatus::Running.is_terminal());
+        assert!(!BackgroundTaskStatus::Pending.is_terminal());
+        assert!(!BackgroundTaskStatus::Stalled.is_terminal());
+    }
+
+    #[test]
+    fn format_notification_message_produces_xml_structure() {
+        let notification = BackgroundTaskNotification {
+            task_id: "bg-001".to_string(),
+            task_type: BackgroundTaskType::Shell,
+            status: BackgroundTaskStatus::Completed,
+            description: "cargo build".to_string(),
+            result_summary: Some("Build succeeded".to_string()),
+            duration_ms: Some(5000),
+        };
+        let xml = format_notification_message(&notification);
+        assert!(xml.contains("<background_task_notification>"));
+        assert!(xml.contains("<task_id>bg-001</task_id>"));
+        assert!(xml.contains("<task_type>shell</task_type>"));
+        assert!(xml.contains("<status>completed</status>"));
+        assert!(xml.contains("<description>cargo build</description>"));
+        assert!(xml.contains("<result_summary>Build succeeded</result_summary>"));
+        assert!(xml.contains("<duration_ms>5000</duration_ms>"));
+        assert!(xml.contains("</background_task_notification>"));
+    }
+}

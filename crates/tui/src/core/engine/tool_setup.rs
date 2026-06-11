@@ -171,3 +171,37 @@ impl Engine {
         builder
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn sandbox_policy_for_mode_plan_is_readonly() {
+        let policy = sandbox_policy_for_mode(AppMode::Plan, Path::new("/repo"));
+        assert!(matches!(policy, SandboxPolicy::ReadOnly));
+    }
+
+    #[test]
+    fn sandbox_policy_for_mode_coordinator_is_readonly() {
+        let policy = sandbox_policy_for_mode(AppMode::Coordinator, Path::new("/repo"));
+        assert!(matches!(policy, SandboxPolicy::ReadOnly));
+    }
+
+    #[test]
+    fn sandbox_policy_for_mode_agent_is_workspace_write() {
+        let policy = sandbox_policy_for_mode(AppMode::Agent, Path::new("/repo"));
+        assert!(matches!(policy, SandboxPolicy::WorkspaceWrite { .. }));
+        if let SandboxPolicy::WorkspaceWrite { writable_roots, network_access, .. } = policy {
+            assert_eq!(writable_roots, vec![PathBuf::from("/repo")]);
+            assert!(network_access);
+        }
+    }
+
+    #[test]
+    fn sandbox_policy_for_mode_yolo_is_danger_full_access() {
+        let policy = sandbox_policy_for_mode(AppMode::Yolo, Path::new("/repo"));
+        assert!(matches!(policy, SandboxPolicy::DangerFullAccess));
+    }
+}

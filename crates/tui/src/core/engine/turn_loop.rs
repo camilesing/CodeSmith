@@ -2330,6 +2330,29 @@ fn is_turn_metadata_text(text: &str) -> bool {
     text.trim_start().starts_with("<turn_meta>")
 }
 
+/// Decide whether auto-compaction should be triggered this iteration.
+/// Compaction runs only when enabled, the circuit breaker allows it, and
+/// the message history exceeds the compaction threshold.
+fn should_trigger_auto_compact(
+    compaction_enabled: bool,
+    circuit_breaker_allows: bool,
+    messages_need_compaction: bool,
+) -> bool {
+    compaction_enabled && circuit_breaker_allows && messages_need_compaction
+}
+
+/// Decide whether context recovery is needed before the next API call.
+/// Returns true when estimated input exceeds the budget and we haven't
+/// exhausted our recovery attempt limit.
+fn context_recovery_needed(
+    estimated_input: usize,
+    input_budget: usize,
+    recovery_attempts: u8,
+    max_attempts: u8,
+) -> bool {
+    estimated_input > input_budget && recovery_attempts < max_attempts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2579,5 +2602,64 @@ mod tests {
         assert_eq!(tool_name, "read_file");
         let allowed = vec!["read_file".to_string()];
         assert!(command_allows_tool(Some(&allowed), &tool_name));
+    }
+
+    #[test]
+    fn should_trigger_auto_compact_requires_all_three_conditions() {
+        assert!(should_trigger_auto_compact(true, true, true));
+        assert!(!should_trigger_auto_compact(false, true, true));
+        assert!(!should_trigger_auto_compact(true, false, true));
+        assert!(!should_trigger_auto_compact(true, true, false));
+    }
+
+    #[test]
+    fn context_recovery_needed_when_over_budget_and_attempts_remaining() {
+        assert!(context_recovery_needed(200_000, 128_000, 0, 2));
+        assert!(context_recovery_needed(200_000, 128_000, 1, 2));
+    }
+
+    #[test]
+    fn context_recovery_not_needed_when_within_budget() {
+        assert!(!context_recovery_needed(100_000, 128_000, 0, 2));
+    }
+
+    #[test]
+    fn context_recovery_not_needed_when_attempts_exhausted() {
+        assert!(!context_recovery_needed(200_000, 128_000, 2, 2));
+        assert!(!context_recovery_needed(200_000, 128_000, 3, 2));
+    }
+
+    #[test]
+    fn resolve_auto_effort_concrete_value_passes_through() {
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        }];
+        assert_eq!(resolve_auto_effort(Some("high"), &messages), Some("high".to_string()));
+        assert_eq!(resolve_auto_effort(Some("low"), &messages), Some("low".to_string()));
+    }
+
+    #[test]
+    fn resolve_auto_effort_none_returns_none() {
+        let messages = vec![];
+        assert_eq!(resolve_auto_effort(None, &messages), None);
+    }
+
+    #[test]
+    fn resolve_auto_effort_auto_classifies_user_message() {
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Give me a quick plan".to_string(),
+                cache_control: None,
+            }],
+        }];
+        let result = resolve_auto_effort(Some("auto"), &messages);
+        assert!(result.is_some());
+        // Auto reasoning always resolves to a concrete tier.
+        assert_ne!(result.as_deref(), Some("auto"));
     }
 }

@@ -409,3 +409,84 @@ pub(super) fn turn_response_headroom_tokens() -> u64 {
 pub(super) fn is_context_length_error_message(message: &str) -> bool {
     crate::error_taxonomy::classify_error_message(message) == ErrorCategory::InvalidInput
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::SystemBlock;
+    use crate::test_support::lock_test_env;
+
+    #[test]
+    fn summarize_text_short_text_unchanged() {
+        assert_eq!(summarize_text("hello", 100), "hello");
+        assert_eq!(summarize_text("", 100), "");
+    }
+
+    #[test]
+    fn summarize_text_long_text_truncated() {
+        let long = "x".repeat(200);
+        let result = summarize_text(&long, 50);
+        assert_eq!(result.chars().count(), 50); // 47 chars + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn context_input_budget_returns_some_for_known_models() {
+        // deepseek-chat is known, has 128K context window
+        let budget = context_input_budget("deepseek-chat");
+        assert!(budget.is_some());
+        assert!(budget.unwrap() > 0);
+    }
+
+    #[test]
+    fn context_input_budget_returns_none_for_unknown_model() {
+        let budget = context_input_budget("totally-unknown-model-xyz");
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn turn_response_headroom_tokens_greater_than_output_tokens() {
+        let headroom = turn_response_headroom_tokens();
+        assert!(headroom > u64::from(TURN_MAX_OUTPUT_TOKENS));
+    }
+
+    #[test]
+    fn is_context_length_error_message_matches_known_patterns() {
+        assert!(is_context_length_error_message("This model's maximum context length is 128000 tokens"));
+        assert!(is_context_length_error_message("context_length_exceeded"));
+    }
+
+    #[test]
+    fn is_context_length_error_message_rejects_normal_errors() {
+        assert!(!is_context_length_error_message("Connection timed out"));
+        assert!(!is_context_length_error_message("Internal server error"));
+    }
+
+    #[test]
+    fn extract_compaction_summary_prompt_finds_marker_in_blocks() {
+        let blocks = vec![
+            SystemBlock { block_type: "text".to_string(), text: "Normal prompt text".to_string(), cache_control: None },
+            SystemBlock { block_type: "text".to_string(), text: format!("{}\nSummary content", COMPACTION_SUMMARY_MARKER), cache_control: None },
+        ];
+        let prompt = Some(SystemPrompt::Blocks(blocks));
+        let extracted = extract_compaction_summary_prompt(prompt);
+        assert!(extracted.is_some());
+        if let Some(SystemPrompt::Blocks(blocks)) = extracted {
+            assert!(blocks[0].text.contains(COMPACTION_SUMMARY_MARKER));
+        }
+    }
+
+    #[test]
+    fn extract_compaction_summary_prompt_returns_none_when_no_marker() {
+        let blocks = vec![
+            SystemBlock { block_type: "text".to_string(), text: "Normal prompt text".to_string(), cache_control: None },
+        ];
+        let prompt = Some(SystemPrompt::Blocks(blocks));
+        assert!(extract_compaction_summary_prompt(prompt).is_none());
+    }
+
+    #[test]
+    fn extract_compaction_summary_prompt_returns_none_for_none_prompt() {
+        assert!(extract_compaction_summary_prompt(None).is_none());
+    }
+}

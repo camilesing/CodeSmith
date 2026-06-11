@@ -21,7 +21,7 @@ use crate::tools::team::{
 // ---------------------------------------------------------------------------
 
 /// Decision from leader on a permission request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PermissionDecision {
     Allow,
     Deny { reason: Option<String> },
@@ -272,4 +272,61 @@ pub fn handle_permission_response(
 
     write_to_mailbox(teammate_name, team_name, msg)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{lock_test_env, ScopedCodeWhaleHome};
+    use crate::tools::team::team_file::{create_team_file, TeamFile, format_lead_agent_id};
+    use crate::tools::team::teammate_mailbox::{read_mailbox, parse_structured_protocol};
+
+    fn make_team_file(name: &str) -> TeamFile {
+        TeamFile {
+            name: name.to_string(),
+            description: None,
+            created_at: 0,
+            lead_agent_id: format_lead_agent_id(name),
+            lead_session_id: None,
+            team_allowed_paths: None,
+            members: vec![],
+        }
+    }
+
+    #[test]
+    fn permission_request_registry_register_and_resolve_allow() {
+        let mut reg = PermissionRequestRegistry::new();
+        let rx = reg.register("req-1".to_string());
+        assert!(reg.resolve("req-1", PermissionDecision::Allow));
+        assert_eq!(rx.blocking_recv(), Ok(PermissionDecision::Allow));
+    }
+
+    #[test]
+    fn permission_request_registry_resolve_unknown_returns_false() {
+        let mut reg = PermissionRequestRegistry::new();
+        assert!(!reg.resolve("nonexistent", PermissionDecision::Allow));
+    }
+
+    #[test]
+    fn permission_request_registry_resolve_deny() {
+        let mut reg = PermissionRequestRegistry::new();
+        let rx = reg.register("req-2".to_string());
+        assert!(reg.resolve("req-2", PermissionDecision::Deny { reason: Some("unsafe".to_string()) }));
+        let decision = rx.blocking_recv().expect("recv");
+        assert!(matches!(decision, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn handle_shutdown_request_writes_to_target_mailbox() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeWhaleHome::new();
+        create_team_file(&make_team_file("proto-test")).expect("team");
+
+        handle_shutdown_request("leader", "worker1", "proto-test", Some("cleanup".to_string())).expect("request");
+
+        let msgs = read_mailbox("worker1", "proto-test").expect("read");
+        assert_eq!(msgs.len(), 1);
+        let parsed = parse_structured_protocol(&msgs[0].text).expect("parse");
+        assert!(matches!(parsed, StructuredProtocolMessage::ShutdownRequest { .. }));
+    }
 }
