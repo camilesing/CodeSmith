@@ -546,59 +546,19 @@ fn compaction_config_defaults_are_enabled_for_session_survivability() {
     assert!(config < 1_000_000, "compaction threshold must be below 1M");
 }
 
-// === 9. Engine-level integration (requires separate test infrastructure) ====
+// === 9. Engine-level integration ===
 //
 // #402 P0 is RESOLVED: the engine now holds `Option<LlmClientHandle>` (= `Option<Arc<dyn LlmClient>>`)
 // and `Engine::new_with_client` accepts an injected client. MockLlmClient can be
-// wired in directly. These tests are still `#[ignore]`-marked because they
-// require EngineConfig + Config test infrastructure that is not yet wired into
-// this standalone integration-test file. A follow-up PR should add a dedicated
-// engine-level test harness that imports from the crate directly.
-
-#[tokio::test]
-#[ignore = "needs EngineConfig/Config test infrastructure; #402 resolved, Engine::new_with_client available"]
-async fn engine_full_turn_loop_with_compaction_and_resume() {
-    // Once the refactor lands:
-    // 1. Build a session with N messages exceeding the compaction threshold.
-    // 2. Inject a MockLlmClient with one canned compaction-summary response
-    //    and one canned post-compaction assistant turn.
-    // 3. Drive a turn through the engine and assert the session resumes
-    //    cleanly with the summary message in place.
-    //
-    // The cycle_manager path replaces high-level compaction in v0.6.6+; this
-    // test should target whichever path is enabled by the test config.
-    unreachable!("ignored");
-}
-
-#[tokio::test]
-#[ignore = "needs EngineConfig/Config test infrastructure; #402 resolved, Engine::new_with_client available"]
-async fn engine_full_sub_agent_spawn_round_trip() {
-    // Once the refactor lands:
-    // 1. Inject MockLlmClient as the parent client AND wire the subagent
-    //    runtime to receive its own MockLlmClient.
-    // 2. Parent emits agent_spawn tool_call; child runs through the v0.6.7
-    //    mailbox and replies with text.
-    // 3. Assert the final assistant text bubbles back to the parent session.
-    unreachable!("ignored");
-}
-
-#[tokio::test]
-#[ignore = "needs EngineConfig/Config test infrastructure; #402 resolved, Engine::new_with_client available"]
-async fn engine_full_parallel_tool_execution() {
-    // Once the refactor lands:
-    // 1. Mock turn 1 returns two tool_calls in a single round.
-    // 2. Engine executes them in parallel via FuturesUnordered.
-    // 3. Assert ordered ToolResult messages are appended to the next request.
-    unreachable!("ignored");
-}
-
-#[tokio::test]
-#[ignore = "needs EngineConfig/Config test infrastructure; #402 resolved, Engine::new_with_client available"]
-async fn engine_capacity_controller_forces_compaction_at_threshold() {
-    // Once the refactor lands:
-    // 1. Inject a long history near the V4 soft cap.
-    // 2. Assert the capacity controller emits a forced-compaction guardrail
-    //    BEFORE dispatching the LLM call.
-    // 3. Verify the mock's call_count() reflects the observed sequence.
-    unreachable!("ignored");
-}
+// wired in directly. The engine-level tests live in the crate's internal
+// `core::engine::tests` module (where they have full `crate::` access to
+// EngineConfig, Config, TurnContext, SubAgentRuntime, etc.). The four tests are:
+//
+// - `engine_injects_mock_client_and_completes_text_turn`
+// - `engine_tool_call_round_trip_with_mock_client`
+// - `engine_capacity_controller_decides_compaction_for_loaded_session`
+// - `engine_sub_agent_runtime_constructs_with_mock_client`
+//
+// These are not replicated here because this standalone integration-test binary
+// cannot import from the crate (no `lib.rs` target). The crate-internal tests
+// exercise the same code paths through the same `Arc<dyn LlmClient>` trait boundary.

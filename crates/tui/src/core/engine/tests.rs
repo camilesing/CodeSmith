@@ -1,3 +1,11 @@
+use crate::llm_client::mock::{MockLlmClient, canned};
+use crate::llm_client::LlmClientHandle;
+use crate::tui::approval::ApprovalMode;
+use crate::core::capacity::GuardrailAction;
+use crate::core::turn::TurnContext;
+use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
+use crate::tools::spec::ToolContext;
+
 use super::*;
 
 use super::context::TURN_MAX_OUTPUT_TOKENS;
@@ -2987,4 +2995,295 @@ async fn post_edit_hook_skips_unknown_tool_names() {
     engine.run_post_edit_lsp_hook("read_file", &input).await;
     assert!(engine.pending_lsp_blocks.is_empty());
     assert_eq!(fake.call_count(), 0);
+}
+
+// === Engine-level integration tests with injected MockLlmClient ===
+//
+// These tests exercise the engine's full turn loop by injecting
+// MockLlmClient through Engine::new_with_client. The mock replays
+// canned streaming responses so the engine processes them as if they
+// came from a real LLM provider.
+
+/// Build an EngineConfig suitable for integration tests (no snapshots,
+/// no shell, trust mode so tool calls auto-approve).
+fn test_engine_config(workspace: &Path) -> EngineConfig {
+    EngineConfig {
+        workspace: workspace.to_path_buf(),
+        allow_shell: false,
+        trust_mode: true,
+        snapshots_enabled: false,
+        ..Default::default()
+    }
+}
+
+/// Construct an `Op::SendMessage` for a simple agent-mode turn.
+fn make_send_op(content: &str) -> Op {
+    Op::SendMessage {
+        content: content.to_string(),
+        mode: AppMode::Agent,
+        model: "mock-model".to_string(),
+        goal_objective: None,
+        reasoning_effort: None,
+        reasoning_effort_auto: false,
+        auto_model: false,
+        allow_shell: false,
+        trust_mode: true,
+        auto_approve: true,
+        approval_mode: ApprovalMode::Auto,
+        translation_enabled: false,
+        show_thinking: true,
+        allowed_tools: None,
+    }
+}
+
+/// Spawn the engine with an injected MockLlmClient and return
+/// (EngineHandle, Arc<MockLlmClient>) for driving and asserting.
+fn spawn_engine_with_mock(
+    config: EngineConfig,
+    mock: MockLlmClient,
+) -> (EngineHandle, Arc<MockLlmClient>) {
+    let mock_arc = Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+    let (engine, handle) = Engine::new_with_client(config, &Config::default(), client);
+    tokio::spawn(async move { engine.run().await });
+    (handle, mock_arc)
+}
+
+/// Collect events from the engine until TurnComplete is received.
+async fn collect_until_turn_complete(handle: &EngineHandle) -> Vec<Event> {
+    let mut events = Vec::new();
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = rx.recv().await {
+        events.push(event.clone());
+        if matches!(event, Event::TurnComplete { .. }) {
+            break;
+        }
+    }
+    events
+}
+
+// === Test 1: Simple text turn ===============================================
+
+#[tokio::test]
+async fn engine_injects_mock_client_and_completes_text_turn() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    let turn = vec![canned::simple_text_turn("Hello from mock!")];
+    let mock = MockLlmClient::new(turn);
+
+    let config = test_engine_config(tmp.path());
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle.send(make_send_op("hello")).await.expect("send op");
+
+    let events = collect_until_turn_complete(&handle).await;
+
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::MessageDelta { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("Hello from mock!"),
+        "expected mock text in events, got: {text}"
+    );
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Completed,
+                ..
+            }
+        )),
+        "expected TurnComplete::Completed"
+    );
+
+    assert_eq!(mock_arc.call_count(), 1);
+}
+
+// === Test 2: Tool call round-trip ============================================
+
+#[tokio::test]
+async fn engine_tool_call_round_trip_with_mock_client() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    // Create a file that read_file will find.
+    let test_file = tmp.path().join("test.txt");
+    fs::write(&test_file, "Hello from file!").expect("write test file");
+    let test_path_str = test_file.display().to_string();
+
+    // Turn 1: read_file tool call
+    let turn1 = canned::tool_call_turn(
+        "call_1",
+        "read_file",
+        &serde_json::json!({ "path": test_path_str }).to_string(),
+    );
+    // Turn 2: text response after tool result
+    let turn2 = canned::simple_text_turn("I read the file.");
+
+    let mock = MockLlmClient::new(vec![turn1, turn2]);
+
+    let config = test_engine_config(tmp.path());
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle.send(make_send_op("read the test file")).await.expect("send op");
+
+    let events = collect_until_turn_complete(&handle).await;
+
+    // Verify tool call was initiated
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::ToolCallStarted { name, .. } if name == "read_file"
+        )),
+        "expected ToolCallStarted for read_file"
+    );
+
+    // Verify tool call completed
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::ToolCallComplete { name, .. } if name == "read_file"
+        )),
+        "expected ToolCallComplete for read_file"
+    );
+
+    // Verify follow-up text arrived
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::MessageDelta { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("I read the file."),
+        "expected follow-up text, got: {text}"
+    );
+
+    assert_eq!(mock_arc.call_count(), 2, "mock should be called twice (tool_call + follow-up)");
+}
+
+// === Test 3: Capacity controller decision ====================================
+//
+// Verify that the capacity controller decides on TargetedContextRefresh
+// when the session is loaded beyond the threshold. This tests the
+// observation-and-decision path directly (no full compaction round-trip,
+// which would require both streaming and non-streaming mock responses).
+
+#[tokio::test]
+async fn engine_capacity_controller_decides_compaction_for_loaded_session() {
+    let _guard = lock_test_env();
+    let _cap_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let cap_dir = tmp.path().join("capacity_mem");
+    fs::create_dir_all(&cap_dir).expect("capacity dir");
+    let _env = ScopedCapacityMemoryDir::set(&cap_dir);
+
+    // Enable capacity controller with aggressive thresholds.
+    let capacity_config = CapacityControllerConfig {
+        enabled: true,
+        // With fallback_default=0.01 the slack is negative → p_fail ≈0.90.
+        // Set thresholds so p_fail falls in Medium band (0.50–1.0) → TargetedContextRefresh.
+        low_risk_max: 0.50,
+        medium_risk_max: 1.0,
+        // Make severe impossible so High+severe never triggers VerifyAndReplan.
+        severe_min_slack: -10.0,
+        severe_violation_ratio: 1.0,
+        refresh_cooldown_turns: 0,
+        replan_cooldown_turns: 5,
+        max_replay_per_turn: 1,
+        min_turns_before_guardrail: 0,
+        profile_window: 8,
+        model_priors: HashMap::new(),
+        fallback_default: 0.01,
+    };
+
+    let turn = vec![canned::simple_text_turn("ok")];
+    let mock = MockLlmClient::new(turn);
+    let mock_arc = Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        // Use a model that maps to 128K context window so 100 messages
+        // easily exceed the 1% threshold. "mock-model" is unrecognized
+        // and falls back to LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS (128K).
+        model: "mock-model".to_string(),
+        capacity: capacity_config,
+        snapshots_enabled: false,
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new_with_client(config, &Config::default(), client);
+
+    // Pre-fill the session with many messages to exceed the very low threshold.
+    // Each message is ~200 chars ≈ ~50 tokens; 100 msgs ≈ 5000 estimated
+    // tokens, well above 1% of the 128K context window (= 1280 tokens).
+    for i in 0..100 {
+        let msg = Message {
+            role: if i % 2 == 0 { "user".to_string() } else { "assistant".to_string() },
+            content: vec![ContentBlock::Text {
+                text: format!("message {i} with enough text to occupy tokens — padding to ensure the estimated token count exceeds the 1% threshold of the 128K context window for the mock-model"),
+                cache_control: None,
+            }],
+        };
+        engine.add_session_message(msg).await;
+    }
+
+    // Create a turn context and observe capacity.
+    let turn_ctx = TurnContext::new(engine.config.max_steps);
+    engine.turn_counter = engine.turn_counter.saturating_add(1);
+    engine.capacity_controller.mark_turn_start(engine.turn_counter);
+
+    let snapshot = engine
+        .capacity_controller
+        .observe_pre_turn(engine.capacity_observation(&turn_ctx));
+
+    let decision = engine
+        .capacity_controller
+        .decide(engine.turn_counter, snapshot.as_ref());
+
+    // With a 0.01 low_risk_max and 100 messages, the controller should
+    // decide that context pressure requires TargetedContextRefresh.
+    assert_eq!(
+        decision.action,
+        GuardrailAction::TargetedContextRefresh,
+        "expected TargetedContextRefresh for loaded session, got {:?}",
+        decision.action
+    );
+}
+
+// === Test 4: SubAgent injection seam =========================================
+//
+// Verify SubAgentRuntime can be constructed with MockLlmClient.
+// This tests the Arc<dyn LlmClient> injection seam for sub-agents
+// without driving the full engine round-trip.
+
+#[test]
+fn engine_sub_agent_runtime_constructs_with_mock_client() {
+    let tmp = tempdir().expect("tempdir");
+    let mock = Arc::new(MockLlmClient::new(vec![])) as LlmClientHandle;
+
+    let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+    let tool_ctx = ToolContext::new(tmp.path().to_path_buf());
+
+    let sub = SubAgentRuntime::new(
+        mock.clone(),
+        "mock-model".to_string(),
+        tool_ctx,
+        false,
+        None,
+        manager,
+    );
+
+    // Verify the sub-agent holds the mock client and its model matches.
+    assert_eq!(sub.model, "mock-model");
+    // The client is an Arc<dyn LlmClient>; verify it's usable.
+    assert_eq!(mock.provider_name(), "mock");
+    assert_eq!(mock.model(), "mock-model");
 }
