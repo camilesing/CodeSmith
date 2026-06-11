@@ -24,10 +24,9 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::client::DeepSeekClient;
 use crate::config::MAX_SUBAGENTS;
 use crate::core::events::Event;
-use crate::llm_client::LlmClient;
+use crate::llm_client::{LlmClient, LlmClientHandle};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use crate::tools::handle::VarHandle;
 use crate::tools::plan::{PlanState, SharedPlanState};
@@ -800,7 +799,7 @@ pub struct ForkedToolCall {
 /// `agent_open` sessions from the caller's turn token.
 #[derive(Clone)]
 pub struct SubAgentRuntime {
-    pub client: DeepSeekClient,
+    pub client: LlmClientHandle,
     pub model: String,
     pub auto_model: bool,
     pub reasoning_effort: Option<String>,
@@ -852,7 +851,7 @@ impl SubAgentRuntime {
     /// runtime via `Self::child_runtime` instead.
     #[must_use]
     pub fn new(
-        client: DeepSeekClient,
+        client: LlmClientHandle,
         model: String,
         context: ToolContext,
         allow_shell: bool,

@@ -11,21 +11,64 @@
 //! still satisfies it.
 
 use anyhow::Result;
+use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::models::{MessageRequest, MessageResponse, StreamEvent};
 
 pub type StreamEventBox =
     Pin<Box<dyn futures_util::Stream<Item = Result<StreamEvent>> + Send + 'static>>;
 
-#[allow(async_fn_in_trait, dead_code)]
+pub type LlmClientHandle = Arc<dyn LlmClient>;
+
+#[allow(dead_code)]
 pub trait LlmClient: Send + Sync {
     fn provider_name(&self) -> &'static str;
     fn model(&self) -> &str;
-    async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse>;
-    async fn create_message_stream(&self, request: MessageRequest) -> Result<StreamEventBox>;
-    async fn health_check(&self) -> Result<bool> {
-        Ok(true)
+    fn create_message(
+        &self,
+        request: MessageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>>;
+    fn create_message_stream(
+        &self,
+        request: MessageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>>;
+    fn health_check(&self) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + '_>> {
+        Box::pin(async { Ok(true) })
+    }
+    fn fim_completion(
+        &self,
+        model: String,
+        prompt: String,
+        suffix: String,
+        max_tokens: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        Box::pin(async {
+            Err(anyhow::anyhow!(
+                "FIM completion not supported by provider '{}'",
+                self.provider_name()
+            ))
+        })
+    }
+    fn translate(
+        &self,
+        text: String,
+        model: String,
+        target_language: String,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        Box::pin(async {
+            Err(anyhow::anyhow!(
+                "Translation not supported by provider '{}'",
+                self.provider_name()
+            ))
+        })
+    }
+    fn base_url(&self) -> &str {
+        ""
+    }
+    fn list_models(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + '_>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 }
 

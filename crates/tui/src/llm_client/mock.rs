@@ -42,6 +42,7 @@
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -236,41 +237,51 @@ impl LlmClient for MockLlmClient {
         &self.model
     }
 
-    async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
-        self.record_request(&request);
+    fn create_message(
+        &self,
+        request: MessageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+        Box::pin(async move {
+            self.record_request(&request);
 
-        if let Some(canned) = self.pop_message() {
-            return Ok(canned);
-        }
+            if let Some(canned) = self.pop_message() {
+                return Ok(canned);
+            }
 
-        // Fallback: synthesize a MessageResponse from the next streaming turn.
-        let Some(step) = self.pop_step() else {
-            return Err(anyhow!(
-                "MockLlmClient: create_message called but no canned response queued (request #{})",
-                self.calls.load(Ordering::SeqCst)
-            ));
-        };
+            // Fallback: synthesize a MessageResponse from the next streaming turn.
+            let Some(step) = self.pop_step() else {
+                return Err(anyhow!(
+                    "MockLlmClient: create_message called but no canned response queued (request #{})",
+                    self.calls.load(Ordering::SeqCst)
+                ));
+            };
 
-        let turn = self.turn_from_step(step, &request);
-        Ok(synthesize_message_response(turn, &self.model))
+            let turn = self.turn_from_step(step, &request);
+            Ok(synthesize_message_response(turn, &self.model))
+        })
     }
 
-    async fn create_message_stream(&self, request: MessageRequest) -> Result<StreamEventBox> {
-        self.record_request(&request);
+    fn create_message_stream(
+        &self,
+        request: MessageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+        Box::pin(async move {
+            self.record_request(&request);
 
-        let Some(step) = self.pop_step() else {
-            return Err(anyhow!(
-                "MockLlmClient: create_message_stream called but no canned turn queued (call #{})",
-                self.calls.load(Ordering::SeqCst)
-            ));
-        };
+            let Some(step) = self.pop_step() else {
+                return Err(anyhow!(
+                    "MockLlmClient: create_message_stream called but no canned turn queued (call #{})",
+                    self.calls.load(Ordering::SeqCst)
+                ));
+            };
 
-        let turn = self.turn_from_step(step, &request);
-        Ok(stream_from_canned(turn))
+            let turn = self.turn_from_step(step, &request);
+            Ok(stream_from_canned(turn))
+        })
     }
 
-    async fn health_check(&self) -> Result<bool> {
-        Ok(true)
+    fn health_check(&self) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + '_>> {
+        Box::pin(async { Ok(true) })
     }
 }
 

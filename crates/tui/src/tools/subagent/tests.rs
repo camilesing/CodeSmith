@@ -1748,12 +1748,13 @@ fn stub_runtime() -> SubAgentRuntime {
 /// *some* `DeepSeekClient` because `SubAgentRuntime.client` isn't
 /// `Option<...>`. `Config::default()` is enough — `DeepSeekClient::new`
 /// only validates that an API key field exists, not that the key works.
-fn stub_client() -> DeepSeekClient {
+fn stub_client() -> crate::llm_client::LlmClientHandle {
     let config = crate::config::Config {
         api_key: Some("test-key".to_string()),
         ..crate::config::Config::default()
     };
-    DeepSeekClient::new(&config).expect("stub client should construct")
+    let client = crate::client::DeepSeekClient::new(&config).expect("stub client should construct");
+    std::sync::Arc::new(client) as crate::llm_client::LlmClientHandle
 }
 
 // ---- #405 session-boundary classification ----

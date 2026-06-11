@@ -95,7 +95,7 @@ impl Engine {
         // all work to workers and doesn't need review/parallel capabilities.
         if mode != AppMode::Coordinator {
             builder = builder
-                .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
+                .with_review_tool(self.llm_client.clone(), self.session.model.clone())
                 .with_parallel_tool();
         }
 
@@ -114,8 +114,8 @@ impl Engine {
 
         if mode != AppMode::Plan && mode != AppMode::Coordinator {
             builder = builder
-                .with_rlm_tool(self.deepseek_client.clone(), self.session.model.clone())
-                .with_fim_tool(self.deepseek_client.clone(), self.session.model.clone());
+                .with_rlm_tool(self.llm_client.clone(), self.session.model.clone())
+                .with_fim_tool(self.llm_client.clone(), self.session.model.clone());
         }
 
         if self.config.features.enabled(Feature::ApplyPatch)

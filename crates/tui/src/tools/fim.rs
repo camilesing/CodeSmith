@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::client::DeepSeekClient;
+use crate::llm_client::LlmClientHandle;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -30,13 +30,13 @@ pub struct FimEditResult {
 
 /// Tool for performing Fill-in-the-Middle edits via the DeepSeek FIM API.
 pub struct FimEditTool {
-    pub client: Option<DeepSeekClient>,
+    pub client: Option<LlmClientHandle>,
     pub model: String,
 }
 
 impl FimEditTool {
     #[must_use]
-    pub fn new(client: Option<DeepSeekClient>, model: String) -> Self {
+    pub fn new(client: Option<LlmClientHandle>, model: String) -> Self {
         Self { client, model }
     }
 }
@@ -147,7 +147,7 @@ impl ToolSpec for FimEditTool {
         // 6. Call FIM API
         let generated_text = match self.client.as_ref() {
             Some(client) => client
-                .fim_completion(&self.model, &fim_prompt, &fim_suffix, max_tokens as u32)
+                .fim_completion(self.model.clone(), fim_prompt.clone(), fim_suffix.clone(), max_tokens as u32)
                 .await
                 .map_err(|e| {
                     ToolError::execution_failed(FimError::ApiFailed(e.to_string()).to_string())

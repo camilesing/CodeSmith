@@ -669,6 +669,7 @@ fn print_agent_tool_catalog_metrics() {
         ..Config::default()
     })
     .expect("stub client");
+    let client: crate::llm_client::LlmClientHandle = std::sync::Arc::new(client);
     let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 8);
     let runtime = crate::tools::subagent::SubAgentRuntime::new(
         client,

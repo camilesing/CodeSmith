@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::client::DeepSeekClient;
+use crate::llm_client::LlmClientHandle;
 use crate::models::Tool;
 
 use super::schema_sanitize;
@@ -761,7 +761,7 @@ impl ToolRegistryBuilder {
 
     /// Include persistent RLM session tools.
     #[must_use]
-    pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, _root_model: String) -> Self {
+    pub fn with_rlm_tool(self, client: Option<LlmClientHandle>, _root_model: String) -> Self {
         use super::rlm::{
             RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RlmSessionObjectsTool,
         };
@@ -782,7 +782,7 @@ impl ToolRegistryBuilder {
 
     /// Include the review tool.
     #[must_use]
-    pub fn with_review_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
+    pub fn with_review_tool(self, client: Option<LlmClientHandle>, model: String) -> Self {
         use super::review::ReviewTool;
         self.with_tool(Arc::new(ReviewTool::new(client, model)))
     }
@@ -804,7 +804,7 @@ impl ToolRegistryBuilder {
 
     /// Include the FIM (Fill-in-the-Middle) edit tool.
     #[must_use]
-    pub fn with_fim_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
+    pub fn with_fim_tool(self, client: Option<LlmClientHandle>, model: String) -> Self {
         use super::fim::FimEditTool;
         self.with_tool(Arc::new(FimEditTool::new(client, model)))
     }
@@ -936,7 +936,7 @@ impl ToolRegistryBuilder {
     #[allow(clippy::too_many_arguments)]
     pub fn with_full_agent_surface(
         self,
-        client: Option<DeepSeekClient>,
+        client: Option<LlmClientHandle>,
         model: String,
         manager: super::subagent::SharedSubAgentManager,
         runtime: super::subagent::SubAgentRuntime,

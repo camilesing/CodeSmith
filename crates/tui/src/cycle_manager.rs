@@ -49,7 +49,6 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::client::DeepSeekClient;
 use crate::llm_client::LlmClient;
 use crate::models::{
     ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt, context_window_for_model,
@@ -337,7 +336,7 @@ pub const CYCLE_HANDOFF_TEMPLATE: &str = include_str!("prompts/cycle_handoff.md"
 /// `max_briefing_tokens` worth of characters as a defensive backstop in case
 /// the model ignores the cap.
 pub async fn produce_briefing(
-    client: &DeepSeekClient,
+    client: &(impl LlmClient + ?Sized),
     model: &str,
     conversation: &[Message],
     max_briefing_tokens: usize,

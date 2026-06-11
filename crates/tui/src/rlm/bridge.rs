@@ -13,7 +13,6 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use std::{future::Future, pin::Pin};
 
 use anyhow::Result;
 use futures_util::future::join_all;
@@ -31,33 +30,9 @@ const DEFAULT_CHILD_MAX_TOKENS: u32 = 4096;
 /// Hard cap on prompts per batch RPC.
 pub const MAX_BATCH: usize = 16;
 
-/// Object-safe slice of the LLM client interface that the RLM bridge needs.
-///
-/// `LlmClient` itself uses native async trait methods, which are not dyn-safe.
-/// The bridge only needs non-streaming completions, so this boxed-future shim
-/// gives tests a clean mock seam without changing the wider provider trait.
-pub(crate) trait RlmLlmClient: Send + Sync {
-    fn create_message_boxed(
-        &self,
-        request: MessageRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>>;
-}
-
-impl<T> RlmLlmClient for T
-where
-    T: LlmClient + Send + Sync,
-{
-    fn create_message_boxed(
-        &self,
-        request: MessageRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
-        Box::pin(self.create_message(request))
-    }
-}
-
 /// State shared with the bridge across all RPC calls in one turn.
 pub struct RlmBridge {
-    client: Arc<dyn RlmLlmClient>,
+    client: Arc<dyn LlmClient>,
     child_model: String,
     /// Recursion budget remaining for `Rlm` / `RlmBatch` requests. When
     /// zero, those requests fall back to plain `Llm` completions.
@@ -67,7 +42,7 @@ pub struct RlmBridge {
 
 impl RlmBridge {
     pub(crate) fn new(
-        client: Arc<dyn RlmLlmClient>,
+        client: Arc<dyn LlmClient>,
         child_model: String,
         depth_remaining: u32,
     ) -> Self {
@@ -115,7 +90,7 @@ impl RlmBridge {
             top_p: Some(0.9_f32),
         };
 
-        let fut = self.client.create_message_boxed(request);
+        let fut = self.client.create_message(request);
         let response =
             match tokio::time::timeout(Duration::from_secs(CHILD_TIMEOUT_SECS), fut).await {
                 Ok(Ok(r)) => r,
@@ -354,7 +329,7 @@ mod tests {
     }
 
     fn bridge_for(mock: Arc<MockLlmClient>, depth_remaining: u32) -> RlmBridge {
-        let client: Arc<dyn RlmLlmClient> = mock;
+        let client: Arc<dyn LlmClient> = mock;
         RlmBridge::new(client, "child-model".to_string(), depth_remaining)
     }
 

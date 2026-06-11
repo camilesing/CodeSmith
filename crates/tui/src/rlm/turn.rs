@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::client::DeepSeekClient;
+use crate::llm_client::LlmClient;
 use crate::core::events::Event;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::repl::PythonRuntime;
 
-use super::bridge::{RlmBridge, RlmLlmClient};
+use super::bridge::RlmBridge;
 use super::prompt::rlm_system_prompt;
 
 // ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ pub struct RlmTurnResult {
 /// Run a full RLM turn. `prompt` is loaded into the REPL as `context`; it
 /// never enters the root LLM's window.
 pub async fn run_rlm_turn(
-    client: &DeepSeekClient,
+    client: Arc<dyn crate::llm_client::LlmClient>,
     model: String,
     prompt: String,
     child_model: String,
@@ -97,7 +97,7 @@ pub async fn run_rlm_turn(
     max_depth: u32,
 ) -> RlmTurnResult {
     run_rlm_turn_inner(
-        Arc::new(client.clone()),
+        client,
         model,
         prompt,
         None,
@@ -111,7 +111,7 @@ pub async fn run_rlm_turn(
 /// Variant that also passes a small `root_prompt` (the user-facing task)
 /// shown to the root LLM each iteration so it remembers its objective.
 pub async fn run_rlm_turn_with_root(
-    client: &DeepSeekClient,
+    client: Arc<dyn crate::llm_client::LlmClient>,
     model: String,
     prompt: String,
     root_prompt: Option<String>,
@@ -120,7 +120,7 @@ pub async fn run_rlm_turn_with_root(
     max_depth: u32,
 ) -> RlmTurnResult {
     run_rlm_turn_inner(
-        Arc::new(client.clone()),
+        client,
         model,
         prompt,
         root_prompt,
@@ -135,7 +135,7 @@ pub async fn run_rlm_turn_with_root(
 /// a boxed future to break the recursive opaque-future-type cycle:
 /// `run_rlm_turn_inner` → `RlmBridge::dispatch` → `run_rlm_turn_inner`.
 pub(crate) fn run_rlm_turn_inner(
-    client: Arc<dyn RlmLlmClient>,
+    client: Arc<dyn crate::llm_client::LlmClient>,
     model: String,
     prompt: String,
     root_prompt: Option<String>,
@@ -166,7 +166,7 @@ fn turn_timeout() -> Option<Duration> {
 // ---------------------------------------------------------------------------
 
 async fn run_rlm_turn_impl(
-    client: Arc<dyn RlmLlmClient>,
+    client: Arc<dyn crate::llm_client::LlmClient>,
     model: String,
     prompt: String,
     root_prompt: Option<String>,
@@ -268,7 +268,7 @@ async fn run_rlm_turn_impl(
             // 4a. Root LLM generates code from metadata-only context.
             let request = build_root_request(&model, &messages, &system);
 
-            let response = match client.create_message_boxed(request).await {
+            let response = match client.create_message(request).await {
                 Ok(r) => r,
                 Err(e) => {
                     break 'turn RlmTurnResult {

@@ -22,6 +22,7 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
+use crate::llm_client::LlmClientHandle;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
@@ -336,8 +337,8 @@ pub struct EngineHandle {
 /// The core engine that processes operations and emits events
 pub struct Engine {
     config: EngineConfig,
-    deepseek_client: Option<DeepSeekClient>,
-    deepseek_client_error: Option<String>,
+    llm_client: Option<LlmClientHandle>,
+    llm_client_error: Option<String>,
     api_key_env_only_recovery: Option<String>,
     session: Session,
     subagent_manager: SharedSubAgentManager,
@@ -432,7 +433,7 @@ impl Engine {
             return;
         }
 
-        let client = match self.deepseek_client.clone() {
+        let client = match self.llm_client.clone() {
             Some(c) => c,
             None => return, // No client → no prefetch
         };
@@ -627,6 +628,27 @@ impl Engine {
 
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
+        Self::new_impl(config, api_config, None)
+    }
+
+    /// Create a new engine with an injected LLM client (for integration tests).
+    ///
+    /// The provided `LlmClientHandle` replaces the client that `Engine::new`
+    /// would construct from `api_config`, enabling `MockLlmClient` injection
+    /// without network dependency.
+    pub fn new_with_client(
+        config: EngineConfig,
+        api_config: &Config,
+        client: LlmClientHandle,
+    ) -> (Self, EngineHandle) {
+        Self::new_impl(config, api_config, Some(client))
+    }
+
+    fn new_impl(
+        config: EngineConfig,
+        api_config: &Config,
+        injected_client: Option<LlmClientHandle>,
+    ) -> (Self, EngineHandle) {
         if let Some(objective) = normalized_goal_objective(config.goal_objective.as_deref()) {
             sync_goal_state_from_host(&config.goal_state, Some(&objective), None, false);
         }
@@ -643,9 +665,12 @@ impl Engine {
         let tool_exec_lock = Arc::new(RwLock::new(()));
 
         // Create clients for both providers
-        let (deepseek_client, deepseek_client_error) = match DeepSeekClient::new(api_config) {
-            Ok(client) => (Some(client), None),
-            Err(err) => (None, Some(err.to_string())),
+        let (llm_client, llm_client_error) = match injected_client {
+            Some(client) => (Some(client), None),
+            None => match DeepSeekClient::new(api_config) {
+                Ok(client) => (Some(Arc::new(client) as LlmClientHandle), None),
+                Err(err) => (None, Some(err.to_string())),
+            },
         };
         let api_key_env_only_recovery = Self::env_only_api_key_recovery_hint(api_config);
 
@@ -726,7 +751,7 @@ impl Engine {
         // Create Flash seam manager for layered context (#159). v0.7.5 keeps
         // this opt-in until the prefix-cache audit proves when seam production
         // is worth the extra request and transcript mutation.
-        let seam_manager = deepseek_client.as_ref().map(|main_client| {
+        let seam_manager = llm_client.as_ref().map(|main_client| {
             let seam_config = SeamConfig {
                 enabled: api_config.context.enabled.unwrap_or(false),
                 verbatim_window_turns: api_config
@@ -802,8 +827,8 @@ impl Engine {
 
         let mut engine = Engine {
             config,
-            deepseek_client,
-            deepseek_client_error,
+            llm_client,
+            llm_client_error,
             api_key_env_only_recovery,
             session,
             subagent_manager,
@@ -945,9 +970,9 @@ impl Engine {
                         .await;
                 }
                 Op::SpawnSubAgent { prompt } => {
-                    let Some(client) = self.deepseek_client.clone() else {
+                    let Some(client) = self.llm_client.clone() else {
                         let message = self
-                            .deepseek_client_error
+                            .llm_client_error
                             .as_deref()
                             .map(|err| format!("Failed to spawn sub-agent: {err}"))
                             .unwrap_or_else(|| {
@@ -1354,9 +1379,9 @@ impl Engine {
         let snapshot_prompt_post = content.clone();
 
         // Check if we have the appropriate client
-        if self.deepseek_client.is_none() {
+        if self.llm_client.is_none() {
             let message = self
-                .deepseek_client_error
+                .llm_client_error
                 .as_deref()
                 .map(|err| format!("Failed to send message: {err}"))
                 .unwrap_or_else(|| "Failed to send message: API client not configured".to_string());
@@ -1498,7 +1523,7 @@ impl Engine {
         let mut tool_registry = match mode {
             AppMode::Agent | AppMode::Yolo => {
                 if self.config.features.enabled(Feature::Subagents) {
-                    let runtime = if let Some(client) = self.deepseek_client.clone() {
+                    let runtime = if let Some(client) = self.llm_client.clone() {
                         let mut rt = SubAgentRuntime::new(
                             client,
                             self.session.model.clone(),
@@ -1545,7 +1570,7 @@ impl Engine {
                 // Coordinator mode requires subagents — it must be able to
                 // spawn worker agents. Add subagent + send_message tools.
                 if self.config.features.enabled(Feature::Subagents)
-                    && let Some(client) = self.deepseek_client.clone()
+                    && let Some(client) = self.llm_client.clone()
                 {
                     let mut rt = SubAgentRuntime::new(
                         client,
@@ -1620,7 +1645,7 @@ impl Engine {
         });
         let tool_catalog_for_event = tools.clone();
         let base_url_for_event = self
-            .deepseek_client
+            .llm_client
             .as_ref()
             .map(|client| client.base_url().to_string());
 
@@ -1699,7 +1724,7 @@ impl Engine {
             output_tokens: 0,
             ..Usage::default()
         };
-        let Some(client) = self.deepseek_client.clone() else {
+        let Some(client) = self.llm_client.clone() else {
             let message = "Manual compaction unavailable: API client not configured".to_string();
             self.emit_compaction_failed(id, false, message.clone())
                 .await;
@@ -1734,7 +1759,7 @@ impl Engine {
         let mut turn_error = None;
 
         match compact_messages_safe(
-            &client,
+            &*client,
             &self.session.messages,
             &self.config.compaction,
             Some(&self.session.workspace),
@@ -1804,7 +1829,7 @@ impl Engine {
             output_tokens: 0,
             ..Usage::default()
         };
-        let Some(client) = self.deepseek_client.clone() else {
+        let Some(client) = self.llm_client.clone() else {
             let message = "Purge unavailable: API client not configured".to_string();
             emit_purge_failed(&self.tx_event, message.clone()).await;
             let _ = self
@@ -1832,7 +1857,7 @@ impl Engine {
         let messages_before = self.session.messages.len();
 
         let (status, error) = match run_purge(
-            &client,
+            client.as_ref(),
             &self.session.messages,
             &self.session.model,
             self.session.reasoning_effort.clone(),
@@ -1897,7 +1922,7 @@ impl Engine {
         removed
     }
 
-    async fn recover_context_overflow(&mut self, client: &DeepSeekClient, reason: &str) -> bool {
+    async fn recover_context_overflow(&mut self, client: &dyn crate::llm_client::LlmClient, reason: &str) -> bool {
         let Some(target_budget) = context_input_budget(&self.session.model) else {
             return false;
         };
@@ -2012,7 +2037,7 @@ impl Engine {
         forced_config.auto_floor_tokens = 0;
 
         match compact_messages_safe(
-            client,
+            &*client,
             &self.session.messages,
             &forced_config,
             Some(&self.session.workspace),
@@ -2336,7 +2361,7 @@ impl Engine {
             return;
         }
 
-        let Some(client) = self.deepseek_client.clone() else {
+        let Some(client) = self.llm_client.clone() else {
             crate::logging::warn(
                 "Cycle boundary skipped: API client not configured for briefing turn",
             );
@@ -2383,7 +2408,7 @@ impl Engine {
                         "Flash briefing failed, falling back to main model: {err}"
                     ));
                     match produce_briefing(
-                        &client,
+                        client.as_ref(),
                         &self.session.model,
                         &self.session.messages,
                         max_briefing_tokens,
@@ -2408,7 +2433,7 @@ impl Engine {
             }
         } else {
             match produce_briefing(
-                &client,
+                client.as_ref(),
                 &self.session.model,
                 &self.session.messages,
                 max_briefing_tokens,

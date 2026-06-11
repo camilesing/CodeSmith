@@ -20,23 +20,14 @@
 //! - **Capacity-gate observation** — runtime can probe estimated request size
 //!   and decline to dispatch; the mock surfaces capture-side hooks for that.
 //!
-//! # Why trait-level (not engine-level)
+//! # Engine-level integration tests
 //!
-//! As of v0.6.7 the engine (`crates/tui/src/core/engine.rs`) holds a concrete
-//! `Option<DeepSeekClient>` — the [`LlmClient`] trait is implemented but no
-//! consumer takes `Arc<dyn LlmClient>` or generic `<C: LlmClient>`. Wiring the
-//! mock into a full engine turn-loop therefore requires a separate refactor:
-//! every `Option<DeepSeekClient>` consumer (engine, registry, rlm, review,
-//! cycle_manager, compaction, subagent) must move to `Arc<dyn LlmClient>`.
-//!
-//! Per the v0.7.0 mock-LLM issue (the parent of this file): "If the engine's
-//! API surfaces are too tangled to mock cleanly … document that as BLOCKED with
-//! what wiring needs to change. In that case still commit any partial work
-//! that lands cleanly." The full engine integration tests below are
-//! `#[ignore]`-marked with TODOs pointing at that refactor.
-//!
-//! Once `Arc<dyn LlmClient>` lands the ignored tests can flip on with no
-//! changes to the mock.
+//! As of v0.8.48 the engine holds `Option<LlmClientHandle>` (= `Option<Arc<dyn LlmClient>>`)
+//! and `Engine::new_with_client` accepts an injected client. The trait-level tests
+//! below exercise `MockLlmClient` through the dyn-safe trait boundary directly.
+//! Engine-level end-to-end tests (turn loop, compaction, sub-agent) still require
+//! EngineConfig/Config test infrastructure and are `#[ignore]`-marked pending that
+//! harness.
 
 use futures_util::StreamExt;
 
@@ -555,21 +546,17 @@ fn compaction_config_defaults_are_enabled_for_session_survivability() {
     assert!(config < 1_000_000, "compaction threshold must be below 1M");
 }
 
-// === 9. BLOCKED: full engine integration ====================================
+// === 9. Engine-level integration (requires separate test infrastructure) ====
 //
-// These tests exercise the engine's turn loop end-to-end. They cannot run
-// today because `core::engine::Engine` holds a concrete `Option<DeepSeekClient>`
-// and there is no constructor seam to inject `Arc<dyn LlmClient>`. Once the
-// engine is refactored to take a trait object (or generic), drop the
-// `#[ignore]` and these tests light up.
-//
-// Blocked on #402 P0: refactor engine + tools::registry +
-// rlm::bridge + tools::review + tools::subagent + cycle_manager + compaction
-// to take `Arc<dyn LlmClient>` instead of `Option<DeepSeekClient>`. Then the
-// mock plugs in directly and these `#[ignore]`s come off.
+// #402 P0 is RESOLVED: the engine now holds `Option<LlmClientHandle>` (= `Option<Arc<dyn LlmClient>>`)
+// and `Engine::new_with_client` accepts an injected client. MockLlmClient can be
+// wired in directly. These tests are still `#[ignore]`-marked because they
+// require EngineConfig + Config test infrastructure that is not yet wired into
+// this standalone integration-test file. A follow-up PR should add a dedicated
+// engine-level test harness that imports from the crate directly.
 
 #[tokio::test]
-#[ignore = "blocked on #402: engine takes concrete DeepSeekClient; needs Arc<dyn LlmClient> refactor"]
+#[ignore = "needs EngineConfig/Config test infrastructure; #402 resolved, Engine::new_with_client available"]
 async fn engine_full_turn_loop_with_compaction_and_resume() {
     // Once the refactor lands:
     // 1. Build a session with N messages exceeding the compaction threshold.
@@ -584,7 +571,7 @@ async fn engine_full_turn_loop_with_compaction_and_resume() {
 }
 
 #[tokio::test]
-#[ignore = "blocked on #402: engine takes concrete DeepSeekClient; needs Arc<dyn LlmClient> refactor"]
+#[ignore = "needs EngineConfig/Config test infrastructure; #402 resolved, Engine::new_with_client available"]
 async fn engine_full_sub_agent_spawn_round_trip() {
     // Once the refactor lands:
     // 1. Inject MockLlmClient as the parent client AND wire the subagent
@@ -596,7 +583,7 @@ async fn engine_full_sub_agent_spawn_round_trip() {
 }
 
 #[tokio::test]
-#[ignore = "blocked on #402: engine takes concrete DeepSeekClient; needs Arc<dyn LlmClient> refactor"]
+#[ignore = "needs EngineConfig/Config test infrastructure; #402 resolved, Engine::new_with_client available"]
 async fn engine_full_parallel_tool_execution() {
     // Once the refactor lands:
     // 1. Mock turn 1 returns two tool_calls in a single round.
@@ -606,7 +593,7 @@ async fn engine_full_parallel_tool_execution() {
 }
 
 #[tokio::test]
-#[ignore = "blocked on #402: engine takes concrete DeepSeekClient; needs Arc<dyn LlmClient> refactor"]
+#[ignore = "needs EngineConfig/Config test infrastructure; #402 resolved, Engine::new_with_client available"]
 async fn engine_capacity_controller_forces_compaction_at_threshold() {
     // Once the refactor lands:
     // 1. Inject a long history near the V4 soft cap.

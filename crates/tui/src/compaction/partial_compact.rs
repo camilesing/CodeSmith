@@ -8,7 +8,7 @@
 //!   (sacrifices cache for immediate budget relief). The summary goes into
 //!   the system prompt.
 
-use crate::client::DeepSeekClient;
+use crate::llm_client::LlmClient;
 use crate::compaction::estimate_tokens;
 use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt};
 
@@ -155,7 +155,7 @@ pub fn find_pivot_for_budget(
 /// - **UpTo**: Retains messages `[pivot..]`, summarizes `[0..pivot]`.
 ///   Result: summary block (in system prompt) + retained tail messages.
 pub async fn partial_compact(
-    client: &DeepSeekClient,
+    client: &dyn LlmClient,
     messages: &[Message],
     request: &PartialCompactRequest,
     cache_summary: bool,

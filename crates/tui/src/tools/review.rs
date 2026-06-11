@@ -7,9 +7,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::client::DeepSeekClient;
 use crate::dependencies::ExternalTool;
-use crate::llm_client::LlmClient;
+use crate::llm_client::{LlmClient, LlmClientHandle};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::utils::truncate_with_ellipsis;
 
@@ -144,13 +143,13 @@ fn parse_review_output_json(raw: &str) -> Option<ReviewOutput> {
 }
 
 pub struct ReviewTool {
-    client: Option<DeepSeekClient>,
+    client: Option<LlmClientHandle>,
     model: String,
 }
 
 impl ReviewTool {
     #[must_use]
-    pub fn new(client: Option<DeepSeekClient>, model: String) -> Self {
+    pub fn new(client: Option<LlmClientHandle>, model: String) -> Self {
         Self { client, model }
     }
 }

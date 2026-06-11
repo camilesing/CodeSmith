@@ -11,7 +11,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::client::DeepSeekClient;
+use crate::llm_client::LlmClientHandle;
 use crate::repl::PythonRuntime;
 use crate::rlm::RlmBridge;
 use crate::rlm::session::{
@@ -201,12 +201,12 @@ impl ToolSpec for RlmOpenTool {
 }
 
 pub struct RlmEvalTool {
-    client: Option<DeepSeekClient>,
+    client: Option<LlmClientHandle>,
 }
 
 impl RlmEvalTool {
     #[must_use]
-    pub fn new(client: Option<DeepSeekClient>) -> Self {
+    pub fn new(client: Option<LlmClientHandle>) -> Self {
         Self { client }
     }
 }
@@ -264,7 +264,7 @@ impl ToolSpec for RlmEvalTool {
         let started = Instant::now();
         let (round, child_usage) = if let Some(client) = self.client.clone() {
             let bridge = RlmBridge::new(
-                Arc::new(client),
+                client,
                 DEFAULT_CHILD_MODEL.to_string(),
                 config.sub_rlm_max_depth.min(HARD_SUB_RLM_DEPTH_CAP),
             );

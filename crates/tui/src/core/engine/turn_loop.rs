@@ -49,9 +49,9 @@ impl Engine {
         self.kod_prefetch_spawn();
 
         let client = self
-            .deepseek_client
+            .llm_client
             .clone()
-            .expect("DeepSeek client should be configured");
+            .expect("LLM client should be configured");
 
         let mut consecutive_tool_error_steps = 0u32;
         let mut turn_error: Option<String> = None;
@@ -165,7 +165,7 @@ impl Engine {
                     .await;
                 let auto_messages_before = self.session.messages.len();
                 match compact_messages_safe(
-                    &client,
+                    &*client,
                     &self.session.messages,
                     &self.config.compaction,
                     Some(&self.session.workspace),
@@ -226,7 +226,7 @@ impl Engine {
             }
 
             if self
-                .run_capacity_pre_request_checkpoint(turn, Some(&client), mode)
+                .run_capacity_pre_request_checkpoint(turn, Some(client.as_ref()), mode)
                 .await
             {
                 continue;
@@ -249,7 +249,7 @@ impl Engine {
                     }
 
                     if self
-                        .recover_context_overflow(&client, "preflight token budget")
+                        .recover_context_overflow(client.as_ref(), "preflight token budget")
                         .await
                     {
                         context_recovery_attempts = context_recovery_attempts.saturating_add(1);
@@ -389,7 +389,7 @@ impl Engine {
                     if is_context_length_error_message(&message)
                         && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
                         && self
-                            .recover_context_overflow(&client, "provider context-length rejection")
+                            .recover_context_overflow(client.as_ref(), "provider context-length rejection")
                             .await
                     {
                         context_recovery_attempts = context_recovery_attempts.saturating_add(1);

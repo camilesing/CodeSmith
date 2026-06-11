@@ -27,6 +27,7 @@ use crate::models::{MessageRequest, MessageResponse, StreamEvent};
 use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -39,6 +40,10 @@ pub mod mock;
 pub type StreamEventBox =
     Pin<Box<dyn futures_util::Stream<Item = Result<StreamEvent>> + Send + 'static>>;
 
+/// Shared handle to a dyn-dispatched LLM client. Use this everywhere instead
+/// of concrete `DeepSeekClient` so tests can inject `MockLlmClient`.
+pub type LlmClientHandle = Arc<dyn LlmClient>;
+
 /// Unified interface for LLM providers.
 ///
 /// This trait abstracts over different LLM APIs (DeepSeek, `OpenAI`, etc.)
@@ -46,10 +51,11 @@ pub type StreamEventBox =
 ///
 /// # Implementation Notes
 ///
-/// - All methods are async and require `Send + Sync` for thread safety
-/// - The `create_message_stream` method returns a pinned boxed stream for SSE
-/// - Implementations should handle their own authentication and base URL configuration
-#[allow(async_fn_in_trait, dead_code)] // Trait methods are part of the LLM provider interface
+/// - All methods are dyn-safe so `Arc<dyn LlmClient>` can be used for test injection.
+/// - `create_message` returns a boxed future; `create_message_stream` returns a boxed stream.
+/// - `fim_completion` and `translate` have default error implementations;
+///   `DeepSeekClient` overrides them with its provider-specific endpoints.
+#[allow(dead_code)] // Trait methods are part of the LLM provider interface
 pub trait LlmClient: Send + Sync {
     /// Returns the provider name (e.g., "openai", "deepseek")
     fn provider_name(&self) -> &'static str;
@@ -57,20 +63,67 @@ pub trait LlmClient: Send + Sync {
     /// Returns the model identifier being used
     fn model(&self) -> &str;
 
-    /// Creates a non-streaming message completion
+    /// Creates a non-streaming message completion (boxed future for dyn-safety).
     fn create_message(
         &self,
         request: MessageRequest,
-    ) -> impl Future<Output = Result<MessageResponse>> + Send;
+    ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>>;
 
-    /// Creates a streaming message completion
-    ///
-    /// Returns a stream of SSE events that should be consumed until completion.
-    async fn create_message_stream(&self, request: MessageRequest) -> Result<StreamEventBox>;
+    /// Creates a streaming message completion (boxed future for dyn-safety).
+    fn create_message_stream(
+        &self,
+        request: MessageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>>;
 
-    /// Optional health check to verify API connectivity
-    async fn health_check(&self) -> Result<bool> {
-        Ok(true)
+    /// Optional health check to verify API connectivity (boxed future for dyn-safety).
+    fn health_check(&self) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + '_>> {
+        Box::pin(async { Ok(true) })
+    }
+
+    /// Fill-in-the-middle (FIM) completion. Only `DeepSeekClient` overrides this;
+    /// the default returns an error for providers that don't support FIM.
+    fn fim_completion(
+        &self,
+        model: String,
+        prompt: String,
+        suffix: String,
+        max_tokens: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        Box::pin(async {
+            Err(anyhow::anyhow!(
+                "FIM completion not supported by provider '{}'",
+                self.provider_name()
+            ))
+        })
+    }
+
+    /// Lightweight text translation. Only `DeepSeekClient` overrides this;
+    /// the default returns an error for providers that don't support it.
+    fn translate(
+        &self,
+        text: String,
+        model: String,
+        target_language: String,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        Box::pin(async {
+            Err(anyhow::anyhow!(
+                "Translation not supported by provider '{}'",
+                self.provider_name()
+            ))
+        })
+    }
+
+    /// Provider-specific base URL. Only `DeepSeekClient` overrides this;
+    /// the default returns an empty string (for mocks and providers that
+    /// don't expose a base URL).
+    fn base_url(&self) -> &str {
+        ""
+    }
+
+    /// List available models (provider-specific).
+    /// Only DeepSeekClient overrides this; default returns empty.
+    fn list_models(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + '_>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 }
 

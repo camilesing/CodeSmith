@@ -4,6 +4,8 @@
 //! client now routes all normal traffic through that surface.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -788,37 +790,65 @@ impl LlmClient for DeepSeekClient {
         &self.default_model
     }
 
-    async fn health_check(&self) -> Result<bool> {
-        let health_url = api_url(&self.base_url, "models");
-        self.wait_for_rate_limit().await;
-        let response = self.http_client.get(health_url).send().await;
-        match response {
-            Ok(resp) if resp.status().is_success() => {
-                self.mark_request_success().await;
-                Ok(true)
-            }
-            Ok(resp) => {
-                self.mark_request_failure(&format!("health status={}", resp.status()))
-                    .await;
-                Ok(false)
-            }
-            Err(err) => {
-                self.mark_request_failure(&format!("health error={err}"))
-                    .await;
-                Ok(false)
-            }
-        }
+    fn base_url(&self) -> &str {
+        &self.base_url
     }
 
-    async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
-        self.create_message_chat(&request).await
+    fn health_check(&self) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + '_>> {
+        Box::pin(async move {
+            let health_url = api_url(&self.base_url, "models");
+            self.wait_for_rate_limit().await;
+            let response = self.http_client.get(health_url).send().await;
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    self.mark_request_success().await;
+                    Ok(true)
+                }
+                Ok(resp) => {
+                    self.mark_request_failure(&format!("health status={}", resp.status()))
+                        .await;
+                    Ok(false)
+                }
+                Err(err) => {
+                    self.mark_request_failure(&format!("health error={err}"))
+                        .await;
+                    Ok(false)
+                }
+            }
+        })
     }
 
-    async fn create_message_stream(
+    fn create_message(
         &self,
         request: MessageRequest,
-    ) -> Result<crate::llm_client::StreamEventBox> {
-        self.handle_chat_completion_stream(request).await
+    ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+        Box::pin(async move { self.create_message_chat(&request).await })
+    }
+
+    fn create_message_stream(
+        &self,
+        request: MessageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<crate::llm_client::StreamEventBox>> + Send + '_>> {
+        Box::pin(async move { self.handle_chat_completion_stream(request).await })
+    }
+
+    fn fim_completion(
+        &self,
+        model: String,
+        prompt: String,
+        suffix: String,
+        max_tokens: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        Box::pin(async move { self.fim_completion(&model, &prompt, &suffix, max_tokens).await })
+    }
+
+    fn translate(
+        &self,
+        text: String,
+        model: String,
+        target_language: String,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        Box::pin(async move { self.translate(&text, &model, &target_language).await })
     }
 }
 

@@ -530,8 +530,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // startup, even when the API key is missing, the base URL is malformed,
     // or the network is unavailable.
     // Translations are skipped with a logged warning until a key is saved.
-    let translation_client = match DeepSeekClient::new(config) {
-        Ok(client) => Some(Arc::new(client)),
+    let translation_client: Option<Arc<dyn crate::llm_client::LlmClient>> = match DeepSeekClient::new(config) {
+        Ok(client) => Some(Arc::new(client) as Arc<dyn crate::llm_client::LlmClient>),
         Err(err) => {
             if app.onboarding == OnboardingState::None {
                 tracing::warn!("Translation client initialization failed: {err}");
@@ -973,7 +973,7 @@ async fn run_event_loop(
     mut engine_handle: EngineHandle,
     task_manager: SharedTaskManager,
     event_broker: &EventBroker,
-    translation_client: Option<Arc<DeepSeekClient>>,
+    translation_client: Option<Arc<dyn crate::llm_client::LlmClient>>,
 ) -> Result<()> {
     // Track streaming state
     let mut current_streaming_text = String::new();
@@ -1270,7 +1270,7 @@ async fn run_event_loop(
                             tokio::spawn(async move {
                                 let translated = crate::tui::translation::translate_text(
                                     &original_text,
-                                    &client,
+                                    client.as_ref(),
                                     &translation_model,
                                     &target_language,
                                 )
@@ -1368,7 +1368,7 @@ async fn run_event_loop(
                                 tokio::spawn(async move {
                                     let translated = crate::tui::translation::translate_text(
                                         &original_thinking,
-                                        &client,
+                                        client.as_ref(),
                                         &translation_model,
                                         &target_language,
                                     )
@@ -3984,7 +3984,7 @@ async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
 
     let client = DeepSeekClient::new(config)?;
     let models = tokio::time::timeout(Duration::from_secs(20), client.list_models()).await??;
-    let mut ids = models.into_iter().map(|model| model.id).collect::<Vec<_>>();
+    let mut ids = models.into_iter().map(|m| m.id).collect::<Vec<_>>();
     ids.sort();
     ids.dedup();
     Ok(ids)

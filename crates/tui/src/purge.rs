@@ -528,7 +528,7 @@ pub fn build_purge_tool() -> Tool {
 /// The caller is responsible for emitting start/completed/failed events
 /// and for replacing the session message list with `PurgeResult.messages`.
 pub async fn run_purge(
-    client: &impl LlmClient,
+    client: &(impl LlmClient + ?Sized),
     messages: &[Message],
     model: &str,
     reasoning_effort: Option<String>,
