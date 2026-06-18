@@ -1969,6 +1969,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "VOLCENGINE_API_KEY",
                     "codewhale auth set --provider volcengine",
                 ),
+                crate::config::ApiProvider::Anthropic => (
+                    "ANTHROPIC_API_KEY/CLAUDE_API_KEY",
+                    "codewhale auth set --provider anthropic --api-key \"...\"",
+                ),
                 crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "codewhale auth set --provider deepseek")
                 }
@@ -1991,6 +1995,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Sglang => "sglang",
                     crate::config::ApiProvider::Vllm => "vllm",
                     crate::config::ApiProvider::Ollama => "ollama",
+                    crate::config::ApiProvider::Anthropic => "anthropic",
                     crate::config::ApiProvider::Deepseek
                     | crate::config::ApiProvider::DeepseekCN => "deepseek",
                 }

@@ -603,6 +603,7 @@ impl Engine {
             ApiProvider::Sglang => "SGLANG_API_KEY",
             ApiProvider::Vllm => "VLLM_API_KEY",
             ApiProvider::Ollama => "OLLAMA_API_KEY",
+            ApiProvider::Anthropic => "ANTHROPIC_API_KEY/CLAUDE_API_KEY",
         };
 
         Some(format!(

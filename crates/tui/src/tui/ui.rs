@@ -6183,6 +6183,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Sglang => Some("SGLang"),
             crate::config::ApiProvider::Vllm => Some("vLLM"),
             crate::config::ApiProvider::Ollama => Some("Ollama"),
+            crate::config::ApiProvider::Anthropic => Some("Claude"),
         };
         let status_indicator_started_at = if app.low_motion {
             None
@@ -7117,6 +7118,7 @@ async fn apply_provider_picker_api_key(
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
             ApiProvider::Ollama => &mut providers.ollama,
+            ApiProvider::Anthropic => &mut providers.anthropic,
         };
         entry.api_key = Some(api_key);
     }
@@ -7172,6 +7174,7 @@ fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, 
         ApiProvider::Sglang => &mut providers.sglang,
         ApiProvider::Vllm => &mut providers.vllm,
         ApiProvider::Ollama => &mut providers.ollama,
+        ApiProvider::Anthropic => &mut providers.anthropic,
     };
     entry.auth_mode = Some(auth_mode);
 }

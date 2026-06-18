@@ -267,7 +267,7 @@ fn buffer_pool() -> &'static StdMutex<Vec<Vec<u8>>> {
     POOL.get_or_init(|| StdMutex::new(Vec::new()))
 }
 
-fn acquire_stream_buffer() -> Vec<u8> {
+pub(super) fn acquire_stream_buffer() -> Vec<u8> {
     if let Ok(mut pool) = buffer_pool().lock() {
         pool.pop().unwrap_or_else(|| Vec::with_capacity(8192))
     } else {
@@ -275,7 +275,7 @@ fn acquire_stream_buffer() -> Vec<u8> {
     }
 }
 
-fn release_stream_buffer(mut buf: Vec<u8>) {
+pub(super) fn release_stream_buffer(mut buf: Vec<u8>) {
     buf.clear();
     if buf.capacity() > 256 * 1024 {
         buf.shrink_to(256 * 1024);
@@ -323,7 +323,7 @@ pub(super) async fn bounded_error_text(response: reqwest::Response, max_bytes: u
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-fn validate_base_url_security(base_url: &str) -> Result<()> {
+pub(super) fn validate_base_url_security(base_url: &str) -> Result<()> {
     if base_url.starts_with("https://")
         || base_url.starts_with("http://localhost")
         || base_url.starts_with("http://127.0.0.1")
@@ -415,7 +415,7 @@ pub(super) fn api_url(base_url: &str, path: &str) -> String {
 /// (`1`, `true`, `yes`, `on`, case-insensitive). Used by `build_http_client`
 /// to opt out of HTTP/2 entirely when DeepSeek's edge mishandles long-lived H2
 /// streams (#103). Anything else (unset, `0`, `false`, ...) leaves HTTP/2 on.
-fn force_http1_from_env() -> bool {
+pub(super) fn force_http1_from_env() -> bool {
     std::env::var("DEEPSEEK_FORCE_HTTP1")
         .ok()
         .map(|v| v.trim().to_ascii_lowercase())
@@ -427,7 +427,7 @@ fn force_http1_from_env() -> bool {
 /// parser first (covers single-cert files too), then falls back to
 /// DER. All failures log a warning and return the builder unchanged
 /// so a malformed env var degrades gracefully.
-fn add_extra_root_certs(
+pub(super) fn add_extra_root_certs(
     mut builder: reqwest::ClientBuilder,
     cert_path: &str,
 ) -> reqwest::ClientBuilder {
@@ -944,6 +944,9 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::WanjieArk
             | ApiProvider::Moonshot
             | ApiProvider::Ollama => {}
+            // Anthropic uses /v1/messages and the AnthropicClient applies its
+            // own thinking config; this OpenAI-shaped path is unreachable for it.
+            ApiProvider::Anthropic => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -996,6 +999,7 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::WanjieArk
             | ApiProvider::Moonshot
             | ApiProvider::Ollama => {}
+            ApiProvider::Anthropic => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -1035,6 +1039,7 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::WanjieArk
             | ApiProvider::Moonshot
             | ApiProvider::Ollama => {}
+            ApiProvider::Anthropic => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -1152,7 +1157,9 @@ impl DeepSeekClient {
 }
 
 mod chat;
+pub(crate) mod anthropic;
 
+pub(crate) use anthropic::AnthropicClient;
 pub(crate) use chat::{CacheWarmupKey, PromptInspection};
 
 pub(crate) fn inspect_prompt_for_request(request: &MessageRequest) -> PromptInspection {

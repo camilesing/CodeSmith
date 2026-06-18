@@ -65,6 +65,8 @@ const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -103,6 +105,8 @@ pub enum ProviderKind {
     Sglang,
     Vllm,
     Ollama,
+    #[serde(alias = "claude", alias = "anthropic-claude")]
+    Anthropic,
 }
 
 impl ProviderKind {
@@ -124,6 +128,7 @@ impl ProviderKind {
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
             Self::Ollama => "ollama",
+            Self::Anthropic => "anthropic",
         }
     }
 
@@ -150,6 +155,7 @@ impl ProviderKind {
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
             "ollama" | "ollama-local" => Some(Self::Ollama),
+            "anthropic" | "claude" | "anthropic-claude" | "claude-ai" => Some(Self::Anthropic),
             _ => None,
         }
     }
@@ -197,6 +203,8 @@ pub struct ProvidersToml {
     pub vllm: ProviderConfigToml,
     #[serde(default)]
     pub ollama: ProviderConfigToml,
+    #[serde(default)]
+    pub anthropic: ProviderConfigToml,
 }
 
 impl ProvidersToml {
@@ -218,6 +226,7 @@ impl ProvidersToml {
             ProviderKind::Sglang => &self.sglang,
             ProviderKind::Vllm => &self.vllm,
             ProviderKind::Ollama => &self.ollama,
+            ProviderKind::Anthropic => &self.anthropic,
         }
     }
 
@@ -238,6 +247,7 @@ impl ProvidersToml {
             ProviderKind::Sglang => &mut self.sglang,
             ProviderKind::Vllm => &mut self.vllm,
             ProviderKind::Ollama => &mut self.ollama,
+            ProviderKind::Anthropic => &mut self.anthropic,
         }
     }
 }
@@ -480,6 +490,7 @@ impl ConfigToml {
         merge_project_provider_config(&mut self.providers.sglang, &project.providers.sglang);
         merge_project_provider_config(&mut self.providers.vllm, &project.providers.vllm);
         merge_project_provider_config(&mut self.providers.ollama, &project.providers.ollama);
+        merge_project_provider_config(&mut self.providers.anthropic, &project.providers.anthropic);
     }
 
     #[must_use]
@@ -590,6 +601,12 @@ impl ConfigToml {
             "providers.ollama.model" => self.providers.ollama.model.clone(),
             "providers.ollama.http_headers" => {
                 serialize_http_headers(&self.providers.ollama.http_headers)
+            }
+            "providers.anthropic.api_key" => self.providers.anthropic.api_key.clone(),
+            "providers.anthropic.base_url" => self.providers.anthropic.base_url.clone(),
+            "providers.anthropic.model" => self.providers.anthropic.model.clone(),
+            "providers.anthropic.http_headers" => {
+                serialize_http_headers(&self.providers.anthropic.http_headers)
             }
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
@@ -812,6 +829,18 @@ impl ConfigToml {
             "providers.ollama.http_headers" => {
                 self.providers.ollama.http_headers = parse_http_headers(value)?;
             }
+            "providers.anthropic.api_key" => {
+                self.providers.anthropic.api_key = Some(value.to_string());
+            }
+            "providers.anthropic.base_url" => {
+                self.providers.anthropic.base_url = Some(value.to_string());
+            }
+            "providers.anthropic.model" => {
+                self.providers.anthropic.model = Some(value.to_string());
+            }
+            "providers.anthropic.http_headers" => {
+                self.providers.anthropic.http_headers = parse_http_headers(value)?;
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -917,6 +946,10 @@ impl ConfigToml {
             "providers.ollama.base_url" => self.providers.ollama.base_url = None,
             "providers.ollama.model" => self.providers.ollama.model = None,
             "providers.ollama.http_headers" => self.providers.ollama.http_headers.clear(),
+            "providers.anthropic.api_key" => self.providers.anthropic.api_key = None,
+            "providers.anthropic.base_url" => self.providers.anthropic.base_url = None,
+            "providers.anthropic.model" => self.providers.anthropic.model = None,
+            "providers.anthropic.http_headers" => self.providers.anthropic.http_headers.clear(),
             _ => {
                 self.extras.remove(key);
             }
@@ -1161,6 +1194,18 @@ impl ConfigToml {
         if let Some(v) = serialize_http_headers(&self.providers.ollama.http_headers) {
             out.insert("providers.ollama.http_headers".to_string(), v);
         }
+        if let Some(v) = self.providers.anthropic.api_key.as_ref() {
+            out.insert("providers.anthropic.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.anthropic.base_url.as_ref() {
+            out.insert("providers.anthropic.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.anthropic.model.as_ref() {
+            out.insert("providers.anthropic.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.anthropic.http_headers) {
+            out.insert("providers.anthropic.http_headers".to_string(), v);
+        }
 
         for (k, v) in &self.extras {
             out.insert(k.clone(), v.to_string());
@@ -1238,6 +1283,7 @@ impl ConfigToml {
                 ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
                 ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL.to_string(),
+                ProviderKind::Anthropic => DEFAULT_ANTHROPIC_BASE_URL.to_string(),
             });
         // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
         // This makes `deepseek auth set` a reliable fix even when the user's
@@ -1434,6 +1480,7 @@ fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
             | ProviderKind::Volcengine
             | ProviderKind::XiaomiMimo
             | ProviderKind::Ollama
+            | ProviderKind::Anthropic
     ) {
         return model.to_string();
     }
@@ -1573,6 +1620,7 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Sglang => DEFAULT_SGLANG_MODEL,
         ProviderKind::Vllm => DEFAULT_VLLM_MODEL,
         ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL,
+        ProviderKind::Anthropic => DEFAULT_ANTHROPIC_MODEL,
     }
 }
 
@@ -1593,6 +1641,7 @@ fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL,
         ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL,
         ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL,
+        ProviderKind::Anthropic => DEFAULT_ANTHROPIC_BASE_URL,
     }
 }
 
@@ -2118,6 +2167,7 @@ struct EnvRuntimeOverrides {
     sglang_base_url: Option<String>,
     vllm_base_url: Option<String>,
     ollama_base_url: Option<String>,
+    anthropic_base_url: Option<String>,
 }
 
 impl EnvRuntimeOverrides {
@@ -2222,6 +2272,9 @@ impl EnvRuntimeOverrides {
             ollama_base_url: std::env::var("OLLAMA_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            anthropic_base_url: std::env::var("ANTHROPIC_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -2244,6 +2297,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Sglang => self.sglang_base_url.clone(),
             ProviderKind::Vllm => self.vllm_base_url.clone(),
             ProviderKind::Ollama => self.ollama_base_url.clone(),
+            ProviderKind::Anthropic => self.anthropic_base_url.clone(),
         }
     }
 

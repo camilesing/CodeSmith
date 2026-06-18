@@ -98,6 +98,8 @@ pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
+pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 /// Legacy `deepseek-cn` provider alias.
 ///
 /// DeepSeek's official API host is the same worldwide. Keep this alias for
@@ -135,6 +137,7 @@ pub enum ApiProvider {
     Sglang,
     Vllm,
     Ollama,
+    Anthropic,
 }
 
 impl ApiProvider {
@@ -163,6 +166,7 @@ impl ApiProvider {
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
             "ollama" | "ollama-local" => Some(Self::Ollama),
+            "anthropic" | "claude" | "anthropic-claude" | "claude-ai" => Some(Self::Anthropic),
             _ => None,
         }
     }
@@ -186,6 +190,7 @@ impl ApiProvider {
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
             Self::Ollama => "ollama",
+            Self::Anthropic => "anthropic",
         }
     }
 
@@ -209,6 +214,7 @@ impl ApiProvider {
             Self::Sglang => "SGLang",
             Self::Vllm => "vLLM",
             Self::Ollama => "Ollama",
+            Self::Anthropic => "Anthropic Claude",
         }
     }
 
@@ -231,6 +237,7 @@ impl ApiProvider {
             Self::Sglang,
             Self::Vllm,
             Self::Ollama,
+            Self::Anthropic,
         ]
     }
 }
@@ -287,6 +294,8 @@ pub struct ModelAliasDeprecation {
 pub enum RequestPayloadMode {
     /// Standard OpenAI-compatible `/v1/chat/completions` payload.
     ChatCompletions,
+    /// Anthropic-native `/v1/messages` payload.
+    Messages,
 }
 
 /// Resolve the provider capability for a given [`ApiProvider`] and resolved
@@ -334,6 +343,30 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             thinking_supported: false,
             cache_telemetry_supported: false,
             request_payload_mode: RequestPayloadMode::ChatCompletions,
+            alias_deprecation: None,
+        };
+    }
+
+    if matches!(provider, ApiProvider::Anthropic) {
+        // Capabilities are inferred from the model name; we don't bundle a
+        // catalog. Recent Claude families (3.5+, 4+) all support thinking
+        // and prompt-caching telemetry, but we conservatively gate thinking
+        // behind a name match so older snapshots don't lie.
+        let model_lower = resolved_model.to_ascii_lowercase();
+        let thinking_supported = model_lower.contains("claude-")
+            && (model_lower.contains("opus-4")
+                || model_lower.contains("sonnet-4")
+                || model_lower.contains("3-7")
+                || model_lower.contains("3.7")
+                || model_lower.contains("haiku-4"));
+        return ProviderCapability {
+            provider,
+            resolved_model: resolved_model.to_string(),
+            context_window: 200_000,
+            max_output: 8_192,
+            thinking_supported,
+            cache_telemetry_supported: true,
+            request_payload_mode: RequestPayloadMode::Messages,
             alias_deprecation: None,
         };
     }
@@ -610,6 +643,8 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
         ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {
             OFFICIAL_DEEPSEEK_MODELS.to_vec()
         }
+        // Users specify Claude model names via config/env; we don't bundle a list.
+        ApiProvider::Anthropic => vec![DEFAULT_ANTHROPIC_MODEL],
     }
 }
 
@@ -1707,6 +1742,8 @@ pub struct ProvidersConfig {
     pub vllm: ProviderConfig,
     #[serde(default)]
     pub ollama: ProviderConfig,
+    #[serde(default)]
+    pub anthropic: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1865,6 +1902,7 @@ impl Config {
             ApiProvider::Ollama => "providers.ollama",
             ApiProvider::Volcengine => "providers.volcengine",
             ApiProvider::NvidiaNim => "providers.nvidia_nim",
+            ApiProvider::Anthropic => "providers.anthropic",
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => return,
         };
         tracing::warn!(
@@ -2009,6 +2047,7 @@ impl Config {
             ApiProvider::Vllm => &providers.vllm,
             ApiProvider::Ollama => &providers.ollama,
             ApiProvider::Volcengine => &providers.volcengine,
+            ApiProvider::Anthropic => &providers.anthropic,
         })
     }
 
@@ -2102,6 +2141,7 @@ impl Config {
             ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
             ApiProvider::Ollama => DEFAULT_OLLAMA_MODEL,
             ApiProvider::Volcengine => DEFAULT_VOLCENGINE_MODEL,
+            ApiProvider::Anthropic => DEFAULT_ANTHROPIC_MODEL,
         }
         .to_string()
     }
@@ -2136,7 +2176,8 @@ impl Config {
             | ApiProvider::Sglang
             | ApiProvider::Vllm
             | ApiProvider::Ollama
-            | ApiProvider::Volcengine => None,
+            | ApiProvider::Volcengine
+            | ApiProvider::Anthropic => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
@@ -2165,6 +2206,7 @@ impl Config {
                 ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
                 ApiProvider::Ollama => DEFAULT_OLLAMA_BASE_URL,
                 ApiProvider::Volcengine => DEFAULT_VOLCENGINE_BASE_URL,
+                ApiProvider::Anthropic => DEFAULT_ANTHROPIC_BASE_URL,
             }
             .to_string()
         });
@@ -2208,6 +2250,7 @@ impl Config {
             ApiProvider::Vllm => "vllm",
             ApiProvider::Ollama => "ollama",
             ApiProvider::Volcengine => "volcengine",
+            ApiProvider::Anthropic => "anthropic",
         };
 
         // 0. DeepSeek compatibility slot. The legacy top-level `api_key`
@@ -2308,6 +2351,10 @@ impl Config {
                  set MOONSHOT_API_KEY/KIMI_API_KEY, or add [providers.moonshot] api_key. \
                  For a Kimi Code plan key, set [providers.moonshot] base_url = \
                  \"https://api.kimi.com/coding/v1\" and model = \"kimi-for-coding\"."
+            ),
+            ApiProvider::Anthropic => anyhow::bail!(
+                "Anthropic API key not found. Run 'codewhale auth set --provider anthropic', \
+                 set ANTHROPIC_API_KEY, or add [providers.anthropic] api_key in ~/.codewhale/config.toml."
             ),
             // Self-hosted deployments commonly run without auth on localhost.
             // Return an empty key and let the client omit the Authorization header.
@@ -3029,6 +3076,13 @@ fn apply_env_overrides(config: &mut Config) {
                     .atlascloud
                     .base_url = Some(value);
             }
+            ApiProvider::Anthropic => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .anthropic
+                    .base_url = Some(value);
+            }
         }
     }
     if matches!(config.api_provider(), ApiProvider::NvidiaNim)
@@ -3188,6 +3242,7 @@ fn apply_env_overrides(config: &mut Config) {
             ApiProvider::Vllm => &mut providers.vllm,
             ApiProvider::Ollama => &mut providers.ollama,
             ApiProvider::Volcengine => &mut providers.volcengine,
+            ApiProvider::Anthropic => &mut providers.anthropic,
         };
         let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
         provider_headers.extend(headers);
@@ -3315,6 +3370,7 @@ fn apply_env_overrides(config: &mut Config) {
                 ApiProvider::Vllm => &mut providers.vllm,
                 ApiProvider::Ollama => &mut providers.ollama,
                 ApiProvider::Volcengine => &mut providers.volcengine,
+                ApiProvider::Anthropic => &mut providers.anthropic,
             };
             entry.model = Some(value);
         }
@@ -3627,6 +3683,7 @@ fn default_base_url_for_provider(provider: ApiProvider) -> &'static str {
         ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
         ApiProvider::Ollama => DEFAULT_OLLAMA_BASE_URL,
         ApiProvider::Volcengine => DEFAULT_VOLCENGINE_BASE_URL,
+        ApiProvider::Anthropic => DEFAULT_ANTHROPIC_BASE_URL,
     }
 }
 
@@ -3904,6 +3961,7 @@ fn merge_providers(
             vllm: merge_provider_config(base.vllm, override_cfg.vllm),
             ollama: merge_provider_config(base.ollama, override_cfg.ollama),
             volcengine: merge_provider_config(base.volcengine, override_cfg.volcengine),
+            anthropic: merge_provider_config(base.anthropic, override_cfg.anthropic),
         }),
     }
 }
@@ -4342,6 +4400,10 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
                 || std::env::var("VOLCENGINE_ARK_API_KEY").is_ok_and(|k| !k.trim().is_empty())
                 || std::env::var("ARK_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
+        ApiProvider::Anthropic => {
+            std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+                || std::env::var("CLAUDE_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
     }
 }
 
@@ -4371,6 +4433,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Vllm => "VLLM_API_KEY",
         ApiProvider::Ollama => "OLLAMA_API_KEY",
         ApiProvider::Volcengine => "VOLCENGINE_API_KEY",
+        ApiProvider::Anthropic => "ANTHROPIC_API_KEY",
     };
     if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
         return true;
@@ -4394,6 +4457,11 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     }
     if matches!(provider, ApiProvider::Moonshot)
         && std::env::var("KIMI_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+    {
+        return true;
+    }
+    if matches!(provider, ApiProvider::Anthropic)
+        && std::env::var("CLAUDE_API_KEY").is_ok_and(|k| !k.trim().is_empty())
     {
         return true;
     }
@@ -4474,6 +4542,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Vllm => "providers.vllm",
         ApiProvider::Ollama => "providers.ollama",
         ApiProvider::Volcengine => "providers.volcengine",
+        ApiProvider::Anthropic => "providers.anthropic",
     };
 
     // Parse existing TOML (or start fresh) so we can edit the right table
@@ -4514,6 +4583,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Vllm => "vllm",
         ApiProvider::Ollama => "ollama",
         ApiProvider::Volcengine => "volcengine",
+        ApiProvider::Anthropic => "anthropic",
     };
     let entry = providers
         .entry(key_inside.to_string())
@@ -4606,6 +4676,7 @@ fn provider_config_key(provider: ApiProvider) -> Result<&'static str> {
         ApiProvider::Sglang => Ok("sglang"),
         ApiProvider::Vllm => Ok("vllm"),
         ApiProvider::Ollama => Ok("ollama"),
+        ApiProvider::Anthropic => Ok("anthropic"),
     }
 }
 
