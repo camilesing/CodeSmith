@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Context window used only for legacy DeepSeek model IDs that do not name a
+/// Context window used only for legacy CodeSmith model IDs that do not name a
 /// newer V4 alias and do not carry an explicit `*k` suffix.
 pub const LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;

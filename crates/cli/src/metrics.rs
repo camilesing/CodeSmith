@@ -1,10 +1,10 @@
-//! `deepseek metrics` — reads the audit log and session/task stores and prints
+//! `codesmith metrics` — reads the audit log and session/task stores and prints
 //! a human-readable usage rollup.
 //!
 //! Data sources:
-//! - `~/.deepseek/audit.log`   — one JSON line per event (approvals, credentials)
-//! - `~/.deepseek/sessions/`   — saved session JSON files (tool call history)
-//! - `~/.deepseek/tasks/runtime/events/` — runtime thread JSONL event streams
+//! - `~/.codesmith/audit.log`   — one JSON line per event (approvals, credentials)
+//! - `~/.codesmith/sessions/`   — saved session JSON files (tool call history)
+//! - `~/.codesmith/tasks/runtime/events/` — runtime thread JSONL event streams
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ use serde_json::Value;
 // Public entry-point
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Arguments accepted by `deepseek metrics`.
+/// Arguments accepted by `codesmith metrics`.
 #[derive(Debug, Default)]
 pub struct MetricsArgs {
     /// Emit machine-readable JSON instead of human text.

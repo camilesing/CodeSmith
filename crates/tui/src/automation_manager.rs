@@ -2,7 +2,7 @@
 //!
 //! Automations are local-first recurring jobs that enqueue standard background
 //! tasks. This module stores automation definitions and run history under
-//! `~/.codewhale/automations` (or `DEEPSEEK_AUTOMATIONS_DIR` override).
+//! `~/.codewhale/automations` (or `CODESMITH_AUTOMATIONS_DIR` override).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -788,7 +788,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 pub fn default_automations_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("DEEPSEEK_AUTOMATIONS_DIR") {
+    if let Ok(path) = std::env::var("CODESMITH_AUTOMATIONS_DIR") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed);
@@ -796,7 +796,7 @@ pub fn default_automations_dir() -> PathBuf {
     }
     dirs::home_dir()
         .map(|home| {
-            let primary = home.join(".codewhale").join("automations");
+            let primary = home.join(".codesmith").join("automations");
             let legacy = home.join(".deepseek").join("automations");
             if primary.exists() || !legacy.exists() {
                 return primary;

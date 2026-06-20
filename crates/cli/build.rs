@@ -4,7 +4,7 @@ use std::{
 };
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=DEEPSEEK_BUILD_SHA");
+    println!("cargo:rerun-if-env-changed=CODESMITH_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     declare_git_head_rerun();
 
@@ -13,7 +13,7 @@ fn main() {
         .map(|sha| format!("{package_version} ({sha})"))
         .unwrap_or_else(|| package_version.to_string());
 
-    println!("cargo:rustc-env=DEEPSEEK_BUILD_VERSION={build_version}");
+    println!("cargo:rustc-env=CODESMITH_BUILD_VERSION={build_version}");
 }
 
 /// Tell Cargo to invalidate the cached build script output when `HEAD`
@@ -113,7 +113,7 @@ mod tests {
 }
 
 fn build_sha() -> Option<String> {
-    env_sha("DEEPSEEK_BUILD_SHA")
+    env_sha("CODESMITH_BUILD_SHA")
         .or_else(|| env_sha("GITHUB_SHA"))
         .or_else(git_sha)
 }

@@ -1,0 +1,98 @@
+{
+    "schema_version": 1,
+    "created_at": "2026-06-20T06:45:29.843439Z",
+    "harbor": {
+        "version": "0.15.0",
+        "is_editable": false
+    },
+    "invocation": [
+        "/Users/camile/.cache/uv/archive-v0/frYYjsVV2Ez0BxdY/bin/harbor",
+        "run",
+        "--dataset",
+        "terminal-bench@2.0",
+        "--agent-import-path",
+        "codesmith_harbor_agent:CodeSmithAgent",
+        "--model",
+        "anthropic/glm-5.1",
+        "--ae",
+        "ANTHROPIC_API_KEY=sk-1****ecd",
+        "--ae",
+        "ANTHROPIC=https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+        "--ae",
+        "ANTHROPIC_BASE_URL=https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+        "-e",
+        "docker",
+        "--mounts",
+        "[{\"type\":\"bind\",\"source\":\"/tmp/codesmith-cargo-amd64/bin\",\"target\":\"/root/.cargo/bin\"}]",
+        "--n-tasks",
+        "1",
+        "--n-concurrent",
+        "1",
+        "--job-name",
+        "codesmith-smoke-20260620-144527"
+    ],
+    "n_concurrent_trials": 1,
+    "retry": {
+        "max_retries": 0,
+        "exclude_exceptions": [
+            "VerifierTimeoutError",
+            "AgentTimeoutError",
+            "RewardFileNotFoundError",
+            "RewardFileEmptyError",
+            "VerifierOutputParseError"
+        ],
+        "wait_multiplier": 1.0,
+        "min_wait_sec": 1.0,
+        "max_wait_sec": 60.0
+    },
+    "trials": [
+        {
+            "task": {
+                "name": "gpt2-codegolf",
+                "type": "git",
+                "digest": "sha256:e2617991ffbe474e67ea4667c352e181982179e1be3229cce65e2c15248fc1df",
+                "source": "terminal-bench",
+                "path": "gpt2-codegolf",
+                "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+                "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c"
+            },
+            "timeout_multiplier": 1.0,
+            "agent": {
+                "import_path": "codesmith_harbor_agent:CodeSmithAgent",
+                "model_name": "anthropic/glm-5.1",
+                "skills": [],
+                "extra_allowed_hosts": [],
+                "kwargs": {},
+                "env": {
+                    "ANTHROPIC_API_KEY": "sk-1****ecd",
+                    "ANTHROPIC": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+                    "ANTHROPIC_BASE_URL": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+                },
+                "mcp_servers": []
+            },
+            "skills": [],
+            "environment": {
+                "type": "docker",
+                "force_build": false,
+                "delete": true,
+                "cpu_enforcement_policy": "auto",
+                "memory_enforcement_policy": "auto",
+                "mounts": [
+                    {
+                        "type": "bind",
+                        "source": "/tmp/codesmith-cargo-amd64/bin",
+                        "target": "/root/.cargo/bin"
+                    }
+                ],
+                "extra_docker_compose": [],
+                "env": {},
+                "kwargs": {},
+                "extra_allowed_hosts": []
+            },
+            "verifier": {
+                "env": {},
+                "disable": false
+            }
+        }
+    ]
+}
