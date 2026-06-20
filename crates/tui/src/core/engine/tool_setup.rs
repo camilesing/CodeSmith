@@ -65,9 +65,7 @@ impl Engine {
                         self.config.plan_state.clone(),
                     ),
                 ))
-                .with_task_v2_read_only_tools_if_available(
-                    self.config.task_v2_manager.clone(),
-                )
+                .with_task_v2_read_only_tools_if_available(self.config.task_v2_manager.clone())
                 .with_goal_tools(self.config.goal_state.clone())
         } else if mode == AppMode::Coordinator {
             // Coordinator mode: empty builder. Subagent + send_message tools
@@ -84,9 +82,7 @@ impl Engine {
                     self.config.plan_mode_state.clone(),
                     self.config.plan_state.clone(),
                 )
-                .with_task_v2_tools_if_available(
-                    self.config.task_v2_manager.clone(),
-                )
+                .with_task_v2_tools_if_available(self.config.task_v2_manager.clone())
                 .with_goal_tools(self.config.goal_state.clone())
                 .with_worktree_tools(self.config.worktree_state.clone())
         };
@@ -100,9 +96,7 @@ impl Engine {
         }
 
         // User input and recall archive are needed for all modes.
-        builder = builder
-            .with_user_input_tool()
-            .with_recall_archive_tool();
+        builder = builder.with_user_input_tool().with_recall_archive_tool();
 
         // SlopLedger: plan gets read-only, agent/yolo get the full set.
         // Coordinator skips slop_ledger entirely — it has no direct tools.
@@ -119,13 +113,12 @@ impl Engine {
         }
 
         if self.config.features.enabled(Feature::ApplyPatch)
-            && mode != AppMode::Plan && mode != AppMode::Coordinator
+            && mode != AppMode::Plan
+            && mode != AppMode::Coordinator
         {
             builder = builder.with_patch_tools();
         }
-        if self.config.features.enabled(Feature::WebSearch)
-            && mode != AppMode::Coordinator
-        {
+        if self.config.features.enabled(Feature::WebSearch) && mode != AppMode::Coordinator {
             builder = builder.with_web_tools();
         }
         // Shell tools (exec_shell, task_shell_start, etc.) are already gated
@@ -147,12 +140,8 @@ impl Engine {
         // Register Agent Teams tools when the feature is enabled.
         // Coordinator mode gets send_message only (added in engine.rs),
         // so skip the full team_tools here for coordinator.
-        if self.config.features.enabled(Feature::AgentTeams)
-            && mode != AppMode::Coordinator
-        {
-            builder = builder.with_team_tools_if_available(
-                self.config.team_context.clone(),
-            );
+        if self.config.features.enabled(Feature::AgentTeams) && mode != AppMode::Coordinator {
+            builder = builder.with_team_tools_if_available(self.config.team_context.clone());
         }
 
         // Register image_analyze tool when vision_model is configured and feature enabled.
@@ -193,7 +182,12 @@ mod tests {
     fn sandbox_policy_for_mode_agent_is_workspace_write() {
         let policy = sandbox_policy_for_mode(AppMode::Agent, Path::new("/repo"));
         assert!(matches!(policy, SandboxPolicy::WorkspaceWrite { .. }));
-        if let SandboxPolicy::WorkspaceWrite { writable_roots, network_access, .. } = policy {
+        if let SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access,
+            ..
+        } = policy
+        {
             assert_eq!(writable_roots, vec![PathBuf::from("/repo")]);
             assert!(network_access);
         }

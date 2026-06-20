@@ -8,12 +8,11 @@ use crate::features::Feature;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use crate::tools::team::{
-    SharedTeamContext, sanitize_name, team_lead_name,
-    read_team_file, delete_team_directories,
-    active_teammate_count, active_teammates,
-};
 use crate::tools::task_v2::TaskV2Manager;
+use crate::tools::team::{
+    SharedTeamContext, active_teammate_count, active_teammates, delete_team_directories,
+    read_team_file, sanitize_name, team_lead_name,
+};
 
 pub struct TeamDeleteTool {
     team_context: SharedTeamContext,
@@ -53,8 +52,12 @@ impl ToolSpec for TeamDeleteTool {
         ApprovalRequirement::Auto
     }
 
-    fn supports_parallel(&self) -> bool { false }
-    fn is_read_only(&self) -> bool { false }
+    fn supports_parallel(&self) -> bool {
+        false
+    }
+    fn is_read_only(&self) -> bool {
+        false
+    }
 
     async fn execute(
         &self,
@@ -69,7 +72,11 @@ impl ToolSpec for TeamDeleteTool {
             let tc = self.team_context.lock().await;
             match tc.as_ref() {
                 Some(ctx) => ctx.team_name.clone(),
-                None => return Err(ToolError::invalid_input("Not in a team. Nothing to delete.")),
+                None => {
+                    return Err(ToolError::invalid_input(
+                        "Not in a team. Nothing to delete.",
+                    ));
+                }
             }
         };
 
@@ -108,8 +115,9 @@ impl ToolSpec for TeamDeleteTool {
             }
         }
 
-        delete_team_directories(&team_name)
-            .map_err(|e| ToolError::execution_failed(format!("Failed to delete team directories: {}", e)))?;
+        delete_team_directories(&team_name).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to delete team directories: {}", e))
+        })?;
 
         // Clear TeamContext.
         {

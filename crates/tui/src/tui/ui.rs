@@ -167,23 +167,23 @@ const SESSION_TITLE_MAX_CHARS: usize = 32;
 const VERSION_HINT_TOAST_TTL_MS: u64 = 12_000;
 
 const REQUIRED_RELEASE_ASSETS: &[&str] = &[
-    "codewhale-artifacts-sha256.txt",
-    "codewhale-linux-arm64",
-    "codewhale-linux-arm64.tar.gz",
-    "codewhale-linux-x64",
-    "codewhale-linux-x64.tar.gz",
-    "codewhale-macos-arm64",
-    "codewhale-macos-arm64.tar.gz",
-    "codewhale-macos-x64",
-    "codewhale-macos-x64.tar.gz",
-    "codewhale-tui-linux-arm64",
-    "codewhale-tui-linux-x64",
-    "codewhale-tui-macos-arm64",
-    "codewhale-tui-macos-x64",
-    "codewhale-tui-windows-x64.exe",
-    "codewhale-windows-x64.exe",
-    "codewhale-windows-x64-portable.zip",
-    "codewhale-windows-x64.zip",
+    "codesmith-artifacts-sha256.txt",
+    "codesmith-linux-arm64",
+    "codesmith-linux-arm64.tar.gz",
+    "codesmith-linux-x64",
+    "codesmith-linux-x64.tar.gz",
+    "codesmith-macos-arm64",
+    "codesmith-macos-arm64.tar.gz",
+    "codesmith-macos-x64",
+    "codesmith-macos-x64.tar.gz",
+    "codesmith-tui-linux-arm64",
+    "codesmith-tui-linux-x64",
+    "codesmith-tui-macos-arm64",
+    "codesmith-tui-macos-x64",
+    "codesmith-tui-windows-x64.exe",
+    "codesmith-windows-x64.exe",
+    "codesmith-windows-x64-portable.zip",
+    "codesmith-windows-x64.zip",
 ];
 
 fn is_session_approved_for_tool(app: &App, tool_name: &str, grouping_key: &str) -> bool {
@@ -332,7 +332,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     };
     if use_alt_screen {
         execute!(stdout, EnterAlternateScreen)?;
-        // Windows also suppresses CodeWhale's own verbose CLI logger while
+        // Windows also suppresses CodeSmith's own verbose CLI logger while
         // the alt-screen is active. The stderr redirect above catches raw
         // writes; this prevents the known verbose source at the origin.
         #[cfg(windows)]
@@ -530,15 +530,16 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // startup, even when the API key is missing, the base URL is malformed,
     // or the network is unavailable.
     // Translations are skipped with a logged warning until a key is saved.
-    let translation_client: Option<Arc<dyn crate::llm_client::LlmClient>> = match DeepSeekClient::new(config) {
-        Ok(client) => Some(Arc::new(client) as Arc<dyn crate::llm_client::LlmClient>),
-        Err(err) => {
-            if app.onboarding == OnboardingState::None {
-                tracing::warn!("Translation client initialization failed: {err}");
+    let translation_client: Option<Arc<dyn crate::llm_client::LlmClient>> =
+        match DeepSeekClient::new(config) {
+            Ok(client) => Some(Arc::new(client) as Arc<dyn crate::llm_client::LlmClient>),
+            Err(err) => {
+                if app.onboarding == OnboardingState::None {
+                    tracing::warn!("Translation client initialization failed: {err}");
+                }
+                None
             }
-            None
-        }
-    };
+        };
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -630,7 +631,7 @@ fn should_show_resume_hint(session_id: Option<&str>) -> bool {
 }
 
 fn resume_hint_text() -> &'static str {
-    "To continue this session, execute codewhale run --continue"
+    "To continue this session, execute codesmith run --continue"
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {
@@ -4219,7 +4220,7 @@ pub(crate) fn apply_engine_error_to_app(
         app.onboarding_needs_api_key = true;
         app.onboarding = OnboardingState::ApiKey;
         app.status_message = Some(
-            "The API key from DEEPSEEK_API_KEY was rejected. Paste a valid key to save it to ~/.codewhale/config.toml, or update the environment variable.".to_string(),
+            "The API key from DEEPSEEK_API_KEY was rejected. Paste a valid key to save it to ~/.codesmith/config.toml, or update the environment variable.".to_string(),
         );
         return;
     }
@@ -5323,12 +5324,18 @@ async fn apply_command_result(
             AppAction::CompactContextWithMode { mode } => {
                 let label: String = match &mode {
                     crate::core::ops::CompactMode::Full => "full".to_string(),
-                    crate::core::ops::CompactMode::From { pivot_index } => format!("from={pivot_index}"),
-                    crate::core::ops::CompactMode::UpTo { pivot_index } => format!("up_to={pivot_index}"),
+                    crate::core::ops::CompactMode::From { pivot_index } => {
+                        format!("from={pivot_index}")
+                    }
+                    crate::core::ops::CompactMode::UpTo { pivot_index } => {
+                        format!("up_to={pivot_index}")
+                    }
                     crate::core::ops::CompactMode::Memory => "memory".to_string(),
                 };
                 app.status_message = Some(format!("Compacting context ({label})..."));
-                let _ = engine_handle.send(Op::CompactContextWithMode { mode }).await;
+                let _ = engine_handle
+                    .send(Op::CompactContextWithMode { mode })
+                    .await;
             }
             AppAction::PurgeContext => {
                 app.status_message = Some("Agent purging context...".to_string());
@@ -7060,7 +7067,7 @@ fn apply_backtrack(app: &mut App, depth: usize) {
     app.needs_redraw = true;
 }
 
-/// Persist the typed API key to `~/.codewhale/config.toml`, refresh the
+/// Persist the typed API key to `~/.codesmith/config.toml`, refresh the
 /// in-memory config so the engine can see it, then switch to the provider.
 async fn apply_provider_picker_api_key(
     app: &mut App,
@@ -8729,8 +8736,8 @@ async fn version_hint_from_startup_source(
                 return version_hint_from_release_mirror_env(current).await;
             }
 
-            let body = codewhale_release::fetch_release_json_async(
-                codewhale_release::LATEST_RELEASE_URL,
+            let body = codesmith_release::fetch_release_json_async(
+                codesmith_release::LATEST_RELEASE_URL,
                 "latest release",
             )
             .await
@@ -8746,23 +8753,23 @@ async fn version_hint_from_release_mirror_env(current: &str) -> Option<String> {
         return None;
     }
     let tag =
-        codewhale_release::latest_release_tag_async(codewhale_release::ReleaseChannel::Stable)
+        codesmith_release::latest_release_tag_async(codesmith_release::ReleaseChannel::Stable)
             .await
             .ok()?;
     version_hint_from_latest_tag(&tag, current)
 }
 
 fn release_mirror_env_configured() -> bool {
-    let version = codewhale_release::update_version_from_env()
+    let version = codesmith_release::update_version_from_env()
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-    codewhale_release::release_base_url_from_env(&version).is_some()
+    codesmith_release::release_base_url_from_env(&version).is_some()
 }
 
 async fn version_hint_from_configured_update_uri(
     update_uri: &str,
     current: &str,
 ) -> Result<Option<String>> {
-    let body = codewhale_release::fetch_release_json_async(update_uri, "configured latest release")
+    let body = codesmith_release::fetch_release_json_async(update_uri, "configured latest release")
         .await?;
     let json: serde_json::Value = serde_json::from_str(&body).with_context(|| {
         format!("failed to parse release JSON from configured URI {update_uri}")
@@ -8800,7 +8807,7 @@ fn version_hint_from_latest_tag(tag: &str, current: &str) -> Option<String> {
     }
 
     Some(format!(
-        "v{latest} available - run `codewhale update` and restart"
+        "v{latest} available - run `codesmith update` and restart"
     ))
 }
 

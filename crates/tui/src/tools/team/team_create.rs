@@ -8,12 +8,11 @@ use crate::features::Feature;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use crate::tools::team::{
-    TeamContext, TeamFile, TeamMember, SharedTeamContext,
-    sanitize_name, format_lead_agent_id, team_lead_name,
-    create_team_file,
-};
 use crate::tools::task_v2::new_shared_task_v2_manager;
+use crate::tools::team::{
+    SharedTeamContext, TeamContext, TeamFile, TeamMember, create_team_file, format_lead_agent_id,
+    sanitize_name, team_lead_name,
+};
 
 pub struct TeamCreateTool {
     team_context: SharedTeamContext,
@@ -67,8 +66,12 @@ impl ToolSpec for TeamCreateTool {
         ApprovalRequirement::Auto
     }
 
-    fn supports_parallel(&self) -> bool { false }
-    fn is_read_only(&self) -> bool { false }
+    fn supports_parallel(&self) -> bool {
+        false
+    }
+    fn is_read_only(&self) -> bool {
+        false
+    }
 
     async fn execute(
         &self,
@@ -84,7 +87,7 @@ impl ToolSpec for TeamCreateTool {
             let tc = self.team_context.lock().await;
             if tc.is_some() {
                 return Err(ToolError::invalid_input(
-                    "Already in a team. Only one team per leader session."
+                    "Already in a team. Only one team per leader session.",
                 ));
             }
         }
@@ -133,12 +136,14 @@ impl ToolSpec for TeamCreateTool {
             members: vec![leader_member],
         };
 
-        let team_file_path = create_team_file(&team_file)
-            .map_err(|e| ToolError::execution_failed(format!("Failed to create team file: {}", e)))?;
+        let team_file_path = create_team_file(&team_file).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to create team file: {}", e))
+        })?;
 
         // Create team-scoped TaskV2Manager.
-        let _task_v2_manager = new_shared_task_v2_manager(&sanitized)
-            .map_err(|e| ToolError::execution_failed(format!("Failed to create task manager: {}", e)))?;
+        let _task_v2_manager = new_shared_task_v2_manager(&sanitized).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to create task manager: {}", e))
+        })?;
 
         let team_ctx = TeamContext {
             team_name: team_name.clone(),

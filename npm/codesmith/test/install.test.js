@@ -16,7 +16,7 @@ function sha256(content) {
 }
 
 async function makeTempDir(t) {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codewhale-install-test-"));
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codesmith-install-test-"));
   t.after(() => fs.promises.rm(dir, { force: true, recursive: true }));
   return dir;
 }
@@ -64,34 +64,34 @@ test("install script remains parseable before the Node support guard runs", () =
 });
 
 test("install failure hint explains release base override for blocked GitHub downloads", () => {
-  const previous = process.env.DEEPSEEK_TUI_RELEASE_BASE_URL;
-  delete process.env.DEEPSEEK_TUI_RELEASE_BASE_URL;
+  const previous = process.env.CODESMITH_RELEASE_BASE_URL;
+  delete process.env.CODESMITH_RELEASE_BASE_URL;
   try {
     const error = Object.assign(
       new Error(
-        "fetch https://github.com/Hmbown/CodeWhale/releases/download/v0.8.19/codewhale-artifacts-sha256.txt failed after 5 attempts:\ngetaddrinfo ENOTFOUND github.com",
+        "fetch https://github.com/Hmbown/CodeSmith/releases/download/v0.8.19/codesmith-artifacts-sha256.txt failed after 5 attempts:\ngetaddrinfo ENOTFOUND github.com",
       ),
       { code: "ENOTFOUND" },
     );
 
     const hint = installFailureHint(error);
 
-    assert.match(hint, /DEEPSEEK_TUI_RELEASE_BASE_URL/);
-    assert.match(hint, /codewhale-artifacts-sha256\.txt/);
+    assert.match(hint, /CODESMITH_RELEASE_BASE_URL/);
+    assert.match(hint, /codesmith-artifacts-sha256\.txt/);
     assert.match(hint, /platform binaries/);
     assert.match(hint, /#npm-binary-download-times-out/);
   } finally {
     if (previous === undefined) {
-      delete process.env.DEEPSEEK_TUI_RELEASE_BASE_URL;
+      delete process.env.CODESMITH_RELEASE_BASE_URL;
     } else {
-      process.env.DEEPSEEK_TUI_RELEASE_BASE_URL = previous;
+      process.env.CODESMITH_RELEASE_BASE_URL = previous;
     }
   }
 });
 
 test("install failure hint checks configured release base when override is already set", () => {
-  const previous = process.env.DEEPSEEK_TUI_RELEASE_BASE_URL;
-  process.env.DEEPSEEK_TUI_RELEASE_BASE_URL = "https://mirror.example/deepseek/";
+  const previous = process.env.CODESMITH_RELEASE_BASE_URL;
+  process.env.CODESMITH_RELEASE_BASE_URL = "https://mirror.example/codesmith/";
   try {
     const error = Object.assign(new Error("download stalled"), {
       code: "EDOWNLOADTIMEOUT",
@@ -99,31 +99,31 @@ test("install failure hint checks configured release base when override is alrea
 
     const hint = installFailureHint(error);
 
-    assert.match(hint, /is set to https:\/\/mirror\.example\/deepseek\//);
-    assert.match(hint, /codewhale-artifacts-sha256\.txt/);
+    assert.match(hint, /is set to https:\/\/mirror\.example\/codesmith\//);
+    assert.match(hint, /codesmith-artifacts-sha256\.txt/);
     assert.doesNotMatch(hint, /If GitHub is unavailable/);
   } finally {
     if (previous === undefined) {
-      delete process.env.DEEPSEEK_TUI_RELEASE_BASE_URL;
+      delete process.env.CODESMITH_RELEASE_BASE_URL;
     } else {
-      process.env.DEEPSEEK_TUI_RELEASE_BASE_URL = previous;
+      process.env.CODESMITH_RELEASE_BASE_URL = previous;
     }
   }
 });
 
 test("ensureBinary adopts a manually placed target binary after checksum validation", async (t) => {
   const dir = await makeTempDir(t);
-  const target = path.join(dir, process.platform === "win32" ? "codewhale.exe" : "codewhale");
-  const assetName = process.platform === "win32" ? "codewhale-windows-x64.exe" : "codewhale-linux-x64";
+  const target = path.join(dir, process.platform === "win32" ? "codesmith.exe" : "codesmith");
+  const assetName = process.platform === "win32" ? "codesmith-windows-x64.exe" : "codesmith-linux-x64";
   const version = "0.8.25";
-  const content = Buffer.from("manual codewhale binary");
+  const content = Buffer.from("manual codesmith binary");
   let checksumLoads = 0;
 
   await fs.promises.writeFile(target, content, { mode: 0o600 });
   await fs.promises.writeFile(`${target}.version`, "0.8.24", "utf8");
 
   const result = await withoutForcedDownload(() =>
-    _internal.ensureBinary(target, assetName, version, "Hmbown/CodeWhale", async () => {
+    _internal.ensureBinary(target, assetName, version, "Hmbown/CodeSmith", async () => {
       checksumLoads += 1;
       return new Map([[assetName, sha256(content)]]);
     }),
@@ -139,8 +139,8 @@ test("ensureBinary adopts a manually placed target binary after checksum validat
 
 test("ensureBinary adopts an official release-named binary placed in downloads", async (t) => {
   const dir = await makeTempDir(t);
-  const target = path.join(dir, process.platform === "win32" ? "codewhale.exe" : "codewhale");
-  const assetName = process.platform === "win32" ? "codewhale-windows-x64.exe" : "codewhale-linux-x64";
+  const target = path.join(dir, process.platform === "win32" ? "codesmith.exe" : "codesmith");
+  const assetName = process.platform === "win32" ? "codesmith-windows-x64.exe" : "codesmith-linux-x64";
   const assetPath = path.join(dir, assetName);
   const version = "0.8.25";
   const content = Buffer.from("official release binary");
@@ -148,7 +148,7 @@ test("ensureBinary adopts an official release-named binary placed in downloads",
   await fs.promises.writeFile(assetPath, content);
 
   const result = await withoutForcedDownload(() =>
-    _internal.ensureBinary(target, assetName, version, "Hmbown/CodeWhale", async () =>
+    _internal.ensureBinary(target, assetName, version, "Hmbown/CodeSmith", async () =>
       new Map([[assetName, sha256(content)]]),
     ),
   );
@@ -161,8 +161,8 @@ test("ensureBinary adopts an official release-named binary placed in downloads",
 
 test("manual binaries with mismatched checksums are not adopted", async (t) => {
   const dir = await makeTempDir(t);
-  const target = path.join(dir, process.platform === "win32" ? "codewhale.exe" : "codewhale");
-  const assetName = process.platform === "win32" ? "codewhale-windows-x64.exe" : "codewhale-linux-x64";
+  const target = path.join(dir, process.platform === "win32" ? "codesmith.exe" : "codesmith");
+  const assetName = process.platform === "win32" ? "codesmith-windows-x64.exe" : "codesmith-linux-x64";
   const content = Buffer.from("wrong binary bytes");
 
   await fs.promises.writeFile(target, content);

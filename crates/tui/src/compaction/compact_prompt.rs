@@ -102,8 +102,7 @@ pub fn extract_compact_sections(
                     };
 
                     // Extract file paths from tool input.
-                    let paths =
-                        crate::compaction::extract_paths_from_tool_input(input, workspace);
+                    let paths = crate::compaction::extract_paths_from_tool_input(input, workspace);
                     for path in paths {
                         if seen_paths.insert(path.clone()) {
                             sections.files_and_code.push(FileEntry {
@@ -183,7 +182,11 @@ pub fn format_compact_summary_prompt(sections: &CompactSummarySections) -> Strin
     if !sections.files_and_code.is_empty() {
         let _ = writeln!(output, "## 3. Files and Code Sections");
         for entry in &sections.files_and_code {
-            let _ = writeln!(output, "- `{}` ({}) {}", entry.path, entry.action, entry.summary);
+            let _ = writeln!(
+                output,
+                "- `{}` ({}) {}",
+                entry.path, entry.action, entry.summary
+            );
         }
         let _ = writeln!(output);
     }
@@ -193,10 +196,18 @@ pub fn format_compact_summary_prompt(sections: &CompactSummarySections) -> Strin
         for entry in &sections.errors {
             match &entry.resolution {
                 Some(res) => {
-                    let _ = writeln!(output, "- {} [{}]: resolved — {res}", entry.error_type, entry.message);
+                    let _ = writeln!(
+                        output,
+                        "- {} [{}]: resolved — {res}",
+                        entry.error_type, entry.message
+                    );
                 }
                 None => {
-                    let _ = writeln!(output, "- {} [{}]: unresolved", entry.error_type, entry.message);
+                    let _ = writeln!(
+                        output,
+                        "- {} [{}]: unresolved",
+                        entry.error_type, entry.message
+                    );
                 }
             }
         }
@@ -328,7 +339,14 @@ fn extract_errors_from_text(
 /// Extract problem-solving descriptions from assistant text.
 fn extract_problem_solving_from_text(text: &str, solutions: &mut Vec<String>) {
     let lower = text.to_lowercase();
-    let markers = ["fixed", "resolved", "solved", "workaround", "solution", "approach"];
+    let markers = [
+        "fixed",
+        "resolved",
+        "solved",
+        "workaround",
+        "solution",
+        "approach",
+    ];
     for marker in markers {
         if lower.contains(marker) {
             let solution = truncate_to(text, 200);
@@ -387,7 +405,11 @@ mod tests {
             msg("assistant", "I'll help with that."),
         ];
         let sections = extract_compact_sections(&messages, None);
-        assert!(sections.primary_request.contains("refactor the authentication module"));
+        assert!(
+            sections
+                .primary_request
+                .contains("refactor the authentication module")
+        );
     }
 
     #[test]
@@ -399,8 +421,18 @@ mod tests {
             tool_result_msg("t2", "edit applied"),
         ];
         let sections = extract_compact_sections(&messages, None);
-        assert!(sections.files_and_code.iter().any(|f| f.path == "src/auth.rs" && f.action == "read"));
-        assert!(sections.files_and_code.iter().any(|f| f.path == "src/auth_mod.rs" && f.action == "modified"));
+        assert!(
+            sections
+                .files_and_code
+                .iter()
+                .any(|f| f.path == "src/auth.rs" && f.action == "read")
+        );
+        assert!(
+            sections
+                .files_and_code
+                .iter()
+                .any(|f| f.path == "src/auth_mod.rs" && f.action == "modified")
+        );
     }
 
     #[test]
@@ -410,7 +442,12 @@ mod tests {
             msg("assistant", "I fixed the error by correcting the type"),
         ];
         let sections = extract_compact_sections(&messages, None);
-        assert!(sections.errors.iter().any(|e| e.error_type == "compilation"));
+        assert!(
+            sections
+                .errors
+                .iter()
+                .any(|e| e.error_type == "compilation")
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
-# Contributing to codewhale
+# Contributing to codesmith
 
-Thank you for your interest in contributing to codewhale! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to codesmith! This document provides guidelines and instructions for contributing.
 
 ## Getting Started
 
@@ -14,8 +14,8 @@ Thank you for your interest in contributing to codewhale! This document provides
 
 1. Fork and clone the repository:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/CodeWhale.git
-   cd CodeWhale
+   git clone https://github.com/YOUR_USERNAME/CodeSmith.git
+   cd CodeSmith
    ```
 
 2. Build the project:
@@ -30,7 +30,7 @@ Thank you for your interest in contributing to codewhale! This document provides
 
 4. Run with development settings:
    ```bash
-   cargo run --bin codewhale
+   cargo run --bin codesmith
    ```
 
 ## Development Workflow
@@ -169,7 +169,7 @@ Validation:
 
 ## Agent-Assisted Improvements
 
-CodeWhale is allowed to help improve CodeWhale, but the contribution still has
+CodeSmith is allowed to help improve CodeSmith, but the contribution still has
 to be shaped for human review. The recommended workflow is the
 [recursive self-improvement prompt](docs/RECURSIVE_SELF_IMPROVEMENT.md): run it
 from a fresh fork or branch, let the agent find exactly one small friction point,
@@ -184,14 +184,14 @@ branding, or global prompts without prior maintainer sign-off.
 
 ## Project Structure
 
-codewhale is a Cargo workspace. The live runtime and the majority of TUI,
+codesmith is a Cargo workspace. The live runtime and the majority of TUI,
 engine, and tool code currently live in `crates/tui/src/`. Smaller workspace
 crates provide shared abstractions that are being extracted incrementally.
 
 ```
 crates/
-├── tui/           codewhale-tui binary (interactive TUI + runtime API)
-├── cli/           codewhale binary (dispatcher facade)
+├── tui/           codesmith-tui binary (interactive TUI + runtime API)
+├── cli/           codesmith binary (dispatcher facade)
 ├── app-server/    HTTP/SSE + JSON-RPC transport
 ├── core/          Agent loop / session / turn management
 ├── protocol/      Request/response framing
@@ -277,7 +277,7 @@ Issue reports should include:
 
 - Operating system and version
 - Rust version (`rustc --version`)
-- codewhale version (`codewhale --version`)
+- codesmith version (`codesmith --version`)
 - Steps to reproduce the issue
 - Expected vs actual behavior
 - Relevant error messages or logs
@@ -296,7 +296,7 @@ code of conduct.
 
 ## License
 
-By contributing to codewhale, you agree that your contributions will be licensed under the MIT License.
+By contributing to codesmith, you agree that your contributions will be licensed under the MIT License.
 
 ## Questions?
 

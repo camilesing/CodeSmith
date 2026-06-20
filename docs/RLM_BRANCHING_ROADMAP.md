@@ -5,7 +5,7 @@ Lab without adding runtime dependencies or changing the live agent loop.
 
 ## Branching Primitive
 
-CodeWhale uses the same branching primitive at three scales:
+CodeSmith uses the same branching primitive at three scales:
 
 1. Release tracks. Each milestone fans into named tracks. A track must stay
    independently reviewable, mergeable, and slippable. Unfinished work rolls
@@ -19,7 +19,7 @@ CodeWhale uses the same branching primitive at three scales:
    constitution clauses are pruned; branches that win at least one eval remain
    on the frontier until the maintainer lands or rejects them.
 
-The maintainer chooses the frontier point. CodeWhale should not collapse
+The maintainer chooses the frontier point. CodeSmith should not collapse
 branches prematurely.
 
 ## v0.8.45
@@ -64,7 +64,7 @@ branches prematurely.
 ## v0.9.0
 
 - Emit per-turn `trajectory.jsonl` as the trainset substrate.
-- Add `codewhale replay <turn_id>` for deterministic replay.
+- Add `codesmith replay <turn_id>` for deterministic replay.
 - Render module artifacts from the `[[ ## field ## ]]` form through a Rust
   adapter.
 - Land the eval pipeline: suites, replay evals, and measurement substrate.
@@ -75,14 +75,14 @@ branches prematurely.
 - Add opt-in Model Lab workset installers for DSPy and GEPA. The default
   install keeps zero Python dependencies.
 - Build the first offline compile pipeline: Rust harvests trainsets, a Python
-  sidecar runs the optimizer, and CodeWhale emits a reviewed Module JSON
+  sidecar runs the optimizer, and CodeSmith emits a reviewed Module JSON
   artifact.
 - Add the Compile TUI panel with Pareto frontier, lineage tree, and
   Land/Reject/Revise actions.
 - Land the first optimized tool-description and agent-prompt artifacts through
   PRs. Constitution clauses remain pinned outside the optimized region.
 - Add whale-species module passports, for example
-  `Sei: codewhale-agent-prompt.v0.10.0-gepa-1`.
+  `Sei: codesmith-agent-prompt.v0.10.0-gepa-1`.
 
 ## Trust Boundary
 

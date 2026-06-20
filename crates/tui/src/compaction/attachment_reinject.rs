@@ -162,7 +162,10 @@ mod tests {
 
     #[test]
     fn reinject_skills_with_definitions() {
-        let defs = vec!["skill 1: debug mode".to_string(), "skill 2: tdd".to_string()];
+        let defs = vec![
+            "skill 1: debug mode".to_string(),
+            "skill 2: tdd".to_string(),
+        ];
         let msg = reinject_skill_attachments(&defs);
         assert!(msg.is_some());
         let text = &msg.unwrap().content[0];

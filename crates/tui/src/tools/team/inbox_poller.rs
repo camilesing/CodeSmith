@@ -8,13 +8,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::ops::Op;
-use crate::tools::team::{
-    TeammateMessage, StructuredProtocolMessage, IdleReason,
-    team_lead_name, process_inbox_messages,
-};
 use crate::tools::team::protocol_handlers::{
-    handle_plan_approval_auto_approve,
-    SharedPermissionRequestRegistry,
+    SharedPermissionRequestRegistry, handle_plan_approval_auto_approve,
+};
+use crate::tools::team::{
+    IdleReason, StructuredProtocolMessage, TeammateMessage, process_inbox_messages, team_lead_name,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,10 +61,7 @@ pub enum InboxDispatch {
         reason: String,
     },
     /// Plan approval request — auto-approved by poller; dispatch info.
-    PlanApprovalAutoApprove {
-        from: String,
-        request_id: String,
-    },
+    PlanApprovalAutoApprove { from: String, request_id: String },
     /// Idle notification — informational for leader.
     IdleNotificationInfo {
         from: String,
@@ -201,28 +196,49 @@ pub fn classify_inbox_messages(
 
     for proto in &protocol_msgs {
         match proto {
-            StructuredProtocolMessage::ShutdownRequest { request_id, from, reason, .. } => {
+            StructuredProtocolMessage::ShutdownRequest {
+                request_id,
+                from,
+                reason,
+                ..
+            } => {
                 cls.shutdown_requests.push(ShutdownRequestEntry {
                     request_id: request_id.clone(),
                     from: from.clone(),
                     reason: reason.clone(),
                 });
             }
-            StructuredProtocolMessage::ShutdownApproved { request_id, from, backend_type, .. } => {
+            StructuredProtocolMessage::ShutdownApproved {
+                request_id,
+                from,
+                backend_type,
+                ..
+            } => {
                 cls.shutdown_approvals.push(ShutdownApprovedEntry {
                     request_id: request_id.clone(),
                     from: from.clone(),
                     backend_type: backend_type.clone(),
                 });
             }
-            StructuredProtocolMessage::ShutdownRejected { request_id, from, reason, .. } => {
+            StructuredProtocolMessage::ShutdownRejected {
+                request_id,
+                from,
+                reason,
+                ..
+            } => {
                 cls.shutdown_rejections.push(ShutdownRejectedEntry {
                     request_id: request_id.clone(),
                     from: from.clone(),
                     reason: reason.clone(),
                 });
             }
-            StructuredProtocolMessage::PermissionRequest { request_id, agent_id, tool_name, tool_use_id, description } => {
+            StructuredProtocolMessage::PermissionRequest {
+                request_id,
+                agent_id,
+                tool_name,
+                tool_use_id,
+                description,
+            } => {
                 cls.permission_requests.push(PermissionRequestEntry {
                     request_id: request_id.clone(),
                     agent_id: agent_id.clone(),
@@ -231,35 +247,62 @@ pub fn classify_inbox_messages(
                     description: description.clone(),
                 });
             }
-            StructuredProtocolMessage::PermissionResponse { request_id, subtype, error } => {
+            StructuredProtocolMessage::PermissionResponse {
+                request_id,
+                subtype,
+                error,
+            } => {
                 cls.permission_responses.push(PermissionResponseEntry {
                     request_id: request_id.clone(),
                     subtype: subtype.clone(),
                     error: error.clone(),
                 });
             }
-            StructuredProtocolMessage::SandboxPermissionRequest { request_id, agent_id, domain, .. } => {
-                cls.sandbox_permission_requests.push(SandboxPermissionRequestEntry {
-                    request_id: request_id.clone(),
-                    agent_id: agent_id.clone(),
-                    domain: domain.clone(),
-                });
+            StructuredProtocolMessage::SandboxPermissionRequest {
+                request_id,
+                agent_id,
+                domain,
+                ..
+            } => {
+                cls.sandbox_permission_requests
+                    .push(SandboxPermissionRequestEntry {
+                        request_id: request_id.clone(),
+                        agent_id: agent_id.clone(),
+                        domain: domain.clone(),
+                    });
             }
-            StructuredProtocolMessage::SandboxPermissionResponse { request_id, subtype, error } => {
-                cls.sandbox_permission_responses.push(SandboxPermissionResponseEntry {
-                    request_id: request_id.clone(),
-                    subtype: subtype.clone(),
-                    error: error.clone(),
-                });
+            StructuredProtocolMessage::SandboxPermissionResponse {
+                request_id,
+                subtype,
+                error,
+            } => {
+                cls.sandbox_permission_responses
+                    .push(SandboxPermissionResponseEntry {
+                        request_id: request_id.clone(),
+                        subtype: subtype.clone(),
+                        error: error.clone(),
+                    });
             }
-            StructuredProtocolMessage::PlanApprovalRequest { from, request_id, plan_file_path, .. } => {
+            StructuredProtocolMessage::PlanApprovalRequest {
+                from,
+                request_id,
+                plan_file_path,
+                ..
+            } => {
                 cls.plan_approval_requests.push(PlanApprovalRequestEntry {
                     from: from.clone(),
                     request_id: request_id.clone(),
                     plan_file_path: plan_file_path.clone(),
                 });
             }
-            StructuredProtocolMessage::IdleNotification { from, idle_reason, summary, completed_task_id, completed_status, .. } => {
+            StructuredProtocolMessage::IdleNotification {
+                from,
+                idle_reason,
+                summary,
+                completed_task_id,
+                completed_status,
+                ..
+            } => {
                 cls.idle_notifications.push(IdleNotificationEntry {
                     from: from.clone(),
                     idle_reason: idle_reason.clone(),
@@ -268,7 +311,13 @@ pub fn classify_inbox_messages(
                     completed_status: completed_status.clone(),
                 });
             }
-            StructuredProtocolMessage::TaskAssignment { task_id, subject, description, assigned_by, .. } => {
+            StructuredProtocolMessage::TaskAssignment {
+                task_id,
+                subject,
+                description,
+                assigned_by,
+                ..
+            } => {
                 cls.task_assignments.push(TaskAssignmentEntry {
                     task_id: task_id.clone(),
                     subject: subject.clone(),
@@ -276,14 +325,23 @@ pub fn classify_inbox_messages(
                     assigned_by: assigned_by.clone(),
                 });
             }
-            StructuredProtocolMessage::TeamPermissionUpdate { from, allowed_tools, denied_tools, .. } => {
+            StructuredProtocolMessage::TeamPermissionUpdate {
+                from,
+                allowed_tools,
+                denied_tools,
+                ..
+            } => {
                 cls.team_permission_updates.push(TeamPermissionUpdateEntry {
                     from: from.clone(),
                     allowed_tools: allowed_tools.clone(),
                     denied_tools: denied_tools.clone(),
                 });
             }
-            StructuredProtocolMessage::ModeSetRequest { from, permission_mode, .. } => {
+            StructuredProtocolMessage::ModeSetRequest {
+                from,
+                permission_mode,
+                ..
+            } => {
                 cls.mode_set_requests.push(ModeSetRequestEntry {
                     from: from.clone(),
                     permission_mode: permission_mode.clone(),
@@ -293,19 +351,30 @@ pub fn classify_inbox_messages(
                 // Responses are handled by teammate side, not leader.
                 // No classification needed on leader inbox.
             }
-            StructuredProtocolMessage::SandboxPermissionRequest { request_id, agent_id, domain, .. } => {
-                cls.sandbox_permission_requests.push(SandboxPermissionRequestEntry {
-                    request_id: request_id.clone(),
-                    agent_id: agent_id.clone(),
-                    domain: domain.clone(),
-                });
+            StructuredProtocolMessage::SandboxPermissionRequest {
+                request_id,
+                agent_id,
+                domain,
+                ..
+            } => {
+                cls.sandbox_permission_requests
+                    .push(SandboxPermissionRequestEntry {
+                        request_id: request_id.clone(),
+                        agent_id: agent_id.clone(),
+                        domain: domain.clone(),
+                    });
             }
-            StructuredProtocolMessage::SandboxPermissionResponse { request_id, subtype, error } => {
-                cls.sandbox_permission_responses.push(SandboxPermissionResponseEntry {
-                    request_id: request_id.clone(),
-                    subtype: subtype.clone(),
-                    error: error.clone(),
-                });
+            StructuredProtocolMessage::SandboxPermissionResponse {
+                request_id,
+                subtype,
+                error,
+            } => {
+                cls.sandbox_permission_responses
+                    .push(SandboxPermissionResponseEntry {
+                        request_id: request_id.clone(),
+                        subtype: subtype.clone(),
+                        error: error.clone(),
+                    });
             }
         }
     }
@@ -338,9 +407,8 @@ pub async fn run_leader_inbox_poller(
             break;
         }
 
-        let (protocol_msgs, text_msgs) = match process_inbox_messages(
-            team_lead_name(), &team_name,
-        ) {
+        let (protocol_msgs, text_msgs) = match process_inbox_messages(team_lead_name(), &team_name)
+        {
             Ok((p, t)) => (p, t),
             Err(_) => continue,
         };
@@ -354,7 +422,10 @@ pub async fn run_leader_inbox_poller(
         // Auto-approve plan approval requests (leader side).
         for entry in &cls.plan_approval_requests {
             let _ = handle_plan_approval_auto_approve(
-                &entry.request_id, &entry.from, &team_name, "auto",
+                &entry.request_id,
+                &entry.from,
+                &team_name,
+                "auto",
             );
             let _ = tx_op.send(Op::TeamInboxDispatch {
                 dispatch: InboxDispatch::PlanApprovalAutoApprove {

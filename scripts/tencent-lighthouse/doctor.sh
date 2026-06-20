@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEEPSEEK_USER="${DEEPSEEK_USER:-codewhale}"
-DEEPSEEK_ROOT="${DEEPSEEK_ROOT:-/opt/codewhale}"
+DEEPSEEK_USER="${DEEPSEEK_USER:-codesmith}"
+DEEPSEEK_ROOT="${DEEPSEEK_ROOT:-/opt/codesmith}"
 WHALEBRO_ROOT="${WHALEBRO_ROOT:-/opt/whalebro}"
 RUNTIME_ENV="${RUNTIME_ENV:-/etc/deepseek/runtime.env}"
 BRIDGE_ENV="${BRIDGE_ENV:-/etc/deepseek/feishu-bridge.env}"
 BRIDGE_DIR="${BRIDGE_DIR:-${DEEPSEEK_ROOT}/bridge}"
-REPO_ROOT="${REPO_ROOT:-${WHALEBRO_ROOT}/codewhale}"
+REPO_ROOT="${REPO_ROOT:-${WHALEBRO_ROOT}/codesmith}"
 
 failures=0
 warnings=0
@@ -97,19 +97,19 @@ check_workspace() {
 }
 
 check_binaries() {
-  section "CodeWhale binaries"
+  section "CodeSmith binaries"
   local cargo_bin="/home/${DEEPSEEK_USER}/.cargo/bin"
-  local codewhale="${cargo_bin}/codewhale"
-  local tui="${cargo_bin}/codewhale-tui"
-  if [[ -x "${codewhale}" ]]; then
-    pass "${codewhale} is executable"
-    "${codewhale}" --version 2>/dev/null | sed 's/^/[info] codewhale version: /' || warn "codewhale --version failed"
+  local codesmith="${cargo_bin}/codesmith"
+  local tui="${cargo_bin}/codesmith-tui"
+  if [[ -x "${codesmith}" ]]; then
+    pass "${codesmith} is executable"
+    "${codesmith}" --version 2>/dev/null | sed 's/^/[info] codesmith version: /' || warn "codesmith --version failed"
   else
-    fail "${codewhale} is missing or not executable"
+    fail "${codesmith} is missing or not executable"
   fi
   if [[ -x "${tui}" ]]; then
     pass "${tui} is executable"
-    "${tui}" --version 2>/dev/null | sed 's/^/[info] codewhale-tui version: /' || warn "codewhale-tui --version failed"
+    "${tui}" --version 2>/dev/null | sed 's/^/[info] codesmith-tui version: /' || warn "codesmith-tui --version failed"
   else
     fail "${tui} is missing or not executable"
   fi
@@ -205,7 +205,7 @@ check_systemd() {
     warn "systemd is not available in this environment"
     return
   fi
-  for unit in codewhale-runtime codewhale-feishu-bridge; do
+  for unit in codesmith-runtime codesmith-feishu-bridge; do
     [[ -f "/etc/systemd/system/${unit}.service" ]] \
       && pass "${unit}.service is installed" \
       || fail "${unit}.service is missing"

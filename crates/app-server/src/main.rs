@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use codewhale_app_server::{AppServerOptions, run};
+use codesmith_app_server::{AppServerOptions, run};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
 }
 
 fn app_server_token_from_env() -> Option<String> {
-    std::env::var("CODEWHALE_APP_SERVER_TOKEN")
+    std::env::var("CODESMITH_APP_SERVER_TOKEN")
         .ok()
         .or_else(|| std::env::var("DEEPSEEK_APP_SERVER_TOKEN").ok())
 }

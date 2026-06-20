@@ -6,7 +6,7 @@
 //! - Selection, focus, diff, warning, success, and status colors are readable.
 //! - Terminal contrast is checked for common truecolor surfaces.
 //!
-//! Run with: cargo test -p codewhale-tui -- theme_qa
+//! Run with: cargo test -p codesmith-tui -- theme_qa
 
 #[cfg(test)]
 mod tests {

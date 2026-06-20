@@ -8,8 +8,8 @@
 //!   (sacrifices cache for immediate budget relief). The summary goes into
 //!   the system prompt.
 
-use crate::llm_client::LlmClient;
 use crate::compaction::estimate_tokens;
+use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt};
 
 /// Direction of partial compaction.
@@ -258,11 +258,9 @@ fn estimate_tokens_for_message(msg: &Message) -> usize {
         .map(|block| match block {
             ContentBlock::Text { text, .. } => text.len() / 4,
             ContentBlock::Thinking { thinking } => thinking.len() / 4,
-            ContentBlock::ToolUse { input, .. } => {
-                serde_json::to_string(input)
-                    .map(|s| s.len() / 4)
-                    .unwrap_or(100)
-            }
+            ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
+                .map(|s| s.len() / 4)
+                .unwrap_or(100),
             ContentBlock::ToolResult { content, .. } => content.len() / 4,
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
@@ -312,11 +310,11 @@ mod tests {
     #[test]
     fn adjust_pivot_preserves_tool_pairs() {
         let messages = vec![
-            msg("user", "start"),         // 0
-            tool_use_msg("t1", "read"),    // 1
-            tool_result_msg("t1", "ok"),   // 2
-            msg("user", "more"),           // 3
-            msg("assistant", "reply"),     // 4
+            msg("user", "start"),        // 0
+            tool_use_msg("t1", "read"),  // 1
+            tool_result_msg("t1", "ok"), // 2
+            msg("user", "more"),         // 3
+            msg("assistant", "reply"),   // 4
         ];
 
         // Pivot at 2 (tool_result) — its call at 1 would be split.
@@ -329,23 +327,26 @@ mod tests {
     fn find_pivot_from_preserves_prefix() {
         // Long prefix, short tail.
         let messages = vec![
-            msg("user", &"x".repeat(4000)),   // ~1000 tokens
+            msg("user", &"x".repeat(4000)),      // ~1000 tokens
             msg("assistant", &"y".repeat(4000)), // ~1000 tokens
-            msg("user", "short"),             // ~1 token
-            msg("assistant", "brief"),        // ~1 token
+            msg("user", "short"),                // ~1 token
+            msg("assistant", "brief"),           // ~1 token
         ];
 
         // Target: keep 500 tokens in prefix, summarize the rest.
         let pivot = find_pivot_for_budget(&messages, PartialCompactDirection::From, 500);
         // Pivot should be 1 or 2 — prefix is messages[0..pivot].
         assert!(pivot >= 1, "From pivot should preserve some prefix");
-        assert!(pivot < messages.len(), "From pivot should leave something to summarize");
+        assert!(
+            pivot < messages.len(),
+            "From pivot should leave something to summarize"
+        );
     }
 
     #[test]
     fn find_pivot_up_to_removes_prefix() {
         let messages = vec![
-            msg("user", &"x".repeat(4000)),   // ~1000 tokens
+            msg("user", &"x".repeat(4000)),      // ~1000 tokens
             msg("assistant", &"y".repeat(4000)), // ~1000 tokens
             msg("user", "short"),
             msg("assistant", "brief"),

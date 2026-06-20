@@ -1,4 +1,4 @@
-# Installing CodeWhale
+# Installing CodeSmith
 
 This page covers every supported install path and the most common
 "it didn't install" failures, including **Linux ARM64** and other less
@@ -12,18 +12,18 @@ If you just want the short version, see the
 
 ## 1. Supported platforms
 
-CodeWhale ships matched `codewhale` and `codewhale-tui` prebuilt binaries for
+CodeSmith ships matched `codesmith` and `codesmith-tui` prebuilt binaries for
 these platform/architecture combinations. Linux ARM64 is available from
 v0.8.8 onward; Linux RISC-V starts with the first release after v0.8.47.
 
 | Platform     | Architecture | npm install | `cargo install` | GitHub release asset                                  |
 | ------------ | ------------ | :---------: | :-------------: | ----------------------------------------------------- |
-| Linux        | x64 (x86_64) |     ✅      |       ✅        | `codewhale-linux-x64`, `codewhale-tui-linux-x64`        |
-| Linux        | arm64        |     ✅      |       ✅        | `codewhale-linux-arm64`, `codewhale-tui-linux-arm64`    |
-| Linux        | riscv64      |     ✅      |       ✅        | `codewhale-linux-riscv64`, `codewhale-tui-linux-riscv64`|
-| macOS        | x64          |     ✅      |       ✅        | `codewhale-macos-x64`, `codewhale-tui-macos-x64`        |
-| macOS        | arm64 (M-series) | ✅      |       ✅        | `codewhale-macos-arm64`, `codewhale-tui-macos-arm64`    |
-| Windows      | x64          |     ✅      |       ✅        | `codewhale-windows-x64.exe`, `codewhale-tui-windows-x64.exe` |
+| Linux        | x64 (x86_64) |     ✅      |       ✅        | `codesmith-linux-x64`, `codesmith-tui-linux-x64`        |
+| Linux        | arm64        |     ✅      |       ✅        | `codesmith-linux-arm64`, `codesmith-tui-linux-arm64`    |
+| Linux        | riscv64      |     ✅      |       ✅        | `codesmith-linux-riscv64`, `codesmith-tui-linux-riscv64`|
+| macOS        | x64          |     ✅      |       ✅        | `codesmith-macos-x64`, `codesmith-tui-macos-x64`        |
+| macOS        | arm64 (M-series) | ✅      |       ✅        | `codesmith-macos-arm64`, `codesmith-tui-macos-arm64`    |
+| Windows      | x64          |     ✅      |       ✅        | `codesmith-windows-x64.exe`, `codesmith-tui-windows-x64.exe` |
 | Other Linux (musl, other architectures) | — |   ❌¹    |       ✅²       | build from source                                     |
 | FreeBSD / OpenBSD              | — |   ❌      |       ✅²       | build from source                                     |
 
@@ -40,8 +40,8 @@ systems such as Alpine should use [Build from source](#7-build-from-source).
 > **Linux ARM64 note (v0.8.7 and earlier).** v0.8.7 and earlier do **not**
 > publish a Linux ARM64 prebuilt; users on HarmonyOS thin-and-light, Asahi
 > Linux, Raspberry Pi, AWS Graviton, etc. saw `Unsupported architecture: arm64`
-> from `npm i -g codewhale`. v0.8.8 publishes both `codewhale-linux-arm64`
-> and `codewhale-tui-linux-arm64`, so a plain `npm i -g codewhale` works
+> from `npm i -g codesmith`. v0.8.8 publishes both `codesmith-linux-arm64`
+> and `codesmith-tui-linux-arm64`, so a plain `npm i -g codesmith` works
 > on any glibc-based ARM64 Linux. If you're stuck on v0.8.7, jump to
 > [Build from source](#7-build-from-source) — `cargo install` works fine.
 
@@ -50,20 +50,20 @@ systems such as Alpine should use [Build from source](#7-build-from-source).
 ## 2. Download safety and checksums
 
 Official release binaries are published only from
-`https://github.com/Hmbown/CodeWhale/releases` and the npm package named
-`codewhale`. Do not install release assets from look-alike repositories,
+`https://github.com/Hmbown/CodeSmith/releases` and the npm package named
+`codesmith`. Do not install release assets from look-alike repositories,
 archives, or search-result mirrors unless you deliberately trust that mirror.
 
-Every GitHub release includes `codewhale-artifacts-sha256.txt`. If you download
+Every GitHub release includes `codesmith-artifacts-sha256.txt`. If you download
 binaries manually, verify them before running:
 
 ```bash
 # Run from the directory containing the downloaded binaries.
-curl -L -O https://github.com/Hmbown/CodeWhale/releases/latest/download/codewhale-artifacts-sha256.txt
-sha256sum -c codewhale-artifacts-sha256.txt --ignore-missing
+curl -L -O https://github.com/Hmbown/CodeSmith/releases/latest/download/codesmith-artifacts-sha256.txt
+sha256sum -c codesmith-artifacts-sha256.txt --ignore-missing
 ```
 
-On macOS, use `shasum -a 256 -c codewhale-artifacts-sha256.txt` instead of
+On macOS, use `shasum -a 256 -c codesmith-artifacts-sha256.txt` instead of
 `sha256sum`.
 
 If antivirus software flags an official release binary, treat it as unresolved
@@ -72,7 +72,7 @@ the GitHub issue:
 
 - the release tag, for example `v0.8.36`
 - the exact download URL
-- the filename, for example `codewhale-linux-x64`
+- the filename, for example `codesmith-linux-x64`
 - the file SHA-256 from your machine
 - the antivirus product name and detection name
 
@@ -84,13 +84,13 @@ a download sourced from an impersonating repository or mirror.
 ## 3. Install via npm (recommended)
 
 ```bash
-npm install -g codewhale
-codewhale
+npm install -g codesmith
+codesmith
 ```
 
 `postinstall` downloads the right pair of binaries from the matching GitHub
-release, verifies a SHA-256 manifest, and exposes both `codewhale` and
-`codewhale-tui` on your `PATH`.
+release, verifies a SHA-256 manifest, and exposes both `codesmith` and
+`codesmith-tui` on your `PATH`.
 
 Useful environment variables:
 
@@ -107,7 +107,7 @@ Useful environment variables:
 > (not just the postinstall binary download), use an npm registry mirror:
 > ```bash
 > npm config set registry https://registry.npmmirror.com
-> npm install -g codewhale
+> npm install -g codesmith
 > ```
 > See also [Section 4](#4-install-via-cargo-any-tier-1-rust-target) if you
 > prefer Cargo over npm.
@@ -122,9 +122,9 @@ delegates to the TUI runtime at runtime.
 
 ```bash
 # Requires Rust 1.88+ (https://rustup.rs)
-cargo install codewhale-cli --locked   # provides `codewhale`
-cargo install codewhale-tui     --locked   # provides `codewhale-tui`
-codewhale --version
+cargo install codesmith-cli --locked   # provides `codesmith`
+cargo install codesmith-tui     --locked   # provides `codesmith-tui`
+codesmith --version
 ```
 
 ### China / mirror-friendly install
@@ -183,7 +183,7 @@ is fastest from your network.
 For an always-on workspace that can be controlled from a phone, use the
 Tencent-native path instead of treating install as a single laptop step:
 
-- CNB mirror/source: `https://cnb.cool/codewhale.net/codewhale.git`
+- CNB mirror/source: `https://cnb.cool/codesmith.net/codesmith.git`
 - Tencent Lighthouse HK: `/opt/whalebro` remote workspace
 - Feishu/Lark: long-connection phone bridge
 - EdgeOne: optional public HTTPS edge for docs/status/webhook surfaces
@@ -200,14 +200,14 @@ then follow [Tencent Lighthouse Hong Kong Phone Setup](TENCENT_LIGHTHOUSE_HK.md)
 If you already have Nix with flake support, run:
 
 ```sh
-nix run github:Hmbown/CodeWhale
+nix run github:Hmbown/CodeSmith
 ```
 
-Nix builds `codewhale-tui` and then starts the `codewhale` dispatcher. Pass
+Nix builds `codesmith-tui` and then starts the `codesmith` dispatcher. Pass
 arguments after `--`, for example:
 
 ```sh
-nix run github:Hmbown/CodeWhale -- --help
+nix run github:Hmbown/CodeSmith -- --help
 ```
 
 ### Flake
@@ -219,8 +219,8 @@ Add inputs to `flake.nix`:
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    codewhale-tui.url = "github:Hmbown/CodeWhale";
-    codewhale-tui.inputs.nixpkgs.follows = "nixpkgs";
+    codesmith-tui.url = "github:Hmbown/CodeSmith";
+    codesmith-tui.inputs.nixpkgs.follows = "nixpkgs";
   };
 }
 ```
@@ -229,7 +229,7 @@ Install into a NixOS module:
 
 ```nix
 {
-  outputs = { self, nixpkgs, codewhale-tui }:
+  outputs = { self, nixpkgs, codesmith-tui }:
   let
     # replace system "x86_64-linux" with your system
     system = "x86_64-linux";
@@ -241,7 +241,7 @@ Install into a NixOS module:
       modules = [
         # ...
         {
-          environment.systemPackages = [ codewhale-tui.packages.${system}.default ];
+          environment.systemPackages = [ codesmith-tui.packages.${system}.default ];
         }
       ];
     };
@@ -254,45 +254,45 @@ Install into a NixOS module:
 ## 6. Manual download from GitHub Releases
 
 Grab the matching pair of binaries for your platform from the
-[Releases page](https://github.com/Hmbown/CodeWhale/releases) and drop them
+[Releases page](https://github.com/Hmbown/CodeSmith/releases) and drop them
 side by side into a directory on your `PATH` (e.g. `~/.local/bin`):
 
 ```bash
 # Linux ARM64 example
 mkdir -p ~/.local/bin
-curl -L -o ~/.local/bin/codewhale      \
-    https://github.com/Hmbown/CodeWhale/releases/latest/download/codewhale-linux-arm64
-curl -L -o ~/.local/bin/codewhale-tui  \
-    https://github.com/Hmbown/CodeWhale/releases/latest/download/codewhale-tui-linux-arm64
-chmod +x ~/.local/bin/codewhale ~/.local/bin/codewhale-tui
-codewhale --version
+curl -L -o ~/.local/bin/codesmith      \
+    https://github.com/Hmbown/CodeSmith/releases/latest/download/codesmith-linux-arm64
+curl -L -o ~/.local/bin/codesmith-tui  \
+    https://github.com/Hmbown/CodeSmith/releases/latest/download/codesmith-tui-linux-arm64
+chmod +x ~/.local/bin/codesmith ~/.local/bin/codesmith-tui
+codesmith --version
 ```
 
 > **macOS Gatekeeper note.** If you downloaded the binaries with a browser,
 > macOS may block them with "Apple cannot verify" warnings. Clear the quarantine
 > attribute on both binaries and retry:
 > ```bash
-> xattr -d com.apple.quarantine ~/.local/bin/codewhale ~/.local/bin/codewhale-tui 2>/dev/null || true
+> xattr -d com.apple.quarantine ~/.local/bin/codesmith ~/.local/bin/codesmith-tui 2>/dev/null || true
 > ```
 
 Verify integrity against the per-release SHA-256 manifest:
 
 ```bash
-curl -L -o /tmp/codewhale-artifacts-sha256.txt \
-    https://github.com/Hmbown/CodeWhale/releases/latest/download/codewhale-artifacts-sha256.txt
-( cd ~/.local/bin && sha256sum -c /tmp/codewhale-artifacts-sha256.txt --ignore-missing )
+curl -L -o /tmp/codesmith-artifacts-sha256.txt \
+    https://github.com/Hmbown/CodeSmith/releases/latest/download/codesmith-artifacts-sha256.txt
+( cd ~/.local/bin && sha256sum -c /tmp/codesmith-artifacts-sha256.txt --ignore-missing )
 ```
 
 (Use `shasum -a 256 -c` instead of `sha256sum` on macOS.)
 
 ### Windows Scoop
 
-The `codewhale` package is listed in Scoop's main bucket:
+The `codesmith` package is listed in Scoop's main bucket:
 
 ```powershell
 scoop update
-scoop install codewhale
-codewhale --version
+scoop install codesmith
+codesmith --version
 ```
 
 Scoop manifests are maintained outside this repository's release workflow and
@@ -320,13 +320,13 @@ LoongArch, FreeBSD, and pre-2024 ARM64 distros.
 ### Build and install
 
 ```bash
-git clone https://github.com/Hmbown/CodeWhale.git
-cd CodeWhale
+git clone https://github.com/Hmbown/CodeSmith.git
+cd CodeSmith
 
-cargo install --path crates/cli --locked   # provides `codewhale`
-cargo install --path crates/tui --locked   # provides `codewhale-tui`
+cargo install --path crates/cli --locked   # provides `codesmith`
+cargo install --path crates/tui --locked   # provides `codesmith-tui`
 
-codewhale --version
+codesmith --version
 ```
 
 Both binaries land in `~/.cargo/bin/` by default; make sure that directory is
@@ -345,13 +345,13 @@ rustup target add aarch64-unknown-linux-gnu
 cargo install cross --locked
 
 # Per build
-cross build --release --target aarch64-unknown-linux-gnu -p codewhale-cli
-cross build --release --target aarch64-unknown-linux-gnu -p codewhale-tui
+cross build --release --target aarch64-unknown-linux-gnu -p codesmith-cli
+cross build --release --target aarch64-unknown-linux-gnu -p codesmith-tui
 ```
 
 The resulting binaries land in
-`target/aarch64-unknown-linux-gnu/release/codewhale` and
-`target/aarch64-unknown-linux-gnu/release/codewhale-tui`. Copy the matched pair
+`target/aarch64-unknown-linux-gnu/release/codesmith` and
+`target/aarch64-unknown-linux-gnu/release/codesmith-tui`. Copy the matched pair
 to the ARM64 host (e.g. via `scp`) and `chmod +x` them.
 
 If you don't have Docker available, install the cross-linker directly and let
@@ -366,8 +366,8 @@ cat >> ~/.cargo/config.toml <<'EOF'
 linker = "aarch64-linux-gnu-gcc"
 EOF
 
-cargo build --release --target aarch64-unknown-linux-gnu -p codewhale-cli
-cargo build --release --target aarch64-unknown-linux-gnu -p codewhale-tui
+cargo build --release --target aarch64-unknown-linux-gnu -p codesmith-cli
+cargo build --release --target aarch64-unknown-linux-gnu -p codesmith-tui
 ```
 
 The same recipe works for `aarch64-unknown-linux-musl` if your distro is
@@ -423,14 +423,14 @@ that session and run `cargo build` from the project root.
 **Build**
 
 ```bash
-git clone https://github.com/Hmbown/CodeWhale.git
-cd CodeWhale
+git clone https://github.com/Hmbown/CodeSmith.git
+cd CodeSmith
 set CARGO_HTTP_CHECK_REVOKE=false   # may be needed behind some Chinese ISPs
 cargo build --release
 ```
 
-Both binaries appear in `target\release\codewhale.exe` and
-`target\release\codewhale-tui.exe`.
+Both binaries appear in `target\release\codesmith.exe` and
+`target\release\codesmith-tui.exe`.
 
 > **Prefer `npm install -g` on Windows unless you need to modify source.**
 > The npm package pulls prebuilt binaries and avoids the C toolchain
@@ -443,30 +443,30 @@ Both binaries appear in `target\release\codewhale.exe` and
 ### `Unsupported architecture: arm64 on platform linux`
 
 You're on a release earlier than v0.8.8 that doesn't publish Linux ARM64
-binaries. Either upgrade (`npm i -g codewhale@latest`) or use
+binaries. Either upgrade (`npm i -g codesmith@latest`) or use
 `cargo install` per [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
 ### `MISSING_COMPANION_BINARY` at runtime
 
-The dispatcher (`codewhale`) requires the TUI runtime (`codewhale-tui`) to be on
+The dispatcher (`codesmith`) requires the TUI runtime (`codesmith-tui`) to be on
 the same `PATH`. If you installed only one crate via `cargo install`, install
 both:
 
 ```bash
-cargo install codewhale-cli --locked
-cargo install codewhale-tui     --locked
+cargo install codesmith-cli --locked
+cargo install codesmith-tui     --locked
 ```
 
-### `codewhale update` reports `no asset found for platform codewhale-linux-aarch64`
+### `codesmith update` reports `no asset found for platform codesmith-linux-aarch64`
 
-This is [#503](https://github.com/Hmbown/CodeWhale/issues/503) in v0.8.7 —
+This is [#503](https://github.com/Hmbown/CodeSmith/issues/503) in v0.8.7 —
 the self-updater used Rust's `aarch64`/`x86_64` arch names instead of the
 release artifact's `arm64`/`x64`. Workaround until v0.8.8:
 
 ```bash
-npm i -g codewhale@latest
+npm i -g codesmith@latest
 # or
-cargo install codewhale-cli --locked
+cargo install codesmith-cli --locked
 ```
 
 ### npm download is slow or times out from mainland China
@@ -475,29 +475,29 @@ Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to a mirrored release-asset directory
 (rsproxy, TUNA, Tencent COS, Aliyun OSS), or skip npm entirely and use the
 Cargo mirror setup in [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
-### `codewhale update` is blocked by GitHub from mainland China
+### `codesmith update` is blocked by GitHub from mainland China
 
-`codewhale update` normally contacts GitHub Releases for metadata and binary
+`codesmith update` normally contacts GitHub Releases for metadata and binary
 assets. On networks where GitHub is blocked or unreliable, use the CNB source
 mirror instead and install both binaries from the release tag:
 
 To check the latest release without downloading or replacing binaries, run
-`codewhale update --check`.
+`codesmith update --check`.
 
 ```bash
-cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-cli --locked --force
-cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-tui     --locked --force
+cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesmith-cli --locked --force
+cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesmith-tui     --locked --force
 ```
 
-If you operate a binary asset mirror, `codewhale update` can use it directly:
+If you operate a binary asset mirror, `codesmith update` can use it directly:
 
 ```bash
 DEEPSEEK_TUI_VERSION=X.Y.Z \
 DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/vX.Y.Z/ \
-codewhale update
+codesmith update
 ```
 
-The mirror directory must contain `codewhale-artifacts-sha256.txt` and the
+The mirror directory must contain `codesmith-artifacts-sha256.txt` and the
 platform binaries from the GitHub release.
 
 ### Debian/Ubuntu: `feature edition2024 is required` from `cargo install`
@@ -523,8 +523,8 @@ export RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 rustup default stable
-cargo install codewhale-cli --locked
-cargo install codewhale-tui     --locked
+cargo install codesmith-cli --locked
+cargo install codesmith-tui     --locked
 ```
 
 Afterward, `which cargo` should point to `~/.cargo/bin/cargo`, not
@@ -538,7 +538,7 @@ Install the C toolchain:
 sudo apt-get install -y build-essential pkg-config libdbus-1-dev
 ```
 
-### Wrapper installs but `codewhale` isn't found
+### Wrapper installs but `codesmith` isn't found
 
 `npm i -g` installs into `$(npm prefix -g)/bin`; make sure that directory is on
 your shell's `PATH`. With nvm: `nvm use --lts && hash -r`.
@@ -585,10 +585,10 @@ path-agnostic — moving `target-dir` does not help.
 
 1. **Add the project's `target/` directory to your AV exclusions list.**
 2. **Close the antivirus software temporarily** during `cargo build`.
-3. **Use `npm install -g codewhale` instead** — the npm package ships
+3. **Use `npm install -g codesmith` instead** — the npm package ships
    prebuilt binaries and skips the Cargo build entirely
    ([Section 3](#3-install-via-npm-recommended)).
-4. **Use `cargo install codewhale-cli --locked`** from crates.io — this
+4. **Use `cargo install codesmith-cli --locked`** from crates.io — this
    changes the binary path, which some AV tools treat differently.
 
 To verify that the build-script binary itself is valid (not corrupted), locate
@@ -602,7 +602,7 @@ target/debug/build/libsqlite3-sys-*/build-script-build
 
 ### npm binary download times out
 
-If `codewhale` waits several seconds and prints `connect ETIMEDOUT` or
+If `codesmith` waits several seconds and prints `connect ETIMEDOUT` or
 `EAI_AGAIN` while fetching from `github.com`, the npm wrapper installed
 successfully but the prebuilt binary download from GitHub Releases is blocked
 or unreliable on your network. This download is separate from the npm registry
@@ -614,24 +614,24 @@ Use one of these paths:
 
    ```bash
    export HTTPS_PROXY=http://your-proxy:port
-   codewhale
+   codesmith
    ```
 
 2. Mirror the release assets internally and set `DEEPSEEK_TUI_RELEASE_BASE_URL`:
 
    ```bash
    export DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/
-   codewhale
+   codesmith
    ```
 
-   The directory must contain `codewhale-artifacts-sha256.txt` and the platform
+   The directory must contain `codesmith-artifacts-sha256.txt` and the platform
    binaries from the GitHub release.
 
 3. Install via Cargo, which builds locally and does not download GitHub release
    assets. See [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
-4. Download both `codewhale` and `codewhale-tui` manually from the
-   [Releases page](https://github.com/Hmbown/CodeWhale/releases), place them
+4. Download both `codesmith` and `codesmith-tui` manually from the
+   [Releases page](https://github.com/Hmbown/CodeSmith/releases), place them
    in a directory on `PATH`, and make them executable. See
    [Section 6](#6-manual-download-from-github-releases).
 
@@ -640,9 +640,9 @@ Use one of these paths:
 ## 9. Verifying your install
 
 ```bash
-codewhale --version
-codewhale doctor       # checks API key, provider, runtime, and PATH integrity
-codewhale doctor --json
+codesmith --version
+codesmith doctor       # checks API key, provider, runtime, and PATH integrity
+codesmith doctor --json
 ```
 
 `doctor` exits non-zero if it finds a problem and prints structured remediation

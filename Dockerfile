@@ -1,16 +1,16 @@
 # syntax=docker/dockerfile:1
-# CodeWhale multi-arch Docker image (#501)
+# CodeSmith multi-arch Docker image (#501)
 #
-# Build:  docker buildx build --platform linux/amd64,linux/arm64 -t codewhale:latest .
-# Run:    docker run --rm -it -e DEEPSEEK_API_KEY -v codewhale-home:/home/codewhale/.codewhale codewhale
+# Build:  docker buildx build --platform linux/amd64,linux/arm64 -t codesmith:latest .
+# Run:    docker run --rm -it -e DEEPSEEK_API_KEY -v codesmith-home:/home/codesmith/.codesmith codesmith
 #
-# The image ships the canonical binaries (`codewhale`, `codewhale-tui`) plus
+# The image ships the canonical binaries (`codesmith`, `codesmith-tui`) plus
 # the legacy `deepseek` / `deepseek-tui` shims in a minimal runtime layer.
 #
 # API keys MUST be passed at runtime (never baked into the image):
-#   docker run --rm -it -e DEEPSEEK_API_KEY codewhale
+#   docker run --rm -it -e DEEPSEEK_API_KEY codesmith
 # Or mount an env file:
-#   docker run --rm -it --env-file .env codewhale
+#   docker run --rm -it --env-file .env codesmith
 
 ARG RUST_VERSION=1.88
 
@@ -55,14 +55,14 @@ COPY . .
 
 # Build both binaries for the target platform.  --locked ensures
 # reproducible builds from the committed lockfile.
-RUN --mount=type=cache,id=codewhale-target-${TARGETARCH},target=/build/target,sharing=locked \
-    --mount=type=cache,id=codewhale-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=codewhale-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
+RUN --mount=type=cache,id=codesmith-target-${TARGETARCH},target=/build/target,sharing=locked \
+    --mount=type=cache,id=codesmith-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=codesmith-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
     cargo build --release --locked --target "$(cat /rust-target)" \
-      -p codewhale-cli -p codewhale-tui \
+      -p codesmith-cli -p codesmith-tui \
     && mkdir -p /out \
-    && cp target/$(cat /rust-target)/release/codewhale /out/ \
-    && cp target/$(cat /rust-target)/release/codewhale-tui /out/ \
+    && cp target/$(cat /rust-target)/release/codesmith /out/ \
+    && cp target/$(cat /rust-target)/release/codesmith-tui /out/ \
     && cp target/$(cat /rust-target)/release/deepseek /out/ \
     && cp target/$(cat /rust-target)/release/deepseek-tui /out/
 
@@ -75,20 +75,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user with explicit UID/GID for filesystem ownership clarity.
-RUN groupadd --gid 1000 codewhale \
-    && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 codewhale \
-    && install -d -m 0700 -o codewhale -g codewhale /home/codewhale/.codewhale \
-    && install -d -m 0700 -o codewhale -g codewhale /home/codewhale/.deepseek
-USER codewhale
-WORKDIR /home/codewhale
+RUN groupadd --gid 1000 codesmith \
+    && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 codesmith \
+    && install -d -m 0700 -o codesmith -g codesmith /home/codesmith/.codesmith \
+    && install -d -m 0700 -o codesmith -g codesmith /home/codesmith/.deepseek
+USER codesmith
+WORKDIR /home/codesmith
 
-COPY --from=builder --chown=codewhale:codewhale /out/codewhale /usr/local/bin/codewhale
-COPY --from=builder --chown=codewhale:codewhale /out/codewhale-tui /usr/local/bin/codewhale-tui
-COPY --from=builder --chown=codewhale:codewhale /out/deepseek /usr/local/bin/deepseek
-COPY --from=builder --chown=codewhale:codewhale /out/deepseek-tui /usr/local/bin/deepseek-tui
+COPY --from=builder --chown=codesmith:codesmith /out/codesmith /usr/local/bin/codesmith
+COPY --from=builder --chown=codesmith:codesmith /out/codesmith-tui /usr/local/bin/codesmith-tui
+COPY --from=builder --chown=codesmith:codesmith /out/deepseek /usr/local/bin/deepseek
+COPY --from=builder --chown=codesmith:codesmith /out/deepseek-tui /usr/local/bin/deepseek-tui
 
 # The dispatcher expects to find its companion binary next to it.
 # Both are in /usr/local/bin — no further path setup needed.
 
-ENTRYPOINT ["codewhale"]
+ENTRYPOINT ["codesmith"]
 CMD []

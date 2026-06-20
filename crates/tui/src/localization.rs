@@ -1214,7 +1214,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::LinksTip => "Tip: API keys are available in the dashboard console.",
         MessageId::SubagentsFetching => "Fetching sub-agent status...",
         MessageId::HelpUnknownCommand => "Unknown command: {topic}",
-        MessageId::HomeDashboardTitle => "codewhale Home Dashboard",
+        MessageId::HomeDashboardTitle => "codesmith Home Dashboard",
         MessageId::HomeModel => "Model:",
         MessageId::HomeMode => "Mode:",
         MessageId::HomeWorkspace => "Workspace:",
@@ -1256,7 +1256,7 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::OnboardApiKeyStep2 => "Step 2.  Paste it below and press Enter.",
         MessageId::OnboardApiKeySavedHint => {
-            "Saved to ~/.codewhale/config.toml so it works from any folder."
+            "Saved to ~/.codesmith/config.toml so it works from any folder."
         }
         MessageId::OnboardApiKeyFormatHint => {
             "Paste the full key exactly as issued (no spaces or newlines)."
@@ -1641,7 +1641,7 @@ fn vietnamese(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "Mẹo: Mã khóa API có sẵn trong bảng điều khiển console.",
         MessageId::SubagentsFetching => "Đang lấy trạng thái của các sub-agent...",
         MessageId::HelpUnknownCommand => "Lệnh không xác định: {topic}",
-        MessageId::HomeDashboardTitle => "Bảng Điều Khiển Trang Chủ codewhale",
+        MessageId::HomeDashboardTitle => "Bảng Điều Khiển Trang Chủ codesmith",
         MessageId::HomeModel => "Mô hình:",
         MessageId::HomeMode => "Chế độ:",
         MessageId::HomeWorkspace => "Không gian làm việc:",
@@ -1691,7 +1691,7 @@ fn vietnamese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::OnboardApiKeyStep2 => "Bước 2. Dán khóa vào bên dưới và nhấn Enter.",
         MessageId::OnboardApiKeySavedHint => {
-            "Được lưu vào ~/.codewhale/config.toml để có thể hoạt động từ mọi thư mục."
+            "Được lưu vào ~/.codesmith/config.toml để có thể hoạt động từ mọi thư mục."
         }
         MessageId::OnboardApiKeyFormatHint => {
             "Dán chính xác toàn bộ khóa (không chứa khoảng trắng hoặc xuống dòng)."
@@ -2058,7 +2058,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "ヒント: API キーはダッシュボードコンソールで取得できます。",
         MessageId::SubagentsFetching => "サブエージェントの状態を取得中...",
         MessageId::HelpUnknownCommand => "不明なコマンド: {topic}",
-        MessageId::HomeDashboardTitle => "codewhale ホームダッシュボード",
+        MessageId::HomeDashboardTitle => "codesmith ホームダッシュボード",
         MessageId::HomeModel => "モデル：",
         MessageId::HomeMode => "モード：",
         MessageId::HomeWorkspace => "ワークスペース：",
@@ -2100,7 +2100,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::OnboardApiKeyStep2 => "ステップ 2. 下に貼り付けて Enter を押してください。",
         MessageId::OnboardApiKeySavedHint => {
-            "~/.codewhale/config.toml に保存されるので、どのフォルダからでも有効になります。"
+            "~/.codesmith/config.toml に保存されるので、どのフォルダからでも有効になります。"
         }
         MessageId::OnboardApiKeyFormatHint => {
             "発行されたキーをそのまま貼り付けてください（空白や改行を含めない）。"
@@ -2407,7 +2407,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "提示：API 密钥可在控制台中获取。",
         MessageId::SubagentsFetching => "正在获取子代理状态...",
         MessageId::HelpUnknownCommand => "未知命令：{topic}",
-        MessageId::HomeDashboardTitle => "codewhale 主面板",
+        MessageId::HomeDashboardTitle => "codesmith 主面板",
         MessageId::HomeModel => "模型：",
         MessageId::HomeMode => "模式：",
         MessageId::HomeWorkspace => "工作区：",
@@ -2447,7 +2447,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         }
         MessageId::OnboardApiKeyStep2 => "步骤 2.  把密钥粘贴到下方并按 Enter。",
         MessageId::OnboardApiKeySavedHint => {
-            "保存到 ~/.codewhale/config.toml，因此在任何目录下都生效。"
+            "保存到 ~/.codesmith/config.toml，因此在任何目录下都生效。"
         }
         MessageId::OnboardApiKeyFormatHint => "请完整粘贴密钥（不要含空格或换行）。",
         MessageId::OnboardApiKeyPlaceholder => "（在此粘贴密钥）",
@@ -2806,7 +2806,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "Dica: chaves de API estão disponíveis no console do painel.",
         MessageId::SubagentsFetching => "Buscando status dos sub-agentes...",
         MessageId::HelpUnknownCommand => "Comando desconhecido: {topic}",
-        MessageId::HomeDashboardTitle => "Painel Inicial do codewhale",
+        MessageId::HomeDashboardTitle => "Painel Inicial do codesmith",
         MessageId::HomeModel => "Modelo:",
         MessageId::HomeMode => "Modo:",
         MessageId::HomeWorkspace => "Workspace:",
@@ -2856,7 +2856,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::OnboardApiKeyStep2 => "Passo 2.  Cole abaixo e pressione Enter.",
         MessageId::OnboardApiKeySavedHint => {
-            "Salvo em ~/.codewhale/config.toml para funcionar em qualquer pasta."
+            "Salvo em ~/.codesmith/config.toml para funcionar em qualquer pasta."
         }
         MessageId::OnboardApiKeyFormatHint => {
             "Cole a chave inteira como foi emitida (sem espaços ou quebras de linha)."
@@ -3032,7 +3032,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "Listar los modelos disponibles por la API",
         MessageId::CmdNetworkDescription => "Gestionar reglas de red permitidas y bloqueadas",
         MessageId::CmdNoteDescription => {
-            "Agregar nota al archivo persistente (.codewhale/notes.md)"
+            "Agregar nota al archivo persistente (.codesmith/notes.md)"
         }
         MessageId::CmdThemeDescription => "Alternar entre tema claro y oscuro",
         MessageId::CmdProviderDescription => {
@@ -3237,7 +3237,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "Tip: las claves de API están disponibles en la consola del panel.",
         MessageId::SubagentsFetching => "Obteniendo estado de los sub-agentes...",
         MessageId::HelpUnknownCommand => "Comando desconocido: {topic}",
-        MessageId::HomeDashboardTitle => "Panel Inicial de codewhale",
+        MessageId::HomeDashboardTitle => "Panel Inicial de codesmith",
         MessageId::HomeModel => "Modelo:",
         MessageId::HomeMode => "Modo:",
         MessageId::HomeWorkspace => "Workspace:",
@@ -3285,7 +3285,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         }
         MessageId::OnboardApiKeyStep2 => "Paso 2.  Pégala abajo y presiona Enter.",
         MessageId::OnboardApiKeySavedHint => {
-            "Guardada en ~/.codewhale/config.toml para funcionar en cualquier carpeta."
+            "Guardada en ~/.codesmith/config.toml para funcionar en cualquier carpeta."
         }
         MessageId::OnboardApiKeyFormatHint => {
             "Pega la clave completa tal como fue emitida (sin espacios ni saltos de línea)."
@@ -3430,8 +3430,8 @@ mod tests {
                 locale.tag()
             );
             assert!(
-                !description.contains("codewhale |"),
-                "{} provider description should not name codewhale as a backend: {description}",
+                !description.contains("codesmith |"),
+                "{} provider description should not name codesmith as a backend: {description}",
                 locale.tag()
             );
         }

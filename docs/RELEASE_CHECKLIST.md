@@ -32,7 +32,7 @@ publish-crates), see [`RELEASE_RUNBOOK.md`](RELEASE_RUNBOOK.md).
 - [ ] `Cargo.toml` workspace `version` is bumped.
 - [ ] All per-crate `crates/*/Cargo.toml` path-dependency `version = "..."`
       pins match the new workspace version.
-- [ ] `npm/codewhale/package.json` `version` AND `codewhaleBinaryVersion`
+- [ ] `npm/codesmith/package.json` `version` AND `codesmithBinaryVersion`
       are both bumped.
 - [ ] `npm/deepseek-tui/package.json` `version` is bumped for the one-release
       deprecation shim.
@@ -56,7 +56,7 @@ Run, in order, from the repo root:
 
 ## 4. npm wrapper smoke
 
-- [ ] `cargo build --release --locked -p codewhale-cli -p codewhale-tui`
+- [ ] `cargo build --release --locked -p codesmith-cli -p codesmith-tui`
 - [ ] `node scripts/release/npm-wrapper-smoke.js`
       (Set `DEEPSEEK_TUI_KEEP_SMOKE_DIR=1` if you need to inspect the temp
       install afterwards.)
@@ -90,14 +90,14 @@ Run, in order, from the repo root:
 - [ ] The live GitHub Release body has its own `## Contributors` or
       `## Credits` section; do not rely on "see CHANGELOG" alone. Verify with:
       ```
-      gh release view vX.Y.Z --repo Hmbown/CodeWhale --json body \
+      gh release view vX.Y.Z --repo Hmbown/CodeSmith --json body \
         --jq '.body | test("## (Contributors|Credits)")'
       ```
-- [ ] `npm view codewhale@X.Y.Z version codewhaleBinaryVersion --json`
+- [ ] `npm view codesmith@X.Y.Z version codesmithBinaryVersion --json`
       reports the new version on the npm registry.
 - [ ] `crates.io` has the new version (or the `publish-crates.sh` job has
       pushed it).
-- [ ] `ghcr.io/hmbown/codewhale:vX.Y.Z` and `:latest` are updated.
+- [ ] `ghcr.io/hmbown/codesmith:vX.Y.Z` and `:latest` are updated.
 
 ## 8. Post-tag
 

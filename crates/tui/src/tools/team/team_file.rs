@@ -1,6 +1,6 @@
 //! Team file persistence — config.json I/O for team coordination.
 //!
-//! Team files live at `~/.codewhale/teams/{sanitized_name}/config.json`.
+//! Team files live at `~/.codesmith/teams/{sanitized_name}/config.json`.
 //! Each file holds the team metadata, leader identity, and member roster.
 
 use std::fs;
@@ -12,7 +12,13 @@ use serde::{Deserialize, Serialize};
 /// Replaces non-alphanumeric chars with hyphens, lowercased.
 pub fn sanitize_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -28,9 +34,9 @@ pub fn team_lead_name() -> &'static str {
     TEAM_LEAD_NAME
 }
 
-/// Path to a team directory under `~/.codewhale/teams/`.
+/// Path to a team directory under `~/.codesmith/teams/`.
 pub fn team_dir(team_name: &str) -> anyhow::Result<PathBuf> {
-    let base = codewhale_config::codewhale_home()?;
+    let base = codesmith_config::codesmith_home()?;
     Ok(base.join("teams").join(sanitize_name(team_name)))
 }
 
@@ -39,9 +45,9 @@ pub fn team_config_path(team_name: &str) -> anyhow::Result<PathBuf> {
     Ok(team_dir(team_name)?.join("config.json"))
 }
 
-/// Path to the team's task directory under `~/.codewhale/tasks/`.
+/// Path to the team's task directory under `~/.codesmith/tasks/`.
 pub fn team_task_dir(team_name: &str) -> anyhow::Result<PathBuf> {
-    let base = codewhale_config::codewhale_home()?;
+    let base = codesmith_config::codesmith_home()?;
     Ok(base.join("tasks").join(sanitize_name(team_name)))
 }
 
@@ -145,7 +151,11 @@ pub fn find_member_by_name(team_file: &TeamFile, name: &str) -> Option<TeamMembe
 
 /// Find a member by agent_id in the team file. Returns cloned member.
 pub fn find_member_by_agent_id(team_file: &TeamFile, agent_id: &str) -> Option<TeamMember> {
-    team_file.members.iter().find(|m| m.agent_id == agent_id).cloned()
+    team_file
+        .members
+        .iter()
+        .find(|m| m.agent_id == agent_id)
+        .cloned()
 }
 
 /// Remove a member by name from the team file, returning the removed member
@@ -173,7 +183,7 @@ pub fn active_teammate_count(team_file: &TeamFile) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{lock_test_env, ScopedCodeWhaleHome};
+    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
 
     fn make_team_file(name: &str) -> TeamFile {
         TeamFile {
@@ -220,7 +230,7 @@ mod tests {
     #[test]
     fn create_team_file_writes_config_and_inboxes_dir() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let tf = make_team_file("test-create");
         let config_path = create_team_file(&tf).expect("create");
 
@@ -237,7 +247,7 @@ mod tests {
     #[test]
     fn read_write_team_file_roundtrips() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let mut tf = make_team_file("test-roundtrip");
         tf.members.push(make_member("worker1", "w1", true));
         create_team_file(&tf).expect("create");
@@ -251,7 +261,7 @@ mod tests {
     #[test]
     fn delete_team_directories_removes_dirs() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let tf = make_team_file("test-delete");
         create_team_file(&tf).expect("create");
         assert!(team_dir("test-delete").expect("dir").exists());

@@ -288,7 +288,7 @@ pub fn verbose(app: &mut App, arg: Option<&str>) -> CommandResult {
     })
 }
 
-/// Persist `tui.status_items` to `~/.codewhale/config.toml` without disturbing
+/// Persist `tui.status_items` to `~/.codesmith/config.toml` without disturbing
 /// the rest of the file. We round-trip through `toml::Value` so any keys we
 /// don't know about (provider blocks, MCP, etc.) survive the write
 /// untouched.
@@ -366,15 +366,15 @@ pub fn persist_root_string_key(
     Ok(path)
 }
 
-/// Resolve the path to `~/.codewhale/config.toml` (or
-/// `$CODEWHALE_CONFIG_PATH` / `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
+/// Resolve the path to `~/.codesmith/config.toml` (or
+/// `$CODESMITH_CONFIG_PATH` / `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
 pub(super) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     if let Some(path) = config_path {
         return Ok(expand_path(path.to_string_lossy().as_ref()));
     }
-    if let Ok(env) = std::env::var("CODEWHALE_CONFIG_PATH") {
+    if let Ok(env) = std::env::var("CODESMITH_CONFIG_PATH") {
         let trimmed = env.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));
@@ -388,7 +388,7 @@ pub(super) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<Pat
     }
     let home =
         effective_home_dir().context("failed to resolve home directory for config.toml path")?;
-    let primary = home.join(".codewhale").join("config.toml");
+    let primary = home.join(".codesmith").join("config.toml");
     if primary.exists() {
         return Ok(primary);
     }
@@ -1085,7 +1085,7 @@ pub struct AutoRouteSelection {
 }
 
 pub const AUTO_MODEL_ROUTER_SYSTEM_PROMPT: &str = "\
-You are the codewhale auto-routing classifier. Return only compact JSON: \
+You are the codesmith auto-routing classifier. Return only compact JSON: \
 {\"model\":\"deepseek-v4-flash|deepseek-v4-pro\",\"thinking\":\"off|high|max\"}. \
 Use deepseek-v4-flash for trivial, conversational, status, or single-step work. \
 Use deepseek-v4-pro for coding, debugging, release work, multi-step tasks, high-risk decisions, \
@@ -1373,7 +1373,7 @@ mod tests {
     struct EnvGuard {
         home: Option<OsString>,
         userprofile: Option<OsString>,
-        codewhale_config_path: Option<OsString>,
+        codesmith_config_path: Option<OsString>,
         deepseek_config_path: Option<OsString>,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
@@ -1386,21 +1386,21 @@ mod tests {
             let config_str = OsString::from(config_path.as_os_str());
             let home_prev = env::var_os("HOME");
             let userprofile_prev = env::var_os("USERPROFILE");
-            let codewhale_config_prev = env::var_os("CODEWHALE_CONFIG_PATH");
+            let codesmith_config_prev = env::var_os("CODESMITH_CONFIG_PATH");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
 
             // Safety: test-only environment mutation guarded by process-wide mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
-                env::remove_var("CODEWHALE_CONFIG_PATH");
+                env::remove_var("CODESMITH_CONFIG_PATH");
                 env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
             }
 
             Self {
                 home: home_prev,
                 userprofile: userprofile_prev,
-                codewhale_config_path: codewhale_config_prev,
+                codesmith_config_path: codesmith_config_prev,
                 deepseek_config_path: deepseek_config_prev,
                 _lock: lock,
             }
@@ -1433,15 +1433,15 @@ mod tests {
                 }
             }
 
-            if let Some(value) = self.codewhale_config_path.take() {
+            if let Some(value) = self.codesmith_config_path.take() {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::set_var("CODEWHALE_CONFIG_PATH", value);
+                    env::set_var("CODESMITH_CONFIG_PATH", value);
                 }
             } else {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::remove_var("CODEWHALE_CONFIG_PATH");
+                    env::remove_var("CODESMITH_CONFIG_PATH");
                 }
             }
 
@@ -1831,7 +1831,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-default-mode-test-{}-{}",
+            "codesmith-tui-default-mode-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -1856,7 +1856,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-cost-currency-test-{}-{}",
+            "codesmith-tui-cost-currency-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2010,7 +2010,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-theme-command-test-{}-{}",
+            "codesmith-tui-theme-command-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2033,7 +2033,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-theme-save-test-{}-{}",
+            "codesmith-tui-theme-save-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2137,7 +2137,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-logout-test-{}-{}",
+            "codesmith-tui-logout-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2186,7 +2186,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-statusline-persist-{}-{}",
+            "codesmith-statusline-persist-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2211,13 +2211,13 @@ mod tests {
     }
 
     #[test]
-    fn config_toml_path_uses_codewhale_home_for_fresh_installs() {
+    fn config_toml_path_uses_codesmith_home_for_fresh_installs() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-config-path-fresh-{}-{}",
+            "codesmith-config-path-fresh-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2230,7 +2230,7 @@ mod tests {
 
         assert_eq!(
             config_toml_path(None).unwrap(),
-            temp_root.join(".codewhale").join("config.toml")
+            temp_root.join(".codesmith").join("config.toml")
         );
     }
 
@@ -2241,7 +2241,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-config-path-legacy-{}-{}",
+            "codesmith-config-path-legacy-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2258,13 +2258,13 @@ mod tests {
     }
 
     #[test]
-    fn config_toml_path_prefers_codewhale_env_over_legacy_env() {
+    fn config_toml_path_prefers_codesmith_env_over_legacy_env() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-config-path-env-{}-{}",
+            "codesmith-config-path-env-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2274,7 +2274,7 @@ mod tests {
         let legacy = temp_root.join("legacy.toml");
 
         unsafe {
-            env::set_var("CODEWHALE_CONFIG_PATH", &preferred);
+            env::set_var("CODESMITH_CONFIG_PATH", &preferred);
             env::set_var("DEEPSEEK_CONFIG_PATH", &legacy);
         }
 
@@ -2288,7 +2288,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-statusline-preserve-{}-{}",
+            "codesmith-statusline-preserve-{}-{}",
             std::process::id(),
             nanos
         ));

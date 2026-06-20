@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 
-# Crates published for each codewhale release, in dependency order.
+# Crates published for each codesmith release, in dependency order.
 release_crates=(
-  codewhale-secrets
-  codewhale-config
-  codewhale-protocol
-  codewhale-state
-  codewhale-agent
-  codewhale-execpolicy
-  codewhale-hooks
-  codewhale-mcp
-  codewhale-tools
-  codewhale-core
-  codewhale-app-server
-  codewhale-tui-core
-  codewhale-cli
-  codewhale-tui
+  codesmith-secrets
+  codesmith-config
+  codesmith-protocol
+  codesmith-state
+  codesmith-agent
+  codesmith-execpolicy
+  codesmith-hooks
+  codesmith-mcp
+  codesmith-tools
+  codesmith-core
+  codesmith-app-server
+  codesmith-tui-core
+  codesmith-cli
+  codesmith-tui
 )

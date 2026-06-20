@@ -9,17 +9,17 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use codewhale_agent::ModelRegistry;
-use codewhale_config::{CliRuntimeOverrides, ConfigStore};
-use codewhale_core::Runtime;
-use codewhale_execpolicy::ExecPolicyEngine;
-use codewhale_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink, UnixSocketHookSink};
-use codewhale_mcp::McpManager;
-use codewhale_protocol::{
+use codesmith_agent::ModelRegistry;
+use codesmith_config::{CliRuntimeOverrides, ConfigStore};
+use codesmith_core::Runtime;
+use codesmith_execpolicy::ExecPolicyEngine;
+use codesmith_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink, UnixSocketHookSink};
+use codesmith_mcp::McpManager;
+use codesmith_protocol::{
     AppRequest, AppResponse, PromptRequest, PromptResponse, ThreadRequest, ThreadResponse,
 };
-use codewhale_state::StateStore;
-use codewhale_tools::{ToolCall, ToolRegistry};
+use codesmith_state::StateStore;
+use codesmith_tools::{ToolCall, ToolRegistry};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -65,7 +65,7 @@ impl std::fmt::Debug for AppServerOptions {
 #[derive(Clone)]
 struct AppState {
     config_path: Option<PathBuf>,
-    config: Arc<RwLock<codewhale_config::ConfigToml>>,
+    config: Arc<RwLock<codesmith_config::ConfigToml>>,
     runtime: Arc<Mutex<Runtime>>,
     registry: ModelRegistry,
     auth_token: Option<String>,
@@ -280,7 +280,7 @@ async fn tool_handler(
     match runtime
         .invoke_tool(
             req.call,
-            codewhale_execpolicy::AskForApproval::OnRequest,
+            codesmith_execpolicy::AskForApproval::OnRequest,
             &cwd,
         )
         .await
@@ -381,7 +381,7 @@ fn resolve_auth_token(options: &AppServerOptions) -> Result<Option<String>> {
     } else {
         eprintln!("app-server auth: generated bearer token for this process.");
         eprintln!("  Authorization: Bearer {token}");
-        eprintln!("  Pass --auth-token or set CODEWHALE_APP_SERVER_TOKEN for a stable token.");
+        eprintln!("  Pass --auth-token or set CODESMITH_APP_SERVER_TOKEN for a stable token.");
     }
     Ok(Some(token))
 }
@@ -916,8 +916,8 @@ async fn process_app_request(
         AppRequest::ThreadLoadedList => {
             let mut runtime = state.runtime.lock().await;
             let response = runtime
-                .handle_thread(codewhale_protocol::ThreadRequest::List(
-                    codewhale_protocol::ThreadListParams {
+                .handle_thread(codesmith_protocol::ThreadRequest::List(
+                    codesmith_protocol::ThreadListParams {
                         include_archived: false,
                         limit: Some(50),
                     },
@@ -939,7 +939,7 @@ async fn process_app_request(
     }
 }
 
-async fn persist_config(state: &AppState, config: codewhale_config::ConfigToml) -> Result<()> {
+async fn persist_config(state: &AppState, config: codesmith_config::ConfigToml) -> Result<()> {
     if state.config_path.is_none() {
         return Ok(());
     }
@@ -952,7 +952,7 @@ async fn persist_config(state: &AppState, config: codewhale_config::ConfigToml) 
 mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
-    use codewhale_protocol::AppRequest;
+    use codesmith_protocol::AppRequest;
     use std::fs;
     use tower::ServiceExt;
 

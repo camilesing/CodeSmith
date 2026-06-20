@@ -1,15 +1,16 @@
 //! `exit_worktree` tool — exits a worktree session and restores original working directory.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use codewhale_tools::{ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_str, required_str};
+use codesmith_tools::{
+    ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_str, required_str,
+};
 
 use crate::tools::spec::{ToolContext, ToolSpec};
 
 use super::{
-    SharedWorktreeSessionState,
-    cleanup_worktree, count_worktree_changes, find_canonical_git_root,
+    SharedWorktreeSessionState, cleanup_worktree, count_worktree_changes, find_canonical_git_root,
 };
 
 pub struct ExitWorktreeTool {
@@ -72,9 +73,9 @@ impl ToolSpec for ExitWorktreeTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let action = required_str(&input, "action")?;
         if action != "keep" && action != "remove" {
-            return Err(ToolError::execution_failed(
-                format!("Invalid action \"{action}\". Must be \"keep\" or \"remove\".")
-            ));
+            return Err(ToolError::execution_failed(format!(
+                "Invalid action \"{action}\". Must be \"keep\" or \"remove\"."
+            )));
         }
         let discard_changes = crate::tools::spec::optional_bool(&input, "discard_changes", false);
 
@@ -85,13 +86,16 @@ impl ToolSpec for ExitWorktreeTool {
                 return Ok(ToolResult::success(
                     "No-op: there is no active enter_worktree session to exit. \
                      This tool only operates on worktrees created by enter_worktree \
-                     in the current session. No filesystem changes were made."
+                     in the current session. No filesystem changes were made.",
                 ));
             }
             (
                 state.worktree_path.clone().unwrap_or_default(),
                 state.worktree_branch.clone(),
-                state.original_cwd.clone().unwrap_or_else(|| context.workspace.clone()),
+                state
+                    .original_cwd
+                    .clone()
+                    .unwrap_or_else(|| context.workspace.clone()),
                 state.original_head_commit.clone(),
             )
         };
@@ -102,21 +106,23 @@ impl ToolSpec for ExitWorktreeTool {
             match summary {
                 None => {
                     // Fail-closed: can't determine state, refuse
-                    return Ok(ToolResult::success(
-                        format!(
-                            "Could not verify worktree state at {}. \
+                    return Ok(ToolResult::success(format!(
+                        "Could not verify worktree state at {}. \
                              Refusing to remove without explicit confirmation. \
                              Re-invoke with discard_changes: true to proceed — \
                              or use action: \"keep\" to preserve the worktree.",
-                            worktree_path.display()
-                        )
-                    ));
+                        worktree_path.display()
+                    )));
                 }
                 Some(s) if s.changed_files > 0 || s.commits > 0 => {
                     let parts: Vec<String> = Vec::new();
                     let mut parts = parts;
                     if s.changed_files > 0 {
-                        let file_word = if s.changed_files == 1 { "file" } else { "files" };
+                        let file_word = if s.changed_files == 1 {
+                            "file"
+                        } else {
+                            "files"
+                        };
                         parts.push(format!("{} uncommitted {}", s.changed_files, file_word));
                     }
                     if s.commits > 0 {
@@ -127,14 +133,12 @@ impl ToolSpec for ExitWorktreeTool {
                             .unwrap_or_default();
                         parts.push(format!("{} {}{}", s.commits, commit_word, branch_note));
                     }
-                    return Ok(ToolResult::success(
-                        format!(
-                            "Worktree has {}. Removing will discard this work permanently. \
+                    return Ok(ToolResult::success(format!(
+                        "Worktree has {}. Removing will discard this work permanently. \
                              Confirm with the user, then re-invoke with discard_changes: true — \
                              or use action: \"keep\" to preserve the worktree.",
-                            parts.join(" and ")
-                        )
-                    ));
+                        parts.join(" and ")
+                    )));
                 }
                 _ => {} // No changes, safe to proceed
             }
@@ -156,15 +160,13 @@ impl ToolSpec for ExitWorktreeTool {
                 .map(|b| format!(" on branch {b}"))
                 .unwrap_or_default();
 
-            return Ok(ToolResult::success(
-                format!(
-                    "Exited worktree. Your work is preserved at {}{}. \
+            return Ok(ToolResult::success(format!(
+                "Exited worktree. Your work is preserved at {}{}. \
                      Session is now back in {}.",
-                    worktree_path.display(),
-                    branch_info,
-                    original_cwd.display()
-                )
-            ));
+                worktree_path.display(),
+                branch_info,
+                original_cwd.display()
+            )));
         }
 
         // action == "remove"
@@ -185,12 +187,10 @@ impl ToolSpec for ExitWorktreeTool {
             state.session_id = None;
         }
 
-        Ok(ToolResult::success(
-            format!(
-                "Exited and removed worktree at {}. Session is now back in {}.",
-                worktree_path.display(),
-                original_cwd.display()
-            )
-        ))
+        Ok(ToolResult::success(format!(
+            "Exited and removed worktree at {}. Session is now back in {}.",
+            worktree_path.display(),
+            original_cwd.display()
+        )))
     }
 }

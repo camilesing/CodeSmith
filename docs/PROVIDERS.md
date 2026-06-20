@@ -1,7 +1,7 @@
 # Provider Registry
 
 This registry describes provider behavior that is wired into the current
-CodeWhale codebase. It is intentionally conservative: shipped entries are
+CodeSmith codebase. It is intentionally conservative: shipped entries are
 limited to provider IDs, config keys, auth paths, base URLs, model resolution,
 and capability metadata that the code already knows about.
 
@@ -18,7 +18,7 @@ Sources to keep in sync:
 - `crates/tui/src/config.rs` - TUI provider IDs, provider capability metadata,
   and provider-specific env handling.
 - `crates/agent/src/lib.rs` - static `ModelRegistry` used by
-  `codewhale model list` and `codewhale model resolve`.
+  `codesmith model list` and `codesmith model resolve`.
 - `config.example.toml` and `docs/CONFIGURATION.md` - user-facing config
   examples and environment variable reference.
 - `scripts/check-provider-registry.py` - drift check for canonical provider
@@ -35,28 +35,28 @@ The canonical provider IDs are:
 
 Use any of these surfaces to select a provider:
 
-- CLI: `codewhale --provider <id>`
+- CLI: `codesmith --provider <id>`
 - TUI: `/provider <id>` or the provider picker
-- Env: `CODEWHALE_PROVIDER=<id>`; `DEEPSEEK_PROVIDER=<id>` is the legacy alias
+- Env: `CODESMITH_PROVIDER=<id>`; `DEEPSEEK_PROVIDER=<id>` is the legacy alias
 - Config: `provider = "<id>"`
 
 `deepseek-cn`, `deepseek_china`, `deepseekcn`, and `deepseek-china` are accepted
 as legacy aliases for `deepseek`. They do not select a different official host;
 DeepSeek uses the same official API host worldwide.
 
-Fresh shared config writes to `~/.codewhale/config.toml`. Existing
+Fresh shared config writes to `~/.codesmith/config.toml`. Existing
 `~/.deepseek/config.toml` files are still read for compatibility.
 
 ## Auth And Env Rules
 
-For hosted providers, `codewhale auth set --provider <id>` saves an API key for
+For hosted providers, `codesmith auth set --provider <id>` saves an API key for
 that provider. API-key environment variables are fallback inputs after saved
 config and keyring credentials; an explicit process-level `--api-key` still
 wins for that launch.
 
 For base URL and model selection, prefer:
 
-- `CODEWHALE_BASE_URL` / `CODEWHALE_MODEL` for the active provider.
+- `CODESMITH_BASE_URL` / `CODESMITH_MODEL` for the active provider.
 - Provider-specific base URL/model env vars when listed below.
 - `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, and `DEEPSEEK_DEFAULT_TEXT_MODEL` as
   legacy aliases.
@@ -111,7 +111,7 @@ endpoint.
 
 | Provider ID | TOML table | Auth env | Base URL env and default | Default or static models | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODEWHALE_BASE_URL` / `DEEPSEEK_BASE_URL`; default `https://api.deepseek.com/beta` | `deepseek-v4-pro`, `deepseek-v4-flash`; compatibility aliases `deepseek-chat`, `deepseek-reasoner` | First-class default. Beta URL enables strict tool mode, chat prefix completion, and FIM completion. Set `https://api.deepseek.com` or `/v1` explicitly to opt out of beta-only features. |
+| `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL` / `DEEPSEEK_BASE_URL`; default `https://api.deepseek.com/beta` | `deepseek-v4-pro`, `deepseek-v4-flash`; compatibility aliases `deepseek-chat`, `deepseek-reasoner` | First-class default. Beta URL enables strict tool mode, chat prefix completion, and FIM completion. Set `https://api.deepseek.com` or `/v1` explicitly to opt out of beta-only features. |
 | `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY`, fallback `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, `NVIDIA_BASE_URL`; default `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash` | Hosted DeepSeek V4 through NVIDIA NIM. `NVIDIA_NIM_MODEL` is accepted by the TUI config path. |
 | `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`; default `https://api.openai.com/v1` | Registry entries: `deepseek-v4-pro`, `deepseek-v4-flash`; default config model `deepseek-v4-pro` | Generic OpenAI-compatible route for gateways and custom endpoints. Use this for explicit third-party OpenAI-compatible routes instead of inventing a new provider ID. `OPENAI_MODEL` is accepted. |
 | `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`; default `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`, `deepseek-ai/deepseek-v4-pro` | OpenAI-compatible hosted route. `ATLASCLOUD_MODEL` is accepted by the TUI config path, and the static `ModelRegistry` includes AtlasCloud fallback rows for CLI model resolution. |
@@ -119,8 +119,8 @@ endpoint.
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`, `VOLCENGINE_ARK_API_KEY`, `ARK_API_KEY` | `VOLCENGINE_BASE_URL`, `VOLCENGINE_ARK_BASE_URL`, `ARK_BASE_URL`; default `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`, `DeepSeek-V4-Flash` | Volcengine/Volcano Engine Ark OpenAI-compatible coding endpoint. `VOLCENGINE_MODEL` and `VOLCENGINE_ARK_MODEL` are accepted. |
 | `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`; default `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash`; recent large IDs include `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, `z-ai/glm-5.1`, `moonshotai/kimi-k2.6` | Additive open-model routing layer. It does not replace DeepSeek; it lets users route supported model IDs through OpenRouter when they choose it. |
 | `xiaomi-mimo` | `[providers.xiaomi_mimo]` | `XIAOMI_MIMO_API_KEY`, `XIAOMI_API_KEY`, `MIMO_API_KEY` | `XIAOMI_MIMO_BASE_URL`, `MIMO_BASE_URL`; default `https://api.xiaomimimo.com/v1` | `mimo-v2.5-pro`, `mimo-v2.5` | Xiaomi MiMo OpenAI-compatible chat completions route. It sends `max_completion_tokens` and uses MiMo's `thinking` field for reasoning control. |
-| `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`; default `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | OpenAI-compatible hosted route for DeepSeek model IDs. Use config or `CODEWHALE_MODEL` / `DEEPSEEK_MODEL` for model overrides. |
-| `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`; default `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI-compatible hosted route. Use config or `CODEWHALE_MODEL` / `DEEPSEEK_MODEL` for model overrides. |
+| `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`; default `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | OpenAI-compatible hosted route for DeepSeek model IDs. Use config or `CODESMITH_MODEL` / `DEEPSEEK_MODEL` for model overrides. |
+| `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`; default `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI-compatible hosted route. Use config or `CODESMITH_MODEL` / `DEEPSEEK_MODEL` for model overrides. |
 | `siliconflow` | `[providers.siliconflow]` | `SILICONFLOW_API_KEY` | `SILICONFLOW_BASE_URL`; default `https://api.siliconflow.com/v1` | `deepseek-ai/DeepSeek-V4-Pro`, `deepseek-ai/DeepSeek-V4-Flash` | OpenAI-compatible hosted route. Official docs use the `.com` endpoint; users who need the regional endpoint can set `https://api.siliconflow.cn/v1` explicitly. `SILICONFLOW_MODEL` is accepted. Reasoning aliases `deepseek-reasoner` and `deepseek-r1` map to Pro; `deepseek-chat` and `deepseek-v3` map to Flash. |
 | `moonshot` | `[providers.moonshot]` | `MOONSHOT_API_KEY`, `KIMI_API_KEY` | `MOONSHOT_BASE_URL`, `KIMI_BASE_URL`; default `https://api.moonshot.ai/v1` | `kimi-k2.6`; Kimi Code path uses `kimi-for-coding` at `https://api.kimi.com/coding/v1` | Moonshot/Kimi route. `MOONSHOT_MODEL`, `KIMI_MODEL_NAME`, and `KIMI_MODEL` are accepted. `[providers.moonshot] auth_mode = "kimi_oauth"` reads Kimi CLI OAuth credentials when present. |
 | `sglang` | `[providers.sglang]` | Optional `SGLANG_API_KEY` | `SGLANG_BASE_URL`; default `http://localhost:30000/v1` | `deepseek-ai/DeepSeek-V4-Pro`, `deepseek-ai/DeepSeek-V4-Flash` | Self-hosted OpenAI-compatible route. Localhost deployments commonly omit auth. `SGLANG_MODEL` is accepted. |
@@ -132,7 +132,7 @@ endpoint.
 `xiaomi-mimo` defaults to `mimo-v2.5-pro` for long-context reasoning and coding
 work, while the static registry also exposes `mimo-v2.5`. Xiaomi's current
 [image-understanding guide](https://platform.xiaomimimo.com/docs/en-US/usage-guide/multimodal-understanding/image-understanding)
-includes `mimo-v2.5` for image input. CodeWhale exposes image analysis through the
+includes `mimo-v2.5` for image input. CodeSmith exposes image analysis through the
 separate `[vision_model]` / `image_analyze` path; set that model to
 `mimo-v2.5` when using MiMo for vision.
 
@@ -150,9 +150,9 @@ but it is treated as a hosted Qwen model rather than documented as open-weight.
 
 ## Static Model Registry
 
-`codewhale model list` and `codewhale model resolve` use the static registry in
+`codesmith model list` and `codesmith model resolve` use the static registry in
 `crates/agent/src/lib.rs`. This is not the same as live `/models` discovery.
-Use `/models` or `codewhale models` to fetch model IDs from the active API
+Use `/models` or `codesmith models` to fetch model IDs from the active API
 endpoint when the endpoint supports model listing.
 
 | Provider | Static registry entries | Tool calls | Registry reasoning flag |
@@ -180,7 +180,7 @@ listing when available.
 
 ## Capability Metadata
 
-`codewhale-tui doctor --json` exposes the `capability` object. It is static
+`codesmith-tui doctor --json` exposes the `capability` object. It is static
 metadata, not a live API probe. Current fields are:
 
 `resolved_provider`, `resolved_model`, `context_window`, `max_output`,
@@ -204,7 +204,7 @@ All shipped providers use the Chat Completions request payload mode today.
 Tool-call support is tracked separately by the static `ModelRegistry` and by
 the endpoint's ability to accept OpenAI-compatible `tools` payloads. A custom
 OpenAI-compatible or local endpoint can still reject tool calls even if
-CodeWhale can send the schema.
+CodeSmith can send the schema.
 
 DeepSeek compatibility aliases `deepseek-chat` and `deepseek-reasoner` map to
 `deepseek-v4-flash` capability metadata and are scheduled to retire on
@@ -235,7 +235,7 @@ The check fails when:
 These items belong to the v0.8.47 provider-abstraction milestone or related
 provider docs work, but they are not native shipped behavior in this checkout:
 
-- A unified `Provider` trait in `codewhale-agent` that owns env precedence,
+- A unified `Provider` trait in `codesmith-agent` that owns env precedence,
   secret resolution, base URL normalization, auth-header construction, and
   provider metadata. Those responsibilities are still split across
   `crates/config`, `crates/secrets`, and `crates/tui/src/client.rs`.

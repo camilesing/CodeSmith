@@ -22,7 +22,6 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
-use crate::llm_client::LlmClientHandle;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
@@ -34,6 +33,7 @@ use crate::cycle_manager::{
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
 use crate::features::{Feature, Features};
 use crate::llm_client::LlmClient;
+use crate::llm_client::LlmClientHandle;
 use crate::mcp::McpPool;
 #[cfg(test)]
 use crate::models::ToolCaller;
@@ -354,7 +354,7 @@ pub struct Engine {
     /// can fan completion events back into the engine.
     tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
     /// Receiver paired with `tx_subagent_completion`. Drained at the
-    /// turn-loop's empty-tool_uses branch to surface `<codewhale:subagent.done>`
+    /// turn-loop's empty-tool_uses branch to surface `<codesmith:subagent.done>`
     /// sentinels into the parent's transcript before deciding to end the turn.
     pub(super) rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
     cancel_token: CancellationToken,
@@ -446,12 +446,10 @@ impl Engine {
             .rev()
             .find_map(|msg| {
                 if msg.role == "user" {
-                    msg.content
-                        .iter()
-                        .find_map(|block| match block {
-                            crate::models::ContentBlock::Text { text, .. } => Some(text.clone()),
-                            _ => None,
-                        })
+                    msg.content.iter().find_map(|block| match block {
+                        crate::models::ContentBlock::Text { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
                 } else {
                     None
                 }
@@ -509,7 +507,10 @@ impl Engine {
                     .unwrap_or_default();
 
                 Ok(text)
-            }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+            })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+                >
         };
 
         let handle = tokio::spawn(async move {
@@ -566,9 +567,7 @@ impl Engine {
                 self.add_session_message(crate::models::Message {
                     role: "user".to_string(),
                     content: vec![crate::models::ContentBlock::Text {
-                        text: format!(
-                            "<system-reminder>\n{content}\n</system-reminder>"
-                        ),
+                        text: format!("<system-reminder>\n{content}\n</system-reminder>"),
                         cache_control: None,
                     }],
                 })
@@ -608,8 +607,8 @@ impl Engine {
 
         Some(format!(
             "The rejected key came from {env_var}; no saved config key is present.\n\
-             Run `codewhale auth status` to inspect credential sources, then \
-             `codewhale auth set --provider {provider}` to save a valid key in ~/.codewhale/config.toml, \
+             Run `codesmith auth status` to inspect credential sources, then \
+             `codesmith auth set --provider {provider}` to save a valid key in ~/.codesmith/config.toml, \
              or remove the stale export and open a fresh shell.",
             provider = provider.as_str()
         ))
@@ -816,14 +815,15 @@ impl Engine {
 
         let bg_registry_shell = shell_manager.clone();
         let bg_registry_agent = subagent_manager.clone();
-        let bg_data_dir = dirs::home_dir().map_or_else(|| PathBuf::from(".codewhale"), |h| h.join(".codewhale"));
+        let bg_data_dir =
+            dirs::home_dir().map_or_else(|| PathBuf::from(".codesmith"), |h| h.join(".codesmith"));
         let bg_registry = std::sync::Arc::new(tokio::sync::Mutex::new(
             crate::background_task::BackgroundTaskRegistry::new(
                 bg_registry_shell,
                 bg_registry_agent,
                 None,
                 bg_data_dir,
-            )
+            ),
         ));
 
         let mut engine = Engine {
@@ -889,27 +889,36 @@ impl Engine {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
                     loop {
                         interval.tick().await;
-                        if cancel_token.is_cancelled() { break; }
+                        if cancel_token.is_cancelled() {
+                            break;
+                        }
                         let mut registry = bg_registry.lock().await;
                         let poll_results = registry.poll_tasks().await;
                         for result in poll_results {
                             if result.stall_detected {
-                                let _ = tx_event.send(Event::BackgroundTaskProgress {
-                                    id: result.task_id.clone(),
-                                    output_delta: result.output_delta.clone().unwrap_or_default(),
-                                    stall_detected: true,
-                                }).await;
+                                let _ = tx_event
+                                    .send(Event::BackgroundTaskProgress {
+                                        id: result.task_id.clone(),
+                                        output_delta: result
+                                            .output_delta
+                                            .clone()
+                                            .unwrap_or_default(),
+                                        stall_detected: true,
+                                    })
+                                    .await;
                             }
-                            if result.old_status != result.new_status && result.new_status.is_terminal() {
+                            if result.old_status != result.new_status
+                                && result.new_status.is_terminal()
+                            {
                                 // Terminal transition — notification will be drained below
                             }
                         }
                         // Drain notifications and emit as events
                         let notifications = registry.drain_notifications();
                         for notification in notifications {
-                            let _ = tx_event.send(Event::BackgroundTaskNotification {
-                                notification,
-                            }).await;
+                            let _ = tx_event
+                                .send(Event::BackgroundTaskNotification { notification })
+                                .await;
                         }
                         registry.evict_notified();
                     }
@@ -1129,7 +1138,8 @@ impl Engine {
                         .await;
                 }
                 Op::CompactContext => {
-                    self.handle_manual_compaction(crate::core::ops::CompactMode::Full).await;
+                    self.handle_manual_compaction(crate::core::ops::CompactMode::Full)
+                        .await;
                 }
                 Op::CompactContextWithMode { mode } => {
                     self.handle_manual_compaction(mode).await;
@@ -1180,7 +1190,11 @@ impl Engine {
 
                 // Background task operations — stubs for Phase 7 engine integration
                 #[allow(dead_code)]
-                Op::StartBackgroundShell { command, cwd, timeout_secs } => {
+                Op::StartBackgroundShell {
+                    command,
+                    cwd,
+                    timeout_secs,
+                } => {
                     // TODO: delegate to ShellManager + BackgroundTaskRegistry
                 }
                 #[allow(dead_code)]
@@ -1599,10 +1613,7 @@ impl Engine {
                             .with_mailbox(mailbox.clone())
                             .with_cancel_token(cancel_token.clone());
                     }
-                    builder = builder.with_subagent_tools(
-                        self.subagent_manager.clone(),
-                        rt,
-                    );
+                    builder = builder.with_subagent_tools(self.subagent_manager.clone(), rt);
                 }
                 // send_message — coordinator needs messaging but NOT
                 // team_create/team_delete.
@@ -1923,7 +1934,11 @@ impl Engine {
         removed
     }
 
-    async fn recover_context_overflow(&mut self, client: &dyn crate::llm_client::LlmClient, reason: &str) -> bool {
+    async fn recover_context_overflow(
+        &mut self,
+        client: &dyn crate::llm_client::LlmClient,
+        reason: &str,
+    ) -> bool {
         let Some(target_budget) = context_input_budget(&self.session.model) else {
             return false;
         };
@@ -1937,7 +1952,9 @@ impl Engine {
         let before_count = self.session.messages.len();
 
         // Phase 1: Responsive compact cascade — try cheapest recovery first.
-        use crate::compaction::responsive_compact::{ResponsiveCompactAction, next_recovery_action};
+        use crate::compaction::responsive_compact::{
+            ResponsiveCompactAction, next_recovery_action,
+        };
         let mut responsive_state = self.session.responsive_compact_state.clone();
         let mut recovery_attempt = 0u32;
 
@@ -1953,11 +1970,24 @@ impl Engine {
                     if bytes > 0 {
                         self.session.messages = messages;
                         if self.estimated_input_tokens() <= target_budget {
-                            crate::compaction::post_compact_cleanup::post_compact_cleanup(&mut self.session);
-                            let _ = self.tx_event.send(Event::status(
-                                "Emergency recovery: micro-compaction cleared enough context".to_string()
-                            )).await;
-                            self.emit_compaction_completed(id.clone(), true, "Micro-compaction recovery".to_string(), Some(before_count), Some(self.session.messages.len())).await;
+                            crate::compaction::post_compact_cleanup::post_compact_cleanup(
+                                &mut self.session,
+                            );
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(
+                                    "Emergency recovery: micro-compaction cleared enough context"
+                                        .to_string(),
+                                ))
+                                .await;
+                            self.emit_compaction_completed(
+                                id.clone(),
+                                true,
+                                "Micro-compaction recovery".to_string(),
+                                Some(before_count),
+                                Some(self.session.messages.len()),
+                            )
+                            .await;
                             return true;
                         }
                     }
@@ -1985,17 +2015,28 @@ impl Engine {
                         &self.session.messages,
                         &request,
                         self.config.compaction.cache_summary,
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(result) => {
                             if !result.messages.is_empty() {
                                 self.session.messages = result.messages;
                                 self.merge_compaction_summary(result.summary_prompt);
                                 if self.estimated_input_tokens() <= target_budget {
-                                    crate::compaction::post_compact_cleanup::post_compact_cleanup(&mut self.session);
+                                    crate::compaction::post_compact_cleanup::post_compact_cleanup(
+                                        &mut self.session,
+                                    );
                                     let _ = self.tx_event.send(Event::status(
                                         format!("Emergency recovery: partial compaction ({}) succeeded", if direction == crate::compaction::partial_compact::PartialCompactDirection::From { "From" } else { "UpTo" })
                                     )).await;
-                                    self.emit_compaction_completed(id.clone(), true, "Partial compaction recovery".to_string(), Some(before_count), Some(self.session.messages.len())).await;
+                                    self.emit_compaction_completed(
+                                        id.clone(),
+                                        true,
+                                        "Partial compaction recovery".to_string(),
+                                        Some(before_count),
+                                        Some(self.session.messages.len()),
+                                    )
+                                    .await;
                                     return true;
                                 }
                             }
@@ -2546,7 +2587,10 @@ impl Engine {
             match kod_block {
                 Some(block) => (None, Some(block)),
                 None => (
-                    crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path),
+                    crate::memory::compose_block(
+                        self.config.memory_enabled,
+                        &self.config.memory_path,
+                    ),
                     None,
                 ),
             }
@@ -2650,9 +2694,9 @@ impl Engine {
 }
 
 fn default_plugin_tools_dir() -> PathBuf {
-    codewhale_config::codewhale_home()
+    codesmith_config::codesmith_home()
         .unwrap_or_else(|_| {
-            dirs::home_dir().map_or_else(|| PathBuf::from(".codewhale"), |h| h.join(".codewhale"))
+            dirs::home_dir().map_or_else(|| PathBuf::from(".codesmith"), |h| h.join(".codesmith"))
         })
         .join("tools")
 }
@@ -2854,11 +2898,11 @@ mod dispatch;
 mod loop_guard;
 mod lsp_hooks;
 mod streaming;
+mod team_inbox;
 mod tool_catalog;
 mod tool_execution;
 mod tool_setup;
 mod turn_loop;
-mod team_inbox;
 
 pub(crate) fn default_active_native_tool_names() -> &'static [&'static str] {
     tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS

@@ -982,9 +982,18 @@ impl ToolRegistryBuilder {
         plan_state: super::plan::SharedPlanState,
     ) -> Self {
         use super::plan_mode::{EnterPlanModeTool, ExitPlanModeTool, WritePlanFileTool};
-        self.with_tool(Arc::new(EnterPlanModeTool::new(plan_mode_state.clone(), plan_state.clone())))
-            .with_tool(Arc::new(ExitPlanModeTool::new(plan_mode_state.clone(), plan_state.clone())))
-            .with_tool(Arc::new(WritePlanFileTool::new(plan_mode_state, plan_state)))
+        self.with_tool(Arc::new(EnterPlanModeTool::new(
+            plan_mode_state.clone(),
+            plan_state.clone(),
+        )))
+        .with_tool(Arc::new(ExitPlanModeTool::new(
+            plan_mode_state.clone(),
+            plan_state.clone(),
+        )))
+        .with_tool(Arc::new(WritePlanFileTool::new(
+            plan_mode_state,
+            plan_state,
+        )))
     }
 
     /// Include plan mode tools in read-only subset for plan mode registry
@@ -997,16 +1006,16 @@ impl ToolRegistryBuilder {
         plan_state: super::plan::SharedPlanState,
     ) -> Self {
         use super::plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
-        self.with_tool(Arc::new(EnterPlanModeTool::new(plan_mode_state.clone(), plan_state.clone())))
-            .with_tool(Arc::new(ExitPlanModeTool::new(plan_mode_state, plan_state)))
+        self.with_tool(Arc::new(EnterPlanModeTool::new(
+            plan_mode_state.clone(),
+            plan_state.clone(),
+        )))
+        .with_tool(Arc::new(ExitPlanModeTool::new(plan_mode_state, plan_state)))
     }
 
     /// Include Task V2 tools (task_create_v2, task_update_v2, task_get_v2, task_list_v2).
     #[must_use]
-    pub fn with_task_v2_tools(
-        self,
-        manager: super::task_v2::SharedTaskV2Manager,
-    ) -> Self {
+    pub fn with_task_v2_tools(self, manager: super::task_v2::SharedTaskV2Manager) -> Self {
         use super::task_v2::{TaskV2CreateTool, TaskV2GetTool, TaskV2ListTool, TaskV2UpdateTool};
         self.with_tool(Arc::new(TaskV2CreateTool::new(manager.clone())))
             .with_tool(Arc::new(TaskV2UpdateTool::new(manager.clone())))
@@ -1052,7 +1061,9 @@ impl ToolRegistryBuilder {
         manager: super::subagent::SharedSubAgentManager,
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
-        use super::subagent::{AgentCloseTool, AgentEvalTool, AgentOpenTool, SubagentRunTool, ToolAgentTool};
+        use super::subagent::{
+            AgentCloseTool, AgentEvalTool, AgentOpenTool, SubagentRunTool, ToolAgentTool,
+        };
 
         self.with_tool(Arc::new(AgentOpenTool::new(
             manager.clone(),
@@ -1063,7 +1074,10 @@ impl ToolRegistryBuilder {
             manager.clone(),
             runtime.clone(),
         )))
-        .with_tool(Arc::new(SubagentRunTool::new(manager.clone(), runtime.clone())))
+        .with_tool(Arc::new(SubagentRunTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
         .with_tool(Arc::new(AgentCloseTool::new(manager)))
     }
 
@@ -1097,11 +1111,8 @@ impl ToolRegistryBuilder {
 
     /// Include Agent Teams tools (team_create, team_delete, send_message).
     #[must_use]
-    pub fn with_team_tools(
-        self,
-        team_context: super::team::SharedTeamContext,
-    ) -> Self {
-        use super::team::{TeamCreateTool, TeamDeleteTool, SendMessageTool};
+    pub fn with_team_tools(self, team_context: super::team::SharedTeamContext) -> Self {
+        use super::team::{SendMessageTool, TeamCreateTool, TeamDeleteTool};
         self.with_tool(Arc::new(TeamCreateTool::new(team_context.clone())))
             .with_tool(Arc::new(TeamDeleteTool::new(team_context.clone())))
             .with_tool(Arc::new(SendMessageTool::new(team_context)))
@@ -1124,10 +1135,7 @@ impl ToolRegistryBuilder {
     /// Used by coordinator mode, which needs messaging but not
     /// team_create/team_delete.
     #[must_use]
-    pub fn with_send_message_tool(
-        self,
-        team_context: super::team::SharedTeamContext,
-    ) -> Self {
+    pub fn with_send_message_tool(self, team_context: super::team::SharedTeamContext) -> Self {
         use super::team::SendMessageTool;
         self.with_tool(Arc::new(SendMessageTool::new(team_context)))
     }

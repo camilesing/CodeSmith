@@ -47,11 +47,11 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace --all-features --locked
       - name: TUI snapshot parity
-        run: cargo test -p codewhale-tui-core --test snapshot --locked
+        run: cargo test -p codesmith-tui-core --test snapshot --locked
       - name: Protocol schema parity
-        run: cargo test -p codewhale-protocol --test parity_protocol --locked
+        run: cargo test -p codesmith-protocol --test parity_protocol --locked
       - name: State persistence parity
-        run: cargo test -p codewhale-state --test parity_state --locked
+        run: cargo test -p codesmith-state --test parity_state --locked
       - name: Lockfile drift guard
         run: git diff --exit-code -- Cargo.lock
 
@@ -106,56 +106,56 @@ jobs:
     strategy:
       matrix:
         include:
-          # --- codewhale (cli dispatcher, canonical) ---
+          # --- codesmith (cli dispatcher, canonical) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary: codewhale
-            artifact_name: codewhale-linux-x64
+            binary: codesmith
+            artifact_name: codesmith-linux-x64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            binary: codewhale
-            artifact_name: codewhale-linux-arm64
+            binary: codesmith
+            artifact_name: codesmith-linux-arm64
           - os: ubuntu-latest
             target: riscv64gc-unknown-linux-gnu
-            binary: codewhale
-            artifact_name: codewhale-linux-riscv64
+            binary: codesmith
+            artifact_name: codesmith-linux-riscv64
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary: codewhale
-            artifact_name: codewhale-macos-x64
+            binary: codesmith
+            artifact_name: codesmith-macos-x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary: codewhale
-            artifact_name: codewhale-macos-arm64
+            binary: codesmith
+            artifact_name: codesmith-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: codewhale.exe
-            artifact_name: codewhale-windows-x64.exe
-          # --- codewhale-tui (TUI runtime, canonical) ---
+            binary: codesmith.exe
+            artifact_name: codesmith-windows-x64.exe
+          # --- codesmith-tui (TUI runtime, canonical) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary: codewhale-tui
-            artifact_name: codewhale-tui-linux-x64
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-linux-x64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            binary: codewhale-tui
-            artifact_name: codewhale-tui-linux-arm64
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-linux-arm64
           - os: ubuntu-latest
             target: riscv64gc-unknown-linux-gnu
-            binary: codewhale-tui
-            artifact_name: codewhale-tui-linux-riscv64
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-linux-riscv64
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary: codewhale-tui
-            artifact_name: codewhale-tui-macos-x64
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-macos-x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary: codewhale-tui
-            artifact_name: codewhale-tui-macos-arm64
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: codewhale-tui.exe
-            artifact_name: codewhale-tui-windows-x64.exe
+            binary: codesmith-tui.exe
+            artifact_name: codesmith-tui-windows-x64.exe
           # --- deepseek (legacy dispatcher shim; removed in v0.9.0) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -273,32 +273,32 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: 'codewhale*'
+          pattern: 'codesmith*'
       - name: Create platform archives
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p bundles/checksums
-          MANIFEST="bundles/checksums/codewhale-bundles-sha256.txt"
+          MANIFEST="bundles/checksums/codesmith-bundles-sha256.txt"
           : > "$MANIFEST"
 
           bundle() {
             local platform="$1"   # linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64
-            local cli_src="$2"    # artifact name for codewhale binary
-            local tui_src="$3"    # artifact name for codewhale-tui binary
+            local cli_src="$2"    # artifact name for codesmith binary
+            local tui_src="$3"    # artifact name for codesmith-tui binary
             local ext="$4"        # tar.gz or zip
             local variant="$5"    # '' (standard) or 'portable' (Windows only, no install script)
             shift 5
 
-            local dir="bundles/codewhale-${platform}${variant:+-}${variant}"
+            local dir="bundles/codesmith-${platform}${variant:+-}${variant}"
             mkdir -p "$dir"
 
             # Copy binaries, stripping platform suffixes
-            local cli_dst="codewhale"
-            local tui_dst="codewhale-tui"
+            local cli_dst="codesmith"
+            local tui_dst="codesmith-tui"
             if [[ "$platform" == windows-* ]]; then
-              cli_dst="codewhale.exe"
-              tui_dst="codewhale-tui.exe"
+              cli_dst="codesmith.exe"
+              tui_dst="codesmith-tui.exe"
             fi
             cp "artifacts/${cli_src}/${cli_src}" "$dir/${cli_dst}"
             cp "artifacts/${tui_src}/${tui_src}" "$dir/${tui_dst}"
@@ -316,41 +316,41 @@ jobs:
             fi
 
             if [[ "$ext" == "zip" ]]; then
-              (cd bundles && zip -r "codewhale-${platform}${variant:+-}${variant}.zip" "codewhale-${platform}${variant:+-}${variant}/")
+              (cd bundles && zip -r "codesmith-${platform}${variant:+-}${variant}.zip" "codesmith-${platform}${variant:+-}${variant}/")
             else
-              tar -czf "bundles/codewhale-${platform}${variant:+-}${variant}.tar.gz" -C bundles "codewhale-${platform}${variant:+-}${variant}/"
+              tar -czf "bundles/codesmith-${platform}${variant:+-}${variant}.tar.gz" -C bundles "codesmith-${platform}${variant:+-}${variant}/"
             fi
 
-            local archive="codewhale-${platform}${variant:+-}${variant}.${ext}"
+            local archive="codesmith-${platform}${variant:+-}${variant}.${ext}"
             sha256sum "bundles/${archive}" | awk '{printf "%s  %s\n", $1, $2}' >> "$MANIFEST"
             echo "  Created bundles/${archive}"
           }
 
           # Platform: linux-x64
           bundle linux-x64 \
-            codewhale-linux-x64 codewhale-tui-linux-x64 tar.gz ""
+            codesmith-linux-x64 codesmith-tui-linux-x64 tar.gz ""
 
           # Platform: linux-arm64
           bundle linux-arm64 \
-            codewhale-linux-arm64 codewhale-tui-linux-arm64 tar.gz ""
+            codesmith-linux-arm64 codesmith-tui-linux-arm64 tar.gz ""
 
           # Platform: linux-riscv64
           bundle linux-riscv64 \
-            codewhale-linux-riscv64 codewhale-tui-linux-riscv64 tar.gz ""
+            codesmith-linux-riscv64 codesmith-tui-linux-riscv64 tar.gz ""
 
           # Platform: macos-x64
           bundle macos-x64 \
-            codewhale-macos-x64 codewhale-tui-macos-x64 tar.gz ""
+            codesmith-macos-x64 codesmith-tui-macos-x64 tar.gz ""
 
           # Platform: macos-arm64
           bundle macos-arm64 \
-            codewhale-macos-arm64 codewhale-tui-macos-arm64 tar.gz ""
+            codesmith-macos-arm64 codesmith-tui-macos-arm64 tar.gz ""
 
           # Platform: windows-x64 (standard + portable)
           bundle windows-x64 \
-            codewhale-windows-x64.exe codewhale-tui-windows-x64.exe zip ""
+            codesmith-windows-x64.exe codesmith-tui-windows-x64.exe zip ""
           bundle windows-x64 \
-            codewhale-windows-x64.exe codewhale-tui-windows-x64.exe zip "portable"
+            codesmith-windows-x64.exe codesmith-tui-windows-x64.exe zip "portable"
 
           echo ""
           echo "=== Archive checksums ==="
@@ -359,7 +359,7 @@ jobs:
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: codewhale-bundles
+          name: codesmith-bundles
           path: bundles/*
           if-no-files-found: error
 
@@ -441,7 +441,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          # Match both the canonical `codewhale*` artifacts and the legacy
+          # Match both the canonical `codesmith*` artifacts and the legacy
           # `deepseek*` shim artifacts that ship for the transition release.
           pattern: '*'
       - name: List artifacts
@@ -450,8 +450,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts/checksums
-          # Canonical manifest used by codewhale's `codewhale update` flow.
-          manifest="artifacts/checksums/codewhale-artifacts-sha256.txt"
+          # Canonical manifest used by codesmith's `codesmith update` flow.
+          manifest="artifacts/checksums/codesmith-artifacts-sha256.txt"
           : > "${manifest}"
           while IFS= read -r -d '' file; do
             hash="$(sha256sum "${file}" | awk '{print $1}')"
@@ -469,10 +469,10 @@ jobs:
           files: artifacts/*/*
           prerelease: false
           body: |
-            > This release renames the project to **CodeWhale**. The legacy
+            > This release renames the project to **CodeSmith**. The legacy
             > `deepseek` and `deepseek-tui` binaries continue to ship as
             > deprecation shims for one release cycle; they print a one-line
-            > warning and forward to `codewhale` / `codewhale-tui`. They will
+            > warning and forward to `codesmith` / `codesmith-tui`. They will
             > be removed in v0.9.0. See `docs/REBRAND.md` for the full
             > migration story.
 
@@ -481,7 +481,7 @@ jobs:
             ### Recommended — npm (one command, both binaries)
 
             ```bash
-            npm install -g codewhale
+            npm install -g codesmith
             ```
 
             The wrapper downloads both binaries from this Release and places them in the same directory.
@@ -491,43 +491,43 @@ jobs:
             ```bash
             docker run --rm -it \
               -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-              -v ~/.deepseek:/home/codewhale/.deepseek \
-              ghcr.io/hmbown/codewhale:${{ needs.resolve.outputs.tag }}
+              -v ~/.deepseek:/home/codesmith/.deepseek \
+              ghcr.io/hmbown/codesmith:${{ needs.resolve.outputs.tag }}
             ```
 
-            The image ships the `codewhale` dispatcher and `codewhale-tui` runtime (plus the legacy `deepseek` / `deepseek-tui` shims during the transition). The `latest` tag is also updated on release.
+            The image ships the `codesmith` dispatcher and `codesmith-tui` runtime (plus the legacy `deepseek` / `deepseek-tui` shims during the transition). The `latest` tag is also updated on release.
 
             ### Cargo (Linux / macOS)
 
             ```bash
-            cargo install codewhale-cli codewhale-tui --locked
+            cargo install codesmith-cli codesmith-tui --locked
             ```
 
-            Both crates are required — `codewhale-cli` produces the `codewhale` dispatcher and `codewhale-tui` produces the interactive runtime that the dispatcher delegates to. Installing only one binary will fail at runtime with a `MISSING_COMPANION_BINARY` error.
+            Both crates are required — `codesmith-cli` produces the `codesmith` dispatcher and `codesmith-tui` produces the interactive runtime that the dispatcher delegates to. Installing only one binary will fail at runtime with a `MISSING_COMPANION_BINARY` error.
 
             ### Manual download — platform archives (recommended)
 
-            Each archive below contains **both** the `codewhale` dispatcher and `codewhale-tui` runtime, plus an install script:
+            Each archive below contains **both** the `codesmith` dispatcher and `codesmith-tui` runtime, plus an install script:
 
             | Platform | Archive | Install script |
             |---|---|---|
-            | Linux x64 | `codewhale-linux-x64.tar.gz` | `install.sh` |
-            | Linux ARM64 | `codewhale-linux-arm64.tar.gz` | `install.sh` |
-            | Linux RISC-V | `codewhale-linux-riscv64.tar.gz` | `install.sh` |
-            | macOS x64 | `codewhale-macos-x64.tar.gz` | `install.sh` |
-            | macOS ARM | `codewhale-macos-arm64.tar.gz` | `install.sh` |
-            | Windows x64 | `codewhale-windows-x64.zip` | `install.bat` |
-            | Windows x64 (portable) | `codewhale-windows-x64-portable.zip` | — |
+            | Linux x64 | `codesmith-linux-x64.tar.gz` | `install.sh` |
+            | Linux ARM64 | `codesmith-linux-arm64.tar.gz` | `install.sh` |
+            | Linux RISC-V | `codesmith-linux-riscv64.tar.gz` | `install.sh` |
+            | macOS x64 | `codesmith-macos-x64.tar.gz` | `install.sh` |
+            | macOS ARM | `codesmith-macos-arm64.tar.gz` | `install.sh` |
+            | Windows x64 | `codesmith-windows-x64.zip` | `install.bat` |
+            | Windows x64 (portable) | `codesmith-windows-x64-portable.zip` | — |
 
             **Unix (Linux / macOS):**
             ```bash
-            tar xzf codewhale-<platform>.tar.gz
-            cd codewhale-<platform>
+            tar xzf codesmith-<platform>.tar.gz
+            cd codesmith-<platform>
             ./install.sh
             ```
 
             **Windows:**
-            - Extract `codewhale-windows-x64.zip`
+            - Extract `codesmith-windows-x64.zip`
             - Run `install.bat` (copies to `%USERPROFILE%\bin`)
             - Add `%USERPROFILE%\bin` to your PATH
 
@@ -541,21 +541,21 @@ jobs:
 
             ```bash
             # Linux — archive bundles
-            sha256sum -c codewhale-bundles-sha256.txt
+            sha256sum -c codesmith-bundles-sha256.txt
 
             # Linux — individual binaries
-            sha256sum -c codewhale-artifacts-sha256.txt
+            sha256sum -c codesmith-artifacts-sha256.txt
 
             # macOS
-            shasum -a 256 -c codewhale-bundles-sha256.txt
-            shasum -a 256 -c codewhale-artifacts-sha256.txt
+            shasum -a 256 -c codesmith-bundles-sha256.txt
+            shasum -a 256 -c codesmith-artifacts-sha256.txt
             ```
 
             The legacy `deepseek-artifacts-sha256.txt` is also attached for backward compatibility and contains the same hashes as the canonical manifest.
 
             ## Changelog
 
-            See [CHANGELOG.md](https://github.com/Hmbown/CodeWhale/blob/main/CHANGELOG.md) for the full notes for this release.
+            See [CHANGELOG.md](https://github.com/Hmbown/CodeSmith/blob/main/CHANGELOG.md) for the full notes for this release.
 
   homebrew:
     needs: [release, resolve]

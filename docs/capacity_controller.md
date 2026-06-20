@@ -1,6 +1,6 @@
 # Capacity Controller
 
-`codewhale-tui` includes an opt-in capacity-aware context controller. In the
+`codesmith-tui` includes an opt-in capacity-aware context controller. In the
 default V4 path it is disabled, because its active interventions can rewrite
 the live prompt and break prefix-cache affinity. Treat it as telemetry or an
 experimental guardrail unless `capacity.enabled = true` is set explicitly.
@@ -112,8 +112,8 @@ the model input budget.
 Path:
 
 - `DEEPSEEK_CAPACITY_MEMORY_DIR` (if set)
-- otherwise `~/.codewhale/memory/<session_id>.jsonl`
-- fallback: existing `~/.deepseek/memory/<session_id>.jsonl` or workspace-local `.codewhale` / legacy `.deepseek` memory paths when needed
+- otherwise `~/.codesmith/memory/<session_id>.jsonl`
+- fallback: existing `~/.deepseek/memory/<session_id>.jsonl` or workspace-local `.codesmith` / legacy `.deepseek` memory paths when needed
 
 Record fields:
 

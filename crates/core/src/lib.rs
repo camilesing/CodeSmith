@@ -3,27 +3,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use codewhale_agent::ModelRegistry;
-use codewhale_config::{CliRuntimeOverrides, ConfigToml, ProviderKind};
-use codewhale_execpolicy::{
+use codesmith_agent::ModelRegistry;
+use codesmith_config::{CliRuntimeOverrides, ConfigToml, ProviderKind};
+use codesmith_execpolicy::{
     AskForApproval, ExecApprovalRequirement, ExecPolicyContext, ExecPolicyDecision,
     ExecPolicyEngine,
 };
-use codewhale_hooks::{HookDispatcher, HookEvent};
-use codewhale_mcp::{
+use codesmith_hooks::{HookDispatcher, HookEvent};
+use codesmith_mcp::{
     McpManager, McpStartupCompleteEvent, McpStartupStatus as McpManagerStartupStatus,
 };
-use codewhale_protocol::{
+use codesmith_protocol::{
     AppResponse, EventFrame, ExecApprovalRequestEvent, PromptRequest, PromptResponse,
     ResponseChannel, ReviewDecision, Thread, ThreadForkParams, ThreadListParams, ThreadReadParams,
     ThreadRequest, ThreadResponse, ThreadResumeParams, ThreadSetNameParams, ThreadStatus,
     ToolPayload,
 };
-use codewhale_state::{
+use codesmith_state::{
     JobStateRecord, JobStateStatus, SessionSource, StateStore, ThreadListFilters, ThreadMetadata,
     ThreadStatus as PersistedThreadStatus,
 };
-use codewhale_tools::{ToolCall, ToolRegistry};
+use codesmith_tools::{ToolCall, ToolRegistry};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -485,11 +485,11 @@ impl ThreadManager {
             cwd: cwd.clone(),
             cli_version: self.cli_version.clone(),
             source: match source {
-                SessionSource::Interactive => codewhale_protocol::SessionSource::Interactive,
-                SessionSource::Resume => codewhale_protocol::SessionSource::Resume,
-                SessionSource::Fork => codewhale_protocol::SessionSource::Fork,
-                SessionSource::Api => codewhale_protocol::SessionSource::Api,
-                SessionSource::Unknown => codewhale_protocol::SessionSource::Unknown,
+                SessionSource::Interactive => codesmith_protocol::SessionSource::Interactive,
+                SessionSource::Resume => codesmith_protocol::SessionSource::Resume,
+                SessionSource::Fork => codesmith_protocol::SessionSource::Fork,
+                SessionSource::Api => codesmith_protocol::SessionSource::Api,
+                SessionSource::Unknown => codesmith_protocol::SessionSource::Unknown,
             },
             name: None,
         };
@@ -1285,19 +1285,19 @@ impl Runtime {
         });
         for update in updates {
             let status = match update.status {
-                McpManagerStartupStatus::Starting => codewhale_protocol::McpStartupStatus::Starting,
-                McpManagerStartupStatus::Ready => codewhale_protocol::McpStartupStatus::Ready,
+                McpManagerStartupStatus::Starting => codesmith_protocol::McpStartupStatus::Starting,
+                McpManagerStartupStatus::Ready => codesmith_protocol::McpStartupStatus::Ready,
                 McpManagerStartupStatus::Failed { error } => {
-                    codewhale_protocol::McpStartupStatus::Failed { error }
+                    codesmith_protocol::McpStartupStatus::Failed { error }
                 }
                 McpManagerStartupStatus::Cancelled => {
-                    codewhale_protocol::McpStartupStatus::Cancelled
+                    codesmith_protocol::McpStartupStatus::Cancelled
                 }
             };
             self.hooks
                 .emit(HookEvent::GenericEventFrame {
                     frame: EventFrame::McpStartupUpdate {
-                        update: codewhale_protocol::McpStartupUpdateEvent {
+                        update: codesmith_protocol::McpStartupUpdateEvent {
                             server_name: update.server_name,
                             status,
                         },
@@ -1308,12 +1308,12 @@ impl Runtime {
         self.hooks
             .emit(HookEvent::GenericEventFrame {
                 frame: EventFrame::McpStartupComplete {
-                    summary: codewhale_protocol::McpStartupCompleteEvent {
+                    summary: codesmith_protocol::McpStartupCompleteEvent {
                         ready: summary.ready.clone(),
                         failed: summary
                             .failed
                             .iter()
-                            .map(|f| codewhale_protocol::McpStartupFailure {
+                            .map(|f| codesmith_protocol::McpStartupFailure {
                                 server_name: f.server_name.clone(),
                                 error: f.error.clone(),
                             })
@@ -1524,11 +1524,11 @@ fn to_protocol_thread(thread: ThreadMetadata) -> Thread {
         cwd: thread.cwd,
         cli_version: thread.cli_version,
         source: match thread.source {
-            SessionSource::Interactive => codewhale_protocol::SessionSource::Interactive,
-            SessionSource::Resume => codewhale_protocol::SessionSource::Resume,
-            SessionSource::Fork => codewhale_protocol::SessionSource::Fork,
-            SessionSource::Api => codewhale_protocol::SessionSource::Api,
-            SessionSource::Unknown => codewhale_protocol::SessionSource::Unknown,
+            SessionSource::Interactive => codesmith_protocol::SessionSource::Interactive,
+            SessionSource::Resume => codesmith_protocol::SessionSource::Resume,
+            SessionSource::Fork => codesmith_protocol::SessionSource::Fork,
+            SessionSource::Api => codesmith_protocol::SessionSource::Api,
+            SessionSource::Unknown => codesmith_protocol::SessionSource::Unknown,
         },
         name: thread.name,
     }
@@ -1545,13 +1545,13 @@ fn to_persisted_status(status: &ThreadStatus) -> PersistedThreadStatus {
     }
 }
 
-fn to_persisted_source(source: &codewhale_protocol::SessionSource) -> SessionSource {
+fn to_persisted_source(source: &codesmith_protocol::SessionSource) -> SessionSource {
     match source {
-        codewhale_protocol::SessionSource::Interactive => SessionSource::Interactive,
-        codewhale_protocol::SessionSource::Resume => SessionSource::Resume,
-        codewhale_protocol::SessionSource::Fork => SessionSource::Fork,
-        codewhale_protocol::SessionSource::Api => SessionSource::Api,
-        codewhale_protocol::SessionSource::Unknown => SessionSource::Unknown,
+        codesmith_protocol::SessionSource::Interactive => SessionSource::Interactive,
+        codesmith_protocol::SessionSource::Resume => SessionSource::Resume,
+        codesmith_protocol::SessionSource::Fork => SessionSource::Fork,
+        codesmith_protocol::SessionSource::Api => SessionSource::Api,
+        codesmith_protocol::SessionSource::Unknown => SessionSource::Unknown,
     }
 }
 
@@ -1670,7 +1670,7 @@ fn tool_payload_value(payload: &ToolPayload) -> Value {
     )
 }
 
-fn tool_output_value(output: &codewhale_protocol::ToolOutput) -> Value {
+fn tool_output_value(output: &codesmith_protocol::ToolOutput) -> Value {
     serde_json::to_value(output).unwrap_or_else(
         |_| json!({"type":"serialization_error","message":"tool output unavailable"}),
     )

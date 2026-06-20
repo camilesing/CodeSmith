@@ -10,14 +10,13 @@ use crate::features::Feature;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use crate::tools::team::{
-    SharedTeamContext, TeammateMessage, team_lead_name,
-    read_team_file, write_to_mailbox,
-};
 use crate::tools::team::protocol_handlers::{
-    handle_shutdown_request, handle_shutdown_approval, handle_shutdown_rejection,
-    handle_plan_approval_auto_approve, handle_plan_approval_rejection,
-    handle_permission_request, handle_permission_response,
+    handle_permission_request, handle_permission_response, handle_plan_approval_auto_approve,
+    handle_plan_approval_rejection, handle_shutdown_approval, handle_shutdown_rejection,
+    handle_shutdown_request,
+};
+use crate::tools::team::{
+    SharedTeamContext, TeammateMessage, read_team_file, team_lead_name, write_to_mailbox,
 };
 
 pub struct SendMessageTool {
@@ -106,8 +105,12 @@ impl ToolSpec for SendMessageTool {
         ApprovalRequirement::Auto
     }
 
-    fn supports_parallel(&self) -> bool { false }
-    fn is_read_only(&self) -> bool { false }
+    fn supports_parallel(&self) -> bool {
+        false
+    }
+    fn is_read_only(&self) -> bool {
+        false
+    }
 
     async fn execute(
         &self,
@@ -133,11 +136,17 @@ impl ToolSpec for SendMessageTool {
             let tc = self.team_context.lock().await;
             match tc.as_ref() {
                 Some(ctx) => (ctx.team_name.clone(), team_lead_name().to_string()),
-                None => return Err(ToolError::invalid_input("Not in a team. Cannot send messages.")),
+                None => {
+                    return Err(ToolError::invalid_input(
+                        "Not in a team. Cannot send messages.",
+                    ));
+                }
             }
         };
 
-        let message_val = input.get("message").ok_or_else(|| ToolError::missing_field("message"))?;
+        let message_val = input
+            .get("message")
+            .ok_or_else(|| ToolError::missing_field("message"))?;
 
         // Plain text string — write as regular TeammateMessage.
         if message_val.is_string() {
@@ -146,18 +155,25 @@ impl ToolSpec for SendMessageTool {
         }
 
         // Structured protocol — dispatch to handler.
-        let obj = message_val.as_object()
+        let obj = message_val
+            .as_object()
             .ok_or_else(|| ToolError::invalid_input("Message must be a string or object"))?;
 
-        let type_str = obj.get("type")
+        let type_str = obj
+            .get("type")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("type in message object"))?;
 
         match type_str {
             "shutdown_request" => {
-                let reason = obj.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let request_id = handle_shutdown_request(&sender_name, &recipient, &team_name, reason)
-                    .map_err(|e| ToolError::execution_failed(format!("Shutdown request failed: {}", e)))?;
+                let reason = obj
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let request_id =
+                    handle_shutdown_request(&sender_name, &recipient, &team_name, reason).map_err(
+                        |e| ToolError::execution_failed(format!("Shutdown request failed: {}", e)),
+                    )?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Shutdown request sent to {}. Request ID: {}", recipient, request_id),
@@ -166,7 +182,8 @@ impl ToolSpec for SendMessageTool {
                 })).map_err(|e| ToolError::execution_failed(e.to_string()))
             }
             "shutdown_approved" => {
-                let request_id = obj.get("request_id")
+                let request_id = obj
+                    .get("request_id")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::missing_field("request_id"))?
                     .to_string();
@@ -178,74 +195,108 @@ impl ToolSpec for SendMessageTool {
                     "request_id": request_id,
                     "from": sender_name,
                     "timestamp": now,
-                })).map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
-                write_to_mailbox(&recipient, &team_name, TeammateMessage {
-                    from: sender_name.clone(),
-                    text: protocol_text,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    read: false,
-                    color: None,
-                    summary: Some("shutdown approved".to_string()),
-                }).map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
+                }))
+                .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
+                write_to_mailbox(
+                    &recipient,
+                    &team_name,
+                    TeammateMessage {
+                        from: sender_name.clone(),
+                        text: protocol_text,
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        read: false,
+                        color: None,
+                        summary: Some("shutdown approved".to_string()),
+                    },
+                )
+                .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Shutdown approved for {}", recipient),
                     "request_id": request_id,
-                })).map_err(|e| ToolError::execution_failed(e.to_string()))
+                }))
+                .map_err(|e| ToolError::execution_failed(e.to_string()))
             }
             "shutdown_rejected" => {
-                let request_id = obj.get("request_id")
+                let request_id = obj
+                    .get("request_id")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::missing_field("request_id"))?
                     .to_string();
-                let reason = obj.get("reason")
+                let reason = obj
+                    .get("reason")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No reason provided")
                     .to_string();
-                handle_shutdown_rejection(&request_id, &sender_name, &recipient, &team_name, reason)
-                    .map_err(|e| ToolError::execution_failed(format!("Shutdown rejection failed: {}", e)))?;
+                handle_shutdown_rejection(
+                    &request_id,
+                    &sender_name,
+                    &recipient,
+                    &team_name,
+                    reason,
+                )
+                .map_err(|e| {
+                    ToolError::execution_failed(format!("Shutdown rejection failed: {}", e))
+                })?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Shutdown rejected for {}", recipient),
                     "request_id": request_id,
-                })).map_err(|e| ToolError::execution_failed(e.to_string()))
+                }))
+                .map_err(|e| ToolError::execution_failed(e.to_string()))
             }
             "plan_approval_response" => {
-                let request_id = obj.get("request_id")
+                let request_id = obj
+                    .get("request_id")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::missing_field("request_id"))?
                     .to_string();
-                let approved = obj.get("approve")
+                let approved = obj
+                    .get("approve")
                     .and_then(|v| v.as_bool())
                     .ok_or_else(|| ToolError::missing_field("approve"))?;
                 if approved {
-                    let permission_mode = obj.get("permission_mode")
+                    let permission_mode = obj
+                        .get("permission_mode")
                         .and_then(|v| v.as_str())
                         .unwrap_or("auto")
                         .to_string();
-                    handle_plan_approval_auto_approve(&request_id, &recipient, &team_name, &permission_mode)
-                        .map_err(|e| ToolError::execution_failed(format!("Plan approval failed: {}", e)))?;
+                    handle_plan_approval_auto_approve(
+                        &request_id,
+                        &recipient,
+                        &team_name,
+                        &permission_mode,
+                    )
+                    .map_err(|e| {
+                        ToolError::execution_failed(format!("Plan approval failed: {}", e))
+                    })?;
                     ToolResult::json(&json!({
                         "success": true,
                         "message": format!("Plan approved for {}", recipient),
                         "request_id": request_id,
-                    })).map_err(|e| ToolError::execution_failed(e.to_string()))
+                    }))
+                    .map_err(|e| ToolError::execution_failed(e.to_string()))
                 } else {
-                    let feedback = obj.get("feedback")
+                    let feedback = obj
+                        .get("feedback")
                         .and_then(|v| v.as_str())
                         .unwrap_or("No feedback provided")
                         .to_string();
                     handle_plan_approval_rejection(&request_id, &recipient, &team_name, feedback)
-                        .map_err(|e| ToolError::execution_failed(format!("Plan rejection failed: {}", e)))?;
+                        .map_err(|e| {
+                        ToolError::execution_failed(format!("Plan rejection failed: {}", e))
+                    })?;
                     ToolResult::json(&json!({
                         "success": true,
                         "message": format!("Plan rejected for {}", recipient),
                         "request_id": request_id,
-                    })).map_err(|e| ToolError::execution_failed(e.to_string()))
+                    }))
+                    .map_err(|e| ToolError::execution_failed(e.to_string()))
                 }
             }
             "mode_set_request" => {
-                let permission_mode = obj.get("permission_mode")
+                let permission_mode = obj
+                    .get("permission_mode")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::missing_field("permission_mode"))?
                     .to_string();
@@ -255,28 +306,44 @@ impl ToolSpec for SendMessageTool {
                     "from": sender_name,
                     "permission_mode": permission_mode,
                     "timestamp": now,
-                })).map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
-                write_to_mailbox(&recipient, &team_name, TeammateMessage {
-                    from: sender_name.clone(),
-                    text: protocol_text,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    read: false,
-                    color: None,
-                    summary: Some(format!("mode set: {}", permission_mode)),
-                }).map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
+                }))
+                .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
+                write_to_mailbox(
+                    &recipient,
+                    &team_name,
+                    TeammateMessage {
+                        from: sender_name.clone(),
+                        text: protocol_text,
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        read: false,
+                        color: None,
+                        summary: Some(format!("mode set: {}", permission_mode)),
+                    },
+                )
+                .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Mode set request sent to {}: {}", recipient, permission_mode),
                 })).map_err(|e| ToolError::execution_failed(e.to_string()))
             }
             "team_permission_update" => {
-                let allowed_tools: Vec<String> = obj.get("allowed_tools")
+                let allowed_tools: Vec<String> = obj
+                    .get("allowed_tools")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let denied_tools: Vec<String> = obj.get("denied_tools")
+                let denied_tools: Vec<String> = obj
+                    .get("denied_tools")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let now = chrono::Utc::now().to_rfc3339();
                 let protocol_text = serde_json::to_string(&json!({
@@ -285,41 +352,60 @@ impl ToolSpec for SendMessageTool {
                     "allowed_tools": allowed_tools,
                     "denied_tools": denied_tools,
                     "timestamp": now,
-                })).map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
-                write_to_mailbox(&recipient, &team_name, TeammateMessage {
-                    from: sender_name.clone(),
-                    text: protocol_text,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    read: false,
-                    color: None,
-                    summary: Some("permission update".to_string()),
-                }).map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
+                }))
+                .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
+                write_to_mailbox(
+                    &recipient,
+                    &team_name,
+                    TeammateMessage {
+                        from: sender_name.clone(),
+                        text: protocol_text,
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        read: false,
+                        color: None,
+                        summary: Some("permission update".to_string()),
+                    },
+                )
+                .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Permission update sent to {}", recipient),
-                })).map_err(|e| ToolError::execution_failed(e.to_string()))
+                }))
+                .map_err(|e| ToolError::execution_failed(e.to_string()))
             }
             "sandbox_permission_request" | "sandbox_permission_response" => {
                 // Forward as-is — the inbox poller will classify and route.
                 let mut forwarded = obj.clone();
                 forwarded.insert("from".to_string(), json!(sender_name));
-                forwarded.insert("timestamp".to_string(), json!(chrono::Utc::now().to_rfc3339()));
+                forwarded.insert(
+                    "timestamp".to_string(),
+                    json!(chrono::Utc::now().to_rfc3339()),
+                );
                 let protocol_text = serde_json::to_string(&forwarded)
                     .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
-                write_to_mailbox(&recipient, &team_name, TeammateMessage {
-                    from: sender_name.clone(),
-                    text: protocol_text,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    read: false,
-                    color: None,
-                    summary: Some(format!("sandbox permission: {}", type_str)),
-                }).map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
+                write_to_mailbox(
+                    &recipient,
+                    &team_name,
+                    TeammateMessage {
+                        from: sender_name.clone(),
+                        text: protocol_text,
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        read: false,
+                        color: None,
+                        summary: Some(format!("sandbox permission: {}", type_str)),
+                    },
+                )
+                .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Sandbox permission {} sent to {}", type_str, recipient),
-                })).map_err(|e| ToolError::execution_failed(e.to_string()))
+                }))
+                .map_err(|e| ToolError::execution_failed(e.to_string()))
             }
-            _ => Err(ToolError::invalid_input(format!("Unknown protocol type: {}", type_str))),
+            _ => Err(ToolError::invalid_input(format!(
+                "Unknown protocol type: {}",
+                type_str
+            ))),
         }
     }
 }
@@ -345,16 +431,19 @@ impl SendMessageTool {
 
         if recipient == "*" {
             // Broadcast to all non-lead teammates.
-            let team_file = read_team_file(team_name)
-                .map_err(|e| ToolError::execution_failed(format!("Failed to read team file: {}", e)))?;
+            let team_file = read_team_file(team_name).map_err(|e| {
+                ToolError::execution_failed(format!("Failed to read team file: {}", e))
+            })?;
 
             let mut delivered = Vec::new();
             for member in &team_file.members {
                 if member.name != team_lead_name() && member.is_active {
-                    write_to_mailbox(&member.name, team_name, team_msg.clone())
-                        .map_err(|e| ToolError::execution_failed(format!(
-                            "Failed to deliver to {}: {}", member.name, e
-                        )))?;
+                    write_to_mailbox(&member.name, team_name, team_msg.clone()).map_err(|e| {
+                        ToolError::execution_failed(format!(
+                            "Failed to deliver to {}: {}",
+                            member.name, e
+                        ))
+                    })?;
                     delivered.push(member.name.clone());
                 }
             }
@@ -364,10 +453,9 @@ impl SendMessageTool {
         }
 
         // Single recipient DM.
-        write_to_mailbox(recipient, team_name, team_msg)
-            .map_err(|e| ToolError::execution_failed(format!(
-                "Failed to deliver to {}: {}", recipient, e
-            )))?;
+        write_to_mailbox(recipient, team_name, team_msg).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to deliver to {}: {}", recipient, e))
+        })?;
 
         ToolResult::json(&json!({"delivered_to": recipient}))
             .map_err(|e| ToolError::execution_failed(e.to_string()))

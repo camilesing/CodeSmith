@@ -24,8 +24,8 @@ test("openharmony x64 resolves to linux x64 binaries", () => {
   withMockedOs("openharmony", "x64", () => {
     const { detectBinaryNames } = require(ARTIFACTS_PATH);
     const result = detectBinaryNames();
-    assert.equal(result.codewhale, "codewhale-linux-x64");
-    assert.equal(result.tui, "codewhale-tui-linux-x64");
+    assert.equal(result.codesmith, "codesmith-linux-x64");
+    assert.equal(result.tui, "codesmith-tui-linux-x64");
   });
 });
 
@@ -33,8 +33,8 @@ test("openharmony arm64 resolves to linux arm64 binaries", () => {
   withMockedOs("openharmony", "arm64", () => {
     const { detectBinaryNames } = require(ARTIFACTS_PATH);
     const result = detectBinaryNames();
-    assert.equal(result.codewhale, "codewhale-linux-arm64");
-    assert.equal(result.tui, "codewhale-tui-linux-arm64");
+    assert.equal(result.codesmith, "codesmith-linux-arm64");
+    assert.equal(result.tui, "codesmith-tui-linux-arm64");
   });
 });
 
@@ -52,16 +52,16 @@ test("genuinely unsupported platform throws with raw platform name", () => {
 });
 
 test("known platforms are unaffected by alias map", () => {
-  for (const [platform, arch, expectedCodeWhale] of [
-    ["linux", "x64", "codewhale-linux-x64"],
-    ["darwin", "arm64", "codewhale-macos-arm64"],
-    ["linux", "riscv64", "codewhale-linux-riscv64"],
-    ["win32", "x64", "codewhale-windows-x64.exe"],
+  for (const [platform, arch, expectedCodeSmith] of [
+    ["linux", "x64", "codesmith-linux-x64"],
+    ["darwin", "arm64", "codesmith-macos-arm64"],
+    ["linux", "riscv64", "codesmith-linux-riscv64"],
+    ["win32", "x64", "codesmith-windows-x64.exe"],
   ]) {
     withMockedOs(platform, arch, () => {
       const { detectBinaryNames } = require(ARTIFACTS_PATH);
       const result = detectBinaryNames();
-      assert.equal(result.codewhale, expectedCodeWhale);
+      assert.equal(result.codesmith, expectedCodeSmith);
     });
   }
 });
@@ -69,8 +69,8 @@ test("known platforms are unaffected by alias map", () => {
 test("allAssetNames includes every matrix entry", () => {
   const { allAssetNames, allReleaseAssetNames } = require(ARTIFACTS_PATH);
   const assetNames = allAssetNames();
-  assert.ok(assetNames.includes("codewhale-windows-x64.exe"));
-  assert.ok(assetNames.includes("codewhale-tui-windows-x64.exe"));
-  assert.ok(assetNames.includes("codewhale.bat"));
-  assert.ok(allReleaseAssetNames().includes("codewhale.bat"));
+  assert.ok(assetNames.includes("codesmith-windows-x64.exe"));
+  assert.ok(assetNames.includes("codesmith-tui-windows-x64.exe"));
+  assert.ok(assetNames.includes("codesmith.bat"));
+  assert.ok(allReleaseAssetNames().includes("codesmith.bat"));
 });

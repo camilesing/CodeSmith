@@ -76,8 +76,8 @@ impl ToolSpec for RememberTool {
             .get("memory_type")
             .and_then(|v| v.as_str())
             .unwrap_or("feedback");
-        let memory_type = MemoryType::from_str_loose(memory_type_str)
-            .unwrap_or(MemoryType::Feedback);
+        let memory_type =
+            MemoryType::from_str_loose(memory_type_str).unwrap_or(MemoryType::Feedback);
         let name = input
             .get("name")
             .and_then(|v| v.as_str())
@@ -120,10 +120,15 @@ fn write_kod_memory(
     memory_type: MemoryType,
 ) -> Result<ToolResult, ToolError> {
     // Generate filename from name or slug.
-    let filename = name
-        .as_deref()
-        .map(slugify)
-        .unwrap_or_else(|| slugify(&note.split_whitespace().take(3).collect::<Vec<_>>().join("_")));
+    let filename = name.as_deref().map(slugify).unwrap_or_else(|| {
+        slugify(
+            &note
+                .split_whitespace()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("_"),
+        )
+    });
     let file_path = memory_dir.join(format!("{filename}.md"));
 
     // Build frontmatter.
@@ -132,12 +137,18 @@ fn write_kod_memory(
 
     let content = format!(
         "---\nname: {}\ndescription: {}\ntype: {}\n---\n{}",
-        fm_name, fm_description, memory_type, note.trim()
+        fm_name,
+        fm_description,
+        memory_type,
+        note.trim()
     );
 
     // Ensure directory exists.
     std::fs::create_dir_all(memory_dir).map_err(|err| {
-        ToolError::execution_failed(format!("failed to create memory dir {}: {err}", memory_dir.display()))
+        ToolError::execution_failed(format!(
+            "failed to create memory dir {}: {err}",
+            memory_dir.display()
+        ))
     })?;
 
     // Write file.
@@ -183,7 +194,13 @@ fn slugify(s: &str) -> String {
     s.trim()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .split('_')
         .filter(|part| !part.is_empty())
@@ -253,12 +270,15 @@ mod tests {
 
         let tool = RememberTool;
         let result = tool
-            .execute(json!({
-                "note": "User prefers concise responses",
-                "name": "concise preference",
-                "description": "User wants short answers",
-                "memory_type": "feedback"
-            }), &ctx)
+            .execute(
+                json!({
+                    "note": "User prefers concise responses",
+                    "name": "concise preference",
+                    "description": "User wants short answers",
+                    "memory_type": "feedback"
+                }),
+                &ctx,
+            )
             .await
             .expect("ok");
 

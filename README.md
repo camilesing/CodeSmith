@@ -1,6 +1,6 @@
-# CodeWhale
+# CodeSmith
 
-> Terminal coding agent for DeepSeek V4. It runs from the `codewhale` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
+> Terminal coding agent for DeepSeek V4. It runs from the `codesmith` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
 
 [简体中文 README](README.zh-CN.md)
 [日本語 README](README.ja-JP.md)
@@ -9,8 +9,8 @@
 
 ## Install
 
-`codewhale` installs as a matched pair of self-contained Rust release binaries:
-the `codewhale` dispatcher command and the sibling `codewhale-tui` runtime it
+`codesmith` installs as a matched pair of self-contained Rust release binaries:
+the `codesmith` dispatcher command and the sibling `codesmith-tui` runtime it
 launches for interactive sessions. npm, Homebrew, and Docker install both for
 you; Cargo and manual installs must put both binaries in the same directory
 (normally a directory on your `PATH`). The npm package is only an
@@ -19,32 +19,32 @@ installer/wrapper for those release binaries; the agent does not run on Node.
 ```bash
 # 1. npm — easiest if you already use Node. The package downloads the
 #    matching prebuilt Rust binaries from GitHub Releases.
-npm install -g codewhale
+npm install -g codesmith
 
 # 2. Cargo — no Node needed. Requires Rust 1.88+ (the crates use the
 #    2024 edition; older toolchains fail with "feature `edition2024` is
 #    required"). Run `rustup update` first, or use a non-Cargo path below.
-cargo install codewhale-cli --locked   # `codewhale` (entry point)
-cargo install codewhale-tui     --locked   # `codewhale-tui` (TUI binary)
+cargo install codesmith-cli --locked   # `codesmith` (entry point)
+cargo install codesmith-tui     --locked   # `codesmith-tui` (TUI binary)
 
 # 3. Homebrew — macOS package manager.
-#    The tap/formula name is legacy; it installs codewhale and codewhale-tui.
+#    The tap/formula name is legacy; it installs codesmith and codesmith-tui.
 brew tap Hmbown/deepseek-tui
 brew install deepseek-tui
 
 # 4. Direct download — platform archive from GitHub Releases.
-#    https://github.com/Hmbown/CodeWhale/releases
-#    Archives include both codewhale and codewhale-tui plus an install script.
+#    https://github.com/Hmbown/CodeSmith/releases
+#    Archives include both codesmith and codesmith-tui plus an install script.
 #    Individual binaries are also attached for scripts; keep the pair together.
 
 # 5. Docker — prebuilt release image.
-docker volume create codewhale-home
+docker volume create codesmith-home
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.codewhale \
+  -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:latest
+  ghcr.io/hmbown/codesmith:latest
 ```
 
 > In mainland China, speed up the npm path with
@@ -52,29 +52,29 @@ docker run --rm -it \
 > [Cargo mirror](#china--mirror-friendly-installation) below.
 >
 > Download safety: official release binaries live under
-> `https://github.com/Hmbown/CodeWhale/releases`. For manual downloads,
+> `https://github.com/Hmbown/CodeSmith/releases`. For manual downloads,
 > verify the SHA-256 manifest and avoid look-alike repositories or search-result
 > mirrors. See [download safety and checksums](docs/INSTALL.md#2-download-safety-and-checksums).
 
 Already installed? Use the updater that matches the install path:
 
 ```bash
-codewhale update                         # release-binary updater
-npm install -g codewhale@latest      # npm wrapper
+codesmith update                         # release-binary updater
+npm install -g codesmith@latest      # npm wrapper
 brew update && brew upgrade deepseek-tui
-cargo install codewhale-cli --locked --force
-cargo install codewhale-tui     --locked --force
+cargo install codesmith-cli --locked --force
+cargo install codesmith-tui     --locked --force
 ```
 
-> codewhale update now supports --proxy, update through a proxy
-> eg: codewhale update --proxy https://localhost:7897
+> codesmith update now supports --proxy, update through a proxy
+> eg: codesmith update --proxy https://localhost:7897
 
-[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[DeepWiki project index](https://deepwiki.com/Hmbown/CodeWhale)
+[![CI](https://github.com/Hmbown/CodeSmith/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeSmith/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/codesmith)](https://www.npmjs.com/package/codesmith)
+[![crates.io](https://img.shields.io/crates/v/codesmith-cli?label=crates.io)](https://crates.io/crates/codesmith-cli)
+[DeepWiki project index](https://deepwiki.com/Hmbown/CodeSmith)
 
-![codewhale screenshot](assets/screenshot.png)
+![codesmith screenshot](assets/screenshot.png)
 
 ---
 
@@ -84,7 +84,7 @@ A model answers a question. An agent finishes a task. The difference is
 the harness — a system of rules, evidence, and feedback that keeps the
 model oriented instead of drifting.
 
-CodeWhale is that harness, built around DeepSeek V4 and guided by three ideas:
+CodeSmith is that harness, built around DeepSeek V4 and guided by three ideas:
 
 | Principle | How it works |
 |---|---|
@@ -92,8 +92,8 @@ CodeWhale is that harness, built around DeepSeek V4 and guided by three ideas:
 | **Clear jurisdiction** | A written Constitution with nine tiers of authority. User intent outranks stale instructions. Verification outranks confidence. |
 | **Recursive improvement** | V4 helped write the harness. As the harness improves, V4 becomes more effective — and helps improve the harness further. Each turn starts stronger. |
 
-It's open source, terminal-native, and packaged as a matched `codewhale` /
-`codewhale-tui` Rust binary pair.
+It's open source, terminal-native, and packaged as a matched `codesmith` /
+`codesmith-tui` Rust binary pair.
 
 ## How the Harness Works
 
@@ -102,7 +102,7 @@ project rules, system defaults, tool output, and stale memory all compete
 for authority in a single turn. LLM-as-a-judge needs jurisdiction — which
 source wins when they disagree?
 
-CodeWhale answers this with a **Constitution** (`prompts/base.md`). It's a
+CodeSmith answers this with a **Constitution** (`prompts/base.md`). It's a
 formal hierarchy of law — Article VII ranks nine sources from the
 Constitution's own articles down to prior-session handoffs. The user's
 current message outranks stale project instructions. Live tool output
@@ -154,17 +154,17 @@ SWE-bench export, and live cost tracking with cache hit/miss breakdowns.
 
 ## The Harness
 
-`codewhale` (dispatcher CLI) → `codewhale-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
+`codesmith` (dispatcher CLI) → `codesmith-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
 
 ### Sub-agents: Concurrent Background Execution
 
-CodeWhale can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
+CodeSmith can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
 
 - **Non-blocking launch.** `agent_open` returns immediately. The child gets its own fresh context and tool registry and runs independently. The parent keeps working.
 - **Background execution.** Sub-agents execute concurrently (default cap: 10, configurable to 20). The engine manages the pool — no polling loop needed.
-- **Completion notification.** When a sub-agent finishes, the runtime injects a `<codewhale:subagent.done>` sentinel into the parent's transcript. The human-readable summary — including the child's findings, changed files, and any risks — sits on the line immediately before the sentinel. The parent model reads that summary and integrates findings without an extra tool call.
+- **Completion notification.** When a sub-agent finishes, the runtime injects a `<codesmith:subagent.done>` sentinel into the parent's transcript. The human-readable summary — including the child's findings, changed files, and any risks — sits on the line immediately before the sentinel. The parent model reads that summary and integrates findings without an extra tool call.
 - **Bounded result retrieval.** The full child transcript lives behind a `transcript_handle` accessible through `agent_eval`. When the summary isn't enough, the parent calls `handle_read` for slices, line ranges, or JSONPath projections — keeping the parent context lean without losing access to the details.
 
 See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for the full sub-agent reference.
@@ -174,34 +174,34 @@ See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for the full sub-agent reference.
 ## Quickstart
 
 ```bash
-npm install -g codewhale
-codewhale --version
-codewhale --model auto
+npm install -g codesmith
+codesmith --version
+codesmith --model auto
 ```
 
 Prebuilt binary pairs and platform archives are published for **Linux x64**, **Linux ARM64** (v0.8.8+), **macOS x64**, **macOS ARM64**, and **Windows x64**. For other targets (musl, riscv64, FreeBSD, etc.), see [Install from source](#install-from-source) or [docs/INSTALL.md](docs/INSTALL.md).
 
-On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is saved to `~/.codewhale/config.toml` (legacy `~/.deepseek/config.toml` also supported) so it works from any directory without OS credential prompts.
+On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is saved to `~/.codesmith/config.toml` (legacy `~/.deepseek/config.toml` also supported) so it works from any directory without OS credential prompts.
 
 You can also set it ahead of time:
 
 ```bash
-codewhale auth set --provider deepseek   # saves to ~/.codewhale/config.toml
-codewhale auth status                    # shows the active credential source
+codesmith auth set --provider deepseek   # saves to ~/.codesmith/config.toml
+codesmith auth status                    # shows the active credential source
 
 export DEEPSEEK_API_KEY="YOUR_KEY"      # env var alternative; use ~/.zshenv for non-interactive shells
-codewhale
+codesmith
 
-codewhale doctor                         # verify setup
+codesmith doctor                         # verify setup
 ```
 
-If `codewhale doctor` says the rejected key came from `DEEPSEEK_API_KEY`, remove
+If `codesmith doctor` says the rejected key came from `DEEPSEEK_API_KEY`, remove
 the stale export from your shell startup file, open a fresh shell, or run
-`codewhale auth set --provider deepseek`. Use `codewhale auth status` to see the
+`codesmith auth set --provider deepseek`. Use `codesmith auth status` to see the
 config, keyring, and env-var source state without printing the key. Saved config
 keys take precedence over the keyring and environment and are easier to rotate.
 
-> To rotate or remove a saved key: `codewhale auth clear --provider deepseek`.
+> To rotate or remove a saved key: `codesmith auth clear --provider deepseek`.
 
 ### Tencent Cloud / CNB Remote-First Path
 
@@ -216,7 +216,7 @@ server runbook.
 
 ### Auto Mode
 
-Use `codewhale --model auto` or `/model auto` when you want codewhale to decide how much model and reasoning power a turn needs.
+Use `codesmith --model auto` or `/model auto` when you want codesmith to decide how much model and reasoning power a turn needs.
 
 Auto mode controls two settings together:
 
@@ -225,13 +225,13 @@ Auto mode controls two settings together:
 
 Before the real turn is sent, the app makes a small `deepseek-v4-flash` routing call with thinking off. That router looks at the latest request and recent context, then selects a concrete model and thinking level for the real request. Short/simple turns can stay on Flash with thinking off; coding, debugging, release work, architecture, security review, or ambiguous multi-step tasks can move up to Pro and/or higher thinking.
 
-`auto` is local to codewhale. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a local heuristic. Sub-agents inherit auto mode unless you assign them an explicit model.
+`auto` is local to codesmith. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a local heuristic. Sub-agents inherit auto mode unless you assign them an explicit model.
 
 Use a fixed model or fixed thinking level when you want repeatable benchmarking, a strict cost ceiling, or a specific provider/model mapping.
 
 ### Linux ARM64 (Raspberry Pi, Asahi, Graviton, HarmonyOS PC)
 
-`npm i -g codewhale` works on glibc-based ARM64 Linux from v0.8.8 onward. You can also download prebuilt binaries from the [Releases page](https://github.com/Hmbown/CodeWhale/releases) and place them side by side on your `PATH`.
+`npm i -g codesmith` works on glibc-based ARM64 Linux from v0.8.8 onward. You can also download prebuilt binaries from the [Releases page](https://github.com/Hmbown/CodeSmith/releases) and place them side by side on your `PATH`.
 
 ### China / Mirror-friendly Installation
 
@@ -249,24 +249,24 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 Then install both binaries (the dispatcher delegates to the TUI at runtime):
 
 ```bash
-cargo install codewhale-cli --locked   # provides `codewhale`
-cargo install codewhale-tui     --locked   # provides `codewhale-tui`
-codewhale --version
+cargo install codesmith-cli --locked   # provides `codesmith`
+cargo install codesmith-tui     --locked   # provides `codesmith-tui`
+codesmith --version
 ```
 
-Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/CodeWhale/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
+Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
 
 ### Windows (Scoop)
 
-[Scoop](https://scoop.sh) is a Windows package manager. The `codewhale` package is listed
+[Scoop](https://scoop.sh) is a Windows package manager. The `codesmith` package is listed
 in Scoop's main bucket, but that manifest updates independently and can lag the
 GitHub/npm/Cargo release. Run `scoop update` first, then verify the installed
-version with `codewhale --version`:
+version with `codesmith --version`:
 
 ```bash
 scoop update
-scoop install codewhale
-codewhale --version
+scoop install codesmith
+codesmith --version
 ```
 
 Use npm or direct GitHub release downloads when you need the newest release
@@ -283,11 +283,11 @@ Works on any Tier-1 Rust target — including musl, riscv64, FreeBSD, and older 
 #   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
 #   sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
 
-git clone https://github.com/Hmbown/CodeWhale.git
-cd CodeWhale
+git clone https://github.com/Hmbown/CodeSmith.git
+cd CodeSmith
 
-cargo install --path crates/cli --locked   # requires Rust 1.88+; provides `codewhale`
-cargo install --path crates/tui --locked   # provides `codewhale-tui`
+cargo install --path crates/cli --locked   # requires Rust 1.88+; provides `codesmith`
+cargo install --path crates/tui --locked   # provides `codesmith-tui`
 ```
 
 Both binaries are required. Cross-compilation and platform-specific notes: [docs/INSTALL.md](docs/INSTALL.md).
@@ -301,59 +301,59 @@ base URLs, and capability boundaries, see [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
 ```bash
 # NVIDIA NIM
-codewhale auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
-codewhale --provider nvidia-nim
+codesmith auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
+codesmith --provider nvidia-nim
 
 # AtlasCloud
-codewhale auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
-codewhale --provider atlascloud
+codesmith auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
+codesmith --provider atlascloud
 
 # Wanjie Ark
-codewhale auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
-codewhale --provider wanjie-ark --model deepseek-reasoner
+codesmith auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
+codesmith --provider wanjie-ark --model deepseek-reasoner
 
 # OpenRouter
-codewhale auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
-codewhale --provider openrouter --model deepseek/deepseek-v4-pro
-codewhale --provider openrouter --model arcee-ai/trinity-large-thinking
-codewhale --provider openrouter --model qwen/qwen3.7-max
+codesmith auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
+codesmith --provider openrouter --model deepseek/deepseek-v4-pro
+codesmith --provider openrouter --model arcee-ai/trinity-large-thinking
+codesmith --provider openrouter --model qwen/qwen3.7-max
 
 # Xiaomi MiMo
-codewhale auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_KEY"
-codewhale --provider xiaomi-mimo --model mimo-v2.5-pro
+codesmith auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_KEY"
+codesmith --provider xiaomi-mimo --model mimo-v2.5-pro
 
 # Novita
-codewhale auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
-codewhale --provider novita --model deepseek/deepseek-v4-pro
+codesmith auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
+codesmith --provider novita --model deepseek/deepseek-v4-pro
 
 # Fireworks
-codewhale auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
-codewhale --provider fireworks --model deepseek-v4-pro
+codesmith auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
+codesmith --provider fireworks --model deepseek-v4-pro
 
 # SiliconFlow
-codewhale auth set --provider siliconflow --api-key "YOUR_SILICONFLOW_API_KEY"
-codewhale --provider siliconflow --model deepseek-ai/DeepSeek-V4-Pro
+codesmith auth set --provider siliconflow --api-key "YOUR_SILICONFLOW_API_KEY"
+codesmith --provider siliconflow --model deepseek-ai/DeepSeek-V4-Pro
 
 # Generic OpenAI-compatible endpoint
-codewhale auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
-OPENAI_BASE_URL="https://openai-compatible.example/v4" codewhale --provider openai --model glm-5
+codesmith auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
+OPENAI_BASE_URL="https://openai-compatible.example/v4" codesmith --provider openai --model glm-5
 
 # Custom DeepSeek-compatible endpoint
 DEEPSEEK_BASE_URL="https://your-provider.example/v1" \
   DEEPSEEK_MODEL="deepseek-ai/DeepSeek-V4-Pro" \
-  codewhale --provider deepseek
+  codesmith --provider deepseek
 
 # Self-hosted SGLang
-SGLANG_BASE_URL="http://localhost:30000/v1" codewhale --provider sglang --model deepseek-v4-flash
+SGLANG_BASE_URL="http://localhost:30000/v1" codesmith --provider sglang --model deepseek-v4-flash
 
 # Self-hosted vLLM
-VLLM_BASE_URL="http://localhost:8000/v1" codewhale --provider vllm --model deepseek-v4-flash
+VLLM_BASE_URL="http://localhost:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 # Trusted LAN vLLM over HTTP
-DEEPSEEK_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" codewhale --provider vllm --model deepseek-v4-flash
+DEEPSEEK_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 
 # Self-hosted Ollama
-ollama pull codewhale-coder:1.3b
-codewhale --provider ollama --model codewhale-coder:1.3b
+ollama pull codesmith-coder:1.3b
+codesmith --provider ollama --model codesmith-coder:1.3b
 ```
 
 Inside the TUI, `/provider` opens the provider picker and `/model` opens the
@@ -374,39 +374,39 @@ interfaces, and extension points.
 ## Usage
 
 ```bash
-codewhale                                         # interactive TUI
-codewhale "explain this function"                 # one-shot prompt
-codewhale exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
-codewhale exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
-codewhale --model deepseek-v4-flash "summarize"   # model override
-codewhale --model auto "fix this bug"             # auto-select model + thinking
-codewhale --yolo                                  # auto-approve tools
-codewhale auth set --provider deepseek            # save API key
-codewhale doctor                                  # check setup & connectivity
-codewhale doctor --json                           # machine-readable diagnostics
-codewhale setup --status                          # read-only setup status
-codewhale setup --tools --plugins                 # scaffold tool/plugin dirs
-codewhale models                                  # list live API models
-codewhale sessions                                # list saved sessions
-codewhale resume --last                           # resume the most recent session in this workspace
-codewhale resume <SESSION_ID>                     # resume a specific session by UUID
-codewhale fork <SESSION_ID>                       # fork a saved session into a sibling path
-codewhale serve --http                            # HTTP/SSE API server
-codewhale serve --mobile                          # LAN mobile control page; token-gated by default
-codewhale serve --acp                             # ACP stdio adapter for Zed/custom agents
-codewhale run pr <N>                              # fetch PR and pre-seed review prompt
-codewhale mcp list                                # list configured MCP servers
-codewhale mcp validate                            # validate MCP config/connectivity
-codewhale mcp-server                              # run dispatcher MCP stdio server
-codewhale update                                  # check for and apply binary updates
+codesmith                                         # interactive TUI
+codesmith "explain this function"                 # one-shot prompt
+codesmith exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
+codesmith exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
+codesmith --model deepseek-v4-flash "summarize"   # model override
+codesmith --model auto "fix this bug"             # auto-select model + thinking
+codesmith --yolo                                  # auto-approve tools
+codesmith auth set --provider deepseek            # save API key
+codesmith doctor                                  # check setup & connectivity
+codesmith doctor --json                           # machine-readable diagnostics
+codesmith setup --status                          # read-only setup status
+codesmith setup --tools --plugins                 # scaffold tool/plugin dirs
+codesmith models                                  # list live API models
+codesmith sessions                                # list saved sessions
+codesmith resume --last                           # resume the most recent session in this workspace
+codesmith resume <SESSION_ID>                     # resume a specific session by UUID
+codesmith fork <SESSION_ID>                       # fork a saved session into a sibling path
+codesmith serve --http                            # HTTP/SSE API server
+codesmith serve --mobile                          # LAN mobile control page; token-gated by default
+codesmith serve --acp                             # ACP stdio adapter for Zed/custom agents
+codesmith run pr <N>                              # fetch PR and pre-seed review prompt
+codesmith mcp list                                # list configured MCP servers
+codesmith mcp validate                            # validate MCP config/connectivity
+codesmith mcp-server                              # run dispatcher MCP stdio server
+codesmith update                                  # check for and apply binary updates
 ```
 
 ### Branching Conversations
 
-Saved sessions are intentionally branchable. `codewhale fork <SESSION_ID>` copies
+Saved sessions are intentionally branchable. `codesmith fork <SESSION_ID>` copies
 an existing saved session into a new sibling session, records the parent session
 id in metadata, and opens that fork so you can explore an alternate direction
-without polluting the original path. The session picker and `codewhale sessions`
+without polluting the original path. The session picker and `codesmith sessions`
 mark forked sessions with their parent id.
 
 Inside the TUI, Esc-Esc backtrack can rewind the active transcript to a prior
@@ -417,14 +417,14 @@ from side-git snapshots but do not rewrite conversation history.
 Docker images are published to GHCR for release builds:
 
 ```bash
-docker volume create codewhale-home
+docker volume create codesmith-home
 
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.codewhale \
+  -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:latest
+  ghcr.io/hmbown/codesmith:latest
 ```
 
 See [docs/DOCKER.md](docs/DOCKER.md) for pinned tags, local image builds,
@@ -440,7 +440,7 @@ spawn local ACP agents over stdio. In Zed, add a custom agent server:
   "agent_servers": {
     "DeepSeek": {
       "type": "custom",
-      "command": "codewhale",
+      "command": "codesmith",
       "args": ["serve", "--acp"],
       "env": {}
     }
@@ -452,8 +452,8 @@ The first ACP slice supports new sessions and prompt responses through your
 existing DeepSeek config/API key. Tool-backed editing and checkpoint replay are
 not exposed through ACP yet.
 
-Community-maintained adapter: [acp-codewhale-adapter](https://github.com/rockeverm3m/acp-codewhale-adapter)
-bridges `codewhale exec --auto` to `cc-connect` for users who need tool-backed
+Community-maintained adapter: [acp-codesmith-adapter](https://github.com/rockeverm3m/acp-codesmith-adapter)
+bridges `codesmith exec --auto` to `cc-connect` for users who need tool-backed
 ACP workflows outside the built-in Zed slice.
 
 ### Keyboard Shortcuts
@@ -487,7 +487,7 @@ Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 ## Configuration
 
-User config: `~/.codewhale/config.toml` (legacy `~/.deepseek/config.toml` fallback). Project overlay: `<workspace>/.codewhale/config.toml` (legacy `<workspace>/.deepseek/config.toml`) (denied: `api_key`, `base_url`, `provider`, `mcp_config_path`). [config.example.toml](config.example.toml) has every option.
+User config: `~/.codesmith/config.toml` (legacy `~/.deepseek/config.toml` fallback). Project overlay: `<workspace>/.codesmith/config.toml` (legacy `<workspace>/.deepseek/config.toml`) (denied: `api_key`, `base_url`, `provider`, `mcp_config_path`). [config.example.toml](config.example.toml) has every option.
 
 Custom DeepSeek-compatible endpoints usually do not need a new provider. Keep
 `provider = "deepseek"` and set `[providers.deepseek].base_url` / `model`, or
@@ -504,7 +504,7 @@ Key environment variables:
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
-| `CODEWHALE_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
+| `CODESMITH_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
 | `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Allow non-local `http://` API base URLs on trusted networks |
@@ -548,7 +548,7 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash` 
 
 ## Publishing Your Own Skill
 
-codewhale discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.codewhale/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
+codesmith discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
 
 ```text
 ~/.agents/skills/my-skill/
@@ -573,7 +573,7 @@ First launch also installs bundled system skills for common workflows:
 `skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`,
 `skill-installer`, `mcp-builder`, `documents`, `presentations`,
 `spreadsheets`, `pdf`, and `feishu`. These live under
-`~/.codewhale/skills` (or legacy `~/.deepseek/skills`) and are versioned so new bundles are added on upgrade
+`~/.codesmith/skills` (or legacy `~/.deepseek/skills`) and are versioned so new bundles are added on upgrade
 without recreating skills the user deliberately deleted.
 
 ---
@@ -609,7 +609,7 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
 - **[DataWhale](https://github.com/datawhalechina)** 🐋 — thank you for your support and for welcoming us into the Whale Brother family. 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
-- **[OpenWarp](https://github.com/zerx-lab/warp)** — thank you for prioritizing codewhale support and for collaborating on a better terminal-agent experience.
+- **[OpenWarp](https://github.com/zerx-lab/warp)** — thank you for prioritizing codesmith support and for collaborating on a better terminal-agent experience.
 - **[Open Design](https://github.com/nexu-io/open-design)** — thank you for support and collaboration around design-forward agent workflows.
 
 This project ships with help from a growing community of contributors:
@@ -635,7 +635,7 @@ This project ships with help from a growing community of contributors:
 - **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
 - **[y0sif](https://github.com/y0sif)** — parent turn-loop wakeup after direct child sub-agent completion (#901)
-- **[mac119](https://github.com/mac119)** and **[leo119](https://github.com/leo119)** — `codewhale update` command documentation (#838, #917)
+- **[mac119](https://github.com/mac119)** and **[leo119](https://github.com/leo119)** — `codesmith update` command documentation (#838, #917)
 - **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — command-safety null-byte hardening (#706, #918)
 - **macworkers** — fork confirmation with the new session id (#600, #919)
 - **zero** and **[zerx-lab](https://github.com/zerx-lab)** — notification condition config and richer OSC 9 notification body (#820, #920)
@@ -663,7 +663,7 @@ This project ships with help from a growing community of contributors:
 - **[mdrkrg](https://github.com/mdrkrg)** — first-run onboarding crash fix when the API key is missing (#1598)
 - **[Aitensa](https://github.com/Aitensa)** — CJK wrapping propagation for diff and pager output (#1622)
 - **[qiyan233](https://github.com/qiyan233)** — legacy DeepSeek CN provider alias compatibility (#1645)
-- **[zlh124](https://github.com/zlh124)** — WSL2/headless startup report, clipboard-init fix, CodeWhale tab-title polish, localized context-menu labels, and approval-dialog fixes (#1772, #1773, #2319, #2320, #2325)
+- **[zlh124](https://github.com/zlh124)** — WSL2/headless startup report, clipboard-init fix, CodeSmith tab-title polish, localized context-menu labels, and approval-dialog fixes (#1772, #1773, #2319, #2320, #2325)
 - **[aboimpinto](https://github.com/aboimpinto)** — Windows alt-screen logging, Home/End composer, and runtime log follow-ups (#1774, #1776, #1748, #1749, #1782, #1783)
 - **[LeoLin990405](https://github.com/LeoLin990405)** — provider model passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes (#1740, #1743, #1742, #1744)
 - **[nightt5879](https://github.com/nightt5879)** — Ctrl+C prompt restore, provider registry drift docs, tool-search defaults, footer git branch display, and startup prompt interactivity (#1764, #2274, #2344, #2347, #2373)
@@ -673,11 +673,11 @@ This project ships with help from a growing community of contributors:
 - **[sximelon](https://github.com/sximelon)** — paste Enter suppression, key handler extraction (#2174, #2042)
 - **[nanookclaw](https://github.com/nanookclaw)** — search provider in doctor output (#2135)
 - **[Sskift](https://github.com/Sskift)** — CLI default env override prevention and statusline footer clearing (#2119, #2248)
-- **[xin1104](https://github.com/xin1104)** — Homebrew codewhale binary install (#2105)
+- **[xin1104](https://github.com/xin1104)** — Homebrew codesmith binary install (#2105)
 - **[mrluanma](https://github.com/mrluanma)** — Metaso search provider (#2059)
 - **[Lellansin](https://github.com/Lellansin)** — skip config merge at home dir (#2055)
 - **[zhuangbiaowei](https://github.com/zhuangbiaowei)** — update release channels and legacy MCP SSE fixes (#2145, #2301)
-- **[cy2311](https://github.com/cy2311)** — Windows `.bat` launcher for CodeWhale (#1861)
+- **[cy2311](https://github.com/cy2311)** — Windows `.bat` launcher for CodeSmith (#1861)
 - **[LING71671](https://github.com/LING71671)** — effective cost currency context, custom provider docs, and core tool taxonomy prompt block (#1902, #2287, #2292)
 - **[dzyuan](https://github.com/dzyuan)** — Volcengine provider support with DeepSeek V4 Pro/Flash models (#1993)
 - **[mvanhorn](https://github.com/mvanhorn)** — live request-shape test factories and global `~/.agents/AGENTS.md` fallback (#2107, #2236)
@@ -720,7 +720,7 @@ credit: **[@buko](https://github.com/buko)**, **[@yyyCode](https://github.com/yy
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/CodeWhale/issues) for good first contributions.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/CodeSmith/issues) for good first contributions.
 
 Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
@@ -733,4 +733,4 @@ Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/CodeWhale&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeWhale&type=date&logscale=&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/CodeSmith&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeSmith&type=date&logscale=&legend=top-left)

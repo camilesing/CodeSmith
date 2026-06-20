@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::llm_client::LlmClient;
 use crate::core::events::Event;
+use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::repl::PythonRuntime;
 

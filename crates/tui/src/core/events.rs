@@ -7,7 +7,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use serde_json::Value;
 
-use crate::background_task::{BackgroundTaskType, BackgroundTaskNotification, BackgroundTaskSummary};
+use crate::background_task::{
+    BackgroundTaskNotification, BackgroundTaskSummary, BackgroundTaskType,
+};
 use crate::core::coherence::CoherenceState;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Tool, Usage};
@@ -368,9 +370,7 @@ pub enum Event {
 
     /// Background task listing result.
     #[allow(dead_code)]
-    BackgroundTaskList {
-        tasks: Vec<BackgroundTaskSummary>,
-    },
+    BackgroundTaskList { tasks: Vec<BackgroundTaskSummary> },
 }
 
 impl Event {

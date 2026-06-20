@@ -1,5 +1,5 @@
 [package]
-name = "codewhale-core"
+name = "codesmith-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,13 +9,13 @@ description = "Core runtime boundaries for DeepSeek workspace architecture"
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-codewhale-agent = { path = "../agent", version = "0.8.48" }
-codewhale-config = { path = "../config", version = "0.8.48" }
-codewhale-execpolicy = { path = "../execpolicy", version = "0.8.48" }
-codewhale-hooks = { path = "../hooks", version = "0.8.48" }
-codewhale-mcp = { path = "../mcp", version = "0.8.48" }
-codewhale-protocol = { path = "../protocol", version = "0.8.48" }
-codewhale-state = { path = "../state", version = "0.8.48" }
-codewhale-tools = { path = "../tools", version = "0.8.48" }
+codesmith-agent = { path = "../agent", version = "0.8.48" }
+codesmith-config = { path = "../config", version = "0.8.48" }
+codesmith-execpolicy = { path = "../execpolicy", version = "0.8.48" }
+codesmith-hooks = { path = "../hooks", version = "0.8.48" }
+codesmith-mcp = { path = "../mcp", version = "0.8.48" }
+codesmith-protocol = { path = "../protocol", version = "0.8.48" }
+codesmith-state = { path = "../state", version = "0.8.48" }
+codesmith-tools = { path = "../tools", version = "0.8.48" }
 serde_json.workspace = true
 uuid.workspace = true

@@ -1,4 +1,4 @@
-//! Tool specification traits for the CodeWhale agent system.
+//! Tool specification traits for the CodeSmith agent system.
 //!
 //! This module defines the core abstractions for tools:
 //! - `ToolSpec`: The main trait that all tools must implement
@@ -22,7 +22,7 @@ use crate::sandbox::backend::SandboxBackend;
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 #[allow(unused_imports)]
-pub use codewhale_tools::{
+pub use codesmith_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
     optional_u64, required_str, required_u64,
 };
@@ -206,9 +206,9 @@ impl ToolContext {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
-        // Prefer .codewhale, fall back to .deepseek for project-local state
-        let notes_path = codewhale_config::resolve_project_state_dir(&workspace, "notes.md").1;
-        let mcp_config_path = codewhale_config::resolve_project_state_dir(&workspace, "mcp.json").1;
+        // Prefer .codesmith, fall back to .deepseek for project-local state
+        let notes_path = codesmith_config::resolve_project_state_dir(&workspace, "notes.md").1;
+        let mcp_config_path = codesmith_config::resolve_project_state_dir(&workspace, "mcp.json").1;
         let cwd = workspace.clone();
         Self {
             workspace,
@@ -392,7 +392,7 @@ impl ToolContext {
         let candidate = if std::path::Path::new(raw).is_absolute() {
             PathBuf::from(raw)
         } else {
-            self.cwd.join(raw)  // resolve relative to effective cwd (worktree-aware)
+            self.cwd.join(raw) // resolve relative to effective cwd (worktree-aware)
         };
 
         // In trust mode, allow any path without validation

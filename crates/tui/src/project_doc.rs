@@ -1,19 +1,19 @@
 //! Project document discovery and loading
 //!
 //! Supports auto-discovery of project instructions like Claude Code.
-//! Priority: WHALE.md > AGENTS.md > .claude/instructions.md > CLAUDE.md > .codewhale/instructions.md > .deepseek/instructions.md
+//! Priority: WHALE.md > AGENTS.md > .claude/instructions.md > CLAUDE.md > .codesmith/instructions.md > .deepseek/instructions.md
 
 use std::path::{Path, PathBuf};
 
 /// Document filenames to search for (in priority order)
-/// WHALE.md is the CodeWhale-native convention; AGENTS.md and CLAUDE.md
-/// provide compatibility; `.codewhale/` is the new config directory.
+/// WHALE.md is the CodeSmith-native convention; AGENTS.md and CLAUDE.md
+/// provide compatibility; `.codesmith/` is the new config directory.
 pub const DOC_FILENAMES: &[&str] = &[
     "WHALE.md",
     "AGENTS.md",
     ".claude/instructions.md",
     "CLAUDE.md",
-    ".codewhale/instructions.md",
+    ".codesmith/instructions.md",
     ".deepseek/instructions.md",
 ];
 

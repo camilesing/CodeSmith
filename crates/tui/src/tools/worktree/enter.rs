@@ -1,15 +1,14 @@
 //! `enter_worktree` tool — creates an isolated git worktree and switches session into it.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use codewhale_tools::{ApprovalRequirement, ToolCapability, ToolError, ToolResult};
+use codesmith_tools::{ApprovalRequirement, ToolCapability, ToolError, ToolResult};
 
 use crate::tools::spec::{ToolContext, ToolSpec};
 
 use super::{
-    SharedWorktreeSessionState,
-    find_canonical_git_root, generate_random_slug, get_current_branch,
+    SharedWorktreeSessionState, find_canonical_git_root, generate_random_slug, get_current_branch,
     get_or_create_worktree, validate_worktree_slug,
 };
 
@@ -34,7 +33,7 @@ impl ToolSpec for EnterWorktreeTool {
          Use this ONLY when explicitly instructed by the user to work in a worktree, \
          or when the user mentions wanting a worktree, working in isolation, or \
          creating a separate branch workspace. This tool creates a new directory \
-         at `.codewhale/worktrees/<name>` with its own branch. The session's \
+         at `.codesmith/worktrees/<name>` with its own branch. The session's \
          working directory shifts to the worktree so all file operations happen \
          there. Use `exit_worktree` to leave."
     }
@@ -70,7 +69,7 @@ impl ToolSpec for EnterWorktreeTool {
             let state = self.worktree_state.lock().unwrap();
             if state.active {
                 return Err(ToolError::execution_failed(
-                    "Already in a worktree session. Use exit_worktree first before entering another."
+                    "Already in a worktree session. Use exit_worktree first before entering another.",
                 ));
             }
         }

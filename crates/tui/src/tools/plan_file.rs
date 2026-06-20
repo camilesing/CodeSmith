@@ -1,6 +1,6 @@
 //! Plan file management — persistence, slug generation, directory resolution.
 //!
-//! Plans are stored at `~/.codewhale/plans/{slug}.md`. The slug is a short
+//! Plans are stored at `~/.codesmith/plans/{slug}.md`. The slug is a short
 //! identifier derived from a UUID v4 (e.g. `plan_a3f2b1c4`), providing
 //! uniqueness without requiring the `rand` crate. A future iteration may
 //! switch to word-pair slugs (adjective-noun) for readability once `rand`
@@ -16,11 +16,11 @@ use anyhow::{Context, Result};
 /// Prefix for plan slugs derived from UUIDs.
 const PLAN_SLUG_PREFIX: &str = "plan_";
 
-/// Resolve the plans directory: `~/.codewhale/plans/`.
+/// Resolve the plans directory: `~/.codesmith/plans/`.
 ///
 /// Creates the directory if it doesn't exist.
 pub fn plans_dir() -> Result<PathBuf> {
-    let dir = codewhale_config::codewhale_home()?.join("plans");
+    let dir = codesmith_config::codesmith_home()?.join("plans");
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create plans directory at {}", dir.display()))?;
     Ok(dir)
@@ -130,12 +130,12 @@ pub fn find_recent_plan() -> Result<Option<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{lock_test_env, ScopedCodeWhaleHome};
+    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
 
     #[test]
     fn generate_plan_slug_starts_with_prefix() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let slug = generate_plan_slug().expect("slug");
         assert!(slug.starts_with("plan_"));
     }
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn generate_plan_slug_is_unique_on_consecutive_calls() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let s1 = generate_plan_slug().expect("slug1");
         let s2 = generate_plan_slug().expect("slug2");
         assert_ne!(s1, s2);
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn write_plan_file_creates_and_reads_back() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let slug = generate_plan_slug().expect("slug");
         write_plan_file(&slug, "# My plan\nStep 1").expect("write");
         let content = read_plan_file(&slug).expect("read");
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn read_plan_file_returns_none_for_missing() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let result = read_plan_file("plan_nonexistent").expect("read");
         assert_eq!(result, None);
     }
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn delete_plan_file_removes_file() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let slug = generate_plan_slug().expect("slug");
         write_plan_file(&slug, "content").expect("write");
         delete_plan_file(&slug).expect("delete");
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn plans_dir_creates_directory() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         let dir = plans_dir().expect("dir");
         assert!(dir.exists());
     }

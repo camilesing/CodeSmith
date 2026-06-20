@@ -6,19 +6,21 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::age::{memory_age_label, memory_freshness_text};
-use super::budget::{SessionByteBudget, MAX_BYTES_PER_MEMORY, MAX_LINES_PER_MEMORY, MAX_MEMORIES_PER_TURN};
+use super::budget::{
+    MAX_BYTES_PER_MEMORY, MAX_LINES_PER_MEMORY, MAX_MEMORIES_PER_TURN, SessionByteBudget,
+};
 use super::dedup::filter_duplicate_attachments;
 use super::entrypoint::load_entrypoint;
 use super::paths::{ensure_memory_dir_exists, resolve_memory_dir, resolve_memory_entrypoint};
-use super::relevance::{select_relevant_memories, RelevanceError};
-use super::scan::{scan_memory_files, MemoryHeader};
+use super::relevance::{RelevanceError, select_relevant_memories};
+use super::scan::{MemoryHeader, scan_memory_files};
 use super::types::SurfacedMemory;
 
 /// Orchestrates async prefetch of relevant memories each turn.
@@ -107,7 +109,12 @@ pub async fn run_prefetch(
     session_budget: Arc<Mutex<SessionByteBudget>>,
     cancel_token: CancellationToken,
     recent_tools: &[String],
-    side_query_fn: impl FnOnce(String, String) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send,
+    side_query_fn: impl FnOnce(
+        String,
+        String,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+    > + Send,
 ) -> Result<PrefetchResult, RelevanceError> {
     let started = std::time::Instant::now();
 
@@ -226,17 +233,17 @@ fn read_memory_for_surfacing(header: &MemoryHeader, memory_dir: &Path) -> Option
 
     // Build staleness header.
     let age_label = memory_age_label(header.mtime_ms);
-    let staleness_header = format!(
-        "[Memory: {}, last modified {}]",
-        header.filename, age_label
-    );
+    let staleness_header = format!("[Memory: {}, last modified {}]", header.filename, age_label);
 
     // Build full content with staleness warning.
     let freshness_warning = memory_freshness_text(header.mtime_ms);
     let full_content = if freshness_warning.is_empty() {
         format!("{}\n{}", staleness_header, truncated_body)
     } else {
-        format!("{}\n{}\n{}", staleness_header, freshness_warning, truncated_body)
+        format!(
+            "{}\n{}\n{}",
+            staleness_header, freshness_warning, truncated_body
+        )
     };
 
     let byte_count = full_content.len();
@@ -299,7 +306,10 @@ mod tests {
         };
 
         let mem = read_memory_for_surfacing(&header, dir).unwrap();
-        assert!(mem.content.contains("[Memory: role.md, last modified today]"));
+        assert!(
+            mem.content
+                .contains("[Memory: role.md, last modified today]")
+        );
         assert!(mem.content.contains("I am a developer."));
         assert!(mem.staleness_header.contains("role.md"));
         assert!(!mem.was_truncated);
@@ -311,7 +321,10 @@ mod tests {
         let dir = tmp.path();
         let file_path = dir.join("long.md");
 
-        let long_content = (0..100).map(|i| format!("Line {i}")).collect::<Vec<_>>().join("\n");
+        let long_content = (0..100)
+            .map(|i| format!("Line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let full = format!("---\n---\n{long_content}");
         std::fs::write(&file_path, &full).unwrap();
 

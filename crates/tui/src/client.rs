@@ -512,9 +512,9 @@ impl DeepSeekClient {
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
             .user_agent(concat!(
-                "Mozilla/5.0 (compatible; codewhale/",
+                "Mozilla/5.0 (compatible; codesmith/",
                 env!("CARGO_PKG_VERSION"),
-                "; +https://github.com/Hmbown/CodeWhale)"
+                "; +https://github.com/Hmbown/CodeSmith)"
             ))
             .connect_timeout(Duration::from_secs(30))
             .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -839,7 +839,10 @@ impl LlmClient for DeepSeekClient {
         suffix: String,
         max_tokens: u32,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
-        Box::pin(async move { self.fim_completion(&model, &prompt, &suffix, max_tokens).await })
+        Box::pin(async move {
+            self.fim_completion(&model, &prompt, &suffix, max_tokens)
+                .await
+        })
     }
 
     fn translate(
@@ -1156,8 +1159,8 @@ impl DeepSeekClient {
     }
 }
 
-mod chat;
 pub(crate) mod anthropic;
+mod chat;
 
 pub(crate) use anthropic::AnthropicClient;
 pub(crate) use chat::{CacheWarmupKey, PromptInspection};

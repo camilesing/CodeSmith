@@ -16,7 +16,7 @@ use super::CommandResult;
 ///
 /// When an explicit path is given, the session is exported there
 /// (user-visible explicit export).  Without a path, v0.8.44 saves
-/// into the managed session directory (`~/.codewhale/sessions`
+/// into the managed session directory (`~/.codesmith/sessions`
 /// or legacy `~/.deepseek/sessions`) so repo-local `session_*.json`
 /// artifacts are no longer created by default.
 pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
@@ -289,21 +289,25 @@ pub fn compact(app: &mut App, arg: Option<&str>) -> CommandResult {
         Some(s) if s.starts_with("from=") => {
             let idx: usize = s.strip_prefix("from=").unwrap_or(s).parse().unwrap_or(0);
             if idx == 0 {
-                return CommandResult::error("Invalid from index. Usage: /compact from=N".to_string());
+                return CommandResult::error(
+                    "Invalid from index. Usage: /compact from=N".to_string(),
+                );
             }
             CompactMode::From { pivot_index: idx }
         }
         Some(s) if s.starts_with("up_to=") => {
             let idx: usize = s.strip_prefix("up_to=").unwrap_or(s).parse().unwrap_or(0);
             if idx == 0 {
-                return CommandResult::error("Invalid up_to index. Usage: /compact up_to=N".to_string());
+                return CommandResult::error(
+                    "Invalid up_to index. Usage: /compact up_to=N".to_string(),
+                );
             }
             CompactMode::UpTo { pivot_index: idx }
         }
         Some(other) => {
-            return CommandResult::error(
-                format!("Unknown compact mode: '{other}'. Usage: /compact [memory|from=N|up_to=N]")
-            );
+            return CommandResult::error(format!(
+                "Unknown compact mode: '{other}'. Usage: /compact [memory|from=N|up_to=N]"
+            ));
         }
         None => CompactMode::Full,
     };
@@ -698,14 +702,14 @@ mod tests {
     fn test_save_with_default_path_uses_managed_sessions_dir() {
         let tmpdir = TempDir::new().unwrap();
         let _lock = crate::test_support::lock_test_env();
-        // Set CODEWHALE_HOME so the managed sessions directory lands inside the
+        // Set CODESMITH_HOME so the managed sessions directory lands inside the
         // temp dir rather than the real user home. Pre-create the directory so
         // resolve_state_dir picks it up instead of falling back to legacy.
         let home = tmpdir.path().join("home");
         let sessions_dir = home.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
-        let codewhale_home = EnvVarGuard::set("CODEWHALE_HOME", &home);
-        let previous_codewhale_home = codewhale_home.previous();
+        let codesmith_home = EnvVarGuard::set("CODESMITH_HOME", &home);
+        let previous_codesmith_home = codesmith_home.previous();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
         let result = save(&mut app, None);
         assert!(result.message.is_some());
@@ -721,13 +725,13 @@ mod tests {
         } else {
             Vec::new()
         };
-        drop(codewhale_home);
+        drop(codesmith_home);
         // Session should be saved to the managed dir, not the workspace root.
         assert!(
             !entries.is_empty(),
             "expected session file in {sessions_dir:?}, got none; msg: {msg}"
         );
-        assert_eq!(std::env::var_os("CODEWHALE_HOME"), previous_codewhale_home);
+        assert_eq!(std::env::var_os("CODESMITH_HOME"), previous_codesmith_home);
     }
 
     #[test]

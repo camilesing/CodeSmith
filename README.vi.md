@@ -1,6 +1,6 @@
-# 🐳 CodeWhale
+# 🐳 CodeSmith
 
-> **Agent lập trình gốc terminal dành cho DeepSeek V4. Chương trình chạy từ lệnh `codewhale`, hỗ trợ stream các khối suy nghĩ (reasoning blocks), chỉnh sửa workspace cục bộ thông qua các lớp phê duyệt, và đi kèm chế độ tự động để tự chọn mô hình cũng như mức độ suy nghĩ phù hợp cho mỗi lượt.**
+> **Agent lập trình gốc terminal dành cho DeepSeek V4. Chương trình chạy từ lệnh `codesmith`, hỗ trợ stream các khối suy nghĩ (reasoning blocks), chỉnh sửa workspace cục bộ thông qua các lớp phê duyệt, và đi kèm chế độ tự động để tự chọn mô hình cũng như mức độ suy nghĩ phù hợp cho mỗi lượt.**
 
 [English README](README.md)
 [简体中文 README](README.zh-CN.md)
@@ -8,38 +8,38 @@
 
 ## Cài đặt
 
-`codewhale` được cài đặt dưới dạng một cặp binary tự chạy bằng Rust đồng bộ với nhau:
-Lệnh điều phối `codewhale` (dispatcher) và môi trường chạy giao diện `codewhale-tui` (runtime) do nó khởi chạy để thực hiện các phiên làm việc tương tác. Các trình quản lý gói như npm, Homebrew, và Docker sẽ tự động cài đặt cả hai cho bạn; đối với Cargo hoặc cài đặt thủ công, bạn phải đặt cả hai tệp binary này trong cùng một thư mục (thông thường là một thư mục nằm trong biến môi trường `PATH` của bạn). Gói npm chỉ là một trình cài đặt/bao bọc (wrapper) cho các tệp binary phát hành này; agent không chạy trên môi trường Node.js.
+`codesmith` được cài đặt dưới dạng một cặp binary tự chạy bằng Rust đồng bộ với nhau:
+Lệnh điều phối `codesmith` (dispatcher) và môi trường chạy giao diện `codesmith-tui` (runtime) do nó khởi chạy để thực hiện các phiên làm việc tương tác. Các trình quản lý gói như npm, Homebrew, và Docker sẽ tự động cài đặt cả hai cho bạn; đối với Cargo hoặc cài đặt thủ công, bạn phải đặt cả hai tệp binary này trong cùng một thư mục (thông thường là một thư mục nằm trong biến môi trường `PATH` của bạn). Gói npm chỉ là một trình cài đặt/bao bọc (wrapper) cho các tệp binary phát hành này; agent không chạy trên môi trường Node.js.
 
 ```bash
 # 1. npm — dễ nhất nếu bạn đã cài đặt Node. Gói này sẽ tự động tải các
 #    binary Rust dựng sẵn tương ứng từ GitHub Releases.
-npm install -g codewhale
+npm install -g codesmith
 
 # 2. Cargo — không cần Node. Yêu cầu phiên bản Rust từ 1.88 trở lên (các crate sử dụng
 #    phiên bản Rust edition 2024; các toolchain cũ hơn sẽ báo lỗi "feature `edition2024` is
 #    required"). Hãy chạy lệnh `rustup update` trước, hoặc sử dụng các cách cài đặt không qua Cargo ở dưới.
-cargo install codewhale-cli --locked   # cài đặt `codewhale` (điểm truy cập CLI chính)
-cargo install codewhale-tui     --locked   # cài đặt `codewhale-tui` (giao diện TUI)
+cargo install codesmith-cli --locked   # cài đặt `codesmith` (điểm truy cập CLI chính)
+cargo install codesmith-tui     --locked   # cài đặt `codesmith-tui` (giao diện TUI)
 
 # 3. Homebrew — trình quản lý gói dành cho macOS.
-#    Tên tap/formula là tên cũ (legacy); nó sẽ cài đặt cả codewhale và codewhale-tui.
+#    Tên tap/formula là tên cũ (legacy); nó sẽ cài đặt cả codesmith và codesmith-tui.
 brew tap Hmbown/deepseek-tui
 brew install deepseek-tui
 
 # 4. Tải xuống trực tiếp — các gói lưu trữ theo nền tảng từ GitHub Releases.
-#    https://github.com/Hmbown/CodeWhale/releases
-#    Gói nén bao gồm cả codewhale và codewhale-tui cùng một tập lệnh cài đặt.
+#    https://github.com/Hmbown/CodeSmith/releases
+#    Gói nén bao gồm cả codesmith và codesmith-tui cùng một tập lệnh cài đặt.
 #    Các binary riêng lẻ cũng được đính kèm cho các tập lệnh; hãy giữ cặp này ở cùng một nơi.
 
 # 5. Docker — hình ảnh phát hành dựng sẵn.
-docker volume create codewhale-home
+docker volume create codesmith-home
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.codewhale \
+  -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:latest
+  ghcr.io/hmbown/codesmith:latest
 ```
 
 > Tại Trung Quốc đại lục, bạn có thể tăng tốc độ tải qua npm bằng tham số
@@ -47,36 +47,36 @@ docker run --rm -it \
 > [Cargo mirror](#china--cai-dat-than-thien-qua-mirror) bên dưới.
 >
 > An toàn tải xuống: Các binary phát hành chính thức chỉ nằm tại
-> `https://github.com/Hmbown/CodeWhale/releases`. Nếu tải thủ công,
+> `https://github.com/Hmbown/CodeSmith/releases`. Nếu tải thủ công,
 > vui lòng xác minh mã băm SHA-256 manifest và tránh các kho lưu trữ giả mạo hoặc các
 > trang web mirror trên kết quả tìm kiếm. Xem [an toàn tải xuống và mã xác thực](docs/INSTALL.md#2-download-safety-and-checksums).
 
 Đã cài đặt từ trước? Sử dụng lệnh cập nhật tương ứng với cách bạn đã cài đặt:
 
 ```bash
-codewhale update                         # trình cập nhật binary phát hành trực tiếp
-npm install -g codewhale@latest      # thông qua trình bao bọc npm
+codesmith update                         # trình cập nhật binary phát hành trực tiếp
+npm install -g codesmith@latest      # thông qua trình bao bọc npm
 brew update && brew upgrade deepseek-tui
-cargo install codewhale-cli --locked --force
-cargo install codewhale-tui     --locked --force
+cargo install codesmith-cli --locked --force
+cargo install codesmith-tui     --locked --force
 ```
 
-[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[Mục lục dự án DeepWiki](https://deepwiki.com/Hmbown/CodeWhale)
+[![CI](https://github.com/Hmbown/CodeSmith/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeSmith/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/codesmith)](https://www.npmjs.com/package/codesmith)
+[![crates.io](https://img.shields.io/crates/v/codesmith-cli?label=crates.io)](https://crates.io/crates/codesmith-cli)
+[Mục lục dự án DeepWiki](https://deepwiki.com/Hmbown/CodeSmith)
 
-![ảnh chụp màn hình codewhale](assets/screenshot.png)
+![ảnh chụp màn hình codesmith](assets/screenshot.png)
 
 ---
 
-## CodeWhale là gì?
+## CodeSmith là gì?
 
 Mô hình AI chỉ trả lời câu hỏi. Agent hoàn thành một nhiệm vụ. Sự khác biệt nằm ở
 **khung ràng buộc (harness)** — một hệ thống các quy tắc, bằng chứng và phản hồi giúp giữ cho
 mô hình đi đúng hướng thay vì bị trôi lệch mục tiêu.
 
-CodeWhale chính là khung ràng buộc đó, được xây dựng xung quanh DeepSeek V4 và được dẫn dắt bởi ba ý tưởng chính:
+CodeSmith chính là khung ràng buộc đó, được xây dựng xung quanh DeepSeek V4 và được dẫn dắt bởi ba ý tưởng chính:
 
 | Nguyên tắc | Cách thức hoạt động |
 |---|---|
@@ -84,13 +84,13 @@ CodeWhale chính là khung ràng buộc đó, được xây dựng xung quanh De
 | **Thẩm quyền rõ ràng** | Một bản Hiến pháp bằng văn bản với chín cấp bậc thẩm quyền. Ý định của người dùng quan trọng hơn các hướng dẫn cũ kỹ. Sự xác minh quan trọng hơn sự tự tin. |
 | **Cải tiến đệ quy** | V4 đã tham gia viết nên một phần của khung ràng buộc này. Khi khung ràng buộc tốt lên, V4 hoạt động hiệu quả hơn — và giúp cải tiến khung ràng buộc hơn nữa. Mỗi lượt chạy mới đều bắt đầu mạnh mẽ hơn. |
 
-Dự án này là mã nguồn mở, hoạt động trực tiếp trên terminal và được đóng gói thành một cặp binary Rust đồng bộ là `codewhale` / `codewhale-tui`.
+Dự án này là mã nguồn mở, hoạt động trực tiếp trên terminal và được đóng gói thành một cặp binary Rust đồng bộ là `codesmith` / `codesmith-tui`.
 
 ## Khung Ràng Buộc Hoạt Động Thế Nào?
 
 Các mô hình dạng Agent phải xử lý lượng thông tin xung đột rất lớn trên quy mô lớn: ý định của người dùng, quy tắc dự án, cấu hình mặc định của hệ thống, đầu ra của công cụ và bộ nhớ cũ đều cạnh tranh thẩm quyền trong một lượt chạy duy nhất. LLM hoạt động như một thẩm phán cần có thẩm quyền rõ ràng — nguồn thông tin nào sẽ thắng thế khi xảy ra xung đột?
 
-CodeWhale giải quyết vấn đề này bằng một bản **Hiến pháp** (`prompts/base.md`). Đây là một hệ thống phân cấp luật chính thức — Điều VII xếp hạng chín nguồn thông tin từ các điều khoản của chính Hiến pháp xuống đến thông tin bàn giao từ phiên làm việc trước. Tin nhắn hiện tại của người dùng có thẩm quyền cao hơn các hướng dẫn dự án cũ kỹ. Đầu ra trực tiếp từ công cụ có thẩm quyền cao hơn các giả định. Việc xác minh thực tế có thẩm quyền cao hơn sự tự tin của mô hình. Mô hình kế thừa một chuỗi thẩm quyền rõ ràng qua từng lượt và không bao giờ phải đoán xem nên làm theo chỉ thị nào.
+CodeSmith giải quyết vấn đề này bằng một bản **Hiến pháp** (`prompts/base.md`). Đây là một hệ thống phân cấp luật chính thức — Điều VII xếp hạng chín nguồn thông tin từ các điều khoản của chính Hiến pháp xuống đến thông tin bàn giao từ phiên làm việc trước. Tin nhắn hiện tại của người dùng có thẩm quyền cao hơn các hướng dẫn dự án cũ kỹ. Đầu ra trực tiếp từ công cụ có thẩm quyền cao hơn các giả định. Việc xác minh thực tế có thẩm quyền cao hơn sự tự tin của mô hình. Mô hình kế thừa một chuỗi thẩm quyền rõ ràng qua từng lượt và không bao giờ phải đoán xem nên làm theo chỉ thị nào.
 
 Có bảy điều khoản đứng đầu hệ thống phân cấp này, định nghĩa danh tính, nghĩa vụ và quyền hạn của mô hình: yêu cầu xác minh (Điều V — mọi hành động phải để lại bằng chứng thực tế, không bao giờ tuyên bố thành công dựa trên niềm tin mơ hồ), di sản điều phối (Điều VI — giữ cho workspace dễ đọc để trí tuệ tiếp theo có thể tiếp quản), và điều khoản ưu tiên sự thật (Điều II — không có quy tắc cấp dưới nào được phép ghi đè lên nó).
 
@@ -112,17 +112,17 @@ Các tính năng khác của hệ thống bao gồm: chẩn đoán lỗi LSP sau
 
 ## Khung Kết Nối (Harness)
 
-`codewhale` (CLI điều phối) → `codewhale-tui` (binary giao diện) → giao diện ratatui ↔ công cụ bất đồng bộ ↔ máy khách streaming tương thích với OpenAI. Các lượt gọi công cụ được định tuyến qua một registry có phân loại (shell, thao tác file, git, web, sub-agent, MCP, RLM) và kết quả được truyền trực tuyến trở lại transcript. Công cụ quản lý trạng thái phiên làm việc, theo dõi lượt chạy, hàng đợi tác vụ bền bỉ và một phân hệ LSP cung cấp thông tin chẩn đoán sau khi chỉnh sửa vào ngữ cảnh của mô hình trước bước suy nghĩ tiếp theo.
+`codesmith` (CLI điều phối) → `codesmith-tui` (binary giao diện) → giao diện ratatui ↔ công cụ bất đồng bộ ↔ máy khách streaming tương thích với OpenAI. Các lượt gọi công cụ được định tuyến qua một registry có phân loại (shell, thao tác file, git, web, sub-agent, MCP, RLM) và kết quả được truyền trực tuyến trở lại transcript. Công cụ quản lý trạng thái phiên làm việc, theo dõi lượt chạy, hàng đợi tác vụ bền bỉ và một phân hệ LSP cung cấp thông tin chẩn đoán sau khi chỉnh sửa vào ngữ cảnh của mô hình trước bước suy nghĩ tiếp theo.
 
 Xem tài liệu [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) để biết chi tiết toàn bộ luồng hoạt động.
 
 ### Sub-agents: Khởi chạy Tác vụ Nền Đồng thời
 
-CodeWhale có thể điều phối nhiều sub-agent chạy song song — hoạt động giống như một hàng đợi tác vụ đồng thời:
+CodeSmith có thể điều phối nhiều sub-agent chạy song song — hoạt động giống như một hàng đợi tác vụ đồng thời:
 
 - **Khởi chạy không chặn:** Lệnh `agent_open` trả về ngay lập tức. Sub-agent con có một ngữ cảnh độc lập mới và hệ thống đăng ký công cụ riêng để chạy tự chủ. Agent cha vẫn tiếp tục làm việc bình thường.
 - **Thực thi dưới nền:** Các sub-agent chạy đồng thời (giới hạn mặc định: 10, có thể cấu hình lên đến 20). Hệ thống tự quản lý pool tài nguyên này mà không cần vòng lặp thăm dò (polling loop).
-- **Thông báo hoàn thành:** Khi một sub-agent hoàn thành, hệ thống sẽ chèn một khóa sentinel `<codewhale:subagent.done>` vào transcript của agent cha. Một bản tóm tắt thân thiện với con người — bao gồm phát hiện của sub-agent con, các file đã thay đổi và các rủi ro có thể xảy ra — nằm ngay dòng phía trên khóa sentinel. Mô hình cha sẽ đọc tóm tắt đó và tích hợp kết quả thu được mà không cần phải thực hiện thêm bất kỳ lệnh gọi công cụ nào khác.
+- **Thông báo hoàn thành:** Khi một sub-agent hoàn thành, hệ thống sẽ chèn một khóa sentinel `<codesmith:subagent.done>` vào transcript của agent cha. Một bản tóm tắt thân thiện với con người — bao gồm phát hiện của sub-agent con, các file đã thay đổi và các rủi ro có thể xảy ra — nằm ngay dòng phía trên khóa sentinel. Mô hình cha sẽ đọc tóm tắt đó và tích hợp kết quả thu được mà không cần phải thực hiện thêm bất kỳ lệnh gọi công cụ nào khác.
 - **Truy xuất kết quả có giới hạn:** Nhật ký chi tiết của agent con nằm dưới dạng một `transcript_handle` có thể truy cập qua `agent_eval`. Khi bản tóm tắt là chưa đủ, agent cha có thể gọi `handle_read` để đọc một phần, các dòng cụ thể hoặc lọc qua JSONPath — giúp ngữ cảnh của agent cha luôn tinh gọn mà không làm mất đi các chi tiết quan trọng.
 
 Xem thêm tài liệu [docs/SUBAGENTS.md](docs/SUBAGENTS.md) để tham khảo thông tin đầy đủ về sub-agent.
@@ -132,30 +132,30 @@ Xem thêm tài liệu [docs/SUBAGENTS.md](docs/SUBAGENTS.md) để tham khảo t
 ## Khởi động nhanh
 
 ```bash
-npm install -g codewhale
-codewhale --version
-codewhale --model auto
+npm install -g codesmith
+codesmith --version
+codesmith --model auto
 ```
 
 Cặp binary dựng sẵn và gói nén nền tảng được phát hành cho các kiến trúc **Linux x64**, **Linux ARM64** (từ v0.8.8 trở lên), **macOS x64**, **macOS ARM64**, và **Windows x64**. Đối với các mục tiêu khác (musl, riscv64, FreeBSD, v.v.), xem phần [Cài đặt từ nguồn](#install-from-source) hoặc tài liệu [docs/INSTALL.md](docs/INSTALL.md).
 
-Trong lần chạy đầu tiên, bạn sẽ được nhắc nhập [API key của DeepSeek](https://platform.deepseek.com/api_keys). Khóa này được lưu vào tệp cấu hình `~/.codewhale/config.toml` (tương thích cả tệp cũ `~/.deepseek/config.toml`) để nó hoạt động từ bất kỳ thư mục nào mà không cần nhắc thông tin đăng nhập của hệ điều hành.
+Trong lần chạy đầu tiên, bạn sẽ được nhắc nhập [API key của DeepSeek](https://platform.deepseek.com/api_keys). Khóa này được lưu vào tệp cấu hình `~/.codesmith/config.toml` (tương thích cả tệp cũ `~/.deepseek/config.toml`) để nó hoạt động từ bất kỳ thư mục nào mà không cần nhắc thông tin đăng nhập của hệ điều hành.
 
 Bạn cũng có thể thiết lập trước:
 
 ```bash
-codewhale auth set --provider deepseek   # lưu vào ~/.codewhale/config.toml
-codewhale auth status                    # hiển thị nguồn thông tin đăng nhập đang hoạt động
+codesmith auth set --provider deepseek   # lưu vào ~/.codesmith/config.toml
+codesmith auth status                    # hiển thị nguồn thông tin đăng nhập đang hoạt động
 
 export DEEPSEEK_API_KEY="YOUR_KEY"      # cách thiết lập qua biến môi trường thay thế; sử dụng ~/.zshenv cho terminal không tương tác
-codewhale
+codesmith
 
-codewhale doctor                         # kiểm tra và xác minh thiết lập
+codesmith doctor                         # kiểm tra và xác minh thiết lập
 ```
 
-Nếu lệnh `codewhale doctor` báo lỗi API key bị từ chối đến từ biến môi trường `DEEPSEEK_API_KEY`, hãy xóa cấu hình xuất biến môi trường cũ trong tệp khởi chạy shell của bạn, mở một shell mới hoặc chạy lệnh `codewhale auth set --provider deepseek`. Sử dụng `codewhale auth status` để xem trạng thái của cấu hình, keyring hệ thống và biến môi trường mà không hiển thị trực tiếp khóa API. Các khóa lưu trong file cấu hình sẽ được ưu tiên cao hơn keyring và môi trường để dễ dàng thay đổi khi cần.
+Nếu lệnh `codesmith doctor` báo lỗi API key bị từ chối đến từ biến môi trường `DEEPSEEK_API_KEY`, hãy xóa cấu hình xuất biến môi trường cũ trong tệp khởi chạy shell của bạn, mở một shell mới hoặc chạy lệnh `codesmith auth set --provider deepseek`. Sử dụng `codesmith auth status` để xem trạng thái của cấu hình, keyring hệ thống và biến môi trường mà không hiển thị trực tiếp khóa API. Các khóa lưu trong file cấu hình sẽ được ưu tiên cao hơn keyring và môi trường để dễ dàng thay đổi khi cần.
 
-> Để thay đổi hoặc xóa khóa đã lưu: `codewhale auth clear --provider deepseek`.
+> Để thay đổi hoặc xóa khóa đã lưu: `codesmith auth clear --provider deepseek`.
 
 ### Tencent Cloud / CNB Remote-First Path
 
@@ -165,7 +165,7 @@ Bắt đầu với tài liệu [docs/TENCENT_CLOUD_REMOTE_FIRST.md](docs/TENCENT
 
 ### Chế độ Tự động (Auto Mode)
 
-Sử dụng `codewhale --model auto` hoặc gõ lệnh `/model auto` khi bạn muốn hệ thống tự động quyết định sức mạnh của mô hình và cấp độ suy nghĩ cần thiết cho mỗi lượt.
+Sử dụng `codesmith --model auto` hoặc gõ lệnh `/model auto` khi bạn muốn hệ thống tự động quyết định sức mạnh của mô hình và cấp độ suy nghĩ cần thiết cho mỗi lượt.
 
 Chế độ tự động điều khiển hai cài đặt cùng nhau:
 
@@ -180,7 +180,7 @@ Hãy chỉ định mô hình hoặc cấp độ suy nghĩ cố định nếu b�
 
 ### Linux ARM64 (Raspberry Pi, Asahi, Graviton, HarmonyOS PC)
 
-Lệnh cài đặt `npm i -g codewhale` hoạt động trên môi trường Linux ARM64 nền glibc từ phiên bản v0.8.8 trở đi. Bạn cũng có thể tải trực tiếp các tệp binary dựng sẵn từ [trang phát hành Releases](https://github.com/Hmbown/CodeWhale/releases) và đặt chúng cạnh nhau trong một thư mục thuộc biến `PATH`.
+Lệnh cài đặt `npm i -g codesmith` hoạt động trên môi trường Linux ARM64 nền glibc từ phiên bản v0.8.8 trở đi. Bạn cũng có thể tải trực tiếp các tệp binary dựng sẵn từ [trang phát hành Releases](https://github.com/Hmbown/CodeSmith/releases) và đặt chúng cạnh nhau trong một thư mục thuộc biến `PATH`.
 
 ### Cài đặt thân thiện qua Mirror (Tại Trung Quốc)
 
@@ -198,21 +198,21 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 Sau đó cài đặt cả hai binary (trình điều phối sẽ ủy quyền cho TUI tại thời điểm chạy):
 
 ```bash
-cargo install codewhale-cli --locked   # cung cấp lệnh `codewhale`
-cargo install codewhale-tui     --locked   # cung cấp giao diện `codewhale-tui`
-codewhale --version
+cargo install codesmith-cli --locked   # cung cấp lệnh `codesmith`
+cargo install codesmith-tui     --locked   # cung cấp giao diện `codesmith-tui`
+codesmith --version
 ```
 
-Các binary dựng sẵn cũng có thể được tải từ [GitHub Releases](https://github.com/Hmbown/CodeWhale/releases). Thiết lập biến `DEEPSEEK_TUI_RELEASE_BASE_URL` để sử dụng mirror tải các tệp tài nguyên phát hành.
+Các binary dựng sẵn cũng có thể được tải từ [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases). Thiết lập biến `DEEPSEEK_TUI_RELEASE_BASE_URL` để sử dụng mirror tải các tệp tài nguyên phát hành.
 
 ### Windows (Scoop)
 
-[Scoop](https://scoop.sh) là một trình quản lý gói phổ biến trên Windows. Gói `codewhale` đã được liệt kê trong bucket chính của Scoop, tuy nhiên gói cài đặt này hoạt động độc lập và đôi khi cập nhật chậm hơn các bản phát hành chính thức trên GitHub/npm/Cargo. Chạy lệnh `scoop update` trước, sau đó xác minh phiên bản đã cài bằng `codewhale --version`:
+[Scoop](https://scoop.sh) là một trình quản lý gói phổ biến trên Windows. Gói `codesmith` đã được liệt kê trong bucket chính của Scoop, tuy nhiên gói cài đặt này hoạt động độc lập và đôi khi cập nhật chậm hơn các bản phát hành chính thức trên GitHub/npm/Cargo. Chạy lệnh `scoop update` trước, sau đó xác minh phiên bản đã cài bằng `codesmith --version`:
 
 ```bash
 scoop update
-scoop install codewhale
-codewhale --version
+scoop install codesmith
+codesmith --version
 ```
 
 Vui lòng sử dụng phương pháp npm hoặc tải trực tiếp từ GitHub Releases nếu bạn muốn trải nghiệm phiên bản mới nhất trước khi Scoop cập nhật.
@@ -227,11 +227,11 @@ Cách này hoạt động trên bất kỳ kiến trúc mục tiêu Tier-1 nào 
 #   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
 #   sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
 
-git clone https://github.com/Hmbown/CodeWhale.git
-cd CodeWhale
+git clone https://github.com/Hmbown/CodeSmith.git
+cd CodeSmith
 
-cargo install --path crates/cli --locked   # yêu cầu Rust 1.88+; cung cấp `codewhale`
-cargo install --path crates/tui --locked   # cung cấp giao diện `codewhale-tui`
+cargo install --path crates/cli --locked   # yêu cầu Rust 1.88+; cung cấp `codesmith`
+cargo install --path crates/tui --locked   # cung cấp giao diện `codesmith-tui`
 ```
 
 Cả hai tệp binary đều bắt buộc phải cài đặt. Xem hướng dẫn biên dịch chéo và ghi chú riêng theo nền tảng tại: [docs/INSTALL.md](docs/INSTALL.md).
@@ -244,44 +244,44 @@ Cả hai tệp binary đều bắt buộc phải cài đặt. Xem hướng dẫn
 
 ```bash
 # NVIDIA NIM
-codewhale auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
-codewhale --provider nvidia-nim
+codesmith auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
+codesmith --provider nvidia-nim
 
 # AtlasCloud
-codewhale auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
-codewhale --provider atlascloud
+codesmith auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
+codesmith --provider atlascloud
 
 # Wanjie Ark
-codewhale auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
-codewhale --provider wanjie-ark --model deepseek-reasoner
+codesmith auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
+codesmith --provider wanjie-ark --model deepseek-reasoner
 
 # OpenRouter
-codewhale auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
-codewhale --provider openrouter --model deepseek/deepseek-v4-pro
+codesmith auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
+codesmith --provider openrouter --model deepseek/deepseek-v4-pro
 
 # Novita
-codewhale auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
-codewhale --provider novita --model deepseek/deepseek-v4-pro
+codesmith auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
+codesmith --provider novita --model deepseek/deepseek-v4-pro
 
 # Fireworks
-codewhale auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
-codewhale --provider fireworks --model deepseek-v4-pro
+codesmith auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
+codesmith --provider fireworks --model deepseek-v4-pro
 
 # Các endpoint tương thích định dạng OpenAI chung
-codewhale auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
-OPENAI_BASE_URL="https://openai-compatible.example/v4" codewhale --provider openai --model glm-5
+codesmith auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
+OPENAI_BASE_URL="https://openai-compatible.example/v4" codesmith --provider openai --model glm-5
 
 # Tự host bằng SGLang
-SGLANG_BASE_URL="http://localhost:30000/v1" codewhale --provider sglang --model deepseek-v4-flash
+SGLANG_BASE_URL="http://localhost:30000/v1" codesmith --provider sglang --model deepseek-v4-flash
 
 # Tự host bằng vLLM
-VLLM_BASE_URL="http://localhost:8000/v1" codewhale --provider vllm --model deepseek-v4-flash
+VLLM_BASE_URL="http://localhost:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 # Sử dụng vLLM qua kết nối HTTP trong mạng LAN đáng tin cậy
-DEEPSEEK_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" codewhale --provider vllm --model deepseek-v4-flash
+DEEPSEEK_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 
 # Tự host bằng Ollama
-ollama pull codewhale-coder:1.3b
-codewhale --provider ollama --model codewhale-coder:1.3b
+ollama pull codesmith-coder:1.3b
+codesmith --provider ollama --model codesmith-coder:1.3b
 ```
 
 Bên trong giao diện TUI, lệnh `/provider` mở bảng chọn nhà cung cấp và `/model` mở bảng chọn mô hình/cấp độ suy nghĩ cục bộ. Lệnh `/provider openrouter` và `/model <id>` chuyển đổi trực tiếp, trong khi lệnh `/models` sẽ truy vấn trực tiếp và hiển thị danh sách các mô hình API trực tuyến từ nhà cung cấp (nếu nhà cung cấp hỗ trợ tính năng liệt kê mô hình).
@@ -297,49 +297,49 @@ Chi tiết thay đổi giữa các phiên bản được cập nhật tại [CHA
 ## Cách sử dụng
 
 ```bash
-codewhale                                         # giao diện tương tác TUI chính
-codewhale "explain this function"                 # thực thi prompt nhanh một lượt
-codewhale exec --auto --output-format stream-json "fix this bug"  # truyền phát luồng dữ liệu NDJSON backend
-codewhale exec --resume <SESSION_ID> "follow up"  # tiếp tục phiên làm việc không tương tác cũ
-codewhale --model deepseek-v4-flash "summarize"   # ghi đè mô hình chạy chỉ định
-codewhale --model auto "fix this bug"             # tự động chọn mô hình và cấp độ suy nghĩ thích hợp
-codewhale --yolo                                  # tự động phê duyệt chạy các công cụ
-codewhale auth set --provider deepseek            # lưu trữ API key
-codewhale doctor                                  # tự động kiểm tra cài đặt và kết nối mạng
-codewhale doctor --json                           # trả về chuẩn đoán định dạng máy đọc được
-codewhale setup --status                          # chỉ đọc trạng thái thiết lập hiện tại
-codewhale setup --tools --plugins                 # tạo sẵn cấu trúc thư mục tool/plugin
-codewhale models                                  # liệt kê các mô hình khả dụng trực tuyến
-codewhale sessions                                # liệt kê các phiên làm việc đã lưu
-codewhale resume --last                           # tiếp tục phiên làm việc gần nhất trong thư mục này
-codewhale resume <SESSION_ID>                     # tiếp tục một phiên làm việc cụ thể theo mã UUID
-codewhale fork <SESSION_ID>                       # tạo một nhánh (fork) phiên làm việc đã lưu sang đường dẫn mới
-codewhale serve --http                            # khởi chạy máy chủ API định dạng HTTP/SSE
-codewhale serve --acp                             # khởi chạy adapter ACP qua stdio cho trình soạn thảo Zed/agent tùy chỉnh
-codewhale run pr <N>                              # tải PR về và nạp sẵn vào prompt đánh giá
-codewhale mcp list                                # liệt kê các máy chủ MCP đã cấu hình
-codewhale mcp validate                            # kiểm tra cấu hình và kết nối máy chủ MCP
-codewhale mcp-server                              # khởi chạy máy chủ MCP điều phối qua cổng stdio
-codewhale update                                  # kiểm tra và cài đặt phiên bản binary mới nhất
+codesmith                                         # giao diện tương tác TUI chính
+codesmith "explain this function"                 # thực thi prompt nhanh một lượt
+codesmith exec --auto --output-format stream-json "fix this bug"  # truyền phát luồng dữ liệu NDJSON backend
+codesmith exec --resume <SESSION_ID> "follow up"  # tiếp tục phiên làm việc không tương tác cũ
+codesmith --model deepseek-v4-flash "summarize"   # ghi đè mô hình chạy chỉ định
+codesmith --model auto "fix this bug"             # tự động chọn mô hình và cấp độ suy nghĩ thích hợp
+codesmith --yolo                                  # tự động phê duyệt chạy các công cụ
+codesmith auth set --provider deepseek            # lưu trữ API key
+codesmith doctor                                  # tự động kiểm tra cài đặt và kết nối mạng
+codesmith doctor --json                           # trả về chuẩn đoán định dạng máy đọc được
+codesmith setup --status                          # chỉ đọc trạng thái thiết lập hiện tại
+codesmith setup --tools --plugins                 # tạo sẵn cấu trúc thư mục tool/plugin
+codesmith models                                  # liệt kê các mô hình khả dụng trực tuyến
+codesmith sessions                                # liệt kê các phiên làm việc đã lưu
+codesmith resume --last                           # tiếp tục phiên làm việc gần nhất trong thư mục này
+codesmith resume <SESSION_ID>                     # tiếp tục một phiên làm việc cụ thể theo mã UUID
+codesmith fork <SESSION_ID>                       # tạo một nhánh (fork) phiên làm việc đã lưu sang đường dẫn mới
+codesmith serve --http                            # khởi chạy máy chủ API định dạng HTTP/SSE
+codesmith serve --acp                             # khởi chạy adapter ACP qua stdio cho trình soạn thảo Zed/agent tùy chỉnh
+codesmith run pr <N>                              # tải PR về và nạp sẵn vào prompt đánh giá
+codesmith mcp list                                # liệt kê các máy chủ MCP đã cấu hình
+codesmith mcp validate                            # kiểm tra cấu hình và kết nối máy chủ MCP
+codesmith mcp-server                              # khởi chạy máy chủ MCP điều phối qua cổng stdio
+codesmith update                                  # kiểm tra và cài đặt phiên bản binary mới nhất
 ```
 
 ### Tạo nhánh phiên làm việc (Branching)
 
-Các phiên làm việc được lưu có thể được phân nhánh một cách có chủ đích. Lệnh `codewhale fork <SESSION_ID>` sao chép toàn bộ phiên làm việc cũ sang một phiên mới song song, lưu trữ mã ID của phiên cha trong siêu dữ liệu (metadata) và mở phiên fork đó ra để bạn có thể thử nghiệm hướng phát triển mới mà không làm ảnh hưởng đến lịch sử phiên làm việc gốc. Trình chọn phiên làm việc và danh sách `codewhale sessions` sẽ đánh dấu rõ ràng các phiên được fork kèm theo mã ID của phiên cha.
+Các phiên làm việc được lưu có thể được phân nhánh một cách có chủ đích. Lệnh `codesmith fork <SESSION_ID>` sao chép toàn bộ phiên làm việc cũ sang một phiên mới song song, lưu trữ mã ID của phiên cha trong siêu dữ liệu (metadata) và mở phiên fork đó ra để bạn có thể thử nghiệm hướng phát triển mới mà không làm ảnh hưởng đến lịch sử phiên làm việc gốc. Trình chọn phiên làm việc và danh sách `codesmith sessions` sẽ đánh dấu rõ ràng các phiên được fork kèm theo mã ID của phiên cha.
 
 Bên trong giao diện TUI, bạn có thể nhấn phím `Esc` hai lần (`Esc-Esc`) để quay ngược lại transcript và đưa prompt cũ về lại phần soạn thảo để chỉnh sửa lại nội dung. Các lệnh `/restore` và `revert_turn` là công cụ khôi phục workspace độc lập: chúng khôi phục lại các tệp tin dựa trên ảnh chụp nhanh side-git nhưng không làm thay đổi hay ghi đè lịch sử trò chuyện của phiên làm việc.
 
 Các hình ảnh Docker được phát hành lên GHCR cho các bản dựng phát hành chính thức:
 
 ```bash
-docker volume create codewhale-home
+docker volume create codesmith-home
 
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.codewhale \
+  -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:latest
+  ghcr.io/hmbown/codesmith:latest
 ```
 
 Xem tài liệu [docs/DOCKER.md](docs/DOCKER.md) để biết thêm thông tin về thẻ phiên bản (pinned tags), cách tự dựng image cục bộ, lưu ý quyền sở hữu volume và cách sử dụng cho pipeline không tương tác.
@@ -353,7 +353,7 @@ DeepSeek có thể chạy dưới dạng một máy chủ Agent Client Protocol 
   "agent_servers": {
     "DeepSeek": {
       "type": "custom",
-      "command": "codewhale",
+      "command": "codesmith",
       "args": ["serve", "--acp"],
       "env": {}
     }
@@ -363,7 +363,7 @@ DeepSeek có thể chạy dưới dạng một máy chủ Agent Client Protocol 
 
 Phân hệ ACP ban đầu hỗ trợ khởi tạo phiên làm việc mới và nhận phản hồi prompt qua cấu hình và API key hiện tại của DeepSeek. Tính năng chỉnh sửa tích hợp công cụ và phát lại checkpoint hiện chưa được hỗ trợ qua giao diện ACP.
 
-Adapter do cộng đồng phát triển: [acp-codewhale-adapter](https://github.com/rockeverm3m/acp-codewhale-adapter) hỗ trợ cầu nối lệnh `codewhale exec --auto` với `cc-connect` cho người dùng cần quy trình làm việc ACP có tích hợp công cụ bên ngoài trình soạn thảo Zed.
+Adapter do cộng đồng phát triển: [acp-codesmith-adapter](https://github.com/rockeverm3m/acp-codesmith-adapter) hỗ trợ cầu nối lệnh `codesmith exec --auto` với `cc-connect` cho người dùng cần quy trình làm việc ACP có tích hợp công cụ bên ngoài trình soạn thảo Zed.
 
 ### Phím Tắt Tiêu Biểu
 
@@ -396,7 +396,7 @@ Xem danh sách phím tắt đầy đủ tại: [docs/KEYBINDINGS.md](docs/KEYBIN
 
 ## Cấu hình
 
-Cấu hình của người dùng lưu tại: `~/.codewhale/config.toml` (tự động fallback về tệp cũ `~/.deepseek/config.toml` nếu có). Cấu hình riêng của dự án ghi đè tại: `<workspace>/.codewhale/config.toml` (hoặc `<workspace>/.deepseek/config.toml`) (lưu ý các trường sau bị cấm ghi đè ở cấp dự án: `api_key`, `base_url`, `provider`, `mcp_config_path`). Tham khảo tệp [config.example.toml](config.example.toml) để xem đầy đủ tất cả cấu hình mẫu.
+Cấu hình của người dùng lưu tại: `~/.codesmith/config.toml` (tự động fallback về tệp cũ `~/.deepseek/config.toml` nếu có). Cấu hình riêng của dự án ghi đè tại: `<workspace>/.codesmith/config.toml` (hoặc `<workspace>/.deepseek/config.toml`) (lưu ý các trường sau bị cấm ghi đè ở cấp dự án: `api_key`, `base_url`, `provider`, `mcp_config_path`). Tham khảo tệp [config.example.toml](config.example.toml) để xem đầy đủ tất cả cấu hình mẫu.
 
 Các biến môi trường chính:
 
@@ -407,7 +407,7 @@ Các biến môi trường chính:
 | `DEEPSEEK_HTTP_HEADERS` | Các header tùy chỉnh gửi kèm yêu cầu API, ví dụ `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Mô hình mặc định |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Thời gian chờ tối đa khi stream bị rảnh (giây), mặc định là `300`, giới hạn trong khoảng `1..=3600` |
-| `CODEWHALE_PROVIDER` / `DEEPSEEK_PROVIDER` | Các nhà cung cấp: `deepseek` (mặc định), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
+| `CODESMITH_PROVIDER` / `DEEPSEEK_PROVIDER` | Các nhà cung cấp: `deepseek` (mặc định), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Tên cấu hình profile sử dụng |
 | `DEEPSEEK_MEMORY` | Thiết lập là `on` để kích hoạt tính năng tự ghi nhớ thông tin người dùng |
 | `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Cho phép sử dụng các đường dẫn API dạng `http://` không mã hóa trong các mạng LAN tin cậy |
@@ -447,13 +447,13 @@ Nền tảng DeepSeek mặc định sử dụng đường dẫn `https://api.dee
 Các tên định danh cũ `deepseek-chat` / `deepseek-reasoner` sẽ được tự động ánh xạ đến `deepseek-v4-flash` và sẽ chính thức dừng hoạt động sau ngày 24 tháng 7 năm 2026. Các biến thể NVIDIA NIM sẽ áp dụng theo điều khoản tài khoản NVIDIA của bạn.
 
 > [!Note]
-> Trang cấu trúc giá của DeepSeek hiện đã cập nhật bảng giá trên của dòng V4 Pro làm mức giá cố định vĩnh viễn: Chương trình khuyến mãi giảm giá 75% trước đó đã được chính thức tích hợp thẳng vào giá cơ sở từ sau khi thời hạn khuyến mãi kết thúc vào lúc 15:59 UTC ngày 31 tháng 5 năm 2026. Trình tính toán chi phí trên giao diện TUI của CodeWhale đã cập nhật các giá trị mới này, do đó bạn không cần thực hiện thêm thay đổi nào. Để theo dõi các thay đổi giá trong tương lai, vui lòng tham khảo [trang giá chính thức của DeepSeek](https://api-docs.deepseek.com/zh-cn/quick_start/pricing).
+> Trang cấu trúc giá của DeepSeek hiện đã cập nhật bảng giá trên của dòng V4 Pro làm mức giá cố định vĩnh viễn: Chương trình khuyến mãi giảm giá 75% trước đó đã được chính thức tích hợp thẳng vào giá cơ sở từ sau khi thời hạn khuyến mãi kết thúc vào lúc 15:59 UTC ngày 31 tháng 5 năm 2026. Trình tính toán chi phí trên giao diện TUI của CodeSmith đã cập nhật các giá trị mới này, do đó bạn không cần thực hiện thêm thay đổi nào. Để theo dõi các thay đổi giá trong tương lai, vui lòng tham khảo [trang giá chính thức của DeepSeek](https://api-docs.deepseek.com/zh-cn/quick_start/pricing).
 
 ---
 
 ## Chia Sẻ Skill Tự Viết
 
-CodeWhale sẽ tự động quét và tìm kiếm các skill được định nghĩa từ các thư mục của dự án (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) và các thư mục cấu hình toàn cục (`~/.agents/skills` → `~/.claude/skills` → `~/.codewhale/skills` → `~/.deepseek/skills`). Mỗi skill là một thư mục chứa một tệp tin `SKILL.md`:
+CodeSmith sẽ tự động quét và tìm kiếm các skill được định nghĩa từ các thư mục của dự án (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) và các thư mục cấu hình toàn cục (`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.deepseek/skills`). Mỗi skill là một thư mục chứa một tệp tin `SKILL.md`:
 
 ```text
 ~/.agents/skills/my-skill/
@@ -475,7 +475,7 @@ Các hướng dẫn chi tiết dành cho agent được viết tại đây.
 Các lệnh tương tác: `/skills` (liệt kê), `/skill <name>` (kích hoạt), `/skill new` (tạo khung mẫu), `/skill install github:<owner>/<repo>` (cài đặt từ cộng đồng GitHub), `/skill update` / `uninstall` / `trust` để quản lý. Cài đặt các skill từ cộng đồng GitHub không yêu cầu chạy thêm bất kỳ dịch vụ nền nào. Các skill sau khi cài đặt sẽ hiển thị trong phần ngữ cảnh phiên làm việc mà mô hình AI có thể đọc được; agent có thể tự chọn skill phù hợp qua công cụ `load_skill` khi nhiệm vụ của bạn khớp với phần mô tả của skill.
 
 Trong lần chạy đầu tiên, chương trình cũng tự động cài đặt sẵn một số skill hệ thống cho các quy trình phổ biến:
-`skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`, `skill-installer`, `mcp-builder`, `documents`, `presentations`, `spreadsheets`, `pdf`, và `feishu`. Các skill này nằm trong thư mục `~/.codewhale/skills` (hoặc thư mục cũ `~/.deepseek/skills`) và được quản lý phiên bản để các bản nâng cấp mới được cài đặt tự động mà không làm ảnh hưởng đến các skill do người dùng tự chủ động xóa trước đó.
+`skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`, `skill-installer`, `mcp-builder`, `documents`, `presentations`, `spreadsheets`, `pdf`, và `feishu`. Các skill này nằm trong thư mục `~/.codesmith/skills` (hoặc thư mục cũ `~/.deepseek/skills`) và được quản lý phiên bản để các bản nâng cấp mới được cài đặt tự động mà không làm ảnh hưởng đến các skill do người dùng tự chủ động xóa trước đó.
 
 ---
 
@@ -508,7 +508,7 @@ Lịch sử cập nhật chi tiết: [CHANGELOG.md](CHANGELOG.md).
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — Xin chân thành cảm ơn sự hỗ trợ và các mô hình AI mạnh mẽ giúp tiếp sức cho mọi tương tác trong dự án. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
 - **[DataWhale](https://github.com/datawhalechina)** 🐋 — Xin cảm ơn sự hỗ trợ nhiệt tình và đã chào đón chúng tôi gia nhập gia đình lớn "Whale Brother". 感谢 DataWhale 的支持，并欢迎 chúng tôi gia nhập “鲸兄弟”大家庭。
-- **[OpenWarp](https://github.com/zerx-lab/warp)** — Cảm ơn vì đã ưu tiên hỗ trợ codewhale và hợp tác để mang lại trải nghiệm agent terminal tốt hơn.
+- **[OpenWarp](https://github.com/zerx-lab/warp)** — Cảm ơn vì đã ưu tiên hỗ trợ codesmith và hợp tác để mang lại trải nghiệm agent terminal tốt hơn.
 - **[Open Design](https://github.com/nexu-io/open-design)** — Cảm ơn vì sự hỗ trợ và hợp tác xung quanh quy trình làm việc chú trọng thiết kế của agent.
 
 Dự án này được phát triển và vận hành trơn tru với sự đóng góp của cộng đồng các nhà phát triển ngày càng lớn mạnh:
@@ -538,7 +538,7 @@ Xin cảm ơn các báo cáo, bước tái hiện lỗi và xác minh từ **[@b
 - **[xieshutao](https://github.com/xieshutao)** — Cơ chế dự phòng skill dạng Markdown thuần (#869)
 - **[GK012](https://github.com/GK012)** — Cơ chế dự phòng lệnh `--version` của wrapper npm (#885)
 - **[y0sif](https://github.com/y0sif)** — Xử lý đánh thức vòng lặp agent cha sau khi các sub-agent con hoàn thành tác vụ (#901)
-- **[mac119](https://github.com/mac119)** và **[leo119](https://github.com/leo119)** — Viết tài liệu hướng dẫn cho lệnh `codewhale update` (#838, #917)
+- **[mac119](https://github.com/mac119)** và **[leo119](https://github.com/leo119)** — Viết tài liệu hướng dẫn cho lệnh `codesmith update` (#838, #917)
 - **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — Tăng cường bảo mật chống mã độc qua lệnh shell byte rỗng (#706, #918)
 - **macworkers** — Cải tiến xác nhận rẽ nhánh (fork) kèm mã phiên làm việc mới (#600, #919)
 - **zero** và **[zerx-lab](https://github.com/zerx-lab)** — Cấu hình điều kiện nhận thông báo và làm phong phú nội dung thông báo qua OSC 9 (#820, #920)
@@ -576,7 +576,7 @@ Xin cảm ơn các báo cáo, bước tái hiện lỗi và xác minh từ **[@b
 - **[sximelon](https://github.com/sximelon)** — Chặn sự kiện tự gửi tin khi dán văn bản và tách phân hệ quản lý phím bấm (#2174, #2042)
 - **[nanookclaw](https://github.com/nanookclaw)** — Bổ sung hiển thị nhà cung cấp tìm kiếm trong kết quả của lệnh doctor (#2135)
 - **[Sskift](https://github.com/Sskift)** — Ngăn chặn việc ghi đè biến môi trường mặc định trên CLI (#2119)
-- **[xin1104](https://github.com/xin1104)** — Tạo brew formula cài binary codewhale độc lập (#2105)
+- **[xin1104](https://github.com/xin1104)** — Tạo brew formula cài binary codesmith độc lập (#2105)
 - **[mrluanma](https://github.com/mrluanma)** — Bổ sung nhà cung cấp dịch vụ tìm kiếm Metaso (#2059)
 - **[Lellansin](https://github.com/Lellansin)** — Bỏ qua việc gộp cấu hình tại thư mục home người dùng (#2055)
 - **[zhuangbiaowei](https://github.com/zhuangbiaowei)** — Cập nhật các kênh phát hành chính thức của sản phẩm (#2145)
@@ -585,7 +585,7 @@ Xin cảm ơn các báo cáo, bước tái hiện lỗi và xác minh từ **[@b
 
 ## Đóng góp cho dự án
 
-Xem tài liệu hướng dẫn đóng góp tại [CONTRIBUTING.md](CONTRIBUTING.md). Chúng tôi luôn hoan nghênh các yêu cầu kéo Pull Requests — vui lòng xem danh sách các [vấn đề mở (open issues)](https://github.com/Hmbown/CodeWhale/issues) để bắt đầu đóng góp những phần việc đầu tiên.
+Xem tài liệu hướng dẫn đóng góp tại [CONTRIBUTING.md](CONTRIBUTING.md). Chúng tôi luôn hoan nghênh các yêu cầu kéo Pull Requests — vui lòng xem danh sách các [vấn đề mở (open issues)](https://github.com/Hmbown/CodeSmith/issues) để bắt đầu đóng góp những phần việc đầu tiên.
 
 Ủng hộ nhà phát triển: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
@@ -598,4 +598,4 @@ Xem tài liệu hướng dẫn đóng góp tại [CONTRIBUTING.md](CONTRIBUTING.
 
 ## Biểu đồ Star History
 
-[![Biểu đồ lịch sử sao](https://api.star-history.com/chart?repos=Hmbown/CodeWhale&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeWhale&type=date&logscale=&legend=top-left)
+[![Biểu đồ lịch sử sao](https://api.star-history.com/chart?repos=Hmbown/CodeSmith&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeSmith&type=date&logscale=&legend=top-left)

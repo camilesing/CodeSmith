@@ -1,6 +1,6 @@
 # CNB Cool mirror
 
-`cnb.cool/codewhale.net/codewhale` is a one-way mirror of this
+`cnb.cool/codesmith.net/codesmith` is a one-way mirror of this
 GitHub repository for users on networks where GitHub is slow or blocked
 (primarily mainland China). The mirror receives every push to `main`, every
 `fix/*`, `rebrand/*`, and `work/v*` branch used for first-party release work,
@@ -41,9 +41,9 @@ mirror carry them to CNB.
 When CNB receives a `v*` tag, the root `.cnb.yml` tag pipeline builds Linux x64
 release assets from source and publishes a CNB release with:
 
-- `codewhale-linux-x64`
-- `codewhale-tui-linux-x64`
-- `codewhale-artifacts-sha256.txt`
+- `codesmith-linux-x64`
+- `codesmith-tui-linux-x64`
+- `codesmith-artifacts-sha256.txt`
 
 This gives users who can reach CNB but not GitHub a CNB-native release path.
 GitHub remains the canonical macOS/Windows release matrix; the CNB tag pipeline
@@ -59,7 +59,7 @@ Linux Rust gates run on Tencent-hosted runners instead of GitHub Actions:
 - `cargo check --workspace --all-targets --locked`
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - `cargo test --workspace --all-features --locked`
-- `cargo build --release --locked -p codewhale-cli -p codewhale-tui`
+- `cargo build --release --locked -p codesmith-cli -p codesmith-tui`
 - `node scripts/release/npm-wrapper-smoke.js`
 
 Release branches matching `work/v*` also run the Feishu bridge checks and
@@ -73,19 +73,19 @@ should have both the new commit on `main` and the new tag:
 
 ```bash
 # Quick check: does the new tag exist on CNB?
-git ls-remote https://cnb.cool/codewhale.net/codewhale.git \
+git ls-remote https://cnb.cool/codesmith.net/codesmith.git \
     refs/tags/vX.Y.Z
 
 # Quick check: is CNB's main at the same commit as origin/main?
-gh_main=$(git ls-remote https://github.com/Hmbown/CodeWhale.git refs/heads/main | awk '{print $1}')
-cnb_main=$(git ls-remote https://cnb.cool/codewhale.net/codewhale.git refs/heads/main | awk '{print $1}')
+gh_main=$(git ls-remote https://github.com/Hmbown/CodeSmith.git refs/heads/main | awk '{print $1}')
+cnb_main=$(git ls-remote https://cnb.cool/codesmith.net/codesmith.git refs/heads/main | awk '{print $1}')
 test "$gh_main" = "$cnb_main" && echo "in sync" || echo "DIVERGED: gh=$gh_main cnb=$cnb_main"
 ```
 
 Or check the workflow run directly:
 
 ```bash
-gh run list --workflow=sync-cnb.yml --repo Hmbown/CodeWhale --limit 5
+gh run list --workflow=sync-cnb.yml --repo Hmbown/CodeSmith --limit 5
 ```
 
 If the most recent run for the release tag is `success`, the mirror
@@ -103,10 +103,10 @@ password manager.
 
 ```bash
 # Add the CNB remote alongside origin.
-git remote add cnb https://cnb:${CNB_TOKEN}@cnb.cool/codewhale.net/codewhale.git
+git remote add cnb https://cnb:${CNB_TOKEN}@cnb.cool/codesmith.net/codesmith.git
 
 # Or, if you don't want the token in your shell history:
-git remote add cnb https://cnb.cool/codewhale.net/codewhale.git
+git remote add cnb https://cnb.cool/codesmith.net/codesmith.git
 # (you'll be prompted for username `cnb` and password ${CNB_TOKEN}
 #  on the first push; subsequent pushes use the credential helper.)
 ```
@@ -132,7 +132,7 @@ If the workflow is healthy but happened to fail on the release run
 without pushing anything:
 
 ```bash
-gh workflow run sync-cnb.yml --repo Hmbown/CodeWhale
+gh workflow run sync-cnb.yml --repo Hmbown/CodeSmith
 ```
 
 `workflow_dispatch` runs against the workflow's default branch
@@ -148,15 +148,15 @@ expired:
    with `repo` (push) scope.
 2. Update the `CNB_GIT_TOKEN` repository secret:
    ```bash
-   gh secret set CNB_GIT_TOKEN --repo Hmbown/CodeWhale
+   gh secret set CNB_GIT_TOKEN --repo Hmbown/CodeSmith
    ```
 3. Re-trigger the workflow on a recent commit:
    ```bash
-   gh workflow run sync-cnb.yml --repo Hmbown/CodeWhale
+   gh workflow run sync-cnb.yml --repo Hmbown/CodeSmith
    ```
 4. Confirm the run succeeds via `gh run list --workflow=sync-cnb.yml`.
 
-## Binary release assets and `codewhale update`
+## Binary release assets and `codesmith update`
 
 CNB now builds Linux x64 assets for `v*` tags from the source-controlled
 `.cnb.yml` pipeline. GitHub remains the canonical macOS/Windows release matrix. Users
@@ -164,24 +164,24 @@ behind GitHub-blocking networks should use one of these paths:
 
 - **`cargo install`** from the CNB mirror:
   ```bash
-  cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-cli
-  cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-tui
+  cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesmith-cli
+  cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesmith-tui
   ```
   (Both binaries are required — the dispatcher and the TUI ship
   separately; see `AGENTS.md` for the two-binary install rationale.)
 
 - **CNB release assets** for Linux x64, when the matching CNB tag pipeline has
-  completed successfully. Download `codewhale-linux-x64`,
-  `codewhale-tui-linux-x64`, and `codewhale-artifacts-sha256.txt` from the CNB
+  completed successfully. Download `codesmith-linux-x64`,
+  `codesmith-tui-linux-x64`, and `codesmith-artifacts-sha256.txt` from the CNB
   release for `vX.Y.Z`, then verify the binaries against the manifest.
 
 - **`DEEPSEEK_TUI_RELEASE_BASE_URL`** environment variable, if a
   CDN mirror of release assets exists. The npm
-  wrapper installer and `codewhale update` read this variable to redirect
-  binary downloads. For `codewhale update`, also set
+  wrapper installer and `codesmith update` read this variable to redirect
+  binary downloads. For `codesmith update`, also set
   `DEEPSEEK_TUI_VERSION=X.Y.Z` so the updater can label the mirrored
   release without contacting GitHub. The directory pointed to must contain
-  `codewhale-artifacts-sha256.txt` and the platform binaries; format matches
+  `codesmith-artifacts-sha256.txt` and the platform binaries; format matches
   a GitHub Release asset directory.
 
 ## Tencent Cloud remote-first path
@@ -190,7 +190,7 @@ The Lighthouse + Feishu/Lark tutorial uses CNB as the Tencent-side source and
 automation lane. For a stable install, clone `main` or a release tag from:
 
 ```bash
-https://cnb.cool/codewhale.net/codewhale.git
+https://cnb.cool/codesmith.net/codesmith.git
 ```
 
 The mirror receives `main`, release tags, and the Tencent setup branch patterns

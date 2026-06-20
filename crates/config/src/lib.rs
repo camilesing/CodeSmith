@@ -6,8 +6,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
-use codewhale_secrets::SecretSource;
-pub use codewhale_secrets::Secrets;
+use codesmith_secrets::SecretSource;
+pub use codesmith_secrets::Secrets;
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
@@ -255,7 +255,7 @@ impl ProvidersToml {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
     /// TUI-compatible DeepSeek API key. Kept at the root so both `deepseek`
-    /// and `codewhale-tui` can share a single config file.
+    /// and `codesmith-tui` can share a single config file.
     pub api_key: Option<String>,
     /// TUI-compatible DeepSeek base URL.
     pub base_url: Option<String>,
@@ -273,7 +273,7 @@ pub struct ConfigToml {
     pub telemetry: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
-    /// Native tool catalog controls shared with `codewhale-tui`.
+    /// Native tool catalog controls shared with `codesmith-tui`.
     #[serde(default)]
     pub tools: Option<ToolsToml>,
     #[serde(default)]
@@ -425,7 +425,7 @@ pub struct LspConfigToml {
 }
 
 impl ConfigToml {
-    /// Merge safe project-level overrides from `$WORKSPACE/.codewhale/config.toml`
+    /// Merge safe project-level overrides from `$WORKSPACE/.codesmith/config.toml`
     /// or legacy `$WORKSPACE/.deepseek/config.toml`.
     ///
     /// Repo-local config is untrusted input. This helper intentionally ignores
@@ -1222,7 +1222,7 @@ impl ConfigToml {
     #[must_use]
     pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
         let no_keyring = Secrets::new(std::sync::Arc::new(
-            codewhale_secrets::InMemoryKeyringStore::new(),
+            codesmith_secrets::InMemoryKeyringStore::new(),
         ));
         self.resolve_runtime_options_with_secrets(cli, &no_keyring)
     }
@@ -1300,7 +1300,7 @@ impl ConfigToml {
         } else if let Some(value) = from_file.clone().filter(|v| !v.trim().is_empty()) {
             (Some(value), Some(RuntimeApiKeySource::ConfigFile))
         } else if should_skip_secret_store_for_provider(provider, &base_url, auth_mode.as_deref()) {
-            match codewhale_secrets::env_for(provider.as_str()) {
+            match codesmith_secrets::env_for(provider.as_str()) {
                 Some(value) => (Some(value), Some(RuntimeApiKeySource::Env)),
                 None => (None, None),
             }
@@ -1457,11 +1457,11 @@ fn sandbox_mode_rank(value: &str) -> Option<u8> {
 
 /// Load a project-level config from the workspace.
 ///
-/// Checks `$WORKSPACE/.codewhale/config.toml` first, falling back to
+/// Checks `$WORKSPACE/.codesmith/config.toml` first, falling back to
 /// `$WORKSPACE/.deepseek/config.toml` for backward compatibility.
 /// Returns `None` if neither file exists or can't be parsed.
 pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
-    for dir in [CODEWHALE_APP_DIR, LEGACY_APP_DIR] {
+    for dir in [CODESMITH_APP_DIR, LEGACY_APP_DIR] {
         let path = workspace.join(dir).join(CONFIG_FILE_NAME);
         if path.exists()
             && let Ok(raw) = fs::read_to_string(&path)
@@ -1873,7 +1873,7 @@ impl ConfigStore {
 
 /// Process-wide default [`Secrets`] façade. The first caller wins; the
 /// lock is exposed so test or CLI code can install an explicit
-/// backend (e.g. an [`codewhale_secrets::InMemoryKeyringStore`]) before
+/// backend (e.g. an [`codesmith_secrets::InMemoryKeyringStore`]) before
 /// any resolver runs.
 pub fn default_secrets() -> &'static Secrets {
     static SECRETS: OnceLock<Secrets> = OnceLock::new();
@@ -1885,7 +1885,7 @@ pub fn default_secrets() -> &'static Secrets {
         #[cfg(test)]
         {
             Secrets::new(std::sync::Arc::new(
-                codewhale_secrets::InMemoryKeyringStore::new(),
+                codesmith_secrets::InMemoryKeyringStore::new(),
             ))
         }
         #[cfg(not(test))]
@@ -1895,32 +1895,45 @@ pub fn default_secrets() -> &'static Secrets {
     })
 }
 
-// ── CodeWhale state root (v0.8.44) ──────────────────────────────────
+// ── CodeSmith state root ─────────────────────────────────────────────
 //
-// v0.8.44 migrates product-owned app state from ~/.deepseek/ to
-// ~/.codewhale/ while keeping ~/.deepseek/ as a compatibility fallback.
-// New installs write to ~/.codewhale/. Existing installs with only
-// ~/.deepseek/ continue working without data loss.
+// CodeSmith writes new product-owned app state to ~/.codesmith/ while keeping
+// ~/.codewhale/ and ~/.deepseek/ as compatibility fallbacks. Existing installs
+// continue working without data loss.
 
-/// Canonical CodeWhale app directory name under $HOME.
-pub const CODEWHALE_APP_DIR: &str = ".codewhale";
+/// Canonical CodeSmith app directory name under $HOME.
+pub const CODESMITH_APP_DIR: &str = ".codesmith";
+
+/// Legacy CodeWhale-branded app directory name (compatibility fallback).
+pub const LEGACY_CODEWHALE_APP_DIR: &str = ".codewhale";
 
 /// Legacy DeepSeek-branded app directory name (compatibility fallback).
 pub const LEGACY_APP_DIR: &str = ".deepseek";
 
-/// Resolve the primary CodeWhale home directory.
+/// Resolve the primary CodeSmith home directory.
 ///
-/// `$CODEWHALE_HOME` takes precedence when set. Otherwise defaults to
-/// `$HOME/.codewhale`. This is the write target for new product state.
-pub fn codewhale_home() -> Result<PathBuf> {
-    if let Ok(val) = std::env::var("CODEWHALE_HOME") {
-        let trimmed = val.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
+/// `$CODESMITH_HOME` takes precedence when set. `$CODEWHALE_HOME` remains a
+/// compatibility alias. Otherwise defaults to `$HOME/.codesmith`. This is the
+/// write target for new product state.
+pub fn codesmith_home() -> Result<PathBuf> {
+    for name in ["CODESMITH_HOME", "CODEWHALE_HOME"] {
+        if let Ok(val) = std::env::var(name) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Ok(PathBuf::from(trimmed));
+            }
         }
     }
     let home = dirs::home_dir().context("failed to resolve home directory")?;
-    Ok(home.join(CODEWHALE_APP_DIR))
+    Ok(home.join(CODESMITH_APP_DIR))
+}
+
+/// Resolve the legacy CodeWhale home directory (`$HOME/.codewhale`).
+///
+/// Always returns the legacy path regardless of whether it exists.
+pub fn legacy_codewhale_home() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("failed to resolve home directory")?;
+    Ok(home.join(LEGACY_CODEWHALE_APP_DIR))
 }
 
 /// Resolve the legacy DeepSeek home directory (`$HOME/.deepseek`).
@@ -1931,16 +1944,20 @@ pub fn legacy_deepseek_home() -> Result<PathBuf> {
     Ok(home.join(LEGACY_APP_DIR))
 }
 
-/// Resolve a state subdirectory, preferring the CodeWhale root if
-/// it already exists, otherwise falling back to the legacy root.
+/// Resolve a state subdirectory, preferring the CodeSmith root if
+/// it already exists, otherwise falling back to legacy roots.
 ///
 /// This is the read-path resolver: it returns the primary path when
 /// migration has occurred or on a fresh install, but keeps reading
-/// from the legacy path for users who haven't migrated yet.
+/// from legacy paths for users who haven't migrated yet.
 pub fn resolve_state_dir(subdir: &str) -> Result<PathBuf> {
-    let primary = codewhale_home()?.join(subdir);
+    let primary = codesmith_home()?.join(subdir);
     if primary.exists() {
         return Ok(primary);
+    }
+    let legacy_codewhale = legacy_codewhale_home()?.join(subdir);
+    if legacy_codewhale.exists() {
+        return Ok(legacy_codewhale);
     }
     let legacy = legacy_deepseek_home()?.join(subdir);
     if legacy.exists() {
@@ -1950,34 +1967,39 @@ pub fn resolve_state_dir(subdir: &str) -> Result<PathBuf> {
     Ok(primary)
 }
 
-/// Ensure a state subdirectory exists under the primary CodeWhale root,
+/// Ensure a state subdirectory exists under the primary CodeSmith root,
 /// creating it if necessary. This is the write-path resolver.
 pub fn ensure_state_dir(subdir: &str) -> Result<PathBuf> {
-    let dir = codewhale_home()?.join(subdir);
+    let dir = codesmith_home()?.join(subdir);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create {}/", dir.display()))?;
     Ok(dir)
 }
 
-/// Resolve a project-local state subdirectory, preferring `.codewhale/`
-/// when it exists, falling back to `.deepseek/` for legacy projects.
+/// Resolve a project-local state subdirectory, preferring `.codesmith/`
+/// when it exists, falling back to `.codewhale/` or `.deepseek/` for legacy
+/// projects.
 ///
-/// Returns `(true, path)` when the primary `.codewhale/` path is used,
-/// `(false, path)` for the legacy fallback. The boolean helps callers
-/// emit a deprecation notice on legacy paths.
+/// Returns `(true, path)` when the primary `.codesmith/` path is used,
+/// `(false, path)` for a legacy fallback. The boolean helps callers emit a
+/// deprecation notice on legacy paths.
 pub fn resolve_project_state_dir(workspace: &Path, subdir: &str) -> (bool, PathBuf) {
-    let primary = workspace.join(CODEWHALE_APP_DIR).join(subdir);
+    let primary = workspace.join(CODESMITH_APP_DIR).join(subdir);
     if primary.exists() {
         return (true, primary);
+    }
+    let legacy_codewhale = workspace.join(LEGACY_CODEWHALE_APP_DIR).join(subdir);
+    if legacy_codewhale.exists() {
+        return (false, legacy_codewhale);
     }
     let legacy = workspace.join(LEGACY_APP_DIR).join(subdir);
     (false, legacy)
 }
 
-/// Ensure a project-local state subdirectory exists under `.codewhale/`,
+/// Ensure a project-local state subdirectory exists under `.codesmith/`,
 /// creating it if necessary. Returns the directory path.
 pub fn ensure_project_state_dir(workspace: &Path, subdir: &str) -> Result<PathBuf> {
-    let dir = workspace.join(CODEWHALE_APP_DIR).join(subdir);
+    let dir = workspace.join(CODESMITH_APP_DIR).join(subdir);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create {}/", dir.display()))?;
     Ok(dir)
@@ -1986,6 +2008,13 @@ pub fn ensure_project_state_dir(workspace: &Path, subdir: &str) -> Result<PathBu
 pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     let path = if let Some(path) = explicit {
         path
+    } else if let Ok(path) = std::env::var("CODESMITH_CONFIG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            PathBuf::from(trimmed)
+        } else {
+            return default_config_path();
+        }
     } else if let Ok(path) = std::env::var("CODEWHALE_CONFIG_PATH") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
@@ -2007,11 +2036,16 @@ pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
-    // Prefer ~/.codewhale/config.toml when it exists (fresh install or
-    // migrated), otherwise fall back to ~/.deepseek/config.toml.
-    let primary = codewhale_home()?.join(CONFIG_FILE_NAME);
+    // Prefer ~/.codesmith/config.toml when it exists (fresh install or
+    // migrated), otherwise fall back to ~/.codewhale/config.toml and then
+    // ~/.deepseek/config.toml.
+    let primary = codesmith_home()?.join(CONFIG_FILE_NAME);
     if primary.exists() {
         return Ok(primary);
+    }
+    let legacy_codewhale = legacy_codewhale_home()?.join(CONFIG_FILE_NAME);
+    if legacy_codewhale.exists() {
+        return Ok(legacy_codewhale);
     }
     let legacy = legacy_deepseek_home()?.join(CONFIG_FILE_NAME);
     if legacy.exists() {
@@ -2021,25 +2055,30 @@ pub fn default_config_path() -> Result<PathBuf> {
     Ok(primary)
 }
 
-/// v0.8.44: one-time migration from `~/.deepseek/config.toml` to
-/// `~/.codewhale/config.toml`. Called on first launch after the config
-/// is loaded; copies the legacy file if the primary doesn't exist yet.
-/// Never overwrites an existing primary config.
+/// One-time migration from legacy config locations to
+/// `~/.codesmith/config.toml`. Called on first launch after the config is
+/// loaded; copies the legacy file if the primary doesn't exist yet. Never
+/// overwrites an existing primary config.
 pub fn migrate_config_if_needed() -> Result<()> {
-    let primary = codewhale_home()?.join(CONFIG_FILE_NAME);
+    let primary = codesmith_home()?.join(CONFIG_FILE_NAME);
     if primary.exists() {
         return Ok(());
     }
-    let legacy = legacy_deepseek_home()?.join(CONFIG_FILE_NAME);
-    if !legacy.exists() {
-        return Ok(());
-    }
+    let legacy_codewhale = legacy_codewhale_home()?.join(CONFIG_FILE_NAME);
+    let legacy = if legacy_codewhale.exists() {
+        legacy_codewhale
+    } else {
+        let legacy_deepseek = legacy_deepseek_home()?.join(CONFIG_FILE_NAME);
+        if !legacy_deepseek.exists() {
+            return Ok(());
+        }
+        legacy_deepseek
+    };
     // Copy the config to the new home.
     if let Some(parent) = primary.parent() {
-        std::fs::create_dir_all(parent).context("failed to create codewhale config directory")?;
+        std::fs::create_dir_all(parent).context("failed to create codesmith config directory")?;
     }
-    std::fs::copy(&legacy, &primary)
-        .context("failed to migrate config from deepseek to codewhale home")?;
+    std::fs::copy(&legacy, &primary).context("failed to migrate config to codesmith home")?;
     tracing::info!(
         "Migrated config from {} to {}",
         legacy.display(),
@@ -2173,11 +2212,11 @@ struct EnvRuntimeOverrides {
 impl EnvRuntimeOverrides {
     fn load() -> Self {
         Self {
-            provider: std::env::var("CODEWHALE_PROVIDER")
+            provider: std::env::var("CODESMITH_PROVIDER")
                 .or_else(|_| std::env::var("DEEPSEEK_PROVIDER"))
                 .ok()
                 .and_then(|v| ProviderKind::parse(&v)),
-            model: std::env::var("CODEWHALE_MODEL")
+            model: std::env::var("CODESMITH_MODEL")
                 .or_else(|_| std::env::var("DEEPSEEK_MODEL"))
                 .or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
                 .ok()
@@ -2215,7 +2254,7 @@ impl EnvRuntimeOverrides {
                 .ok()
                 .and_then(|value| parse_http_headers(&value).ok())
                 .filter(|headers| !headers.is_empty()),
-            deepseek_base_url: std::env::var("CODEWHALE_BASE_URL")
+            deepseek_base_url: std::env::var("CODESMITH_BASE_URL")
                 .or_else(|_| std::env::var("DEEPSEEK_BASE_URL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -2397,9 +2436,9 @@ mod tests {
         vllm_base_url: Option<OsString>,
         ollama_api_key: Option<OsString>,
         ollama_base_url: Option<OsString>,
-        codewhale_provider: Option<OsString>,
-        codewhale_model: Option<OsString>,
-        codewhale_base_url: Option<OsString>,
+        codesmith_provider: Option<OsString>,
+        codesmith_model: Option<OsString>,
+        codesmith_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -2412,9 +2451,9 @@ mod tests {
                 deepseek_default_text_model: env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL"),
                 deepseek_provider: env::var_os("DEEPSEEK_PROVIDER"),
                 deepseek_auth_mode: env::var_os("DEEPSEEK_AUTH_MODE"),
-                codewhale_provider: env::var_os("CODEWHALE_PROVIDER"),
-                codewhale_model: env::var_os("CODEWHALE_MODEL"),
-                codewhale_base_url: env::var_os("CODEWHALE_BASE_URL"),
+                codesmith_provider: env::var_os("CODESMITH_PROVIDER"),
+                codesmith_model: env::var_os("CODESMITH_MODEL"),
+                codesmith_base_url: env::var_os("CODESMITH_BASE_URL"),
                 nvidia_api_key: env::var_os("NVIDIA_API_KEY"),
                 nvidia_nim_api_key: env::var_os("NVIDIA_NIM_API_KEY"),
                 nim_base_url: env::var_os("NIM_BASE_URL"),
@@ -2467,9 +2506,9 @@ mod tests {
                 env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
                 env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("DEEPSEEK_AUTH_MODE");
-                env::remove_var("CODEWHALE_PROVIDER");
-                env::remove_var("CODEWHALE_MODEL");
-                env::remove_var("CODEWHALE_BASE_URL");
+                env::remove_var("CODESMITH_PROVIDER");
+                env::remove_var("CODESMITH_MODEL");
+                env::remove_var("CODESMITH_BASE_URL");
                 env::remove_var("NVIDIA_API_KEY");
                 env::remove_var("NVIDIA_NIM_API_KEY");
                 env::remove_var("NIM_BASE_URL");
@@ -2538,9 +2577,9 @@ mod tests {
                 );
                 Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("DEEPSEEK_AUTH_MODE", self.deepseek_auth_mode.take());
-                Self::restore_var("CODEWHALE_PROVIDER", self.codewhale_provider.take());
-                Self::restore_var("CODEWHALE_MODEL", self.codewhale_model.take());
-                Self::restore_var("CODEWHALE_BASE_URL", self.codewhale_base_url.take());
+                Self::restore_var("CODESMITH_PROVIDER", self.codesmith_provider.take());
+                Self::restore_var("CODESMITH_MODEL", self.codesmith_model.take());
+                Self::restore_var("CODESMITH_BASE_URL", self.codesmith_base_url.take());
                 Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
                 Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
                 Self::restore_var("NIM_BASE_URL", self.nim_base_url.take());
@@ -2601,17 +2640,17 @@ mod tests {
         }
     }
 
-    impl codewhale_secrets::KeyringStore for RecordingSecretsStore {
-        fn get(&self, key: &str) -> Result<Option<String>, codewhale_secrets::SecretsError> {
+    impl codesmith_secrets::KeyringStore for RecordingSecretsStore {
+        fn get(&self, key: &str) -> Result<Option<String>, codesmith_secrets::SecretsError> {
             self.gets.lock().unwrap().push(key.to_string());
             Ok(self.value.clone())
         }
 
-        fn set(&self, _key: &str, _value: &str) -> Result<(), codewhale_secrets::SecretsError> {
+        fn set(&self, _key: &str, _value: &str) -> Result<(), codesmith_secrets::SecretsError> {
             Ok(())
         }
 
-        fn delete(&self, _key: &str) -> Result<(), codewhale_secrets::SecretsError> {
+        fn delete(&self, _key: &str) -> Result<(), codesmith_secrets::SecretsError> {
             Ok(())
         }
 
@@ -2986,8 +3025,8 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     /// End-to-end smoke for the preferred Kimi Code setup path:
     ///   1. Start from a fresh root config that uses DeepSeek defaults.
     ///   2. Mutate it through the same key-value setters the
-    ///      `codewhale config set providers.moonshot.*` CLI invokes.
-    ///   3. Switch the active provider through `CODEWHALE_PROVIDER` —
+    ///      `codesmith config set providers.moonshot.*` CLI invokes.
+    ///   3. Switch the active provider through `CODESMITH_PROVIDER` —
     ///      the public env alias — without ever touching the legacy
     ///      `DEEPSEEK_PROVIDER` name.
     ///   4. Resolve the runtime and confirm the doctor/runtime values.
@@ -3005,7 +3044,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        // Same key paths a user would run via `codewhale config set`.
+        // Same key paths a user would run via `codesmith config set`.
         config.set_value("providers.moonshot.api_key", "kimi-code-key-placeholder")?;
         config.set_value("providers.moonshot.auth_mode", "api_key")?;
         config.set_value("providers.moonshot.base_url", DEFAULT_KIMI_CODE_BASE_URL)?;
@@ -3013,7 +3052,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
 
         // Public env alias for the active-provider switch.
         // Safety: test-only env mutation guarded by env_lock().
-        unsafe { env::set_var("CODEWHALE_PROVIDER", "moonshot") };
+        unsafe { env::set_var("CODESMITH_PROVIDER", "moonshot") };
 
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
 
@@ -3433,16 +3472,16 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         );
     }
 
-    /// `CODEWHALE_PROVIDER` is the user-facing env alias for switching the
+    /// `CODESMITH_PROVIDER` is the user-facing env alias for switching the
     /// active provider. It must be honored by the runtime resolver and win
     /// over a root `provider = "deepseek"` config entry.
     #[test]
-    fn codewhale_provider_env_switches_active_provider() {
+    fn codesmith_provider_env_switches_active_provider() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: test-only env mutation guarded by env_lock().
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
         }
         let mut config = ConfigToml {
             provider: ProviderKind::Deepseek,
@@ -3459,17 +3498,17 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         assert_eq!(resolved.api_key.as_deref(), Some("kimi-code-key"));
     }
 
-    /// When both `CODEWHALE_PROVIDER` and the legacy `DEEPSEEK_PROVIDER`
-    /// are set, the public alias wins — a user adopting `CODEWHALE_*` in a
+    /// When both `CODESMITH_PROVIDER` and the legacy `DEEPSEEK_PROVIDER`
+    /// are set, the public alias wins — a user adopting `CODESMITH_*` in a
     /// fresh shell config is not tripped up by a stale legacy export still
     /// living in their dotfiles.
     #[test]
-    fn codewhale_provider_env_wins_over_deepseek_provider_env() {
+    fn codesmith_provider_env_wins_over_deepseek_provider_env() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: test-only env mutation guarded by env_lock().
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
             env::set_var("DEEPSEEK_PROVIDER", "openrouter");
         }
         let config = ConfigToml {
@@ -3482,17 +3521,17 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         assert_eq!(resolved.provider, ProviderKind::Moonshot);
     }
 
-    /// `CODEWHALE_MODEL` is the user-facing env alias for picking a model
+    /// `CODESMITH_MODEL` is the user-facing env alias for picking a model
     /// against the active provider. It must be honored by the runtime
     /// resolver in place of `DEEPSEEK_MODEL`.
     #[test]
-    fn codewhale_model_env_alias_overrides_default_for_active_provider() {
+    fn codesmith_model_env_alias_overrides_default_for_active_provider() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: test-only env mutation guarded by env_lock().
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "moonshot");
-            env::set_var("CODEWHALE_MODEL", "custom-kimi-test-model");
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_MODEL", "custom-kimi-test-model");
         }
         let config = ConfigToml::default();
 
@@ -3503,13 +3542,13 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     }
 
     #[test]
-    fn blank_codewhale_model_env_alias_does_not_override_default_for_active_provider() {
+    fn blank_codesmith_model_env_alias_does_not_override_default_for_active_provider() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: test-only env mutation guarded by env_lock().
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "moonshot");
-            env::set_var("CODEWHALE_MODEL", "   ");
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_MODEL", "   ");
         }
         let config = ConfigToml::default();
 
@@ -3525,7 +3564,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: test-only env mutation guarded by env_lock().
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
             env::set_var("DEEPSEEK_DEFAULT_TEXT_MODEL", "legacy-env-model");
         }
         let config = ConfigToml::default();
@@ -3808,7 +3847,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "siliconflow");
+            env::set_var("CODESMITH_PROVIDER", "siliconflow");
             env::set_var("SILICONFLOW_API_KEY", "sf-env-key");
             env::set_var("SILICONFLOW_BASE_URL", "https://sf-mirror.example/v1");
             env::set_var("SILICONFLOW_MODEL", "deepseek-v4-flash");
@@ -3829,7 +3868,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "siliconflow");
+            env::set_var("CODESMITH_PROVIDER", "siliconflow");
             env::set_var("SILICONFLOW_API_KEY", "sf-env-key");
             env::set_var("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1");
         }
@@ -4093,13 +4132,13 @@ unix_socket_path = "/tmp/cw-hooks.sock"
 
     #[test]
     fn config_file_resolves_above_env_and_keyring() {
-        use codewhale_secrets::KeyringStore;
+        use codesmith_secrets::KeyringStore;
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
 
-        let store = std::sync::Arc::new(codewhale_secrets::InMemoryKeyringStore::new());
+        let store = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
         store.set("deepseek", "ring-key").unwrap();
         let secrets = Secrets::new(store);
 
@@ -4126,7 +4165,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
 
         let secrets = Secrets::new(std::sync::Arc::new(
-            codewhale_secrets::InMemoryKeyringStore::new(),
+            codesmith_secrets::InMemoryKeyringStore::new(),
         ));
         let config = ConfigToml::default();
 
@@ -4145,7 +4184,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         let _env = EnvGuard::without_deepseek_runtime_overrides();
 
         let secrets = Secrets::new(std::sync::Arc::new(
-            codewhale_secrets::InMemoryKeyringStore::new(),
+            codesmith_secrets::InMemoryKeyringStore::new(),
         ));
         let mut config = ConfigToml::default();
         config.providers.deepseek.api_key = Some("file-key".to_string());
@@ -4161,13 +4200,13 @@ unix_socket_path = "/tmp/cw-hooks.sock"
 
     #[test]
     fn keyring_resolves_when_config_file_empty_even_if_env_is_set() {
-        use codewhale_secrets::KeyringStore;
+        use codesmith_secrets::KeyringStore;
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key") };
 
-        let store = std::sync::Arc::new(codewhale_secrets::InMemoryKeyringStore::new());
+        let store = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
         store.set("deepseek", "ring-key").unwrap();
         let secrets = Secrets::new(store);
 
@@ -4182,11 +4221,11 @@ unix_socket_path = "/tmp/cw-hooks.sock"
 
     #[test]
     fn cli_flag_still_overrides_keyring() {
-        use codewhale_secrets::KeyringStore;
+        use codesmith_secrets::KeyringStore;
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
 
-        let store = std::sync::Arc::new(codewhale_secrets::InMemoryKeyringStore::new());
+        let store = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
         store.set("deepseek", "ring-key").unwrap();
         let secrets = Secrets::new(store);
 

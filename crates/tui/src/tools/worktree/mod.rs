@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use codewhale_tools::ToolError;
 use crate::dependencies::ExternalTool;
+use codesmith_tools::ToolError;
 
 mod enter;
 mod exit;
@@ -24,7 +24,7 @@ pub use exit::ExitWorktreeTool;
 pub struct WorktreeSessionState {
     /// Whether a worktree session is currently active.
     pub active: bool,
-    /// Path to the worktree directory (e.g. `.codewhale/worktrees/<slug>`).
+    /// Path to the worktree directory (e.g. `.codesmith/worktrees/<slug>`).
     pub worktree_path: Option<PathBuf>,
     /// Branch name for the worktree (e.g. `worktree-<slug>`).
     pub worktree_branch: Option<String>,
@@ -73,7 +73,10 @@ pub fn validate_worktree_slug(slug: &str) -> Result<(), ToolError> {
             )));
         }
         // Regex check: each segment must match [a-zA-Z0-9._-]+
-        if !segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
+        if !segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        {
             return Err(ToolError::execution_failed(format!(
                 "Invalid worktree name \"{slug}\": each segment must contain only letters, digits, dots, underscores, and dashes"
             )));
@@ -93,14 +96,17 @@ pub fn worktree_branch_name(slug: &str) -> String {
     format!("worktree-{}", flatten_slug(slug))
 }
 
-/// Derive the worktree directory path: `{repo_root}/.codewhale/worktrees/{flatten_slug}`.
+/// Derive the worktree directory path: `{repo_root}/.codesmith/worktrees/{flatten_slug}`.
 pub fn worktree_path_for(repo_root: &Path, slug: &str) -> PathBuf {
-    repo_root.join(".codewhale").join("worktrees").join(flatten_slug(slug))
+    repo_root
+        .join(".codesmith")
+        .join("worktrees")
+        .join(flatten_slug(slug))
 }
 
-/// Directory holding all session worktrees: `{repo_root}/.codewhale/worktrees/`.
+/// Directory holding all session worktrees: `{repo_root}/.codesmith/worktrees/`.
 pub fn worktrees_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join(".codewhale").join("worktrees")
+    repo_root.join(".codesmith").join("worktrees")
 }
 
 /// Generate a random slug for unnamed worktrees.
@@ -169,13 +175,13 @@ mod tests {
     #[test]
     fn worktree_path_for_constructs_path() {
         let path = worktree_path_for(Path::new("/repo"), "my-feature");
-        assert_eq!(path, PathBuf::from("/repo/.codewhale/worktrees/my-feature"));
+        assert_eq!(path, PathBuf::from("/repo/.codesmith/worktrees/my-feature"));
     }
 
     #[test]
     fn worktrees_dir_constructs_path() {
         let dir = worktrees_dir(Path::new("/repo"));
-        assert_eq!(dir, PathBuf::from("/repo/.codewhale/worktrees"));
+        assert_eq!(dir, PathBuf::from("/repo/.codesmith/worktrees"));
     }
 }
 
@@ -250,7 +256,9 @@ pub fn find_canonical_git_root(start_dir: &Path) -> Option<PathBuf> {
 pub fn get_current_branch(working_dir: &Path) -> Result<String, ToolError> {
     let output = run_git(working_dir, &["branch", "--show-current"])?;
     if !output.status.success() {
-        return Err(ToolError::execution_failed("git branch --show-current failed"));
+        return Err(ToolError::execution_failed(
+            "git branch --show-current failed",
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
@@ -325,7 +333,9 @@ fn check_existing_worktree(worktree_path: &Path) -> Option<String> {
         } else {
             return None;
         };
-        std::fs::read_to_string(ref_file).ok().map(|s| s.trim().to_string())
+        std::fs::read_to_string(ref_file)
+            .ok()
+            .map(|s| s.trim().to_string())
     } else {
         Some(head_content.to_string())
     }
@@ -351,7 +361,7 @@ pub fn get_or_create_worktree(
         });
     }
 
-    // New worktree: create .codewhale/worktrees/ directory
+    // New worktree: create .codesmith/worktrees/ directory
     std::fs::create_dir_all(worktrees_dir(repo_root))
         .map_err(|e| ToolError::execution_failed(format!("Failed to create worktrees dir: {e}")))?;
 
@@ -363,12 +373,21 @@ pub fn get_or_create_worktree(
     // -B resets any orphan branch left by a previous removed worktree
     let output = run_git(
         repo_root,
-        &["worktree", "add", "-B", &worktree_branch, worktree_path.to_str().unwrap_or(""), &base_branch],
+        &[
+            "worktree",
+            "add",
+            "-B",
+            &worktree_branch,
+            worktree_path.to_str().unwrap_or(""),
+            &base_branch,
+        ],
     )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ToolError::execution_failed(format!("Failed to create worktree: {stderr}")));
+        return Err(ToolError::execution_failed(format!(
+            "Failed to create worktree: {stderr}"
+        )));
     }
 
     Ok(WorktreeCreateResult {
@@ -416,7 +435,10 @@ pub fn count_worktree_changes(
         .parse::<usize>()
         .unwrap_or(0);
 
-    Some(ChangeSummary { changed_files, commits })
+    Some(ChangeSummary {
+        changed_files,
+        commits,
+    })
 }
 
 /// Remove the git worktree directory and delete the branch.
@@ -427,7 +449,15 @@ pub fn cleanup_worktree(
     git_root: &Path,
 ) -> Result<(), ToolError> {
     // git worktree remove --force <path>
-    let output = run_git(git_root, &["worktree", "remove", "--force", worktree_path.to_str().unwrap_or("")])?;
+    let output = run_git(
+        git_root,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            worktree_path.to_str().unwrap_or(""),
+        ],
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Log but don't fail — the worktree dir might already be gone

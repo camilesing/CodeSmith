@@ -1,5 +1,5 @@
-//! User-defined slash commands from `~/.codewhale/commands/<name>.md` and
-//! workspace-local `<workspace>/.codewhale/commands/<name>.md`.
+//! User-defined slash commands from `~/.codesmith/commands/<name>.md` and
+//! workspace-local `<workspace>/.codesmith/commands/<name>.md`.
 //!
 //! Users drop `.md` files into a commands directory and the filename
 //! (without `.md` extension) becomes a slash command. When invoked via
@@ -13,11 +13,11 @@
 //!
 //! Workspace-local directories shadow user-global by name:
 //!
-//! 1. `<workspace>/.codewhale/commands/` (project-local, highest)
+//! 1. `<workspace>/.codesmith/commands/` (project-local, highest)
 //! 2. `<workspace>/.deepseek/commands/`  (legacy project-local)
 //! 3. `<workspace>/.claude/commands/`    (Claude Code interop)
 //! 4. `<workspace>/.cursor/commands/`    (Cursor interop)
-//! 5. `~/.codewhale/commands/`           (user-global)
+//! 5. `~/.codesmith/commands/`           (user-global)
 //! 6. `~/.deepseek/commands/`            (legacy user-global)
 
 use std::collections::HashSet;
@@ -27,10 +27,10 @@ use crate::tui::app::{App, AppAction, HuntVerdict};
 
 use super::CommandResult;
 
-/// Path to the global user commands directory: `~/.codewhale/commands/`.
+/// Path to the global user commands directory: `~/.codesmith/commands/`.
 fn global_commands_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".codewhale").join("commands")
+    home.join(".codesmith").join("commands")
 }
 
 fn legacy_global_commands_dir() -> PathBuf {
@@ -42,7 +42,7 @@ fn legacy_global_commands_dir() -> PathBuf {
 fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(ws) = workspace {
-        dirs.push(ws.join(".codewhale").join("commands"));
+        dirs.push(ws.join(".codesmith").join("commands"));
         dirs.push(ws.join(".deepseek").join("commands"));
         dirs.push(ws.join(".claude").join("commands"));
         dirs.push(ws.join(".cursor").join("commands"));
@@ -248,7 +248,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_global_commands_dir_contains_codewhale_commands() {
+    fn test_global_commands_dir_contains_codesmith_commands() {
         let dir = global_commands_dir();
         let parts: Vec<_> = dir
             .components()
@@ -257,8 +257,8 @@ mod tests {
         assert!(
             parts
                 .windows(2)
-                .any(|pair| pair == [".codewhale", "commands"]),
-            "expected .codewhale/commands components in path, got: {}",
+                .any(|pair| pair == [".codesmith", "commands"]),
+            "expected .codesmith/commands components in path, got: {}",
             dir.display()
         );
     }
@@ -342,7 +342,7 @@ mod tests {
     fn load_user_commands_scans_workspace_local_dir() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path();
-        let cmds_dir = ws.join(".codewhale").join("commands");
+        let cmds_dir = ws.join(".codesmith").join("commands");
         write_command(&cmds_dir, "hello", "echo hi");
 
         let cmds = load_user_commands(Some(ws));
@@ -387,7 +387,7 @@ mod tests {
 
         // Workspace-local version
         write_command(
-            &ws.join(".codewhale").join("commands"),
+            &ws.join(".codesmith").join("commands"),
             "shared",
             "workspace version",
         );
@@ -408,7 +408,7 @@ mod tests {
             .expect("shared present");
         assert_eq!(
             shared.1, "workspace version",
-            "workspace-local (.codewhale) must shadow later dirs"
+            "workspace-local (.codesmith) must shadow later dirs"
         );
     }
 

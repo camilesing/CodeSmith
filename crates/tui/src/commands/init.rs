@@ -35,7 +35,7 @@ pub fn init(app: &mut App) -> CommandResult {
     }
 }
 
-/// If `workspace` is inside a git repository, ensure `.codewhale/` and
+/// If `workspace` is inside a git repository, ensure `.codesmith/` and
 /// `.deepseek/` are listed in the nearest `.gitignore` so that snapshots,
 /// instructions, and other workspace-local state are not accidentally committed.
 fn ensure_deepseek_gitignored(workspace: &Path) {
@@ -45,7 +45,7 @@ fn ensure_deepseek_gitignored(workspace: &Path) {
     }
 
     let gitignore = workspace.join(".gitignore");
-    let entries = [".codewhale/", ".deepseek/"];
+    let entries = [".codesmith/", ".deepseek/"];
 
     // Read existing contents once.
     let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
@@ -109,7 +109,7 @@ fn generate_project_doc(workspace: &Path) -> String {
     doc.push_str("<!-- file patterns to avoid, and anything that helps a model navigate -->\n");
     doc.push_str("<!-- the codebase without reading every file. -->\n");
     doc.push('\n');
-    doc.push_str("- **CodeWhale reads this file as:** <!-- WHALE.md (CodeWhale-native) or AGENTS.md (compatible with other agents) -->\n");
+    doc.push_str("- **CodeSmith reads this file as:** <!-- WHALE.md (CodeSmith-native) or AGENTS.md (compatible with other agents) -->\n");
     doc.push_str(
         "- **Read-only surface:** <!-- Which directories can the agent read but not write? -->\n",
     );

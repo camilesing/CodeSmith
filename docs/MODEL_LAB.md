@@ -1,7 +1,7 @@
 # Model Lab Roadmap
 
-Model Lab is the planned open-model workbench for CodeWhale. The north star is
-simple: CodeWhale should become the best terminal coding agent for open-source
+Model Lab is the planned open-model workbench for CodeSmith. The north star is
+simple: CodeSmith should become the best terminal coding agent for open-source
 and open-weight models across every provider that offers them. Model Lab is how
 those models become discoverable, evaluable, routable, servable, and exportable
 without weakening the current terminal-agent contract: local workspace control,
@@ -17,8 +17,8 @@ implemented today.
   environment variables, and `~/.deepseek` config compatibility.
 - OpenRouter, Novita, Fireworks, NVIDIA NIM, AtlasCloud, Wanjie Ark, generic
   OpenAI-compatible endpoints, SGLang, vLLM, and Ollama are supported provider
-  paths where their IDs appear in `/provider`, `codewhale --provider`, or
-  `codewhale models`.
+  paths where their IDs appear in `/provider`, `codesmith --provider`, or
+  `codesmith models`.
 - Model auto-routing chooses a concrete DeepSeek model and thinking level per
   turn. It is not a TUI mode.
 - Fin is the fast `deepseek-v4-flash` thinking-off path for routing,
@@ -53,7 +53,7 @@ Model Lab should help users answer practical questions:
 - Can I reproduce, export, or self-host the route?
 
 It should never hide provider boundaries, silently upload local artifacts, or
-describe a model as available before CodeWhale can actually route to it.
+describe a model as available before CodeSmith can actually route to it.
 
 ## Hugging Face Workset
 

@@ -1,9 +1,8 @@
 //! Team discovery — utilities for reading team config and finding members.
 
 use crate::tools::team::team_file::{
-    TeamFile, TeamMember,
-    read_team_file, write_team_file,
-    find_member_by_name, find_member_by_agent_id, remove_member_by_name,
+    TeamFile, TeamMember, find_member_by_agent_id, find_member_by_name, read_team_file,
+    remove_member_by_name, write_team_file,
 };
 
 /// Read the team config file from disk.

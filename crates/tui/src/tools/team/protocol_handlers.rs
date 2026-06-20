@@ -11,9 +11,8 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::tools::team::{
-    TeammateMessage, StructuredProtocolMessage, IdleReason,
-    write_to_mailbox, team_lead_name, read_team_file,
-    remove_member_by_name, write_team_file,
+    IdleReason, StructuredProtocolMessage, TeammateMessage, read_team_file, remove_member_by_name,
+    team_lead_name, write_team_file, write_to_mailbox,
 };
 
 // ---------------------------------------------------------------------------
@@ -277,9 +276,9 @@ pub fn handle_permission_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{lock_test_env, ScopedCodeWhaleHome};
-    use crate::tools::team::team_file::{create_team_file, TeamFile, format_lead_agent_id};
-    use crate::tools::team::teammate_mailbox::{read_mailbox, parse_structured_protocol};
+    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+    use crate::tools::team::team_file::{TeamFile, create_team_file, format_lead_agent_id};
+    use crate::tools::team::teammate_mailbox::{parse_structured_protocol, read_mailbox};
 
     fn make_team_file(name: &str) -> TeamFile {
         TeamFile {
@@ -311,7 +310,12 @@ mod tests {
     fn permission_request_registry_resolve_deny() {
         let mut reg = PermissionRequestRegistry::new();
         let rx = reg.register("req-2".to_string());
-        assert!(reg.resolve("req-2", PermissionDecision::Deny { reason: Some("unsafe".to_string()) }));
+        assert!(reg.resolve(
+            "req-2",
+            PermissionDecision::Deny {
+                reason: Some("unsafe".to_string())
+            }
+        ));
         let decision = rx.blocking_recv().expect("recv");
         assert!(matches!(decision, PermissionDecision::Deny { .. }));
     }
@@ -319,14 +323,23 @@ mod tests {
     #[test]
     fn handle_shutdown_request_writes_to_target_mailbox() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         create_team_file(&make_team_file("proto-test")).expect("team");
 
-        handle_shutdown_request("leader", "worker1", "proto-test", Some("cleanup".to_string())).expect("request");
+        handle_shutdown_request(
+            "leader",
+            "worker1",
+            "proto-test",
+            Some("cleanup".to_string()),
+        )
+        .expect("request");
 
         let msgs = read_mailbox("worker1", "proto-test").expect("read");
         assert_eq!(msgs.len(), 1);
         let parsed = parse_structured_protocol(&msgs[0].text).expect("parse");
-        assert!(matches!(parsed, StructuredProtocolMessage::ShutdownRequest { .. }));
+        assert!(matches!(
+            parsed,
+            StructuredProtocolMessage::ShutdownRequest { .. }
+        ));
     }
 }

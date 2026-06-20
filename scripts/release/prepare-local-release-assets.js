@@ -8,10 +8,10 @@ const {
   allAssetNames,
   CHECKSUM_MANIFEST,
   detectBinaryNames,
-} = require("../../npm/codewhale/scripts/artifacts");
+} = require("../../npm/codesmith/scripts/artifacts");
 
-const WINDOWS_LAUNCHER = "codewhale.bat";
-const WINDOWS_CLI_ASSET = "codewhale-windows-x64.exe";
+const WINDOWS_LAUNCHER = "codesmith.bat";
+const WINDOWS_CLI_ASSET = "codesmith-windows-x64.exe";
 
 async function sha256(filePath) {
   const content = await fs.readFile(filePath);
@@ -28,16 +28,16 @@ async function main() {
   const buildDir = path.resolve(
     process.argv[3] || path.join("target", "release"),
   );
-  const { codewhale, tui } = detectBinaryNames();
+  const { codesmith, tui } = detectBinaryNames();
   const isWindows = process.platform === "win32";
 
   const assets = [
     {
-      source: path.join(buildDir, isWindows ? "codewhale.exe" : "codewhale"),
-      target: codewhale,
+      source: path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith"),
+      target: codesmith,
     },
     {
-      source: path.join(buildDir, isWindows ? "codewhale-tui.exe" : "codewhale-tui"),
+      source: path.join(buildDir, isWindows ? "codesmith-tui.exe" : "codesmith-tui"),
       target: tui,
     },
   ];
@@ -51,9 +51,9 @@ async function main() {
         continue;
       }
       assets.push({
-        source: assetName.startsWith("codewhale-tui")
-          ? path.join(buildDir, isWindows ? "codewhale-tui.exe" : "codewhale-tui")
-          : path.join(buildDir, isWindows ? "codewhale.exe" : "codewhale"),
+        source: assetName.startsWith("codesmith-tui")
+          ? path.join(buildDir, isWindows ? "codesmith-tui.exe" : "codesmith-tui")
+          : path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith"),
         target: assetName,
       });
     }
@@ -74,9 +74,9 @@ async function main() {
       "where wt >nul 2>nul",
       "set NO_ANIMATIONS=1",
       'if "%ERRORLEVEL%"=="0" (',
-      '    wt --title CodeWhale cmd /k "%~dp0codewhale-windows-x64.exe"',
+      '    wt --title CodeSmith cmd /k "%~dp0codesmith-windows-x64.exe"',
       ") else (",
-      '    "%~dp0codewhale-windows-x64.exe"',
+      '    "%~dp0codesmith-windows-x64.exe"',
       ")",
       "",
     ].join("\r\n");

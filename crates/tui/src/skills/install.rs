@@ -47,12 +47,12 @@ use crate::network_policy::{Decision, NetworkPolicy, host_from_url};
 
 /// Cache directory for registry-synced skills.
 ///
-/// Lives at `~/.codewhale/cache/skills/` so it's separate from user-installed
+/// Lives at `~/.codesmith/cache/skills/` so it's separate from user-installed
 /// skills and can be blown away without losing anything irreplaceable.
 pub fn default_cache_skills_dir() -> PathBuf {
     dirs::home_dir().map_or_else(
-        || PathBuf::from("/tmp/codewhale/cache/skills"),
-        |p| p.join(".codewhale").join("cache").join("skills"),
+        || PathBuf::from("/tmp/codesmith/cache/skills"),
+        |p| p.join(".codesmith").join("cache").join("skills"),
     )
 }
 

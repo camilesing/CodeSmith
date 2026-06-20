@@ -132,7 +132,7 @@ screenshots, logs, or retest requests shaped this release: **@buko** (#2359,
 ### Changed
 
 - **DeepSeek-first release framing, project-context logging, state-root
-  migration, CodeWhale README paths, and reasoning-locale behavior** were
+  migration, CodeSmith README paths, and reasoning-locale behavior** were
   finalized for the v0.8.47 release.
 
 ### Fixed
@@ -155,15 +155,15 @@ Thanks to contributors credited in the v0.8.47 GitHub Release, including
 
 ### Added
 
-- **`CODEWHALE_*` env aliases.** `CODEWHALE_PROVIDER`, `CODEWHALE_MODEL`,
-  and `CODEWHALE_BASE_URL` are public product-scoped aliases that take
+- **`CODESMITH_*` env aliases.** `CODESMITH_PROVIDER`, `CODESMITH_MODEL`,
+  and `CODESMITH_BASE_URL` are public product-scoped aliases that take
   precedence over the legacy `DEEPSEEK_*` forms. The `DEEPSEEK_*` names
   remain accepted for back-compat.
 - **Platform archive bundles.** Release artifacts now ship as per-platform
   archives (`tar.gz` for Linux/macOS, `.zip` for Windows) containing both
-  `codewhale` and `codewhale-tui` binaries plus an install script. No more
+  `codesmith` and `codesmith-tui` binaries plus an install script. No more
   downloading two loose files and guessing which ones to pick (#2193).
-- **Windows portable archive.** `codewhale-windows-x64-portable.zip` ships
+- **Windows portable archive.** `codesmith-windows-x64-portable.zip` ships
   the two binaries without an install script for USB-stick distribution
   (#2193).
 - **Web install download tile.** The website install page now shows a
@@ -201,7 +201,7 @@ Thanks to contributors credited in the v0.8.47 GitHub Release, including
   with Esc now applies the last-highlighted choice instead of reverting
   (#2196).
 - **Web install downloads both binaries.** The `install-binary.tsx`
-  snippet now fetches both `codewhale` and `codewhale-tui`, fixing the
+  snippet now fetches both `codesmith` and `codesmith-tui`, fixing the
   `MISSING_COMPANION_BINARY` trap on fresh npm installs (#2191).
 - **`grep_files` skips large directories.** The pure-Rust search tool
   now skips known-large directories (`.git`, `node_modules`, `target`)
@@ -280,9 +280,9 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   Thanks @reidliu41 (#2143).
 - **Model picker selection survives Esc.** Dismissing the model picker with Esc
   no longer loses the highlighted selection. Thanks @reidliu41 (#2056).
-- **Moonshot/Kimi sessions launch from the dispatcher.** The `codewhale`
+- **Moonshot/Kimi sessions launch from the dispatcher.** The `codesmith`
   wrapper now includes Moonshot/Kimi in the TUI provider allowlist, so
-  `codewhale --provider moonshot --model kimi-k2.6` reaches the TUI instead of
+  `codesmith --provider moonshot --model kimi-k2.6` reaches the TUI instead of
   stopping after config resolution.
 - **Slash recovery no longer restores command tails in the composer.**
   Resuming a session or recovering from a crash no longer leaves stale
@@ -318,8 +318,8 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
 ### Added
 
 - **`codew` convenience alias.** `codew` is a short-form command that silently
-  forwards to `codewhale`. Six fewer keystrokes, same binary. Ships with the
-  Rust `codewhale-cli` crate and the npm `codewhale` package (#2013).
+  forwards to `codesmith`. Six fewer keystrokes, same binary. Ships with the
+  Rust `codesmith-cli` crate and the npm `codesmith` package (#2013).
 - **Session picker inline rename.** Press `r` in the session picker (Ctrl+R)
   to rename the selected session inline. Type the new title, Enter to confirm,
   Esc to cancel (#1600).
@@ -329,18 +329,18 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
 - **Agent team UX.** Delegate cards in the transcript now show human-readable
   roles (scout, builder, reviewer, verifier, executor) and the completion
   summary instead of raw `agent_xxx` IDs (#1981).
-- **`--continue` / `-c` CLI flag.** `codewhale --continue` resumes your most
+- **`--continue` / `-c` CLI flag.** `codesmith --continue` resumes your most
   recent interactive session for the current workspace.
 
 ### Changed
 
-- **App state migrates to `~/.codewhale/`.** New installs write product-owned
-  state (config, sessions, tasks, skills, logs, etc.) under `~/.codewhale/`.
+- **App state migrates to `~/.codesmith/`.** New installs write product-owned
+  state (config, sessions, tasks, skills, logs, etc.) under `~/.codesmith/`.
   `~/.deepseek/` continues to work as a compatibility fallback — no data loss,
-  no forced migration. `CODEWHALE_HOME` and `CODEWHALE_CONFIG_PATH` env vars
+  no forced migration. `CODESMITH_HOME` and `CODESMITH_CONFIG_PATH` env vars
   are now supported alongside existing `DEEPSEEK_*` vars (#2011).
-- **Project config overlay prefers `.codewhale/config.toml`** before
-  `.deepseek/config.toml`. Both are read; the CodeWhale root takes precedence.
+- **Project config overlay prefers `.codesmith/config.toml`** before
+  `.deepseek/config.toml`. Both are read; the CodeSmith root takes precedence.
 - **Doctor reports active state root** and whether legacy `~/.deepseek/`
   state is also present.
 - **README contributor acknowledgements are current for this release.**
@@ -372,10 +372,10 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   now go to the managed sessions directory instead of the current workspace.
   Explicit `/save path/to/file.json` exports still work as before (#2010).
 - **Boot-time session prune** caps managed sessions at 50 on every startup,
-  preventing unbounded growth of `~/.codewhale/sessions/`.
+  preventing unbounded growth of `~/.codesmith/sessions/`.
 - **Checkpoint path resolution** no longer hardcodes `~/.deepseek/` — uses
   the resolved session directory instead.
-- **Plain startup no longer auto-opens the session picker.** `codewhale` and
+- **Plain startup no longer auto-opens the session picker.** `codesmith` and
   `codew` start in a fresh composer again even when saved sessions exist.
   Use `/sessions`, Ctrl+R, `--resume`, or `--continue` when you want to resume.
 - **Work sidebar now refreshes immediately** after `checklist_write`,
@@ -432,7 +432,7 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   include 30+ previously unlisted contributors whose PRs were merged since
   April 2026.
 - **README and web surface rebrand refinements.** Crate descriptions, npm
-  package text, and website copy now consistently position CodeWhale as
+  package text, and website copy now consistently position CodeSmith as
   open-model-first and provider-spanning, with DeepSeek V4 as the first-class
   path.
 - **New contributor names added to README acknowledgements.** Thanks to
@@ -454,21 +454,21 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   loop now drains late-arriving sub-agent completions at the final checkpoint
   before breaking, so child-agent sentinels surface immediately instead of
   appearing in the following turn (#1961).
-- **`codewhale doctor` now referenced correctly in SSE timeout errors.**
+- **`codesmith doctor` now referenced correctly in SSE timeout errors.**
   The error message shown when SSE streams fail to connect now points users to
-  `codewhale doctor` (not the legacy `deepseek doctor`).
+  `codesmith doctor` (not the legacy `deepseek doctor`).
 
 ## [0.8.42] - 2026-05-24
 
 ### Changed
 
-- **CodeWhale now ships with the Brother Whale agent identity prompt.** The
+- **CodeSmith now ships with the Brother Whale agent identity prompt.** The
   built-in system prompt frames the agent as trusted, calm, careful, and
   responsible, and adds the coordination principle that great intelligence
   creates spaces where future intelligences can work together.
-- **CodeWhale positioning is clarified as DeepSeek-first and open-model
+- **CodeSmith positioning is clarified as DeepSeek-first and open-model
   oriented.** README, rebrand notes, crate metadata, and npm package text now
-  describe CodeWhale as an agentic terminal for open source and open-weight
+  describe CodeSmith as an agentic terminal for open source and open-weight
   coding models while preserving the official DeepSeek provider as first-class.
 - **Model auto-routing is documented separately from TUI modes.** README and
   modes docs now reserve "mode" for Plan / Agent / YOLO, describe
@@ -528,11 +528,11 @@ and selection fix in #1964.
 
 ### Changed
 
-- **Project renamed to codewhale.** The canonical CLI dispatcher is now
-  `codewhale` (was `deepseek`) and the TUI runtime is `codewhale-tui`
+- **Project renamed to codesmith.** The canonical CLI dispatcher is now
+  `codesmith` (was `deepseek`) and the TUI runtime is `codesmith-tui`
   (was `deepseek-tui`). The 14 workspace crates are renamed from
-  `deepseek-*` / `deepseek-tui-*` to `codewhale-*` / `codewhale-tui-*`.
-  The npm wrapper package is now `codewhale` (was `deepseek-tui`). See
+  `deepseek-*` / `deepseek-tui-*` to `codesmith-*` / `codesmith-tui-*`.
+  The npm wrapper package is now `codesmith` (was `deepseek-tui`). See
   [docs/REBRAND.md](docs/REBRAND.md) for migration notes.
 - **DeepSeek provider integration is unchanged.** `DEEPSEEK_*` env vars,
   model IDs (`deepseek-v4-pro`, `deepseek-v4-flash`, the legacy
@@ -547,7 +547,7 @@ and selection fix in #1964.
   renamed binaries. They will be removed in v0.9.0.
 - The `deepseek-tui` npm package continues to publish for one release
   cycle as a no-`bin` deprecation shim whose postinstall directs users
-  to `npm install -g codewhale`. It will be removed in v0.9.0.
+  to `npm install -g codesmith`. It will be removed in v0.9.0.
 
 ### Fixed
 
@@ -582,7 +582,7 @@ and selection fix in #1964.
 ### Thanks
 
 Thanks to **OpenWarp ([@zerx-lab](https://github.com/zerx-lab))** for
-prioritizing codewhale support and collaborating on terminal-agent UX.
+prioritizing codesmith support and collaborating on terminal-agent UX.
 Thanks to **[@leo119](https://github.com/leo119)** for the update-command
 documentation lineage now preserved through the rename.
 
@@ -4616,7 +4616,7 @@ Welcome — and thank you.
 - Multi-turn tool calls on thinking-mode models no longer return HTTP 400. Every assistant message in the conversation now carries `reasoning_content` when thinking is enabled — not just tool-call rounds — matching DeepSeek's actual API validation, which rejects any assistant message missing the field even though the docs describe non-tool-call reasoning as "ignored".
 - Added a final-pass wire-payload sanitizer in the chat-completions client that forces a non-empty `reasoning_content` placeholder onto any assistant message still missing one at request time. This is the last line of defense after engine-side and build-side substitution, so sessions restored from older checkpoints, sub-agents that append messages directly, and cached prefix mismatches all produce a valid request.
 - On a `reasoning_content`-related 400, the client now logs the offending message indices to make future regressions diagnosable.
-- Stripped phantom `web.run` references from prompts and the `web_search` tool surface ([#25](https://github.com/Hmbown/CodeWhale/issues/25)).
+- Stripped phantom `web.run` references from prompts and the `web_search` tool surface ([#25](https://github.com/Hmbown/CodeSmith/issues/25)).
 
 ### Changed
 - Header/UI widget refactor in the TUI (`crates/tui/src/tui/ui.rs`, `widgets/header.rs`) — internal cleanup, no user-visible behavior change.
@@ -5112,90 +5112,90 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/CodeWhale/compare/v0.8.48...HEAD
-[0.8.48]: https://github.com/Hmbown/CodeWhale/compare/v0.8.47...v0.8.48
-[0.8.47]: https://github.com/Hmbown/CodeWhale/compare/v0.8.46...v0.8.47
-[0.8.46]: https://github.com/Hmbown/CodeWhale/compare/v0.8.45...v0.8.46
-[0.8.45]: https://github.com/Hmbown/CodeWhale/compare/v0.8.44...v0.8.45
-[0.8.44]: https://github.com/Hmbown/CodeWhale/compare/v0.8.43...v0.8.44
-[0.8.43]: https://github.com/Hmbown/CodeWhale/compare/v0.8.42...v0.8.43
-[0.8.42]: https://github.com/Hmbown/CodeWhale/compare/v0.8.41...v0.8.42
-[0.8.41]: https://github.com/Hmbown/CodeWhale/compare/v0.8.40...v0.8.41
-[0.8.40]: https://github.com/Hmbown/CodeWhale/compare/v0.8.39...v0.8.40
-[0.8.39]: https://github.com/Hmbown/CodeWhale/compare/v0.8.38...v0.8.39
-[0.8.38]: https://github.com/Hmbown/CodeWhale/compare/v0.8.37...v0.8.38
-[0.8.37]: https://github.com/Hmbown/CodeWhale/compare/v0.8.36...v0.8.37
-[0.8.36]: https://github.com/Hmbown/CodeWhale/compare/v0.8.35...v0.8.36
-[0.8.35]: https://github.com/Hmbown/CodeWhale/compare/v0.8.34...v0.8.35
-[0.8.34]: https://github.com/Hmbown/CodeWhale/compare/v0.8.33...v0.8.34
-[0.8.33]: https://github.com/Hmbown/CodeWhale/compare/v0.8.32...v0.8.33
-[0.8.32]: https://github.com/Hmbown/CodeWhale/compare/v0.8.31...v0.8.32
-[0.8.31]: https://github.com/Hmbown/CodeWhale/compare/v0.8.30...v0.8.31
-[0.8.30]: https://github.com/Hmbown/CodeWhale/compare/v0.8.29...v0.8.30
-[0.8.29]: https://github.com/Hmbown/CodeWhale/compare/v0.8.28...v0.8.29
-[0.8.28]: https://github.com/Hmbown/CodeWhale/compare/v0.8.27...v0.8.28
-[0.8.27]: https://github.com/Hmbown/CodeWhale/compare/v0.8.26...v0.8.27
-[0.8.26]: https://github.com/Hmbown/CodeWhale/compare/v0.8.25...v0.8.26
-[0.8.25]: https://github.com/Hmbown/CodeWhale/compare/v0.8.24...v0.8.25
-[0.8.24]: https://github.com/Hmbown/CodeWhale/compare/v0.8.23...v0.8.24
-[0.8.23]: https://github.com/Hmbown/CodeWhale/compare/v0.8.22...v0.8.23
-[0.8.22]: https://github.com/Hmbown/CodeWhale/compare/v0.8.21...v0.8.22
-[0.8.21]: https://github.com/Hmbown/CodeWhale/compare/v0.8.20...v0.8.21
-[0.8.20]: https://github.com/Hmbown/CodeWhale/compare/v0.8.19...v0.8.20
-[0.8.19]: https://github.com/Hmbown/CodeWhale/compare/v0.8.18...v0.8.19
-[0.8.18]: https://github.com/Hmbown/CodeWhale/compare/v0.8.17...v0.8.18
-[0.8.17]: https://github.com/Hmbown/CodeWhale/compare/v0.8.16...v0.8.17
-[0.8.16]: https://github.com/Hmbown/CodeWhale/compare/v0.8.15...v0.8.16
-[0.8.15]: https://github.com/Hmbown/CodeWhale/compare/v0.8.13...v0.8.15
-[0.8.13]: https://github.com/Hmbown/CodeWhale/compare/v0.8.12...v0.8.13
-[0.8.12]: https://github.com/Hmbown/CodeWhale/compare/v0.8.11...v0.8.12
-[0.8.11]: https://github.com/Hmbown/CodeWhale/compare/v0.8.10...v0.8.11
-[0.8.10]: https://github.com/Hmbown/CodeWhale/compare/v0.8.8...v0.8.10
-[0.8.8]: https://github.com/Hmbown/CodeWhale/compare/v0.8.7...v0.8.8
-[0.8.7]: https://github.com/Hmbown/CodeWhale/compare/v0.8.6...v0.8.7
-[0.8.6]: https://github.com/Hmbown/CodeWhale/compare/v0.8.5...v0.8.6
-[0.8.5]: https://github.com/Hmbown/CodeWhale/compare/v0.8.4...v0.8.5
-[0.8.4]: https://github.com/Hmbown/CodeWhale/compare/v0.8.3...v0.8.4
-[0.8.3]: https://github.com/Hmbown/CodeWhale/compare/v0.8.2...v0.8.3
-[0.8.2]: https://github.com/Hmbown/CodeWhale/compare/v0.8.1...v0.8.2
-[0.8.1]: https://github.com/Hmbown/CodeWhale/compare/v0.8.0...v0.8.1
-[0.8.0]: https://github.com/Hmbown/CodeWhale/compare/v0.7.9...v0.8.0
-[0.7.9]: https://github.com/Hmbown/CodeWhale/compare/v0.7.8...v0.7.9
-[0.7.8]: https://github.com/Hmbown/CodeWhale/compare/v0.7.7...v0.7.8
-[0.7.7]: https://github.com/Hmbown/CodeWhale/compare/v0.7.6...v0.7.7
-[0.7.6]: https://github.com/Hmbown/CodeWhale/compare/v0.7.5...v0.7.6
-[0.6.1]: https://github.com/Hmbown/CodeWhale/compare/v0.6.0...v0.6.1
-[0.6.0]: https://github.com/Hmbown/CodeWhale/compare/v0.4.9...v0.6.0
-[0.4.9]: https://github.com/Hmbown/CodeWhale/compare/v0.4.8...v0.4.9
-[0.4.8]: https://github.com/Hmbown/CodeWhale/compare/v0.3.33...v0.4.8
-[0.3.33]: https://github.com/Hmbown/CodeWhale/compare/v0.3.32...v0.3.33
-[0.3.32]: https://github.com/Hmbown/CodeWhale/compare/v0.3.31...v0.3.32
-[0.3.31]: https://github.com/Hmbown/CodeWhale/compare/v0.3.28...v0.3.31
-[0.3.28]: https://github.com/Hmbown/CodeWhale/compare/v0.3.27...v0.3.28
-[0.3.23]: https://github.com/Hmbown/CodeWhale/compare/v0.3.22...v0.3.23
-[0.3.22]: https://github.com/Hmbown/CodeWhale/compare/v0.3.21...v0.3.22
-[0.3.21]: https://github.com/Hmbown/CodeWhale/compare/v0.3.17...v0.3.21
-[0.3.17]: https://github.com/Hmbown/CodeWhale/compare/v0.3.16...v0.3.17
-[0.3.16]: https://github.com/Hmbown/CodeWhale/compare/v0.3.14...v0.3.16
-[0.3.14]: https://github.com/Hmbown/CodeWhale/compare/v0.3.13...v0.3.14
-[0.3.13]: https://github.com/Hmbown/CodeWhale/compare/v0.3.12...v0.3.13
-[0.3.12]: https://github.com/Hmbown/CodeWhale/compare/v0.3.11...v0.3.12
-[0.3.11]: https://github.com/Hmbown/CodeWhale/compare/v0.3.10...v0.3.11
-[0.3.10]: https://github.com/Hmbown/CodeWhale/compare/v0.3.6...v0.3.10
-[0.3.6]: https://github.com/Hmbown/CodeWhale/compare/v0.3.5...v0.3.6
-[0.3.5]: https://github.com/Hmbown/CodeWhale/compare/v0.3.4...v0.3.5
-[0.3.4]: https://github.com/Hmbown/CodeWhale/compare/v0.3.3...v0.3.4
-[0.3.3]: https://github.com/Hmbown/CodeWhale/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/Hmbown/CodeWhale/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/Hmbown/CodeWhale/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/Hmbown/CodeWhale/compare/v0.2.2...v0.3.0
-[0.2.2]: https://github.com/Hmbown/CodeWhale/compare/v0.2.0...v0.2.2
-[0.2.0]: https://github.com/Hmbown/CodeWhale/releases/tag/v0.2.0
-[0.0.2]: https://github.com/Hmbown/CodeWhale/releases/tag/v0.0.2
-[0.0.1]: https://github.com/Hmbown/CodeWhale/releases/tag/v0.0.1
-[0.1.9]: https://github.com/Hmbown/CodeWhale/compare/v0.1.8...v0.1.9
-[0.1.8]: https://github.com/Hmbown/CodeWhale/compare/v0.1.7...v0.1.8
-[0.1.7]: https://github.com/Hmbown/CodeWhale/compare/v0.1.6...v0.1.7
-[0.1.6]: https://github.com/Hmbown/CodeWhale/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/Hmbown/CodeWhale/compare/v0.1.0...v0.1.5
-[0.1.0]: https://github.com/Hmbown/CodeWhale/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Hmbown/CodeSmith/compare/v0.8.48...HEAD
+[0.8.48]: https://github.com/Hmbown/CodeSmith/compare/v0.8.47...v0.8.48
+[0.8.47]: https://github.com/Hmbown/CodeSmith/compare/v0.8.46...v0.8.47
+[0.8.46]: https://github.com/Hmbown/CodeSmith/compare/v0.8.45...v0.8.46
+[0.8.45]: https://github.com/Hmbown/CodeSmith/compare/v0.8.44...v0.8.45
+[0.8.44]: https://github.com/Hmbown/CodeSmith/compare/v0.8.43...v0.8.44
+[0.8.43]: https://github.com/Hmbown/CodeSmith/compare/v0.8.42...v0.8.43
+[0.8.42]: https://github.com/Hmbown/CodeSmith/compare/v0.8.41...v0.8.42
+[0.8.41]: https://github.com/Hmbown/CodeSmith/compare/v0.8.40...v0.8.41
+[0.8.40]: https://github.com/Hmbown/CodeSmith/compare/v0.8.39...v0.8.40
+[0.8.39]: https://github.com/Hmbown/CodeSmith/compare/v0.8.38...v0.8.39
+[0.8.38]: https://github.com/Hmbown/CodeSmith/compare/v0.8.37...v0.8.38
+[0.8.37]: https://github.com/Hmbown/CodeSmith/compare/v0.8.36...v0.8.37
+[0.8.36]: https://github.com/Hmbown/CodeSmith/compare/v0.8.35...v0.8.36
+[0.8.35]: https://github.com/Hmbown/CodeSmith/compare/v0.8.34...v0.8.35
+[0.8.34]: https://github.com/Hmbown/CodeSmith/compare/v0.8.33...v0.8.34
+[0.8.33]: https://github.com/Hmbown/CodeSmith/compare/v0.8.32...v0.8.33
+[0.8.32]: https://github.com/Hmbown/CodeSmith/compare/v0.8.31...v0.8.32
+[0.8.31]: https://github.com/Hmbown/CodeSmith/compare/v0.8.30...v0.8.31
+[0.8.30]: https://github.com/Hmbown/CodeSmith/compare/v0.8.29...v0.8.30
+[0.8.29]: https://github.com/Hmbown/CodeSmith/compare/v0.8.28...v0.8.29
+[0.8.28]: https://github.com/Hmbown/CodeSmith/compare/v0.8.27...v0.8.28
+[0.8.27]: https://github.com/Hmbown/CodeSmith/compare/v0.8.26...v0.8.27
+[0.8.26]: https://github.com/Hmbown/CodeSmith/compare/v0.8.25...v0.8.26
+[0.8.25]: https://github.com/Hmbown/CodeSmith/compare/v0.8.24...v0.8.25
+[0.8.24]: https://github.com/Hmbown/CodeSmith/compare/v0.8.23...v0.8.24
+[0.8.23]: https://github.com/Hmbown/CodeSmith/compare/v0.8.22...v0.8.23
+[0.8.22]: https://github.com/Hmbown/CodeSmith/compare/v0.8.21...v0.8.22
+[0.8.21]: https://github.com/Hmbown/CodeSmith/compare/v0.8.20...v0.8.21
+[0.8.20]: https://github.com/Hmbown/CodeSmith/compare/v0.8.19...v0.8.20
+[0.8.19]: https://github.com/Hmbown/CodeSmith/compare/v0.8.18...v0.8.19
+[0.8.18]: https://github.com/Hmbown/CodeSmith/compare/v0.8.17...v0.8.18
+[0.8.17]: https://github.com/Hmbown/CodeSmith/compare/v0.8.16...v0.8.17
+[0.8.16]: https://github.com/Hmbown/CodeSmith/compare/v0.8.15...v0.8.16
+[0.8.15]: https://github.com/Hmbown/CodeSmith/compare/v0.8.13...v0.8.15
+[0.8.13]: https://github.com/Hmbown/CodeSmith/compare/v0.8.12...v0.8.13
+[0.8.12]: https://github.com/Hmbown/CodeSmith/compare/v0.8.11...v0.8.12
+[0.8.11]: https://github.com/Hmbown/CodeSmith/compare/v0.8.10...v0.8.11
+[0.8.10]: https://github.com/Hmbown/CodeSmith/compare/v0.8.8...v0.8.10
+[0.8.8]: https://github.com/Hmbown/CodeSmith/compare/v0.8.7...v0.8.8
+[0.8.7]: https://github.com/Hmbown/CodeSmith/compare/v0.8.6...v0.8.7
+[0.8.6]: https://github.com/Hmbown/CodeSmith/compare/v0.8.5...v0.8.6
+[0.8.5]: https://github.com/Hmbown/CodeSmith/compare/v0.8.4...v0.8.5
+[0.8.4]: https://github.com/Hmbown/CodeSmith/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/Hmbown/CodeSmith/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/Hmbown/CodeSmith/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/Hmbown/CodeSmith/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/Hmbown/CodeSmith/compare/v0.7.9...v0.8.0
+[0.7.9]: https://github.com/Hmbown/CodeSmith/compare/v0.7.8...v0.7.9
+[0.7.8]: https://github.com/Hmbown/CodeSmith/compare/v0.7.7...v0.7.8
+[0.7.7]: https://github.com/Hmbown/CodeSmith/compare/v0.7.6...v0.7.7
+[0.7.6]: https://github.com/Hmbown/CodeSmith/compare/v0.7.5...v0.7.6
+[0.6.1]: https://github.com/Hmbown/CodeSmith/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/Hmbown/CodeSmith/compare/v0.4.9...v0.6.0
+[0.4.9]: https://github.com/Hmbown/CodeSmith/compare/v0.4.8...v0.4.9
+[0.4.8]: https://github.com/Hmbown/CodeSmith/compare/v0.3.33...v0.4.8
+[0.3.33]: https://github.com/Hmbown/CodeSmith/compare/v0.3.32...v0.3.33
+[0.3.32]: https://github.com/Hmbown/CodeSmith/compare/v0.3.31...v0.3.32
+[0.3.31]: https://github.com/Hmbown/CodeSmith/compare/v0.3.28...v0.3.31
+[0.3.28]: https://github.com/Hmbown/CodeSmith/compare/v0.3.27...v0.3.28
+[0.3.23]: https://github.com/Hmbown/CodeSmith/compare/v0.3.22...v0.3.23
+[0.3.22]: https://github.com/Hmbown/CodeSmith/compare/v0.3.21...v0.3.22
+[0.3.21]: https://github.com/Hmbown/CodeSmith/compare/v0.3.17...v0.3.21
+[0.3.17]: https://github.com/Hmbown/CodeSmith/compare/v0.3.16...v0.3.17
+[0.3.16]: https://github.com/Hmbown/CodeSmith/compare/v0.3.14...v0.3.16
+[0.3.14]: https://github.com/Hmbown/CodeSmith/compare/v0.3.13...v0.3.14
+[0.3.13]: https://github.com/Hmbown/CodeSmith/compare/v0.3.12...v0.3.13
+[0.3.12]: https://github.com/Hmbown/CodeSmith/compare/v0.3.11...v0.3.12
+[0.3.11]: https://github.com/Hmbown/CodeSmith/compare/v0.3.10...v0.3.11
+[0.3.10]: https://github.com/Hmbown/CodeSmith/compare/v0.3.6...v0.3.10
+[0.3.6]: https://github.com/Hmbown/CodeSmith/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/Hmbown/CodeSmith/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/Hmbown/CodeSmith/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/Hmbown/CodeSmith/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/Hmbown/CodeSmith/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/Hmbown/CodeSmith/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/Hmbown/CodeSmith/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/Hmbown/CodeSmith/compare/v0.2.0...v0.2.2
+[0.2.0]: https://github.com/Hmbown/CodeSmith/releases/tag/v0.2.0
+[0.0.2]: https://github.com/Hmbown/CodeSmith/releases/tag/v0.0.2
+[0.0.1]: https://github.com/Hmbown/CodeSmith/releases/tag/v0.0.1
+[0.1.9]: https://github.com/Hmbown/CodeSmith/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/Hmbown/CodeSmith/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/Hmbown/CodeSmith/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/Hmbown/CodeSmith/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/Hmbown/CodeSmith/compare/v0.1.0...v0.1.5
+[0.1.0]: https://github.com/Hmbown/CodeSmith/releases/tag/v0.1.0

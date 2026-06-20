@@ -1,40 +1,40 @@
-# Opt-in CodeWhale toolbox workflow.
+# Opt-in CodeSmith toolbox workflow.
 #
 # Usage:
-#   CODEWHALE_IMAGE=ghcr.io/hmbown/codewhale:vX.Y.Z \
-#   CODEWHALE_TOOLBOX_IMAGE=codewhale-toolbox:my-project \
-#   CODEWHALE_HOME_VOLUME=codewhale-my-project-home \
-#   CODEWHALE_WORKSPACE="$PWD" \
-#   docker compose -f docs/examples/compose.toolbox.yml run --rm codewhale
+#   CODESMITH_IMAGE=ghcr.io/hmbown/codesmith:vX.Y.Z \
+#   CODESMITH_TOOLBOX_IMAGE=codesmith-toolbox:my-project \
+#   CODESMITH_HOME_VOLUME=codesmith-my-project-home \
+#   CODESMITH_WORKSPACE="$PWD" \
+#   docker compose -f docs/examples/compose.toolbox.yml run --rm codesmith
 #
-# Keep CODEWHALE_HOME_VOLUME distinct per project so sessions, config, skills,
+# Keep CODESMITH_HOME_VOLUME distinct per project so sessions, config, skills,
 # memory, and queued work do not bleed across workspaces.
 
 services:
-  codewhale:
-    image: ${CODEWHALE_TOOLBOX_IMAGE:-codewhale-toolbox:local}
+  codesmith:
+    image: ${CODESMITH_TOOLBOX_IMAGE:-codesmith-toolbox:local}
     build:
       context: ../..
       dockerfile: docs/examples/Dockerfile.toolbox
       args:
-        CODEWHALE_IMAGE: ${CODEWHALE_IMAGE:-ghcr.io/hmbown/codewhale:latest}
+        CODESMITH_IMAGE: ${CODESMITH_IMAGE:-ghcr.io/hmbown/codesmith:latest}
         TOOLBOX_PACKAGES: ${TOOLBOX_PACKAGES:-git openssh-client curl build-essential pkg-config python3 python3-pip nodejs npm}
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
       - DEEPSEEK_BASE_URL
       - DEEPSEEK_NO_COLOR
     volumes:
-      - codewhale-home:/home/codewhale/.codewhale
-      - ${CODEWHALE_WORKSPACE:?set CODEWHALE_WORKSPACE to the project directory}:/workspace
+      - codesmith-home:/home/codesmith/.codesmith
+      - ${CODESMITH_WORKSPACE:?set CODESMITH_WORKSPACE to the project directory}:/workspace
       # Mount SSH material only for projects that need it, and prefer read-only.
-      # - ${HOME}/.ssh:/home/codewhale/.ssh:ro
+      # - ${HOME}/.ssh:/home/codesmith/.ssh:ro
       # Mount local CA certificates only when starting through a command that
       # runs `sudo update-ca-certificates` inside this toolbox image.
-      # - ${CODEWHALE_CERTS_DIR:-../../docker/certs}:/usr/local/share/ca-certificates/local:ro
+      # - ${CODESMITH_CERTS_DIR:-../../docker/certs}:/usr/local/share/ca-certificates/local:ro
     working_dir: /workspace
     stdin_open: true
     tty: true
 
 volumes:
-  codewhale-home:
-    name: ${CODEWHALE_HOME_VOLUME:-codewhale-toolbox-home}
+  codesmith-home:
+    name: ${CODESMITH_HOME_VOLUME:-codesmith-toolbox-home}

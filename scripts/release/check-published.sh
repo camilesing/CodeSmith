@@ -57,21 +57,21 @@ fail=0
 echo "Checking published release ${version}..."
 
 # Canonical post-rebrand npm package.
-if npm_version="$(npm view "codewhale@${version}" version 2>/dev/null)"; then
-  echo "npm codewhale@${npm_version} is published."
+if npm_version="$(npm view "codesmith@${version}" version 2>/dev/null)"; then
+  echo "npm codesmith@${npm_version} is published."
 else
-  echo "npm codewhale@${version} is not published." >&2
+  echo "npm codesmith@${version} is not published." >&2
   fail=1
 fi
 
-# `codewhaleBinaryVersion` is the new internal version-pin field. Fall back
+# `codesmithBinaryVersion` is the new internal version-pin field. Fall back
 # to the legacy `deepseekBinaryVersion` field for old/transition packages.
 binary_field=""
 npm_binary_version=""
-if value="$(npm view "codewhale@${version}" codewhaleBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
-  binary_field="codewhaleBinaryVersion"
+if value="$(npm view "codesmith@${version}" codesmithBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
+  binary_field="codesmithBinaryVersion"
   npm_binary_version="${value}"
-elif value="$(npm view "codewhale@${version}" deepseekBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
+elif value="$(npm view "codesmith@${version}" deepseekBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
   binary_field="deepseekBinaryVersion"
   npm_binary_version="${value}"
 fi
@@ -86,9 +86,9 @@ if [[ -n "${binary_field}" ]]; then
     fail=1
   fi
 elif [[ "${allow_npm_binary_mismatch}" == "1" ]]; then
-  echo "npm codewhaleBinaryVersion is absent (allowed packaging-only mismatch)."
+  echo "npm codesmithBinaryVersion is absent (allowed packaging-only mismatch)."
 else
-  echo "npm codewhaleBinaryVersion is absent for codewhale@${version}." >&2
+  echo "npm codesmithBinaryVersion is absent for codesmith@${version}." >&2
   fail=1
 fi
 
@@ -108,7 +108,7 @@ for crate in "${release_crates[@]}"; do
 done
 
 if [[ "${fail}" == "0" ]]; then
-  echo "Published release OK: npm codewhale@${version} and ${#release_crates[@]} crates are visible."
+  echo "Published release OK: npm codesmith@${version} and ${#release_crates[@]} crates are visible."
 fi
 
 exit "${fail}"

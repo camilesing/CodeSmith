@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use codewhale_config::ProviderKind;
+use codesmith_config::ProviderKind;
 use serde::{Deserialize, Serialize};
 
 /// Metadata for a single model entry in the registry.

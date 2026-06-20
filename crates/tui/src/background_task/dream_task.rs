@@ -43,7 +43,11 @@ pub struct DreamTaskRunner {
 impl DreamTaskRunner {
     /// Create a new dream task runner.
     pub fn new(memory_dir: PathBuf, model: String, max_rounds: u32) -> Self {
-        Self { memory_dir, model, max_rounds }
+        Self {
+            memory_dir,
+            model,
+            max_rounds,
+        }
     }
 
     /// Get the memory directory path.

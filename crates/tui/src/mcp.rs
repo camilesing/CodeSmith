@@ -1445,7 +1445,7 @@ impl McpConnection {
             "params": {
                 "protocolVersion": "2024-11-05",
                 "clientInfo": {
-                    "name": "codewhale-tui",
+                    "name": "codesmith-tui",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {
@@ -3686,7 +3686,7 @@ mod tests {
             r#"{
                 "mcpServers": {
                     "broken": {
-                        "command": "codewhale-tui-test-this-binary-does-not-exist-9f8e7d6c5b4a",
+                        "command": "codesmith-tui-test-this-binary-does-not-exist-9f8e7d6c5b4a",
                         "args": []
                     }
                 }

@@ -46,7 +46,7 @@ fn boot_minimal_without_retry() -> anyhow::Result<(qa_harness::harness::SealedWo
 fn spawn_minimal(
     ws: qa_harness::harness::SealedWorkspace,
 ) -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
-    let h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let h = Harness::builder(Harness::cargo_bin("codesmith-tui"))
         .cwd(ws.workspace())
         .seal_home(ws.home())
         // Provide a stub key so the onboarding screen is bypassed and the TUI
@@ -177,7 +177,7 @@ fn skills_menu_shows_local_and_global_skills() -> anyhow::Result<()> {
         "Workspace beta skill",
     )?;
 
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+    let mut h = Harness::builder(Harness::cargo_bin("codesmith-tui"))
         .cwd(ws.workspace())
         .seal_home(ws.home())
         .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")

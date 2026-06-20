@@ -97,7 +97,13 @@ pub async fn translate_text(
     model: &str,
     target_language: &str,
 ) -> Result<String> {
-    client.translate(text.to_string(), model.to_string(), target_language.to_string()).await
+    client
+        .translate(
+            text.to_string(),
+            model.to_string(),
+            target_language.to_string(),
+        )
+        .await
 }
 
 /// Status of a translation operation for a single message.

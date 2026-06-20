@@ -1,6 +1,6 @@
 //! File-based teammate mailbox — inter-agent message delivery via inbox files.
 //!
-//! Inbox files live at `~/.codewhale/teams/{sanitized_name}/inboxes/{agent_name}.json`.
+//! Inbox files live at `~/.codesmith/teams/{sanitized_name}/inboxes/{agent_name}.json`.
 //! Each inbox is a JSON array of TeammateMessage entries. Concurrent writes
 //! use flock via a separate `.lock` file (same pattern as TaskV2Manager).
 
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use fd_lock::RwLock;
 use serde::{Deserialize, Serialize};
 
-use super::team_file::{team_dir, sanitize_name};
+use super::team_file::{sanitize_name, team_dir};
 
 /// A single message in a teammate's file-based inbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,7 +204,9 @@ pub fn parse_structured_protocol(text: &str) -> Option<StructuredProtocolMessage
 /// Path to a teammate's inbox file.
 fn inbox_path(agent_name: &str, team_name: &str) -> anyhow::Result<PathBuf> {
     let dir = team_dir(team_name)?;
-    Ok(dir.join("inboxes").join(format!("{}.json", sanitize_name(agent_name))))
+    Ok(dir
+        .join("inboxes")
+        .join(format!("{}.json", sanitize_name(agent_name))))
 }
 
 /// Path to the flock lock file for a teammate's inbox.
@@ -237,7 +239,10 @@ pub fn read_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<Vec<Tea
 }
 
 /// Read only unread messages from a teammate's inbox.
-pub fn read_unread_messages(agent_name: &str, team_name: &str) -> anyhow::Result<Vec<TeammateMessage>> {
+pub fn read_unread_messages(
+    agent_name: &str,
+    team_name: &str,
+) -> anyhow::Result<Vec<TeammateMessage>> {
     let messages = read_mailbox(agent_name, team_name)?;
     Ok(messages.into_iter().filter(|m| !m.read).collect())
 }
@@ -313,8 +318,10 @@ pub fn clear_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{lock_test_env, ScopedCodeWhaleHome};
-    use crate::tools::team::team_file::{create_team_file, TeamFile, TeamMember, format_lead_agent_id, team_lead_name};
+    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+    use crate::tools::team::team_file::{
+        TeamFile, TeamMember, create_team_file, format_lead_agent_id, team_lead_name,
+    };
 
     fn make_team_file(name: &str) -> TeamFile {
         TeamFile {
@@ -342,16 +349,26 @@ mod tests {
     #[test]
     fn is_structured_protocol_message_true_for_known_types() {
         let types = [
-            "shutdown_request", "shutdown_approved", "shutdown_rejected",
-            "idle_notification", "task_assignment",
-            "permission_request", "permission_response",
-            "plan_approval_request", "plan_approval_response",
-            "team_permission_update", "mode_set_request",
-            "sandbox_permission_request", "sandbox_permission_response",
+            "shutdown_request",
+            "shutdown_approved",
+            "shutdown_rejected",
+            "idle_notification",
+            "task_assignment",
+            "permission_request",
+            "permission_response",
+            "plan_approval_request",
+            "plan_approval_response",
+            "team_permission_update",
+            "mode_set_request",
+            "sandbox_permission_request",
+            "sandbox_permission_response",
         ];
         for t in types {
             let json = format!("{{\"type\":\"{t}\"}}");
-            assert!(is_structured_protocol_message(&json), "expected true for {t}");
+            assert!(
+                is_structured_protocol_message(&json),
+                "expected true for {t}"
+            );
         }
     }
 
@@ -376,7 +393,10 @@ mod tests {
         };
         let text = serde_json::to_string(&msg).expect("serialize");
         let parsed = parse_structured_protocol(&text).expect("parse");
-        assert!(matches!(parsed, StructuredProtocolMessage::ShutdownRequest { .. }));
+        assert!(matches!(
+            parsed,
+            StructuredProtocolMessage::ShutdownRequest { .. }
+        ));
     }
 
     #[test]
@@ -388,7 +408,7 @@ mod tests {
     #[test]
     fn read_mailbox_returns_empty_for_missing_file() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         create_team_file(&make_team_file("mb-test")).expect("team");
 
         let msgs = read_mailbox("nonexistent-agent", "mb-test").expect("read");
@@ -398,7 +418,7 @@ mod tests {
     #[test]
     fn write_to_mailbox_creates_and_appends() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         create_team_file(&make_team_file("mb-write")).expect("team");
 
         write_to_mailbox("worker1", "mb-write", make_message("leader", "hello")).expect("write1");
@@ -413,7 +433,7 @@ mod tests {
     #[test]
     fn write_to_mailbox_concurrent_no_message_loss() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         create_team_file(&make_team_file("mb-concurrent")).expect("team");
 
         let team_name = "mb-concurrent".to_string();
@@ -444,7 +464,7 @@ mod tests {
     #[test]
     fn mark_messages_as_read_marks_all() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         create_team_file(&make_team_file("mb-read")).expect("team");
 
         write_to_mailbox("worker1", "mb-read", make_message("leader", "msg1")).expect("write");
@@ -457,7 +477,7 @@ mod tests {
     #[test]
     fn clear_mailbox_empties_inbox() {
         let _guard = lock_test_env();
-        let _home = ScopedCodeWhaleHome::new();
+        let _home = ScopedCodeSmithHome::new();
         create_team_file(&make_team_file("mb-clear")).expect("team");
 
         write_to_mailbox("worker1", "mb-clear", make_message("leader", "msg1")).expect("write");

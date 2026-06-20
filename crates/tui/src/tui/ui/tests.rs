@@ -117,7 +117,7 @@ impl Drop for SettingsHomeGuard {
 fn resume_hint_uses_canonical_resume_command() {
     assert_eq!(
         resume_hint_text(),
-        "To continue this session, execute codewhale run --continue"
+        "To continue this session, execute codesmith run --continue"
     );
     assert!(should_show_resume_hint(Some(
         "019dd9d6-4f44-7c83-9863-59674a12b827"
@@ -1873,7 +1873,7 @@ fn active_tool_status_label_strips_shell_wrappers_from_ci_polling() {
     active.push_tool(
         "exec-1",
         HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: "cd /tmp/repo && sleep 15 && gh pr checks 1611 --repo Hmbown/CodeWhale"
+            command: "cd /tmp/repo && sleep 15 && gh pr checks 1611 --repo Hmbown/CodeSmith"
                 .to_string(),
             status: ToolStatus::Running,
             output: None,
@@ -2514,7 +2514,7 @@ fn init_git_repo() -> TempDir {
     let commit = Command::new("git")
         .args([
             "-c",
-            "user.name=codewhale Tests",
+            "user.name=codesmith Tests",
             "-c",
             "user.email=tests@example.com",
             "-c",
@@ -2826,7 +2826,7 @@ fn version_hint_requires_complete_release_assets() {
             .iter()
             .filter(|asset| {
                 asset.get("name").and_then(serde_json::Value::as_str)
-                    != Some("codewhale-artifacts-sha256.txt")
+                    != Some("codesmith-artifacts-sha256.txt")
             })
             .cloned()
             .collect(),
@@ -3565,7 +3565,7 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
     assert!(entries.iter().any(|entry| entry.name == "/config"));
     assert!(entries.iter().any(|entry| entry.name == "/links"));
     assert!(!entries.iter().any(|entry| entry.name == "/set"));
-    assert!(!entries.iter().any(|entry| entry.name == "/codewhale"));
+    assert!(!entries.iter().any(|entry| entry.name == "/codesmith"));
 }
 
 #[test]
@@ -5959,7 +5959,7 @@ fn approval_prompt_uses_event_input_after_message_complete_drain() {
     app.pending_tool_uses.clear();
 
     let event_input = serde_json::json!({
-        "command": "cargo test -p codewhale-tui approval",
+        "command": "cargo test -p codesmith-tui approval",
         "workdir": "/repo",
     });
     push_approval_request_view(
@@ -5982,7 +5982,7 @@ fn approval_prompt_uses_event_input_after_message_complete_drain() {
         panic!("expected approval params pager");
     };
 
-    assert!(content.contains("cargo test -p codewhale-tui approval"));
+    assert!(content.contains("cargo test -p codesmith-tui approval"));
     assert!(content.contains("/repo"));
     assert!(!content.contains("stale value from drained list"));
     assert_ne!(content.trim(), "{}");
@@ -7288,7 +7288,7 @@ fn completed_turn_notification_falls_back_to_default_when_empty() {
         Duration::from_secs(5),
         None,
     );
-    assert_eq!(msg, "codewhale: turn complete");
+    assert_eq!(msg, "codesmith: turn complete");
 }
 
 #[test]
@@ -7311,13 +7311,13 @@ fn completed_turn_notification_truncates_long_text() {
 fn subagent_completion_notification_uses_summary_line_not_sentinel() {
     let msg = crate::tui::notifications::subagent_completion_message(
         "agent_live",
-        "Finished the docs audit.\n<codewhale:subagent.done>{}</codewhale:subagent.done>",
+        "Finished the docs audit.\n<codesmith:subagent.done>{}</codesmith:subagent.done>",
         false,
         Duration::from_secs(42),
     );
 
     assert_eq!(msg, "sub-agent agent_live: Finished the docs audit.");
-    assert!(!msg.contains("codewhale:subagent.done"));
+    assert!(!msg.contains("codesmith:subagent.done"));
 }
 
 #[test]
@@ -7329,8 +7329,8 @@ fn subagent_completion_notification_can_include_elapsed_summary() {
         Duration::from_secs(65),
     );
 
-    assert!(msg.contains("codewhale: sub-agent agent_live complete"));
-    assert!(msg.contains("codewhale: sub-agent complete (1m 5s)"));
+    assert!(msg.contains("codesmith: sub-agent agent_live complete"));
+    assert!(msg.contains("codesmith: sub-agent complete (1m 5s)"));
 }
 
 #[test]

@@ -9,17 +9,17 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use codewhale_agent::ModelRegistry;
-use codewhale_app_server::{
+use codesmith_agent::ModelRegistry;
+use codesmith_app_server::{
     AppServerOptions, run as run_app_server, run_stdio as run_app_server_stdio,
 };
-use codewhale_config::{
+use codesmith_config::{
     CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions, RuntimeApiKeySource,
 };
-use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
-use codewhale_mcp::{McpServerDefinition, run_stdio_server};
-use codewhale_secrets::Secrets;
-use codewhale_state::{StateStore, ThreadListFilters};
+use codesmith_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
+use codesmith_mcp::{McpServerDefinition, run_stdio_server};
+use codesmith_secrets::Secrets;
+use codesmith_state::{StateStore, ThreadListFilters};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProviderArg {
@@ -66,10 +66,10 @@ impl From<ProviderArg> for ProviderKind {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "codewhale",
-    version = env!("DEEPSEEK_BUILD_VERSION"),
-    bin_name = "codewhale",
-    override_usage = "codewhale [OPTIONS] [PROMPT]\n       codewhale [OPTIONS] <COMMAND> [ARGS]"
+    name = "codesmith",
+    version = env!("CODESMITH_BUILD_VERSION"),
+    bin_name = "codesmith",
+    override_usage = "codesmith [OPTIONS] [PROMPT]\n       codesmith [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct Cli {
     #[arg(long)]
@@ -131,7 +131,7 @@ struct Cli {
 enum Commands {
     /// Run interactive/non-interactive flows via the TUI binary.
     Run(RunArgs),
-    /// Run CodeWhale diagnostics.
+    /// Run CodeSmith diagnostics.
     Doctor(TuiPassthroughArgs),
     /// List live DeepSeek API models via the TUI binary.
     Models(TuiPassthroughArgs),
@@ -148,9 +148,9 @@ enum Commands {
     /// Run a non-interactive prompt through the TUI runtime.
     #[command(after_help = "\
 Examples:
-  codewhale exec \"explain this function\"
-  codewhale exec --auto \"list crates/ with ls\"
-  codewhale exec --auto --output-format stream-json \"fix the failing test\"
+  codesmith exec \"explain this function\"
+  codesmith exec --auto \"list crates/ with ls\"
+  codesmith exec --auto --output-format stream-json \"fix the failing test\"
 
 Common forwarded flags:
   --auto                           Enable tool-backed agent mode with auto-approvals
@@ -160,23 +160,23 @@ Common forwarded flags:
   --continue                       Continue the most recent session for this workspace
   --output-format <FORMAT>         Output format: text or stream-json
 
-Plain `codewhale exec` is a one-shot model response. Use `--auto` for
+Plain `codesmith exec` is a one-shot model response. Use `--auto` for
 non-interactive filesystem/shell tool use, matching the supported automation
 path used by stream-json wrappers.
 ")]
     Exec(TuiPassthroughArgs),
-    /// Generate SWE-bench prediction rows from CodeWhale runs.
+    /// Generate SWE-bench prediction rows from CodeSmith runs.
     #[command(after_help = "\
 Examples:
-  codewhale swebench run --instance-id django__django-12345 --issue-file issue.md
-  codewhale swebench export --instance-id django__django-12345 --predictions-path all_preds.jsonl
+  codesmith swebench run --instance-id django__django-12345 --issue-file issue.md
+  codesmith swebench export --instance-id django__django-12345 --predictions-path all_preds.jsonl
 
 This command forwards to the TUI runtime. `run` invokes tool-backed agent mode
 and writes a SWE-bench-compatible JSONL prediction row from the resulting
 working-tree diff. `export` only writes the current diff.
 ")]
     Swebench(TuiPassthroughArgs),
-    /// Run a CodeWhale-powered code review over a git diff.
+    /// Run a CodeSmith-powered code review over a git diff.
     Review(TuiPassthroughArgs),
     /// Apply a patch file or stdin to the working tree.
     Apply(TuiPassthroughArgs),
@@ -211,26 +211,26 @@ working-tree diff. `export` only writes the current diff.
     /// Generate shell completions.
     #[command(after_help = r#"Examples:
   Bash (current shell only):
-    source <(codewhale completion bash)
+    source <(codesmith completion bash)
 
   Bash (persistent, Linux/bash-completion):
     mkdir -p ~/.local/share/bash-completion/completions
-    codewhale completion bash > ~/.local/share/bash-completion/completions/codewhale
+    codesmith completion bash > ~/.local/share/bash-completion/completions/codesmith
     # Requires bash-completion to be installed and loaded by your shell.
 
   Zsh:
     mkdir -p ~/.zfunc
-    codewhale completion zsh > ~/.zfunc/_codewhale
+    codesmith completion zsh > ~/.zfunc/_codesmith
     # Add to ~/.zshrc if needed:
     #   fpath=(~/.zfunc $fpath)
     #   autoload -Uz compinit && compinit
 
   Fish:
     mkdir -p ~/.config/fish/completions
-    codewhale completion fish > ~/.config/fish/completions/codewhale.fish
+    codesmith completion fish > ~/.config/fish/completions/codesmith.fish
 
   PowerShell (current shell only):
-    codewhale completion powershell | Out-String | Invoke-Expression
+    codesmith completion powershell | Out-String | Invoke-Expression
 
 The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#)]
     Completion {
@@ -239,7 +239,7 @@ The command prints the completion script to stdout; redirect it to a path your s
     },
     /// Print a usage rollup from the audit log and session store.
     Metrics(MetricsArgs),
-    /// Check for and apply updates to the `codewhale` binary.
+    /// Check for and apply updates to the `codesmith` binary.
     Update(UpdateArgs),
 }
 
@@ -579,7 +579,7 @@ fn run() -> Result<()> {
         Some(Commands::AppServer(args)) => run_app_server_command(args),
         Some(Commands::Completion { shell }) => {
             let mut cmd = Cli::command();
-            generate(shell, &mut cmd, "codewhale", &mut io::stdout());
+            generate(shell, &mut cmd, "codesmith", &mut io::stdout());
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
@@ -612,7 +612,7 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
     if !prompt.is_empty() {
         if cli.continue_session {
             bail!(
-                "`codewhale --continue` resumes the interactive TUI. Use `codewhale exec --continue <PROMPT>` to continue a session non-interactively."
+                "`codesmith --continue` resumes the interactive TUI. Use `codesmith exec --continue <PROMPT>` to continue a session non-interactively."
             );
         }
         forwarded.push("--prompt".to_string());
@@ -768,7 +768,7 @@ const PROVIDER_LIST: [ProviderKind; 16] = [
 #[cfg(test)]
 fn no_keyring_secrets() -> Secrets {
     Secrets::new(std::sync::Arc::new(
-        codewhale_secrets::InMemoryKeyringStore::new(),
+        codesmith_secrets::InMemoryKeyringStore::new(),
     ))
 }
 
@@ -1351,7 +1351,7 @@ fn run_app_server_command(args: AppServerArgs) -> Result<()> {
 }
 
 fn app_server_token_from_env() -> Option<String> {
-    std::env::var("CODEWHALE_APP_SERVER_TOKEN")
+    std::env::var("CODESMITH_APP_SERVER_TOKEN")
         .ok()
         .or_else(|| std::env::var("DEEPSEEK_APP_SERVER_TOKEN").ok())
 }
@@ -1442,7 +1442,7 @@ fn run_dispatcher_resume_picker(
 
     println!();
     println!("Windows note: enter a session id or prefix from the list above.");
-    println!("You can also run `codewhale resume --last` to skip this prompt.");
+    println!("You can also run `codesmith resume --last` to skip this prompt.");
     print!("Session id/prefix (Enter to cancel): ");
     io::stdout().flush()?;
 
@@ -1516,7 +1516,7 @@ fn build_tui_command(
             | ProviderKind::Anthropic
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Xiaomi MiMo, Novita, Fireworks, SiliconFlow, Moonshot/Kimi, SGLang, vLLM, Ollama, and Anthropic providers. Remove --provider {} or use `codewhale model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Xiaomi MiMo, Novita, Fireworks, SiliconFlow, Moonshot/Kimi, SGLang, vLLM, Ollama, and Anthropic providers. Remove --provider {} or use `codesmith model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
@@ -1595,7 +1595,7 @@ fn build_tui_command(
 fn exit_with_tui_status(status: std::process::ExitStatus) -> Result<()> {
     match status.code() {
         Some(code) => std::process::exit(code),
-        None => bail!("codewhale-tui terminated by signal"),
+        None => bail!("codesmith-tui terminated by signal"),
     }
 }
 
@@ -1607,7 +1607,7 @@ fn delegate_simple_tui(args: Vec<String>) -> Result<()> {
         .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
     match status.code() {
         Some(code) => std::process::exit(code),
-        None => bail!("codewhale-tui terminated by signal"),
+        None => bail!("codesmith-tui terminated by signal"),
     }
 }
 
@@ -1615,23 +1615,23 @@ fn tui_spawn_error(tui: &Path, err: &io::Error) -> String {
     format!(
         "failed to spawn companion TUI binary at {}: {err}\n\
 \n\
-The `codewhale` dispatcher found a `codewhale-tui` file, but the OS refused \
+The `codesmith` dispatcher found a `codesmith-tui` file, but the OS refused \
 to execute it. Common fixes:\n\
-  - Reinstall with `npm install -g codewhale`, or run `codewhale update`.\n\
-  - On Windows, run `where codewhale` and `where codewhale-tui`; both should \
+  - Reinstall with `npm install -g codesmith`, or run `codesmith update`.\n\
+  - On Windows, run `where codesmith` and `where codesmith-tui`; both should \
 come from the same install directory.\n\
-  - If you downloaded release assets manually, keep both `codewhale` and \
-`codewhale-tui` binaries together and make sure the TUI binary is executable.\n\
-  - Set DEEPSEEK_TUI_BIN to the absolute path of a working `codewhale-tui` \
+  - If you downloaded release assets manually, keep both `codesmith` and \
+`codesmith-tui` binaries together and make sure the TUI binary is executable.\n\
+  - Set DEEPSEEK_TUI_BIN to the absolute path of a working `codesmith-tui` \
 binary.",
         tui.display()
     )
 }
 
-/// Resolve the sibling `codewhale-tui` executable next to the running
+/// Resolve the sibling `codesmith-tui` executable next to the running
 /// dispatcher. Honours platform executable suffix (`.exe` on Windows) so
 /// the npm-distributed Windows package — which ships
-/// `bin/downloads/codewhale-tui.exe` — is found by `Path::exists` (#247).
+/// `bin/downloads/codesmith-tui.exe` — is found by `Path::exists` (#247).
 ///
 /// `DEEPSEEK_TUI_BIN` is consulted first as an explicit override for
 /// custom installs and CI test layouts. On Windows we additionally try
@@ -1655,39 +1655,39 @@ fn locate_sibling_tui_binary() -> Result<PathBuf> {
     }
 
     // Build a stable error path so the user sees the platform-correct
-    // expected name, not "codewhale-tui" on Windows.
-    let expected = current.with_file_name(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+    // expected name, not "codesmith-tui" on Windows.
+    let expected = current.with_file_name(format!("codesmith-tui{}", std::env::consts::EXE_SUFFIX));
     bail!(
-        "Companion `codewhale-tui` binary not found at {}.\n\
+        "Companion `codesmith-tui` binary not found at {}.\n\
 \n\
-The `codewhale` dispatcher delegates interactive sessions to a sibling \
-`codewhale-tui` binary. To fix this, install one of:\n\
-  • npm:    npm install -g codewhale                (downloads both binaries)\n\
-  • cargo:  cargo install codewhale-cli codewhale-tui --locked\n\
-  • GitHub Releases: download BOTH `codewhale-<platform>` AND \
-`codewhale-tui-<platform>` from https://github.com/Hmbown/CodeWhale/releases/latest \
+The `codesmith` dispatcher delegates interactive sessions to a sibling \
+`codesmith-tui` binary. To fix this, install one of:\n\
+  • npm:    npm install -g codesmith                (downloads both binaries)\n\
+  • cargo:  cargo install codesmith-cli codesmith-tui --locked\n\
+  • GitHub Releases: download BOTH `codesmith-<platform>` AND \
+`codesmith-tui-<platform>` from https://github.com/Hmbown/CodeSmith/releases/latest \
 and place them in the same directory.\n\
 \n\
-Or set DEEPSEEK_TUI_BIN to the absolute path of an existing `codewhale-tui` binary.",
+Or set DEEPSEEK_TUI_BIN to the absolute path of an existing `codesmith-tui` binary.",
         expected.display()
     );
 }
 
 /// Return the first existing sibling-binary path under any of the names
-/// `codewhale-tui` might use on this platform. Pure function to keep
+/// `codesmith-tui` might use on this platform. Pure function to keep
 /// `locate_sibling_tui_binary` testable.
 fn sibling_tui_candidate(dispatcher: &Path) -> Option<PathBuf> {
     // Primary: platform-correct name. EXE_SUFFIX is "" on Unix and ".exe"
     // on Windows.
     let primary =
-        dispatcher.with_file_name(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+        dispatcher.with_file_name(format!("codesmith-tui{}", std::env::consts::EXE_SUFFIX));
     if primary.is_file() {
         return Some(primary);
     }
     // Windows fallback: a user who manually renamed `.exe` away (per the
     // workaround in #247) still launches successfully under the new code.
     if cfg!(windows) {
-        let suffixless = dispatcher.with_file_name("codewhale-tui");
+        let suffixless = dispatcher.with_file_name("codesmith-tui");
         if suffixless.is_file() {
             return Some(suffixless);
         }
@@ -1855,7 +1855,7 @@ mod tests {
 
     #[test]
     fn parses_update_beta_flag() {
-        let cli = parse_ok(&["codewhale", "update"]);
+        let cli = parse_ok(&["codesmith", "update"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Update(UpdateArgs {
@@ -1865,7 +1865,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["codewhale", "update", "--beta"]);
+        let cli = parse_ok(&["codesmith", "update", "--beta"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Update(UpdateArgs {
@@ -1875,7 +1875,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["codewhale", "update", "--check"]);
+        let cli = parse_ok(&["codesmith", "update", "--check"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Update(UpdateArgs {
@@ -1885,7 +1885,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["codewhale", "update", "--proxy", "socks5://127.0.0.1:1080"]);
+        let cli = parse_ok(&["codesmith", "update", "--proxy", "socks5://127.0.0.1:1080"]);
         let Some(Commands::Update(args)) = cli.command else {
             panic!("expected update command");
         };
@@ -2312,7 +2312,7 @@ mod tests {
 
     #[test]
     fn auth_set_writes_to_shared_config_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2383,7 +2383,7 @@ mod tests {
 
     #[test]
     fn auth_clear_removes_from_config() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2418,7 +2418,7 @@ mod tests {
 
     #[test]
     fn auth_status_and_list_only_probe_active_provider_keyring() {
-        use codewhale_secrets::{KeyringStore, SecretsError};
+        use codesmith_secrets::{KeyringStore, SecretsError};
         use std::sync::{Arc, Mutex};
 
         #[derive(Default)]
@@ -2470,7 +2470,7 @@ mod tests {
 
     #[test]
     fn auth_status_reports_all_active_provider_sources_with_last4() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let _lock = env_lock();
@@ -2508,7 +2508,7 @@ mod tests {
 
     #[test]
     fn dispatch_keyring_recovery_self_heals_into_config_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2581,7 +2581,7 @@ mod tests {
 
     #[test]
     fn auth_migrate_moves_plaintext_keys_into_keyring_and_strips_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2626,7 +2626,7 @@ mod tests {
 
     #[test]
     fn auth_migrate_dry_run_does_not_modify_anything() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2726,7 +2726,7 @@ mod tests {
             "--provider",
             "openai",
             "--workspace",
-            "/tmp/codewhale-workspace",
+            "/tmp/codesmith-workspace",
         ]);
         let resolved = ResolvedRuntimeOptions {
             provider: ProviderKind::Openai,
@@ -2768,7 +2768,7 @@ mod tests {
             .collect();
         assert!(
             args.windows(2)
-                .any(|pair| pair == ["--workspace", "/tmp/codewhale-workspace"]),
+                .any(|pair| pair == ["--workspace", "/tmp/codesmith-workspace"]),
             "expected workspace forwarding in args: {args:?}"
         );
     }
@@ -2834,13 +2834,13 @@ mod tests {
         let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
 
         let cli = parse_ok(&[
-            "codewhale",
+            "codesmith",
             "--provider",
             "moonshot",
             "--model",
             "kimi-k2.6",
             "--workspace",
-            "/tmp/codewhale-workspace",
+            "/tmp/codesmith-workspace",
         ]);
         let resolved = ResolvedRuntimeOptions {
             provider: ProviderKind::Moonshot,
@@ -2996,11 +2996,11 @@ mod tests {
 
         for &(provider, flag, expected_vars) in cases {
             let cli = parse_ok(&[
-                "codewhale",
+                "codesmith",
                 "--provider",
                 flag,
                 "--workspace",
-                "/tmp/codewhale-workspace",
+                "/tmp/codesmith-workspace",
             ]);
             let resolved = ResolvedRuntimeOptions {
                 provider,
@@ -3060,7 +3060,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_continue_for_interactive_resume() {
-        let cli = parse_ok(&["codewhale", "--continue"]);
+        let cli = parse_ok(&["codesmith", "--continue"]);
 
         assert!(cli.continue_session);
         assert!(cli.prompt_flag.is_none());
@@ -3070,12 +3070,12 @@ mod tests {
 
     #[test]
     fn top_level_continue_rejects_startup_prompt() {
-        let cli = parse_ok(&["codewhale", "--continue", "-p", "follow up"]);
+        let cli = parse_ok(&["codesmith", "--continue", "-p", "follow up"]);
 
         let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
         assert!(
             err.to_string()
-                .contains("codewhale exec --continue <PROMPT>")
+                .contains("codesmith exec --continue <PROMPT>")
         );
     }
 
@@ -3197,11 +3197,11 @@ mod tests {
                 vec![
                     "<SHELL>",
                     "bash",
-                    "source <(codewhale completion bash)",
-                    "~/.local/share/bash-completion/completions/codewhale",
+                    "source <(codesmith completion bash)",
+                    "~/.local/share/bash-completion/completions/codesmith",
                     "fpath=(~/.zfunc $fpath)",
-                    "codewhale completion fish > ~/.config/fish/completions/codewhale.fish",
-                    "codewhale completion powershell | Out-String | Invoke-Expression",
+                    "codesmith completion fish > ~/.config/fish/completions/codesmith.fish",
+                    "codesmith completion powershell | Out-String | Invoke-Expression",
                 ],
             ),
             ("metrics", vec!["--json", "--since"]),
@@ -3220,8 +3220,8 @@ mod tests {
     }
 
     /// Regression for issue #247: on Windows the dispatcher must find the
-    /// sibling `codewhale-tui.exe`, not bail out looking for an
-    /// extension-less `codewhale-tui`. The candidate resolver also accepts
+    /// sibling `codesmith-tui.exe`, not bail out looking for an
+    /// extension-less `codesmith-tui`. The candidate resolver also accepts
     /// the suffix-less name on Windows so users who manually renamed the
     /// file as a workaround keep working after the upgrade.
     #[test]
@@ -3229,7 +3229,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let dispatcher = dir
             .path()
-            .join("codewhale")
+            .join("codesmith")
             .with_extension(std::env::consts::EXE_EXTENSION);
         // Touch the dispatcher so its parent dir is the lookup root.
         std::fs::write(&dispatcher, b"").unwrap();
@@ -3238,7 +3238,7 @@ mod tests {
         assert!(sibling_tui_candidate(&dispatcher).is_none());
 
         let target =
-            dispatcher.with_file_name(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+            dispatcher.with_file_name(format!("codesmith-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&target, b"").unwrap();
 
         let found = sibling_tui_candidate(&dispatcher).expect("must locate sibling");
@@ -3248,11 +3248,11 @@ mod tests {
     #[test]
     fn dispatcher_spawn_error_names_path_and_recovery_checks() {
         let err = io::Error::new(io::ErrorKind::PermissionDenied, "access is denied");
-        let message = tui_spawn_error(Path::new("C:/tools/codewhale-tui.exe"), &err);
+        let message = tui_spawn_error(Path::new("C:/tools/codesmith-tui.exe"), &err);
 
-        assert!(message.contains("C:/tools/codewhale-tui.exe"));
+        assert!(message.contains("C:/tools/codesmith-tui.exe"));
         assert!(message.contains("access is denied"));
-        assert!(message.contains("where codewhale"));
+        assert!(message.contains("where codesmith"));
         assert!(message.contains("DEEPSEEK_TUI_BIN"));
     }
 
@@ -3264,15 +3264,15 @@ mod tests {
     #[test]
     fn sibling_tui_candidate_windows_falls_back_to_suffixless() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let dispatcher = dir.path().join("codewhale.exe");
+        let dispatcher = dir.path().join("codesmith.exe");
         std::fs::write(&dispatcher, b"").unwrap();
 
         // Only the suffixless name exists — emulates the manual rename.
-        let suffixless = dispatcher.with_file_name("codewhale-tui");
+        let suffixless = dispatcher.with_file_name("codesmith-tui");
         std::fs::write(&suffixless, b"").unwrap();
 
         let found = sibling_tui_candidate(&dispatcher)
-            .expect("Windows fallback must locate suffixless codewhale-tui");
+            .expect("Windows fallback must locate suffixless codesmith-tui");
         assert_eq!(found, suffixless);
     }
 

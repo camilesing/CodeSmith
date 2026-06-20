@@ -1,4 +1,4 @@
-use codewhale_protocol::{
+use codesmith_protocol::{
     EventFrame, ThreadListParams, ThreadRequest, ThreadResumeParams,
     runtime::{RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope},
 };

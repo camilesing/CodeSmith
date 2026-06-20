@@ -92,7 +92,10 @@ pub struct EnterPlanModeTool {
 
 impl EnterPlanModeTool {
     pub fn new(plan_mode_state: SharedPlanModeState, plan_state: SharedPlanState) -> Self {
-        Self { plan_mode_state, plan_state }
+        Self {
+            plan_mode_state,
+            plan_state,
+        }
     }
 }
 
@@ -159,9 +162,10 @@ impl ToolSpec for EnterPlanModeTool {
         state.model_initiated = true;
 
         // Get the plan file path for the result message
-        let plan_path = plan_file::plan_file_path(&slug).map_err(|e| ToolError::ExecutionFailed {
-            message: format!("Failed to resolve plan file path: {e}"),
-        })?;
+        let plan_path =
+            plan_file::plan_file_path(&slug).map_err(|e| ToolError::ExecutionFailed {
+                message: format!("Failed to resolve plan file path: {e}"),
+            })?;
 
         let message = format!(
             "Entered plan mode. Plan file: {}\n\n{}",
@@ -186,7 +190,10 @@ pub struct ExitPlanModeTool {
 
 impl ExitPlanModeTool {
     pub fn new(plan_mode_state: SharedPlanModeState, plan_state: SharedPlanState) -> Self {
-        Self { plan_mode_state, plan_state }
+        Self {
+            plan_mode_state,
+            plan_state,
+        }
     }
 }
 
@@ -232,7 +239,10 @@ impl ToolSpec for ExitPlanModeTool {
         }
 
         let slug = state.current_slug.clone().unwrap_or_default();
-        let pre_mode = state.pre_plan_mode.clone().unwrap_or_else(|| "Agent".to_string());
+        let pre_mode = state
+            .pre_plan_mode
+            .clone()
+            .unwrap_or_else(|| "Agent".to_string());
 
         // Read the plan file content
         let plan_content = plan_file::read_plan_file(&slug)
@@ -279,7 +289,10 @@ pub struct WritePlanFileTool {
 
 impl WritePlanFileTool {
     pub fn new(plan_mode_state: SharedPlanModeState, plan_state: SharedPlanState) -> Self {
-        Self { plan_mode_state, plan_state }
+        Self {
+            plan_mode_state,
+            plan_state,
+        }
     }
 }
 
@@ -331,7 +344,9 @@ impl ToolSpec for WritePlanFileTool {
 
         if !is_active {
             return Err(ToolError::PermissionDenied {
-                message: "write_plan_file is only available in plan mode. Call enter_plan_mode first.".to_string(),
+                message:
+                    "write_plan_file is only available in plan mode. Call enter_plan_mode first."
+                        .to_string(),
             });
         }
 

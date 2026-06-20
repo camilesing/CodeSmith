@@ -89,8 +89,7 @@ pub fn should_trigger_micro_compact(
 
     // Check if there are enough micro-compactable tool results to warrant clearing.
     let compactable_count = count_compactable_tool_results(messages);
-    compactable_count > 0
-        && estimate_compactable_bytes(messages) >= state.cache_trigger_threshold
+    compactable_count > 0 && estimate_compactable_bytes(messages) >= state.cache_trigger_threshold
 }
 
 /// Count how many tool results in messages are from micro-compactable tools.
@@ -120,7 +119,12 @@ fn estimate_compactable_bytes(messages: &[Message]) -> usize {
         .iter()
         .flat_map(|msg| msg.content.iter())
         .filter_map(|block| {
-            if let ContentBlock::ToolResult { tool_use_id, content, .. } = block {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = block
+            {
                 if tool_use_names
                     .get(tool_use_id)
                     .is_some_and(|name| is_micro_compactable_tool(name))
@@ -155,10 +159,7 @@ fn collect_tool_use_names(messages: &[Message]) -> std::collections::HashMap<Str
 /// with a placeholder, preserving message structure and tool_use/tool_result pairs.
 ///
 /// Returns the number of bytes cleared.
-pub fn micro_compact_messages(
-    messages: &mut [Message],
-    state: &mut MicroCompactState,
-) -> usize {
+pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompactState) -> usize {
     let tool_use_names = collect_tool_use_names(messages);
     let total_bytes_cleared: usize = 0;
     let mut bytes_cleared = 0usize;
@@ -261,9 +262,8 @@ mod tests {
     fn should_trigger_time_based() {
         let mut state = MicroCompactState::default();
         // Simulate 61 minutes since last assistant message
-        state.last_assistant_message_at = Some(
-            Instant::now() - std::time::Duration::from_secs(TIME_TRIGGER_GAP_SECS + 60),
-        );
+        state.last_assistant_message_at =
+            Some(Instant::now() - std::time::Duration::from_secs(TIME_TRIGGER_GAP_SECS + 60));
         let messages = vec![msg("user", "test")];
         assert!(should_trigger_micro_compact(&messages, &state, false));
     }

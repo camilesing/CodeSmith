@@ -15,7 +15,7 @@
   rev ? "dirty",
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
-  pname = "codewhale";
+  pname = "codesmith";
   version = "git-${rev}";
 
   src = ../.;
@@ -46,9 +46,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   cargoBuildFlags = [
     "--package"
-    "codewhale-cli"
+    "codesmith-cli"
     "--package"
-    "codewhale-tui"
+    "codesmith-tui"
   ];
   cargoTestFlags = finalAttrs.cargoBuildFlags ++ [
     "--lib"
@@ -61,8 +61,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   meta = {
     description = "Terminal coding agent for DeepSeek";
-    homepage = "https://github.com/Hmbown/CodeWhale";
+    homepage = "https://github.com/Hmbown/CodeSmith";
     license = lib.licenses.mit;
-    mainProgram = "codewhale";
+    mainProgram = "codesmith";
   };
 })

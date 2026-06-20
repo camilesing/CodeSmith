@@ -462,10 +462,10 @@ pub struct CycleArchiveHeader {
     pub message_count: usize,
 }
 
-/// Resolve the on-disk archive directory: `~/.codewhale/sessions/<id>/cycles`
+/// Resolve the on-disk archive directory: `~/.codesmith/sessions/<id>/cycles`
 /// (or legacy `~/.deepseek/sessions/<id>/cycles`).
 fn archive_dir_for(session_id: &str) -> Result<PathBuf> {
-    let sessions = codewhale_config::resolve_state_dir("sessions").unwrap_or_else(|_| {
+    let sessions = codesmith_config::resolve_state_dir("sessions").unwrap_or_else(|_| {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".deepseek")

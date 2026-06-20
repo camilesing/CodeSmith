@@ -17,8 +17,8 @@ use crate::config::{
 };
 use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;
-use crate::features::Feature;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
+use crate::features::Feature;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{Locale, MessageId, resolve_locale, tr};
 use crate::models::{Message, SystemPrompt, Tool, compaction_threshold_for_model_and_effort};
@@ -777,7 +777,9 @@ impl AppMode {
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
-            AppMode::Coordinator => "Coordinator mode - orchestrator only, delegates work to workers",
+            AppMode::Coordinator => {
+                "Coordinator mode - orchestrator only, delegates work to workers"
+            }
         }
     }
 }
@@ -830,7 +832,7 @@ pub struct TuiOptions {
 pub enum InitialInput {
     /// Pre-populate the composer and wait for the user to press Enter.
     ///
-    /// Used by `codewhale pr <N>` (#451) to drop the model into a session
+    /// Used by `codesmith pr <N>` (#451) to drop the model into a session
     /// with the PR context already typed so the user can edit before sending.
     Prefill(String),
     /// Pre-populate the composer, submit it once startup is ready, then keep
@@ -2192,8 +2194,10 @@ impl App {
 
         let entering_yolo = mode == AppMode::Yolo && previous_mode != AppMode::Yolo;
         let leaving_yolo = previous_mode == AppMode::Yolo && mode != AppMode::Yolo;
-        let entering_coordinator = mode == AppMode::Coordinator && previous_mode != AppMode::Coordinator;
-        let leaving_coordinator = previous_mode == AppMode::Coordinator && mode != AppMode::Coordinator;
+        let entering_coordinator =
+            mode == AppMode::Coordinator && previous_mode != AppMode::Coordinator;
+        let leaving_coordinator =
+            previous_mode == AppMode::Coordinator && mode != AppMode::Coordinator;
         self.mode = mode;
         self.status_message = Some(format!("Switched to {} mode", mode.label()));
 
@@ -4847,7 +4851,9 @@ pub enum AppAction {
     UpdateCompaction(CompactionConfig),
     OpenContextInspector,
     CompactContext,
-    CompactContextWithMode { mode: crate::core::ops::CompactMode },
+    CompactContextWithMode {
+        mode: crate::core::ops::CompactMode,
+    },
     PurgeContext,
     TaskAdd {
         prompt: String,
@@ -5438,7 +5444,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let config_path = tmp.path().join("config.toml");
         let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-        let _provider_env = EnvVarGuard::remove("CODEWHALE_PROVIDER");
+        let _provider_env = EnvVarGuard::remove("CODESMITH_PROVIDER");
         let _legacy_provider_env = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
         let _api_key_envs: Vec<_> = [
             "DEEPSEEK_API_KEY",

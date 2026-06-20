@@ -452,7 +452,9 @@ mod tests {
 
     #[test]
     fn is_context_length_error_message_matches_known_patterns() {
-        assert!(is_context_length_error_message("This model's maximum context length is 128000 tokens"));
+        assert!(is_context_length_error_message(
+            "This model's maximum context length is 128000 tokens"
+        ));
         assert!(is_context_length_error_message("context_length_exceeded"));
     }
 
@@ -465,8 +467,16 @@ mod tests {
     #[test]
     fn extract_compaction_summary_prompt_finds_marker_in_blocks() {
         let blocks = vec![
-            SystemBlock { block_type: "text".to_string(), text: "Normal prompt text".to_string(), cache_control: None },
-            SystemBlock { block_type: "text".to_string(), text: format!("{}\nSummary content", COMPACTION_SUMMARY_MARKER), cache_control: None },
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "Normal prompt text".to_string(),
+                cache_control: None,
+            },
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: format!("{}\nSummary content", COMPACTION_SUMMARY_MARKER),
+                cache_control: None,
+            },
         ];
         let prompt = Some(SystemPrompt::Blocks(blocks));
         let extracted = extract_compaction_summary_prompt(prompt);
@@ -478,9 +488,11 @@ mod tests {
 
     #[test]
     fn extract_compaction_summary_prompt_returns_none_when_no_marker() {
-        let blocks = vec![
-            SystemBlock { block_type: "text".to_string(), text: "Normal prompt text".to_string(), cache_control: None },
-        ];
+        let blocks = vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "Normal prompt text".to_string(),
+            cache_control: None,
+        }];
         let prompt = Some(SystemPrompt::Blocks(blocks));
         assert!(extract_compaction_summary_prompt(prompt).is_none());
     }

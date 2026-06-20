@@ -1639,7 +1639,7 @@ fn default_auto_approve() -> bool {
     true
 }
 
-/// Default task manager data location (`~/.codewhale/tasks`, or legacy
+/// Default task manager data location (`~/.codesmith/tasks`, or legacy
 /// `~/.deepseek/tasks` when only the legacy directory exists).
 #[must_use]
 pub fn default_tasks_dir() -> PathBuf {
@@ -1650,11 +1650,11 @@ pub fn default_tasks_dir() -> PathBuf {
     }
     dirs::home_dir()
         .map(|home| default_tasks_dir_for_home(&home))
-        .unwrap_or_else(|| PathBuf::from(".codewhale").join("tasks"))
+        .unwrap_or_else(|| PathBuf::from(".codesmith").join("tasks"))
 }
 
 fn default_tasks_dir_for_home(home: &Path) -> PathBuf {
-    let primary = home.join(".codewhale").join("tasks");
+    let primary = home.join(".codesmith").join("tasks");
     if primary.is_dir() {
         return primary;
     }
@@ -1826,7 +1826,7 @@ mod tests {
                         "gate": {
                             "id": "gate_test",
                             "gate": "test",
-                            "command": "cargo test -p codewhale-tui --lib",
+                            "command": "cargo test -p codesmith-tui --lib",
                             "cwd": ".",
                             "exit_code": 0,
                             "status": "passed",
@@ -1934,10 +1934,10 @@ mod tests {
     }
 
     #[test]
-    fn default_tasks_dir_prefers_existing_codewhale_tasks() {
+    fn default_tasks_dir_prefers_existing_codesmith_tasks() {
         let temp_home = tempfile::tempdir().unwrap();
         let home = temp_home.path();
-        let primary_tasks = home.join(".codewhale").join("tasks");
+        let primary_tasks = home.join(".codesmith").join("tasks");
         let legacy_tasks = home.join(".deepseek").join("tasks");
         std::fs::create_dir_all(&primary_tasks).unwrap();
         std::fs::create_dir_all(&legacy_tasks).unwrap();
@@ -1949,7 +1949,7 @@ mod tests {
     fn default_tasks_dir_falls_back_to_legacy_when_primary_is_file() {
         let temp_home = tempfile::tempdir().unwrap();
         let home = temp_home.path();
-        let primary_tasks = home.join(".codewhale").join("tasks");
+        let primary_tasks = home.join(".codesmith").join("tasks");
         let legacy_tasks = home.join(".deepseek").join("tasks");
         std::fs::create_dir_all(primary_tasks.parent().unwrap()).unwrap();
         std::fs::write(&primary_tasks, "not a directory").unwrap();
@@ -1962,7 +1962,7 @@ mod tests {
     fn default_tasks_dir_ignores_legacy_file_for_new_installs() {
         let temp_home = tempfile::tempdir().unwrap();
         let home = temp_home.path();
-        let primary_tasks = home.join(".codewhale").join("tasks");
+        let primary_tasks = home.join(".codesmith").join("tasks");
         let legacy_tasks = home.join(".deepseek").join("tasks");
         std::fs::create_dir_all(legacy_tasks.parent().unwrap()).unwrap();
         std::fs::write(&legacy_tasks, "not a directory").unwrap();
@@ -1971,13 +1971,13 @@ mod tests {
     }
 
     #[test]
-    fn default_tasks_dir_uses_codewhale_tasks_for_new_installs() {
+    fn default_tasks_dir_uses_codesmith_tasks_for_new_installs() {
         let temp_home = tempfile::tempdir().unwrap();
         let home = temp_home.path();
 
         assert_eq!(
             default_tasks_dir_for_home(home),
-            home.join(".codewhale").join("tasks")
+            home.join(".codesmith").join("tasks")
         );
     }
 }

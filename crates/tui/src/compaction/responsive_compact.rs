@@ -117,11 +117,26 @@ mod tests {
     fn recovery_cascade_follows_order() {
         let state = ResponsiveCompactState::new();
 
-        assert_eq!(next_recovery_action(&state, 0), ResponsiveCompactAction::MicroCompact);
-        assert_eq!(next_recovery_action(&state, 1), ResponsiveCompactAction::PartialFrom);
-        assert_eq!(next_recovery_action(&state, 2), ResponsiveCompactAction::PartialUpTo);
-        assert_eq!(next_recovery_action(&state, 3), ResponsiveCompactAction::FullCompact);
-        assert_eq!(next_recovery_action(&state, 4), ResponsiveCompactAction::Fail);
+        assert_eq!(
+            next_recovery_action(&state, 0),
+            ResponsiveCompactAction::MicroCompact
+        );
+        assert_eq!(
+            next_recovery_action(&state, 1),
+            ResponsiveCompactAction::PartialFrom
+        );
+        assert_eq!(
+            next_recovery_action(&state, 2),
+            ResponsiveCompactAction::PartialUpTo
+        );
+        assert_eq!(
+            next_recovery_action(&state, 3),
+            ResponsiveCompactAction::FullCompact
+        );
+        assert_eq!(
+            next_recovery_action(&state, 4),
+            ResponsiveCompactAction::Fail
+        );
     }
 
     #[test]
@@ -150,12 +165,20 @@ mod tests {
 
     #[test]
     fn detects_prompt_too_long_errors() {
-        assert!(is_prompt_too_long_error("prompt is too long for the current model"));
-        assert!(is_prompt_too_long_error("maximum context length is 1000000 tokens"));
-        assert!(is_prompt_too_long_error("You requested 1000001 tokens but the maximum is 1000000"));
+        assert!(is_prompt_too_long_error(
+            "prompt is too long for the current model"
+        ));
+        assert!(is_prompt_too_long_error(
+            "maximum context length is 1000000 tokens"
+        ));
+        assert!(is_prompt_too_long_error(
+            "You requested 1000001 tokens but the maximum is 1000000"
+        ));
         assert!(is_prompt_too_long_error("request exceeds context window"));
 
-        assert!(!is_prompt_too_long_error("401 Unauthorized: Invalid API key"));
+        assert!(!is_prompt_too_long_error(
+            "401 Unauthorized: Invalid API key"
+        ));
         assert!(!is_prompt_too_long_error("503 Service Unavailable"));
     }
 }

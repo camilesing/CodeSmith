@@ -4,10 +4,10 @@
 //! Mirrors Claude Code's background task layer (Task.ts, framework.ts,
 //! LocalShellTask.tsx, DreamTask.ts, LocalAgentTask.tsx) adapted to Rust.
 
-mod output;
-mod shell_bridge;
 mod agent_bridge;
 mod dream_task;
+mod output;
+mod shell_bridge;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -20,13 +20,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::task_manager::SharedTaskManager;
-use crate::tools::shell::{SharedShellManager, ShellStatus, ShellJobSnapshot};
-use crate::tools::subagent::{SharedSubAgentManager, SubAgentType, SubAgentStatus, SubAgentResult};
+use crate::tools::shell::{SharedShellManager, ShellJobSnapshot, ShellStatus};
+use crate::tools::subagent::{SharedSubAgentManager, SubAgentResult, SubAgentStatus, SubAgentType};
 
+pub use agent_bridge::{map_subagent_status, subagent_error};
+pub use dream_task::{DreamResult, DreamStatus, DreamTaskRunner};
 pub use output::BackgroundTaskOutputManager;
 pub use shell_bridge::default_stall_patterns;
-pub use agent_bridge::{map_subagent_status, subagent_error};
-pub use dream_task::{DreamTaskRunner, DreamResult, DreamStatus};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -203,9 +203,9 @@ pub struct BackgroundTaskSummary {
 
 impl From<&BackgroundTaskState> for BackgroundTaskSummary {
     fn from(s: &BackgroundTaskState) -> Self {
-        let duration_ms = s.ended_at.map(|end| {
-            (end - s.started_at).num_milliseconds().max(0) as u64
-        });
+        let duration_ms = s
+            .ended_at
+            .map(|end| (end - s.started_at).num_milliseconds().max(0) as u64);
         Self {
             id: s.id.clone(),
             source_id: s.source_id.clone(),
@@ -326,10 +326,7 @@ impl BackgroundTaskRegistry {
     }
 
     /// Register a dream (memory consolidation) task.
-    pub fn register_dream_task(
-        &mut self,
-        memory_path: PathBuf,
-    ) -> BackgroundTaskState {
+    pub fn register_dream_task(&mut self, memory_path: PathBuf) -> BackgroundTaskState {
         let id = format!("bg_dream_{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let state = BackgroundTaskState {
             id: id.clone(),
@@ -383,7 +380,9 @@ impl BackgroundTaskRegistry {
 
     /// Cancel a background task by delegating to the source subsystem.
     pub async fn cancel_task(&mut self, id: &str) -> Result<()> {
-        let state = self.tasks.get(id)
+        let state = self
+            .tasks
+            .get(id)
             .ok_or_else(|| anyhow::anyhow!("Background task not found: {id}"))?
             .clone();
 
@@ -422,9 +421,12 @@ impl BackgroundTaskRegistry {
         }
 
         // Collect currently running shell tasks
-        self.tasks.values()
-            .filter(|s| s.task_type == BackgroundTaskType::Shell
-                && s.status == BackgroundTaskStatus::Running)
+        self.tasks
+            .values()
+            .filter(|s| {
+                s.task_type == BackgroundTaskType::Shell
+                    && s.status == BackgroundTaskStatus::Running
+            })
             .cloned()
             .collect()
     }
@@ -450,9 +452,7 @@ impl BackgroundTaskRegistry {
         let output_file = state.output_file.as_ref()?;
         let offset = state.output_offset;
 
-        let (content, new_offset) = self.output_mgr.read_from_offset(
-            output_file, offset,
-        ).ok()?;
+        let (content, new_offset) = self.output_mgr.read_from_offset(output_file, offset).ok()?;
 
         if new_offset > offset {
             state.output_offset = new_offset;
@@ -467,9 +467,9 @@ impl BackgroundTaskRegistry {
         while let Some(id) = self.pending_notifications.pop_front() {
             if let Some(state) = self.tasks.get_mut(&id) {
                 state.notified = true;
-                let duration_ms = state.ended_at.map(|end| {
-                    (end - state.started_at).num_milliseconds().max(0) as u64
-                });
+                let duration_ms = state
+                    .ended_at
+                    .map(|end| (end - state.started_at).num_milliseconds().max(0) as u64);
                 result.push(BackgroundTaskNotification {
                     task_id: state.id.clone(),
                     task_type: state.task_type,
@@ -485,7 +485,10 @@ impl BackgroundTaskRegistry {
 
     /// List all background tasks.
     pub fn list_tasks(&self) -> Vec<BackgroundTaskSummary> {
-        self.tasks.values().map(BackgroundTaskSummary::from).collect()
+        self.tasks
+            .values()
+            .map(BackgroundTaskSummary::from)
+            .collect()
     }
 
     /// Get a specific task by id.
@@ -499,9 +502,13 @@ impl BackgroundTaskRegistry {
         let mut results = Vec::new();
 
         // Poll shell tasks — ShellManager uses std::sync::Mutex
-        let shell_ids: Vec<(String, String)> = self.tasks.iter()
-            .filter(|(_, s)| s.task_type == BackgroundTaskType::Shell
-                && s.status == BackgroundTaskStatus::Running)
+        let shell_ids: Vec<(String, String)> = self
+            .tasks
+            .iter()
+            .filter(|(_, s)| {
+                s.task_type == BackgroundTaskType::Shell
+                    && s.status == BackgroundTaskStatus::Running
+            })
             .map(|(id, s)| (id.clone(), s.source_id.clone()))
             .collect();
 
@@ -524,7 +531,8 @@ impl BackgroundTaskRegistry {
                 // Check stall first (only if still Running)
                 if new_status == BackgroundTaskStatus::Running && self.looks_like_prompt(&tail) {
                     if let Some(r) = self.update_task_status(
-                        &bg_id, BackgroundTaskStatus::Stalled,
+                        &bg_id,
+                        BackgroundTaskStatus::Stalled,
                         Some("Interactive prompt detected".to_string()),
                     ) {
                         results.push(r);
@@ -533,7 +541,10 @@ impl BackgroundTaskRegistry {
                 }
                 // Update extension with exit_code
                 if let Some(state) = self.tasks.get_mut(&bg_id) {
-                    if let BackgroundTaskExtension::Shell { ref mut exit_code, .. } = state.extension {
+                    if let BackgroundTaskExtension::Shell {
+                        ref mut exit_code, ..
+                    } = state.extension
+                    {
                         *exit_code = exit_code_val;
                     }
                 }
@@ -547,9 +558,13 @@ impl BackgroundTaskRegistry {
         }
 
         // Poll agent tasks — SubAgentManager uses tokio::sync::RwLock
-        let agent_ids: Vec<(String, String)> = self.tasks.iter()
-            .filter(|(_, s)| s.task_type == BackgroundTaskType::Agent
-                && s.status == BackgroundTaskStatus::Running)
+        let agent_ids: Vec<(String, String)> = self
+            .tasks
+            .iter()
+            .filter(|(_, s)| {
+                s.task_type == BackgroundTaskType::Agent
+                    && s.status == BackgroundTaskStatus::Running
+            })
             .map(|(id, s)| (id.clone(), s.source_id.clone()))
             .collect();
 
@@ -559,12 +574,22 @@ impl BackgroundTaskRegistry {
                 let mgr = self.subagent_manager.read().await;
                 let agents = mgr.list_filtered(false);
                 let result = agents.iter().find(|a| a.agent_id == agent_id);
-                result.map(|r| (r.status.clone().into(), agent_bridge::subagent_error(&r.status), r.steps_taken))
+                result.map(|r| {
+                    (
+                        r.status.clone().into(),
+                        agent_bridge::subagent_error(&r.status),
+                        r.steps_taken,
+                    )
+                })
             };
 
             if let Some((new_status, error, steps_taken_val)) = agent_info {
                 if let Some(state) = self.tasks.get_mut(&bg_id) {
-                    if let BackgroundTaskExtension::Agent { ref mut steps_taken, .. } = state.extension {
+                    if let BackgroundTaskExtension::Agent {
+                        ref mut steps_taken,
+                        ..
+                    } = state.extension
+                    {
                         *steps_taken = steps_taken_val;
                     }
                 }
@@ -580,7 +605,9 @@ impl BackgroundTaskRegistry {
     /// Check if the tail of shell output looks like an interactive prompt.
     fn looks_like_prompt(&self, tail: &str) -> bool {
         let last_line = tail.trim_end().lines().last().unwrap_or("");
-        self.stall_patterns.iter().any(|p| p.pattern.is_match(last_line))
+        self.stall_patterns
+            .iter()
+            .any(|p| p.pattern.is_match(last_line))
     }
 }
 
@@ -612,7 +639,10 @@ pub fn format_notification_message(notification: &BackgroundTaskNotification) ->
         notification.task_type.as_str(),
         status_label,
         notification.description,
-        notification.result_summary.as_deref().unwrap_or("(no output)"),
+        notification
+            .result_summary
+            .as_deref()
+            .unwrap_or("(no output)"),
         notification.duration_ms.unwrap_or(0),
     )
 }

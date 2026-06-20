@@ -7,8 +7,8 @@
 
 use std::path::PathBuf;
 
-use std::pin::Pin;
 use std::future::Future;
+use std::pin::Pin;
 
 use tokio_util::sync::CancellationToken;
 
@@ -83,7 +83,12 @@ pub async fn select_relevant_memories(
     recent_tools: &[String],
     // The caller provides a function that makes the actual API call.
     // This decouples relevance.rs from the DeepSeek client type.
-    side_query_fn: impl FnOnce(String, String) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>,
+    side_query_fn: impl FnOnce(
+        String,
+        String,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+    >,
     cancel_token: CancellationToken,
 ) -> Result<Vec<String>, RelevanceError> {
     if headers.is_empty() {
@@ -97,9 +102,8 @@ pub async fn select_relevant_memories(
         format!("\n\nRecently used tools: {}", recent_tools.join(", "))
     };
 
-    let user_message = format!(
-        "Query: {user_query}\n\nAvailable memories:\n{manifest}{tools_section}"
-    );
+    let user_message =
+        format!("Query: {user_query}\n\nAvailable memories:\n{manifest}{tools_section}");
 
     let result = tokio::select! {
         _ = cancel_token.cancelled() => return Err(RelevanceError::Cancelled),
@@ -113,7 +117,10 @@ pub async fn select_relevant_memories(
 }
 
 /// Parse the side-query response and validate filenames against the manifest.
-fn parse_selected_memories(response: &str, headers: &[MemoryHeader]) -> Result<Vec<String>, RelevanceError> {
+fn parse_selected_memories(
+    response: &str,
+    headers: &[MemoryHeader],
+) -> Result<Vec<String>, RelevanceError> {
     // The model might return the JSON inline or with surrounding text.
     // Try to extract JSON from the response.
     let json_str = extract_json(response);

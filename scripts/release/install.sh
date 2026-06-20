@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# CodeWhale Unix installer
-# Copies codewhale and codewhale-tui to ~/.local/bin (or $PREFIX/bin)
+# CodeSmith Unix installer
+# Copies codesmith and codesmith-tui to ~/.local/bin (or $PREFIX/bin)
 
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
@@ -9,9 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$BIN_DIR"
 
-echo "Installing codewhale to $BIN_DIR ..."
+echo "Installing codesmith to $BIN_DIR ..."
 
-for bin in codewhale codewhale-tui; do
+for bin in codesmith codesmith-tui; do
     src="$SCRIPT_DIR/$bin"
     dst="$BIN_DIR/$bin"
     if [[ ! -f "$src" ]]; then
@@ -43,4 +43,4 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
 fi
 
 echo ""
-echo "Then run: codewhale"
+echo "Then run: codesmith"

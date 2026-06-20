@@ -290,9 +290,7 @@ impl AnthropicClient {
         let status = response.status();
         if !status.is_success() {
             let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
-            anyhow::bail!(
-                "Anthropic SSE stream request failed: HTTP {status}: {error_text}"
-            );
+            anyhow::bail!("Anthropic SSE stream request failed: HTTP {status}: {error_text}");
         }
 
         let byte_stream = response.bytes_stream();
@@ -404,7 +402,9 @@ impl AnthropicClient {
         };
 
         Ok(Pin::from(Box::new(stream)
-            as Box<dyn futures_util::Stream<Item = Result<StreamEvent>> + Send>))
+            as Box<
+                dyn futures_util::Stream<Item = Result<StreamEvent>> + Send,
+            >))
     }
 }
 
@@ -457,9 +457,9 @@ fn build_http_client(
     let mut builder = reqwest::Client::builder()
         .default_headers(headers)
         .user_agent(concat!(
-            "Mozilla/5.0 (compatible; codewhale/",
+            "Mozilla/5.0 (compatible; codesmith/",
             env!("CARGO_PKG_VERSION"),
-            "; +https://github.com/Hmbown/CodeWhale)"
+            "; +https://github.com/Hmbown/CodeSmith)"
         ))
         .connect_timeout(Duration::from_secs(30))
         .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -551,10 +551,7 @@ fn build_request_body(request: &MessageRequest, stream: bool) -> Result<Value> {
         // strip it from outgoing assistant-message content too.
         if let Some(messages) = obj.get_mut("messages").and_then(Value::as_array_mut) {
             for message in messages {
-                if let Some(content) = message
-                    .get_mut("content")
-                    .and_then(Value::as_array_mut)
-                {
+                if let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) {
                     for block in content {
                         if let Some(b) = block.as_object_mut() {
                             b.remove("caller");
@@ -709,13 +706,25 @@ mod tests {
     fn build_request_body_strips_internal_fields_and_adds_thinking() {
         let body = build_request_body(&sample_request(), true).unwrap();
         let obj = body.as_object().unwrap();
-        assert_eq!(obj.get("model").and_then(Value::as_str), Some("claude-sonnet-4-5"));
+        assert_eq!(
+            obj.get("model").and_then(Value::as_str),
+            Some("claude-sonnet-4-5")
+        );
         assert_eq!(obj.get("stream").and_then(Value::as_bool), Some(true));
-        assert!(obj.get("reasoning_effort").is_none(), "reasoning_effort must be stripped");
+        assert!(
+            obj.get("reasoning_effort").is_none(),
+            "reasoning_effort must be stripped"
+        );
 
         let thinking = obj.get("thinking").expect("thinking must be derived");
-        assert_eq!(thinking.get("type").and_then(Value::as_str), Some("enabled"));
-        assert_eq!(thinking.get("budget_tokens").and_then(Value::as_u64), Some(16_384));
+        assert_eq!(
+            thinking.get("type").and_then(Value::as_str),
+            Some("enabled")
+        );
+        assert_eq!(
+            thinking.get("budget_tokens").and_then(Value::as_u64),
+            Some(16_384)
+        );
 
         let tool = obj["tools"][0].as_object().unwrap();
         assert!(tool.get("allowed_callers").is_none());
@@ -731,7 +740,10 @@ mod tests {
         req.reasoning_effort = Some("off".to_string());
         let body = build_request_body(&req, false).unwrap();
         let thinking = body.get("thinking").unwrap();
-        assert_eq!(thinking.get("type").and_then(Value::as_str), Some("disabled"));
+        assert_eq!(
+            thinking.get("type").and_then(Value::as_str),
+            Some("disabled")
+        );
         assert_eq!(body.get("stream").and_then(Value::as_bool), Some(false));
     }
 
@@ -751,7 +763,10 @@ mod tests {
         req.thinking = Some(serde_json::json!({ "type": "enabled", "budget_tokens": 1234 }));
         let body = build_request_body(&req, false).unwrap();
         let thinking = body.get("thinking").unwrap();
-        assert_eq!(thinking.get("budget_tokens").and_then(Value::as_u64), Some(1234));
+        assert_eq!(
+            thinking.get("budget_tokens").and_then(Value::as_u64),
+            Some(1234)
+        );
     }
 
     #[test]
@@ -762,7 +777,9 @@ mod tests {
             Some("sk-ant-test")
         );
         assert_eq!(
-            headers.get("anthropic-version").and_then(|v| v.to_str().ok()),
+            headers
+                .get("anthropic-version")
+                .and_then(|v| v.to_str().ok()),
             Some(DEFAULT_ANTHROPIC_VERSION)
         );
         assert!(
@@ -781,7 +798,9 @@ mod tests {
         );
         let headers = build_default_headers("k", &extra).unwrap();
         assert_eq!(
-            headers.get("anthropic-version").and_then(|v| v.to_str().ok()),
+            headers
+                .get("anthropic-version")
+                .and_then(|v| v.to_str().ok()),
             Some("2024-10-22")
         );
         assert_eq!(
@@ -825,7 +844,8 @@ mod tests {
 
     #[test]
     fn parse_anthropic_sse_event_surfaces_error_event() {
-        let data = r#"{"type":"error","error":{"type":"overloaded_error","message":"server busy"}}"#;
+        let data =
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"server busy"}}"#;
         match parse_anthropic_sse_event(data) {
             ParseOutcome::Error(err) => {
                 assert!(err.to_string().contains("server busy"));

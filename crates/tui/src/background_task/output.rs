@@ -47,7 +47,9 @@ impl BackgroundTaskOutputManager {
         if !path.exists() {
             return Ok((String::new(), offset));
         }
-        let mut file = fs::OpenOptions::new().read(true).open(path)
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .open(path)
             .with_context(|| format!("open {:?}", path))?;
         let file_len = file.seek(SeekFrom::End(0))? as usize;
         if offset >= file_len {

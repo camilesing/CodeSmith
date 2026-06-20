@@ -139,7 +139,8 @@ pub(super) fn ensure_advanced_tooling(
     // once it appeared in the catalog. We now probe at catalog-build
     // time and only advertise when an interpreter resolves. See
     // `crate::dependencies::resolve_python_interpreter` for the probe.
-    if mode != AppMode::Plan && mode != AppMode::Coordinator
+    if mode != AppMode::Plan
+        && mode != AppMode::Coordinator
         && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME)
         && crate::dependencies::resolve_python_interpreter().is_some()
     {
@@ -171,7 +172,8 @@ pub(super) fn ensure_advanced_tooling(
     // actually use. Plan mode hides shell/exec surfaces (including
     // both interpreter tools) by construction; Agent / YOLO advertise
     // the tool only when `resolve_node()` succeeds.
-    if mode != AppMode::Plan && mode != AppMode::Coordinator
+    if mode != AppMode::Plan
+        && mode != AppMode::Coordinator
         && !catalog.iter().any(|t| t.name == JS_EXECUTION_TOOL_NAME)
         && crate::dependencies::resolve_node().is_some()
     {

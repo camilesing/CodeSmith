@@ -108,7 +108,6 @@ pub enum Op {
     Shutdown,
 
     // === Background Task Operations ===
-
     /// Start a shell command in background.
     #[allow(dead_code)]
     StartBackgroundShell {

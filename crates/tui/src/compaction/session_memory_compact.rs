@@ -226,11 +226,9 @@ fn estimate_tokens_for_message_conservative(msg: &Message) -> usize {
         .map(|block| match block {
             ContentBlock::Text { text, .. } => text.len().div_ceil(3),
             ContentBlock::Thinking { thinking } => thinking.len().div_ceil(3),
-            ContentBlock::ToolUse { input, .. } => {
-                serde_json::to_string(input)
-                    .map(|s| s.len().div_ceil(3))
-                    .unwrap_or(100)
-            }
+            ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
+                .map(|s| s.len().div_ceil(3))
+                .unwrap_or(100),
             ContentBlock::ToolResult { content, .. } => content.len().div_ceil(3),
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
@@ -283,23 +281,31 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        assert!(!should_use_session_memory_compact("memory", &vec![msg("user", "test")], &config));
+        assert!(!should_use_session_memory_compact(
+            "memory",
+            &vec![msg("user", "test")],
+            &config
+        ));
     }
 
     #[test]
     fn should_use_returns_false_when_memory_empty() {
         let config = SessionMemoryCompactConfig::default();
-        assert!(!should_use_session_memory_compact("", &vec![msg("user", "test")], &config));
+        assert!(!should_use_session_memory_compact(
+            "",
+            &vec![msg("user", "test")],
+            &config
+        ));
     }
 
     #[test]
     fn adjust_preserves_tool_pairs() {
         let messages = vec![
-            msg("user", "start"), // 0
-            tool_use_msg("t1", "read"), // 1
+            msg("user", "start"),            // 0
+            tool_use_msg("t1", "read"),      // 1
             tool_result_msg("t1", "result"), // 2
-            msg("user", "more"), // 3
-            msg("assistant", "reply"), // 4
+            msg("user", "more"),             // 3
+            msg("assistant", "reply"),       // 4
         ];
 
         // Start at index 2 (tool_result) — its call (tool_use) is at index 1

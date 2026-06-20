@@ -69,7 +69,7 @@ pub struct TaskV2Record {
 
 /// File-based task list manager with concurrent-safe access.
 ///
-/// Task files live at `~/.codewhale/tasks/{task_list_id}/{task_id}.json`.
+/// Task files live at `~/.codesmith/tasks/{task_list_id}/{task_id}.json`.
 /// A `.highwatermark` file prevents ID reuse after deletion.
 /// A `.lock` file provides flock-based concurrent access.
 #[derive(Debug)]
@@ -80,7 +80,7 @@ pub struct TaskV2Manager {
 impl TaskV2Manager {
     /// Create a new TaskV2Manager for a given task list ID (typically session ID).
     pub fn new(task_list_id: &str) -> anyhow::Result<Self> {
-        let base = codewhale_config::codewhale_home()?;
+        let base = codesmith_config::codesmith_home()?;
         let task_dir = base.join("tasks").join(task_list_id);
         fs::create_dir_all(&task_dir)?;
         Ok(Self { task_dir })
@@ -413,7 +413,8 @@ impl TaskV2Manager {
         if busy {
             return Err(anyhow::anyhow!(
                 "Agent '{}' already has an in-progress task; cannot claim task {}",
-                agent_name, id
+                agent_name,
+                id
             ));
         }
 
@@ -624,7 +625,16 @@ impl ToolSpec for TaskV2CreateTool {
         let subject_display = subject.clone();
         let mut manager = self.manager.lock().await;
         let task_id = manager
-            .create_task(subject, description, active_form, Some(status), owner, blocked_by, blocks, metadata)
+            .create_task(
+                subject,
+                description,
+                active_form,
+                Some(status),
+                owner,
+                blocked_by,
+                blocks,
+                metadata,
+            )
             .map_err(|e| ToolError::ExecutionFailed {
                 message: format!("Failed to create task: {e}"),
             })?;
@@ -637,18 +647,17 @@ impl ToolSpec for TaskV2CreateTool {
                     .with_task_id(&task_id)
                     .with_task_subject(&subject_display)
                     .with_task_status(status_str);
-                let results = hook_executor.execute(crate::hooks::HookEvent::TaskCreated, &hook_ctx);
+                let results =
+                    hook_executor.execute(crate::hooks::HookEvent::TaskCreated, &hook_ctx);
                 for result in &results {
                     if result.exit_code == Some(2) {
                         // Rollback: delete the just-created task
-                        manager.delete_task(&task_id).map_err(|e| ToolError::ExecutionFailed {
-                            message: format!("Failed to rollback task creation: {e}"),
-                        })?;
-                        let reason = result
-                            .stderr
-                            .lines()
-                            .next()
-                            .unwrap_or("no reason given");
+                        manager
+                            .delete_task(&task_id)
+                            .map_err(|e| ToolError::ExecutionFailed {
+                                message: format!("Failed to rollback task creation: {e}"),
+                            })?;
+                        let reason = result.stderr.lines().next().unwrap_or("no reason given");
                         return Ok(ToolResult::error(format!(
                             "Task creation blocked by hook: {reason}"
                         )));
@@ -848,7 +857,8 @@ impl ToolSpec for TaskV2UpdateTool {
                         .with_task_id(&updated.id)
                         .with_task_subject(&updated.subject)
                         .with_task_status("completed");
-                    let _ = hook_executor.execute(crate::hooks::HookEvent::TaskCompleted, &hook_ctx);
+                    let _ =
+                        hook_executor.execute(crate::hooks::HookEvent::TaskCompleted, &hook_ctx);
                 }
             }
         }
@@ -857,17 +867,21 @@ impl ToolSpec for TaskV2UpdateTool {
         if let Some(mailbox) = &context.runtime.task_mailbox {
             let owner_input = input.get("owner").and_then(|v| v.as_str());
             if owner_input.is_some() {
-                mailbox.send(crate::tools::subagent::mailbox::MailboxMessage::TaskAssigned {
-                    agent_id: updated.owner.clone().unwrap_or_default(),
-                    task_id: updated.id.clone(),
-                    task_subject: updated.subject.clone(),
-                });
+                mailbox.send(
+                    crate::tools::subagent::mailbox::MailboxMessage::TaskAssigned {
+                        agent_id: updated.owner.clone().unwrap_or_default(),
+                        task_id: updated.id.clone(),
+                        task_subject: updated.subject.clone(),
+                    },
+                );
             }
         }
 
         Ok(ToolResult::success(format!(
             "Task {} [{}] updated to {}",
-            updated.id, updated.subject, serde_json::to_string(&updated.status).unwrap_or_default()
+            updated.id,
+            updated.subject,
+            serde_json::to_string(&updated.status).unwrap_or_default()
         )))
     }
 }
@@ -933,8 +947,8 @@ impl ToolSpec for TaskV2GetTool {
                 message: format!("Failed to get task {task_id}: {e}"),
             })?;
 
-        let content = serde_json::to_string_pretty(&record)
-            .map_err(|e| ToolError::ExecutionFailed {
+        let content =
+            serde_json::to_string_pretty(&record).map_err(|e| ToolError::ExecutionFailed {
                 message: format!("Failed to serialize task: {e}"),
             })?;
 
@@ -1019,7 +1033,11 @@ impl ToolSpec for TaskV2ListTool {
             };
             lines.push(format!(
                 "{} {} [{}] {} — {}{deps}",
-                status_sym, t.id, t.subject, serde_json::to_string(&t.status).unwrap_or_default(), owner_str
+                status_sym,
+                t.id,
+                t.subject,
+                serde_json::to_string(&t.status).unwrap_or_default(),
+                owner_str
             ));
         }
 
@@ -1043,10 +1061,28 @@ mod tests {
     fn create_task_returns_incrementing_ids() {
         let mut mgr = temp_manager();
         let id1 = mgr
-            .create_task("Task A".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "Task A".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         let id2 = mgr
-            .create_task("Task B".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "Task B".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         let n1: u64 = id1.parse().unwrap();
         let n2: u64 = id2.parse().unwrap();
@@ -1057,7 +1093,16 @@ mod tests {
     fn create_task_with_blocked_by_updates_blocks() {
         let mut mgr = temp_manager();
         let id1 = mgr
-            .create_task("Blocker".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "Blocker".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         let id2 = mgr
             .create_task(
@@ -1080,7 +1125,16 @@ mod tests {
     fn create_task_with_blocks_updates_blocked_by() {
         let mut mgr = temp_manager();
         let id1 = mgr
-            .create_task("First".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "First".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         let id2 = mgr
             .create_task(
@@ -1103,14 +1157,42 @@ mod tests {
     fn update_task_add_blocks_bidirectional() {
         let mut mgr = temp_manager();
         let id1 = mgr
-            .create_task("A".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "A".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         let id2 = mgr
-            .create_task("B".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "B".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
 
         let updated = mgr
-            .update_task(&id1, None, None, None, None, None, None, Some(vec![id2.clone()]), None)
+            .update_task(
+                &id1,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![id2.clone()]),
+                None,
+            )
             .unwrap();
 
         assert!(updated.blocks.contains(&id2));
@@ -1122,14 +1204,42 @@ mod tests {
     fn update_task_add_blocked_by_bidirectional() {
         let mut mgr = temp_manager();
         let id1 = mgr
-            .create_task("A".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "A".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         let id2 = mgr
-            .create_task("B".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "B".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
 
         let updated = mgr
-            .update_task(&id2, None, None, None, None, None, None, None, Some(vec![id1.clone()]))
+            .update_task(
+                &id2,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![id1.clone()]),
+            )
             .unwrap();
 
         assert!(updated.blocked_by.contains(&id1));
@@ -1141,7 +1251,16 @@ mod tests {
     fn soft_delete_cleans_up_references() {
         let mut mgr = temp_manager();
         let id1 = mgr
-            .create_task("Blocker".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "Blocker".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         let id2 = mgr
             .create_task(
@@ -1186,7 +1305,16 @@ mod tests {
             )
             .unwrap();
         let id2 = mgr
-            .create_task("New task".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "New task".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
 
         let result = mgr.claim_task(&id2, "agent_a");
@@ -1197,7 +1325,16 @@ mod tests {
     fn claim_task_succeeds_when_agent_free() {
         let mut mgr = temp_manager();
         let id1 = mgr
-            .create_task("Free task".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "Free task".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
 
         let result = mgr.claim_task(&id1, "agent_a");
@@ -1245,10 +1382,28 @@ mod tests {
     #[test]
     fn list_tasks_excludes_deleted() {
         let mut mgr = temp_manager();
-        mgr.create_task("Visible".into(), "desc".into(), None, None, None, vec![], vec![], None)
-            .unwrap();
+        mgr.create_task(
+            "Visible".into(),
+            "desc".into(),
+            None,
+            None,
+            None,
+            vec![],
+            vec![],
+            None,
+        )
+        .unwrap();
         let id2 = mgr
-            .create_task("To delete".into(), "desc".into(), None, None, None, vec![], vec![], None)
+            .create_task(
+                "To delete".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
 
         mgr.soft_delete_task(&id2).unwrap();
@@ -1260,8 +1415,14 @@ mod tests {
 
     #[test]
     fn status_deleted_parsed_from_string() {
-        assert_eq!(TaskV2Status::from_str_opt("deleted"), Some(TaskV2Status::Deleted));
-        assert_eq!(TaskV2Status::from_str_opt("DELETED"), Some(TaskV2Status::Deleted));
+        assert_eq!(
+            TaskV2Status::from_str_opt("deleted"),
+            Some(TaskV2Status::Deleted)
+        );
+        assert_eq!(
+            TaskV2Status::from_str_opt("DELETED"),
+            Some(TaskV2Status::Deleted)
+        );
     }
 
     #[test]

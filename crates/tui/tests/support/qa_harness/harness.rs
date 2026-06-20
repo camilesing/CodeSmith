@@ -221,13 +221,13 @@ impl Harness {
         if let Some(path) = std::env::var_os(&key) {
             return PathBuf::from(path);
         }
-        if name == "codewhale-tui"
-            && let Some(path) = option_env!("CARGO_BIN_EXE_codewhale-tui")
+        if name == "codesmith-tui"
+            && let Some(path) = option_env!("CARGO_BIN_EXE_codesmith-tui")
         {
             return PathBuf::from(path);
         }
         // Legacy fallback for callers still referencing the old bin name.
-        if name == "codewhale-tui"
+        if name == "codesmith-tui"
             && let Some(path) = option_env!("CARGO_BIN_EXE_deepseek-tui")
         {
             return PathBuf::from(path);

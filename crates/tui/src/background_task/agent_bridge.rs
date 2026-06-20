@@ -3,8 +3,8 @@
 //! Maps SubAgentStatus → BackgroundTaskStatus and provides utility
 //! functions for bridging SubAgentManager into the unified registry.
 
-use crate::tools::subagent::SubAgentStatus;
 use super::BackgroundTaskStatus;
+use crate::tools::subagent::SubAgentStatus;
 
 /// Map SubAgentStatus → BackgroundTaskStatus.
 /// Standalone function so it can be used without the registry.
@@ -34,20 +34,38 @@ mod tests {
 
     #[test]
     fn map_subagent_status_running_to_running() {
-        assert_eq!(map_subagent_status(&SubAgentStatus::Running), BackgroundTaskStatus::Running);
-        assert_eq!(map_subagent_status(&SubAgentStatus::Completed), BackgroundTaskStatus::Completed);
-        assert_eq!(map_subagent_status(&SubAgentStatus::Cancelled), BackgroundTaskStatus::Cancelled);
+        assert_eq!(
+            map_subagent_status(&SubAgentStatus::Running),
+            BackgroundTaskStatus::Running
+        );
+        assert_eq!(
+            map_subagent_status(&SubAgentStatus::Completed),
+            BackgroundTaskStatus::Completed
+        );
+        assert_eq!(
+            map_subagent_status(&SubAgentStatus::Cancelled),
+            BackgroundTaskStatus::Cancelled
+        );
     }
 
     #[test]
     fn map_subagent_status_failed_and_interrupted_to_failed() {
-        assert_eq!(map_subagent_status(&SubAgentStatus::Failed("err".to_string())), BackgroundTaskStatus::Failed);
-        assert_eq!(map_subagent_status(&SubAgentStatus::Interrupted("sig".to_string())), BackgroundTaskStatus::Failed);
+        assert_eq!(
+            map_subagent_status(&SubAgentStatus::Failed("err".to_string())),
+            BackgroundTaskStatus::Failed
+        );
+        assert_eq!(
+            map_subagent_status(&SubAgentStatus::Interrupted("sig".to_string())),
+            BackgroundTaskStatus::Failed
+        );
     }
 
     #[test]
     fn subagent_error_returns_message_for_failed() {
-        assert_eq!(subagent_error(&SubAgentStatus::Failed("oops".to_string())), Some("oops".to_string()));
+        assert_eq!(
+            subagent_error(&SubAgentStatus::Failed("oops".to_string())),
+            Some("oops".to_string())
+        );
         assert_eq!(subagent_error(&SubAgentStatus::Running), None);
     }
 }

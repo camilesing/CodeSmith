@@ -14,13 +14,13 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::tools::task_v2::{SharedTaskV2Manager, TaskV2Manager, TaskV2Record, TaskV2Status};
-use crate::tools::team::{
-    TeammateMessage, StructuredProtocolMessage, IdleReason,
-    read_unread_messages, mark_messages_as_read, parse_structured_protocol,
-    is_structured_protocol_message, write_to_mailbox, team_lead_name,
-};
 use crate::tools::team::protocol_handlers::{
-    SharedPermissionRequestRegistry, PermissionDecision, new_shared_permission_registry,
+    PermissionDecision, SharedPermissionRequestRegistry, new_shared_permission_registry,
+};
+use crate::tools::team::{
+    IdleReason, StructuredProtocolMessage, TeammateMessage, is_structured_protocol_message,
+    mark_messages_as_read, parse_structured_protocol, read_unread_messages, team_lead_name,
+    write_to_mailbox,
 };
 
 // ---------------------------------------------------------------------------
@@ -166,7 +166,12 @@ pub fn scan_inbox_with_priority(
         if is_structured_protocol_message(&msg.text) {
             if let Some(proto) = parse_structured_protocol(&msg.text) {
                 match &proto {
-                    StructuredProtocolMessage::ShutdownRequest { request_id, from, reason, .. } => {
+                    StructuredProtocolMessage::ShutdownRequest {
+                        request_id,
+                        from,
+                        reason,
+                        ..
+                    } => {
                         // Only the first shutdown request is returned (highest priority).
                         if result.shutdown_request.is_none() {
                             result.shutdown_request = Some(ShutdownRequestEntry {
@@ -176,22 +181,40 @@ pub fn scan_inbox_with_priority(
                             });
                         }
                     }
-                    StructuredProtocolMessage::PermissionResponse { request_id, subtype, error } => {
+                    StructuredProtocolMessage::PermissionResponse {
+                        request_id,
+                        subtype,
+                        error,
+                    } => {
                         result.permission_responses.push(PermissionResponseEntry {
                             request_id: request_id.clone(),
                             subtype: subtype.clone(),
                             error: error.clone(),
                         });
                     }
-                    StructuredProtocolMessage::PlanApprovalResponse { request_id, approved, feedback, permission_mode, .. } => {
-                        result.plan_approval_responses.push(PlanApprovalResponseEntry {
-                            request_id: request_id.clone(),
-                            approved: *approved,
-                            feedback: feedback.clone(),
-                            permission_mode: permission_mode.clone(),
-                        });
+                    StructuredProtocolMessage::PlanApprovalResponse {
+                        request_id,
+                        approved,
+                        feedback,
+                        permission_mode,
+                        ..
+                    } => {
+                        result
+                            .plan_approval_responses
+                            .push(PlanApprovalResponseEntry {
+                                request_id: request_id.clone(),
+                                approved: *approved,
+                                feedback: feedback.clone(),
+                                permission_mode: permission_mode.clone(),
+                            });
                     }
-                    StructuredProtocolMessage::TaskAssignment { task_id, subject, description, assigned_by, .. } => {
+                    StructuredProtocolMessage::TaskAssignment {
+                        task_id,
+                        subject,
+                        description,
+                        assigned_by,
+                        ..
+                    } => {
                         result.task_assignments.push(TaskAssignmentEntry {
                             task_id: task_id.clone(),
                             subject: subject.clone(),
@@ -199,7 +222,14 @@ pub fn scan_inbox_with_priority(
                             assigned_by: assigned_by.clone(),
                         });
                     }
-                    StructuredProtocolMessage::IdleNotification { from, idle_reason, summary, completed_task_id, completed_status, .. } => {
+                    StructuredProtocolMessage::IdleNotification {
+                        from,
+                        idle_reason,
+                        summary,
+                        completed_task_id,
+                        completed_status,
+                        ..
+                    } => {
                         result.idle_notifications.push(IdleNotificationEntry {
                             from: from.clone(),
                             idle_reason: idle_reason.clone(),
@@ -208,18 +238,29 @@ pub fn scan_inbox_with_priority(
                             completed_status: completed_status.clone(),
                         });
                     }
-                    StructuredProtocolMessage::ModeSetRequest { from, permission_mode, .. } => {
+                    StructuredProtocolMessage::ModeSetRequest {
+                        from,
+                        permission_mode,
+                        ..
+                    } => {
                         result.mode_set_requests.push(ModeSetRequestEntry {
                             from: from.clone(),
                             permission_mode: permission_mode.clone(),
                         });
                     }
-                    StructuredProtocolMessage::TeamPermissionUpdate { from, allowed_tools, denied_tools, .. } => {
-                        result.team_permission_updates.push(TeamPermissionUpdateEntry {
-                            from: from.clone(),
-                            allowed_tools: allowed_tools.clone(),
-                            denied_tools: denied_tools.clone(),
-                        });
+                    StructuredProtocolMessage::TeamPermissionUpdate {
+                        from,
+                        allowed_tools,
+                        denied_tools,
+                        ..
+                    } => {
+                        result
+                            .team_permission_updates
+                            .push(TeamPermissionUpdateEntry {
+                                from: from.clone(),
+                                allowed_tools: allowed_tools.clone(),
+                                denied_tools: denied_tools.clone(),
+                            });
                     }
                     _ => {
                         result.other_protocol.push(proto.clone());
@@ -271,7 +312,11 @@ pub async fn try_claim_next_task(
         if task.owner.is_some() {
             continue;
         }
-        if !task.blocked_by.iter().all(|bid| !unresolved_ids.contains(bid)) {
+        if !task
+            .blocked_by
+            .iter()
+            .all(|bid| !unresolved_ids.contains(bid))
+        {
             continue;
         }
 
@@ -285,7 +330,13 @@ pub async fn try_claim_next_task(
         let _ = manager.update_task(
             &task.id,
             Some(TaskV2Status::InProgress),
-            None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
 
         return Some(claimed);
@@ -312,9 +363,7 @@ pub enum WaitResult {
 
 /// Wait for next prompt, shutdown, or available task.
 /// Polls every 500ms with priority checks.
-pub async fn wait_for_next_prompt_or_shutdown(
-    rt: &mut TeammateRuntime,
-) -> WaitResult {
+pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitResult {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
 
     loop {
@@ -340,7 +389,10 @@ pub async fn wait_for_next_prompt_or_shutdown(
         // Apply plan approval responses.
         for resp in &inbox.plan_approval_responses {
             if resp.approved {
-                rt.permission_mode = resp.permission_mode.clone().unwrap_or_else(|| "auto".to_string());
+                rt.permission_mode = resp
+                    .permission_mode
+                    .clone()
+                    .unwrap_or_else(|| "auto".to_string());
             }
         }
 
@@ -376,7 +428,9 @@ fn resolve_permission_responses(
         let decision = if resp.subtype == "success" || resp.subtype == "allow" {
             PermissionDecision::Allow
         } else {
-            PermissionDecision::Deny { reason: resp.error.clone() }
+            PermissionDecision::Deny {
+                reason: resp.error.clone(),
+            }
         };
         reg.resolve(&resp.request_id, decision);
     }
@@ -477,7 +531,14 @@ pub fn handle_shutdown_request(
         timestamp: now,
         read: false,
         color: None,
-        summary: Some(if approved { "shutdown approved" } else { "shutdown rejected" }.to_string()),
+        summary: Some(
+            if approved {
+                "shutdown approved"
+            } else {
+                "shutdown rejected"
+            }
+            .to_string(),
+        ),
     };
 
     write_to_mailbox(team_lead_name(), team_name, msg)?;
@@ -495,7 +556,10 @@ fn format_prompt_from_inbox(inbox: &PriorityInboxResult) -> String {
 
     // Task assignments first (most actionable).
     for entry in &inbox.task_assignments {
-        parts.push(format!("New task assigned: {}\n\n{}", entry.subject, entry.description));
+        parts.push(format!(
+            "New task assigned: {}\n\n{}",
+            entry.subject, entry.description
+        ));
     }
 
     // Lead messages next.
@@ -540,11 +604,7 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                 break;
             }
             WaitResult::ShutdownRequest(entry) => {
-                match handle_shutdown_request(
-                    &entry.request_id,
-                    &rt.agent_name,
-                    &rt.team_name,
-                ) {
+                match handle_shutdown_request(&entry.request_id, &rt.agent_name, &rt.team_name) {
                     Ok(TeammateState::ShutdownApproved) => {
                         state = TeammateState::ShutdownApproved;
                         break;
@@ -572,8 +632,10 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
             WaitResult::TaskClaimed(task) => {
                 state = TeammateState::Active;
                 // TODO: Execute one LLM step with task as prompt.
-                let _ = format!("Complete all open tasks. Start with task #{}: \n\n{}\n\n{}",
-                    task.id, task.subject, task.description);
+                let _ = format!(
+                    "Complete all open tasks. Start with task #{}: \n\n{}\n\n{}",
+                    task.id, task.subject, task.description
+                );
             }
         }
 
@@ -601,14 +663,17 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
 /// into the leader's conversation as synthetic user messages.
 /// Legacy function — the inbox poller now handles this continuously.
 pub fn poll_leader_inbox(team_name: &str) -> anyhow::Result<Vec<String>> {
-    let (protocol_msgs, text_msgs) = process_inbox_messages(
-        team_lead_name(), team_name,
-    )?;
+    let (protocol_msgs, text_msgs) = process_inbox_messages(team_lead_name(), team_name)?;
 
-    let protocol_texts: Vec<String> = protocol_msgs.iter().map(|p| {
-        match p {
+    let protocol_texts: Vec<String> = protocol_msgs
+        .iter()
+        .map(|p| match p {
             StructuredProtocolMessage::IdleNotification { from, summary, .. } => {
-                format!("Teammate {} is idle. {}", from, summary.as_deref().unwrap_or(""))
+                format!(
+                    "Teammate {} is idle. {}",
+                    from,
+                    summary.as_deref().unwrap_or("")
+                )
             }
             StructuredProtocolMessage::ShutdownApproved { from, .. } => {
                 format!("Teammate {} approved shutdown.", from)
@@ -617,10 +682,11 @@ pub fn poll_leader_inbox(team_name: &str) -> anyhow::Result<Vec<String>> {
                 format!("Teammate {} rejected shutdown: {}", from, reason)
             }
             _ => format!("Protocol message from teammate"),
-        }
-    }).collect();
+        })
+        .collect();
 
-    let text_contents: Vec<String> = text_msgs.iter()
+    let text_contents: Vec<String> = text_msgs
+        .iter()
         .map(|m| format!("Message from {}: {}", m.from, m.text))
         .collect();
 

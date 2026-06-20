@@ -91,16 +91,10 @@ pub fn compose_knowledge_block(memory_dir: &Path) -> Option<String> {
     if truncation.was_line_truncated || truncation.was_byte_truncated {
         block.push_str("\n\n[Note: MEMORY.md was truncated to fit budget limits. ");
         if truncation.was_line_truncated {
-            block.push_str(&format!(
-                "Max {} lines. ",
-                MAX_ENTRYPOINT_LINES
-            ));
+            block.push_str(&format!("Max {} lines. ", MAX_ENTRYPOINT_LINES));
         }
         if truncation.was_byte_truncated {
-            block.push_str(&format!(
-                "Max {} bytes. ",
-                MAX_ENTRYPOINT_BYTES
-            ));
+            block.push_str(&format!("Max {} bytes. ", MAX_ENTRYPOINT_BYTES));
         }
         block.push_str("Full content available via `read_file`.]");
     }
@@ -141,7 +135,10 @@ mod tests {
 
     #[test]
     fn truncate_entrypoint_respects_line_limit() {
-        let content = (0..300).map(|i| format!("Line {i}")).collect::<Vec<_>>().join("\n");
+        let content = (0..300)
+            .map(|i| format!("Line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let result = truncate_entrypoint(&content);
         assert!(result.was_line_truncated);
         assert!(result.line_count <= MAX_ENTRYPOINT_LINES);

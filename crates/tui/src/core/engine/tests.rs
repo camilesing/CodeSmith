@@ -1,10 +1,10 @@
-use crate::llm_client::mock::{MockLlmClient, canned};
-use crate::llm_client::LlmClientHandle;
-use crate::tui::approval::ApprovalMode;
 use crate::core::capacity::GuardrailAction;
 use crate::core::turn::TurnContext;
-use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
+use crate::llm_client::LlmClientHandle;
+use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::tools::spec::ToolContext;
+use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
+use crate::tui::approval::ApprovalMode;
 
 use super::*;
 
@@ -103,8 +103,8 @@ fn env_only_auth_error_gets_recovery_hint() {
 
     assert!(message.contains("DEEPSEEK_API_KEY"));
     assert!(message.contains("no saved config key is present"));
-    assert!(message.contains("codewhale auth status"));
-    assert!(message.contains("codewhale auth set --provider deepseek"));
+    assert!(message.contains("codesmith auth status"));
+    assert!(message.contains("codesmith auth set --provider deepseek"));
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn config_auth_error_does_not_blame_env() {
 
 #[test]
 fn plugin_tools_dir_honors_missing_custom_directory_without_fallback() {
-    let missing = PathBuf::from("definitely-missing-codewhale-plugin-dir");
+    let missing = PathBuf::from("definitely-missing-codesmith-plugin-dir");
     let tools_config = crate::config::ToolsConfig {
         plugin_dir: Some(missing.to_string_lossy().to_string()),
         ..Default::default()
@@ -2473,7 +2473,7 @@ fn filter_tool_call_delta_strips_bracket_marker() {
 fn filter_tool_call_delta_strips_deepseek_xml_marker() {
     let mut in_block = false;
     let visible = filter_tool_call_delta(
-        "before <codewhale:tool_call name=\"x\">payload</codewhale:tool_call> after",
+        "before <codesmith:tool_call name=\"x\">payload</codesmith:tool_call> after",
         &mut in_block,
     );
     assert!(!in_block);
@@ -3131,7 +3131,10 @@ async fn engine_tool_call_round_trip_with_mock_client() {
     let config = test_engine_config(tmp.path());
     let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
 
-    handle.send(make_send_op("read the test file")).await.expect("send op");
+    handle
+        .send(make_send_op("read the test file"))
+        .await
+        .expect("send op");
 
     let events = collect_until_turn_complete(&handle).await;
 
@@ -3166,7 +3169,11 @@ async fn engine_tool_call_round_trip_with_mock_client() {
         "expected follow-up text, got: {text}"
     );
 
-    assert_eq!(mock_arc.call_count(), 2, "mock should be called twice (tool_call + follow-up)");
+    assert_eq!(
+        mock_arc.call_count(),
+        2,
+        "mock should be called twice (tool_call + follow-up)"
+    );
 }
 
 // === Test 3: Capacity controller decision ====================================
@@ -3226,9 +3233,15 @@ async fn engine_capacity_controller_decides_compaction_for_loaded_session() {
     // tokens, well above 1% of the 128K context window (= 1280 tokens).
     for i in 0..100 {
         let msg = Message {
-            role: if i % 2 == 0 { "user".to_string() } else { "assistant".to_string() },
+            role: if i % 2 == 0 {
+                "user".to_string()
+            } else {
+                "assistant".to_string()
+            },
             content: vec![ContentBlock::Text {
-                text: format!("message {i} with enough text to occupy tokens — padding to ensure the estimated token count exceeds the 1% threshold of the 128K context window for the mock-model"),
+                text: format!(
+                    "message {i} with enough text to occupy tokens — padding to ensure the estimated token count exceeds the 1% threshold of the 128K context window for the mock-model"
+                ),
                 cache_control: None,
             }],
         };
@@ -3238,7 +3251,9 @@ async fn engine_capacity_controller_decides_compaction_for_loaded_session() {
     // Create a turn context and observe capacity.
     let turn_ctx = TurnContext::new(engine.config.max_steps);
     engine.turn_counter = engine.turn_counter.saturating_add(1);
-    engine.capacity_controller.mark_turn_start(engine.turn_counter);
+    engine
+        .capacity_controller
+        .mark_turn_start(engine.turn_counter);
 
     let snapshot = engine
         .capacity_controller

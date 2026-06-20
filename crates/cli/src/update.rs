@@ -1,7 +1,7 @@
-//! Self-update for the `codewhale` binary.
+//! Self-update for the `codesmith` binary.
 //!
 //! The `update` subcommand fetches the latest release from
-//! `github.com/Hmbown/CodeWhale/releases/latest`, downloads the
+//! `github.com/Hmbown/CodeSmith/releases/latest`, downloads the
 //! platform-correct binary, verifies its SHA256 checksum, and atomically
 //! replaces the currently running binary.
 
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use codewhale_release::{
+use codesmith_release::{
     CHECKSUM_MANIFEST_ASSET, ReleaseChannel, ReleaseQuery, UPDATE_USER_AGENT,
     compare_release_versions, is_beta_tag, mirror_asset_url, resolve_release_query,
     update_is_needed, update_network_fallback_hint,
@@ -39,7 +39,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
             .with_context(update_network_fallback_hint)?;
         println!("Latest {} release: {latest_tag}", channel.label());
         if update_is_needed(channel, current_version, &latest_tag)? {
-            println!("Update available. Run `codewhale update` to install {latest_tag}.");
+            println!("Update available. Run `codesmith update` to install {latest_tag}.");
         } else {
             match compare_release_versions(current_version, &latest_tag)? {
                 Ordering::Greater => {
@@ -185,19 +185,19 @@ pub(crate) fn binary_prefix_for_exe(current_exe: &Path) -> &'static str {
     let exe_name = current_exe
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("codewhale");
-    if exe_name.contains("codewhale-tui") {
-        "codewhale-tui"
+        .unwrap_or("codesmith");
+    if exe_name.contains("codesmith-tui") {
+        "codesmith-tui"
     } else {
-        "codewhale"
+        "codesmith"
     }
 }
 
 fn sibling_prefix_for(prefix: &str) -> &'static str {
-    if prefix == "codewhale-tui" {
-        "codewhale"
+    if prefix == "codesmith-tui" {
+        "codesmith"
     } else {
-        "codewhale-tui"
+        "codesmith-tui"
     }
 }
 
@@ -403,7 +403,7 @@ fn release_from_mirror_base_url(
         browser_download_url: mirror_asset_url(base_url, CHECKSUM_MANIFEST_ASSET),
     }];
 
-    for prefix in ["codewhale", "codewhale-tui"] {
+    for prefix in ["codesmith", "codesmith-tui"] {
         let name = release_asset_name_for_prefix(prefix, os, rust_arch);
         assets.push(Asset {
             browser_download_url: mirror_asset_url(base_url, &name),
@@ -446,7 +446,7 @@ fn fetch_latest_release_from_url(url: &str, proxy: Option<&Proxy>) -> Result<Rel
 
 fn fetch_latest_beta_release_from_url(url: &str, proxy: Option<&Proxy>) -> Result<Release> {
     let body = fetch_release_json(url, "release list", proxy)?;
-    // GitHub caps this endpoint at 100 releases per page. CodeWhale uses the
+    // GitHub caps this endpoint at 100 releases per page. CodeSmith uses the
     // first page as the latest-beta search window, matching GitHub's ordering.
     let releases: Vec<Release> = serde_json::from_str(&body).with_context(|| {
         format!("failed to parse release list JSON from GitHub API. Response: {body}")
@@ -498,7 +498,7 @@ fn replace_binary(target: &Path, new_bytes: &[u8]) -> Result<()> {
         .unwrap_or_else(|| Path::new("."));
 
     let mut tmp = tempfile::Builder::new()
-        .prefix(".codewhale-update-")
+        .prefix(".codesmith-update-")
         .tempfile_in(parent)
         .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
     tmp.write_all(new_bytes)
@@ -602,56 +602,56 @@ mod tests {
     /// Verify binary prefix detection for dispatcher vs TUI binary.
     #[test]
     fn test_binary_prefix_detection() {
-        // TUI binary should use codewhale-tui prefix
+        // TUI binary should use codesmith-tui prefix
         assert_eq!(
-            binary_prefix_for_exe(Path::new("codewhale-tui")),
-            "codewhale-tui"
+            binary_prefix_for_exe(Path::new("codesmith-tui")),
+            "codesmith-tui"
         );
         assert_eq!(
-            binary_prefix_for_exe(Path::new("codewhale-tui.exe")),
-            "codewhale-tui"
+            binary_prefix_for_exe(Path::new("codesmith-tui.exe")),
+            "codesmith-tui"
         );
         assert_eq!(
-            binary_prefix_for_exe(Path::new("/usr/local/bin/codewhale-tui")),
-            "codewhale-tui"
+            binary_prefix_for_exe(Path::new("/usr/local/bin/codesmith-tui")),
+            "codesmith-tui"
         );
 
-        // Dispatcher binary should use codewhale prefix
-        assert_eq!(binary_prefix_for_exe(Path::new("codewhale")), "codewhale");
+        // Dispatcher binary should use codesmith prefix
+        assert_eq!(binary_prefix_for_exe(Path::new("codesmith")), "codesmith");
         assert_eq!(
-            binary_prefix_for_exe(Path::new("codewhale.exe")),
-            "codewhale"
+            binary_prefix_for_exe(Path::new("codesmith.exe")),
+            "codesmith"
         );
         assert_eq!(
-            binary_prefix_for_exe(Path::new("/usr/local/bin/codewhale")),
-            "codewhale"
+            binary_prefix_for_exe(Path::new("/usr/local/bin/codesmith")),
+            "codesmith"
         );
 
         // Fallback for unknown names
         assert_eq!(
             binary_prefix_for_exe(Path::new("other-binary")),
-            "codewhale"
+            "codesmith"
         );
     }
 
     #[test]
     fn test_release_asset_stem_for_supported_platforms() {
         let cases = [
-            ("codewhale", "macos", "aarch64", "codewhale-macos-arm64"),
-            ("codewhale", "macos", "x86_64", "codewhale-macos-x64"),
-            ("codewhale", "linux", "x86_64", "codewhale-linux-x64"),
-            ("codewhale", "windows", "x86_64", "codewhale-windows-x64"),
+            ("codesmith", "macos", "aarch64", "codesmith-macos-arm64"),
+            ("codesmith", "macos", "x86_64", "codesmith-macos-x64"),
+            ("codesmith", "linux", "x86_64", "codesmith-linux-x64"),
+            ("codesmith", "windows", "x86_64", "codesmith-windows-x64"),
             (
-                "codewhale-tui",
+                "codesmith-tui",
                 "macos",
                 "aarch64",
-                "codewhale-tui-macos-arm64",
+                "codesmith-tui-macos-arm64",
             ),
             (
-                "codewhale-tui",
+                "codesmith-tui",
                 "linux",
                 "x86_64",
-                "codewhale-tui-linux-x64",
+                "codesmith-tui-linux-x64",
             ),
         ];
 
@@ -665,10 +665,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let dispatcher = dir
             .path()
-            .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("codesmith{}", std::env::consts::EXE_SUFFIX));
         let tui = dir
             .path()
-            .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("codesmith-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&dispatcher, b"dispatcher").unwrap();
         std::fs::write(&tui, b"tui").unwrap();
 
@@ -679,8 +679,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(paths, vec![dispatcher.as_path(), tui.as_path()]);
-        assert!(targets[0].asset_stem.starts_with("codewhale-"));
-        assert!(targets[1].asset_stem.starts_with("codewhale-tui-"));
+        assert!(targets[0].asset_stem.starts_with("codesmith-"));
+        assert!(targets[1].asset_stem.starts_with("codesmith-tui-"));
     }
 
     #[test]
@@ -688,37 +688,37 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let dispatcher = dir
             .path()
-            .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("codesmith{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&dispatcher, b"dispatcher").unwrap();
 
         let targets = update_targets_for_exe(&dispatcher);
 
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].path, dispatcher);
-        assert!(targets[0].asset_stem.starts_with("codewhale-"));
+        assert!(targets[0].asset_stem.starts_with("codesmith-"));
     }
 
     #[test]
     fn test_asset_matching_accepts_binary_assets_and_rejects_checksums() {
         assert!(asset_matches_platform(
-            "codewhale-macos-arm64",
-            "codewhale-macos-arm64"
+            "codesmith-macos-arm64",
+            "codesmith-macos-arm64"
         ));
         assert!(asset_matches_platform(
-            "codewhale-macos-arm64.tar.gz",
-            "codewhale-macos-arm64"
+            "codesmith-macos-arm64.tar.gz",
+            "codesmith-macos-arm64"
         ));
         assert!(asset_matches_platform(
-            "codewhale-tui-windows-x64.exe",
-            "codewhale-tui-windows-x64"
+            "codesmith-tui-windows-x64.exe",
+            "codesmith-tui-windows-x64"
         ));
         assert!(!asset_matches_platform(
-            "codewhale-tui-windows-x64.exe.sha256",
-            "codewhale-tui-windows-x64"
+            "codesmith-tui-windows-x64.exe.sha256",
+            "codesmith-tui-windows-x64"
         ));
         assert!(!asset_matches_platform(
-            "codewhale-macos-aarch64.tar.gz",
-            "codewhale-macos-arm64"
+            "codesmith-macos-aarch64.tar.gz",
+            "codesmith-macos-arm64"
         ));
     }
 
@@ -744,18 +744,18 @@ mod tests {
     #[test]
     fn parse_checksum_manifest_accepts_sha256sum_format() {
         let manifest = "\
-2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  codewhale-macos-arm64
-E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-windows-x64.exe
+2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  codesmith-macos-arm64
+E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-windows-x64.exe
 ";
         let checksums = parse_checksum_manifest(manifest).expect("valid manifest");
 
         assert_eq!(
-            checksums.get("codewhale-macos-arm64").map(String::as_str),
+            checksums.get("codesmith-macos-arm64").map(String::as_str),
             Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
         );
         assert_eq!(
             checksums
-                .get("codewhale-windows-x64.exe")
+                .get("codesmith-windows-x64.exe")
                 .map(String::as_str),
             Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
         );
@@ -763,7 +763,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
     #[test]
     fn parse_checksum_manifest_rejects_malformed_lines() {
-        let err = parse_checksum_manifest("not-a-hash  codewhale-macos-arm64")
+        let err = parse_checksum_manifest("not-a-hash  codesmith-macos-arm64")
             .expect_err("invalid manifest line should fail");
         assert!(
             err.to_string().contains("invalid SHA256 manifest line"),
@@ -775,11 +775,11 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     fn expected_sha256_from_manifest_requires_matching_asset() {
         let manifest =
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  other-asset\n";
-        let err = expected_sha256_from_manifest(manifest, "codewhale-macos-arm64")
+        let err = expected_sha256_from_manifest(manifest, "codesmith-macos-arm64")
             .expect_err("missing asset should fail");
         assert!(
             err.to_string()
-                .contains("checksum manifest is missing codewhale-macos-arm64"),
+                .contains("checksum manifest is missing codesmith-macos-arm64"),
             "unexpected error: {err:#}"
         );
     }
@@ -787,7 +787,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn test_replace_binary_creates_and_replaces() {
         let dir = tempfile::TempDir::new().unwrap();
-        let target = dir.path().join("codewhale-test");
+        let target = dir.path().join("codesmith-test");
         // Write initial content
         std::fs::write(&target, b"old binary").unwrap();
 
@@ -799,30 +799,30 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn test_replace_binary_creates_new_file() {
         let dir = tempfile::TempDir::new().unwrap();
-        let target = dir.path().join("codewhale-new-test");
+        let target = dir.path().join("codesmith-new-test");
 
         replace_binary(&target, b"fresh binary").unwrap();
         let content = std::fs::read_to_string(&target).unwrap();
         assert_eq!(content, "fresh binary");
     }
 
-    /// Mocked GitHub release payload covering both the dispatcher (`codewhale`)
-    /// and the legacy TUI (`codewhale-tui`) binaries across our published
+    /// Mocked GitHub release payload covering both the dispatcher (`codesmith`)
+    /// and the legacy TUI (`codesmith-tui`) binaries across our published
     /// platform/arch matrix, plus a checksum sibling that must never be picked
     /// as the primary binary.
     fn mocked_release() -> Release {
         let json = r#"{
           "tag_name": "v0.8.8",
           "assets": [
-            { "name": "codewhale-linux-x64",          "browser_download_url": "https://example.invalid/codewhale-linux-x64" },
-            { "name": "codewhale-macos-x64",          "browser_download_url": "https://example.invalid/codewhale-macos-x64" },
-            { "name": "codewhale-macos-arm64",        "browser_download_url": "https://example.invalid/codewhale-macos-arm64" },
-            { "name": "codewhale-windows-x64.exe",    "browser_download_url": "https://example.invalid/codewhale-windows-x64.exe" },
-            { "name": "codewhale-windows-x64.exe.sha256", "browser_download_url": "https://example.invalid/codewhale-windows-x64.exe.sha256" },
-            { "name": "codewhale-tui-linux-x64",      "browser_download_url": "https://example.invalid/codewhale-tui-linux-x64" },
-            { "name": "codewhale-tui-macos-x64",      "browser_download_url": "https://example.invalid/codewhale-tui-macos-x64" },
-            { "name": "codewhale-tui-macos-arm64",    "browser_download_url": "https://example.invalid/codewhale-tui-macos-arm64" },
-            { "name": "codewhale-tui-windows-x64.exe","browser_download_url": "https://example.invalid/codewhale-tui-windows-x64.exe" }
+            { "name": "codesmith-linux-x64",          "browser_download_url": "https://example.invalid/codesmith-linux-x64" },
+            { "name": "codesmith-macos-x64",          "browser_download_url": "https://example.invalid/codesmith-macos-x64" },
+            { "name": "codesmith-macos-arm64",        "browser_download_url": "https://example.invalid/codesmith-macos-arm64" },
+            { "name": "codesmith-windows-x64.exe",    "browser_download_url": "https://example.invalid/codesmith-windows-x64.exe" },
+            { "name": "codesmith-windows-x64.exe.sha256", "browser_download_url": "https://example.invalid/codesmith-windows-x64.exe.sha256" },
+            { "name": "codesmith-tui-linux-x64",      "browser_download_url": "https://example.invalid/codesmith-tui-linux-x64" },
+            { "name": "codesmith-tui-macos-x64",      "browser_download_url": "https://example.invalid/codesmith-tui-macos-x64" },
+            { "name": "codesmith-tui-macos-arm64",    "browser_download_url": "https://example.invalid/codesmith-tui-macos-arm64" },
+            { "name": "codesmith-tui-windows-x64.exe","browser_download_url": "https://example.invalid/codesmith-tui-windows-x64.exe" }
           ]
         }"#;
         serde_json::from_str(json).expect("mock release JSON")
@@ -832,14 +832,14 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     fn mocked_release_selects_dispatcher_asset_for_supported_platforms() {
         let release = mocked_release();
         let cases = [
-            ("macos", "aarch64", "codewhale-macos-arm64"),
-            ("macos", "x86_64", "codewhale-macos-x64"),
-            ("linux", "x86_64", "codewhale-linux-x64"),
-            ("windows", "x86_64", "codewhale-windows-x64.exe"),
+            ("macos", "aarch64", "codesmith-macos-arm64"),
+            ("macos", "x86_64", "codesmith-macos-x64"),
+            ("linux", "x86_64", "codesmith-linux-x64"),
+            ("windows", "x86_64", "codesmith-windows-x64.exe"),
         ];
 
         for (os, arch, expected) in cases {
-            let stem = release_asset_stem_for(Path::new("/usr/local/bin/codewhale"), os, arch);
+            let stem = release_asset_stem_for(Path::new("/usr/local/bin/codesmith"), os, arch);
             let asset = select_platform_asset(&release, &stem)
                 .unwrap_or_else(|| panic!("no asset for {os}/{arch} (stem {stem})"));
             assert_eq!(asset.name, expected, "{os}/{arch}");
@@ -850,12 +850,12 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     fn mocked_release_selects_tui_asset_when_tui_binary_invokes_update() {
         let release = mocked_release();
         let stem = release_asset_stem_for(
-            Path::new("/usr/local/bin/codewhale-tui"),
+            Path::new("/usr/local/bin/codesmith-tui"),
             "macos",
             "aarch64",
         );
         let asset = select_platform_asset(&release, &stem).expect("TUI platform asset");
-        assert_eq!(asset.name, "codewhale-tui-macos-arm64");
+        assert_eq!(asset.name, "codesmith-tui-macos-arm64");
     }
 
     #[test]
@@ -871,19 +871,19 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         assert_eq!(release.assets[0].name, CHECKSUM_MANIFEST_ASSET);
         assert_eq!(
             release.assets[0].browser_download_url,
-            "https://mirror.example/releases/v0.8.36/codewhale-artifacts-sha256.txt"
+            "https://mirror.example/releases/v0.8.36/codesmith-artifacts-sha256.txt"
         );
 
         let dispatcher =
-            select_platform_asset(&release, "codewhale-linux-x64").expect("dispatcher asset");
+            select_platform_asset(&release, "codesmith-linux-x64").expect("dispatcher asset");
         assert_eq!(
             dispatcher.browser_download_url,
-            "https://mirror.example/releases/v0.8.36/codewhale-linux-x64"
+            "https://mirror.example/releases/v0.8.36/codesmith-linux-x64"
         );
-        let tui = select_platform_asset(&release, "codewhale-tui-linux-x64").expect("tui asset");
+        let tui = select_platform_asset(&release, "codesmith-tui-linux-x64").expect("tui asset");
         assert_eq!(
             tui.browser_download_url,
-            "https://mirror.example/releases/v0.8.36/codewhale-tui-linux-x64"
+            "https://mirror.example/releases/v0.8.36/codesmith-tui-linux-x64"
         );
     }
 
@@ -898,24 +898,24 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
         assert_eq!(release.tag_name, "v0.8.36");
         assert!(
-            select_platform_asset(&release, "codewhale-windows-x64")
-                .is_some_and(|asset| asset.name == "codewhale-windows-x64.exe")
+            select_platform_asset(&release, "codesmith-windows-x64")
+                .is_some_and(|asset| asset.name == "codesmith-windows-x64.exe")
         );
         assert!(
-            select_platform_asset(&release, "codewhale-tui-windows-x64")
-                .is_some_and(|asset| asset.name == "codewhale-tui-windows-x64.exe")
+            select_platform_asset(&release, "codesmith-tui-windows-x64")
+                .is_some_and(|asset| asset.name == "codesmith-tui-windows-x64.exe")
         );
     }
 
     #[test]
     fn cnb_release_base_url_includes_tag_directory() {
         assert_eq!(
-            codewhale_release::cnb_release_base_url("0.8.47"),
-            "https://cnb.cool/Hmbown/CodeWhale/-/releases/v0.8.47"
+            codesmith_release::cnb_release_base_url("0.8.47"),
+            "https://cnb.cool/Hmbown/CodeSmith/-/releases/v0.8.47"
         );
         assert_eq!(
-            codewhale_release::cnb_release_base_url("v0.8.47"),
-            "https://cnb.cool/Hmbown/CodeWhale/-/releases/v0.8.47"
+            codesmith_release::cnb_release_base_url("v0.8.47"),
+            "https://cnb.cool/Hmbown/CodeSmith/-/releases/v0.8.47"
         );
     }
 
@@ -943,11 +943,11 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn parse_release_version_accepts_tags_and_build_suffixes() {
         assert_eq!(
-            codewhale_release::parse_release_version("v0.9.0-beta.1").unwrap(),
+            codesmith_release::parse_release_version("v0.9.0-beta.1").unwrap(),
             semver::Version::parse("0.9.0-beta.1").unwrap()
         );
         assert_eq!(
-            codewhale_release::parse_release_version("0.8.45 (abcdef123456)").unwrap(),
+            codesmith_release::parse_release_version("0.8.45 (abcdef123456)").unwrap(),
             semver::Version::parse("0.8.45").unwrap()
         );
     }
@@ -979,17 +979,17 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     fn update_fallback_hint_points_china_users_to_cnb_and_asset_mirrors() {
         let hint = update_network_fallback_hint();
 
-        assert!(hint.contains(codewhale_release::CNB_REPO_URL), "{hint}");
+        assert!(hint.contains(codesmith_release::CNB_REPO_URL), "{hint}");
         assert!(
-            hint.contains(codewhale_release::RELEASE_BASE_URL_ENV),
+            hint.contains(codesmith_release::RELEASE_BASE_URL_ENV),
             "{hint}"
         );
         assert!(
-            hint.contains(codewhale_release::UPDATE_VERSION_ENV),
+            hint.contains(codesmith_release::UPDATE_VERSION_ENV),
             "{hint}"
         );
-        assert!(hint.contains("codewhale-cli"), "{hint}");
-        assert!(hint.contains("codewhale-tui --locked"), "{hint}");
+        assert!(hint.contains("codesmith-cli"), "{hint}");
+        assert!(hint.contains("codesmith-tui --locked"), "{hint}");
     }
 
     fn serve_http_once(
@@ -1039,8 +1039,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         let body = br#"{
           "tag_name": "v9.9.9",
           "assets": [
-            { "name": "codewhale-linux-x64", "browser_download_url": "http://example.invalid/codewhale-linux-x64" },
-            { "name": "codewhale-artifacts-sha256.txt", "browser_download_url": "http://example.invalid/codewhale-artifacts-sha256.txt" }
+            { "name": "codesmith-linux-x64", "browser_download_url": "http://example.invalid/codesmith-linux-x64" },
+            { "name": "codesmith-artifacts-sha256.txt", "browser_download_url": "http://example.invalid/codesmith-artifacts-sha256.txt" }
           ]
         }"#;
         let (url, request_rx, handle) = serve_http_once("200 OK", "application/json", body);
@@ -1057,7 +1057,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             "got {request:?}"
         );
         assert!(
-            request_lower.contains("user-agent: codewhale-updater"),
+            request_lower.contains("user-agent: codesmith-updater"),
             "got {request:?}"
         );
         handle.join().expect("test server thread");
@@ -1082,7 +1082,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
           { "tag_name": "v0.9.0", "prerelease": false, "assets": [] },
           { "tag_name": "v0.9.0-rc.1", "prerelease": true, "assets": [] },
           { "tag_name": "v0.9.0-beta.2", "prerelease": true, "assets": [
-            { "name": "codewhale-linux-x64", "browser_download_url": "http://example.invalid/codewhale-linux-x64" }
+            { "name": "codesmith-linux-x64", "browser_download_url": "http://example.invalid/codesmith-linux-x64" }
           ] },
           { "tag_name": "v0.9.0-beta.1", "prerelease": true, "assets": [] }
         ]"#;
@@ -1131,7 +1131,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         let request_lower = request.to_ascii_lowercase();
         assert!(request.starts_with("GET /release "), "got {request:?}");
         assert!(
-            request_lower.contains("user-agent: codewhale-updater"),
+            request_lower.contains("user-agent: codesmith-updater"),
             "got {request:?}"
         );
         handle.join().expect("test server thread");

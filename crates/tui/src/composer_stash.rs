@@ -7,7 +7,7 @@
 //!
 //! ## On-disk format
 //!
-//! `~/.codewhale/composer_stash.jsonl` — one JSON object per line:
+//! `~/.codesmith/composer_stash.jsonl` — one JSON object per line:
 //!
 //! ```jsonl
 //! {"ts":"2026-05-04T01:23:45Z","text":"draft here"}

@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn unknown_provider_returns_error() {
         let mut app = create_test_app();
-        let result = provider(&mut app, Some("anthropic"));
+        let result = provider(&mut app, Some("unknown-provider"));
         let msg = result.message.expect("expected error message");
         assert!(msg.contains("Unknown provider"));
         assert!(msg.contains("openrouter"));

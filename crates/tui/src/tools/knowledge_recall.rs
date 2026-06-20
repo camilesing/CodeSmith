@@ -7,9 +7,9 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::knowledge::scan::scan_memory_files;
 use crate::knowledge::age::{memory_age_label, memory_freshness_text};
 use crate::knowledge::budget::{MAX_BYTES_PER_MEMORY, MAX_LINES_PER_MEMORY};
+use crate::knowledge::scan::scan_memory_files;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
@@ -66,7 +66,9 @@ impl ToolSpec for KnowledgeRetrievalTool {
 
         let headers = scan_memory_files(memory_dir);
         if headers.is_empty() {
-            return Ok(ToolResult::success("No memory files found in the memory directory."));
+            return Ok(ToolResult::success(
+                "No memory files found in the memory directory.",
+            ));
         }
 
         // Filter headers by query matching filename or description.
@@ -108,11 +110,17 @@ impl ToolSpec for KnowledgeRetrievalTool {
                 }
                 let mut body_text = lines.join("\n");
                 if body_text.len() > MAX_BYTES_PER_MEMORY {
-                    let cutoff = crate::knowledge::entrypoint::previous_char_boundary(&body_text, MAX_BYTES_PER_MEMORY);
+                    let cutoff = crate::knowledge::entrypoint::previous_char_boundary(
+                        &body_text,
+                        MAX_BYTES_PER_MEMORY,
+                    );
                     body_text = format!("{}[truncated]", &body_text[..cutoff]);
                 }
 
-                output.push_str(&format!("[Memory: {}, last modified {}]\n", header.filename, age_label));
+                output.push_str(&format!(
+                    "[Memory: {}, last modified {}]\n",
+                    header.filename, age_label
+                ));
                 if !freshness.is_empty() {
                     output.push_str(&format!("{}\n", freshness));
                 }

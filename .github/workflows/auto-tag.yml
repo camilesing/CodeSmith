@@ -18,7 +18,7 @@ on:
     branches: [main]
     paths:
       - 'Cargo.toml'
-      - 'npm/codewhale/package.json'
+      - 'npm/codesmith/package.json'
       - 'npm/deepseek-tui/package.json'
   workflow_dispatch:
 

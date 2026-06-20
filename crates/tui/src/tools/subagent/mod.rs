@@ -390,7 +390,9 @@ impl SubAgentType {
             }
             "custom" => Some(Self::Custom),
             "team" | "teammate" | "swarm" => Some(Self::Team),
-            "coordinator-worker" | "coordinator_worker" | "coord_worker" => Some(Self::CoordinatorWorker),
+            "coordinator-worker" | "coordinator_worker" | "coord_worker" => {
+                Some(Self::CoordinatorWorker)
+            }
             _ => None,
         }
     }
@@ -423,7 +425,7 @@ impl SubAgentType {
             Self::Verifier => VERIFIER_AGENT_INTRO,
             Self::ToolAgent => TOOL_AGENT_INTRO,
             Self::Custom => CUSTOM_AGENT_INTRO,
-            Self::Team => GENERAL_AGENT_INTRO,  // Team agents reuse general prompt with team context
+            Self::Team => GENERAL_AGENT_INTRO, // Team agents reuse general prompt with team context
             Self::CoordinatorWorker => COORDINATOR_WORKER_INTRO,
         };
         format!("{role_intro}{SUBAGENT_OUTPUT_FORMAT}")
@@ -554,21 +556,46 @@ impl SubAgentType {
             ],
             Self::Custom => vec![], // Must be provided by caller.
             Self::Team => vec![
-                "list_dir", "read_file", "write_file", "edit_file",
-                "grep_files", "file_search",
-                "task_create_v2", "task_update_v2", "task_get_v2", "task_list_v2",
+                "list_dir",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "grep_files",
+                "file_search",
+                "task_create_v2",
+                "task_update_v2",
+                "task_get_v2",
+                "task_list_v2",
                 "send_message",
-                "exec_shell", "exec_shell_wait", "exec_shell_interact",
+                "exec_shell",
+                "exec_shell_wait",
+                "exec_shell_interact",
             ],
             Self::CoordinatorWorker => vec![
-                "list_dir", "read_file", "write_file", "edit_file", "apply_patch",
-                "grep_files", "file_search",
-                "web.run", "web_search", "fetch_url",
-                "exec_shell", "exec_shell_wait", "exec_shell_interact",
-                "exec_wait", "exec_interact",
+                "list_dir",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "apply_patch",
+                "grep_files",
+                "file_search",
+                "web.run",
+                "web_search",
+                "fetch_url",
+                "exec_shell",
+                "exec_shell_wait",
+                "exec_shell_interact",
+                "exec_wait",
+                "exec_interact",
                 "note",
-                "checklist_write", "checklist_add", "checklist_update", "checklist_list",
-                "todo_write", "todo_add", "todo_update", "todo_list",
+                "checklist_write",
+                "checklist_add",
+                "checklist_update",
+                "checklist_list",
+                "todo_write",
+                "todo_add",
+                "todo_update",
+                "todo_list",
                 "update_plan",
                 "diagnostics",
             ],
@@ -750,7 +777,7 @@ pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
 
 /// Terminal-state notification emitted to the engine's parent turn loop
 /// when one of its direct children finishes (issue #756). Carries the
-/// already-rendered `<codewhale:subagent.done>` sentinel that the model
+/// already-rendered `<codesmith:subagent.done>` sentinel that the model
 /// expects in the transcript per `prompts/base.md`.
 #[derive(Debug, Clone)]
 pub struct SubAgentCompletion {
@@ -1911,8 +1938,8 @@ async fn subagent_session_projection(
 }
 
 fn default_state_path(workspace: &Path) -> PathBuf {
-    // Prefer .codewhale, fall back to .deepseek for project-local state
-    let primary = workspace.join(".codewhale").join("state");
+    // Prefer .codesmith, fall back to .deepseek for project-local state
+    let primary = workspace.join(".codesmith").join("state");
     if primary.exists() {
         return primary.join(SUBAGENT_STATE_FILE);
     }
@@ -2533,9 +2560,17 @@ struct AgentRunRequest {
 }
 
 fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
-    let prompt = parse_text_or_items(input, &["prompt", "message", "objective", "description"], "items", "prompt")?;
+    let prompt = parse_text_or_items(
+        input,
+        &["prompt", "message", "objective", "description"],
+        "items",
+        "prompt",
+    )?;
 
-    let type_input = optional_input_str(input, &["type", "agent_type", "subagent_type", "agent_name"]);
+    let type_input = optional_input_str(
+        input,
+        &["type", "agent_type", "subagent_type", "agent_name"],
+    );
     let role_input = optional_input_str(input, &["role", "agent_role"]);
 
     let parsed_type = type_input
@@ -2601,10 +2636,14 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
 
     let cwd = parse_optional_cwd(input)?;
     let model = parse_optional_subagent_model(input, "model")?;
-    let fork_context = parse_optional_bool(input, &["fork_context", "forkContext", "inherit_context"])
-        .unwrap_or(false);
-    let run_in_background = parse_optional_bool(input, &["run_in_background", "runInBackground", "background"])
-        .unwrap_or(false);
+    let fork_context =
+        parse_optional_bool(input, &["fork_context", "forkContext", "inherit_context"])
+            .unwrap_or(false);
+    let run_in_background = parse_optional_bool(
+        input,
+        &["run_in_background", "runInBackground", "background"],
+    )
+    .unwrap_or(false);
     let max_depth = input
         .get("max_depth")
         .or_else(|| input.get("maxDepth"))
@@ -2658,7 +2697,10 @@ impl SubagentRunTool {
     }
 
     /// Validate cwd: must canonicalize inside the parent workspace.
-    fn validate_cwd(requested_cwd: &PathBuf, parent_workspace: &Path) -> Result<PathBuf, ToolError> {
+    fn validate_cwd(
+        requested_cwd: &PathBuf,
+        parent_workspace: &Path,
+    ) -> Result<PathBuf, ToolError> {
         let resolved = if requested_cwd.is_absolute() {
             requested_cwd.clone()
         } else {
@@ -2692,7 +2734,10 @@ impl SubagentRunTool {
         _context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let validated_cwd = if let Some(ref requested_cwd) = request.cwd {
-            Some(Self::validate_cwd(requested_cwd, &self.runtime.context.workspace)?)
+            Some(Self::validate_cwd(
+                requested_cwd,
+                &self.runtime.context.workspace,
+            )?)
         } else {
             None
         };
@@ -3960,12 +4005,12 @@ fn build_initial_subagent_messages(
             .filter(|state| !state.is_empty())
         {
             messages.push(system_text_message(format!(
-                "<codewhale:fork_state>\n{state}\n</codewhale:fork_state>"
+                "<codesmith:fork_state>\n{state}\n</codesmith:fork_state>"
             )));
         }
 
         messages.push(system_text_message(format!(
-            "<codewhale:subagent_context>\n{}\n</codewhale:subagent_context>",
+            "<codesmith:subagent_context>\n{}\n</codesmith:subagent_context>",
             build_subagent_system_prompt(agent_type, assignment)
         )));
     }
@@ -4004,11 +4049,11 @@ fn build_forked_messages(
         .filter(|s| !s.is_empty())
     {
         messages.push(system_text_message(format!(
-            "<codewhale:fork_state>\n{state}\n</codewhale:fork_state>"
+            "<codesmith:fork_state>\n{state}\n</codesmith:fork_state>"
         )));
     }
     messages.push(system_text_message(format!(
-        "<codewhale:subagent_context>\n{}\n</codewhale:subagent_context>",
+        "<codesmith:subagent_context>\n{}\n</codesmith:subagent_context>",
         build_subagent_system_prompt(agent_type, assignment)
     )));
 
@@ -4097,7 +4142,7 @@ async fn run_subagent_task(task: SubAgentTask) {
     // sidebar / cell) AND a structured sentinel the model can recognize
     // on its next turn. Format: human summary on the first line,
     // sentinel on the second. The sentinel uses an opaque tag
-    // (`codewhale:subagent.done`) to avoid collision with normal user
+    // (`codesmith:subagent.done`) to avoid collision with normal user
     // text.
     let (summary, sentinel) = match &result {
         Ok(res) => (
@@ -4172,7 +4217,7 @@ pub(crate) fn emit_parent_completion(
     true
 }
 
-/// Build a `<codewhale:subagent.done>` JSON sentinel for a successful child.
+/// Build a `<codesmith:subagent.done>` JSON sentinel for a successful child.
 /// Intended to surface in the parent's transcript so the model recognizes
 /// child completion and can decide whether to read the full result via
 /// `agent_eval`.
@@ -4189,10 +4234,10 @@ fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult) -> String {
         "summary_location": "previous_line",
         "details": "agent_eval",
     });
-    format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
+    format!("<codesmith:subagent.done>{payload}</codesmith:subagent.done>")
 }
 
-/// Build a `<codewhale:subagent.done>` sentinel for a failed child.
+/// Build a `<codesmith:subagent.done>` sentinel for a failed child.
 fn subagent_failed_sentinel(agent_id: &str, _err: &str) -> String {
     let payload = json!({
         "agent_id": agent_id,
@@ -4200,7 +4245,7 @@ fn subagent_failed_sentinel(agent_id: &str, _err: &str) -> String {
         "error_location": "previous_line",
         "details": "agent_eval",
     });
-    format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
+    format!("<codesmith:subagent.done>{payload}</codesmith:subagent.done>")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5138,7 +5183,7 @@ async fn subagent_flash_router(
 }
 
 const SUBAGENT_ROUTER_SYSTEM_PROMPT: &str = "\
-You are the codewhale sub-agent routing manager. Return only compact JSON: \
+You are the codesmith sub-agent routing manager. Return only compact JSON: \
 {\"model\":\"deepseek-v4-flash|deepseek-v4-pro\",\"thinking\":\"off|high|max\"}. \
 Treat each child assignment like a customer request entering a team queue: decide the least \
 sufficient worker and thinking budget for that assignment. Do not treat being a sub-agent as \
@@ -5385,7 +5430,13 @@ impl SubAgentToolRegistry {
         let disallowed = match agent_type {
             // Review and tool-executor agents should not spawn or manage
             // sub-agents recursively (#1489, fast-lane executor).
-            SubAgentType::Review => &["agent_spawn", "agent_open", "agent_run", "agent_eval", "agent_close"][..],
+            SubAgentType::Review => &[
+                "agent_spawn",
+                "agent_open",
+                "agent_run",
+                "agent_eval",
+                "agent_close",
+            ][..],
             SubAgentType::ToolAgent => &[
                 "agent_spawn",
                 "agent_open",
@@ -5647,11 +5698,7 @@ pub const COORDINATOR_ALLOWED_TOOLS: &[&str] = &[
 /// Tools excluded from worker sub-agents spawned by the coordinator.
 /// Workers get full tool access except team management and
 /// coordinator-specific tools.
-pub const WORKER_EXCLUDED_TOOLS: &[&str] = &[
-    "team_create",
-    "team_delete",
-    "send_message",
-];
+pub const WORKER_EXCLUDED_TOOLS: &[&str] = &["team_create", "team_delete", "send_message"];
 
 // === Tests ===
 

@@ -510,7 +510,7 @@ Previous release.\n";
         let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", tmp.path().join("config.toml"));
         let _deepseek_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
         let _deepseek_provider = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
-        let _codewhale_provider = EnvVarGuard::remove("CODEWHALE_PROVIDER");
+        let _codesmith_provider = EnvVarGuard::remove("CODESMITH_PROVIDER");
         let mut app = make_app(&tmp, Locale::ZhHans, false);
         let result = change(&mut app, None);
         assert!(!result.is_error);

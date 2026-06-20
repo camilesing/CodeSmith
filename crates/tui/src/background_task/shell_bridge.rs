@@ -21,7 +21,10 @@ pub fn default_stall_patterns() -> Vec<StallPattern> {
         (r"(?i)\(yes/no\)", "yes/no confirmation"),
         (r"(?i)password\s*:", "password prompt"),
         (r"(?i)enter\s+password", "password entry"),
-        (r"(?i)\b(?:do you|would you|shall i|are you sure|ready to)\b.*\?\s*$", "directed question"),
+        (
+            r"(?i)\b(?:do you|would you|shall i|are you sure|ready to)\b.*\?\s*$",
+            "directed question",
+        ),
         (r"(?i)press\s+(any key|enter)", "press key prompt"),
         (r"(?i)continue\?", "continue prompt"),
         (r"(?i)overwrite\?", "overwrite prompt"),
@@ -32,12 +35,10 @@ pub fn default_stall_patterns() -> Vec<StallPattern> {
     patterns
         .iter()
         .filter_map(|(pat, desc)| {
-            Regex::new(pat)
-                .ok()
-                .map(|r| StallPattern {
-                    pattern: r,
-                    description: desc.to_string(),
-                })
+            Regex::new(pat).ok().map(|r| StallPattern {
+                pattern: r,
+                description: desc.to_string(),
+            })
         })
         .collect()
 }
@@ -70,7 +71,10 @@ mod tests {
     #[test]
     fn looks_like_prompt_true_for_yes_no() {
         let patterns = default_stall_patterns();
-        assert!(looks_like_prompt("Do you want to continue? (y/n)", &patterns));
+        assert!(looks_like_prompt(
+            "Do you want to continue? (y/n)",
+            &patterns
+        ));
     }
 
     #[test]

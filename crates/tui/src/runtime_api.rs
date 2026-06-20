@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use codewhale_protocol::runtime::{RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope};
+use codesmith_protocol::runtime::{RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -666,7 +666,7 @@ async fn mobile_page(State(state): State<RuntimeApiState>, req: Request) -> Resp
     if !state.mobile_enabled {
         return (
             StatusCode::NOT_FOUND,
-            "mobile control is disabled; start with `codewhale serve --mobile`",
+            "mobile control is disabled; start with `codesmith serve --mobile`",
         )
             .into_response();
     }
@@ -4058,7 +4058,7 @@ mod tests {
             .await?
             .error_for_status()?;
         let html = enabled.text().await?;
-        assert!(html.contains("CodeWhale Mobile"));
+        assert!(html.contains("CodeSmith Mobile"));
         assert!(html.contains("/v1/approvals/"));
 
         handle.abort();
@@ -4092,7 +4092,7 @@ mod tests {
             .send()
             .await?
             .error_for_status()?;
-        assert!(query.text().await?.contains("CodeWhale Mobile"));
+        assert!(query.text().await?.contains("CodeSmith Mobile"));
 
         let bearer = client
             .get(format!("http://{addr}/mobile"))
@@ -4100,7 +4100,7 @@ mod tests {
             .send()
             .await?
             .error_for_status()?;
-        assert!(bearer.text().await?.contains("CodeWhale Mobile"));
+        assert!(bearer.text().await?.contains("CodeSmith Mobile"));
 
         handle.abort();
         Ok(())
@@ -4123,7 +4123,7 @@ mod tests {
             .send()
             .await?
             .error_for_status()?;
-        assert!(page.text().await?.contains("CodeWhale Mobile"));
+        assert!(page.text().await?.contains("CodeSmith Mobile"));
 
         let summary = client
             .get(format!("http://{addr}/v1/threads/summary"))

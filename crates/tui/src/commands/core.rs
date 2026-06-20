@@ -200,7 +200,7 @@ pub fn profile_switch(_app: &mut App, arg: Option<&str>) -> CommandResult {
         Some(name) if !name.trim().is_empty() => name.trim().to_string(),
         _ => {
             return CommandResult::error(
-                "Usage: /profile <name>\n\nSwitch to a named config profile. Profiles are defined in ~/.codewhale/config.toml under [profiles] sections.",
+                "Usage: /profile <name>\n\nSwitch to a named config profile. Profiles are defined in ~/.codesmith/config.toml under [profiles] sections.",
             );
         }
     };
@@ -377,8 +377,14 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
             let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeChecklistTip));
         }
         AppMode::Coordinator => {
-            let _ = writeln!(stats, "Coordinator mode - orchestrator only, delegates work to workers");
-            let _ = writeln!(stats, "Use agent_spawn/agent_run to delegate tasks to worker sub-agents");
+            let _ = writeln!(
+                stats,
+                "Coordinator mode - orchestrator only, delegates work to workers"
+            );
+            let _ = writeln!(
+                stats,
+                "Use agent_spawn/agent_run to delegate tasks to worker sub-agents"
+            );
         }
     }
 
@@ -847,7 +853,7 @@ mod tests {
         let result = home_dashboard(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains("codewhale Home Dashboard"));
+        assert!(msg.contains("codesmith Home Dashboard"));
         assert!(msg.contains("Model:"));
         assert!(msg.contains("Mode:"));
         assert!(msg.contains("Workspace:"));
@@ -896,7 +902,7 @@ mod tests {
             !msg.lines()
                 .any(|line| line.trim_start().starts_with("/set "))
         );
-        assert!(!msg.contains("/codewhale"));
+        assert!(!msg.contains("/codesmith"));
     }
 
     #[test]

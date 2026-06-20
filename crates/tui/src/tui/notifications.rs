@@ -156,7 +156,7 @@ fn build_escape(method: Method, in_tmux: bool, msg: &str) -> Vec<u8> {
         }
         Method::Ghostty => {
             // Ghostty notification: OSC 777 ; notify ; title ; message BEL
-            let seq = format!("\x1b]777;notify;codewhale;{msg}\x07");
+            let seq = format!("\x1b]777;notify;codesmith;{msg}\x07");
             wrap_for_multiplexer(&seq, in_tmux).into_bytes()
         }
         // Auto and Off and MacOS should not reach build_escape.
@@ -329,7 +329,7 @@ pub fn stop_title_animation() {
     // terminal-level visual indicator (flash/icon).
     let mode = COMPLETION_SOUND_MODE.load(Ordering::SeqCst);
     if mode == 1 {
-        set_terminal_title("✅ CodeWhale");
+        set_terminal_title("✅ CodeSmith");
     }
     play_completion_sound();
 }
@@ -341,7 +341,7 @@ pub fn stop_title_animation() {
 pub fn stop_title_animation_quietly() {
     TITLE_ANIMATION_RUNNING.store(false, Ordering::SeqCst);
     COMPLETION_MARKER_SHOWN.store(false, Ordering::SeqCst);
-    set_terminal_title("CodeWhale");
+    set_terminal_title("CodeSmith");
 }
 
 /// Clear the ✅ completion marker from the title when the user interacts.
@@ -350,7 +350,7 @@ pub fn stop_title_animation_quietly() {
 /// marker doesn't persist once the user is back at the terminal.
 pub fn reset_title_on_interaction() {
     if COMPLETION_MARKER_SHOWN.swap(false, Ordering::SeqCst) {
-        set_terminal_title("CodeWhale");
+        set_terminal_title("CodeSmith");
     }
 }
 
@@ -407,7 +407,7 @@ fn bell_sound() {
 /// Runs on a dedicated background thread so the caller is not blocked.
 ///
 /// The notification includes:
-/// - **Title**: "CodeWhale"
+/// - **Title**: "CodeSmith"
 /// - **Subtitle**: First line of `msg` (when the message contains a newline,
 ///   e.g. the response preview from a completed turn)
 /// - **Body**: Remaining lines of `msg`, or the full `msg` if single-line
@@ -466,7 +466,7 @@ fn macos_display_notification(msg: &str) {
                     "-e".into(),
                     "set theSubtitle to item 2 of argv".into(),
                     "-e".into(),
-                    "display notification theBody with title \"CodeWhale\" subtitle theSubtitle sound name \"default\"".into(),
+                    "display notification theBody with title \"CodeSmith\" subtitle theSubtitle sound name \"default\"".into(),
                     "-e".into(),
                     "end run".into(),
                     "--".into(),
@@ -478,7 +478,7 @@ fn macos_display_notification(msg: &str) {
                     "-e".into(),
                     "on run argv".into(),
                     "-e".into(),
-                    "display notification (item 1 of argv) with title \"CodeWhale\" sound name \"default\"".into(),
+                    "display notification (item 1 of argv) with title \"CodeSmith\" sound name \"default\"".into(),
                     "-e".into(),
                     "end run".into(),
                     "--".into(),
@@ -629,18 +629,18 @@ pub fn completed_turn_message(
 ) -> String {
     let mut msg = text_summary(current_streaming_text)
         .or_else(|| latest_assistant_text(&app.api_messages))
-        .unwrap_or_else(|| "codewhale: turn complete".to_string());
+        .unwrap_or_else(|| "codesmith: turn complete".to_string());
 
     if include_summary {
         let human = humanize_duration(turn_elapsed);
         let summary = match turn_cost {
             Some(c) => {
                 let cost = crate::pricing::format_cost_estimate(c, app.cost_currency);
-                format!("codewhale: turn complete ({human}, {cost})")
+                format!("codesmith: turn complete ({human}, {cost})")
             }
-            None => format!("codewhale: turn complete ({human})"),
+            None => format!("codesmith: turn complete ({human})"),
         };
-        if msg == "codewhale: turn complete" {
+        if msg == "codesmith: turn complete" {
             msg = summary;
         } else {
             msg.push('\n');
@@ -663,16 +663,16 @@ pub fn subagent_completion_message(
     let result_line = result
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with("<codewhale:subagent.done>"));
+        .find(|line| !line.is_empty() && !line.starts_with("<codesmith:subagent.done>"));
     let mut msg = result_line
         .and_then(text_summary)
         .map(|summary| format!("sub-agent {id}: {summary}"))
-        .unwrap_or_else(|| format!("codewhale: sub-agent {id} complete"));
+        .unwrap_or_else(|| format!("codesmith: sub-agent {id} complete"));
 
     if include_summary {
         let human = humanize_duration(elapsed);
         msg.push('\n');
-        msg.push_str(&format!("codewhale: sub-agent complete ({human})"));
+        msg.push_str(&format!("codesmith: sub-agent complete ({human})"));
     }
 
     msg
@@ -770,8 +770,8 @@ mod tests {
 
     #[test]
     fn osc9_body_format() {
-        let out = capture(Method::Osc9, false, "codewhale: done", 0, 1);
-        assert_eq!(out, b"\x1b]9;codewhale: done\x07");
+        let out = capture(Method::Osc9, false, "codesmith: done", 0, 1);
+        assert_eq!(out, b"\x1b]9;codesmith: done\x07");
     }
 
     #[test]
@@ -800,7 +800,7 @@ mod tests {
         let out = capture(Method::Ghostty, false, "done", 0, 1);
         let s = String::from_utf8(out).unwrap();
         assert!(
-            s.contains("777;notify;codewhale;done"),
+            s.contains("777;notify;codesmith;done"),
             "should have ghostty seq"
         );
     }

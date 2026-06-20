@@ -1,8 +1,8 @@
 # Runtime API & Integration Contract
 
-codewhale exposes a local runtime API through `codewhale serve --http` and
-machine-readable health via `codewhale doctor --json`. It also exposes
-`codewhale serve --acp` for editor clients that speak the Agent Client Protocol
+codesmith exposes a local runtime API through `codesmith serve --http` and
+machine-readable health via `codesmith doctor --json`. It also exposes
+`codesmith serve --acp` for editor clients that speak the Agent Client Protocol
 over stdio. This document is the stable integration contract for native macOS
 workbench applications (and other local supervisors) that embed the DeepSeek
 engine without screen-scraping terminal output.
@@ -12,19 +12,19 @@ engine without screen-scraping terminal output.
 ```
 macOS workbench (or any local supervisor)
         │
-        ├─ codewhale doctor --json   → machine-readable health & capability
-        ├─ codewhale serve --http    → HTTP/SSE runtime API
-        ├─ codewhale serve --acp     → ACP stdio agent for editors such as Zed
-        ├─ codewhale serve --mcp     → MCP stdio server
-        └─ codewhale [args]          → interactive TUI session
+        ├─ codesmith doctor --json   → machine-readable health & capability
+        ├─ codesmith serve --http    → HTTP/SSE runtime API
+        ├─ codesmith serve --acp     → ACP stdio agent for editors such as Zed
+        ├─ codesmith serve --mcp     → MCP stdio server
+        └─ codesmith [args]          → interactive TUI session
 ```
 
 The engine runs as a local-only process. All APIs bind to `localhost` by
 default. No hosted relay, no provider-token custody, no secret leakage.
 
-## ACP stdio adapter: `codewhale serve --acp`
+## ACP stdio adapter: `codesmith serve --acp`
 
-`codewhale serve --acp` speaks JSON-RPC 2.0 over newline-delimited stdio for
+`codesmith serve --acp` speaks JSON-RPC 2.0 over newline-delimited stdio for
 ACP-compatible editor clients. The initial adapter implements the ACP baseline:
 
 - `initialize`
@@ -38,16 +38,16 @@ followed by a `session/prompt` response with `stopReason: "end_turn"`.
 
 The adapter is intentionally conservative: it does not yet expose shell tools,
 file-write tools, checkpoint replay, or session loading through ACP. Use
-`codewhale serve --http` for the full local runtime API and `codewhale serve --mcp`
+`codesmith serve --http` for the full local runtime API and `codesmith serve --mcp`
 when another client needs DeepSeek's tools as MCP tools.
 
-## Capability endpoint: `codewhale doctor --json`
+## Capability endpoint: `codesmith doctor --json`
 
 Returns a JSON object describing the current installation's readiness state.
 Suitable for health-check polling from a macOS workbench.
 
 ```bash
-codewhale doctor --json
+codesmith doctor --json
 ```
 
 ### Response schema (key fields)
@@ -68,7 +68,7 @@ codewhale doctor --json
 | `mcp.present` | bool | Whether MCP config exists |
 | `mcp.servers` | array | Per-server health: `{name, enabled, status, detail}` |
 | `skills.selected` | string | Resolved skills directory |
-| `skills.global.path` / `.present` / `.count` | — | CodeWhale global skills dir (`~/.codewhale/skills`, with legacy `~/.deepseek/skills` support) |
+| `skills.global.path` / `.present` / `.count` | — | CodeSmith global skills dir (`~/.codesmith/skills`, with legacy `~/.deepseek/skills` support) |
 | `skills.agents.path` / `.present` / `.count` | — | Workspace `.agents/skills/` dir |
 | `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io global skills dir (`~/.agents/skills`) |
 | `skills.local.path` / `.present` / `.count` | — | `skills/` dir |
@@ -86,9 +86,9 @@ codewhale doctor --json
 ```json
 {
   "version": "0.8.9",
-  "config_path": "/Users/you/.codewhale/config.toml",
+  "config_path": "/Users/you/.codesmith/config.toml",
   "config_present": true,
-  "workspace": "/Users/you/projects/codewhale-tui",
+  "workspace": "/Users/you/projects/codesmith-tui",
   "api_key": {
     "source": "env"
   },
@@ -96,11 +96,11 @@ codewhale doctor --json
   "default_text_model": "deepseek-v4-pro",
   "memory": {
     "enabled": false,
-    "path": "/Users/you/.codewhale/memory.md",
+    "path": "/Users/you/.codesmith/memory.md",
     "file_present": true
   },
   "mcp": {
-    "config_path": "/Users/you/.codewhale/mcp.json",
+    "config_path": "/Users/you/.codesmith/mcp.json",
     "present": true,
     "servers": [
       {"name": "filesystem", "enabled": true, "status": "ok", "detail": "ready"}
@@ -113,11 +113,11 @@ codewhale doctor --json
 }
 ```
 
-## HTTP/SSE runtime API: `codewhale serve --http`
+## HTTP/SSE runtime API: `codesmith serve --http`
 
 ```bash
-codewhale serve --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN]
-codewhale serve --mobile [--host 0.0.0.0] [--port 7878] [--auth-token TOKEN]
+codesmith serve --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN]
+codesmith serve --mobile [--host 0.0.0.0] [--port 7878] [--auth-token TOKEN]
 ```
 
 Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
@@ -139,7 +139,7 @@ clients that cannot set custom headers.
 
 ### Mobile control page
 
-`codewhale serve --mobile` starts the same HTTP/SSE runtime API and serves a
+`codesmith serve --mobile` starts the same HTTP/SSE runtime API and serves a
 phone-friendly control page at `/mobile`. When the bind host is left at the
 default, mobile mode binds to `0.0.0.0`, prints a warning, and prints local/LAN
 URLs. Pass `--host 127.0.0.1` to keep the mobile page loopback-only. If a
@@ -375,9 +375,9 @@ The runtime API ships with a built-in dev-origin allow-list:
 `http://127.0.0.1:1420`, `tauri://localhost`. To add additional origins (e.g.
 when developing a UI on Vite's default `:5173`), use any of:
 
-- CLI flag (repeatable): `codewhale serve --http --cors-origin http://localhost:5173`
+- CLI flag (repeatable): `codesmith serve --http --cors-origin http://localhost:5173`
 - Env var (comma-separated): `DEEPSEEK_CORS_ORIGINS="http://localhost:5173,http://localhost:8080"`
-- Config (`~/.codewhale/config.toml`):
+- Config (`~/.codesmith/config.toml`):
   ```toml
   [runtime_api]
   cors_origins = ["http://localhost:5173"]
@@ -408,7 +408,7 @@ model is preserved. Added in v0.8.10 (#561).
 Contract snapshots live in `crates/protocol/tests/`. Run:
 
 ```bash
-cargo test -p codewhale-protocol --test parity_protocol --locked
+cargo test -p codesmith-protocol --test parity_protocol --locked
 ```
 
 This validates that the app-server's event schema hasn't drifted from the

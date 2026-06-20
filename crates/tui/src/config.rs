@@ -1,4 +1,4 @@
-//! Configuration loading and defaults for codewhale.
+//! Configuration loading and defaults for codesmith.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -991,7 +991,7 @@ pub struct ToolsConfig {
     /// frontmatter header (`# name:`, `# description:`, `# schema:`) are
     /// auto-discovered and registered as tools.
     ///
-    /// Defaults to `~/.codewhale/tools/` when `None`.
+    /// Defaults to `~/.codesmith/tools/` when `None`.
     #[serde(default)]
     pub plugin_dir: Option<String>,
 
@@ -1432,7 +1432,7 @@ pub struct Config {
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
 
-    /// Provider-specific credentials and defaults shared with the `codewhale` facade.
+    /// Provider-specific credentials and defaults shared with the `codesmith` facade.
     #[serde(default)]
     pub providers: Option<ProvidersConfig>,
 
@@ -1492,7 +1492,7 @@ pub struct Config {
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
 
-    /// Runtime API server tuning (`codewhale serve --http`). Currently only
+    /// Runtime API server tuning (`codesmith serve --http`). Currently only
     /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
     /// table is absent, the daemon ships with localhost:3000 / localhost:1420
     /// / tauri://localhost as the only allowed dev origins.
@@ -1516,7 +1516,7 @@ pub enum ToolOverride {
     /// Run a local script file. The script receives the tool's JSON input
     /// on stdin and must return a JSON `ToolResult` on stdout.
     Script {
-        /// Path to the script (absolute, or relative to `~/.codewhale/tools/`).
+        /// Path to the script (absolute, or relative to `~/.codesmith/tools/`).
         path: String,
         /// Optional static arguments prepended before the tool's JSON input.
         #[serde(default)]
@@ -1594,7 +1594,7 @@ impl SkillsConfig {
     }
 }
 
-/// `[network]` table — mirrors `codewhale_config::NetworkPolicyToml` so the live
+/// `[network]` table — mirrors `codesmith_config::NetworkPolicyToml` so the live
 /// TUI runtime can construct a [`crate::network_policy::NetworkPolicy`]
 /// without reaching into the workspace config crate. See `config.example.toml`
 /// for documentation.
@@ -2273,7 +2273,7 @@ impl Config {
         }
 
         // 1. Config file (provider-scoped slot). This intentionally wins
-        // over ambient env so `codewhale auth set` fixes stale shell exports.
+        // over ambient env so `codesmith auth set` fixes stale shell exports.
         if let Some(configured) = self
             .provider_config_for(provider)
             .and_then(|provider| provider.api_key.clone())
@@ -2284,7 +2284,7 @@ impl Config {
 
         // 2. Environment variables. Do not query platform credential stores
         // here; routine startup and doctor checks must stay prompt-free.
-        if let Some(value) = codewhale_secrets::env_for(slot)
+        if let Some(value) = codesmith_secrets::env_for(slot)
             && !value.trim().is_empty()
         {
             return Ok(value);
@@ -2300,61 +2300,61 @@ impl Config {
                  \n\
                  1. Get a key:  https://platform.deepseek.com/api_keys\n\
                  2. Save it (works in every folder, no OS prompts):\n\
-                        codewhale auth set --provider deepseek\n\
+                        codesmith auth set --provider deepseek\n\
                  \n\
                  Alternatives:\n\
                    • export DEEPSEEK_API_KEY=<your-key>      (current shell only;\n\
                      also note: zsh users — exports in ~/.zshrc only reach interactive\n\
                      shells, prefer ~/.zshenv for everything)\n\
-                   • api_key = \"<your-key>\"  in ~/.codewhale/config.toml"
+                   • api_key = \"<your-key>\"  in ~/.codesmith/config.toml"
             ),
             ApiProvider::NvidiaNim => anyhow::bail!(
-                "NVIDIA NIM API key not found. Run 'codewhale auth set --provider nvidia-nim', \
-                 set NVIDIA_API_KEY/NVIDIA_NIM_API_KEY, or save api_key in ~/.codewhale/config.toml \
+                "NVIDIA NIM API key not found. Run 'codesmith auth set --provider nvidia-nim', \
+                 set NVIDIA_API_KEY/NVIDIA_NIM_API_KEY, or save api_key in ~/.codesmith/config.toml \
                  with provider = \"nvidia-nim\"."
             ),
             ApiProvider::Openai => anyhow::bail!(
-                "OpenAI-compatible API key not found. Run 'codewhale auth set --provider openai', \
-                 set OPENAI_API_KEY, or add [providers.openai] api_key in ~/.codewhale/config.toml."
+                "OpenAI-compatible API key not found. Run 'codesmith auth set --provider openai', \
+                 set OPENAI_API_KEY, or add [providers.openai] api_key in ~/.codesmith/config.toml."
             ),
             ApiProvider::Atlascloud => anyhow::bail!(
-                "AtlasCloud API key not found. Run 'codewhale auth set --provider atlascloud', \
-                 set ATLASCLOUD_API_KEY, or add [providers.atlascloud] api_key in ~/.codewhale/config.toml."
+                "AtlasCloud API key not found. Run 'codesmith auth set --provider atlascloud', \
+                 set ATLASCLOUD_API_KEY, or add [providers.atlascloud] api_key in ~/.codesmith/config.toml."
             ),
             ApiProvider::WanjieArk => anyhow::bail!(
-                "Wanjie Ark API key not found. Run 'codewhale auth set --provider wanjie-ark', \
+                "Wanjie Ark API key not found. Run 'codesmith auth set --provider wanjie-ark', \
                  set WANJIE_ARK_API_KEY/WANJIE_API_KEY/WANJIE_MAAS_API_KEY, or add \
-                 [providers.wanjie_ark] api_key in ~/.codewhale/config.toml."
+                 [providers.wanjie_ark] api_key in ~/.codesmith/config.toml."
             ),
             ApiProvider::Openrouter => anyhow::bail!(
-                "OpenRouter API key not found. Run 'codewhale auth set --provider openrouter', \
-                 set OPENROUTER_API_KEY, or add [providers.openrouter] api_key in ~/.codewhale/config.toml."
+                "OpenRouter API key not found. Run 'codesmith auth set --provider openrouter', \
+                 set OPENROUTER_API_KEY, or add [providers.openrouter] api_key in ~/.codesmith/config.toml."
             ),
             ApiProvider::XiaomiMimo => anyhow::bail!(
-                "Xiaomi MiMo API key not found. Run 'codewhale auth set --provider xiaomi-mimo', \
-                 set XIAOMI_MIMO_API_KEY/XIAOMI_API_KEY/MIMO_API_KEY, or add [providers.xiaomi_mimo] api_key in ~/.codewhale/config.toml."
+                "Xiaomi MiMo API key not found. Run 'codesmith auth set --provider xiaomi-mimo', \
+                 set XIAOMI_MIMO_API_KEY/XIAOMI_API_KEY/MIMO_API_KEY, or add [providers.xiaomi_mimo] api_key in ~/.codesmith/config.toml."
             ),
             ApiProvider::Novita => anyhow::bail!(
-                "Novita API key not found. Run 'codewhale auth set --provider novita', \
-                 set NOVITA_API_KEY, or add [providers.novita] api_key in ~/.codewhale/config.toml."
+                "Novita API key not found. Run 'codesmith auth set --provider novita', \
+                 set NOVITA_API_KEY, or add [providers.novita] api_key in ~/.codesmith/config.toml."
             ),
             ApiProvider::Fireworks => anyhow::bail!(
-                "Fireworks AI API key not found. Run 'codewhale auth set --provider fireworks', \
-                 set FIREWORKS_API_KEY, or add [providers.fireworks] api_key in ~/.codewhale/config.toml."
+                "Fireworks AI API key not found. Run 'codesmith auth set --provider fireworks', \
+                 set FIREWORKS_API_KEY, or add [providers.fireworks] api_key in ~/.codesmith/config.toml."
             ),
             ApiProvider::Siliconflow => anyhow::bail!(
-                "SiliconFlow API key not found. Run 'codewhale auth set --provider siliconflow', \
-                 set SILICONFLOW_API_KEY, or add [providers.siliconflow] api_key in ~/.codewhale/config.toml."
+                "SiliconFlow API key not found. Run 'codesmith auth set --provider siliconflow', \
+                 set SILICONFLOW_API_KEY, or add [providers.siliconflow] api_key in ~/.codesmith/config.toml."
             ),
             ApiProvider::Moonshot => anyhow::bail!(
-                "Moonshot/Kimi API key not found. Run 'codewhale auth set --provider moonshot', \
+                "Moonshot/Kimi API key not found. Run 'codesmith auth set --provider moonshot', \
                  set MOONSHOT_API_KEY/KIMI_API_KEY, or add [providers.moonshot] api_key. \
                  For a Kimi Code plan key, set [providers.moonshot] base_url = \
                  \"https://api.kimi.com/coding/v1\" and model = \"kimi-for-coding\"."
             ),
             ApiProvider::Anthropic => anyhow::bail!(
-                "Anthropic API key not found. Run 'codewhale auth set --provider anthropic', \
-                 set ANTHROPIC_API_KEY, or add [providers.anthropic] api_key in ~/.codewhale/config.toml."
+                "Anthropic API key not found. Run 'codesmith auth set --provider anthropic', \
+                 set ANTHROPIC_API_KEY, or add [providers.anthropic] api_key in ~/.codesmith/config.toml."
             ),
             // Self-hosted deployments commonly run without auth on localhost.
             // Return an empty key and let the client omit the Authorization header.
@@ -2461,10 +2461,7 @@ impl Config {
     /// directory containing frontmatter-parsed `.md` memory files.
     #[must_use]
     pub fn memory_dir(&self) -> PathBuf {
-        crate::knowledge::paths::resolve_memory_dir(
-            &self.memory_path(),
-            self.memory_dir_override(),
-        )
+        crate::knowledge::paths::resolve_memory_dir(&self.memory_path(), self.memory_dir_override())
     }
 
     /// Return the configured vision model config, inheriting api_key from main config.
@@ -2677,7 +2674,7 @@ pub(crate) fn effective_home_dir() -> Option<PathBuf> {
 
 fn home_config_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("config.toml");
+        let primary = home.join(".codesmith").join("config.toml");
         if primary.exists() {
             return primary;
         }
@@ -2767,7 +2764,7 @@ fn canonicalize_or_keep(path: &Path) -> PathBuf {
 }
 
 fn env_config_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("CODEWHALE_CONFIG_PATH") {
+    if let Ok(path) = std::env::var("CODESMITH_CONFIG_PATH") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             return Some(expand_path(trimmed));
@@ -2813,7 +2810,7 @@ fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
 
 /// Create an inspectable config file on first interactive launch.
 ///
-/// The file intentionally omits `api_key`; onboarding or `codewhale auth set`
+/// The file intentionally omits `api_key`; onboarding or `codesmith auth set`
 /// writes that field after the user supplies a key.
 pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf>> {
     let config_path = path
@@ -2826,9 +2823,9 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
 
     ensure_parent_dir(&config_path)?;
     let content = format!(
-        r#"# codewhale Configuration
+        r#"# codesmith Configuration
 # Get your API key from https://platform.deepseek.com
-# Save it with: codewhale auth set --provider deepseek
+# Save it with: codesmith auth set --provider deepseek
 
 # Base URL (default: https://api.deepseek.com/beta)
 # Set https://api.deepseek.com to opt out of beta features.
@@ -2845,7 +2842,7 @@ reasoning_effort = "auto"
 # Startup update check
 [update]
 check_for_updates = true
-# update_uri = "https://internal.mirror.example/codewhale/releases/latest"
+# update_uri = "https://internal.mirror.example/codesmith/releases/latest"
 "#
     );
     write_config_file_secure(&config_path, &content)
@@ -2861,7 +2858,7 @@ fn default_managed_config_path() -> Option<PathBuf> {
     #[cfg(not(unix))]
     {
         effective_home_dir().map(|home| {
-            let primary = home.join(".codewhale").join("managed_config.toml");
+            let primary = home.join(".codesmith").join("managed_config.toml");
             if primary.exists() {
                 return primary;
             }
@@ -2878,7 +2875,7 @@ fn default_requirements_path() -> Option<PathBuf> {
     #[cfg(not(unix))]
     {
         effective_home_dir().map(|home| {
-            let primary = home.join(".codewhale").join("requirements.toml");
+            let primary = home.join(".codesmith").join("requirements.toml");
             if primary.exists() {
                 return primary;
             }
@@ -2904,12 +2901,12 @@ pub(crate) fn expand_path(path: &str) -> PathBuf {
 }
 
 fn default_skills_dir() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codewhale").join("skills"))
+    effective_home_dir().map(|home| home.join(".codesmith").join("skills"))
 }
 
 fn default_mcp_config_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("mcp.json");
+        let primary = home.join(".codesmith").join("mcp.json");
         if primary.exists() {
             return primary;
         }
@@ -2923,7 +2920,7 @@ fn default_mcp_config_path() -> Option<PathBuf> {
 
 fn default_notes_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("notes.txt");
+        let primary = home.join(".codesmith").join("notes.txt");
         if primary.exists() {
             return primary;
         }
@@ -2937,7 +2934,7 @@ fn default_notes_path() -> Option<PathBuf> {
 
 fn default_memory_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("memory.md");
+        let primary = home.join(".codesmith").join("memory.md");
         if primary.exists() {
             return primary;
         }
@@ -2951,16 +2948,22 @@ fn default_memory_path() -> Option<PathBuf> {
 
 // === Environment Overrides ===
 
-/// Read a CodeWhale env var, preferring the `CODEWHALE_*` form over the
-/// legacy `DEEPSEEK_*` form. Empty values are ignored so a blank shell export
-/// does not erase configured provider settings.
-fn codewhale_env_var(
-    codewhale_name: &str,
+/// Read a CodeSmith env var, preferring the `CODESMITH_*` form over legacy
+/// aliases. Empty values are ignored so a blank shell export does not erase
+/// configured provider settings.
+fn codesmith_env_var(
+    codesmith_name: &str,
     legacy_name: &str,
 ) -> Result<String, std::env::VarError> {
-    std::env::var(codewhale_name)
+    let codewhale_name = codesmith_name.replacen("CODESMITH_", "CODEWHALE_", 1);
+    std::env::var(codesmith_name)
         .ok()
         .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var(&codewhale_name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
         .or_else(|| {
             std::env::var(legacy_name)
                 .ok()
@@ -2970,10 +2973,10 @@ fn codewhale_env_var(
 }
 
 fn apply_env_overrides(config: &mut Config) {
-    if let Ok(value) = codewhale_env_var("CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER") {
+    if let Ok(value) = codesmith_env_var("CODESMITH_PROVIDER", "DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
     }
-    if let Ok(value) = codewhale_env_var("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL") {
+    if let Ok(value) = codesmith_env_var("CODESMITH_BASE_URL", "DEEPSEEK_BASE_URL") {
         match config.api_provider() {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
                 config.base_url = Some(value);
@@ -3329,7 +3332,7 @@ fn apply_env_overrides(config: &mut Config) {
             .siliconflow
             .model = Some(value);
     }
-    if let Some(value) = codewhale_env_var("CODEWHALE_MODEL", "DEEPSEEK_MODEL")
+    if let Some(value) = codesmith_env_var("CODESMITH_MODEL", "DEEPSEEK_MODEL")
         .ok()
         .or_else(|| {
             std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL")
@@ -4081,7 +4084,7 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
                     perms.set_mode(mode & !0o077);
                     if let Err(err) = fs::set_permissions(parent, perms) {
                         tracing::warn!(
-                            target: "codewhale::config",
+                            target: "codesmith::config",
                             path = %parent.display(),
                             error = %err,
                             "could not tighten parent dir permissions; \
@@ -4119,7 +4122,7 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
         // system's native ACL model is doing the access control.
         if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
             tracing::warn!(
-                target: "codewhale::config",
+                target: "codesmith::config",
                 path = %path.display(),
                 error = %err,
                 "could not enforce 0o600 on config file; filesystem may \
@@ -4139,22 +4142,22 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
 /// the caller can show a confirmation message without leaking the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedCredential {
-    /// Stored in **both** the OS keyring and the codewhale config file.
+    /// Stored in **both** the OS keyring and the codesmith config file.
     /// This is the default outcome on platforms with a working keyring
     /// backend: writing both layers defeats the
     /// `keyring → env → config-file` resolution-order shadow that
     /// would otherwise let a stale OS-keyring entry from a previous
     /// install hide the freshly-entered key (#593). The `backend`
-    /// label is the value of [`codewhale_secrets::Secrets::backend_name`]
+    /// label is the value of [`codesmith_secrets::Secrets::backend_name`]
     /// at write time so the toast text can name the actual backend
-    /// (`"system keyring"`, `"file-based (~/.codewhale/secrets/)"`).
+    /// (`"system keyring"`, `"file-based (~/.codesmith/secrets/)"`).
     KeyringAndConfigFile {
         /// `Secrets::backend_name()` at write time.
         backend: String,
         /// Absolute path to the config file that was also updated.
         path: PathBuf,
     },
-    /// Stored in the codewhale config file only. Fallback when no
+    /// Stored in the codesmith config file only. Fallback when no
     /// keyring backend is reachable, or under `cfg(test)` so unit
     /// tests don't pollute the host keyring.
     ConfigFile(PathBuf),
@@ -4176,8 +4179,8 @@ impl SavedCredential {
 
 /// Save the active provider's API key.
 ///
-/// **Dual-write strategy (#593):** writes to `~/.codewhale/config.toml`
-/// (always) and to the OS keyring via [`codewhale_secrets::Secrets`]
+/// **Dual-write strategy (#593):** writes to `~/.codesmith/config.toml`
+/// (always) and to the OS keyring via [`codesmith_secrets::Secrets`]
 /// (when a backend is reachable). The runtime resolves credentials in
 /// `keyring → env → config-file` order; writing to the config file
 /// alone — as v0.8.8 through v0.8.10 did — let a stale keyring entry
@@ -4215,7 +4218,7 @@ pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
     // cross-test contamination).
     #[cfg(not(test))]
     {
-        let secrets = codewhale_secrets::Secrets::auto_detect();
+        let secrets = codesmith_secrets::Secrets::auto_detect();
         match secrets.set("deepseek", trimmed) {
             Ok(()) => {
                 let backend = secrets.backend_name().to_string();
@@ -4277,7 +4280,7 @@ fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
     } else {
         // Create new minimal config
         format!(
-            r#"# codewhale Configuration
+            r#"# codesmith Configuration
 # Get your API key from https://platform.deepseek.com
 # Or set DEEPSEEK_API_KEY environment variable
 
@@ -4317,7 +4320,7 @@ reasoning_effort = "max"
 /// Platform credential stores are intentionally not queried here.
 /// Startup/onboarding checks must be cheap and prompt-free, so v0.8.8
 /// keeps the default auth path to environment variables and
-/// `~/.codewhale/config.toml`.
+/// `~/.codesmith/config.toml`.
 ///
 /// Used by [`crate::tui::app::App::new`] to decide whether to gate
 /// the user behind the in-TUI api-key onboarding screen — getting
@@ -4508,7 +4511,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
 
 /// Save an API key to the appropriate place for the given provider.
 /// DeepSeek goes through [`save_api_key`]. Other providers write
-/// `[providers.<name>] api_key = "..."` to `~/.codewhale/config.toml`.
+/// `[providers.<name>] api_key = "..."` to `~/.codesmith/config.toml`.
 /// Returns the config file path.
 pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf> {
     if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
@@ -4802,7 +4805,7 @@ fn write_kimi_oauth_credential(path: &Path, credential: &KimiOAuthCredential) ->
     #[cfg(unix)]
     if let Err(err) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
         tracing::warn!(
-            target: "codewhale::config",
+            target: "codesmith::config",
             path = %path.display(),
             error = %err,
             "could not enforce 0o600 on Kimi OAuth credentials; relying on host ACLs"
@@ -5148,10 +5151,10 @@ mod tests {
     struct EnvGuard {
         home: Option<OsString>,
         userprofile: Option<OsString>,
-        codewhale_home: Option<OsString>,
-        codewhale_config_path: Option<OsString>,
+        codesmith_home: Option<OsString>,
+        codesmith_config_path: Option<OsString>,
         deepseek_config_path: Option<OsString>,
-        codewhale_secret_backend: Option<OsString>,
+        codesmith_secret_backend: Option<OsString>,
         deepseek_secret_backend: Option<OsString>,
         deepseek_provider: Option<OsString>,
         deepseek_api_key: Option<OsString>,
@@ -5159,9 +5162,9 @@ mod tests {
         deepseek_http_headers: Option<OsString>,
         deepseek_model: Option<OsString>,
         deepseek_default_text_model: Option<OsString>,
-        codewhale_provider: Option<OsString>,
-        codewhale_model: Option<OsString>,
-        codewhale_base_url: Option<OsString>,
+        codesmith_provider: Option<OsString>,
+        codesmith_model: Option<OsString>,
+        codesmith_base_url: Option<OsString>,
         nvidia_api_key: Option<OsString>,
         nvidia_nim_api_key: Option<OsString>,
         nim_base_url: Option<OsString>,
@@ -5227,10 +5230,10 @@ mod tests {
             let config_str = OsString::from(config_path.as_os_str());
             let home_prev = env::var_os("HOME");
             let userprofile_prev = env::var_os("USERPROFILE");
-            let codewhale_home_prev = env::var_os("CODEWHALE_HOME");
-            let codewhale_config_prev = env::var_os("CODEWHALE_CONFIG_PATH");
+            let codesmith_home_prev = env::var_os("CODESMITH_HOME");
+            let codesmith_config_prev = env::var_os("CODESMITH_CONFIG_PATH");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
-            let codewhale_secret_backend_prev = env::var_os("CODEWHALE_SECRET_BACKEND");
+            let codesmith_secret_backend_prev = env::var_os("CODESMITH_SECRET_BACKEND");
             let deepseek_secret_backend_prev = env::var_os("DEEPSEEK_SECRET_BACKEND");
             let deepseek_provider_prev = env::var_os("DEEPSEEK_PROVIDER");
             let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
@@ -5238,9 +5241,9 @@ mod tests {
             let http_headers_prev = env::var_os("DEEPSEEK_HTTP_HEADERS");
             let model_prev = env::var_os("DEEPSEEK_MODEL");
             let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
-            let codewhale_provider_prev = env::var_os("CODEWHALE_PROVIDER");
-            let codewhale_model_prev = env::var_os("CODEWHALE_MODEL");
-            let codewhale_base_url_prev = env::var_os("CODEWHALE_BASE_URL");
+            let codesmith_provider_prev = env::var_os("CODESMITH_PROVIDER");
+            let codesmith_model_prev = env::var_os("CODESMITH_MODEL");
+            let codesmith_base_url_prev = env::var_os("CODESMITH_BASE_URL");
             let nvidia_api_key_prev = env::var_os("NVIDIA_API_KEY");
             let nvidia_nim_api_key_prev = env::var_os("NVIDIA_NIM_API_KEY");
             let nim_base_url_prev = env::var_os("NIM_BASE_URL");
@@ -5301,10 +5304,10 @@ mod tests {
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
-                env::remove_var("CODEWHALE_HOME");
-                env::remove_var("CODEWHALE_CONFIG_PATH");
+                env::remove_var("CODESMITH_HOME");
+                env::remove_var("CODESMITH_CONFIG_PATH");
                 env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
-                env::remove_var("CODEWHALE_SECRET_BACKEND");
+                env::remove_var("CODESMITH_SECRET_BACKEND");
                 env::remove_var("DEEPSEEK_SECRET_BACKEND");
                 env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("DEEPSEEK_API_KEY");
@@ -5312,9 +5315,9 @@ mod tests {
                 env::remove_var("DEEPSEEK_HTTP_HEADERS");
                 env::remove_var("DEEPSEEK_MODEL");
                 env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
-                env::remove_var("CODEWHALE_PROVIDER");
-                env::remove_var("CODEWHALE_MODEL");
-                env::remove_var("CODEWHALE_BASE_URL");
+                env::remove_var("CODESMITH_PROVIDER");
+                env::remove_var("CODESMITH_MODEL");
+                env::remove_var("CODESMITH_BASE_URL");
                 env::remove_var("NVIDIA_API_KEY");
                 env::remove_var("NVIDIA_NIM_API_KEY");
                 env::remove_var("NIM_BASE_URL");
@@ -5375,10 +5378,10 @@ mod tests {
             Self {
                 home: home_prev,
                 userprofile: userprofile_prev,
-                codewhale_home: codewhale_home_prev,
-                codewhale_config_path: codewhale_config_prev,
+                codesmith_home: codesmith_home_prev,
+                codesmith_config_path: codesmith_config_prev,
                 deepseek_config_path: deepseek_config_prev,
-                codewhale_secret_backend: codewhale_secret_backend_prev,
+                codesmith_secret_backend: codesmith_secret_backend_prev,
                 deepseek_secret_backend: deepseek_secret_backend_prev,
                 deepseek_provider: deepseek_provider_prev,
                 deepseek_api_key: api_key_prev,
@@ -5386,9 +5389,9 @@ mod tests {
                 deepseek_http_headers: http_headers_prev,
                 deepseek_model: model_prev,
                 deepseek_default_text_model: default_text_model_prev,
-                codewhale_provider: codewhale_provider_prev,
-                codewhale_model: codewhale_model_prev,
-                codewhale_base_url: codewhale_base_url_prev,
+                codesmith_provider: codesmith_provider_prev,
+                codesmith_model: codesmith_model_prev,
+                codesmith_base_url: codesmith_base_url_prev,
                 nvidia_api_key: nvidia_api_key_prev,
                 nvidia_nim_api_key: nvidia_nim_api_key_prev,
                 nim_base_url: nim_base_url_prev,
@@ -5455,12 +5458,12 @@ mod tests {
             unsafe {
                 Self::restore_var("HOME", self.home.take());
                 Self::restore_var("USERPROFILE", self.userprofile.take());
-                Self::restore_var("CODEWHALE_HOME", self.codewhale_home.take());
-                Self::restore_var("CODEWHALE_CONFIG_PATH", self.codewhale_config_path.take());
+                Self::restore_var("CODESMITH_HOME", self.codesmith_home.take());
+                Self::restore_var("CODESMITH_CONFIG_PATH", self.codesmith_config_path.take());
                 Self::restore_var("DEEPSEEK_CONFIG_PATH", self.deepseek_config_path.take());
                 Self::restore_var(
-                    "CODEWHALE_SECRET_BACKEND",
-                    self.codewhale_secret_backend.take(),
+                    "CODESMITH_SECRET_BACKEND",
+                    self.codesmith_secret_backend.take(),
                 );
                 Self::restore_var(
                     "DEEPSEEK_SECRET_BACKEND",
@@ -5475,9 +5478,9 @@ mod tests {
                     "DEEPSEEK_DEFAULT_TEXT_MODEL",
                     self.deepseek_default_text_model.take(),
                 );
-                Self::restore_var("CODEWHALE_PROVIDER", self.codewhale_provider.take());
-                Self::restore_var("CODEWHALE_MODEL", self.codewhale_model.take());
-                Self::restore_var("CODEWHALE_BASE_URL", self.codewhale_base_url.take());
+                Self::restore_var("CODESMITH_PROVIDER", self.codesmith_provider.take());
+                Self::restore_var("CODESMITH_MODEL", self.codesmith_model.take());
+                Self::restore_var("CODESMITH_BASE_URL", self.codesmith_base_url.take());
                 Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
                 Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
                 Self::restore_var("NIM_BASE_URL", self.nim_base_url.take());
@@ -5645,7 +5648,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-test-{}-{}",
+            "codesmith-tui-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5681,7 +5684,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-first-run-config-{}-{}",
+            "codesmith-tui-first-run-config-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5707,7 +5710,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-workspace-trust-{}-{}",
+            "codesmith-tui-workspace-trust-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5743,7 +5746,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-existing-project-trust-{}-{}",
+            "codesmith-tui-existing-project-trust-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5957,7 +5960,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-clear-{}-{}",
+            "codesmith-tui-clear-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5990,7 +5993,7 @@ api_key = "old-openrouter-key"
         );
         assert!(
             !after.contains("old-provider-key"),
-            "provider-scoped codewhale key must be stripped: {after}"
+            "provider-scoped codesmith key must be stripped: {after}"
         );
         assert!(
             !after.contains("old-openrouter-key"),
@@ -6013,7 +6016,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-override-{}-{}",
+            "codesmith-tui-override-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6039,7 +6042,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-config-over-env-{}-{}",
+            "codesmith-tui-config-over-env-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6064,7 +6067,7 @@ api_key = "old-openrouter-key"
     fn active_provider_detects_env_only_api_key() -> Result<()> {
         let _lock = lock_test_env();
         let temp_root =
-            env::temp_dir().join(format!("codewhale-tui-env-only-key-{}", std::process::id()));
+            env::temp_dir().join(format!("codesmith-tui-env-only-key-{}", std::process::id()));
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
@@ -6094,7 +6097,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-sentinel-{}-{}",
+            "codesmith-tui-sentinel-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6115,14 +6118,14 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
-    fn default_user_paths_use_codewhale_home_for_fresh_installs() -> Result<()> {
+    fn default_user_paths_use_codesmith_home_for_fresh_installs() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-fresh-home-test-{}-{}",
+            "codesmith-tui-fresh-home-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6138,19 +6141,19 @@ api_key = "old-openrouter-key"
         let config = Config::default();
         assert_eq!(
             default_config_path().unwrap(),
-            temp_root.join(".codewhale").join("config.toml")
+            temp_root.join(".codesmith").join("config.toml")
         );
         assert_eq!(
             config.mcp_config_path(),
-            temp_root.join(".codewhale").join("mcp.json")
+            temp_root.join(".codesmith").join("mcp.json")
         );
         assert_eq!(
             config.notes_path(),
-            temp_root.join(".codewhale").join("notes.txt")
+            temp_root.join(".codesmith").join("notes.txt")
         );
         assert_eq!(
             config.memory_path(),
-            temp_root.join(".codewhale").join("memory.md")
+            temp_root.join(".codesmith").join("memory.md")
         );
 
         Ok(())
@@ -6164,7 +6167,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-legacy-home-test-{}-{}",
+            "codesmith-tui-legacy-home-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6192,16 +6195,16 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
-    fn codewhale_config_path_env_wins_over_legacy_env() -> Result<()> {
+    fn codesmith_config_path_env_wins_over_legacy_env() -> Result<()> {
         let _lock = lock_test_env();
-        let prev_codewhale = env::var_os("CODEWHALE_CONFIG_PATH");
+        let prev_codesmith = env::var_os("CODESMITH_CONFIG_PATH");
         let prev_deepseek = env::var_os("DEEPSEEK_CONFIG_PATH");
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-config-env-test-{}-{}",
+            "codesmith-tui-config-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6209,14 +6212,14 @@ api_key = "old-openrouter-key"
         let legacy = temp_root.join("legacy.toml");
 
         unsafe {
-            env::set_var("CODEWHALE_CONFIG_PATH", &preferred);
+            env::set_var("CODESMITH_CONFIG_PATH", &preferred);
             env::set_var("DEEPSEEK_CONFIG_PATH", &legacy);
         }
 
         assert_eq!(env_config_path().unwrap(), preferred);
 
         unsafe {
-            EnvGuard::restore_var("CODEWHALE_CONFIG_PATH", prev_codewhale);
+            EnvGuard::restore_var("CODESMITH_CONFIG_PATH", prev_codesmith);
             EnvGuard::restore_var("DEEPSEEK_CONFIG_PATH", prev_deepseek);
         }
 
@@ -6231,7 +6234,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-tilde-test-{}-{}",
+            "codesmith-tui-tilde-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6260,7 +6263,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-load-tilde-test-{}-{}",
+            "codesmith-tui-load-tilde-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6289,7 +6292,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-load-fallback-test-{}-{}",
+            "codesmith-tui-load-fallback-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6348,7 +6351,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-api-key-test-{}-{}",
+            "codesmith-tui-api-key-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6395,7 +6398,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-empty-key-{}-{}",
+            "codesmith-tui-empty-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6428,7 +6431,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-env-key-not-config-{}-{}",
+            "codesmith-tui-env-key-not-config-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6614,7 +6617,7 @@ api_key = "old-openrouter-key"
     #[test]
     fn normalize_model_name_rejects_invalid_or_non_deepseek_ids() {
         assert!(normalize_model_name("qwen3-coder").is_none());
-        assert!(normalize_model_name("codewhale v4").is_none());
+        assert!(normalize_model_name("codesmith v4").is_none());
         assert!(normalize_model_name("").is_none());
     }
 
@@ -6755,7 +6758,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-model-env-test-{}-{}",
+            "codesmith-tui-model-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6784,7 +6787,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-http-headers-root-{}-{}",
+            "codesmith-tui-http-headers-root-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6848,7 +6851,7 @@ http_headers = { "X-Model-Provider-Id" = "tongyi" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-http-headers-env-{}-{}",
+            "codesmith-tui-http-headers-env-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6902,7 +6905,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-nim-model-alias-test-{}-{}",
+            "codesmith-tui-nim-model-alias-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6946,7 +6949,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-nim-env-test-{}-{}",
+            "codesmith-tui-nim-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6975,7 +6978,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-nim-base-url-alias-test-{}-{}",
+            "codesmith-tui-nim-base-url-alias-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7002,7 +7005,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-nim-forwarded-base-url-test-{}-{}",
+            "codesmith-tui-nim-forwarded-base-url-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7060,7 +7063,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-xiaomi-mimo-env-test-{}-{}",
+            "codesmith-tui-xiaomi-mimo-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7108,7 +7111,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-atlascloud-env-test-{}-{}",
+            "codesmith-tui-atlascloud-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7152,7 +7155,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-wanjie-env-test-{}-{}",
+            "codesmith-tui-wanjie-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7182,7 +7185,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-wanjie-table-{}-{}",
+            "codesmith-tui-wanjie-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7221,7 +7224,7 @@ model = "account-model-id"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-openai-table-{}-{}",
+            "codesmith-tui-openai-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7252,7 +7255,7 @@ model = "glm-5"
         Ok(())
     }
 
-    // Regression for issue #1714: `codewhale --provider openai --model
+    // Regression for issue #1714: `codesmith --provider openai --model
     // MiniMax-M2.7` forwards the choice via DEEPSEEK_MODEL (never
     // OPENAI_MODEL) and uses the DEFAULT base_url. The explicit custom model
     // must pass through verbatim instead of silently becoming a
@@ -7265,7 +7268,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-1714-passthrough-{}-{}",
+            "codesmith-tui-1714-passthrough-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7318,7 +7321,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-openai-env-test-{}-{}",
+            "codesmith-tui-openai-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7352,7 +7355,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-openai-forwarded-base-url-test-{}-{}",
+            "codesmith-tui-openai-forwarded-base-url-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7386,7 +7389,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-or-defaults-{}-{}",
+            "codesmith-tui-or-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7412,7 +7415,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-novita-defaults-{}-{}",
+            "codesmith-tui-novita-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7438,7 +7441,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-fireworks-defaults-{}-{}",
+            "codesmith-tui-fireworks-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7464,7 +7467,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-siliconflow-defaults-{}-{}",
+            "codesmith-tui-siliconflow-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7494,7 +7497,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-sglang-defaults-{}-{}",
+            "codesmith-tui-sglang-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7522,7 +7525,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-ollama-defaults-{}-{}",
+            "codesmith-tui-ollama-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7550,7 +7553,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-ollama-model-test-{}-{}",
+            "codesmith-tui-ollama-model-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7584,7 +7587,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-self-hosted-base-url-test-{}-{}",
+            "codesmith-tui-self-hosted-base-url-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7619,7 +7622,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-vllm-lan-http-test-{}-{}",
+            "codesmith-tui-vllm-lan-http-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7648,7 +7651,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-ollama-env-test-{}-{}",
+            "codesmith-tui-ollama-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7677,7 +7680,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-or-env-key-{}-{}",
+            "codesmith-tui-or-env-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7704,7 +7707,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-novita-env-key-{}-{}",
+            "codesmith-tui-novita-env-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7731,7 +7734,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-siliconflow-env-test-{}-{}",
+            "codesmith-tui-siliconflow-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7740,7 +7743,7 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "siliconflow");
+            env::set_var("CODESMITH_PROVIDER", "siliconflow");
             env::set_var("SILICONFLOW_API_KEY", "sf-env-key");
             env::set_var("SILICONFLOW_BASE_URL", "https://sf-mirror.example/v1");
             env::set_var("SILICONFLOW_MODEL", "deepseek-v4-flash");
@@ -7762,7 +7765,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-siliconflow-cn-env-test-{}-{}",
+            "codesmith-tui-siliconflow-cn-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7771,7 +7774,7 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "siliconflow");
+            env::set_var("CODESMITH_PROVIDER", "siliconflow");
             env::set_var("SILICONFLOW_API_KEY", "sf-env-key");
             env::set_var("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1");
             env::set_var("SILICONFLOW_MODEL", "deepseek-reasoner");
@@ -7793,7 +7796,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-or-base-url-{}-{}",
+            "codesmith-tui-or-base-url-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7820,7 +7823,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-or-table-{}-{}",
+            "codesmith-tui-or-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7854,7 +7857,7 @@ base_url = "https://or-table.example/v1"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-siliconflow-table-{}-{}",
+            "codesmith-tui-siliconflow-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7889,7 +7892,7 @@ model = "deepseek-v4-flash"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-or-custom-model-{}-{}",
+            "codesmith-tui-or-custom-model-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7925,7 +7928,7 @@ model = "DeepSeek-V4-Pro"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-novita-table-{}-{}",
+            "codesmith-tui-novita-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7958,7 +7961,7 @@ api_key = "novita-table-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-kimi-oauth-key-{}-{}",
+            "codesmith-tui-kimi-oauth-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8016,7 +8019,7 @@ api_key = "stale-api-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-kimi-code-key-{}-{}",
+            "codesmith-tui-kimi-code-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8044,8 +8047,8 @@ base_url = "https://api.kimi.com/coding/v1"
         Ok(())
     }
 
-    /// Env-var-only path: `CODEWHALE_BASE_URL=https://api.kimi.com/coding/v1`
-    /// combined with `CODEWHALE_PROVIDER=moonshot` must trigger Kimi Code
+    /// Env-var-only path: `CODESMITH_BASE_URL=https://api.kimi.com/coding/v1`
+    /// combined with `CODESMITH_PROVIDER=moonshot` must trigger Kimi Code
     /// model selection even when the TOML has no `base_url`.
     #[test]
     fn moonshot_kimi_code_env_base_url_selects_coding_model() -> Result<()> {
@@ -8055,7 +8058,7 @@ base_url = "https://api.kimi.com/coding/v1"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-kimi-code-env-url-{}-{}",
+            "codesmith-tui-kimi-code-env-url-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8072,8 +8075,8 @@ api_key = "kimi-code-env-key"
         )?;
         // Safety: test-only env mutation guarded by lock_test_env().
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "moonshot");
-            env::set_var("CODEWHALE_BASE_URL", "https://api.kimi.com/coding/v1");
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_BASE_URL", "https://api.kimi.com/coding/v1");
         }
 
         let config = Config::load(None, None)?;
@@ -8088,9 +8091,9 @@ api_key = "kimi-code-env-key"
     /// Regression for issue #2160: a stale root `default_text_model` carried
     /// over from a DeepSeek setup must not steer the Kimi Code endpoint to
     /// `deepseek-v4-pro`. The user-facing trigger here is the legacy
-    /// `DEEPSEEK_PROVIDER` env var (still produced by the `codewhale
+    /// `DEEPSEEK_PROVIDER` env var (still produced by the `codesmith
     /// --provider moonshot` dispatcher for compat); the test also has a
-    /// `CODEWHALE_PROVIDER` twin below for the public env path.
+    /// `CODESMITH_PROVIDER` twin below for the public env path.
     #[test]
     fn moonshot_kimi_code_model_overrides_root_deepseek_default() -> Result<()> {
         let _lock = lock_test_env();
@@ -8099,7 +8102,7 @@ api_key = "kimi-code-env-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-kimi-code-root-model-{}-{}",
+            "codesmith-tui-kimi-code-root-model-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8128,20 +8131,20 @@ base_url = "https://api.kimi.com/coding/v1"
         Ok(())
     }
 
-    /// Same regression as above, but driven by the public `CODEWHALE_PROVIDER`
+    /// Same regression as above, but driven by the public `CODESMITH_PROVIDER`
     /// env var. Documents the recommended user-facing setup path: never
-    /// `DEEPSEEK_PROVIDER=moonshot`, always `CODEWHALE_PROVIDER=moonshot`
-    /// (or `codewhale --provider moonshot`, which also resolves through
+    /// `DEEPSEEK_PROVIDER=moonshot`, always `CODESMITH_PROVIDER=moonshot`
+    /// (or `codesmith --provider moonshot`, which also resolves through
     /// this code path internally).
     #[test]
-    fn moonshot_kimi_code_model_resolves_via_codewhale_provider_env() -> Result<()> {
+    fn moonshot_kimi_code_model_resolves_via_codesmith_provider_env() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-kimi-code-cw-env-{}-{}",
+            "codesmith-tui-kimi-code-cw-env-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8161,7 +8164,7 @@ base_url = "https://api.kimi.com/coding/v1"
 "#,
         )?;
         // Safety: test-only env mutation guarded by lock_test_env().
-        unsafe { env::set_var("CODEWHALE_PROVIDER", "moonshot") };
+        unsafe { env::set_var("CODESMITH_PROVIDER", "moonshot") };
 
         let config = Config::load(None, None)?;
         assert_eq!(config.api_provider(), ApiProvider::Moonshot);
@@ -8170,18 +8173,18 @@ base_url = "https://api.kimi.com/coding/v1"
         Ok(())
     }
 
-    /// `CODEWHALE_PROVIDER` wins when both it and the legacy
+    /// `CODESMITH_PROVIDER` wins when both it and the legacy
     /// `DEEPSEEK_PROVIDER` are set, so a user adding the new alias to their
     /// shell isn't surprised by a stale legacy export.
     #[test]
-    fn codewhale_provider_env_takes_precedence_over_deepseek_provider() -> Result<()> {
+    fn codesmith_provider_env_takes_precedence_over_deepseek_provider() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-cw-vs-ds-provider-{}-{}",
+            "codesmith-tui-cw-vs-ds-provider-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8193,7 +8196,7 @@ base_url = "https://api.kimi.com/coding/v1"
         fs::write(&config_path, "provider = \"deepseek\"\n")?;
         // Safety: test-only env mutation guarded by lock_test_env().
         unsafe {
-            env::set_var("CODEWHALE_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
             env::set_var("DEEPSEEK_PROVIDER", "openrouter");
         }
 
@@ -8215,7 +8218,7 @@ base_url = "https://api.kimi.com/coding/v1"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-moonshot-platform-{}-{}",
+            "codesmith-tui-moonshot-platform-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8249,7 +8252,7 @@ api_key = "moonshot-platform-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-has-key-{}-{}",
+            "codesmith-tui-has-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8318,7 +8321,7 @@ api_key = "moonshot-platform-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-has-key-cn-{}-{}",
+            "codesmith-tui-has-key-cn-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8355,13 +8358,13 @@ api_key = "moonshot-platform-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-save-key-or-{}-{}",
+            "codesmith-tui-save-key-or-{}-{}",
             std::process::id(),
             nanos
         ));
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
-        unsafe { std::env::set_var("CODEWHALE_SECRET_BACKEND", "local") };
+        unsafe { std::env::set_var("CODESMITH_SECRET_BACKEND", "local") };
 
         let path = save_api_key_for(ApiProvider::Openrouter, "or-saved-key")?;
         let contents = fs::read_to_string(&path)?;
@@ -8461,7 +8464,7 @@ api_key = "moonshot-platform-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-save-key-cn-{}-{}",
+            "codesmith-tui-save-key-cn-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8488,7 +8491,7 @@ api_key = "moonshot-platform-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-nim-provider-table-test-{}-{}",
+            "codesmith-tui-nim-provider-table-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8527,7 +8530,7 @@ model = "deepseek-v4-pro"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-nim-root-key-precedence-test-{}-{}",
+            "codesmith-tui-nim-root-key-precedence-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8538,7 +8541,7 @@ model = "deepseek-v4-pro"
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
-            r#"api_key = "codewhale-root-key"
+            r#"api_key = "codesmith-root-key"
 provider = "nvidia-nim"
 
 [providers.nvidia_nim]

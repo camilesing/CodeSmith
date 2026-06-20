@@ -1,20 +1,20 @@
 const path = require("path");
 const os = require("os");
 
-const CHECKSUM_MANIFEST = "codewhale-artifacts-sha256.txt";
+const CHECKSUM_MANIFEST = "codesmith-artifacts-sha256.txt";
 
 const ASSET_MATRIX = {
   linux: {
-    x64: ["codewhale-linux-x64", "codewhale-tui-linux-x64"],
-    arm64: ["codewhale-linux-arm64", "codewhale-tui-linux-arm64"],
-    riscv64: ["codewhale-linux-riscv64", "codewhale-tui-linux-riscv64"],
+    x64: ["codesmith-linux-x64", "codesmith-tui-linux-x64"],
+    arm64: ["codesmith-linux-arm64", "codesmith-tui-linux-arm64"],
+    riscv64: ["codesmith-linux-riscv64", "codesmith-tui-linux-riscv64"],
   },
   darwin: {
-    x64: ["codewhale-macos-x64", "codewhale-tui-macos-x64"],
-    arm64: ["codewhale-macos-arm64", "codewhale-tui-macos-arm64"],
+    x64: ["codesmith-macos-x64", "codesmith-tui-macos-x64"],
+    arm64: ["codesmith-macos-arm64", "codesmith-tui-macos-arm64"],
   },
   win32: {
-    x64: ["codewhale-windows-x64.exe", "codewhale-tui-windows-x64.exe", "codewhale.bat"],
+    x64: ["codesmith-windows-x64.exe", "codesmith-tui-windows-x64.exe", "codesmith.bat"],
   },
 };
 
@@ -48,7 +48,7 @@ function detectBinaryNames() {
   return {
     platform,
     arch,
-    codewhale: pair[0],
+    codesmith: pair[0],
     tui: pair[1],
   };
 }
@@ -56,20 +56,20 @@ function detectBinaryNames() {
 function unsupportedBuildHint() {
   return [
     "No prebuilt binary is available for this platform/architecture combo.",
-    "You can still run codewhale by building from source with Cargo:",
+    "You can still run codesmith by building from source with Cargo:",
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
-    "  cargo install codewhale-cli --locked   # provides `codewhale`",
-    "  cargo install codewhale-tui --locked   # provides `codewhale-tui`",
+    "  cargo install codesmith-cli --locked   # provides `codesmith`",
+    "  cargo install codesmith-tui --locked   # provides `codesmith-tui`",
     "",
     "Or build from a checkout:",
     "",
-    "  git clone https://github.com/Hmbown/CodeWhale.git",
-    "  cd CodeWhale",
+    "  git clone https://github.com/Hmbown/CodeSmith.git",
+    "  cd CodeSmith",
     "  cargo install --path crates/cli --locked",
     "  cargo install --path crates/tui --locked",
     "",
-    "See https://github.com/Hmbown/CodeWhale/blob/main/docs/INSTALL.md",
+    "See https://github.com/Hmbown/CodeSmith/blob/main/docs/INSTALL.md",
     "for cross-compilation, mirror, and Linux ARM64 specifics.",
   ].join("\n");
 }
@@ -78,30 +78,31 @@ function executableName(base, platform) {
   return platform === "win32" ? `${base}.exe` : base;
 }
 
-function releaseBaseUrl(version, repo = "Hmbown/CodeWhale") {
-  // CODEWHALE_RELEASE_BASE_URL is the canonical override.
+function releaseBaseUrl(version, repo = "Hmbown/CodeSmith") {
+  // CODESMITH_RELEASE_BASE_URL is the canonical override.
   // DEEPSEEK_TUI_RELEASE_BASE_URL / DEEPSEEK_RELEASE_BASE_URL are legacy aliases.
   const override =
-    process.env.CODEWHALE_RELEASE_BASE_URL ||
+    process.env.CODESMITH_RELEASE_BASE_URL ||
+    process.env.CODESMITH_RELEASE_BASE_URL ||
     process.env.DEEPSEEK_TUI_RELEASE_BASE_URL ||
     process.env.DEEPSEEK_RELEASE_BASE_URL;
   if (override) {
     const trimmed = String(override).trim();
     return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
   }
-  // When CODEWHALE_USE_CNB_MIRROR is set, use the CNB (China-friendly)
+  // When CODESMITH_USE_CNB_MIRROR is set, use the CNB (China-friendly)
   // mirror that already builds and publishes binary release assets.
-  if (process.env.CODEWHALE_USE_CNB_MIRROR) {
-    return `https://cnb.cool/Hmbown/CodeWhale/-/releases/v${version}/`;
+  if (process.env.CODESMITH_USE_CNB_MIRROR) {
+    return `https://cnb.cool/Hmbown/CodeSmith/-/releases/v${version}/`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/`;
 }
 
-function releaseAssetUrl(baseName, version, repo = "Hmbown/CodeWhale") {
+function releaseAssetUrl(baseName, version, repo = "Hmbown/CodeSmith") {
   return new URL(baseName, releaseBaseUrl(version, repo)).toString();
 }
 
-function checksumManifestUrl(version, repo = "Hmbown/CodeWhale") {
+function checksumManifestUrl(version, repo = "Hmbown/CodeSmith") {
   return releaseAssetUrl(CHECKSUM_MANIFEST, version, repo);
 }
 

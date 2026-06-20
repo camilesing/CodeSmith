@@ -90,19 +90,19 @@ pub(crate) fn first_divergence(a: &str, b: &str) -> Option<(usize, String, Strin
     None
 }
 
-/// Redirect `CODEWHALE_HOME` to a temporary directory for tests that write
+/// Redirect `CODESMITH_HOME` to a temporary directory for tests that write
 /// team files, mailbox data, or plan files. Drop restores the original value.
 ///
 /// Callers must hold [`lock_test_env`] while this guard is alive.
-pub(crate) struct ScopedCodeWhaleHome {
+pub(crate) struct ScopedCodeSmithHome {
     _env_guard: EnvVarGuard,
     _tempdir: tempfile::TempDir,
 }
 
-impl ScopedCodeWhaleHome {
+impl ScopedCodeSmithHome {
     pub(crate) fn new() -> Self {
-        let tempdir = tempfile::tempdir().expect("tempdir for CODEWHALE_HOME");
-        let env_guard = EnvVarGuard::set("CODEWHALE_HOME", tempdir.path());
+        let tempdir = tempfile::tempdir().expect("tempdir for CODESMITH_HOME");
+        let env_guard = EnvVarGuard::set("CODESMITH_HOME", tempdir.path());
         Self {
             _env_guard: env_guard,
             _tempdir: tempdir,

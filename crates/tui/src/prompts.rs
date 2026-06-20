@@ -33,8 +33,8 @@ pub struct PromptSessionContext<'a> {
     /// the resolved session locale.
     pub translation_enabled: bool,
     /// Active model identifier injected into the Constitutional
-    /// preamble ("You are {model_id}, running inside CodeWhale").
-    /// Defaults to `"codewhale"` when the caller doesn't supply one,
+    /// preamble ("You are {model_id}, running inside CodeSmith").
+    /// Defaults to `"codesmith"` when the caller doesn't supply one,
     /// preserving backward compatibility with existing call sites
     /// that predate dynamic model injection.
     pub model_id: &'a str,
@@ -53,7 +53,7 @@ impl Default for PromptSessionContext<'_> {
             project_context_pack_enabled: true,
             locale_tag: "en",
             translation_enabled: false,
-            model_id: "codewhale",
+            model_id: "codesmith",
             show_thinking: true,
         }
     }
@@ -63,7 +63,7 @@ impl Default for PromptSessionContext<'_> {
 /// A previous session writes it on exit / `/compact`; the next session reads
 /// it back on startup and prepends it to the system prompt so a fresh agent
 /// doesn't have to re-discover open blockers from scratch.
-pub const HANDOFF_RELATIVE_PATH: &str = ".codewhale/handoff.md";
+pub const HANDOFF_RELATIVE_PATH: &str = ".codesmith/handoff.md";
 /// Legacy handoff path for reading from existing installs.
 const LEGACY_HANDOFF_RELATIVE_PATH: &str = ".deepseek/handoff.md";
 
@@ -502,7 +502,7 @@ pub(crate) fn locale_reinforcement_closer(locale_tag: &str) -> Option<&'static s
 }
 
 const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
-你正在 codewhale 中运行。无论任务上下文（代码、错误日志、文件名）\
+你正在 codesmith 中运行。无论任务上下文（代码、错误日志、文件名）\
 是英文，无论系统提示的其余部分是英文，你都必须用简体中文进行 \
 `reasoning_content`（内部思考）和最终回复。代码、文件路径、工具名称\
 （例如 `read_file`、`exec_shell`）、环境变量、命令行参数和 URL \
@@ -511,7 +511,7 @@ const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
 如果用户明确要求（例如 \"think in English\"），则覆盖此规则。";
 
 const LOCALE_PREAMBLE_JA: &str = "## 言語要件\n\n\
-codewhale を実行しています。タスクコンテキスト（コード、エラーログ、\
+codesmith を実行しています。タスクコンテキスト（コード、エラーログ、\
 ファイル名）が英語であっても、システムプロンプトの他の部分が英語で\
 あっても、`reasoning_content`（内部思考）と最終的な返信は日本語で\
 行ってください。コード、ファイルパス、ツール名（例：`read_file`、\
@@ -522,7 +522,7 @@ codewhale を実行しています。タスクコンテキスト（コード、�
 \"think in English\"）はこのルールを上書きします。";
 
 const LOCALE_PREAMBLE_PT_BR: &str = "## Requisito de Idioma\n\n\
-Você está rodando dentro do codewhale. Escreva tanto \
+Você está rodando dentro do codesmith. Escreva tanto \
 `reasoning_content` (seu pensamento interno) quanto a resposta final \
 em português do Brasil, mesmo quando o contexto da tarefa (código, \
 logs de erro, nomes de arquivos) estiver em inglês e mesmo quando o \
@@ -565,7 +565,7 @@ idioma. A menos que o usuário peça explicitamente a troca (por exemplo, \
 Brasil.";
 
 const LOCALE_PREAMBLE_VI: &str = "## Yêu cầu ngôn ngữ\n\n\
-Bạn đang chạy trong codewhale. Cho dù ngữ cảnh tác vụ (mã nguồn, nhật ký lỗi, tên tệp) \
+Bạn đang chạy trong codesmith. Cho dù ngữ cảnh tác vụ (mã nguồn, nhật ký lỗi, tên tệp) \
 là tiếng Anh, cho dù phần còn lại của system prompt là tiếng Anh, bạn đều phải sử dụng \
 tiếng Việt cho phần `reasoning_content` (suy nghĩ nội bộ) và câu trả lời cuối cùng. Các từ \
 mã nguồn, đường dẫn tệp, tên công cụ (ví dụ `read_file`, `exec_shell`), biến môi trường, \
@@ -599,7 +599,7 @@ pub const SUGGEST_APPROVAL: &str = include_str!("prompts/approvals/suggest.md");
 pub const NEVER_APPROVAL: &str = include_str!("prompts/approvals/never.md");
 
 /// Compaction relay template — written into the system prompt so the
-/// model knows the format to use when writing `.codewhale/handoff.md`.
+/// model knows the format to use when writing `.codesmith/handoff.md`.
 pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
 
 /// Goal continuation audit template — injected by the engine when a runtime
@@ -761,7 +761,7 @@ fn render_core_tool_group(group: &[&str], core_tools: &[&str]) -> Option<String>
 const AUTHORITY_RECAP: &str = "\
 ## Authority Recap
 
-The Constitution of CodeWhale (Articles I-VII) governs your behavior.
+The Constitution of CodeSmith (Articles I-VII) governs your behavior.
 Tier 1 rules — truthfulness, user agency, tool-use mandate, verification
 duty — are non-negotiable. The user's next message is the highest
 directive within Constitutional bounds. Personality, memory, and handoff
@@ -777,7 +777,7 @@ pub fn compose_prompt_with_approval(
     personality: Personality,
     approval_mode: ApprovalMode,
 ) -> String {
-    compose_prompt_with_approval_and_model(mode, personality, approval_mode, "codewhale")
+    compose_prompt_with_approval_and_model(mode, personality, approval_mode, "codesmith")
 }
 
 /// Compose with explicit model ID for dynamic identity injection.
@@ -898,7 +898,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             project_context_pack_enabled: true,
             locale_tag: "en",
             translation_enabled: false,
-            model_id: "codewhale",
+            model_id: "codesmith",
             show_thinking: true,
         },
     )
@@ -953,7 +953,7 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     };
 
     // 1–2. Mode prompt + project context.
-    // `load_project_context_with_parents` auto-generates .codewhale/instructions.md
+    // `load_project_context_with_parents` auto-generates .codesmith/instructions.md
     // (or .deepseek/instructions.md as fallback) when no context file exists,
     // so the fallback should always be available.
     let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
@@ -1023,7 +1023,7 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     }
 
     // 5. Compaction relay template — so the model knows the format to use
-    //    when writing `.codewhale/handoff.md` on exit / `/compact`.
+    //    when writing `.codesmith/handoff.md` on exit / `/compact`.
     full_prompt.push_str("\n\n");
     full_prompt.push_str(COMPACT_TEMPLATE);
 
@@ -1145,7 +1145,7 @@ mod tests {
 
     /// Discriminator unique to the injected relay block (not present in the
     /// agent prompt's own discussion of the convention).
-    const HANDOFF_BLOCK_MARKER: &str = "left a relay artifact at `.codewhale/handoff.md`";
+    const HANDOFF_BLOCK_MARKER: &str = "left a relay artifact at `.codesmith/handoff.md`";
 
     #[test]
     fn prompt_override_storage_reports_duplicate_sets() {
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn base_prompt_carries_constitutional_preamble() {
         // Pin the load-bearing Constitutional anchors. The exact prose
-        // can evolve, but CodeWhale must keep the Brother Whale preamble,
+        // can evolve, but CodeSmith must keep the Brother Whale preamble,
         // the coordination principle, and the hierarchy of law.
         for phrase in [
             "We begin with Brother Whale",
@@ -1349,7 +1349,7 @@ mod tests {
             "full system prompt must contain the authority recap"
         );
         assert!(
-            text.contains("The Constitution of CodeWhale (Articles I-VII) governs your behavior"),
+            text.contains("The Constitution of CodeSmith (Articles I-VII) governs your behavior"),
             "authority recap must reference the Constitution"
         );
     }
@@ -1467,12 +1467,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
             ApprovalMode::Suggest,
@@ -1481,7 +1481,7 @@ mod tests {
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
         let preamble_marker = "## 语言要求";
-        let base_marker = "You are codewhale";
+        let base_marker = "You are codesmith";
         let preamble_pos = text
             .find(preamble_marker)
             .expect("zh-Hans preamble should be present");
@@ -1539,12 +1539,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
             ApprovalMode::Suggest,
@@ -1584,12 +1584,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: false,
             },
             ApprovalMode::Suggest,
@@ -1639,12 +1639,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
             ApprovalMode::Suggest,
@@ -1745,12 +1745,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: true,
                 locale_tag: "ja",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
         ) {
@@ -1783,12 +1783,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
         ) {
@@ -1818,7 +1818,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
         ) {
@@ -1872,12 +1872,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
         ) {
@@ -1902,12 +1902,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
         ) {
@@ -1970,7 +1970,7 @@ mod tests {
     fn compose_prompt_includes_all_layers() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
         // Base layer
-        assert!(prompt.contains("You are codewhale"));
+        assert!(prompt.contains("You are codesmith"));
         // Personality layer
         assert!(prompt.contains("Personality: Calm"));
         // Mode layer
@@ -2029,7 +2029,7 @@ mod tests {
     #[test]
     fn compose_prompt_deterministic_order() {
         let prompt = compose_prompt(AppMode::Yolo, Personality::Calm);
-        let base_pos = prompt.find("You are codewhale").unwrap();
+        let base_pos = prompt.find("You are codesmith").unwrap();
         let personality_pos = prompt.find("Personality: Calm").unwrap();
         let mode_pos = prompt.find("Mode: YOLO").unwrap();
         let approval_pos = prompt.find("Approval Policy: Auto").unwrap();
@@ -2099,12 +2099,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: Some("Fix transcript corruption"),
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
         ) {
@@ -2135,12 +2135,12 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
-            knowledge_prompt_block: None,
+                knowledge_prompt_block: None,
                 goal_objective: Some("   "),
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
-                model_id: "codewhale",
+                model_id: "codesmith",
                 show_thinking: true,
             },
         ) {
@@ -2260,7 +2260,7 @@ mod tests {
     /// files. Without this clause, embedders that inject instructions via the
     /// config field (rather than via the four hard-coded path conventions)
     /// get their files classified by path — and since those embedder-supplied
-    /// paths aren't `AGENTS.md` / `CLAUDE.md` / `.codewhale/instructions.md` /
+    /// paths aren't `AGENTS.md` / `CLAUDE.md` / `.codesmith/instructions.md` /
     /// `.deepseek/instructions.md`, the model defaults to treating their
     /// imperatives as Tier 7 Memory (the lowest tier per Article VII),
     /// overridable by a single user sentence.
@@ -2336,7 +2336,7 @@ mod tests {
     fn subagent_done_sentinel_section_present() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
         assert!(prompt.contains("Internal Sub-agent Completion Events"));
-        assert!(prompt.contains("<codewhale:subagent.done>"));
+        assert!(prompt.contains("<codesmith:subagent.done>"));
         assert!(prompt.contains("not user input"));
         assert!(prompt.contains("Integration protocol"));
         assert!(prompt.contains("Do not tell the user they pasted sentinels"));

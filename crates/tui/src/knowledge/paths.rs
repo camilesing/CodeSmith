@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 /// Resolve the memory directory path from a memory file path.
 ///
-/// Given the existing `memory_path` (e.g. `~/.codewhale/projects/<hash>/memory.md`),
+/// Given the existing `memory_path` (e.g. `~/.codesmith/projects/<hash>/memory.md`),
 /// the memory directory is the same parent directory with `/memory/` appended.
 /// When a custom `directory_override` is provided, it takes priority.
 pub fn resolve_memory_dir(memory_path: &Path, directory_override: Option<&str>) -> PathBuf {
@@ -47,14 +47,17 @@ mod tests {
 
     #[test]
     fn resolve_dir_from_memory_path() {
-        let mp = Path::new("/home/.codewhale/projects/abc123/memory.md");
+        let mp = Path::new("/home/.codesmith/projects/abc123/memory.md");
         let dir = resolve_memory_dir(mp, None);
-        assert_eq!(dir, PathBuf::from("/home/.codewhale/projects/abc123/memory"));
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/.codesmith/projects/abc123/memory")
+        );
     }
 
     #[test]
     fn resolve_dir_with_override() {
-        let mp = Path::new("/home/.codewhale/projects/abc123/memory.md");
+        let mp = Path::new("/home/.codesmith/projects/abc123/memory.md");
         let dir = resolve_memory_dir(mp, Some("/custom/dir"));
         assert_eq!(dir, PathBuf::from("/custom/dir"));
     }

@@ -1,6 +1,6 @@
-# 🐳 CodeWhale
+# 🐳 CodeSmith
 
-> **このターミナルネイティブのコーディングエージェントは、DeepSeek V4 の 100 万トークンのコンテキストウィンドウとプレフィックスキャッシュ機能を中心に構築されています。`codewhale` ディスパッチャーと `codewhale-tui` ランタイムの Rust バイナリペアとして配布され、Node.js や Python のランタイムは不要です。MCP クライアント、サンドボックス、永続的なタスクキューも標準で同梱されています。**
+> **このターミナルネイティブのコーディングエージェントは、DeepSeek V4 の 100 万トークンのコンテキストウィンドウとプレフィックスキャッシュ機能を中心に構築されています。`codesmith` ディスパッチャーと `codesmith-tui` ランタイムの Rust バイナリペアとして配布され、Node.js や Python のランタイムは不要です。MCP クライアント、サンドボックス、永続的なタスクキューも標準で同梱されています。**
 
 [English README](README.md)
 [简体中文 README](README.zh-CN.md)
@@ -9,36 +9,36 @@
 
 ## インストール
 
-`codewhale` は自己完結型の Rust リリースバイナリのペアとしてインストールされます。`codewhale` はディスパッチャーで、同じ場所にある `codewhale-tui` ランタイムを起動して対話セッションを実行します。npm、Homebrew、Docker は両方を自動でインストールします。Cargo や手動インストールでは、両方を同じディレクトリ（通常は `PATH` 上のディレクトリ）に置いてください。実行に Node.js や Python のランタイムは不要です。
+`codesmith` は自己完結型の Rust リリースバイナリのペアとしてインストールされます。`codesmith` はディスパッチャーで、同じ場所にある `codesmith-tui` ランタイムを起動して対話セッションを実行します。npm、Homebrew、Docker は両方を自動でインストールします。Cargo や手動インストールでは、両方を同じディレクトリ（通常は `PATH` 上のディレクトリ）に置いてください。実行に Node.js や Python のランタイムは不要です。
 
 ```bash
 # 1. npm — すでに Node を使っているなら最も簡単。npm パッケージは
 #    GitHub Releases から対応するビルド済みバイナリペアをダウンロードする
-#    薄いインストーラーであり、codewhale 本体に Node ランタイム依存を加えるものではありません。
-npm install -g codewhale
+#    薄いインストーラーであり、codesmith 本体に Node ランタイム依存を加えるものではありません。
+npm install -g codesmith
 
 # 2. Cargo — Node 不要。2 つの crate を両方インストールします。
-cargo install codewhale-cli --locked   # `codewhale` (エントリーポイント)
-cargo install codewhale-tui     --locked   # `codewhale-tui` (TUI バイナリ)
+cargo install codesmith-cli --locked   # `codesmith` (エントリーポイント)
+cargo install codesmith-tui     --locked   # `codesmith-tui` (TUI バイナリ)
 
 # 3. Homebrew — macOS パッケージマネージャ。
-#    tap/formula 名は旧名のままですが、codewhale と codewhale-tui をインストールします。
+#    tap/formula 名は旧名のままですが、codesmith と codesmith-tui をインストールします。
 brew tap Hmbown/deepseek-tui
 brew install deepseek-tui
 
 # 4. 直接ダウンロード — GitHub Releases のプラットフォームアーカイブ。
-#    https://github.com/Hmbown/CodeWhale/releases
-#    アーカイブには codewhale と codewhale-tui とインストールスクリプトが含まれます。
+#    https://github.com/Hmbown/CodeSmith/releases
+#    アーカイブには codesmith と codesmith-tui とインストールスクリプトが含まれます。
 #    個別バイナリもスクリプト用に添付されています。手動ではペアを同じ場所に置いてください。
 
 # 5. Docker — ビルド済みリリースイメージ。
-docker volume create codewhale-home
+docker volume create codesmith-home
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.codewhale \
+  -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:latest
+  ghcr.io/hmbown/codesmith:latest
 ```
 
 > 中国本土では、`--registry=https://registry.npmmirror.com` を指定して npm 経由のダウンロードを高速化するか、下記の[Cargo ミラー](#中国--ミラーフレンドリーなインストール)を利用してください。
@@ -46,32 +46,32 @@ docker run --rm -it \
 既にインストール済みの場合は、インストール方法に合わせて更新してください:
 
 ```bash
-codewhale update
-npm install -g codewhale@latest
+codesmith update
+npm install -g codesmith@latest
 brew update && brew upgrade deepseek-tui
-cargo install codewhale-cli --locked --force
-cargo install codewhale-tui     --locked --force
+cargo install codesmith-cli --locked --force
+cargo install codesmith-tui     --locked --force
 ```
 
-> codewhale update は --proxy をサポートしており、プロキシ経由で更新できます
-> 例: codewhale update --proxy https://localhost:7897
+> codesmith update は --proxy をサポートしており、プロキシ経由で更新できます
+> 例: codesmith update --proxy https://localhost:7897
 
-[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/codewhale)](https://www.npmjs.com/package/codewhale)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/Hmbown/CodeWhale)
+[![CI](https://github.com/Hmbown/CodeSmith/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeSmith/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/codesmith)](https://www.npmjs.com/package/codesmith)
+[![crates.io](https://img.shields.io/crates/v/codesmith-cli?label=crates.io)](https://crates.io/crates/codesmith-cli)
+[![DeepWiki](https://img.shields.io/badge/DeepWiki-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/Hmbown/CodeSmith)
 
 <a href="https://www.buymeacoffee.com/hmbown" target="_blank"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-5F7FFF?style=for-the-badge&logo=buymeacoffee&logoColor=white" alt="Buy me a coffee" /></a>
 
-![codewhale スクリーンショット](assets/screenshot.png)
+![codesmith スクリーンショット](assets/screenshot.png)
 
 ---
 
-## codewhale とは？
+## codesmith とは？
 
 モデルは質問に答えます。エージェントはタスクを完了します。その差がハーネス——モデルが迷走しないようにするルール、証拠、フィードバックのシステムです。
 
-CodeWhale はそのハーネスであり、DeepSeek V4 を中心に構築され、3つの原則に導かれています：
+CodeSmith はそのハーネスであり、DeepSeek V4 を中心に構築され、3つの原則に導かれています：
 
 | 原則 | 仕組み |
 |---|---|
@@ -79,13 +79,13 @@ CodeWhale はそのハーネスであり、DeepSeek V4 を中心に構築され�
 | **明確な管轄権** | 9階層の権威を持つ成文憲法。ユーザーの意図が古い指示より優先。検証が自信より優先。 |
 | **再帰的改善** | V4 がハーネスの一部を書いた。ハーネスが改善されると V4 はより効果的になり、さらにハーネスを改善する。毎ターンがより強くなる。 |
 
-オープンソース、ターミナルネイティブ、`codewhale` / `codewhale-tui` の Rust バイナリペアとして提供されています。
+オープンソース、ターミナルネイティブ、`codesmith` / `codesmith-tui` の Rust バイナリペアとして提供されています。
 
 ## ハーネスの仕組み
 
 エージェントモデルは大規模な相反する情報を扱います：ユーザーの意図、プロジェクトルール、システムデフォルト、ツール出力、古いメモリが単一ターンで権威を競い合います。LLM が裁判官として機能するには管轄権が必要です——衝突したとき、どの情報源が勝つのか？
 
-CodeWhale は**憲法**（`prompts/base.md`）でこれに答えます。これは形式化された法の階層です——第七条は憲法自体の条項から前セッションのハンドオフまで、9 つの情報源をランク付けします。ユーザーの現在のメッセージは古いプロジェクト指示より上。ライブのツール出力は仮定より上。検証は自信より上。モデルは毎ターン明確な権威チェーンを継承し、どの指示に従うべきか推測する必要がありません。
+CodeSmith は**憲法**（`prompts/base.md`）でこれに答えます。これは形式化された法の階層です——第七条は憲法自体の条項から前セッションのハンドオフまで、9 つの情報源をランク付けします。ユーザーの現在のメッセージは古いプロジェクト指示より上。ライブのツール出力は仮定より上。検証は自信より上。モデルは毎ターン明確な権威チェーンを継承し、どの指示に従うべきか推測する必要がありません。
 
 7 つの条項が階層の上にあり、モデルのアイデンティティ、義務、エージェンシーを定義します：検証義務（第5条——すべての行動は証拠を残し、信念で成功を宣言しない）、協調の遺産（第6条——次の知性のためにワークスペースを可読に保つ）、真実優先条項（第2条——下位のルールで上書きできない）。
 
@@ -107,7 +107,7 @@ Fin——thinking off の安価な Flash 呼び出し——がターンごとに
 
 ## ハーネス
 
-`codewhale`（ディスパッチャー CLI）→ `codewhale-tui`（コンパニオンバイナリ）→ ratatui インターフェース ↔ 非同期エンジン ↔ OpenAI 互換のストリーミングクライアント。ツール呼び出しは型付きレジストリ（シェル、ファイル操作、Git、Web、サブエージェント、MCP、RLM）を経由してルーティングされ、結果はトランスクリプトへとストリーム返送されます。エンジンはセッション状態、ターン管理、永続タスクキューを管理し、LSP サブシステムは編集後の診断を次の推論ステップ前にモデルのコンテキストへ供給します。
+`codesmith`（ディスパッチャー CLI）→ `codesmith-tui`（コンパニオンバイナリ）→ ratatui インターフェース ↔ 非同期エンジン ↔ OpenAI 互換のストリーミングクライアント。ツール呼び出しは型付きレジストリ（シェル、ファイル操作、Git、Web、サブエージェント、MCP、RLM）を経由してルーティングされ、結果はトランスクリプトへとストリーム返送されます。エンジンはセッション状態、ターン管理、永続タスクキューを管理し、LSP サブシステムは編集後の診断を次の推論ステップ前にモデルのコンテキストへ供給します。
 
 詳しくは [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) を参照してください。
 
@@ -116,31 +116,31 @@ Fin——thinking off の安価な Flash 呼び出し——がターンごとに
 ## クイックスタート
 
 ```bash
-npm install -g codewhale
-codewhale --version
-codewhale --model auto
+npm install -g codesmith
+codesmith --version
+codesmith --model auto
 ```
 
 ビルド済みバイナリペアとプラットフォームアーカイブは **Linux x64**、**Linux ARM64**（v0.8.8 以降）、**macOS x64**、**macOS ARM64**、**Windows x64** 向けに公開されています。その他のターゲット（musl、riscv64、FreeBSD など）は [ソースからのインストール](#install-from-source) または [docs/INSTALL.md](docs/INSTALL.md) を参照してください。
 
-初回起動時に [DeepSeek API キー](https://platform.deepseek.com/api_keys) の入力を求められます。キーは `~/.codewhale/config.toml`（旧 `~/.deepseek/config.toml` も互換性維持）に保存されるため、OS のクレデンシャルプロンプトなしに任意のディレクトリから利用できます。
+初回起動時に [DeepSeek API キー](https://platform.deepseek.com/api_keys) の入力を求められます。キーは `~/.codesmith/config.toml`（旧 `~/.deepseek/config.toml` も互換性維持）に保存されるため、OS のクレデンシャルプロンプトなしに任意のディレクトリから利用できます。
 
 事前に設定することもできます:
 
 ```bash
-codewhale auth set --provider deepseek   # ~/.codewhale/config.toml に保存
+codesmith auth set --provider deepseek   # ~/.codesmith/config.toml に保存
 
 export DEEPSEEK_API_KEY="YOUR_KEY"      # 環境変数による代替方法。非対話シェルでは ~/.zshenv を使用
-codewhale
+codesmith
 
-codewhale doctor                         # セットアップを検証
+codesmith doctor                         # セットアップを検証
 ```
 
-> 保存済みキーをローテーション／削除するには: `codewhale auth clear --provider deepseek`。
+> 保存済みキーをローテーション／削除するには: `codesmith auth clear --provider deepseek`。
 
 ### Linux ARM64（Raspberry Pi、Asahi、Graviton、HarmonyOS PC）
 
-`npm i -g codewhale` は v0.8.8 以降、glibc ベースの ARM64 Linux で動作します。[Releases ページ](https://github.com/Hmbown/CodeWhale/releases) からビルド済みバイナリをダウンロードし、`PATH` 上に並べて配置することもできます。
+`npm i -g codesmith` は v0.8.8 以降、glibc ベースの ARM64 Linux で動作します。[Releases ページ](https://github.com/Hmbown/CodeSmith/releases) からビルド済みバイナリをダウンロードし、`PATH` 上に並べて配置することもできます。
 
 ### 中国 / ミラーフレンドリーなインストール
 
@@ -158,24 +158,24 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 その後、両方のバイナリをインストールしてください（ディスパッチャーは実行時に TUI へ委譲します）:
 
 ```bash
-cargo install codewhale-cli --locked   # `codewhale` を提供
-cargo install codewhale-tui     --locked   # `codewhale-tui` を提供
-codewhale --version
+cargo install codesmith-cli --locked   # `codesmith` を提供
+cargo install codesmith-tui     --locked   # `codesmith-tui` を提供
+codesmith --version
 ```
 
-ビルド済みバイナリは [GitHub Releases](https://github.com/Hmbown/CodeWhale/releases) からもダウンロードできます。ミラーされたリリースアセットには `DEEPSEEK_TUI_RELEASE_BASE_URL` を使ってください。
+ビルド済みバイナリは [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases) からもダウンロードできます。ミラーされたリリースアセットには `DEEPSEEK_TUI_RELEASE_BASE_URL` を使ってください。
 
 ### Windows（Scoop）
 
-[Scoop](https://scoop.sh) は Windows のパッケージマネージャです。`codewhale`
+[Scoop](https://scoop.sh) は Windows のパッケージマネージャです。`codesmith`
 パッケージは Scoop main bucket にありますが、manifest は GitHub/npm/Cargo
 リリースより遅れることがあります。先に更新し、インストール後に
-`codewhale --version` で確認してください:
+`codesmith --version` で確認してください:
 
 ```bash
 scoop update
-scoop install codewhale
-codewhale --version
+scoop install codesmith
+codesmith --version
 ```
 
 
@@ -189,11 +189,11 @@ codewhale --version
 #   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
 #   sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
 
-git clone https://github.com/Hmbown/CodeWhale.git
-cd CodeWhale
+git clone https://github.com/Hmbown/CodeSmith.git
+cd CodeSmith
 
-cargo install --path crates/cli --locked   # Rust 1.88+ が必要。`codewhale` を提供
-cargo install --path crates/tui --locked   # `codewhale-tui` を提供
+cargo install --path crates/cli --locked   # Rust 1.88+ が必要。`codesmith` を提供
+cargo install --path crates/tui --locked   # `codesmith-tui` を提供
 ```
 
 両方のバイナリが必要です。クロスコンパイルとプラットフォーム固有の注意事項: [docs/INSTALL.md](docs/INSTALL.md)。
@@ -204,48 +204,48 @@ cargo install --path crates/tui --locked   # `codewhale-tui` を提供
 
 ```bash
 # NVIDIA NIM
-codewhale auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
-codewhale --provider nvidia-nim
+codesmith auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
+codesmith --provider nvidia-nim
 
 # AtlasCloud
-codewhale auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
-codewhale --provider atlascloud
+codesmith auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
+codesmith --provider atlascloud
 
 # Wanjie Ark
-codewhale auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
-codewhale --provider wanjie-ark --model deepseek-reasoner
+codesmith auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
+codesmith --provider wanjie-ark --model deepseek-reasoner
 
 # OpenRouter
-codewhale auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
-codewhale --provider openrouter --model deepseek/deepseek-v4-pro
-codewhale --provider openrouter --model arcee-ai/trinity-large-thinking
-codewhale --provider openrouter --model qwen/qwen3.7-max
+codesmith auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
+codesmith --provider openrouter --model deepseek/deepseek-v4-pro
+codesmith --provider openrouter --model arcee-ai/trinity-large-thinking
+codesmith --provider openrouter --model qwen/qwen3.7-max
 
 # Xiaomi MiMo
-codewhale auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_MIMO_API_KEY"
-codewhale --provider xiaomi-mimo --model mimo-v2.5-pro
+codesmith auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_MIMO_API_KEY"
+codesmith --provider xiaomi-mimo --model mimo-v2.5-pro
 
 # Novita
-codewhale auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
-codewhale --provider novita --model deepseek/deepseek-v4-pro
+codesmith auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
+codesmith --provider novita --model deepseek/deepseek-v4-pro
 
 # Fireworks
-codewhale auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
-codewhale --provider fireworks --model deepseek-v4-pro
+codesmith auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
+codesmith --provider fireworks --model deepseek-v4-pro
 
 # 汎用 OpenAI 互換エンドポイント
-codewhale auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
-OPENAI_BASE_URL="https://openai-compatible.example/v4" codewhale --provider openai --model glm-5
+codesmith auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
+OPENAI_BASE_URL="https://openai-compatible.example/v4" codesmith --provider openai --model glm-5
 
 # セルフホスト SGLang
-SGLANG_BASE_URL="http://localhost:30000/v1" codewhale --provider sglang --model deepseek-v4-flash
+SGLANG_BASE_URL="http://localhost:30000/v1" codesmith --provider sglang --model deepseek-v4-flash
 
 # セルフホスト vLLM
-VLLM_BASE_URL="http://localhost:8000/v1" codewhale --provider vllm --model deepseek-v4-flash
+VLLM_BASE_URL="http://localhost:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 
 # セルフホスト Ollama
-ollama pull codewhale-coder:1.3b
-codewhale --provider ollama --model codewhale-coder:1.3b
+ollama pull codesmith-coder:1.3b
+codesmith --provider ollama --model codesmith-coder:1.3b
 ```
 
 TUI 内では `/provider` でプロバイダーピッカー、`/model` でローカルのモデル/思考モードピッカーを開けます。`/provider openrouter` や `/model <id>` で直接切り替え、`/models` で対応プロバイダーのライブモデル一覧を明示的に取得できます。
@@ -261,30 +261,30 @@ TUI 内では `/provider` でプロバイダーピッカー、`/model` でロー
 ## 使い方
 
 ```bash
-codewhale                                         # インタラクティブ TUI
-codewhale "explain this function"                 # ワンショットプロンプト
-codewhale exec --auto --output-format stream-json "fix this bug"  # NDJSON バックエンドストリーム
-codewhale exec --resume <SESSION_ID> "follow up"  # 非対話セッションを継続
-codewhale --model deepseek-v4-flash "summarize"   # モデルの上書き
-codewhale --model auto "fix this bug"             # モデルと推論強度を自動選択
-codewhale --yolo                                  # ツールを自動承認
-codewhale auth set --provider deepseek            # API キーの保存
-codewhale doctor                                  # セットアップと接続性のチェック
-codewhale doctor --json                           # 機械可読の診断
-codewhale setup --status                          # 読み取り専用のセットアップ状態
-codewhale setup --tools --plugins                 # ツール／プラグインディレクトリの雛形作成
-codewhale models                                  # ライブ API モデル一覧
-codewhale sessions                                # 保存済みセッション一覧
-codewhale resume --last                           # 最新セッションを再開
-codewhale resume <SESSION_ID>                     # UUID 指定で特定セッションを再開
-codewhale fork <SESSION_ID>                       # 保存済みセッションを兄弟パスに fork
-codewhale serve --http                            # HTTP/SSE API サーバー
-codewhale serve --acp                             # Zed/カスタムエージェント向け ACP stdio アダプター
-codewhale run pr <N>                              # PR を取得しレビュープロンプトに先行投入
-codewhale mcp list                                # 設定された MCP サーバー一覧
-codewhale mcp validate                            # MCP の設定／接続性を検証
-codewhale mcp-server                              # ディスパッチャー MCP stdio サーバーを実行
-codewhale update                                  # バイナリ更新の確認と適用
+codesmith                                         # インタラクティブ TUI
+codesmith "explain this function"                 # ワンショットプロンプト
+codesmith exec --auto --output-format stream-json "fix this bug"  # NDJSON バックエンドストリーム
+codesmith exec --resume <SESSION_ID> "follow up"  # 非対話セッションを継続
+codesmith --model deepseek-v4-flash "summarize"   # モデルの上書き
+codesmith --model auto "fix this bug"             # モデルと推論強度を自動選択
+codesmith --yolo                                  # ツールを自動承認
+codesmith auth set --provider deepseek            # API キーの保存
+codesmith doctor                                  # セットアップと接続性のチェック
+codesmith doctor --json                           # 機械可読の診断
+codesmith setup --status                          # 読み取り専用のセットアップ状態
+codesmith setup --tools --plugins                 # ツール／プラグインディレクトリの雛形作成
+codesmith models                                  # ライブ API モデル一覧
+codesmith sessions                                # 保存済みセッション一覧
+codesmith resume --last                           # 最新セッションを再開
+codesmith resume <SESSION_ID>                     # UUID 指定で特定セッションを再開
+codesmith fork <SESSION_ID>                       # 保存済みセッションを兄弟パスに fork
+codesmith serve --http                            # HTTP/SSE API サーバー
+codesmith serve --acp                             # Zed/カスタムエージェント向け ACP stdio アダプター
+codesmith run pr <N>                              # PR を取得しレビュープロンプトに先行投入
+codesmith mcp list                                # 設定された MCP サーバー一覧
+codesmith mcp validate                            # MCP の設定／接続性を検証
+codesmith mcp-server                              # ディスパッチャー MCP stdio サーバーを実行
+codesmith update                                  # バイナリ更新の確認と適用
 ```
 
 ### キーボードショートカット
@@ -319,7 +319,7 @@ codewhale update                                  # バイナリ更新の確認�
 
 ## 設定
 
-ユーザー設定: `~/.codewhale/config.toml`（旧 `~/.deepseek/config.toml` も互換性維持）。プロジェクトオーバーレイ: `<workspace>/.codewhale/config.toml`（旧 `<workspace>/.deepseek/config.toml`）（拒否される項目: `api_key`、`base_url`、`provider`、`mcp_config_path`）。すべてのオプションは [config.example.toml](config.example.toml) にあります。
+ユーザー設定: `~/.codesmith/config.toml`（旧 `~/.deepseek/config.toml` も互換性維持）。プロジェクトオーバーレイ: `<workspace>/.codesmith/config.toml`（旧 `<workspace>/.deepseek/config.toml`）（拒否される項目: `api_key`、`base_url`、`provider`、`mcp_config_path`）。すべてのオプションは [config.example.toml](config.example.toml) にあります。
 
 主な環境変数:
 
@@ -330,7 +330,7 @@ codewhale update                                  # バイナリ更新の確認�
 | `DEEPSEEK_HTTP_HEADERS` | 任意のモデルリクエストヘッダー |
 | `DEEPSEEK_MODEL` | デフォルトモデル |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | ストリームのアイドルタイムアウト秒数 |
-| `CODEWHALE_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek`（デフォルト）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`volcengine`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm`、`ollama` |
+| `CODESMITH_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek`（デフォルト）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`volcengine`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm`、`ollama` |
 | `DEEPSEEK_PROFILE` | 設定プロファイル名 |
 | `DEEPSEEK_MEMORY` | `on` に設定するとユーザーメモリを有効化 |
 | `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | 信頼できるネットワークで非ローカル `http://` API ベース URL を許可 |
@@ -374,10 +374,10 @@ UI のロケールはモデルの言語とは別です。`settings.toml` で `lo
 
 ## 自分のスキルを公開する
 
-codewhale はワークスペースのディレクトリ（`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills`）とグローバルな `~/.codewhale/skills`（旧 `~/.deepseek/skills` も互換性維持）からスキルを発見します。各スキルは `SKILL.md` ファイルを持つディレクトリです:
+codesmith はワークスペースのディレクトリ（`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills`）とグローバルな `~/.codesmith/skills`（旧 `~/.deepseek/skills` も互換性維持）からスキルを発見します。各スキルは `SKILL.md` ファイルを持つディレクトリです:
 
 ```text
-~/.codewhale/skills/my-skill/
+~/.codesmith/skills/my-skill/
 └── SKILL.md
 ```
 
@@ -452,7 +452,7 @@ v0.8.48 でマージまたは取り込まれた貢献者: **[@cy2311](https://gi
 
 ## コントリビューション
 
-[CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。プルリクエストを歓迎します。良い初コントリビューションは [Open Issues](https://github.com/Hmbown/CodeWhale/issues) を確認してください。
+[CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。プルリクエストを歓迎します。良い初コントリビューションは [Open Issues](https://github.com/Hmbown/CodeSmith/issues) を確認してください。
 
 > [!Note]
 > *DeepSeek Inc. とは関係ありません。*
@@ -463,4 +463,4 @@ v0.8.48 でマージまたは取り込まれた貢献者: **[@cy2311](https://gi
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/CodeWhale&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeWhale&type=date&logscale=&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/CodeSmith&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeSmith&type=date&logscale=&legend=top-left)

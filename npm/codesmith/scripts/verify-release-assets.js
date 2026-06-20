@@ -11,15 +11,16 @@ const pkg = require("../package.json");
 
 function resolveBinaryVersion() {
   const configuredVersion =
+    process.env.CODESMITH_VERSION ||
     process.env.DEEPSEEK_TUI_VERSION ||
     process.env.DEEPSEEK_VERSION ||
-    pkg.codewhaleBinaryVersion || pkg.deepseekBinaryVersion ||
+    pkg.codesmithBinaryVersion || pkg.deepseekBinaryVersion ||
     pkg.version;
   return String(configuredVersion).trim();
 }
 
 function resolveRepo() {
-  return process.env.DEEPSEEK_TUI_GITHUB_REPO || process.env.DEEPSEEK_GITHUB_REPO || "Hmbown/CodeWhale";
+  return process.env.CODESMITH_GITHUB_REPO || process.env.DEEPSEEK_TUI_GITHUB_REPO || process.env.DEEPSEEK_GITHUB_REPO || "Hmbown/CodeSmith";
 }
 
 function requestStatus(url, method = "HEAD", redirects = 0) {
@@ -33,7 +34,7 @@ function requestStatus(url, method = "HEAD", redirects = 0) {
       {
         method,
         headers: {
-          "User-Agent": "codewhale-npm-release-check",
+          "User-Agent": "codesmith-npm-release-check",
         },
       },
       (res) => {
@@ -71,7 +72,7 @@ async function downloadText(url) {
         url,
         {
           headers: {
-            "User-Agent": "codewhale-npm-release-check",
+            "User-Agent": "codesmith-npm-release-check",
           },
         },
         (res) => {

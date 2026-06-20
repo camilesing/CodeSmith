@@ -42,7 +42,7 @@ impl Engine {
         // Signal to the terminal / taskbar that a turn is in progress
         // (OSC 9 ; 4 indeterminate progress + title spinner).
         crate::tui::notifications::set_taskbar_progress_busy();
-        crate::tui::notifications::start_title_animation("CodeWhale");
+        crate::tui::notifications::start_title_animation("CodeSmith");
 
         // KoD prefetch: spawn at turn start so the side-query runs
         // concurrently with streaming and tool execution.
@@ -181,7 +181,9 @@ impl Engine {
                             self.session.messages = result.messages;
                             self.merge_compaction_summary(result.summary_prompt);
                             self.session.circuit_breaker.record_success();
-                            crate::compaction::post_compact_cleanup::post_compact_cleanup(&mut self.session);
+                            crate::compaction::post_compact_cleanup::post_compact_cleanup(
+                                &mut self.session,
+                            );
                             self.emit_session_updated().await;
                             let removed = auto_messages_before.saturating_sub(auto_messages_after);
                             let status = if result.retries_used > 0 {
@@ -389,7 +391,10 @@ impl Engine {
                     if is_context_length_error_message(&message)
                         && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
                         && self
-                            .recover_context_overflow(client.as_ref(), "provider context-length rejection")
+                            .recover_context_overflow(
+                                client.as_ref(),
+                                "provider context-length rejection",
+                            )
                             .await
                     {
                         context_recovery_attempts = context_recovery_attempts.saturating_add(1);
@@ -976,7 +981,7 @@ impl Engine {
                 // streaming with no tool calls — but if it has direct children
                 // still running (or completions queued from children that
                 // finished while we were inferring), surface their
-                // `<codewhale:subagent.done>` sentinels into the transcript and
+                // `<codesmith:subagent.done>` sentinels into the transcript and
                 // resume instead of ending the turn. This fulfils the contract
                 // already documented in `prompts/base.md`: the parent is
                 // promised it'll see the sentinel when a child finishes.
@@ -1308,9 +1313,12 @@ impl Engine {
                             .and_then(|r| r.get(&tool_name))
                             .map(|t| t.capabilities())
                             .unwrap_or_default();
-                        let is_read_only_tool = tool_caps.contains(&crate::tools::spec::ToolCapability::ReadOnly)
-                            && !tool_caps.contains(&crate::tools::spec::ToolCapability::WritesFiles)
-                            && !tool_caps.contains(&crate::tools::spec::ToolCapability::ExecutesCode);
+                        let is_read_only_tool = tool_caps
+                            .contains(&crate::tools::spec::ToolCapability::ReadOnly)
+                            && !tool_caps
+                                .contains(&crate::tools::spec::ToolCapability::WritesFiles)
+                            && !tool_caps
+                                .contains(&crate::tools::spec::ToolCapability::ExecutesCode);
                         if !is_read_only_tool {
                             blocked_error = Some(ToolError::permission_denied(format!(
                                 "Tool '{tool_name}' is blocked in plan mode. Only read-only tools \
@@ -2204,13 +2212,13 @@ fn subagent_completion_runtime_message(payload: &str) -> Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: format!(
-                "<codewhale:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
+                "<codesmith:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
 This is an internal runtime event, not user input. Use the sub-agent completion \
 data below to continue coordinating the current task. Do not tell the user they \
 pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
 XML unless the user explicitly asks to debug sub-agent internals.\n\n\
 {payload}\n\
-</codewhale:runtime_event>"
+</codesmith:runtime_event>"
             ),
             cache_control: None,
         }],
@@ -2360,7 +2368,7 @@ mod tests {
     #[test]
     fn subagent_completion_handoff_is_internal_user_message() {
         let message = subagent_completion_runtime_message(
-            "Build passed\n<codewhale:subagent.done>{\"agent_id\":\"agent_a\"}</codewhale:subagent.done>",
+            "Build passed\n<codesmith:subagent.done>{\"agent_id\":\"agent_a\"}</codesmith:subagent.done>",
         );
 
         // Must be "user", not "system": a system message appended mid-stream
@@ -2374,7 +2382,7 @@ mod tests {
         };
         assert!(text.contains("internal runtime event, not user input"));
         assert!(text.contains("Do not tell the user they pasted sentinels"));
-        assert!(text.contains("<codewhale:subagent.done>"));
+        assert!(text.contains("<codesmith:subagent.done>"));
         assert!(text.contains("Build passed"));
     }
 
@@ -2638,8 +2646,14 @@ mod tests {
                 cache_control: None,
             }],
         }];
-        assert_eq!(resolve_auto_effort(Some("high"), &messages), Some("high".to_string()));
-        assert_eq!(resolve_auto_effort(Some("low"), &messages), Some("low".to_string()));
+        assert_eq!(
+            resolve_auto_effort(Some("high"), &messages),
+            Some("high".to_string())
+        );
+        assert_eq!(
+            resolve_auto_effort(Some("low"), &messages),
+            Some("low".to_string())
+        );
     }
 
     #[test]
