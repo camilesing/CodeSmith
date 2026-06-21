@@ -69,6 +69,7 @@ project_overhaul_prompt.md
 # Local runtime state
 .codesmith/
 .deepseek/
+/jobs/
 **/session_*.json
 *.db
 npm/*/bin/downloads/
