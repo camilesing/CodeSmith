@@ -8,7 +8,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use dotenvy::dotenv;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
@@ -856,7 +855,6 @@ async fn main() -> Result<()> {
     // suspend path, and SIGTERM / SIGHUP from the OS.
     spawn_signal_cleanup_task();
 
-    dotenv().ok();
     let cli = Cli::parse();
     logging::set_verbose(cli.verbose || logging::env_requests_verbose_logging());
 
@@ -3683,6 +3681,56 @@ fn resolve_workspace(cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WorkspaceInitBoundary {
+    workspace_trusted_at_start: bool,
+    bypassed_by_explicit_user_choice: bool,
+    allow_workspace_initialization: bool,
+}
+
+fn resolve_workspace_init_boundary(
+    workspace: &Path,
+    skip_onboarding: bool,
+    yolo: bool,
+) -> WorkspaceInitBoundary {
+    let workspace_trusted_at_start = !crate::tui::onboarding::needs_trust(workspace);
+    let bypassed_by_explicit_user_choice = skip_onboarding || yolo;
+    let allow_workspace_initialization =
+        workspace_trusted_at_start || bypassed_by_explicit_user_choice;
+
+    WorkspaceInitBoundary {
+        workspace_trusted_at_start,
+        bypassed_by_explicit_user_choice,
+        allow_workspace_initialization,
+    }
+}
+
+fn should_load_project_config(no_project_config: bool, boundary: &WorkspaceInitBoundary) -> bool {
+    !no_project_config && boundary.allow_workspace_initialization
+}
+
+fn load_workspace_dotenv_if_allowed(workspace: &Path, boundary: &WorkspaceInitBoundary) -> bool {
+    if !boundary.allow_workspace_initialization {
+        return false;
+    }
+
+    let dotenv_path = workspace.join(".env");
+    if !dotenv_path.is_file() {
+        return false;
+    }
+
+    match dotenvy::from_path(&dotenv_path) {
+        Ok(_) => true,
+        Err(err) => {
+            logging::warn(format!(
+                "Failed to load workspace .env at {}: {err}",
+                dotenv_path.display()
+            ));
+            false
+        }
+    }
+}
+
 fn load_config_from_cli(cli: &Cli) -> Result<Config> {
     let profile = cli
         .profile
@@ -4966,11 +5014,22 @@ async fn run_interactive(
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
+    let startup_yolo = cli.yolo || config.yolo.unwrap_or(false);
+    let boundary = resolve_workspace_init_boundary(&workspace, cli.skip_onboarding, startup_yolo);
+    let dotenv_loaded = load_workspace_dotenv_if_allowed(&workspace, &boundary);
+    let base_config;
+    let config = if dotenv_loaded {
+        base_config = load_config_from_cli(cli)?;
+        &base_config
+    } else {
+        config
+    };
+
     // Merge project-level config from $WORKSPACE/.codesmith/config.toml
-    // or legacy $WORKSPACE/.deepseek/config.toml
-    // unless --no-project-config was passed (#485).
+    // or legacy $WORKSPACE/.deepseek/config.toml only after startup is allowed
+    // to read workspace-controlled initialization inputs (#485).
     let mut merged_config = config.clone();
-    if !cli.no_project_config {
+    if should_load_project_config(cli.no_project_config, &boundary) {
         merge_project_config(&mut merged_config, &workspace);
     }
     let config = &merged_config;
@@ -6575,6 +6634,75 @@ mod project_config_tests {
             }
         }
         result
+    }
+
+    #[test]
+    fn startup_boundary_blocks_workspace_initialization_until_trusted() {
+        let tmp = tempdir().expect("tempdir");
+
+        let boundary = resolve_workspace_init_boundary(tmp.path(), false, false);
+
+        assert!(!boundary.workspace_trusted_at_start);
+        assert!(!boundary.bypassed_by_explicit_user_choice);
+        assert!(!boundary.allow_workspace_initialization);
+        assert!(!should_load_project_config(false, &boundary));
+    }
+
+    #[test]
+    fn startup_boundary_allows_workspace_initialization_for_trusted_workspace() {
+        let tmp = tempdir().expect("tempdir");
+        let legacy_trust_dir = tmp.path().join(".deepseek");
+        fs::create_dir_all(&legacy_trust_dir).expect("mkdir trust marker dir");
+        fs::write(legacy_trust_dir.join("trusted"), "trusted\n").expect("write trust marker");
+
+        let boundary = resolve_workspace_init_boundary(tmp.path(), false, false);
+
+        assert!(boundary.workspace_trusted_at_start);
+        assert!(!boundary.bypassed_by_explicit_user_choice);
+        assert!(boundary.allow_workspace_initialization);
+        assert!(should_load_project_config(false, &boundary));
+        assert!(!should_load_project_config(true, &boundary));
+    }
+
+    #[test]
+    fn startup_boundary_preserves_yolo_and_skip_onboarding_bypass() {
+        let tmp = tempdir().expect("tempdir");
+
+        let yolo = resolve_workspace_init_boundary(tmp.path(), false, true);
+        assert!(!yolo.workspace_trusted_at_start);
+        assert!(yolo.bypassed_by_explicit_user_choice);
+        assert!(yolo.allow_workspace_initialization);
+
+        let skip_onboarding = resolve_workspace_init_boundary(tmp.path(), true, false);
+        assert!(!skip_onboarding.workspace_trusted_at_start);
+        assert!(skip_onboarding.bypassed_by_explicit_user_choice);
+        assert!(skip_onboarding.allow_workspace_initialization);
+    }
+
+    #[test]
+    fn workspace_dotenv_load_is_gated_by_startup_boundary() {
+        let _guard = crate::test_support::lock_test_env();
+        let tmp = tempdir().expect("tempdir");
+        let key = "CODESMITH_TEST_STARTUP_DOTENV_GATE";
+        unsafe { std::env::remove_var(key) };
+        fs::write(tmp.path().join(".env"), format!("{key}=loaded\n")).expect("write .env");
+
+        let blocked = WorkspaceInitBoundary {
+            workspace_trusted_at_start: false,
+            bypassed_by_explicit_user_choice: false,
+            allow_workspace_initialization: false,
+        };
+        assert!(!load_workspace_dotenv_if_allowed(tmp.path(), &blocked));
+        assert!(std::env::var(key).is_err());
+
+        let allowed = WorkspaceInitBoundary {
+            workspace_trusted_at_start: true,
+            bypassed_by_explicit_user_choice: false,
+            allow_workspace_initialization: true,
+        };
+        assert!(load_workspace_dotenv_if_allowed(tmp.path(), &allowed));
+        assert_eq!(std::env::var(key).as_deref(), Ok("loaded"));
+        unsafe { std::env::remove_var(key) };
     }
 
     #[test]

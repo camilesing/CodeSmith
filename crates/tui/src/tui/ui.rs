@@ -246,6 +246,20 @@ const BEGIN_SYNC_UPDATE: &[u8] = b"\x1b[?2026h";
 /// the complete frame now.
 const END_SYNC_UPDATE: &[u8] = b"\x1b[?2026l";
 
+fn should_fire_session_start_hook(app: &App) -> bool {
+    !app.session_start_hook_fired && app.onboarding != OnboardingState::TrustDirectory
+}
+
+fn fire_session_start_hook_if_ready(app: &mut App) {
+    if !should_fire_session_start_hook(app) {
+        return;
+    }
+
+    let context = app.base_hook_context();
+    let _ = app.execute_hooks(HookEvent::SessionStart, &context);
+    app.session_start_hook_fired = true;
+}
+
 /// Run the interactive TUI event loop.
 ///
 /// # Examples
@@ -554,11 +568,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             .await;
     }
 
-    // Fire session start hook
-    {
-        let context = app.base_hook_context();
-        let _ = app.execute_hooks(HookEvent::SessionStart, &context);
-    }
+    fire_session_start_hook_if_ready(&mut app);
 
     // Spawn the persistence actor so checkpoint/session-save I/O stays off
     // the UI thread.  The actor serialises + writes to disk in a dedicated
@@ -583,8 +593,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     automation_cancel.cancel();
     automation_scheduler.abort();
 
-    // Fire session end hook
-    {
+    // Fire session end hook only if the matching session start hook ran.
+    if app.session_start_hook_fired {
         let context = app.base_hook_context();
         let _ = app.execute_hooks(HookEvent::SessionEnd, &context);
     }
@@ -2776,13 +2786,17 @@ async fn run_event_loop(
                         match onboarding::mark_trusted(&app.workspace) {
                             Ok(_) => {
                                 app.trust_mode = true;
-                                app.status_message = None;
+                                app.status_message = Some(
+                                    "Workspace trusted. Restart CodeSmith to apply project config and .env."
+                                        .to_string(),
+                                );
                                 if app.onboarding_workspace_trust_gate {
                                     app.onboarding_workspace_trust_gate = false;
                                     app.onboarding = OnboardingState::None;
                                 } else {
                                     app.onboarding = OnboardingState::Tips;
                                 }
+                                fire_session_start_hook_if_ready(app);
                             }
                             Err(err) => {
                                 app.status_message =

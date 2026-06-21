@@ -1,4 +1,0 @@
-{"type":"error","error":"Failed to send message: Anthropic API key not found. Run 'codesmith auth set --provider anthropic', set ANTHROPIC_API_KEY, or add [providers.anthropic] api_key in ~/.codesmith/config.toml."}
-{"type":"metadata","meta":{"model":"anthropic/glm-5.1","input_tokens":0,"output_tokens":0,"session_id":"","status":"failed"}}
-{"type":"done"}
-Error: exec turn failed: Failed to send message: Anthropic API key not found. Run 'codesmith auth set --provider anthropic', set ANTHROPIC_API_KEY, or add [providers.anthropic] api_key in ~/.codesmith/config.toml.

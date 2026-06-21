@@ -1411,6 +1411,27 @@ fn create_test_app() -> App {
 }
 
 #[test]
+fn session_start_hook_is_suppressed_while_workspace_trust_gate_is_visible() {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::TrustDirectory;
+    app.session_start_hook_fired = false;
+
+    assert!(!should_fire_session_start_hook(&app));
+}
+
+#[test]
+fn session_start_hook_decision_is_allowed_after_trust_gate_clears() {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::None;
+    app.session_start_hook_fired = false;
+
+    assert!(should_fire_session_start_hook(&app));
+
+    app.session_start_hook_fired = true;
+    assert!(!should_fire_session_start_hook(&app));
+}
+
+#[test]
 fn session_denied_cache_matches_only_approval_key() {
     let mut app = create_test_app();
     app.approval_session_denied.insert("edit_file".to_string());
