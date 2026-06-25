@@ -172,6 +172,14 @@ pub struct ToolContext {
     /// is disabled — tools that need directory-based memory should
     /// short-circuit on `None`.
     pub memory_dir: Option<PathBuf>,
+    /// Resolved directory for the current sub-agent's scoped Agent Memory.
+    /// Only agent-memory-specific tools should use this; it must not be
+    /// conflated with global KoD memory.
+    pub agent_memory_dir: Option<PathBuf>,
+    /// Agent type/name owning `agent_memory_dir`.
+    pub agent_memory_agent_type: Option<String>,
+    /// Scope label (`user`, `project`, or `local`) for `agent_memory_dir`.
+    pub agent_memory_scope: Option<String>,
     /// LSP manager for post-edit diagnostics injection (#428). `None` when
     /// LSP is disabled or the context is constructed in a test that does not
     /// need diagnostics. Edit tools append a `<diagnostics>` block to their
@@ -231,6 +239,9 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             memory_dir: None,
+            agent_memory_dir: None,
+            agent_memory_agent_type: None,
+            agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),
@@ -271,6 +282,9 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             memory_dir: None,
+            agent_memory_dir: None,
+            agent_memory_agent_type: None,
+            agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),
@@ -311,6 +325,9 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             memory_dir: None,
+            agent_memory_dir: None,
+            agent_memory_agent_type: None,
+            agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),

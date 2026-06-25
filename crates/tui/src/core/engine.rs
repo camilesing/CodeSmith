@@ -22,6 +22,9 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
+use crate::compaction::session_memory_compact::{
+    session_memory_compact, should_use_session_memory_compact,
+};
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
@@ -1730,6 +1733,11 @@ impl Engine {
     }
 
     async fn handle_manual_compaction(&mut self, mode: crate::core::ops::CompactMode) {
+        if matches!(mode, crate::core::ops::CompactMode::Memory) {
+            self.handle_session_memory_compaction().await;
+            return;
+        }
+
         let id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let zero_usage = Usage {
             input_tokens: 0,
@@ -1833,6 +1841,162 @@ impl Engine {
                 base_url: None,
             })
             .await;
+    }
+
+    async fn handle_session_memory_compaction(&mut self) {
+        let id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let zero_usage = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            ..Usage::default()
+        };
+
+        self.emit_compaction_started(
+            id.clone(),
+            false,
+            "Session-memory context compaction started".to_string(),
+        )
+        .await;
+
+        let (memory_source, memory_content) = match self.session_memory_compaction_content() {
+            Ok(Some(content)) => content,
+            Ok(None) => {
+                let message = "Session-memory compaction skipped: no enabled MEMORY.md or user memory content found".to_string();
+                self.emit_compaction_failed(id, false, message.clone())
+                    .await;
+                let _ = self.tx_event.send(Event::status(message.clone())).await;
+                let _ = self
+                    .tx_event
+                    .send(Event::TurnComplete {
+                        usage: zero_usage,
+                        status: TurnOutcomeStatus::Failed,
+                        error: Some(message),
+                        tool_catalog: None,
+                        base_url: None,
+                    })
+                    .await;
+                return;
+            }
+            Err(err) => {
+                let message = format!("Session-memory compaction failed to load memory: {err}");
+                self.emit_compaction_failed(id, false, message.clone())
+                    .await;
+                let _ = self.tx_event.send(Event::status(message.clone())).await;
+                let _ = self
+                    .tx_event
+                    .send(Event::TurnComplete {
+                        usage: zero_usage,
+                        status: TurnOutcomeStatus::Failed,
+                        error: Some(message),
+                        tool_catalog: None,
+                        base_url: None,
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        let config = &self.session.session_memory_compact_config;
+        if !should_use_session_memory_compact(&memory_content, &self.session.messages, config) {
+            let message = format!(
+                "Session-memory compaction skipped: conversation is below the {} token threshold or memory is empty",
+                config.min_retain_tokens
+            );
+            self.emit_compaction_failed(id, false, message.clone())
+                .await;
+            let _ = self.tx_event.send(Event::status(message.clone())).await;
+            let _ = self
+                .tx_event
+                .send(Event::TurnComplete {
+                    usage: zero_usage,
+                    status: TurnOutcomeStatus::Failed,
+                    error: Some(message),
+                    tool_catalog: None,
+                    base_url: None,
+                })
+                .await;
+            return;
+        }
+
+        let messages_before = self.session.messages.len();
+        let result = session_memory_compact(&self.session.messages, &memory_content, config);
+        let messages_after = result.messages.len();
+
+        if result.removed_count == 0 || messages_after == messages_before {
+            let message =
+                "Session-memory compaction skipped: no messages could be removed".to_string();
+            self.emit_compaction_failed(id, false, message.clone())
+                .await;
+            let _ = self.tx_event.send(Event::status(message.clone())).await;
+            let _ = self
+                .tx_event
+                .send(Event::TurnComplete {
+                    usage: zero_usage,
+                    status: TurnOutcomeStatus::Failed,
+                    error: Some(message),
+                    tool_catalog: None,
+                    base_url: None,
+                })
+                .await;
+            return;
+        }
+
+        self.session.messages = result.messages;
+        self.merge_compaction_summary(result.summary_prompt);
+        self.emit_session_updated().await;
+        let removed = messages_before.saturating_sub(messages_after);
+        let message = format!(
+            "Session-memory compaction complete using {memory_source}: {messages_before} → {messages_after} messages ({removed} removed)"
+        );
+        self.emit_compaction_completed(
+            id,
+            false,
+            message,
+            Some(messages_before),
+            Some(messages_after),
+        )
+        .await;
+        let _ = self
+            .tx_event
+            .send(Event::TurnComplete {
+                usage: zero_usage,
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+            })
+            .await;
+    }
+
+    fn session_memory_compaction_content(&self) -> std::io::Result<Option<(String, String)>> {
+        if self.config.kod_enabled {
+            let entrypoint =
+                crate::knowledge::paths::resolve_memory_entrypoint(&self.config.memory_dir);
+            match std::fs::read_to_string(&entrypoint) {
+                Ok(content) if !content.trim().is_empty() => {
+                    return Ok(Some((entrypoint.display().to_string(), content)));
+                }
+                Ok(_) => return Ok(None),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => return Err(err),
+            }
+        }
+
+        if self.config.memory_enabled {
+            match std::fs::read_to_string(&self.config.memory_path) {
+                Ok(content) if !content.trim().is_empty() => {
+                    return Ok(Some((
+                        self.config.memory_path.display().to_string(),
+                        content,
+                    )));
+                }
+                Ok(_) => return Ok(None),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(None)
     }
 
     async fn handle_purge(&mut self) {

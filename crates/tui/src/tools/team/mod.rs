@@ -15,6 +15,7 @@ mod team_create;
 mod team_delete;
 mod team_discovery;
 mod team_file;
+mod team_memory;
 mod teammate_lifecycle;
 mod teammate_mailbox;
 
@@ -50,6 +51,11 @@ pub use team_file::{
     create_team_file, delete_team_directories, find_member_by_agent_id, find_member_by_name,
     format_lead_agent_id, read_team_file, remove_member_by_name, sanitize_name, team_config_path,
     team_dir, team_lead_name, team_task_dir, write_team_file,
+};
+#[allow(unused_imports)]
+pub use team_memory::{
+    TeamMemoryMemberSync, TeamMemorySyncManifest, build_team_memory_sync_manifest,
+    read_team_memory_sync_manifest, team_memory_sync_path, write_team_memory_sync_manifest,
 };
 pub use teammate_lifecycle::{
     TeammateResult, TeammateRuntime, TeammateState, handle_shutdown_request, poll_leader_inbox,

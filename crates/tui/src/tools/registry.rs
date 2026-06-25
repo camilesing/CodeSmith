@@ -505,6 +505,16 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(ListDirTool))
     }
 
+    /// Include scoped Agent Memory tools. These are constrained by
+    /// `ToolContext.agent_memory_dir` and do not grant general workspace writes.
+    #[must_use]
+    pub fn with_agent_memory_tools(self) -> Self {
+        use super::agent_memory::{AgentMemoryEditTool, AgentMemoryReadTool, AgentMemoryWriteTool};
+        self.with_tool(Arc::new(AgentMemoryReadTool))
+            .with_tool(Arc::new(AgentMemoryWriteTool))
+            .with_tool(Arc::new(AgentMemoryEditTool))
+    }
+
     /// Include only read-only file tools (read, list).
     #[must_use]
     pub fn with_read_only_file_tools(self) -> Self {
@@ -895,6 +905,7 @@ impl ToolRegistryBuilder {
     pub fn with_agent_tools(self, allow_shell: bool) -> Self {
         let builder = self
             .with_file_tools()
+            .with_agent_memory_tools()
             .with_note_tool()
             .with_search_tools()
             .with_web_tools()

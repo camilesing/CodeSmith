@@ -19,14 +19,18 @@ use tokio::sync::{Mutex, RwLock};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::agent_memory::{
+    AgentMemoryMetadata, AgentMemoryRequest, AgentMemoryScope, AgentMemorySnapshotMode,
+    ResolvedAgentMemory,
+};
 use crate::config::MAX_SUBAGENTS;
 use crate::core::events::Event;
-use crate::llm_client::{LlmClient, LlmClientHandle};
+use crate::llm_client::LlmClientHandle;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use crate::tools::handle::VarHandle;
 use crate::tools::plan::{PlanState, SharedPlanState};
@@ -627,6 +631,8 @@ pub struct SubAgentResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
     pub status: SubAgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_memory: Option<AgentMemoryMetadata>,
     pub result: Option<String>,
     pub steps_taken: u32,
     pub duration_ms: u64,
@@ -648,6 +654,7 @@ pub(crate) struct SubAgentSpawnOptions {
     pub model: Option<String>,
     pub nickname: Option<String>,
     pub fork_context: bool,
+    pub agent_memory: Option<ResolvedAgentMemory>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -692,6 +699,16 @@ struct SubAgentInput {
 }
 
 #[derive(Debug, Clone)]
+struct AgentDefinition {
+    name: String,
+    agent_type: Option<SubAgentType>,
+    prompt: Option<String>,
+    allowed_tools: Option<Vec<String>>,
+    model: Option<String>,
+    memory: Option<AgentMemoryRequest>,
+}
+
+#[derive(Debug, Clone)]
 struct SpawnRequest {
     session_name: Option<String>,
     prompt: String,
@@ -715,6 +732,8 @@ struct SpawnRequest {
     /// Optional recursion budget for descendants opened by this child.
     /// `0` means the child may not call `agent_open` recursively.
     max_depth: Option<u32>,
+    /// Optional scoped persistent memory for this agent type.
+    memory: Option<AgentMemoryRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -741,6 +760,8 @@ struct PersistedSubAgent {
     #[serde(default)]
     nickname: Option<String>,
     status: SubAgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_memory: Option<AgentMemoryMetadata>,
     result: Option<String>,
     steps_taken: u32,
     duration_ms: u64,
@@ -1083,6 +1104,8 @@ pub struct SubAgent {
     pub session_boot_id: String,
     /// Team name this agent belongs to. `None` for non-team agents.
     pub team_name: Option<String>,
+    /// Scoped Agent Memory metadata for this session, if enabled.
+    pub agent_memory: Option<AgentMemoryMetadata>,
     input_tx: Option<mpsc::UnboundedSender<SubAgentInput>>,
     task_handle: Option<JoinHandle<()>>,
 }
@@ -1114,6 +1137,7 @@ impl SubAgent {
             model,
             nickname,
             status: SubAgentStatus::Running,
+            agent_memory: None,
             result: None,
             steps_taken: 0,
             started_at: Instant::now(),
@@ -1138,6 +1162,7 @@ impl SubAgent {
             model: self.model.clone(),
             nickname: self.nickname.clone(),
             status: self.status.clone(),
+            agent_memory: self.agent_memory.clone(),
             result: self.result.clone(),
             steps_taken: self.steps_taken,
             duration_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -1221,6 +1246,7 @@ impl SubAgentManager {
                 model: agent.model.clone(),
                 nickname: agent.nickname.clone(),
                 status: agent.status.clone(),
+                agent_memory: agent.agent_memory.clone(),
                 result: agent.result.clone(),
                 steps_taken: agent.steps_taken,
                 duration_ms: u64::try_from(agent.started_at.elapsed().as_millis())
@@ -1300,6 +1326,7 @@ impl SubAgentManager {
                 },
                 nickname: persisted.nickname,
                 status,
+                agent_memory: persisted.agent_memory,
                 result: persisted.result,
                 steps_taken: persisted.steps_taken,
                 started_at,
@@ -1403,6 +1430,11 @@ impl SubAgentManager {
         if let Some(model) = options.model.as_deref() {
             runtime.model = model.to_string();
         }
+        if let Some(agent_memory) = options.agent_memory.clone() {
+            runtime.context.agent_memory_dir = Some(agent_memory.dir.clone());
+            runtime.context.agent_memory_agent_type = Some(agent_memory.agent_type.clone());
+            runtime.context.agent_memory_scope = Some(agent_memory.scope.as_str().to_string());
+        }
         let effective_model = runtime.model.clone();
         let agent_id = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
         let active_names: std::collections::HashSet<String> = self
@@ -1426,6 +1458,9 @@ impl SubAgentManager {
             input_tx,
             self.current_session_boot_id.clone(),
         );
+        if let Some(memory) = options.agent_memory.as_ref() {
+            agent.agent_memory = Some(AgentMemoryMetadata::from(memory));
+        }
         if let Some(name) = options
             .name
             .as_deref()
@@ -1462,6 +1497,7 @@ impl SubAgentManager {
             assignment,
             allowed_tools: tools,
             fork_context: options.fork_context,
+            agent_memory: options.agent_memory,
             started_at,
             max_steps,
             input_rx,
@@ -1580,6 +1616,25 @@ impl SubAgentManager {
             let (input_tx, input_rx) = mpsc::unbounded_channel();
             let restarted_at = Instant::now();
             let mut restart_runtime = runtime.clone();
+            let agent_memory = agent.agent_memory.clone().map(|metadata| {
+                let prompt = crate::agent_memory::compose_agent_memory_prompt(
+                    &metadata.agent_type,
+                    metadata.scope,
+                    &metadata.dir,
+                );
+                ResolvedAgentMemory {
+                    agent_type: metadata.agent_type,
+                    scope: metadata.scope,
+                    dir: metadata.dir,
+                    prompt,
+                }
+            });
+            if let Some(memory) = agent_memory.as_ref() {
+                restart_runtime.context.agent_memory_dir = Some(memory.dir.clone());
+                restart_runtime.context.agent_memory_agent_type = Some(memory.agent_type.clone());
+                restart_runtime.context.agent_memory_scope =
+                    Some(memory.scope.as_str().to_string());
+            }
             if !agent.model.trim().is_empty() && agent.model != "unknown" {
                 restart_runtime.model.clone_from(&agent.model);
             }
@@ -1592,6 +1647,7 @@ impl SubAgentManager {
                 assignment: agent.assignment.clone(),
                 allowed_tools: agent.allowed_tools.clone(),
                 fork_context: false,
+                agent_memory,
                 started_at: restarted_at,
                 max_steps: self.max_steps,
                 input_rx,
@@ -1900,8 +1956,9 @@ async fn subagent_session_projection(
         "result": snapshot.result.clone(),
         "steps_taken": snapshot.steps_taken,
         "duration_ms": snapshot.duration_ms,
-        "assignment": snapshot.assignment.clone(),
-        "snapshot": snapshot.clone(),
+            "assignment": snapshot.assignment.clone(),
+            "agent_memory": snapshot.agent_memory.clone(),
+            "snapshot": snapshot.clone(),
     });
     let transcript_handle = {
         let mut store = context.runtime.handle_store.lock().await;
@@ -2091,6 +2148,19 @@ impl ToolSpec for AgentOpenTool {
                     "minimum": 0,
                     "maximum": 3,
                     "description": "Recursive child-agent budget for this session. 0 blocks agent_open from the child; 1-3 allow that many descendant levels."
+                },
+                "memory": {
+                    "description": "Optional scoped persistent Agent Memory. Use a string scope ('user', 'project', 'local') or an object like {\"scope\": \"project\", \"snapshot\": \"initialize\"}.",
+                    "oneOf": [
+                        { "type": "string", "enum": ["user", "project", "local"] },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "scope": { "type": "string", "enum": ["user", "project", "local"] },
+                                "snapshot": { "type": "string", "enum": ["none", "initialize", "prompt-update"] }
+                            }
+                        }
+                    ]
                 }
             }
         })
@@ -2314,7 +2384,7 @@ impl ToolSpec for AgentSpawnTool {
                 },
                 "type": {
                     "type": "string",
-                    "description": "Sub-agent type: general, explore, plan, review, implementer, verifier, custom. See docs/SUBAGENTS.md for posture per role."
+                    "description": "Sub-agent type or custom agent definition name. Built-ins: general, explore, plan, review, implementer, verifier, custom. Custom definitions are loaded from .codesmith/agents, .claude/agents, ~/.codesmith/agents, or ~/.claude/agents."
                 },
                 "agent_type": {
                     "type": "string",
@@ -2322,7 +2392,7 @@ impl ToolSpec for AgentSpawnTool {
                 },
                 "agent_name": {
                     "type": "string",
-                    "description": "Alias for type"
+                    "description": "Alias for type; may name a custom agent definition"
                 },
                 "role": {
                     "type": "string",
@@ -2352,6 +2422,19 @@ impl ToolSpec for AgentSpawnTool {
                 "fork_context": {
                     "type": "boolean",
                     "description": "When true, inherit the parent's system prompt and conversation prefix before appending this task. This preserves DeepSeek prefix-cache reuse and gives the child full parent context. Defaults to false for independent exploration."
+                },
+                "memory": {
+                    "description": "Optional scoped persistent Agent Memory. Use a string scope ('user', 'project', 'local') or an object like {\"scope\": \"project\", \"snapshot\": \"initialize\"}.",
+                    "oneOf": [
+                        { "type": "string", "enum": ["user", "project", "local"] },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "scope": { "type": "string", "enum": ["user", "project", "local"] },
+                                "snapshot": { "type": "string", "enum": ["none", "initialize", "prompt-update"] }
+                            }
+                        }
+                    ]
                 }
             }
         })
@@ -2369,7 +2452,7 @@ impl ToolSpec for AgentSpawnTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let spawn_request = parse_spawn_request(&input)?;
+        let spawn_request = parse_spawn_request_with_workspace(&input, &self.runtime.context.cwd)?;
 
         // Depth cap: reject before locking the manager so we don't introduce
         // unnecessary contention. Mirrors codex's pattern (allow-equal at the
@@ -2422,6 +2505,21 @@ impl ToolSpec for AgentSpawnTool {
         }
         if let Some(cwd) = validated_cwd {
             child_runtime.context.workspace = cwd;
+            child_runtime.context.cwd = child_runtime.context.workspace.clone();
+        }
+        let resolved_agent_memory = if let Some(memory_request) = spawn_request.memory.clone() {
+            Some(resolve_agent_memory_for_spawn(
+                &child_runtime.context.workspace,
+                spawn_request.agent_type.as_str(),
+                memory_request,
+            )?)
+        } else {
+            None
+        };
+        if let Some(memory) = resolved_agent_memory.as_ref() {
+            child_runtime.context.agent_memory_dir = Some(memory.dir.clone());
+            child_runtime.context.agent_memory_agent_type = Some(memory.agent_type.clone());
+            child_runtime.context.agent_memory_scope = Some(memory.scope.as_str().to_string());
         }
         let configured_model = match spawn_request.model.clone() {
             Some(model) => Some(model),
@@ -2493,6 +2591,7 @@ impl ToolSpec for AgentSpawnTool {
                     model: Some(effective_model),
                     nickname: None,
                     fork_context: spawn_request.fork_context,
+                    agent_memory: resolved_agent_memory,
                 },
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
@@ -2534,6 +2633,19 @@ impl ToolSpec for AgentSpawnTool {
                 tool_result.metadata = Some(json!({ "status": "Running" }));
             }
         }
+        if let Some(agent_memory) = result.agent_memory.as_ref() {
+            let existing = tool_result.metadata.take().unwrap_or_else(|| json!({}));
+            tool_result.metadata = Some(match existing {
+                Value::Object(mut map) => {
+                    map.insert("agent_memory".to_string(), json!(agent_memory));
+                    Value::Object(map)
+                }
+                other => json!({
+                    "agent_memory": agent_memory,
+                    "metadata": other
+                }),
+            });
+        }
         // Annotate alias invocations with a deprecation notice so the model
         // can migrate to the canonical name before removal in v0.8.0.
         if self.name == "spawn_agent" {
@@ -2557,9 +2669,14 @@ struct AgentRunRequest {
     fork_context: bool,
     run_in_background: bool,
     max_depth: Option<u32>,
+    /// Optional scoped persistent memory for this agent type.
+    memory: Option<AgentMemoryRequest>,
 }
 
-fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
+fn parse_run_request_with_workspace(
+    input: &Value,
+    workspace: &Path,
+) -> Result<AgentRunRequest, ToolError> {
     let prompt = parse_text_or_items(
         input,
         &["prompt", "message", "objective", "description"],
@@ -2567,43 +2684,7 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
         "prompt",
     )?;
 
-    let type_input = optional_input_str(
-        input,
-        &["type", "agent_type", "subagent_type", "agent_name"],
-    );
-    let role_input = optional_input_str(input, &["role", "agent_role"]);
-
-    let parsed_type = type_input
-        .map(|kind| {
-            SubAgentType::from_str(kind).ok_or_else(|| {
-                ToolError::invalid_input(format!(
-                    "Invalid sub-agent type '{kind}'. Use: {VALID_SUBAGENT_TYPES}"
-                ))
-            })
-        })
-        .transpose()?;
-
-    let parsed_role_type = role_input
-        .map(|role| {
-            SubAgentType::from_str(role).ok_or_else(|| {
-                ToolError::invalid_input(format!(
-                    "Invalid role alias '{role}'. Use: worker, explorer, awaiter, default"
-                ))
-            })
-        })
-        .transpose()?;
-
-    if let (Some(type_kind), Some(role_kind)) = (&parsed_type, &parsed_role_type)
-        && type_kind != role_kind
-    {
-        return Err(ToolError::invalid_input(
-            "Conflicting type/agent_type and role/agent_role values".to_string(),
-        ));
-    }
-
-    let agent_type = parsed_type
-        .or(parsed_role_type)
-        .unwrap_or(SubAgentType::General);
+    let (agent_type, definition, type_input, role_input) = parse_agent_reference(input, workspace)?;
 
     if let Some(role) = role_input
         && normalize_role_alias(role).is_none()
@@ -2616,26 +2697,22 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
     let role = role_input
         .and_then(normalize_role_alias)
         .or_else(|| type_input.and_then(normalize_role_alias))
-        .map(str::to_string);
-
-    let allowed_tools = input
-        .get("allowed_tools")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            let mut tools = Vec::new();
-            for item in items {
-                if let Some(tool) = item.as_str() {
-                    let trimmed = tool.trim();
-                    if !trimmed.is_empty() && !tools.iter().any(|existing| existing == trimmed) {
-                        tools.push(trimmed.to_string());
-                    }
-                }
-            }
-            tools
+        .map(str::to_string)
+        .or_else(|| {
+            definition
+                .as_ref()
+                .map(|definition| definition.name.clone())
         });
 
+    let prompt = merge_definition_prompt(prompt, definition.as_ref());
+    let allowed_tools = merge_allowed_tools(input, definition.as_ref());
+
     let cwd = parse_optional_cwd(input)?;
-    let model = parse_optional_subagent_model(input, "model")?;
+    let model = parse_optional_subagent_model(input, "model")?.or_else(|| {
+        definition
+            .as_ref()
+            .and_then(|definition| definition.model.clone())
+    });
     let fork_context =
         parse_optional_bool(input, &["fork_context", "forkContext", "inherit_context"])
             .unwrap_or(false);
@@ -2644,25 +2721,9 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
         &["run_in_background", "runInBackground", "background"],
     )
     .unwrap_or(false);
-    let max_depth = input
-        .get("max_depth")
-        .or_else(|| input.get("maxDepth"))
-        .or_else(|| input.get("max_spawn_depth"))
-        .and_then(Value::as_u64)
-        .map(|depth| {
-            u32::try_from(depth)
-                .map_err(|_| ToolError::invalid_input("max_depth must be between 0 and 3"))
-                .and_then(|depth| {
-                    if depth <= 3 {
-                        Ok(depth)
-                    } else {
-                        Err(ToolError::invalid_input(
-                            "max_depth must be between 0 and 3",
-                        ))
-                    }
-                })
-        })
-        .transpose()?;
+    let max_depth = parse_optional_max_depth(input)?;
+
+    let memory = parse_memory_with_definition(input, definition.as_ref())?;
 
     Ok(AgentRunRequest {
         prompt: prompt.clone(),
@@ -2674,7 +2735,12 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
         fork_context,
         run_in_background,
         max_depth,
+        memory,
     })
+}
+
+fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
+    parse_run_request_with_workspace(input, Path::new("."))
 }
 
 /// Run a sub-agent synchronously (foreground) or asynchronously (background).
@@ -2749,6 +2815,21 @@ impl SubagentRunTool {
         }
         if let Some(cwd) = validated_cwd {
             child_runtime.context.workspace = cwd;
+            child_runtime.context.cwd = child_runtime.context.workspace.clone();
+        }
+        let resolved_agent_memory = if let Some(memory_request) = request.memory.clone() {
+            Some(resolve_agent_memory_for_spawn(
+                &child_runtime.context.workspace,
+                request.agent_type.as_str(),
+                memory_request,
+            )?)
+        } else {
+            None
+        };
+        if let Some(memory) = resolved_agent_memory.as_ref() {
+            child_runtime.context.agent_memory_dir = Some(memory.dir.clone());
+            child_runtime.context.agent_memory_agent_type = Some(memory.agent_type.clone());
+            child_runtime.context.agent_memory_scope = Some(memory.scope.as_str().to_string());
         }
 
         // Fork guard: no forks inside forks
@@ -2793,6 +2874,7 @@ impl SubagentRunTool {
             request.assignment.clone(),
             request.allowed_tools.clone(),
             request.fork_context,
+            resolved_agent_memory,
             started_at,
             DEFAULT_MAX_STEPS,
             input_rx,
@@ -2854,6 +2936,7 @@ impl SubagentRunTool {
             "cwd": request.cwd.map(|p| p.display().to_string()),
             "max_depth": request.max_depth,
             "role": request.assignment.role,
+            "memory": request.memory,
         });
         let spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
         spawn_tool.execute(spawn_input, context).await
@@ -2948,6 +3031,19 @@ impl ToolSpec for SubagentRunTool {
                 "cwd": {
                     "type": "string",
                     "description": "Optional working directory inside parent workspace"
+                },
+                "memory": {
+                    "description": "Optional scoped persistent Agent Memory. Use a string scope ('user', 'project', 'local') or an object like {\"scope\": \"project\", \"snapshot\": \"initialize\"}.",
+                    "oneOf": [
+                        { "type": "string", "enum": ["user", "project", "local"] },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "scope": { "type": "string", "enum": ["user", "project", "local"] },
+                                "snapshot": { "type": "string", "enum": ["none", "initialize", "prompt-update"] }
+                            }
+                        }
+                    ]
                 }
             },
             "required": ["prompt"]
@@ -2970,7 +3066,7 @@ impl ToolSpec for SubagentRunTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let request = parse_run_request(&input)?;
+        let request = parse_run_request_with_workspace(&input, &self.runtime.context.cwd)?;
 
         if self.runtime.would_exceed_depth() {
             return Err(ToolError::execution_failed(format!(
@@ -3955,9 +4051,10 @@ impl ToolSpec for DelegateToAgentTool {
 fn build_subagent_system_prompt(
     agent_type: &SubAgentType,
     assignment: &SubAgentAssignment,
+    agent_memory: Option<&ResolvedAgentMemory>,
 ) -> String {
     let base = agent_type.system_prompt();
-    match assignment.role.as_deref() {
+    let with_role = match assignment.role.as_deref() {
         Some(role) if !role.trim().is_empty() => {
             format!(
                 "{base}\n\nYou are operating in the role of `{}`.",
@@ -3965,6 +4062,10 @@ fn build_subagent_system_prompt(
             )
         }
         _ => base,
+    };
+    match agent_memory {
+        Some(memory) => format!("{with_role}\n\n{}", memory.prompt),
+        None => with_role,
     }
 }
 
@@ -3982,6 +4083,7 @@ fn build_initial_subagent_messages(
     assignment: &SubAgentAssignment,
     agent_type: &SubAgentType,
     fork_context: Option<&SubAgentForkContext>,
+    agent_memory: Option<&ResolvedAgentMemory>,
 ) -> Vec<Message> {
     // When fork context carries a current-assistant-turn snapshot, use the
     // enhanced forked-messages builder that clones the parent's partial
@@ -3989,7 +4091,7 @@ fn build_initial_subagent_messages(
     // prefix-cache reuse (Claude Code forkSubagent pattern).
     if let Some(context) = fork_context {
         if context.current_assistant_text.is_some() || context.current_turn_tool_calls.is_some() {
-            return build_forked_messages(context, prompt, assignment, agent_type);
+            return build_forked_messages(context, prompt, assignment, agent_type, agent_memory);
         }
     }
 
@@ -4011,7 +4113,7 @@ fn build_initial_subagent_messages(
 
         messages.push(system_text_message(format!(
             "<codesmith:subagent_context>\n{}\n</codesmith:subagent_context>",
-            build_subagent_system_prompt(agent_type, assignment)
+            build_subagent_system_prompt(agent_type, assignment, agent_memory)
         )));
     }
 
@@ -4038,6 +4140,7 @@ fn build_forked_messages(
     prompt: &str,
     assignment: &SubAgentAssignment,
     agent_type: &SubAgentType,
+    agent_memory: Option<&ResolvedAgentMemory>,
 ) -> Vec<Message> {
     let mut messages = fork_context.messages.clone();
 
@@ -4054,7 +4157,7 @@ fn build_forked_messages(
     }
     messages.push(system_text_message(format!(
         "<codesmith:subagent_context>\n{}\n</codesmith:subagent_context>",
-        build_subagent_system_prompt(agent_type, assignment)
+        build_subagent_system_prompt(agent_type, assignment, agent_memory)
     )));
 
     // 2. Clone parent assistant turn and inject placeholder tool_results
@@ -4117,6 +4220,7 @@ struct SubAgentTask {
     /// Approval-gated tools still require an auto-approved parent runtime.
     allowed_tools: Option<Vec<String>>,
     fork_context: bool,
+    agent_memory: Option<ResolvedAgentMemory>,
     started_at: Instant,
     max_steps: u32,
     input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
@@ -4132,6 +4236,7 @@ async fn run_subagent_task(task: SubAgentTask) {
         task.assignment,
         task.allowed_tools,
         task.fork_context,
+        task.agent_memory,
         task.started_at,
         task.max_steps,
         task.input_rx,
@@ -4287,18 +4392,25 @@ async fn run_subagent(
     assignment: SubAgentAssignment,
     allowed_tools: Option<Vec<String>>,
     fork_context: bool,
+    agent_memory: Option<ResolvedAgentMemory>,
     started_at: Instant,
     max_steps: u32,
     mut input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
-    let system_prompt = build_subagent_system_prompt(&agent_type, &assignment);
+    let system_prompt =
+        build_subagent_system_prompt(&agent_type, &assignment, agent_memory.as_ref());
     let fork_context_enabled = fork_context;
     let fork_context = fork_context_enabled
         .then_some(runtime.fork_context.as_ref())
         .flatten();
     let request_system = subagent_request_system_prompt(&system_prompt, fork_context);
-    let mut messages =
-        build_initial_subagent_messages(&prompt, &assignment, &agent_type, fork_context);
+    let mut messages = build_initial_subagent_messages(
+        &prompt,
+        &assignment,
+        &agent_type,
+        fork_context,
+        agent_memory.as_ref(),
+    );
     let runtime_for_tools = runtime.clone().with_fork_context(SubAgentForkContext {
         system: Some(request_system.clone()),
         messages: messages.clone(),
@@ -4381,6 +4493,7 @@ async fn run_subagent(
                 model: runtime.model.clone(),
                 nickname: None,
                 status,
+                agent_memory: agent_memory.as_ref().map(AgentMemoryMetadata::from),
                 result: None,
                 steps_taken: steps,
                 duration_ms,
@@ -4472,6 +4585,7 @@ async fn run_subagent(
                     model: runtime.model.clone(),
                     nickname: None,
                     status,
+                    agent_memory: agent_memory.as_ref().map(AgentMemoryMetadata::from),
                     result: None,
                     steps_taken: steps,
                     duration_ms,
@@ -4631,6 +4745,7 @@ async fn run_subagent(
         model: runtime.model.clone(),
         nickname: None,
         status,
+        agent_memory: agent_memory.as_ref().map(AgentMemoryMetadata::from),
         result: final_result,
         steps_taken: steps,
         duration_ms,
@@ -4867,29 +4982,239 @@ fn parse_items_text(input: &Value, key: &str) -> Result<Option<String>, ToolErro
     Ok(Some(lines.join("\n")))
 }
 
-fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
-    let prompt = parse_text_or_items(
-        input,
-        &["prompt", "message", "objective"],
-        "items",
-        "prompt",
-    )?;
-    let session_name = optional_input_str(input, &["name", "session_name"])
-        .map(validate_session_name)
-        .transpose()?;
+fn parse_definition_document(
+    path: &Path,
+    fallback_name: &str,
+) -> Result<AgentDefinition, ToolError> {
+    let raw = fs::read_to_string(path).map_err(|err| {
+        ToolError::execution_failed(format!(
+            "failed to read agent definition {}: {err}",
+            path.display()
+        ))
+    })?;
+    if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        let value: Value = serde_json::from_str(&raw).map_err(|err| {
+            ToolError::invalid_input(format!(
+                "invalid agent definition JSON {}: {err}",
+                path.display()
+            ))
+        })?;
+        return parse_definition_map(
+            value.as_object().ok_or_else(|| {
+                ToolError::invalid_input(format!(
+                    "agent definition {} must be a JSON object",
+                    path.display()
+                ))
+            })?,
+            fallback_name,
+            None,
+        );
+    }
 
-    let type_input = optional_input_str(input, &["type", "agent_type", "agent_name"]);
-    let role_input = optional_input_str(input, &["role", "agent_role"]);
+    let trimmed = raw.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("---") {
+        let rest = rest.strip_prefix('\n').unwrap_or(rest);
+        if let Some((frontmatter, body)) = rest.split_once("\n---") {
+            return parse_definition_frontmatter(
+                frontmatter,
+                fallback_name,
+                Some(body.trim_start()),
+            );
+        }
+    }
 
-    let parsed_type = type_input
+    Ok(AgentDefinition {
+        name: fallback_name.to_string(),
+        agent_type: Some(SubAgentType::Custom),
+        prompt: Some(raw),
+        allowed_tools: None,
+        model: None,
+        memory: None,
+    })
+}
+
+fn parse_definition_frontmatter(
+    frontmatter: &str,
+    fallback_name: &str,
+    body: Option<&str>,
+) -> Result<AgentDefinition, ToolError> {
+    let mut map = Map::new();
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        map.insert(
+            key.trim().to_string(),
+            parse_frontmatter_value(value.trim()),
+        );
+    }
+    parse_definition_map(&map, fallback_name, body)
+}
+
+fn parse_frontmatter_value(raw: &str) -> Value {
+    let raw = raw.trim();
+    if raw.eq_ignore_ascii_case("true") {
+        return Value::Bool(true);
+    }
+    if raw.eq_ignore_ascii_case("false") {
+        return Value::Bool(false);
+    }
+    if raw.starts_with('[') && raw.ends_with(']') {
+        let inner = raw.trim_start_matches('[').trim_end_matches(']');
+        return Value::Array(
+            inner
+                .split(',')
+                .map(|item| Value::String(unquote_frontmatter_scalar(item.trim())))
+                .filter(|value| value.as_str().is_some_and(|text| !text.is_empty()))
+                .collect(),
+        );
+    }
+    Value::String(unquote_frontmatter_scalar(raw))
+}
+
+fn unquote_frontmatter_scalar(raw: &str) -> String {
+    raw.trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
+fn parse_definition_map(
+    map: &Map<String, Value>,
+    fallback_name: &str,
+    body: Option<&str>,
+) -> Result<AgentDefinition, ToolError> {
+    let name = map
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback_name)
+        .to_string();
+    let agent_type = map
+        .get("type")
+        .or_else(|| map.get("agent_type"))
+        .and_then(Value::as_str)
         .map(|kind| {
             SubAgentType::from_str(kind).ok_or_else(|| {
                 ToolError::invalid_input(format!(
-                    "Invalid sub-agent type '{kind}'. Use: {VALID_SUBAGENT_TYPES}"
+                    "Invalid sub-agent type '{kind}' in custom agent definition. Use: {VALID_SUBAGENT_TYPES}"
                 ))
             })
         })
         .transpose()?;
+    let prompt = map
+        .get("prompt")
+        .or_else(|| map.get("description"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| body.map(str::to_string));
+    let allowed_tools = map
+        .get("allowed_tools")
+        .or_else(|| map.get("tools"))
+        .and_then(Value::as_array)
+        .map(|items| parse_tool_array(items));
+    let model = map
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
+    let memory = parse_agent_memory_request(map.get("memory"))?;
+    Ok(AgentDefinition {
+        name,
+        agent_type,
+        prompt,
+        allowed_tools,
+        model,
+        memory,
+    })
+}
+
+fn agent_definition_candidates(workspace: &Path, name: &str) -> Vec<PathBuf> {
+    let mut roots = vec![
+        workspace.join(".codesmith").join("agents"),
+        workspace.join(".claude").join("agents"),
+    ];
+    let home = codesmith_config::codesmith_home();
+    if let Ok(home) = home {
+        roots.push(home.join("agents"));
+    }
+    if let Some(home_dir) = dirs::home_dir() {
+        roots.push(home_dir.join(".claude").join("agents"));
+    }
+
+    let safe_name = crate::agent_memory::paths::sanitize_agent_type_segment(name)
+        .unwrap_or_else(|_| name.trim().to_string());
+    let mut candidates = Vec::new();
+    for root in roots {
+        for stem in [name.trim(), safe_name.as_str()] {
+            if stem.is_empty() {
+                continue;
+            }
+            candidates.push(root.join(format!("{stem}.json")));
+            candidates.push(root.join(format!("{stem}.md")));
+        }
+    }
+    candidates
+}
+
+fn load_agent_definition(workspace: &Path, name: &str) -> Result<AgentDefinition, ToolError> {
+    for path in agent_definition_candidates(workspace, name) {
+        if path.is_file() {
+            let fallback_name = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(name);
+            return parse_definition_document(&path, fallback_name);
+        }
+    }
+    Err(ToolError::invalid_input(format!(
+        "Invalid sub-agent type or custom agent definition '{name}'. Use: {VALID_SUBAGENT_TYPES}, or create .codesmith/agents/{name}.md or {name}.json"
+    )))
+}
+
+fn parse_agent_reference<'a>(
+    input: &'a Value,
+    workspace: &Path,
+) -> Result<
+    (
+        SubAgentType,
+        Option<AgentDefinition>,
+        Option<&'a str>,
+        Option<&'a str>,
+    ),
+    ToolError,
+> {
+    let type_input = optional_input_str(
+        input,
+        &["type", "agent_type", "subagent_type", "agent_name"],
+    );
+    let role_input = optional_input_str(input, &["role", "agent_role"]);
+
+    let parsed_type = match type_input {
+        Some(kind) => match SubAgentType::from_str(kind) {
+            Some(agent_type) => Some(agent_type),
+            None => {
+                let definition = load_agent_definition(workspace, kind)?;
+                return Ok((
+                    definition
+                        .agent_type
+                        .clone()
+                        .unwrap_or(SubAgentType::Custom),
+                    Some(definition),
+                    type_input,
+                    role_input,
+                ));
+            }
+        },
+        None => None,
+    };
 
     let parsed_role_type = role_input
         .map(|role| {
@@ -4909,9 +5234,72 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         ));
     }
 
-    let agent_type = parsed_type
-        .or(parsed_role_type)
-        .unwrap_or(SubAgentType::General);
+    Ok((
+        parsed_type
+            .or(parsed_role_type)
+            .unwrap_or(SubAgentType::General),
+        None,
+        type_input,
+        role_input,
+    ))
+}
+
+fn merge_definition_prompt(mut prompt: String, definition: Option<&AgentDefinition>) -> String {
+    if let Some(definition) = definition
+        && let Some(definition_prompt) = definition.prompt.as_deref().map(str::trim)
+        && !definition_prompt.is_empty()
+    {
+        prompt = format!("{definition_prompt}\n\n{prompt}");
+    }
+    prompt
+}
+
+fn merge_allowed_tools(input: &Value, definition: Option<&AgentDefinition>) -> Option<Vec<String>> {
+    input
+        .get("allowed_tools")
+        .and_then(|v| v.as_array())
+        .map(|items| parse_tool_array(items))
+        .or_else(|| definition.and_then(|definition| definition.allowed_tools.clone()))
+}
+
+fn parse_tool_array(items: &[Value]) -> Vec<String> {
+    let mut tools = Vec::new();
+    for item in items {
+        if let Some(tool) = item.as_str() {
+            let trimmed = tool.trim();
+            if !trimmed.is_empty() && !tools.iter().any(|existing| existing == trimmed) {
+                tools.push(trimmed.to_string());
+            }
+        }
+    }
+    tools
+}
+
+fn parse_memory_with_definition(
+    input: &Value,
+    definition: Option<&AgentDefinition>,
+) -> Result<Option<AgentMemoryRequest>, ToolError> {
+    match parse_agent_memory_request(input.get("memory"))? {
+        Some(memory) => Ok(Some(memory)),
+        None => Ok(definition.and_then(|definition| definition.memory.clone())),
+    }
+}
+
+fn parse_spawn_request_with_workspace(
+    input: &Value,
+    workspace: &Path,
+) -> Result<SpawnRequest, ToolError> {
+    let prompt = parse_text_or_items(
+        input,
+        &["prompt", "message", "objective"],
+        "items",
+        "prompt",
+    )?;
+    let session_name = optional_input_str(input, &["name", "session_name"])
+        .map(validate_session_name)
+        .transpose()?;
+
+    let (agent_type, definition, type_input, role_input) = parse_agent_reference(input, workspace)?;
 
     if let Some(role) = role_input
         && normalize_role_alias(role).is_none()
@@ -4924,26 +5312,22 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
     let role = role_input
         .and_then(normalize_role_alias)
         .or_else(|| type_input.and_then(normalize_role_alias))
-        .map(str::to_string);
-
-    let allowed_tools = input
-        .get("allowed_tools")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            let mut tools = Vec::new();
-            for item in items {
-                if let Some(tool) = item.as_str() {
-                    let trimmed = tool.trim();
-                    if !trimmed.is_empty() && !tools.iter().any(|existing| existing == trimmed) {
-                        tools.push(trimmed.to_string());
-                    }
-                }
-            }
-            tools
+        .map(str::to_string)
+        .or_else(|| {
+            definition
+                .as_ref()
+                .map(|definition| definition.name.clone())
         });
 
+    let prompt = merge_definition_prompt(prompt, definition.as_ref());
+    let allowed_tools = merge_allowed_tools(input, definition.as_ref());
+
     let cwd = parse_optional_cwd(input)?;
-    let model = parse_optional_subagent_model(input, "model")?;
+    let model = parse_optional_subagent_model(input, "model")?.or_else(|| {
+        definition
+            .as_ref()
+            .and_then(|definition| definition.model.clone())
+    });
     let resident_file = input
         .get("resident_file")
         .and_then(|v| v.as_str())
@@ -4952,7 +5336,30 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
     let fork_context =
         parse_optional_bool(input, &["fork_context", "forkContext", "inherit_context"])
             .unwrap_or(false);
-    let max_depth = input
+    let max_depth = parse_optional_max_depth(input)?;
+    let memory = parse_memory_with_definition(input, definition.as_ref())?;
+
+    Ok(SpawnRequest {
+        session_name,
+        prompt: prompt.clone(),
+        agent_type,
+        assignment: SubAgentAssignment::new(prompt, role),
+        allowed_tools,
+        model,
+        cwd,
+        resident_file,
+        fork_context,
+        max_depth,
+        memory,
+    })
+}
+
+fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
+    parse_spawn_request_with_workspace(input, Path::new("."))
+}
+
+fn parse_optional_max_depth(input: &Value) -> Result<Option<u32>, ToolError> {
+    input
         .get("max_depth")
         .or_else(|| input.get("maxDepth"))
         .or_else(|| input.get("max_spawn_depth"))
@@ -4970,19 +5377,108 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
                     }
                 })
         })
-        .transpose()?;
+        .transpose()
+}
 
-    Ok(SpawnRequest {
-        session_name,
-        prompt: prompt.clone(),
-        agent_type,
-        assignment: SubAgentAssignment::new(prompt, role),
-        allowed_tools,
-        model,
-        cwd,
-        resident_file,
-        fork_context,
-        max_depth,
+fn parse_agent_memory_request(
+    value: Option<&Value>,
+) -> Result<Option<AgentMemoryRequest>, ToolError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() || value.as_bool() == Some(false) {
+        return Ok(None);
+    }
+    if value.as_bool() == Some(true) {
+        return Ok(Some(AgentMemoryRequest::default()));
+    }
+    if let Some(scope) = value.as_str() {
+        return Ok(Some(AgentMemoryRequest {
+            scope: scope
+                .parse::<AgentMemoryScope>()
+                .map_err(ToolError::invalid_input)?,
+            snapshot: AgentMemorySnapshotMode::None,
+        }));
+    }
+    let Some(object) = value.as_object() else {
+        return Err(ToolError::invalid_input(
+            "memory must be a scope string, boolean, or object",
+        ));
+    };
+    let scope = object
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("project")
+        .parse::<AgentMemoryScope>()
+        .map_err(ToolError::invalid_input)?;
+    let snapshot = object
+        .get("snapshot")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        .parse::<AgentMemorySnapshotMode>()
+        .map_err(ToolError::invalid_input)?;
+    Ok(Some(AgentMemoryRequest { scope, snapshot }))
+}
+
+fn resolve_agent_memory_for_spawn(
+    workspace: &Path,
+    agent_type: &str,
+    request: AgentMemoryRequest,
+) -> Result<ResolvedAgentMemory, ToolError> {
+    let dir = crate::agent_memory::resolve_agent_memory_dir(workspace, agent_type, request.scope)
+        .map_err(ToolError::invalid_input)?;
+    crate::agent_memory::ensure_agent_memory_dir(&dir).map_err(|err| {
+        ToolError::execution_failed(format!(
+            "failed to initialize agent memory dir {}: {err}",
+            dir.display()
+        ))
+    })?;
+    let prompt = crate::agent_memory::compose_agent_memory_prompt(agent_type, request.scope, &dir);
+    match request.snapshot {
+        AgentMemorySnapshotMode::None => {}
+        AgentMemorySnapshotMode::Initialize => {
+            crate::agent_memory::initialize_or_update_snapshot(
+                workspace,
+                agent_type,
+                request.scope,
+                &dir,
+                &prompt,
+            )
+            .map_err(|err| {
+                ToolError::execution_failed(format!(
+                    "failed to initialize agent memory snapshot: {err}"
+                ))
+            })?;
+        }
+        AgentMemorySnapshotMode::PromptUpdate => {
+            let status = crate::agent_memory::load_snapshot_status(
+                workspace,
+                agent_type,
+                request.scope,
+                &dir,
+                &prompt,
+            );
+            if status.snapshot.is_none() || status.prompt_changed {
+                crate::agent_memory::initialize_or_update_snapshot(
+                    workspace,
+                    agent_type,
+                    request.scope,
+                    &dir,
+                    &prompt,
+                )
+                .map_err(|err| {
+                    ToolError::execution_failed(format!(
+                        "failed to update agent memory snapshot: {err}"
+                    ))
+                })?;
+            }
+        }
+    }
+    Ok(ResolvedAgentMemory {
+        agent_type: agent_type.to_string(),
+        scope: request.scope,
+        dir,
+        prompt,
     })
 }
 
@@ -5382,6 +5878,20 @@ impl SubAgentToolRegistry {
         // review, RLM, sub-agent management (so grandchildren can spawn),
         // plus per-child fresh todo/plan state.
         let context = runtime.context.clone();
+        let mut explicit_allowed_tools = explicit_allowed_tools;
+        if context.agent_memory_dir.is_some() {
+            if let Some(list) = explicit_allowed_tools.as_mut() {
+                for tool in [
+                    "agent_memory_read",
+                    "agent_memory_write",
+                    "agent_memory_edit",
+                ] {
+                    if !list.iter().any(|name| name == tool) {
+                        list.push(tool.to_string());
+                    }
+                }
+            }
+        }
         let mut registry = ToolRegistryBuilder::new().with_full_agent_surface(
             Some(runtime.client.clone()),
             runtime.model.clone(),
