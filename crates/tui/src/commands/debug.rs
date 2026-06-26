@@ -846,6 +846,7 @@ mod tests {
                     "path": {"type": "string"}
                 }
             }),
+            output_schema: None,
             allowed_callers: None,
             defer_loading: Some(false),
             input_examples: None,

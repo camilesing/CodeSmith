@@ -35,7 +35,7 @@ pub(super) struct ToolExecOutcome {
     pub(super) result: Result<ToolResult, ToolError>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct ToolExecutionPlan {
     pub(super) index: usize,
     pub(super) id: String,
@@ -47,6 +47,8 @@ pub(super) struct ToolExecutionPlan {
     pub(super) approval_description: String,
     pub(super) supports_parallel: bool,
     pub(super) read_only: bool,
+    pub(super) stream_early_start_safe: bool,
+    pub(super) early_result: Option<super::turn_loop::EarlyToolTask>,
     pub(super) blocked_error: Option<ToolError>,
     pub(super) guard_result: Option<ToolResult>,
 }

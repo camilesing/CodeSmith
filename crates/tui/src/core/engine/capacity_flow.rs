@@ -510,13 +510,13 @@ impl Engine {
                 .and_then(|registry| registry.get(&candidate.name))
                 .is_some_and(|spec| spec.supports_parallel())
         };
-        let interactive = (candidate.name == "exec_shell"
-            && candidate
-                .input
-                .get("interactive")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true))
-            || candidate.name == REQUEST_USER_INPUT_NAME;
+        let interactive = if McpPool::is_mcp_tool(&candidate.name) {
+            false
+        } else {
+            tool_registry
+                .and_then(|registry| registry.get(&candidate.name))
+                .is_some_and(|spec| spec.is_interactive(&candidate.input))
+        };
 
         let replay_result = Self::execute_tool_with_lock(
             tool_exec_lock,

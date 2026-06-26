@@ -1840,6 +1840,10 @@ impl ToolSpec for ExecShellTool {
         ApprovalRequirement::Required
     }
 
+    fn is_interactive(&self, input: &serde_json::Value) -> bool {
+        optional_bool(input, "interactive", false)
+    }
+
     async fn execute(
         &self,
         input: serde_json::Value,

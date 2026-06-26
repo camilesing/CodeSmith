@@ -630,7 +630,8 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # Configure as `[[hooks.hooks]]` under a `[hooks]` table.
 #
 # Available events: session_start, session_end, message_submit,
-# tool_call_before, tool_call_after, mode_change, on_error, shell_env.
+# tool_call_before (alias: pre_tool_use), tool_call_after (alias: post_tool_use),
+# mode_change, on_error, shell_env.
 #
 # `shell_env` (#456) is special: the hook runs immediately before each
 # `exec_shell` invocation and its stdout is parsed as `KEY=VALUE\n` lines.

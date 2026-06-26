@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::hooks::HookEvent;
 use crate::tools::ReviewOutput;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tui::active_cell::ActiveCell;
@@ -22,20 +21,6 @@ pub(super) fn handle_tool_call_started(
     name: &str,
     input: &serde_json::Value,
 ) {
-    // #455 (observer-only): fire `tool_call_before` hooks here, before
-    // any UI bookkeeping. Hooks are read-only observers in this slice
-    // — they can log, notify, or audit, but cannot mutate the args.
-    // Fast-path skip when no hooks are configured so per-tool
-    // dispatch doesn't pay for context construction in the common
-    // case (most users have no hooks).
-    if app.hooks.has_hooks_for_event(HookEvent::ToolCallBefore) {
-        let context = app
-            .base_hook_context()
-            .with_tool_name(name)
-            .with_tool_args(input);
-        let _ = app.execute_hooks(HookEvent::ToolCallBefore, &context);
-    }
-
     let id = id.to_string();
 
     // All in-flight tool work for the current turn lives in `app.active_cell`
@@ -673,25 +658,6 @@ pub(super) fn handle_tool_call_complete(
             active.bump_revision();
         }
         refresh_active_tool_completion_timestamp(app, cell_index);
-    }
-
-    // #455 (observer-only): fire `tool_call_after` hooks once the
-    // result has settled. Hooks see tool_name + the result content
-    // (or error message) + success flag. Read-only — they cannot
-    // mutate the result that goes back to the model. Mutation
-    // remains a v0.8.9 follow-up. Fast-path skip avoids the
-    // result.content.clone() and HookContext allocation when no
-    // hooks are configured.
-    if app.hooks.has_hooks_for_event(HookEvent::ToolCallAfter) {
-        let (result_text, success): (String, bool) = match result.as_ref() {
-            Ok(tool_result) => (tool_result.content.clone(), tool_result.success),
-            Err(err) => (err.to_string(), false),
-        };
-        let context = app
-            .base_hook_context()
-            .with_tool_name(name)
-            .with_tool_result(&result_text, success, None);
-        let _ = app.execute_hooks(HookEvent::ToolCallAfter, &context);
     }
 
     // Collect evidence for the post-turn receipt.

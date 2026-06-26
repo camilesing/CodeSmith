@@ -2227,6 +2227,7 @@ impl McpPool {
                 name,
                 description: tool.description.clone().unwrap_or_default(),
                 input_schema: tool.input_schema.clone(),
+                output_schema: None,
                 allowed_callers: Some(vec!["direct".to_string()]),
                 defer_loading: Some(false),
                 input_examples: None,
@@ -2246,6 +2247,7 @@ impl McpPool {
                         "server": { "type": "string", "description": "Optional MCP server name to filter by" }
                     }
                 }),
+                output_schema: None,
                 allowed_callers: Some(vec!["direct".to_string()]),
                 defer_loading: Some(false),
                 input_examples: None,
@@ -2262,6 +2264,7 @@ impl McpPool {
                         "server": { "type": "string", "description": "Optional MCP server name to filter by" }
                     }
                 }),
+                output_schema: None,
                 allowed_callers: Some(vec!["direct".to_string()]),
                 defer_loading: Some(false),
                 input_examples: None,
@@ -2285,6 +2288,7 @@ impl McpPool {
                     },
                     "required": ["server", "uri"]
                 }),
+                output_schema: None,
                 allowed_callers: Some(vec!["direct".to_string()]),
                 defer_loading: Some(false),
                 input_examples: None,
@@ -2303,6 +2307,7 @@ impl McpPool {
                     },
                     "required": ["server", "uri"]
                 }),
+                output_schema: None,
                 allowed_callers: Some(vec!["direct".to_string()]),
                 defer_loading: Some(false),
                 input_examples: None,
@@ -2331,6 +2336,7 @@ impl McpPool {
                     },
                     "required": ["server", "name"]
                 }),
+                output_schema: None,
                 allowed_callers: Some(vec!["direct".to_string()]),
                 defer_loading: Some(false),
                 input_examples: None,

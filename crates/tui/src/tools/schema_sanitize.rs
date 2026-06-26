@@ -538,6 +538,7 @@ mod tests {
                     {"required": ["b"]}
                 ]
             }),
+            output_schema: None,
             allowed_callers: None,
             defer_loading: None,
             input_examples: None,
@@ -567,6 +568,7 @@ mod tests {
                     }
                 }
             }),
+            output_schema: None,
             allowed_callers: None,
             defer_loading: None,
             input_examples: None,
@@ -591,6 +593,7 @@ mod tests {
                 },
                 "required": []
             }),
+            output_schema: None,
             allowed_callers: None,
             defer_loading: None,
             input_examples: None,

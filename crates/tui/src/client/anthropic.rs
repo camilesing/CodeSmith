@@ -590,7 +590,7 @@ fn insert_anthropic_auth_headers(
 /// This translates the internal `MessageRequest` into Anthropic-shape:
 /// * Strips DeepSeek-specific `reasoning_effort` from the wire payload.
 /// * Strips agent-internal `Tool` fields (`allowed_callers`, `defer_loading`,
-///   `input_examples`, `strict`, `caller`) that Anthropic does not understand.
+///   `input_examples`, `output_schema`, `strict`, `caller`) that Anthropic does not understand.
 /// * If `request.thinking` is unset, derives a `thinking` field from
 ///   `request.reasoning_effort` (Anthropic-native shape).
 /// * Forces `stream` to match the caller's intent.
@@ -628,6 +628,7 @@ fn build_request_body(request: &MessageRequest, stream: bool) -> Result<Value> {
                     tool_obj.remove("allowed_callers");
                     tool_obj.remove("defer_loading");
                     tool_obj.remove("input_examples");
+                    tool_obj.remove("output_schema");
                     tool_obj.remove("strict");
                     // Anthropic requires `name`, `description`, `input_schema`.
                     // `type` is allowed (e.g. "custom", "computer_20250124").
@@ -743,6 +744,7 @@ mod tests {
                 name: "echo".to_string(),
                 description: "echo".to_string(),
                 input_schema: serde_json::json!({"type": "object"}),
+                output_schema: Some(serde_json::json!({"type": "object"})),
                 allowed_callers: Some(vec!["agent".to_string()]),
                 defer_loading: Some(true),
                 input_examples: Some(vec![serde_json::json!({"x": 1})]),
@@ -787,6 +789,7 @@ mod tests {
         assert!(tool.get("allowed_callers").is_none());
         assert!(tool.get("defer_loading").is_none());
         assert!(tool.get("input_examples").is_none());
+        assert!(tool.get("output_schema").is_none());
         assert!(tool.get("strict").is_none());
         assert_eq!(tool.get("name").and_then(Value::as_str), Some("echo"));
     }
