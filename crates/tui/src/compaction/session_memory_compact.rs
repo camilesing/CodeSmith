@@ -154,66 +154,65 @@ fn calculate_retain_start_index(
 
 /// Adjust a start index to ensure we don't split tool_use/tool_result pairs.
 ///
-/// If the start index lands on a tool_result whose corresponding tool_use
-/// is in the removed section, move the start index back to include the
-/// tool_use. If the start index lands on a tool_use whose tool_result is
-/// in the retained section, move forward to include the result.
+/// Retention always keeps a suffix of the transcript. If either side of a
+/// tool pair is retained while the other side would be removed, move the
+/// boundary back to the earlier side of the pair. Repeat until all known pairs
+/// that cross the boundary are fully retained. Orphaned tool results at the
+/// boundary are dropped by moving the boundary forward past them.
 fn adjust_index_for_tool_pairs(messages: &[Message], start_idx: usize) -> usize {
     if start_idx == 0 || start_idx >= messages.len() {
         return start_idx;
     }
 
+    let mut tool_uses: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut tool_results: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    for (idx, msg) in messages.iter().enumerate() {
+        for block in &msg.content {
+            match block {
+                ContentBlock::ToolUse { id, .. } => {
+                    tool_uses.entry(id.clone()).or_insert(idx);
+                }
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    tool_results.entry(tool_use_id.clone()).or_insert(idx);
+                }
+                _ => {}
+            }
+        }
+    }
+
     let mut adjusted = start_idx;
 
-    // Build tool_use_id → message index map for the retained section.
-    let mut call_ids_in_retained: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-    for msg in &messages[adjusted..] {
-        for block in &msg.content {
-            if let ContentBlock::ToolUse { id, .. } = block {
-                call_ids_in_retained.insert(id.clone());
+    loop {
+        let mut moved = false;
+        for (id, use_idx) in &tool_uses {
+            let Some(result_idx) = tool_results.get(id) else {
+                continue;
+            };
+            let earliest = (*use_idx).min(*result_idx);
+            let latest = (*use_idx).max(*result_idx);
+            if earliest < adjusted && latest >= adjusted {
+                adjusted = earliest;
+                moved = true;
+                break;
             }
+        }
+        if !moved {
+            break;
         }
     }
 
-    // Check if the message at adjusted-1 contains a tool_use whose result
-    // is in the retained section — move back to keep the pair together.
-    for block in &messages[adjusted - 1].content {
-        if let ContentBlock::ToolUse { id, .. } = block {
-            if call_ids_in_retained.contains(id) {
-                // The call is just before the boundary, its result is retained.
-                // Move boundary back to include the call.
-                adjusted = adjusted.saturating_sub(1);
-                // Recurse to handle cascading adjustments.
-                return adjust_index_for_tool_pairs(messages, adjusted);
-            }
-        }
-    }
-
-    // Check if the message at adjusted contains a tool_result whose call
-    // is in the removed section — move back to include the call.
-    for block in &messages[adjusted].content {
-        if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-            if !call_ids_in_retained.contains(tool_use_id) {
-                // The result's call is missing from retained section.
-                // Search backwards for the call.
-                for search_idx in (0..adjusted).rev() {
-                    for search_block in &messages[search_idx].content {
-                        if let ContentBlock::ToolUse { id, .. } = search_block {
-                            if id == tool_use_id {
-                                // Move boundary back to include the call.
-                                adjusted = search_idx;
-                                return adjust_index_for_tool_pairs(messages, adjusted);
-                            }
-                        }
-                    }
-                }
-                // No matching call found — orphaned result. Remove it
-                // by moving forward past this message.
-                adjusted = adjusted.saturating_add(1);
-                return adjust_index_for_tool_pairs(messages, adjusted);
-            }
-        }
+    while adjusted < messages.len()
+        && messages[adjusted].content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolResult { tool_use_id, .. }
+                    if !tool_uses.contains_key(tool_use_id)
+            )
+        })
+    {
+        adjusted += 1;
     }
 
     adjusted
@@ -299,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn adjust_preserves_tool_pairs() {
+    fn adjust_preserves_tool_pairs_when_result_is_retained() {
         let messages = vec![
             msg("user", "start"),            // 0
             tool_use_msg("t1", "read"),      // 1
@@ -311,7 +310,36 @@ mod tests {
         // Start at index 2 (tool_result) — its call (tool_use) is at index 1
         // which would be removed. Adjust should move back to include index 1.
         let adjusted = adjust_index_for_tool_pairs(&messages, 2);
-        assert!(adjusted <= 1, "adjusted should include the tool_use");
+        assert_eq!(adjusted, 1);
+    }
+
+    #[test]
+    fn adjust_preserves_tool_pairs_when_use_is_retained() {
+        let messages = vec![
+            msg("user", "start"),
+            tool_use_msg("t1", "read"),
+            tool_result_msg("t1", "result"),
+            msg("assistant", "done"),
+        ];
+
+        // Start at index 2 (tool_result) already includes the result but not
+        // the use. The boundary should move back to include the whole pair.
+        assert_eq!(adjust_index_for_tool_pairs(&messages, 2), 1);
+    }
+
+    #[test]
+    fn adjust_handles_cascading_tool_pairs() {
+        let messages = vec![
+            msg("user", "start"),
+            tool_use_msg("a", "read"),
+            tool_result_msg("a", "result"),
+            tool_use_msg("b", "read"),
+            tool_result_msg("b", "result"),
+            msg("assistant", "done"),
+        ];
+
+        assert_eq!(adjust_index_for_tool_pairs(&messages, 4), 3);
+        assert_eq!(adjust_index_for_tool_pairs(&messages, 2), 1);
     }
 
     #[test]

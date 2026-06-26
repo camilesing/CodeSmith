@@ -14,6 +14,7 @@ use wait_timeout::ChildExt;
 use crate::dependencies::ExternalTool;
 
 mod acp_server;
+mod agent_memory;
 mod artifacts;
 mod audit;
 mod auto_reasoning;

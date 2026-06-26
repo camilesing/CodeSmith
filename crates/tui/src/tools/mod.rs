@@ -8,6 +8,7 @@
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
 
+pub mod agent_memory;
 pub mod apply_patch;
 pub mod approval_cache;
 pub mod arg_repair;

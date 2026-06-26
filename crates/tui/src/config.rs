@@ -3251,6 +3251,16 @@ fn apply_env_overrides(config: &mut Config) {
         provider_headers.extend(headers);
         entry.http_headers = Some(provider_headers);
     }
+    if matches!(config.api_provider(), ApiProvider::Anthropic)
+        && let Ok(value) = std::env::var("ANTHROPIC_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .anthropic
+            .base_url = Some(value);
+    }
     if matches!(config.api_provider(), ApiProvider::Ollama)
         && let Ok(value) = std::env::var("OLLAMA_BASE_URL")
         && !value.trim().is_empty()
@@ -5221,6 +5231,7 @@ mod tests {
         ollama_api_key: Option<OsString>,
         ollama_base_url: Option<OsString>,
         ollama_model: Option<OsString>,
+        anthropic_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -5300,6 +5311,7 @@ mod tests {
             let ollama_api_key_prev = env::var_os("OLLAMA_API_KEY");
             let ollama_base_url_prev = env::var_os("OLLAMA_BASE_URL");
             let ollama_model_prev = env::var_os("OLLAMA_MODEL");
+            let anthropic_base_url_prev = env::var_os("ANTHROPIC_BASE_URL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
@@ -5374,6 +5386,7 @@ mod tests {
                 env::remove_var("OLLAMA_API_KEY");
                 env::remove_var("OLLAMA_BASE_URL");
                 env::remove_var("OLLAMA_MODEL");
+                env::remove_var("ANTHROPIC_BASE_URL");
             }
             Self {
                 home: home_prev,
@@ -5448,6 +5461,7 @@ mod tests {
                 ollama_api_key: ollama_api_key_prev,
                 ollama_base_url: ollama_base_url_prev,
                 ollama_model: ollama_model_prev,
+                anthropic_base_url: anthropic_base_url_prev,
             }
         }
     }
@@ -5537,6 +5551,7 @@ mod tests {
                 Self::restore_var("OLLAMA_API_KEY", self.ollama_api_key.take());
                 Self::restore_var("OLLAMA_BASE_URL", self.ollama_base_url.take());
                 Self::restore_var("OLLAMA_MODEL", self.ollama_model.take());
+                Self::restore_var("ANTHROPIC_BASE_URL", self.anthropic_base_url.take());
             }
         }
     }
@@ -7213,6 +7228,41 @@ model = "account-model-id"
             "https://maas-openapi.wanjiedata.com/api/v1"
         );
         assert_eq!(config.default_model(), "account-model-id");
+        Ok(())
+    }
+
+    #[test]
+    fn anthropic_provider_reads_anthropic_base_url_env() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-anthropic-base-url-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "anthropic");
+            env::set_var("ANTHROPIC_API_KEY", "anthropic-env-key");
+            env::set_var(
+                "ANTHROPIC_BASE_URL",
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+            );
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Anthropic);
+        assert_eq!(config.deepseek_api_key()?, "anthropic-env-key");
+        assert_eq!(
+            config.deepseek_base_url(),
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+        );
         Ok(())
     }
 

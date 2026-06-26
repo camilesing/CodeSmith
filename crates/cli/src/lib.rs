@@ -1587,6 +1587,9 @@ fn build_tui_command(
     }
     if let Some(base_url) = cli.base_url.as_ref() {
         cmd.env("DEEPSEEK_BASE_URL", base_url);
+        if resolved_runtime.provider == ProviderKind::Anthropic {
+            cmd.env("ANTHROPIC_BASE_URL", base_url);
+        }
     }
 
     Ok(cmd)
@@ -2937,6 +2940,54 @@ mod tests {
         assert_eq!(
             command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
             Some("https://openai-compatible.example/v4")
+        );
+    }
+
+    #[test]
+    fn build_tui_command_exports_anthropic_base_url_alias() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let custom = dir
+            .path()
+            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&custom, b"").unwrap();
+        let custom_str = custom.to_string_lossy().into_owned();
+        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+
+        let cli = parse_ok(&[
+            "deepseek",
+            "--provider",
+            "anthropic",
+            "--model",
+            "glm-5.1",
+            "--base-url",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+        ]);
+        let resolved = ResolvedRuntimeOptions {
+            provider: ProviderKind::Anthropic,
+            model: "glm-5.1".to_string(),
+            api_key: None,
+            api_key_source: None,
+            base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic".to_string(),
+            auth_mode: None,
+            output_mode: None,
+            log_level: None,
+            telemetry: false,
+            approval_policy: None,
+            sandbox_mode: None,
+            yolo: None,
+            http_headers: std::collections::BTreeMap::new(),
+        };
+
+        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
+
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
+            Some("https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
+        );
+        assert_eq!(
+            command_env(&cmd, "ANTHROPIC_BASE_URL").as_deref(),
+            Some("https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
         );
     }
 

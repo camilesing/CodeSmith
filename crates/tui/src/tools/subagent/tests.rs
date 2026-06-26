@@ -16,6 +16,7 @@ fn make_snapshot(status: SubAgentStatus) -> SubAgentResult {
         model: "deepseek-v4-flash".to_string(),
         nickname: None,
         status,
+        agent_memory: None,
         result: None,
         steps_taken: 0,
         duration_ms: 0,
@@ -426,6 +427,43 @@ async fn terminal_session_projection_prefers_full_transcript_handle() {
 }
 
 #[test]
+fn test_parse_spawn_request_loads_custom_agent_definition_memory() {
+    let tmp = tempdir().unwrap();
+    let agents_dir = tmp.path().join(".codesmith").join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("researcher.md"),
+        r#"---
+name: researcher
+agent_type: explore
+allowed_tools: [read_file, grep_files]
+memory: project
+---
+Use the project research playbook.
+"#,
+    )
+    .unwrap();
+
+    let input = json!({
+        "prompt": "Find parser notes",
+        "agent_type": "researcher"
+    });
+    let parsed = parse_spawn_request_with_workspace(&input, tmp.path()).expect("definition parses");
+    assert_eq!(parsed.agent_type, SubAgentType::Explore);
+    assert_eq!(parsed.assignment.role.as_deref(), Some("researcher"));
+    assert!(
+        parsed
+            .prompt
+            .starts_with("Use the project research playbook.")
+    );
+    assert_eq!(
+        parsed.allowed_tools,
+        Some(vec!["read_file".to_string(), "grep_files".to_string()])
+    );
+    assert_eq!(parsed.memory.unwrap().scope, AgentMemoryScope::Project);
+}
+
+#[test]
 fn test_delegate_defaults_to_fork_context() {
     let input = with_default_fork_context(json!({ "prompt": "review current work" }), true);
     let parsed = parse_spawn_request(&input).expect("delegate request should parse");
@@ -465,6 +503,7 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
         &assignment,
         &SubAgentType::General,
         Some(&fork_context),
+        None,
     );
 
     assert_eq!(
@@ -484,8 +523,13 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
 #[test]
 fn fresh_subagent_messages_keep_existing_single_turn_shape() {
     let assignment = SubAgentAssignment::new("list files".to_string(), None);
-    let messages =
-        build_initial_subagent_messages("list files", &assignment, &SubAgentType::Explore, None);
+    let messages = build_initial_subagent_messages(
+        "list files",
+        &assignment,
+        &SubAgentType::Explore,
+        None,
+        None,
+    );
 
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, "user");
@@ -1194,7 +1238,7 @@ fn parse_spawn_request_cwd_empty_string_yields_none() {
 #[test]
 fn build_subagent_system_prompt_appends_role_when_set() {
     let assignment = SubAgentAssignment::new("p".to_string(), Some("worker".to_string()));
-    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment, None);
     assert!(
         prompt.ends_with("You are operating in the role of `worker`."),
         "expected role line at end, got: {}",
@@ -1205,14 +1249,14 @@ fn build_subagent_system_prompt_appends_role_when_set() {
 #[test]
 fn build_subagent_system_prompt_skips_role_when_none() {
     let assignment = SubAgentAssignment::new("p".to_string(), None);
-    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment, None);
     assert!(!prompt.contains("You are operating in the role of"));
 }
 
 #[test]
 fn build_subagent_system_prompt_skips_role_when_blank() {
     let assignment = SubAgentAssignment::new("p".to_string(), Some("   ".to_string()));
-    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment, None);
     assert!(!prompt.contains("You are operating in the role of"));
 }
 
@@ -2066,6 +2110,7 @@ async fn run_subagent_task_emits_parent_completion_before_terminal_update() {
         assignment: make_assignment(),
         allowed_tools: None,
         fork_context: false,
+        agent_memory: None,
         started_at: Instant::now(),
         max_steps: 0,
         input_rx: task_input_rx,

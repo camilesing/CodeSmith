@@ -9,8 +9,8 @@
 //! * SSE streaming events deserialize directly into `StreamEvent` because
 //!   the `#[serde(tag = "type")]` discriminators already match
 //!   (`message_start`, `content_block_delta`, `message_stop`, etc.).
-//! * Auth via `x-api-key`, `anthropic-version`, and optional
-//!   `anthropic-beta` headers — **not** `Authorization: Bearer`.
+//! * Auth via `x-api-key` for Anthropic's official API; compatible
+//!   gateways may use `Authorization: Bearer` instead.
 //! * Reasoning effort is translated into the Anthropic-native
 //!   `thinking: {type, budget_tokens}` field on the request body.
 
@@ -158,7 +158,7 @@ impl AnthropicClient {
             retry.enabled, retry.max_retries, retry.initial_delay, retry.max_delay
         ));
 
-        let http_client = build_http_client(&api_key, &http_headers)?;
+        let http_client = build_http_client(&api_key, &base_url, &http_headers)?;
 
         Ok(Self {
             http_client,
@@ -177,8 +177,7 @@ impl AnthropicClient {
     }
 
     fn messages_url(&self) -> String {
-        let trimmed = self.base_url.trim_end_matches('/');
-        format!("{trimmed}/messages")
+        anthropic_messages_url(&self.base_url)
     }
 
     async fn wait_for_rate_limit(&self) {
@@ -449,11 +448,26 @@ fn parse_anthropic_sse_event(data: &str) -> ParseOutcome {
     }
 }
 
+fn anthropic_messages_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.ends_with("/messages") {
+        trimmed.to_string()
+    } else if lower.ends_with("/v1") {
+        format!("{trimmed}/messages")
+    } else if anthropic_base_url_uses_bearer_gateway(trimmed) {
+        format!("{trimmed}/v1/messages")
+    } else {
+        format!("{trimmed}/messages")
+    }
+}
+
 fn build_http_client(
     api_key: &str,
+    base_url: &str,
     extra_headers: &HashMap<String, String>,
 ) -> Result<reqwest::Client> {
-    let headers = build_default_headers(api_key, extra_headers)?;
+    let headers = build_default_headers(api_key, base_url, extra_headers)?;
     let mut builder = reqwest::Client::builder()
         .default_headers(headers)
         .user_agent(concat!(
@@ -478,12 +492,33 @@ fn build_http_client(
     builder.build().map_err(Into::into)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnthropicAuthMode {
+    ApiKey,
+    Bearer,
+}
+
+impl AnthropicAuthMode {
+    fn from_base_url(base_url: &str) -> Self {
+        if anthropic_base_url_uses_bearer_gateway(base_url) {
+            Self::Bearer
+        } else {
+            Self::ApiKey
+        }
+    }
+}
+
+fn anthropic_base_url_uses_bearer_gateway(base_url: &str) -> bool {
+    let lower = base_url.trim().to_ascii_lowercase();
+    lower.contains("token-plan.cn-beijing.maas.aliyuncs.com") || lower.contains("/apps/anthropic")
+}
+
 /// Build the default Anthropic headers: `x-api-key`, `anthropic-version`,
-/// optional `anthropic-beta`, and any user-supplied custom headers
-/// (which can override the defaults — including `anthropic-version` —
-/// or add `anthropic-beta` flags).
+/// optional gateway `Authorization: Bearer`, optional `anthropic-beta`, and
+/// any user-supplied custom headers (which can override the defaults).
 fn build_default_headers(
     api_key: &str,
+    base_url: &str,
     extra_headers: &HashMap<String, String>,
 ) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
@@ -494,9 +529,11 @@ fn build_default_headers(
     );
 
     if !api_key.trim().is_empty() {
-        let mut value = HeaderValue::from_str(api_key)?;
-        value.set_sensitive(true);
-        headers.insert(HeaderName::from_static("x-api-key"), value);
+        insert_anthropic_auth_headers(
+            &mut headers,
+            api_key.trim(),
+            AnthropicAuthMode::from_base_url(base_url),
+        )?;
     }
 
     // Allow ANTHROPIC_BETA env var to set the anthropic-beta header for
@@ -518,14 +555,34 @@ fn build_default_headers(
         }
         let header_name = HeaderName::from_bytes(name.as_bytes())?;
         // Disallow CONTENT_TYPE override; everything else (including
-        // anthropic-version, anthropic-beta, x-api-key) can be overridden
-        // by user config — the user is responsible for the value.
+        // anthropic-version, anthropic-beta, x-api-key, authorization) can be
+        // overridden by user config — the user is responsible for the value.
         if header_name == CONTENT_TYPE {
             continue;
         }
         headers.insert(header_name, HeaderValue::from_str(value)?);
     }
     Ok(headers)
+}
+
+fn insert_anthropic_auth_headers(
+    headers: &mut HeaderMap,
+    api_key: &str,
+    mode: AnthropicAuthMode,
+) -> Result<()> {
+    if matches!(mode, AnthropicAuthMode::ApiKey) {
+        let mut value = HeaderValue::from_str(api_key)?;
+        value.set_sensitive(true);
+        headers.insert(HeaderName::from_static("x-api-key"), value);
+    }
+
+    if matches!(mode, AnthropicAuthMode::Bearer) {
+        let mut value = HeaderValue::from_str(&format!("Bearer {api_key}"))?;
+        value.set_sensitive(true);
+        headers.insert(HeaderName::from_static("authorization"), value);
+    }
+
+    Ok(())
 }
 
 /// Build the JSON body posted to `/v1/messages`.
@@ -735,6 +792,34 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_messages_url_preserves_official_v1_base() {
+        assert_eq!(
+            anthropic_messages_url("https://api.anthropic.com/v1"),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn anthropic_messages_url_adds_v1_for_token_plan_gateway() {
+        assert_eq!(
+            anthropic_messages_url(
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+            ),
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic/v1/messages"
+        );
+    }
+
+    #[test]
+    fn anthropic_messages_url_does_not_duplicate_explicit_messages_path() {
+        assert_eq!(
+            anthropic_messages_url(
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic/v1/messages"
+            ),
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic/v1/messages"
+        );
+    }
+
+    #[test]
     fn build_request_body_off_emits_disabled_thinking() {
         let mut req = sample_request();
         req.reasoning_effort = Some("off".to_string());
@@ -771,7 +856,12 @@ mod tests {
 
     #[test]
     fn build_default_headers_sets_anthropic_auth() {
-        let headers = build_default_headers("sk-ant-test", &HashMap::new()).unwrap();
+        let headers = build_default_headers(
+            "sk-ant-test",
+            "https://api.anthropic.com/v1",
+            &HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             headers.get("x-api-key").and_then(|v| v.to_str().ok()),
             Some("sk-ant-test")
@@ -784,7 +874,46 @@ mod tests {
         );
         assert!(
             headers.get("authorization").is_none(),
-            "Anthropic must NOT use bearer auth"
+            "Official Anthropic must keep x-api-key-only auth"
+        );
+    }
+
+    #[test]
+    fn build_default_headers_sets_bearer_for_token_plan_gateway() {
+        let headers = build_default_headers(
+            "gateway-key",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(
+            headers.get("x-api-key").is_none(),
+            "token-plan gateway expects bearer-only auth"
+        );
+        assert_eq!(
+            headers.get("authorization").and_then(|v| v.to_str().ok()),
+            Some("Bearer gateway-key")
+        );
+    }
+
+    #[test]
+    fn build_default_headers_extra_headers_can_override_auth() {
+        let mut extra = HashMap::new();
+        extra.insert("authorization".to_string(), "Bearer override".to_string());
+        extra.insert("x-api-key".to_string(), "override-key".to_string());
+        let headers = build_default_headers(
+            "gateway-key",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+            &extra,
+        )
+        .unwrap();
+        assert_eq!(
+            headers.get("authorization").and_then(|v| v.to_str().ok()),
+            Some("Bearer override")
+        );
+        assert_eq!(
+            headers.get("x-api-key").and_then(|v| v.to_str().ok()),
+            Some("override-key")
         );
     }
 
@@ -796,7 +925,7 @@ mod tests {
             "anthropic-beta".to_string(),
             "interleaved-thinking-2025-05-14".to_string(),
         );
-        let headers = build_default_headers("k", &extra).unwrap();
+        let headers = build_default_headers("k", "https://api.anthropic.com/v1", &extra).unwrap();
         assert_eq!(
             headers
                 .get("anthropic-version")

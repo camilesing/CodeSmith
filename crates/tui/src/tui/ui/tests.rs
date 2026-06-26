@@ -2652,6 +2652,7 @@ fn make_subagent(
         model: "deepseek-v4-flash".to_string(),
         nickname: None,
         status,
+        agent_memory: None,
         result: None,
         steps_taken: 0,
         duration_ms: 0,

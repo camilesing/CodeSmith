@@ -1198,6 +1198,10 @@ pub struct App {
     /// Path to the user-memory file (#489). Always populated; only
     /// consulted when `use_memory` is `true`.
     pub memory_path: PathBuf,
+    /// Directory used by Knowledge On Demand (`MEMORY.md` entrypoint).
+    pub memory_dir: PathBuf,
+    /// Whether Knowledge On Demand is enabled for this TUI session.
+    pub kod_enabled: bool,
     /// Whether the user-memory feature is enabled (#489). Mirrors
     /// `Config::memory_enabled()` at app boot. Used by the `# foo`
     /// composer interception, the `/memory` slash command, and tool
@@ -1736,6 +1740,8 @@ impl App {
         } = options;
 
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+        let memory_dir = config.memory_dir();
+        let kod_enabled = config.kod_enabled();
         let mut provider = config.api_provider();
 
         // Let settings override the config provider so runtime switches survive restarts.
@@ -1950,6 +1956,8 @@ impl App {
             mcp_config_path: mcp_config_path.clone(),
             skills_dir,
             memory_path,
+            memory_dir,
+            kod_enabled,
             use_memory,
             use_alt_screen,
             use_mouse_capture,
@@ -1994,7 +2002,8 @@ impl App {
             onboarding,
             onboarding_needs_api_key: needs_api_key,
             onboarding_workspace_trust_gate,
-            workspace_initialization_allowed_at_start: onboarding != OnboardingState::TrustDirectory,
+            workspace_initialization_allowed_at_start: onboarding
+                != OnboardingState::TrustDirectory,
             api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
