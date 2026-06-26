@@ -55,6 +55,16 @@ pub fn claude_global_skills_dir() -> Option<PathBuf> {
 
 // === Types ===
 
+/// Where a skill definition originated. File-system skills are local
+/// `SKILL.md` files, bundled skills are CodeSmith-provided definitions
+/// materialized on disk, and MCP skills describe remote MCP prompts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillSource {
+    FileSystem,
+    Bundled,
+    Mcp { server: String, prompt: String },
+}
+
 /// Parsed representation of a SKILL.md definition.
 #[derive(Debug, Clone)]
 pub struct Skill {
@@ -66,6 +76,44 @@ pub struct Skill {
     /// or manually-placed skills, so callers must use this rather than
     /// reconstructing `<dir>/<name>/SKILL.md`.
     pub path: PathBuf,
+    pub when_to_use: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub user_invocable: bool,
+    pub paths: Vec<String>,
+    pub version: Option<String>,
+    pub context: Option<String>,
+    pub agent: Option<String>,
+    pub shell: Option<String>,
+    pub loaded_from: SkillSource,
+}
+
+impl Skill {
+    pub fn with_defaults(name: String, description: String, body: String) -> Self {
+        Self {
+            name,
+            description,
+            body,
+            path: PathBuf::new(),
+            when_to_use: None,
+            allowed_tools: None,
+            model: None,
+            effort: None,
+            user_invocable: true,
+            paths: Vec::new(),
+            version: None,
+            context: None,
+            agent: None,
+            shell: None,
+            loaded_from: SkillSource::FileSystem,
+        }
+    }
+
+    #[must_use]
+    pub fn is_mcp(&self) -> bool {
+        matches!(self.loaded_from, SkillSource::Mcp { .. })
+    }
 }
 
 /// Collection of discovered skills.
@@ -182,6 +230,9 @@ impl SkillRegistry {
                             continue;
                         }
                         skill.path = skill_path.clone();
+                        if is_bundled_skill_name(&skill.name) {
+                            skill.loaded_from = SkillSource::Bundled;
+                        }
                         registry.skills.push(skill);
                         // This directory IS a skill. Don't descend further:
                         // any nested `SKILL.md` would be a fixture or
@@ -259,6 +310,7 @@ impl SkillRegistry {
                     continue;
                 }
                 if let Some((key, value)) = line.split_once(':') {
+                    let key = key.trim().to_ascii_lowercase();
                     let value = value.trim();
                     // Check for YAML block scalar indicators: > (folded), | (literal),
                     // optionally with chomping: >-, >+, |-, |+
@@ -361,17 +413,35 @@ impl SkillRegistry {
                             // Literal: join with newlines.
                             block_lines.join("\n")
                         };
-                        metadata.insert(key.trim().to_ascii_lowercase(), description);
-                    } else {
-                        let unquoted = match value {
-                            v if (v.starts_with('"') && v.ends_with('"') && v.len() >= 2)
-                                || (v.starts_with('\'') && v.ends_with('\'') && v.len() >= 2) =>
-                            {
-                                &v[1..v.len() - 1]
+                        metadata.insert(key, description);
+                    } else if value.is_empty() {
+                        let base_indent = raw.len() - raw.trim_start().len();
+                        let mut items = Vec::new();
+                        i += 1;
+                        while i < lines.len() {
+                            let raw_line = lines[i];
+                            let trimmed_line = raw_line.trim();
+                            if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
+                                i += 1;
+                                continue;
                             }
-                            _ => value,
-                        };
-                        metadata.insert(key.trim().to_ascii_lowercase(), unquoted.to_string());
+                            let line_indent = raw_line.len() - raw_line.trim_start().len();
+                            if line_indent <= base_indent {
+                                break;
+                            }
+                            if let Some(item) = trimmed_line.strip_prefix('-') {
+                                let item = strip_yaml_quotes(item.trim());
+                                if !item.is_empty() {
+                                    items.push(item.to_string());
+                                }
+                                i += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        metadata.insert(key, items.join(", "));
+                    } else {
+                        metadata.insert(key, strip_yaml_quotes(value).to_string());
                         i += 1;
                     }
                 } else {
@@ -386,15 +456,27 @@ impl SkillRegistry {
                 .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
 
             let description = metadata.get("description").cloned().unwrap_or_default();
+            let mut skill = Skill::with_defaults(name, description, body.trim().to_string());
+            skill.when_to_use = metadata.get("when_to_use").cloned();
+            skill.allowed_tools = first_metadata(&metadata, &["allowed_tools", "allowed-tools"])
+                .map(|value| parse_metadata_list(value))
+                .filter(|items| !items.is_empty());
+            skill.model = metadata.get("model").cloned();
+            skill.effort = metadata.get("effort").cloned();
+            skill.user_invocable = metadata
+                .get("user_invocable")
+                .or_else(|| metadata.get("user-invocable"))
+                .is_none_or(|value| parse_boolish(value).unwrap_or(true));
+            skill.paths = metadata
+                .get("paths")
+                .map(|value| parse_metadata_list(value))
+                .unwrap_or_default();
+            skill.version = metadata.get("version").cloned();
+            skill.context = metadata.get("context").cloned();
+            skill.agent = metadata.get("agent").cloned();
+            skill.shell = metadata.get("shell").cloned();
 
-            return Ok(Skill {
-                name,
-                description,
-                body: body.trim().to_string(),
-                // Filled in by `discover` after parse succeeds; default to an
-                // empty path so direct constructors (e.g. tests) compile.
-                path: PathBuf::new(),
-            });
+            return Ok(skill);
         }
 
         // Graceful degradation: no frontmatter fence found.
@@ -409,12 +491,11 @@ impl SkillRegistry {
                 "no frontmatter and no `# Heading` found to use as skill name".to_string()
             })?;
 
-        Ok(Skill {
+        Ok(Skill::with_defaults(
             name,
-            description: String::new(),
-            body: content.trim().to_string(),
-            path: PathBuf::new(),
-        })
+            String::new(),
+            content.trim().to_string(),
+        ))
     }
 
     /// Lookup a skill by name.
@@ -425,6 +506,10 @@ impl SkillRegistry {
     /// Return all loaded skills.
     pub fn list(&self) -> &[Skill] {
         &self.skills
+    }
+
+    pub fn visible_list(&self) -> Vec<&Skill> {
+        self.skills.iter().filter(|s| s.user_invocable).collect()
     }
 
     /// Parse or I/O warnings encountered while discovering skills.
@@ -443,6 +528,211 @@ impl SkillRegistry {
     pub fn len(&self) -> usize {
         self.skills.len()
     }
+}
+
+fn strip_yaml_quotes(value: &str) -> &str {
+    let trimmed = value.trim();
+    if ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+        && trimmed.len() >= 2
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    }
+}
+
+fn first_metadata<'a>(metadata: &'a HashMap<String, String>, keys: &[&str]) -> Option<&'a String> {
+    keys.iter().find_map(|key| metadata.get(*key))
+}
+
+fn parse_boolish(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+pub fn parse_metadata_list(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    let inner = trimmed
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    inner
+        .lines()
+        .flat_map(|line| line.split(','))
+        .map(|item| item.trim().trim_start_matches('-').trim())
+        .map(strip_yaml_quotes)
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub fn skill_is_trusted(skill: &Skill) -> bool {
+    skill
+        .path
+        .parent()
+        .is_some_and(|dir| dir.join(install::TRUSTED_MARKER).is_file())
+}
+
+pub fn preprocess_skill_body_for_activation(skill: &Skill) -> String {
+    preprocess_shell_snippets(skill, &skill.body, skill_is_trusted(skill))
+}
+
+pub fn preprocess_shell_snippets(skill: &Skill, body: &str, trusted: bool) -> String {
+    let fenced = replace_fenced_shell_snippets(skill, body, trusted);
+    replace_inline_shell_snippets(skill, &fenced, trusted)
+}
+
+fn shell_replacement(skill: &Skill, command: &str, trusted: bool) -> String {
+    let command = command.trim();
+    if command.is_empty() {
+        return String::new();
+    }
+    if skill.is_mcp() {
+        return format!(
+            "[MCP skill shell snippet disabled for safety: `{}`]",
+            command.replace('`', "\\`")
+        );
+    }
+    if !trusted {
+        return format!(
+            "[Skill shell snippet disabled until this skill is trusted with `/skill trust {}`: `{}`]",
+            skill.name,
+            command.replace('`', "\\`")
+        );
+    }
+    format!(
+        "[Trusted skill shell snippet: run this through the `exec_shell` tool if needed so normal approval and sandbox policy apply: `{}`]",
+        command.replace('`', "\\`")
+    )
+}
+
+fn replace_inline_shell_snippets(skill: &Skill, body: &str, trusted: bool) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(start) = rest.find("!`") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find('`') {
+            out.push_str(&shell_replacement(skill, &after[..end], trusted));
+            rest = &after[end + 1..];
+        } else {
+            out.push_str("!`");
+            out.push_str(after);
+            return out;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn replace_fenced_shell_snippets(skill: &Skill, body: &str, trusted: bool) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut lines = body.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```!") {
+            let mut command_lines = Vec::new();
+            for block_line in lines.by_ref() {
+                if block_line.trim_start().starts_with("```") {
+                    break;
+                }
+                command_lines.push(block_line);
+            }
+            out.push_str(&shell_replacement(
+                skill,
+                &command_lines.join("\n"),
+                trusted,
+            ));
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !body.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+pub fn skill_matches_any_path(skill: &Skill, paths: &[String]) -> bool {
+    !skill.paths.is_empty()
+        && paths.iter().any(|path| {
+            let normalized = normalize_match_path(path);
+            skill
+                .paths
+                .iter()
+                .any(|pattern| glob_matches(pattern, &normalized))
+        })
+}
+
+pub fn matching_conditional_skills<'a>(
+    registry: &'a SkillRegistry,
+    paths: &[String],
+) -> Vec<&'a Skill> {
+    registry
+        .list()
+        .iter()
+        .filter(|skill| skill.user_invocable && skill_matches_any_path(skill, paths))
+        .collect()
+}
+
+fn normalize_match_path(path: &str) -> String {
+    path.trim().trim_start_matches("./").replace('\\', "/")
+}
+
+pub fn glob_matches(pattern: &str, path: &str) -> bool {
+    let pattern = normalize_match_path(pattern);
+    let path = normalize_match_path(path);
+    glob_match_parts(
+        &pattern.split('/').collect::<Vec<_>>(),
+        &path.split('/').collect::<Vec<_>>(),
+    )
+}
+
+fn glob_match_parts(pattern: &[&str], path: &[&str]) -> bool {
+    if pattern.is_empty() {
+        return path.is_empty();
+    }
+    if pattern[0] == "**" {
+        return glob_match_parts(&pattern[1..], path)
+            || (!path.is_empty() && glob_match_parts(pattern, &path[1..]));
+    }
+    !path.is_empty()
+        && segment_matches(pattern[0], path[0])
+        && glob_match_parts(&pattern[1..], &path[1..])
+}
+
+fn segment_matches(pattern: &str, text: &str) -> bool {
+    let p = pattern.as_bytes();
+    let t = text.as_bytes();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut match_i = 0usize;
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == b'*' {
+            star = Some(pi);
+            match_i = ti;
+            pi += 1;
+        } else if let Some(star_i) = star {
+            pi = star_i + 1;
+            match_i += 1;
+            ti = match_i;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 /// Render a compact model-visible skills block.
@@ -633,7 +923,8 @@ pub fn render_available_skills_context(skills_dir: &Path) -> Option<String> {
 }
 
 fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
-    if registry.is_empty() {
+    let visible = registry.visible_list();
+    if visible.is_empty() {
         return None;
     }
 
@@ -648,21 +939,55 @@ instructions when using a specific skill.\n\n",
     out.push_str("### Available skills\n");
 
     let mut omitted = 0usize;
-    for skill in registry.list() {
+    for skill in visible {
         // Use the real on-disk path captured at discovery — the directory
         // name can differ from the frontmatter `name` for community
         // installs, in which case `<dir>/<name>/SKILL.md` would not exist
         // and the model would fail to open it.
         let description = truncate_for_prompt(&skill.description, MAX_SKILL_DESCRIPTION_CHARS);
-        let line = if description.is_empty() {
-            format!("- {}: (file: {})\n", skill.name, skill.path.display())
+        let usage = skill
+            .when_to_use
+            .as_deref()
+            .map(|value| truncate_for_prompt(value, 160));
+        let paths = if skill.paths.is_empty() {
+            String::new()
         } else {
-            format!(
-                "- {}: {} (file: {})\n",
-                skill.name,
-                description,
-                skill.path.display()
-            )
+            format!(" paths: {}.", skill.paths.join(", "))
+        };
+        let line = if description.is_empty() {
+            match usage {
+                Some(usage) if !usage.is_empty() => format!(
+                    "- {}: use when {}{} (file: {})\n",
+                    skill.name,
+                    usage,
+                    paths,
+                    skill.path.display()
+                ),
+                _ => format!(
+                    "- {}:{} (file: {})\n",
+                    skill.name,
+                    paths,
+                    skill.path.display()
+                ),
+            }
+        } else {
+            match usage {
+                Some(usage) if !usage.is_empty() => format!(
+                    "- {}: {} Use when {}{} (file: {})\n",
+                    skill.name,
+                    description,
+                    usage,
+                    paths,
+                    skill.path.display()
+                ),
+                _ => format!(
+                    "- {}: {}{} (file: {})\n",
+                    skill.name,
+                    description,
+                    paths,
+                    skill.path.display()
+                ),
+            }
         };
 
         if out.chars().count() + line.chars().count() > MAX_AVAILABLE_SKILLS_CHARS {
@@ -690,9 +1015,9 @@ instructions when using a specific skill.\n\n",
     out.push_str(
         "\n### How to use skills\n\
 - Skill bodies live on disk at the listed paths. When a skill is relevant, open only that skill's `SKILL.md` and the specific companion files it references.\n\
-- Trigger rules: use a skill when the user names it (`$SkillName`, `/skill <name>`, or plain text) or the task clearly matches its description. Do not carry skills across turns unless re-mentioned.\n\
+- Trigger rules: use a skill when the user names it (`$SkillName`, `/skill <name>`, or plain text), the task clearly matches its description/when_to_use, or the current working paths match its paths metadata. Do not carry skills across turns unless re-mentioned.\n\
 - Missing/blocked: if a named skill is missing or cannot be read, say so briefly and continue with the best fallback.\n\
-- Safety: do not execute scripts from a community skill unless the user explicitly asks or the skill has been trusted for script use.\n",
+- Safety: skill shell snippets must go through the `exec_shell` tool so normal approval and sandbox policy apply. MCP skill shell snippets are disabled; community skill snippets are disabled until the skill is trusted with `/skill trust <name>`.\n",
     );
 
     Some(out)
@@ -910,31 +1235,33 @@ mod tests {
     fn render_skills_block_preserves_registry_precedence_under_prompt_budget() {
         let tmpdir = TempDir::new().unwrap();
         let mut registry = super::SkillRegistry::default();
-        registry.skills.push(super::Skill {
-            name: "workspace-priority".to_string(),
-            description: "must survive truncation".to_string(),
-            body: "body".to_string(),
-            path: tmpdir
-                .path()
-                .join(".claude")
-                .join("skills")
-                .join("workspace-priority")
-                .join("SKILL.md"),
-        });
+        let mut workspace_skill = super::Skill::with_defaults(
+            "workspace-priority".to_string(),
+            "must survive truncation".to_string(),
+            "body".to_string(),
+        );
+        workspace_skill.path = tmpdir
+            .path()
+            .join(".claude")
+            .join("skills")
+            .join("workspace-priority")
+            .join("SKILL.md");
+        registry.skills.push(workspace_skill);
 
         let big_desc = "y".repeat(super::MAX_SKILL_DESCRIPTION_CHARS - 20);
         for i in 0..200 {
-            registry.skills.push(super::Skill {
-                name: format!("aaa-global-{i:03}"),
-                description: big_desc.clone(),
-                body: "body".to_string(),
-                path: tmpdir
-                    .path()
-                    .join(".deepseek")
-                    .join("skills")
-                    .join(format!("aaa-global-{i:03}"))
-                    .join("SKILL.md"),
-            });
+            let mut skill = super::Skill::with_defaults(
+                format!("aaa-global-{i:03}"),
+                big_desc.clone(),
+                "body".to_string(),
+            );
+            skill.path = tmpdir
+                .path()
+                .join(".deepseek")
+                .join("skills")
+                .join(format!("aaa-global-{i:03}"))
+                .join("SKILL.md");
+            registry.skills.push(skill);
         }
 
         let rendered = super::render_skills_block(&registry).expect("skill context");
@@ -1627,6 +1954,91 @@ mod tests {
         // literal: newlines preserved between non-empty lines.
         // keep: trailing empty lines are preserved as newlines.
         assert_eq!(skill.description, "line one\nline two\n\n");
+    }
+
+    #[test]
+    fn parse_skill_metadata_fields_and_lists() {
+        let skill = super::SkillRegistry::parse_skill(
+            std::path::Path::new(""),
+            "---\nname: meta\ndescription: Meta skill\nwhen_to_use: Use for Rust files\nallowed_tools:\n  - read_file\n  - edit_file\nmodel: deepseek-v4-pro\neffort: high\nuser_invocable: false\npaths: [\"src/**/*.rs\", \"crates/*.rs\"]\nversion: 1.2.3\ncontext: extra context\nagent: reviewer\nshell: trusted\n---\nbody",
+        )
+        .expect("should parse");
+        assert_eq!(skill.when_to_use.as_deref(), Some("Use for Rust files"));
+        assert_eq!(
+            skill.allowed_tools,
+            Some(vec!["read_file".to_string(), "edit_file".to_string()])
+        );
+        assert_eq!(skill.model.as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(skill.effort.as_deref(), Some("high"));
+        assert!(!skill.user_invocable);
+        assert_eq!(skill.paths, vec!["src/**/*.rs", "crates/*.rs"]);
+        assert_eq!(skill.version.as_deref(), Some("1.2.3"));
+        assert_eq!(skill.context.as_deref(), Some("extra context"));
+        assert_eq!(skill.agent.as_deref(), Some("reviewer"));
+        assert_eq!(skill.shell.as_deref(), Some("trusted"));
+    }
+
+    #[test]
+    fn hidden_skills_are_omitted_from_prompt_but_still_discovered() {
+        let tmpdir = TempDir::new().unwrap();
+        create_skill_dir(
+            &tmpdir,
+            "hidden",
+            "---\nname: hidden\ndescription: Hidden\nuser_invocable: false\n---\nbody",
+        );
+        let registry = super::SkillRegistry::discover(&tmpdir.path().join("skills"));
+        assert!(registry.get("hidden").is_some());
+        assert!(super::render_skills_block(&registry).is_none());
+    }
+
+    #[test]
+    fn glob_matching_supports_star_question_and_globstar() {
+        assert!(super::glob_matches("src/**/*.rs", "src/bin/main.rs"));
+        assert!(super::glob_matches("src/*.rs", "src/lib.rs"));
+        assert!(super::glob_matches("src/file?.md", "src/file1.md"));
+        assert!(!super::glob_matches("src/*.rs", "src/bin/main.rs"));
+    }
+
+    #[test]
+    fn matching_conditional_skills_uses_paths_and_visibility() {
+        let mut registry = super::SkillRegistry::default();
+        let mut visible =
+            super::Skill::with_defaults("rust".to_string(), "Rust".to_string(), "body".to_string());
+        visible.paths = vec!["src/**/*.rs".to_string()];
+        let mut hidden = super::Skill::with_defaults(
+            "hidden".to_string(),
+            "Hidden".to_string(),
+            "body".to_string(),
+        );
+        hidden.user_invocable = false;
+        hidden.paths = vec!["src/**/*.rs".to_string()];
+        registry.skills.push(visible);
+        registry.skills.push(hidden);
+
+        let matches = super::matching_conditional_skills(&registry, &["src/main.rs".to_string()]);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "rust");
+    }
+
+    #[test]
+    fn shell_snippets_are_disabled_until_trusted_and_marked_for_exec_shell_when_trusted() {
+        let mut skill =
+            super::Skill::with_defaults("sheller".to_string(), String::new(), String::new());
+        let body = "inline !`git status`\n```!\npwd\n```";
+        let untrusted = super::preprocess_shell_snippets(&skill, body, false);
+        assert!(untrusted.contains("disabled until this skill is trusted"));
+        assert!(untrusted.contains("git status"));
+        let trusted = super::preprocess_shell_snippets(&skill, body, true);
+        assert!(trusted.contains("exec_shell"));
+        assert!(trusted.contains("git status"));
+        assert!(trusted.contains("pwd"));
+
+        skill.loaded_from = super::SkillSource::Mcp {
+            server: "srv".to_string(),
+            prompt: "prompt".to_string(),
+        };
+        let mcp = super::preprocess_shell_snippets(&skill, "!`whoami`", true);
+        assert!(mcp.contains("MCP skill shell snippet disabled"));
     }
 
     /// Nested relative indentation is preserved in literal (`|`) block

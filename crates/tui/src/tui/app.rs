@@ -2139,6 +2139,7 @@ impl App {
         crate::skills::discover_for_workspace_and_dir(workspace, skills_dir)
             .list()
             .iter()
+            .filter(|s| s.user_invocable)
             .map(|s| (s.name.clone(), s.description.clone()))
             .collect()
     }

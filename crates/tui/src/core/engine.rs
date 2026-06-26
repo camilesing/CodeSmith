@@ -1274,6 +1274,8 @@ impl Engine {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let conditional_skills = self.conditional_skills_block();
+
         let mut lines = vec![format!("Current local date: {today}")];
         if auto_model {
             lines.push(format!("Auto model route: {routed_model}"));
@@ -1284,12 +1286,59 @@ impl Engine {
         if let Some(working_set_summary) = working_set_summary {
             lines.push(working_set_summary);
         }
+        if let Some(conditional_skills) = conditional_skills {
+            lines.push(conditional_skills);
+        }
         let summary = lines.join("\n");
 
         ContentBlock::Text {
             text: format!("<turn_meta>\n{summary}\n</turn_meta>"),
             cache_control: None,
         }
+    }
+
+    fn conditional_skills_block(&self) -> Option<String> {
+        let paths = self.session.working_set.top_paths(16);
+        if paths.is_empty() {
+            return None;
+        }
+        let registry = crate::skills::discover_for_workspace_and_dir(
+            &self.config.workspace,
+            &self.config.skills_dir,
+        );
+        let matches = crate::skills::matching_conditional_skills(&registry, &paths);
+        if matches.is_empty() {
+            return None;
+        }
+        let mut lines = vec!["## Matched Conditional Skills".to_string()];
+        for skill in matches.into_iter().take(6) {
+            let reason = skill
+                .when_to_use
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    let description = skill.description.trim();
+                    (!description.is_empty()).then_some(description)
+                })
+                .unwrap_or("");
+            if reason.is_empty() {
+                lines.push(format!(
+                    "- {} matched paths [{}]. Load with `load_skill` if relevant. Source: {}",
+                    skill.name,
+                    skill.paths.join(", "),
+                    skill.path.display()
+                ));
+            } else {
+                lines.push(format!(
+                    "- {}: {} Matched paths [{}]. Load with `load_skill` if relevant. Source: {}",
+                    skill.name,
+                    reason,
+                    skill.paths.join(", "),
+                    skill.path.display()
+                ));
+            }
+        }
+        Some(lines.join("\n"))
     }
 
     fn user_text_message_with_turn_metadata(&self, text: String) -> Message {

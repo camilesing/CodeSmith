@@ -3,11 +3,11 @@
 use std::fmt::Write;
 
 use crate::network_policy::NetworkPolicy;
-use crate::skills::SkillRegistry;
 use crate::skills::install::{
     self, DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL, InstallOutcome, InstallSource,
     RegistryFetchResult, SkillSyncOutcome, SyncResult, UpdateResult,
 };
+use crate::skills::{Skill, SkillRegistry};
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 
@@ -60,7 +60,7 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
     let registry = discover_visible_skills(app);
     let warnings = render_skill_warnings(&registry);
 
-    if registry.is_empty() {
+    if registry.visible_list().is_empty() {
         let msg = format!(
             "No skills found.\n\n\
              Skills location: {}\n\n\
@@ -79,14 +79,15 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         return CommandResult::message(msg);
     }
 
+    let visible = registry.visible_list();
     let filtered: Vec<&crate::skills::Skill> = if let Some(p) = prefix.as_deref() {
-        registry
-            .list()
+        visible
             .iter()
+            .copied()
             .filter(|s| s.name.to_ascii_lowercase().starts_with(p))
             .collect()
     } else {
-        registry.list().iter().collect()
+        visible
     };
 
     if filtered.is_empty() {
@@ -96,7 +97,7 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         let p = prefix.as_deref().unwrap_or("");
         return CommandResult::message(format!(
             "No skills match prefix `{p}` (out of {} available).\n\nRun /skills to see them all.{warnings}",
-            registry.len()
+            registry.visible_list().len()
         ));
     }
 
@@ -104,10 +105,10 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         format!(
             "Available skills matching `{p}` ({} of {}):\n",
             filtered.len(),
-            registry.len()
+            registry.visible_list().len()
         )
     } else {
-        format!("Available skills ({}):\n", registry.len())
+        format!("Available skills ({}):\n", registry.visible_list().len())
     };
     output.push_str("─────────────────────────────\n");
 
@@ -179,14 +180,18 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
 /// Run a specific skill — activates skill for next user message, or
 /// dispatches a sub-command (`install`, `update`, `uninstall`, `trust`).
 /// Try to run a skill by exact name (used for unified slash-command namespace, #435).
-/// Returns None when no skill with that name exists, so the caller can try other sources.
-pub fn run_skill_by_name(app: &mut App, name: &str, _arg: Option<&str>) -> Option<CommandResult> {
+/// Returns None when no user-invocable skill with that name exists, so the caller can try other sources.
+pub fn run_skill_by_name(app: &mut App, name: &str, arg: Option<&str>) -> Option<CommandResult> {
     let registry = discover_visible_skills(app);
-    if registry.get(name).is_some() {
-        Some(activate_skill(app, name))
-    } else {
-        None
+    let skill = registry.get(name)?;
+    if !skill.user_invocable {
+        return None;
     }
+    Some(activate_skill_with_args(
+        app,
+        skill,
+        arg.unwrap_or_default(),
+    ))
 }
 
 pub fn run_skill(app: &mut App, name: Option<&str>) -> CommandResult {
@@ -212,48 +217,120 @@ pub fn run_skill(app: &mut App, name: Option<&str>) -> CommandResult {
         _ => {}
     }
 
-    activate_skill(app, raw)
+    activate_skill(app, if raw == "new" { "skill-creator" } else { raw })
+}
+
+fn resolve_skill_invocation<'a>(
+    registry: &'a SkillRegistry,
+    raw: &'a str,
+) -> Option<(&'a Skill, &'a str)> {
+    let trimmed = raw.trim();
+    let mut matches: Vec<(&Skill, &str)> = registry
+        .list()
+        .iter()
+        .filter_map(|skill| {
+            if !skill.user_invocable {
+                return None;
+            }
+            if trimmed == skill.name {
+                return Some((skill, ""));
+            }
+            trimmed
+                .strip_prefix(&skill.name)
+                .filter(|rest| rest.starts_with(char::is_whitespace))
+                .map(|rest| (skill, rest.trim()))
+        })
+        .collect();
+    matches.sort_by(|(a, _), (b, _)| b.name.len().cmp(&a.name.len()));
+    matches.into_iter().next()
 }
 
 fn activate_skill(app: &mut App, name: &str) -> CommandResult {
-    // `/skill new` is a friendly alias for `/skill skill-creator`.
-    let name = if name == "new" { "skill-creator" } else { name };
-
     let registry = discover_visible_skills(app);
+    if let Some((skill, args)) = resolve_skill_invocation(&registry, name) {
+        activate_skill_with_args(app, skill, args)
+    } else {
+        skill_not_found(&registry, name)
+    }
+}
 
-    if let Some(skill) = registry.get(name) {
-        let instruction = format!(
-            "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
-            skill.name, skill.body
-        );
+fn activate_skill_with_args(app: &mut App, skill: &Skill, args: &str) -> CommandResult {
+    if !skill.user_invocable {
+        return CommandResult::error(format!(
+            "Skill '{}' is not user-invocable. It can only be loaded internally when relevant.",
+            skill.name
+        ));
+    }
 
-        app.add_message(HistoryCell::System {
-            content: format!("Activated skill: {}\n\n{}", skill.name, skill.description),
-        });
+    let body = crate::skills::preprocess_skill_body_for_activation(skill);
+    let body = expand_skill_variables(skill, &body, args, app.current_session_id.as_deref());
+    let instruction = format!(
+        "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
+        skill.name, body
+    );
 
-        app.active_skill = Some(instruction);
+    app.add_message(HistoryCell::System {
+        content: format!("Activated skill: {}\n\n{}", skill.name, skill.description),
+    });
 
-        CommandResult::message(format!(
-            "Skill '{}' activated.\n\nDescription: {}\n\nType your request and the skill instructions will be applied.",
-            skill.name, skill.description
+    app.active_skill = Some(instruction);
+    app.active_allowed_tools = skill.allowed_tools.clone();
+
+    let mut msg = format!(
+        "Skill '{}' activated.\n\nDescription: {}\n\nType your request and the skill instructions will be applied.",
+        skill.name, skill.description
+    );
+    if let Some(tools) = &skill.allowed_tools
+        && !tools.is_empty()
+    {
+        let _ = write!(msg, "\n\nAllowed tools for next turn: {}", tools.join(", "));
+    }
+    CommandResult::message(msg)
+}
+
+fn skill_not_found(registry: &SkillRegistry, name: &str) -> CommandResult {
+    let available: Vec<String> = registry
+        .visible_list()
+        .into_iter()
+        .map(|s| s.name.clone())
+        .collect();
+    let warnings = render_skill_warnings(registry);
+
+    if available.is_empty() {
+        CommandResult::error(format!(
+            "Skill '{name}' not found. No skills installed.\n\nUse /skills to see how to add skills.{warnings}"
         ))
     } else {
-        let available: Vec<String> = registry.list().iter().map(|s| s.name.clone()).collect();
-        let warnings = render_skill_warnings(&registry);
-
-        if available.is_empty() {
-            CommandResult::error(format!(
-                "Skill '{name}' not found. No skills installed.\n\nUse /skills to see how to add skills.{warnings}"
-            ))
-        } else {
-            CommandResult::error(format!(
-                "Skill '{}' not found.\n\nAvailable skills: {}{}",
-                name,
-                available.join(", "),
-                warnings
-            ))
-        }
+        CommandResult::error(format!(
+            "Skill '{}' not found.\n\nAvailable skills: {}{}",
+            name,
+            available.join(", "),
+            warnings
+        ))
     }
+}
+
+pub(crate) fn expand_skill_variables(
+    skill: &Skill,
+    body: &str,
+    args: &str,
+    session_id: Option<&str>,
+) -> String {
+    let mut out = body.replace("$ARGUMENTS", args);
+    let skill_dir = skill
+        .path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    out = out.replace("${CODESMITH_SKILL_DIR}", &skill_dir);
+    out = out.replace("${CLAUDE_SKILL_DIR}", &skill_dir);
+    let session_id = session_id.unwrap_or_default();
+    out = out.replace("${CODESMITH_SESSION_ID}", session_id);
+    out = out.replace("${CLAUDE_SESSION_ID}", session_id);
+    for (idx, arg) in args.split_whitespace().enumerate() {
+        out = out.replace(&format!("${}", idx + 1), arg);
+    }
+    out
 }
 
 // ─── /skill install ────────────────────────────────────────────────────────
@@ -971,6 +1048,67 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn hidden_skills_are_not_listed_or_user_invocable() {
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        create_skill_dir(
+            &tmpdir,
+            "hidden-skill",
+            "---\nname: hidden-skill\ndescription: Hidden\nuser_invocable: false\n---\nbody",
+        );
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+
+        let list = list_skills(&mut app, None).message.unwrap();
+        assert!(!list.contains("/hidden-skill"), "got: {list}");
+        let result = run_skill(&mut app, Some("hidden-skill"));
+        assert!(result.is_error, "hidden skill should not activate");
+    }
+
+    #[test]
+    fn run_skill_splits_longest_name_from_arguments_and_sets_allowed_tools() {
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        let skill_dir = tmpdir.path().join("skills").join("review pr");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: review pr\ndescription: Review\nallowed_tools: read_file, edit_file\n---\nArgs: $ARGUMENTS / first=$1 / dir=${CODESMITH_SKILL_DIR}",
+        )
+        .unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+
+        let result = run_skill(&mut app, Some("review pr src/main.rs extra"));
+        assert!(!result.is_error, "got: {result:?}");
+        assert_eq!(
+            app.active_allowed_tools,
+            Some(vec!["read_file".to_string(), "edit_file".to_string()])
+        );
+        let active = app.active_skill.as_deref().expect("skill activated");
+        assert!(active.contains("Args: src/main.rs extra"), "got: {active}");
+        assert!(active.contains("first=src/main.rs"), "got: {active}");
+        assert!(
+            active.contains(&skill_dir.display().to_string()),
+            "got: {active}"
+        );
+    }
+
+    #[test]
+    fn expand_skill_variables_replaces_session_and_claude_compat_variables() {
+        let mut skill = Skill::with_defaults("vars".to_string(), String::new(), String::new());
+        skill.path = std::path::PathBuf::from("/tmp/skills/vars/SKILL.md");
+        let expanded = expand_skill_variables(
+            &skill,
+            "args=$ARGUMENTS second=$2 dir=${CLAUDE_SKILL_DIR} sid=${CLAUDE_SESSION_ID}",
+            "one two",
+            Some("sess-123"),
+        );
+        assert!(expanded.contains("args=one two"));
+        assert!(expanded.contains("second=two"));
+        assert!(expanded.contains("dir=/tmp/skills/vars"));
+        assert!(expanded.contains("sid=sess-123"));
     }
 
     #[test]

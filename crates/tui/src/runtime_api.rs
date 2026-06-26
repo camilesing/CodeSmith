@@ -271,6 +271,12 @@ struct SkillEntry {
     path: PathBuf,
     enabled: bool,
     is_bundled: bool,
+    when_to_use: Option<String>,
+    allowed_tools: Option<Vec<String>>,
+    user_invocable: bool,
+    paths: Vec<String>,
+    version: Option<String>,
+    source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1113,6 +1119,12 @@ async fn list_skills(
             path: skill.path.clone(),
             enabled: skill_state.is_enabled(&skill.name),
             is_bundled: skill_entry_is_bundled(skill, &skills_dir),
+            when_to_use: skill.when_to_use.clone(),
+            allowed_tools: skill.allowed_tools.clone(),
+            user_invocable: skill.user_invocable,
+            paths: skill.paths.clone(),
+            version: skill.version.clone(),
+            source: format!("{:?}", skill.loaded_from),
         })
         .collect();
     Ok(Json(SkillsResponse {
@@ -4312,18 +4324,18 @@ mod tests {
         )
         .expect("write override skill");
 
-        let bundled_skill = crate::skills::Skill {
-            name: "delegate".to_string(),
-            description: String::new(),
-            body: String::new(),
-            path: bundled_skill_path,
-        };
-        let override_skill = crate::skills::Skill {
-            name: "delegate".to_string(),
-            description: String::new(),
-            body: String::new(),
-            path: override_skill_path,
-        };
+        let mut bundled_skill = crate::skills::Skill::with_defaults(
+            "delegate".to_string(),
+            String::new(),
+            String::new(),
+        );
+        bundled_skill.path = bundled_skill_path;
+        let mut override_skill = crate::skills::Skill::with_defaults(
+            "delegate".to_string(),
+            String::new(),
+            String::new(),
+        );
+        override_skill.path = override_skill_path;
 
         assert!(skill_entry_is_bundled(&bundled_skill, &bundled_skills_dir));
         assert!(!skill_entry_is_bundled(
