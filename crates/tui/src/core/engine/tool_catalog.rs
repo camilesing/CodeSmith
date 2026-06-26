@@ -155,6 +155,7 @@ pub(super) fn ensure_advanced_tooling(
                 },
                 "required": ["code"]
             }),
+            output_schema: None,
             allowed_callers: Some(vec!["direct".to_string()]),
             defer_loading: Some(should_default_defer_tool(
                 CODE_EXECUTION_TOOL_NAME,
@@ -201,6 +202,7 @@ pub(super) fn ensure_advanced_tooling(
                 },
                 "required": ["query"]
             }),
+            output_schema: None,
             allowed_callers: Some(vec!["direct".to_string()]),
             defer_loading: Some(false),
             input_examples: None,
@@ -228,6 +230,7 @@ pub(super) fn ensure_advanced_tooling(
                 },
                 "required": ["query"]
             }),
+            output_schema: None,
             allowed_callers: Some(vec!["direct".to_string()]),
             defer_loading: Some(false),
             input_examples: None,

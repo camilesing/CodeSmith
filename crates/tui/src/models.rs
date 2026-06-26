@@ -143,6 +143,8 @@ pub struct Tool {
     pub description: String,
     pub input_schema: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_callers: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,

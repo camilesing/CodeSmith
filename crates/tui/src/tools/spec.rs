@@ -680,6 +680,30 @@ pub trait ToolSpec: Send + Sync {
     /// Returns the JSON Schema for the tool's input parameters.
     fn input_schema(&self) -> Value;
 
+    /// Returns the JSON Schema for the tool's output payload.
+    ///
+    /// Most tools return plain text today, so the default is intentionally
+    /// permissive. Tools with structured output can override this without
+    /// changing the execution contract.
+    fn output_schema(&self) -> Value {
+        serde_json::json!({
+            "oneOf": [
+                { "type": "string" },
+                { "type": "object" },
+                { "type": "array" }
+            ]
+        })
+    }
+
+    /// Validate finalized model-provided input before approval or execution.
+    ///
+    /// JSON Schema is primarily model-facing in the current API surface; this
+    /// hook gives tools a centralized semantic validation stage while remaining
+    /// backwards compatible for existing tools.
+    fn validate_input(&self, _input: &Value, _context: &ToolContext) -> Result<(), ToolError> {
+        Ok(())
+    }
+
     /// Returns the capabilities this tool has.
     fn capabilities(&self) -> Vec<ToolCapability>;
 
@@ -707,6 +731,26 @@ pub trait ToolSpec: Send + Sync {
         caps.contains(&ToolCapability::ReadOnly)
             && !caps.contains(&ToolCapability::WritesFiles)
             && !caps.contains(&ToolCapability::ExecutesCode)
+    }
+
+    /// Returns whether this input can perform destructive work.
+    fn is_destructive(&self, _input: &Value) -> bool {
+        let caps = self.capabilities();
+        caps.contains(&ToolCapability::WritesFiles) || caps.contains(&ToolCapability::ExecutesCode)
+    }
+
+    /// Returns whether this input requires user interaction while executing.
+    fn is_interactive(&self, _input: &Value) -> bool {
+        false
+    }
+
+    /// Returns the approval requirement for a specific input.
+    fn approval_requirement_for_input(
+        &self,
+        _input: &Value,
+        _context: &ToolContext,
+    ) -> ApprovalRequirement {
+        self.approval_requirement()
     }
 
     /// Returns whether this tool can be executed in parallel with others.

@@ -34,6 +34,20 @@ pub struct ToolRegistry {
     api_cache: OnceLock<Vec<Tool>>,
 }
 
+impl Clone for ToolRegistry {
+    fn clone(&self) -> Self {
+        let api_cache = OnceLock::new();
+        if let Some(cached) = self.api_cache.get() {
+            let _ = api_cache.set(cached.clone());
+        }
+        Self {
+            tools: self.tools.clone(),
+            context: self.context.clone(),
+            api_cache,
+        }
+    }
+}
+
 impl ToolRegistry {
     /// Create a new empty registry with the given context.
     #[must_use]
@@ -229,6 +243,7 @@ impl ToolRegistry {
                     name: tool.name().to_string(),
                     description: tool.description().to_string(),
                     input_schema: schema,
+                    output_schema: Some(tool.output_schema()),
                     allowed_callers: Some(vec!["direct".to_string()]),
                     defer_loading: Some(tool.defer_loading()),
                     input_examples: None,
@@ -1378,6 +1393,7 @@ mod tests {
         assert_eq!(api_tools.len(), 1);
         assert_eq!(api_tools[0].name, "my_tool");
         assert_eq!(api_tools[0].description, "A test tool");
+        assert!(api_tools[0].output_schema.is_some());
     }
 
     #[test]

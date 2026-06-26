@@ -25,21 +25,27 @@ use wait_timeout::ChildExt;
 
 /// Events that can trigger hook execution
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum HookEvent {
     /// Triggered when a new session starts
+    #[serde(rename = "session_start")]
     SessionStart,
     /// Triggered when a session ends (quit, Ctrl+C)
+    #[serde(rename = "session_end")]
     SessionEnd,
     /// Triggered before a user message is sent to the LLM
+    #[serde(rename = "message_submit")]
     MessageSubmit,
-    /// Triggered before a tool is executed
+    /// Triggered before a tool is executed (`pre_tool_use` alias supported)
+    #[serde(rename = "tool_call_before", alias = "pre_tool_use")]
     ToolCallBefore,
-    /// Triggered after a tool completes (success or failure)
+    /// Triggered after a tool completes (success or failure) (`post_tool_use` alias supported)
+    #[serde(rename = "tool_call_after", alias = "post_tool_use")]
     ToolCallAfter,
     /// Triggered when the user changes modes (Plan, Agent, Yolo)
+    #[serde(rename = "mode_change")]
     ModeChange,
     /// Triggered when an error occurs
+    #[serde(rename = "on_error")]
     OnError,
     /// Triggered immediately before each `exec_shell` invocation. The hook's
     /// stdout is parsed as `KEY=VALUE\n` lines and merged on top of the
@@ -47,12 +53,15 @@ pub enum HookEvent {
     /// per-skill PATH adjustments, or short-lived tokens (#456). Hooks that
     /// fail or time out are logged but do *not* abort the shell call; they
     /// simply contribute no env vars.
+    #[serde(rename = "shell_env")]
     ShellEnv,
     /// Triggered after a TaskV2 task is created. Hooks can block creation
     /// by exiting with code 2.
+    #[serde(rename = "task_created")]
     TaskCreated,
     /// Triggered when a TaskV2 task status transitions to completed.
     /// Observer-only; cannot block completion.
+    #[serde(rename = "task_completed")]
     TaskCompleted,
 }
 
@@ -1261,6 +1270,18 @@ NOEQUAL line dropped
         assert_eq!(HookEvent::SessionStart.as_str(), "session_start");
         assert_eq!(HookEvent::ToolCallAfter.as_str(), "tool_call_after");
         assert_eq!(HookEvent::ModeChange.as_str(), "mode_change");
+    }
+
+    #[test]
+    fn tool_hook_aliases_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<HookEvent>(r#""pre_tool_use""#).unwrap(),
+            HookEvent::ToolCallBefore
+        );
+        assert_eq!(
+            serde_json::from_str::<HookEvent>(r#""post_tool_use""#).unwrap(),
+            HookEvent::ToolCallAfter
+        );
     }
 
     #[test]

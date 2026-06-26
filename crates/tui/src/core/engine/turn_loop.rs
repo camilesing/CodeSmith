@@ -30,6 +30,197 @@ fn approval_intent_summary(text: &str) -> Option<String> {
     Some(summary)
 }
 
+fn tool_hook_result(result: &Result<ToolResult, ToolError>) -> (String, bool) {
+    match result {
+        Ok(tool_result) => (tool_result.content.clone(), tool_result.success),
+        Err(err) => (err.to_string(), false),
+    }
+}
+
+#[derive(Clone)]
+struct ToolHookEnv {
+    mode: AppMode,
+    workspace: PathBuf,
+    model: String,
+    total_tokens: u32,
+}
+
+fn tool_hook_env(session: &Session, mode: AppMode) -> ToolHookEnv {
+    let total_tokens = session
+        .total_usage
+        .input_tokens
+        .saturating_add(session.total_usage.output_tokens)
+        .min(u64::from(u32::MAX)) as u32;
+    ToolHookEnv {
+        mode,
+        workspace: session.workspace.clone(),
+        model: session.model.clone(),
+        total_tokens,
+    }
+}
+
+fn tool_hook_executor(
+    registry: Option<&crate::tools::ToolRegistry>,
+) -> Option<std::sync::Arc<crate::hooks::HookExecutor>> {
+    registry.and_then(|registry| registry.context().runtime.hook_executor.clone())
+}
+
+fn build_tool_hook_context(
+    hook_executor: &crate::hooks::HookExecutor,
+    env: &ToolHookEnv,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+) -> crate::hooks::HookContext {
+    crate::hooks::HookContext::new()
+        .with_mode(env.mode.label())
+        .with_workspace(env.workspace.clone())
+        .with_model(&env.model)
+        .with_session_id(hook_executor.session_id())
+        .with_tokens(env.total_tokens)
+        .with_tool_name(tool_name)
+        .with_tool_args(tool_input)
+}
+
+fn execute_pre_tool_hook(
+    hook_executor: Option<&crate::hooks::HookExecutor>,
+    env: &ToolHookEnv,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+) {
+    let Some(hook_executor) = hook_executor else {
+        return;
+    };
+    if !hook_executor.has_hooks_for_event(crate::hooks::HookEvent::ToolCallBefore) {
+        return;
+    }
+    let hook_ctx = build_tool_hook_context(hook_executor, env, tool_name, tool_input);
+    let _ = hook_executor.execute(crate::hooks::HookEvent::ToolCallBefore, &hook_ctx);
+}
+
+fn execute_post_tool_hook(
+    hook_executor: Option<&crate::hooks::HookExecutor>,
+    env: &ToolHookEnv,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    result: &Result<ToolResult, ToolError>,
+) {
+    let Some(hook_executor) = hook_executor else {
+        return;
+    };
+    if !hook_executor.has_hooks_for_event(crate::hooks::HookEvent::ToolCallAfter) {
+        return;
+    }
+    let (hook_result_text, hook_success) = tool_hook_result(result);
+    let hook_ctx = build_tool_hook_context(hook_executor, env, tool_name, tool_input)
+        .with_tool_result(&hook_result_text, hook_success, None);
+    let _ = hook_executor.execute(crate::hooks::HookEvent::ToolCallAfter, &hook_ctx);
+}
+
+#[derive(Debug)]
+struct EarlyToolResult {
+    result: Result<ToolResult, ToolError>,
+    elapsed: Duration,
+}
+
+#[derive(Debug)]
+pub(super) struct EarlyToolTask {
+    name: String,
+    input: serde_json::Value,
+    handle: tokio::task::JoinHandle<EarlyToolResult>,
+}
+
+struct EarlyToolStart<'a> {
+    tool_state: &'a ToolUseState,
+    tool_input: &'a serde_json::Value,
+    registry: &'a crate::tools::ToolRegistry,
+    tool_catalog: &'a [Tool],
+    active_tools_at_batch_start: &'a std::collections::HashSet<String>,
+    allowed_tools: Option<&'a [String]>,
+    plan_mode_active: bool,
+    loop_guard: &'a LoopGuard,
+}
+
+fn early_tool_key(id: &str, name: &str) -> String {
+    format!("{id}\u{1f}{name}")
+}
+
+fn abort_early_tool_tasks(early_tool_tasks: &mut std::collections::HashMap<String, EarlyToolTask>) {
+    for (_, task) in early_tool_tasks.drain() {
+        task.handle.abort();
+    }
+}
+
+fn early_tool_start_safe(preflight: EarlyToolStart<'_>) -> bool {
+    let mut tool_name = preflight.tool_state.name.clone();
+    let requested_tool_name = tool_name.clone();
+    let tool_def = resolve_tool_definition(
+        &mut tool_name,
+        preflight.tool_catalog,
+        Some(preflight.registry),
+    );
+
+    if tool_name != preflight.tool_state.name {
+        return false;
+    }
+    if McpPool::is_mcp_tool(&tool_name)
+        || tool_name == MULTI_TOOL_PARALLEL_NAME
+        || tool_name == CODE_EXECUTION_TOOL_NAME
+        || tool_name == JS_EXECUTION_TOOL_NAME
+        || tool_name == REQUEST_USER_INPUT_NAME
+        || is_tool_search_tool(&tool_name)
+    {
+        return false;
+    }
+    if !command_allows_tool(preflight.allowed_tools, &tool_name) {
+        return false;
+    }
+    if !caller_allowed_for_tool(preflight.tool_state.caller.as_ref(), tool_def) {
+        return false;
+    }
+    let Some(spec) = preflight.registry.get(&tool_name) else {
+        return false;
+    };
+    if preflight.plan_mode_active {
+        let allowed = matches!(
+            tool_name.as_str(),
+            "write_plan_file" | "exit_plan_mode" | "enter_plan_mode"
+        );
+        if !allowed && !spec.is_read_only() {
+            return false;
+        }
+    }
+    if tool_def.is_none() {
+        return false;
+    }
+    if preflight
+        .tool_catalog
+        .iter()
+        .find(|def| def.name == tool_name)
+        .is_some_and(|def| {
+            def.defer_loading.unwrap_or(false)
+                && !preflight.active_tools_at_batch_start.contains(&tool_name)
+        })
+    {
+        return false;
+    }
+    if let AttemptDecision::Block(_) = preflight
+        .loop_guard
+        .clone()
+        .record_attempt(&tool_name, preflight.tool_input)
+    {
+        return false;
+    }
+
+    spec.is_read_only()
+        && spec.supports_parallel()
+        && !spec.is_interactive(preflight.tool_input)
+        && spec
+            .validate_input(preflight.tool_input, preflight.registry.context())
+            .is_ok()
+        && spec.approval_requirement_for_input(preflight.tool_input, preflight.registry.context())
+            == ApprovalRequirement::Auto
+}
+
 impl Engine {
     pub(super) async fn handle_deepseek_turn(
         &mut self,
@@ -458,6 +649,11 @@ impl Engine {
             let chunk_timeout = Duration::from_secs(chunk_timeout_secs);
             let max_duration = Duration::from_secs(STREAM_MAX_DURATION_SECS);
 
+            let mut early_tool_tasks: std::collections::HashMap<String, EarlyToolTask> =
+                std::collections::HashMap::new();
+            let active_tools_at_stream_start = active_tool_names.clone();
+            let plan_mode_active_at_stream_start = self.config.plan_mode_state.lock().await.active;
+
             // Process stream events
             loop {
                 let poll_outcome = tokio::select! {
@@ -798,14 +994,97 @@ impl Engine {
                             // keeps the cell from rendering `<command>` /
                             // `<file>` placeholders during the brief window
                             // between block start and the last InputJsonDelta.
+                            let tool_input = final_tool_input(tool_state);
                             let _ = self
                                 .tx_event
                                 .send(Event::ToolCallStarted {
                                     id: tool_state.id.clone(),
                                     name: tool_state.name.clone(),
-                                    input: final_tool_input(tool_state),
+                                    input: tool_input.clone(),
                                 })
                                 .await;
+
+                            if let Some(registry) = tool_registry {
+                                let is_safe_for_early_start =
+                                    early_tool_start_safe(EarlyToolStart {
+                                        tool_state,
+                                        tool_input: &tool_input,
+                                        registry,
+                                        tool_catalog: &tool_catalog,
+                                        active_tools_at_batch_start: &active_tools_at_stream_start,
+                                        allowed_tools: self.config.allowed_tools.as_deref(),
+                                        plan_mode_active: plan_mode_active_at_stream_start,
+                                        loop_guard: &loop_guard,
+                                    });
+                                if is_safe_for_early_start {
+                                    let key = early_tool_key(&tool_state.id, &tool_state.name);
+                                    let registry = registry.clone();
+                                    let tool_exec_lock = self.tool_exec_lock.clone();
+                                    let tx_event = self.tx_event.clone();
+                                    let session_id = self.session.id.clone();
+                                    let tool_id = tool_state.id.clone();
+                                    let tool_name = tool_state.name.clone();
+                                    let input_for_task = tool_input.clone();
+                                    let hook_executor = tool_hook_executor(tool_registry);
+                                    let hook_env = tool_hook_env(&self.session, mode);
+                                    let started_at = Instant::now();
+                                    let handle = tokio::spawn(async move {
+                                        execute_pre_tool_hook(
+                                            hook_executor.as_deref(),
+                                            &hook_env,
+                                            &tool_name,
+                                            &input_for_task,
+                                        );
+                                        let mut result = Engine::execute_tool_with_lock(
+                                            tool_exec_lock,
+                                            true,
+                                            false,
+                                            tx_event,
+                                            tool_name.clone(),
+                                            input_for_task.clone(),
+                                            Some(&registry),
+                                            None,
+                                            None,
+                                        )
+                                        .await;
+                                        if let Ok(tool_result) = result.as_mut()
+                                            && let Some(path) =
+                                                crate::tools::truncate::apply_spillover_with_artifact(
+                                                    tool_result,
+                                                    &tool_id,
+                                                    &tool_name,
+                                                    &session_id,
+                                                )
+                                        {
+                                            emit_tool_audit(json!({
+                                                "event": "tool.spillover",
+                                                "tool_id": tool_id.clone(),
+                                                "tool_name": tool_name.clone(),
+                                                "path": path.display().to_string(),
+                                            }));
+                                        }
+                                        execute_post_tool_hook(
+                                            hook_executor.as_deref(),
+                                            &hook_env,
+                                            &tool_name,
+                                            &input_for_task,
+                                            &result,
+                                        );
+                                        EarlyToolResult {
+                                            result,
+                                            elapsed: started_at.elapsed(),
+                                        }
+                                    });
+                                    early_tool_tasks.insert(
+                                        key,
+                                        EarlyToolTask {
+                                            name: tool_state.name.clone(),
+                                            input: tool_input,
+                                            handle,
+                                        },
+                                    );
+                                }
+                            }
                         }
                     }
                     StreamEvent::MessageDelta {
@@ -927,6 +1206,10 @@ impl Engine {
             if pending_message_complete {
                 let index = last_text_index.unwrap_or(0);
                 let _ = self.tx_event.send(Event::MessageComplete { index }).await;
+            }
+
+            if tool_uses.is_empty() && !early_tool_tasks.is_empty() {
+                abort_early_tool_tasks(&mut early_tool_tasks);
             }
 
             // RLM is a structured tool call (`rlm_query`) handled by the
@@ -1243,6 +1526,9 @@ impl Engine {
                 None
             };
 
+            let hook_executor = tool_hook_executor(tool_registry);
+            let hook_env = tool_hook_env(&self.session, mode);
+
             let active_tools_at_batch_start = active_tool_names.clone();
             let mut deferred_tools_hydrated_this_batch: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
@@ -1250,6 +1536,8 @@ impl Engine {
             let plan_mode_active = self.config.plan_mode_state.lock().await.active;
             let mut plans: Vec<ToolExecutionPlan> = Vec::with_capacity(tool_uses.len());
             for (index, tool) in tool_uses.iter_mut().enumerate() {
+                let early_key = early_tool_key(&tool.id, &tool.name);
+                let early_task = early_tool_tasks.remove(&early_key);
                 let tool_id = tool.id.clone();
                 let mut tool_name = tool.name.clone();
                 let tool_input = tool.input.clone();
@@ -1265,17 +1553,11 @@ impl Engine {
                     tool.name = tool_name.clone();
                 }
 
-                let interactive = (tool_name == "exec_shell"
-                    && tool_input
-                        .get("interactive")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(true))
-                    || tool_name == REQUEST_USER_INPUT_NAME;
-
                 let mut approval_required = false;
                 let mut approval_description = "Tool execution requires approval".to_string();
                 let mut supports_parallel = false;
                 let mut read_only = false;
+                let mut interactive = false;
                 let mut blocked_error: Option<ToolError> = None;
                 let mut guard_result: Option<ToolResult> = None;
 
@@ -1363,10 +1645,18 @@ impl Engine {
                 } else if let Some(registry) = tool_registry
                     && let Some(spec) = registry.get(&tool_name)
                 {
-                    approval_required = spec.approval_requirement() != ApprovalRequirement::Auto;
+                    if blocked_error.is_none()
+                        && let Err(err) = spec.validate_input(&tool_input, registry.context())
+                    {
+                        blocked_error = Some(err);
+                    }
+                    let requirement =
+                        spec.approval_requirement_for_input(&tool_input, registry.context());
+                    approval_required = requirement != ApprovalRequirement::Auto;
                     approval_description = spec.description().to_string();
                     supports_parallel = spec.supports_parallel();
                     read_only = spec.is_read_only();
+                    interactive = spec.is_interactive(&tool_input);
                 } else if tool_name == CODE_EXECUTION_TOOL_NAME {
                     approval_required = true;
                     approval_description =
@@ -1420,6 +1710,28 @@ impl Engine {
                     guard_result = Some(loop_guard_block_tool_result(message));
                 }
 
+                let normal_stream_early_start_safe = read_only
+                    && supports_parallel
+                    && !approval_required
+                    && !interactive
+                    && blocked_error.is_none()
+                    && guard_result.is_none()
+                    && !McpPool::is_mcp_tool(&tool_name)
+                    && tool_name != MULTI_TOOL_PARALLEL_NAME
+                    && tool_name != CODE_EXECUTION_TOOL_NAME
+                    && tool_name != JS_EXECUTION_TOOL_NAME
+                    && tool_name != REQUEST_USER_INPUT_NAME
+                    && !is_tool_search_tool(&tool_name);
+                let early_result = early_task.filter(|task| {
+                    task.name == tool_name
+                        && task.input == tool_input
+                        && normal_stream_early_start_safe
+                        && blocked_error.is_none()
+                        && guard_result.is_none()
+                });
+                let stream_early_start_safe =
+                    early_result.is_some() || normal_stream_early_start_safe;
+
                 plans.push(ToolExecutionPlan {
                     index,
                     id: tool_id,
@@ -1431,11 +1743,16 @@ impl Engine {
                     approval_description,
                     supports_parallel,
                     read_only,
+                    stream_early_start_safe,
+                    early_result,
                     blocked_error,
                     guard_result,
                 });
             }
             active_tool_names.extend(deferred_tools_hydrated_this_batch);
+            if !early_tool_tasks.is_empty() {
+                abort_early_tool_tasks(&mut early_tool_tasks);
+            }
 
             // --- Intent summary for write tools (#2381) ---
             // When the model invokes write tools, extract its preceding text
@@ -1528,42 +1845,76 @@ impl Engine {
                         let mcp_pool = mcp_pool.clone();
                         let tx_event = self.tx_event.clone();
                         let session_id = self.session.id.clone();
+                        let hook_executor = hook_executor.clone();
+                        let hook_env = hook_env.clone();
                         let started_at = Instant::now();
 
                         tool_tasks.push(async move {
-                            let mut result = Engine::execute_tool_with_lock(
-                                lock,
-                                plan.supports_parallel,
-                                plan.interactive,
-                                tx_event.clone(),
-                                plan.name.clone(),
-                                plan.input.clone(),
-                                registry,
-                                mcp_pool,
-                                None,
-                            )
-                            .await;
+                            let (result, started_at) = if let Some(early_task) = plan.early_result {
+                                match early_task.handle.await {
+                                    Ok(early_result) => (
+                                        early_result.result,
+                                        started_at
+                                            .checked_sub(early_result.elapsed)
+                                            .unwrap_or(started_at),
+                                    ),
+                                    Err(join_err) => (
+                                        Err(ToolError::execution_failed(format!(
+                                            "Early tool execution task failed: {join_err}"
+                                        ))),
+                                        started_at,
+                                    ),
+                                }
+                            } else {
+                                execute_pre_tool_hook(
+                                    hook_executor.as_deref(),
+                                    &hook_env,
+                                    &plan.name,
+                                    &plan.input,
+                                );
+                                let mut result = Engine::execute_tool_with_lock(
+                                    lock,
+                                    plan.supports_parallel,
+                                    plan.interactive,
+                                    tx_event.clone(),
+                                    plan.name.clone(),
+                                    plan.input.clone(),
+                                    registry,
+                                    mcp_pool,
+                                    None,
+                                )
+                                .await;
 
-                            // #500: spill outsized output before fanout (mirror
-                            // of the sequential path below). Emit a
-                            // `tool.spillover` audit event so operators can
-                            // correlate large-output episodes with disk usage.
-                            if let Ok(tool_result) = result.as_mut()
-                                && let Some(path) =
-                                    crate::tools::truncate::apply_spillover_with_artifact(
-                                        tool_result,
-                                        &plan.id,
-                                        &plan.name,
-                                        &session_id,
-                                    )
-                            {
-                                emit_tool_audit(json!({
-                                    "event": "tool.spillover",
-                                    "tool_id": plan.id.clone(),
-                                    "tool_name": plan.name.clone(),
-                                    "path": path.display().to_string(),
-                                }));
-                            }
+                                // #500: spill outsized output before fanout (mirror
+                                // of the sequential path below). Emit a
+                                // `tool.spillover` audit event so operators can
+                                // correlate large-output episodes with disk usage.
+                                if let Ok(tool_result) = result.as_mut()
+                                    && let Some(path) =
+                                        crate::tools::truncate::apply_spillover_with_artifact(
+                                            tool_result,
+                                            &plan.id,
+                                            &plan.name,
+                                            &session_id,
+                                        )
+                                {
+                                    emit_tool_audit(json!({
+                                        "event": "tool.spillover",
+                                        "tool_id": plan.id.clone(),
+                                        "tool_name": plan.name.clone(),
+                                        "path": path.display().to_string(),
+                                    }));
+                                }
+
+                                execute_post_tool_hook(
+                                    hook_executor.as_deref(),
+                                    &hook_env,
+                                    &plan.name,
+                                    &plan.input,
+                                    &result,
+                                );
+                                (result, started_at)
+                            };
 
                             let _ = tx_event
                                 .send(Event::ToolCallComplete {
@@ -1639,6 +1990,12 @@ impl Engine {
 
                         if tool_name == MULTI_TOOL_PARALLEL_NAME {
                             let started_at = Instant::now();
+                            execute_pre_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                            );
                             let result = self
                                 .execute_parallel_tool(
                                     tool_input.clone(),
@@ -1646,6 +2003,14 @@ impl Engine {
                                     tool_exec_lock.clone(),
                                 )
                                 .await;
+
+                            execute_post_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                                &result,
+                            );
 
                             let _ = self
                                 .tx_event
@@ -1669,9 +2034,23 @@ impl Engine {
 
                         if tool_name == CODE_EXECUTION_TOOL_NAME {
                             let started_at = Instant::now();
+                            execute_pre_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                            );
                             let result =
                                 execute_code_execution_tool(&tool_input, &self.session.workspace)
                                     .await;
+
+                            execute_post_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                                &result,
+                            );
 
                             let _ = self
                                 .tx_event
@@ -1695,9 +2074,23 @@ impl Engine {
 
                         if tool_name == JS_EXECUTION_TOOL_NAME {
                             let started_at = Instant::now();
+                            execute_pre_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                            );
                             let result =
                                 execute_js_execution_tool(&tool_input, &self.session.workspace)
                                     .await;
+
+                            execute_post_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                                &result,
+                            );
 
                             let _ = self
                                 .tx_event
@@ -1721,11 +2114,25 @@ impl Engine {
 
                         if is_tool_search_tool(&tool_name) {
                             let started_at = Instant::now();
+                            execute_pre_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                            );
                             let result = execute_tool_search(
                                 &tool_name,
                                 &tool_input,
                                 &tool_catalog,
                                 &mut active_tool_names,
+                            );
+
+                            execute_post_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                                &result,
                             );
 
                             let _ = self
@@ -1750,6 +2157,12 @@ impl Engine {
 
                         if tool_name == REQUEST_USER_INPUT_NAME {
                             let started_at = Instant::now();
+                            execute_pre_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                            );
                             let result = match UserInputRequest::from_value(&tool_input) {
                                 Ok(request) => self
                                     .await_user_input(&tool_id, request)
@@ -1760,6 +2173,14 @@ impl Engine {
                                     }),
                                 Err(err) => Err(err),
                             };
+
+                            execute_post_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                                &result,
+                            );
 
                             let _ = self
                                 .tx_event
@@ -1884,9 +2305,16 @@ impl Engine {
                         }
 
                         let started_at = Instant::now();
+                        let had_result_override = result_override.is_some();
                         let mut result = if let Some(result_override) = result_override {
                             result_override
                         } else {
+                            execute_pre_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                            );
                             Self::execute_tool_with_lock(
                                 tool_exec_lock.clone(),
                                 plan.supports_parallel,
@@ -1923,6 +2351,16 @@ impl Engine {
                                 "tool_name": tool_name.clone(),
                                 "path": path.display().to_string(),
                             }));
+                        }
+
+                        if !had_result_override {
+                            execute_post_tool_hook(
+                                hook_executor.as_deref(),
+                                &hook_env,
+                                &tool_name,
+                                &tool_input,
+                                &result,
+                            );
                         }
 
                         let _ = self

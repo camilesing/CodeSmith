@@ -50,6 +50,7 @@ pub fn js_execution_tool_definition() -> Tool {
             },
             "required": ["code"]
         }),
+        output_schema: None,
         allowed_callers: Some(vec!["direct".to_string()]),
         defer_loading: Some(false),
         input_examples: None,

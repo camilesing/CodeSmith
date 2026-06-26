@@ -152,6 +152,14 @@ impl ToolSpec for RequestUserInputTool {
         ApprovalRequirement::Auto
     }
 
+    fn validate_input(&self, input: &Value, _context: &ToolContext) -> Result<(), ToolError> {
+        UserInputRequest::from_value(input).map(|_| ())
+    }
+
+    fn is_interactive(&self, _input: &Value) -> bool {
+        true
+    }
+
     async fn execute(
         &self,
         _input: Value,
@@ -192,69 +200,35 @@ mod tests {
     #[test]
     fn rejects_too_many_questions() {
         let request = UserInputRequest {
-            questions: vec![
-                UserInputQuestion {
-                    header: "Q1".to_string(),
-                    id: "q1".to_string(),
-                    question: "?".to_string(),
+            questions: (0..4)
+                .map(|idx| UserInputQuestion {
+                    header: format!("Q{idx}"),
+                    id: format!("choice_{idx}"),
+                    question: "Pick one".to_string(),
                     options: vec![
                         UserInputOption {
                             label: "A".to_string(),
-                            description: "A".to_string(),
+                            description: "Option A".to_string(),
                         },
                         UserInputOption {
                             label: "B".to_string(),
-                            description: "B".to_string(),
+                            description: "Option B".to_string(),
                         },
                     ],
-                },
-                UserInputQuestion {
-                    header: "Q2".to_string(),
-                    id: "q2".to_string(),
-                    question: "?".to_string(),
-                    options: vec![
-                        UserInputOption {
-                            label: "A".to_string(),
-                            description: "A".to_string(),
-                        },
-                        UserInputOption {
-                            label: "B".to_string(),
-                            description: "B".to_string(),
-                        },
-                    ],
-                },
-                UserInputQuestion {
-                    header: "Q3".to_string(),
-                    id: "q3".to_string(),
-                    question: "?".to_string(),
-                    options: vec![
-                        UserInputOption {
-                            label: "A".to_string(),
-                            description: "A".to_string(),
-                        },
-                        UserInputOption {
-                            label: "B".to_string(),
-                            description: "B".to_string(),
-                        },
-                    ],
-                },
-                UserInputQuestion {
-                    header: "Q4".to_string(),
-                    id: "q4".to_string(),
-                    question: "?".to_string(),
-                    options: vec![
-                        UserInputOption {
-                            label: "A".to_string(),
-                            description: "A".to_string(),
-                        },
-                        UserInputOption {
-                            label: "B".to_string(),
-                            description: "B".to_string(),
-                        },
-                    ],
-                },
-            ],
+                })
+                .collect(),
         };
         assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn tool_spec_validate_input_uses_request_shape() {
+        let tool = RequestUserInputTool;
+        let context = ToolContext::new(std::env::temp_dir());
+        assert!(
+            tool.validate_input(&json!({ "questions": [] }), &context)
+                .is_err()
+        );
+        assert!(tool.is_interactive(&json!({})));
     }
 }

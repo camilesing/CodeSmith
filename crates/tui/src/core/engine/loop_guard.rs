@@ -24,7 +24,7 @@ pub(super) enum OutcomeDecision {
     Halt(String),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct LoopGuard {
     call_counts: HashMap<(String, u64), u32>,
     failure_counts: HashMap<String, u32>,

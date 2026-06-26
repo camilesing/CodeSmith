@@ -508,6 +508,7 @@ pub fn build_purge_tool() -> Tool {
             },
             "required": ["operations"]
         }),
+        output_schema: None,
         allowed_callers: None,
         defer_loading: None,
         input_examples: None,

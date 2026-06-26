@@ -49,11 +49,11 @@ fn events() -> CommandResult {
         ),
         (
             HookEvent::ToolCallBefore,
-            "fires before each tool call (read-only observer for now)",
+            "fires before each approved tool execution (alias: pre_tool_use; read-only observer)",
         ),
         (
             HookEvent::ToolCallAfter,
-            "fires after each tool call (read-only observer for now)",
+            "fires after each executed tool completes (alias: post_tool_use; read-only observer)",
         ),
         (
             HookEvent::ModeChange,
@@ -286,6 +286,8 @@ mod tests {
         }
         // Each event line includes the descriptive blurb.
         assert!(body.contains("fires once when the TUI launches"));
+        assert!(body.contains("alias: pre_tool_use"));
+        assert!(body.contains("alias: post_tool_use"));
         assert!(body.contains("read-only observer"));
     }
 

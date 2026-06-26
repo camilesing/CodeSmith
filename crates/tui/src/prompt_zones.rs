@@ -370,6 +370,7 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             input_schema: serde_json::Value::Null,
+            output_schema: None,
             tool_type: None,
             allowed_callers: None,
             defer_loading: None,
