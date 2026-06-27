@@ -195,8 +195,9 @@ pub async fn partial_compact(
     }
 
     // Generate summary using LLM.
-    let summary_text =
-        crate::compaction::create_summary(client, &to_summarize, &request.model).await?;
+    let summary_text = crate::compaction::create_summary(client, &to_summarize, &request.model)
+        .await?
+        .text;
 
     let summary_block = SystemBlock {
         block_type: "text".to_string(),

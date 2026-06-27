@@ -121,12 +121,10 @@ pub struct EngineConfig {
     pub features: Features,
     /// Auto-compaction settings for long conversations.
     ///
-    /// As of v0.6.6 the high-level summarization compaction (`compact_messages_safe`)
-    /// is **disabled by default**; the checkpoint-restart cycle architecture
-    /// (`cycle_manager`) replaces it. The compaction config is still wired through
+    /// High-level summarization compaction is enabled by default and uses
+    /// provider-neutral context-window thresholds. The same config is also used
     /// for the per-tool-result truncation path (`compact_tool_result_for_context`)
-    /// and for users who explicitly opt back in through the `auto_compact`
-    /// setting or a direct engine config.
+    /// and by direct embedders that override compaction behavior.
     pub compaction: CompactionConfig,
     /// Checkpoint-restart cycle settings (issue #124).
     pub cycle: CycleConfig,
@@ -348,6 +346,7 @@ pub struct Engine {
     llm_client_error: Option<String>,
     api_key_env_only_recovery: Option<String>,
     session: Session,
+    api_provider: ApiProvider,
     subagent_manager: SharedSubAgentManager,
     shell_manager: SharedShellManager,
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
@@ -837,12 +836,14 @@ impl Engine {
             ),
         ));
 
+        let api_provider = api_config.api_provider();
         let mut engine = Engine {
             config,
             llm_client,
             llm_client_error,
             api_key_env_only_recovery,
             session,
+            api_provider,
             subagent_manager,
             shell_manager,
             mcp_pool: None,
@@ -1850,6 +1851,11 @@ impl Engine {
                     let messages_after = result.messages.len();
                     self.session.messages = result.messages;
                     self.merge_compaction_summary(result.summary_prompt);
+                    self.reinject_compaction_attachments(context_input_budget_for_provider(
+                        self.api_provider,
+                        &self.session.model,
+                    ))
+                    .await;
                     self.emit_session_updated().await;
                     let removed = messages_before.saturating_sub(messages_after);
                     let message = if result.retries_used > 0 {
@@ -2000,6 +2006,11 @@ impl Engine {
 
         self.session.messages = result.messages;
         self.merge_compaction_summary(result.summary_prompt);
+        self.reinject_compaction_attachments(context_input_budget_for_provider(
+            self.api_provider,
+            &self.session.model,
+        ))
+        .await;
         self.emit_session_updated().await;
         let removed = messages_before.saturating_sub(messages_after);
         let message = format!(
@@ -2094,7 +2105,7 @@ impl Engine {
             &self.session.messages,
             &self.session.model,
             self.session.reasoning_effort.clone(),
-            effective_max_output_tokens(&self.session.model),
+            effective_max_output_tokens_for_provider(self.api_provider, &self.session.model),
         )
         .await
         {
@@ -2160,7 +2171,9 @@ impl Engine {
         client: &dyn crate::llm_client::LlmClient,
         reason: &str,
     ) -> bool {
-        let Some(target_budget) = context_input_budget(&self.session.model) else {
+        let Some(target_budget) =
+            context_input_budget_for_provider(self.api_provider, &self.session.model)
+        else {
             return false;
         };
 
@@ -2243,6 +2256,8 @@ impl Engine {
                             if !result.messages.is_empty() {
                                 self.session.messages = result.messages;
                                 self.merge_compaction_summary(result.summary_prompt);
+                                self.reinject_compaction_attachments(Some(target_budget))
+                                    .await;
                                 if self.estimated_input_tokens() <= target_budget {
                                     crate::compaction::post_compact_cleanup::post_compact_cleanup(
                                         &mut self.session,
@@ -2328,8 +2343,14 @@ impl Engine {
             self.session.messages = compacted_messages;
         }
         self.merge_compaction_summary(summary_prompt);
+        self.reinject_compaction_attachments(Some(target_budget))
+            .await;
 
         let trimmed = self.trim_oldest_messages_to_budget(target_budget);
+        if trimmed > 0 {
+            self.reinject_compaction_attachments(Some(target_budget))
+                .await;
+        }
         self.emit_session_updated().await;
         let after_tokens = self.estimated_input_tokens();
         let after_count = self.session.messages.len();
@@ -2914,6 +2935,153 @@ impl Engine {
         self.session.last_system_prompt_hash = Some(system_prompt_hash(merged.as_ref()));
         self.session.system_prompt = merged;
     }
+
+    async fn reinject_compaction_attachments(
+        &mut self,
+        target_input_budget: Option<usize>,
+    ) -> usize {
+        let plan_snapshot = { self.config.plan_state.lock().await.snapshot() };
+        let plan_summary = format_plan_reinject_summary(&plan_snapshot);
+        let todo_snapshot = { self.config.todos.lock().await.snapshot() };
+        let todo_summary = format_todo_reinject_summary(&todo_snapshot);
+        let mut candidates = Vec::new();
+
+        if let Some(message) = crate::compaction::attachment_reinject::reinject_plan_attachment(
+            plan_summary.as_deref().unwrap_or(""),
+        ) {
+            candidates.push(message);
+        }
+        if let Some(todo_summary) = todo_summary {
+            candidates.push(compaction_reinject_message(format!(
+                "Active todos resumed after context compaction:\n\n{todo_summary}"
+            )));
+        }
+        let subagent_summaries = self.compaction_subagent_summaries().await;
+        if let Some(message) = crate::compaction::attachment_reinject::reinject_subagent_attachments(
+            &subagent_summaries,
+        ) {
+            candidates.push(message);
+        }
+        let recent_read_files = self
+            .session
+            .recent_read_files
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(message) =
+            crate::compaction::attachment_reinject::reinject_read_file_attachments(
+                &recent_read_files,
+            )
+        {
+            candidates.push(message);
+        }
+
+        let mut injected = 0usize;
+        for candidate in candidates {
+            if self
+                .session
+                .messages
+                .iter()
+                .any(|message| message == &candidate)
+            {
+                continue;
+            }
+            if let Some(target_budget) = target_input_budget {
+                let mut trial = self.session.messages.clone();
+                trial.push(candidate.clone());
+                if estimate_input_tokens_conservative(&trial, self.session.system_prompt.as_ref())
+                    > target_budget
+                {
+                    continue;
+                }
+            }
+            self.session.messages.push(candidate);
+            injected = injected.saturating_add(1);
+        }
+        injected
+    }
+
+    async fn compaction_subagent_summaries(
+        &self,
+    ) -> Vec<crate::compaction::attachment_reinject::AgentSummary> {
+        self.subagent_manager
+            .read()
+            .await
+            .live_running_snapshots()
+            .into_iter()
+            .map(|snapshot| {
+                let name = if snapshot.name.trim().is_empty() {
+                    snapshot.agent_id.clone()
+                } else {
+                    snapshot.name.clone()
+                };
+                let role = snapshot.assignment.role.as_deref().unwrap_or("unspecified");
+                let description = format!(
+                    "id={}, role={}, objective={}, model={}, steps={}",
+                    snapshot.agent_id,
+                    role,
+                    snapshot.assignment.objective,
+                    snapshot.model,
+                    snapshot.steps_taken
+                );
+                crate::compaction::attachment_reinject::AgentSummary {
+                    name,
+                    status: "running".to_string(),
+                    description,
+                }
+            })
+            .collect()
+    }
+}
+
+fn compaction_reinject_message(content: String) -> Message {
+    Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: format!("<system-reminder>\n{content}\n</system-reminder>"),
+            cache_control: None,
+        }],
+    }
+}
+
+fn format_plan_reinject_summary(snapshot: &crate::tools::plan::PlanSnapshot) -> Option<String> {
+    if snapshot.items.is_empty()
+        && snapshot
+            .explanation
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
+        return None;
+    }
+    let mut lines = Vec::new();
+    if let Some(explanation) = snapshot
+        .explanation
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        lines.push(explanation.trim().to_string());
+        lines.push(String::new());
+    }
+    for item in &snapshot.items {
+        lines.push(format!("- {:?}: {}", item.status, item.step));
+    }
+    Some(lines.join("\n"))
+}
+
+fn format_todo_reinject_summary(snapshot: &crate::tools::todo::TodoListSnapshot) -> Option<String> {
+    if snapshot.items.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::new();
+    for item in &snapshot.items {
+        lines.push(format!(
+            "- #{} {:?}: {}",
+            item.id, item.status, item.content
+        ));
+    }
+    Some(lines.join("\n"))
 }
 
 fn default_plugin_tools_dir() -> PathBuf {
@@ -3113,9 +3281,9 @@ mod handle;
 pub(crate) use context::compact_tool_result_for_context;
 use context::{
     COMPACTION_SUMMARY_MARKER, MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
-    context_input_budget, effective_max_output_tokens, estimate_input_tokens_conservative,
-    extract_compaction_summary_prompt, is_context_length_error_message, summarize_text,
-    turn_response_headroom_tokens,
+    context_input_budget_for_provider, effective_max_output_tokens_for_provider,
+    estimate_input_tokens_conservative, extract_compaction_summary_prompt,
+    is_context_length_error_message, summarize_text, turn_response_headroom_tokens,
 };
 mod dispatch;
 mod loop_guard;

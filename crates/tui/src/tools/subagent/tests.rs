@@ -962,6 +962,56 @@ async fn test_running_count_counts_only_agents_with_live_task_handles() {
         .abort();
 }
 
+#[tokio::test]
+async fn test_live_running_snapshots_return_only_agents_with_live_task_handles() {
+    let mut manager = SubAgentManager::new(PathBuf::from("."), 2);
+    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let mut live_agent = SubAgent::new(
+        "test_agent_live".to_string(),
+        SubAgentType::Explore,
+        "prompt".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
+        Some(vec!["read_file".to_string()]),
+        input_tx,
+        "boot_test".to_string(),
+    );
+    live_agent.status = SubAgentStatus::Running;
+    let handle = tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    });
+    live_agent.task_handle = Some(handle);
+    let live_agent_id = live_agent.id.clone();
+    manager.agents.insert(live_agent_id.clone(), live_agent);
+
+    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let mut stale_agent = SubAgent::new(
+        "test_agent_stale".to_string(),
+        SubAgentType::Explore,
+        "prompt".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Green".to_string()),
+        Some(vec!["read_file".to_string()]),
+        input_tx,
+        "boot_test".to_string(),
+    );
+    stale_agent.status = SubAgentStatus::Running;
+    manager.agents.insert(stale_agent.id.clone(), stale_agent);
+
+    let snapshots = manager.live_running_snapshots();
+
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].agent_id, live_agent_id);
+    manager
+        .agents
+        .get_mut(&live_agent_id)
+        .and_then(|agent| agent.task_handle.take())
+        .expect("live task handle")
+        .abort();
+}
+
 #[test]
 fn test_running_count_ignores_running_status_without_task_handle() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 1);

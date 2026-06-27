@@ -371,6 +371,13 @@ impl Engine {
                             let auto_messages_after = result.messages.len();
                             self.session.messages = result.messages;
                             self.merge_compaction_summary(result.summary_prompt);
+                            self.reinject_compaction_attachments(
+                                context_input_budget_for_provider(
+                                    self.api_provider,
+                                    &self.session.model,
+                                ),
+                            )
+                            .await;
                             self.session.circuit_breaker.record_success();
                             crate::compaction::post_compact_cleanup::post_compact_cleanup(
                                 &mut self.session,
@@ -425,7 +432,9 @@ impl Engine {
                 continue;
             }
 
-            if let Some(input_budget) = context_input_budget(&self.session.model) {
+            if let Some(input_budget) =
+                context_input_budget_for_provider(self.api_provider, &self.session.model)
+            {
                 let estimated_input = self.estimated_input_tokens();
                 if estimated_input > input_budget {
                     if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
@@ -540,7 +549,10 @@ impl Engine {
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.messages_with_turn_metadata(),
-                max_tokens: effective_max_output_tokens(&self.session.model),
+                max_tokens: effective_max_output_tokens_for_provider(
+                    self.api_provider,
+                    &self.session.model,
+                ),
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
                 tool_choice: if active_tools.is_some() {
@@ -2425,6 +2437,11 @@ impl Engine {
                             &outcome.name,
                             &output,
                         );
+                        if output.success && outcome.name == "read_file" {
+                            self.session
+                                .record_read_file_result(&tool_input, &output_for_context);
+                        }
+
                         let tool_was_executed = output
                             .metadata
                             .as_ref()

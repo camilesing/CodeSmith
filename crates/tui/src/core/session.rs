@@ -13,7 +13,21 @@ use crate::project_context::{ProjectContext, load_project_context_with_parents};
 use crate::tui::approval::ApprovalMode;
 use crate::working_set::WorkingSet;
 use chrono::{DateTime, Utc};
+use serde_json::Value;
+use std::collections::VecDeque;
 use std::path::PathBuf;
+
+const RECENT_READ_FILE_LIMIT: usize = 12;
+const RECENT_READ_FILE_SNIPPET_CHARS: usize = 1_200;
+
+/// Bounded snapshot of successful `read_file` tool outputs that may be lost
+/// when old tool-result messages are compacted away.
+#[derive(Debug, Clone)]
+pub struct RecentReadFile {
+    pub path: String,
+    pub input: Value,
+    pub output_preview: String,
+}
 
 /// Session state for the engine.
 #[derive(Debug, Clone)]
@@ -51,6 +65,10 @@ pub struct Session {
 
     /// Conversation history (API format)
     pub messages: Vec<Message>,
+
+    /// Successful recent `read_file` outputs, retained outside the transcript so
+    /// compaction can re-inject concise file context without synthetic tool blocks.
+    pub recent_read_files: VecDeque<RecentReadFile>,
 
     /// Total tokens used in this session
     pub total_usage: SessionUsage,
@@ -165,6 +183,7 @@ impl Session {
             system_prompt_override: false,
             compaction_summary_prompt: None,
             messages: Vec::new(),
+            recent_read_files: VecDeque::new(),
             total_usage: SessionUsage::default(),
             allow_shell,
             trust_mode,
@@ -201,6 +220,39 @@ impl Session {
         self.working_set
             .rebuild_from_messages(&self.messages, &self.workspace);
     }
+
+    /// Record a successful `read_file` output for post-compaction reminders.
+    pub fn record_read_file_result(&mut self, input: &Value, output_for_context: &str) {
+        let Some(path) = input.get("path").and_then(Value::as_str) else {
+            return;
+        };
+        let preview = summarize_chars(output_for_context, RECENT_READ_FILE_SNIPPET_CHARS);
+        if let Some(existing) = self
+            .recent_read_files
+            .iter()
+            .position(|entry| entry.path == path)
+        {
+            self.recent_read_files.remove(existing);
+        }
+        self.recent_read_files.push_back(RecentReadFile {
+            path: path.to_string(),
+            input: input.clone(),
+            output_preview: preview,
+        });
+        while self.recent_read_files.len() > RECENT_READ_FILE_LIMIT {
+            self.recent_read_files.pop_front();
+        }
+    }
+}
+
+fn summarize_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let take = limit.saturating_sub(3);
+    let mut out: String = text.chars().take(take).collect();
+    out.push_str("...");
+    out
 }
 
 #[cfg(test)]
@@ -267,5 +319,96 @@ mod tests {
         // 0 is a valid observed value, must NOT be converted to None
         assert_eq!(usage.cache_read_input_tokens, Some(0));
         assert_eq!(usage.cache_creation_input_tokens, Some(1234));
+    }
+
+    #[test]
+    fn record_read_file_result_tracks_latest_entry_by_path() {
+        let mut session = Session::new(
+            "test-model".to_string(),
+            std::path::PathBuf::from("/tmp/workspace"),
+            false,
+            false,
+            std::path::PathBuf::from("/tmp/notes.md"),
+            std::path::PathBuf::from("/tmp/mcp.json"),
+        );
+
+        session.record_read_file_result(
+            &serde_json::json!({"path": "src/lib.rs", "offset": 0}),
+            "old contents",
+        );
+        session.record_read_file_result(
+            &serde_json::json!({"path": "src/lib.rs", "offset": 10}),
+            "new contents",
+        );
+
+        assert_eq!(session.recent_read_files.len(), 1);
+        let entry = session.recent_read_files.back().unwrap();
+        assert_eq!(entry.path, "src/lib.rs");
+        assert_eq!(entry.input["offset"], 10);
+        assert_eq!(entry.output_preview, "new contents");
+    }
+
+    #[test]
+    fn record_read_file_result_ignores_missing_path() {
+        let mut session = Session::new(
+            "test-model".to_string(),
+            std::path::PathBuf::from("/tmp/workspace"),
+            false,
+            false,
+            std::path::PathBuf::from("/tmp/notes.md"),
+            std::path::PathBuf::from("/tmp/mcp.json"),
+        );
+
+        session.record_read_file_result(&serde_json::json!({"file": "src/lib.rs"}), "contents");
+
+        assert!(session.recent_read_files.is_empty());
+    }
+
+    #[test]
+    fn record_read_file_result_bounds_and_truncates_recent_files() {
+        let mut session = Session::new(
+            "test-model".to_string(),
+            std::path::PathBuf::from("/tmp/workspace"),
+            false,
+            false,
+            std::path::PathBuf::from("/tmp/notes.md"),
+            std::path::PathBuf::from("/tmp/mcp.json"),
+        );
+        let long_output = "é".repeat(RECENT_READ_FILE_SNIPPET_CHARS + 10);
+
+        for index in 0..(RECENT_READ_FILE_LIMIT + 2) {
+            session.record_read_file_result(
+                &serde_json::json!({"path": format!("src/file_{index}.rs")}),
+                &long_output,
+            );
+        }
+
+        assert_eq!(session.recent_read_files.len(), RECENT_READ_FILE_LIMIT);
+        assert_eq!(
+            session.recent_read_files.front().unwrap().path,
+            "src/file_2.rs"
+        );
+        assert_eq!(
+            session.recent_read_files.back().unwrap().path,
+            "src/file_13.rs"
+        );
+        assert_eq!(
+            session
+                .recent_read_files
+                .back()
+                .unwrap()
+                .output_preview
+                .chars()
+                .count(),
+            RECENT_READ_FILE_SNIPPET_CHARS
+        );
+        assert!(
+            session
+                .recent_read_files
+                .back()
+                .unwrap()
+                .output_preview
+                .ends_with("...")
+        );
     }
 }

@@ -420,6 +420,11 @@ impl Engine {
                     if !result.messages.is_empty() || self.session.messages.is_empty() {
                         self.session.messages = result.messages;
                         self.merge_compaction_summary(result.summary_prompt);
+                        self.reinject_compaction_attachments(context_input_budget_for_provider(
+                            self.api_provider,
+                            &self.session.model,
+                        ))
+                        .await;
                         refreshed = true;
                     }
                 }
@@ -435,11 +440,16 @@ impl Engine {
         }
 
         if !refreshed {
-            let target_budget = context_input_budget(&self.session.model)
-                .unwrap_or(self.config.compaction.token_threshold.max(1));
+            let target_budget =
+                context_input_budget_for_provider(self.api_provider, &self.session.model)
+                    .unwrap_or(self.config.compaction.token_threshold.max(1));
             if self.estimated_input_tokens() > target_budget {
                 let trimmed = self.trim_oldest_messages_to_budget(target_budget);
                 refreshed = trimmed > 0;
+                if refreshed {
+                    self.reinject_compaction_attachments(Some(target_budget))
+                        .await;
+                }
             }
         }
 

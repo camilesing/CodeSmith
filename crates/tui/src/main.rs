@@ -5377,13 +5377,11 @@ async fn run_exec_agent(
         .reasoning_effort
         .map(|effort| effort.as_setting().to_string());
 
-    // Compaction defaults to disabled in v0.6.6: the checkpoint-restart cycle
-    // architecture (issue #124) handles long-context resets via fresh contexts
-    // rather than progressive summarization. The compaction config is still
-    // wired through so users who explicitly opt back in through TUI settings
-    // or direct engine config keep their old behavior.
+    // Provider-neutral automatic compaction is enabled by default so smaller
+    // context providers compact before hard context-limit rejection. Users can
+    // still disable it through settings in the TUI path.
     let compaction = CompactionConfig {
-        enabled: false,
+        enabled: true,
         model: effective_model.clone(),
         token_threshold: compaction_threshold_for_model(&effective_model),
         ..Default::default()

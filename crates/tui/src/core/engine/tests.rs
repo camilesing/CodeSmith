@@ -8,10 +8,16 @@ use crate::tui::approval::ApprovalMode;
 
 use super::*;
 
-use super::context::TURN_MAX_OUTPUT_TOKENS;
-use crate::models::SystemBlock;
+use super::context::{
+    TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
+    effective_max_output_tokens,
+};
+use crate::config::ApiProvider;
+use crate::models::{ContentBlock, SystemBlock};
 use crate::test_support::lock_test_env;
+use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use crate::tools::spec::ToolCapability;
+use crate::tools::todo::TodoStatus;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -1277,6 +1283,116 @@ async fn session_update_preserves_reasoning_tool_only_turn() {
     assert_eq!(messages, vec![assistant]);
 }
 
+#[tokio::test]
+async fn reinject_compaction_attachments_appends_plan_todo_and_read_file_reminders() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Implement context parity".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Add provider-neutral compaction".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.add("Run targeted tests".to_string(), TodoStatus::Pending);
+    }
+    engine.session.record_read_file_result(
+        &json!({"path": "src/lib.rs", "limit": 20}),
+        "pub fn library() {}",
+    );
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+
+    assert_eq!(injected, 3);
+    assert_eq!(engine.session.messages.len(), 3);
+    let duplicate_injected = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(duplicate_injected, 0);
+    assert_eq!(engine.session.messages.len(), 3);
+    let combined = engine
+        .session
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(combined.contains("Active plan resumed"));
+    assert!(combined.contains("Implement context parity"));
+    assert!(combined.contains("Add provider-neutral compaction"));
+    assert!(combined.contains("Active todos resumed"));
+    assert!(combined.contains("Run targeted tests"));
+    assert!(combined.contains("Recent read_file outputs retained"));
+    assert!(combined.contains("src/lib.rs"));
+    assert!(combined.contains("pub fn library() {}"));
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_includes_live_subagents() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let assignment = crate::tools::subagent::SubAgentAssignment {
+        objective: "Inspect context management".to_string(),
+        role: Some("researcher".to_string()),
+    };
+    let agent_id = {
+        let mut manager = engine.subagent_manager.write().await;
+        manager.insert_test_live_agent("agent_live".to_string(), assignment)
+    };
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+
+    assert_eq!(injected, 1);
+    let combined = engine
+        .session
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(combined.contains("Running subagents resumed"));
+    assert!(combined.contains("Inspect context management"));
+    assert!(combined.contains("researcher"));
+    assert!(combined.contains(&agent_id));
+    engine
+        .subagent_manager
+        .write()
+        .await
+        .abort_test_agent(&agent_id);
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_skips_messages_that_exceed_budget() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Keep this plan".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Stay under budget".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+
+    let before = engine.estimated_input_tokens();
+    let injected = engine
+        .reinject_compaction_attachments(Some(before.saturating_sub(1)))
+        .await;
+
+    assert_eq!(injected, 0);
+    assert!(engine.session.messages.is_empty());
+}
+
 #[test]
 fn detects_context_length_errors_from_provider_payloads() {
     let msg = r#"SSE stream request failed: HTTP 400 Bad Request: {"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 153056 tokens (148960 in the messages, 4096 in the completion).","type":"invalid_request_error"}}"#;
@@ -1288,7 +1404,7 @@ fn detects_context_length_errors_from_provider_payloads() {
 
 #[test]
 fn context_budget_reserves_output_and_headroom() {
-    // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
+    // Serialize with other tests that mutate output-token env vars so
     // the internal effective_max_output_tokens() call sees a stable env.
     let _lock = lock_test_env();
     // V4 has a 1M context window — the only family that comfortably hosts
@@ -1302,7 +1418,7 @@ fn context_budget_reserves_output_and_headroom() {
 
 #[test]
 fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
-    // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
+    // Serialize with other tests that mutate output-token env vars so
     // v4_cap and flash_cap below see the same env state.
     let _lock = lock_test_env();
     // V4 models have a 1M context window but the API request cap must stay
@@ -1322,40 +1438,59 @@ fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
     assert_eq!(v4_cap, flash_cap);
 }
 
-struct ScopedDeepSeekMaxOutputTokens {
+struct ScopedMaxOutputTokens {
+    var: &'static str,
     previous: Option<OsString>,
 }
 
-impl ScopedDeepSeekMaxOutputTokens {
-    fn set(value: &str) -> Self {
-        let previous = std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS");
+impl ScopedMaxOutputTokens {
+    fn set(var: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(var);
         // Safety: tests using this helper serialize with lock_test_env() and
         // restore the original value in Drop.
         unsafe {
-            std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", value);
+            std::env::set_var(var, value);
         }
-        Self { previous }
+        Self { var, previous }
     }
 
-    fn unset() -> Self {
-        let previous = std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS");
+    fn unset(var: &'static str) -> Self {
+        let previous = std::env::var_os(var);
         // Safety: see set().
         unsafe {
-            std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+            std::env::remove_var(var);
         }
-        Self { previous }
+        Self { var, previous }
     }
 }
 
-impl Drop for ScopedDeepSeekMaxOutputTokens {
+impl Drop for ScopedMaxOutputTokens {
     fn drop(&mut self) {
         // Safety: tests using this helper serialize with lock_test_env().
         unsafe {
             if let Some(previous) = self.previous.take() {
-                std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", previous);
+                std::env::set_var(self.var, previous);
             } else {
-                std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+                std::env::remove_var(self.var);
             }
+        }
+    }
+}
+
+struct ScopedDeepSeekMaxOutputTokens {
+    _inner: ScopedMaxOutputTokens,
+}
+
+impl ScopedDeepSeekMaxOutputTokens {
+    fn set(value: &str) -> Self {
+        Self {
+            _inner: ScopedMaxOutputTokens::set("DEEPSEEK_MAX_OUTPUT_TOKENS", value),
+        }
+    }
+
+    fn unset() -> Self {
+        Self {
+            _inner: ScopedMaxOutputTokens::unset("DEEPSEEK_MAX_OUTPUT_TOKENS"),
         }
     }
 }
@@ -1363,18 +1498,66 @@ impl Drop for ScopedDeepSeekMaxOutputTokens {
 #[test]
 fn effective_max_output_tokens_env_override_returns_positive_value() {
     let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
     let _guard = ScopedDeepSeekMaxOutputTokens::set("16384");
 
-    // Override applies regardless of model — V4 hosted, V4 flash, sub-500K
-    // self-hosted all return the env value verbatim.
+    // Legacy override applies regardless of model — V4 hosted, V4 flash,
+    // sub-500K self-hosted all return the env value verbatim.
     assert_eq!(effective_max_output_tokens("deepseek-v4-pro"), 16_384);
     assert_eq!(effective_max_output_tokens("deepseek-v4-flash"), 16_384);
     assert_eq!(effective_max_output_tokens("qwen3-32b-256k"), 16_384);
 }
 
 #[test]
+fn codesmith_max_output_tokens_takes_priority_over_legacy_override() {
+    let _lock = lock_test_env();
+    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::set("16384");
+    let _codesmith_guard = ScopedMaxOutputTokens::set("CODESMITH_MAX_OUTPUT_TOKENS", "32768");
+
+    assert_eq!(effective_max_output_tokens("deepseek-v4-pro"), 32_768);
+    assert_eq!(
+        effective_max_output_tokens_for_provider(
+            ApiProvider::Anthropic,
+            "claude-sonnet-4-20250514"
+        ),
+        32_768
+    );
+}
+
+#[test]
+fn effective_max_output_tokens_for_provider_uses_anthropic_cap() {
+    let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
+    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::unset();
+
+    assert_eq!(
+        effective_max_output_tokens_for_provider(
+            ApiProvider::Anthropic,
+            "claude-sonnet-4-20250514"
+        ),
+        8_192
+    );
+}
+
+#[test]
+fn effective_max_output_tokens_legacy_env_override_still_works_for_provider_helper() {
+    let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
+    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::set("12288");
+
+    assert_eq!(
+        effective_max_output_tokens_for_provider(
+            ApiProvider::Anthropic,
+            "claude-sonnet-4-20250514"
+        ),
+        12_288
+    );
+}
+
+#[test]
 fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
     let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
     // Establish the heuristic baseline with the env unset.
     let baseline = {
         let _guard = ScopedDeepSeekMaxOutputTokens::unset();
@@ -1396,8 +1579,21 @@ fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
 }
 
 #[test]
+fn provider_aware_context_budget_uses_provider_capability_window_and_output() {
+    let _lock = lock_test_env();
+    let anthropic_budget =
+        context_input_budget_for_provider(ApiProvider::Anthropic, "claude-sonnet-4-20250514")
+            .expect("Anthropic capability should provide a window");
+    assert_eq!(anthropic_budget, 200_000 - 8_192 - 1_024);
+
+    let ollama_budget = context_input_budget_for_provider(ApiProvider::Ollama, "llama3")
+        .expect("Ollama capability should provide a window");
+    assert_eq!(ollama_budget, 8_192 - 4_096 - 1_024);
+}
+
+#[test]
 fn internal_context_budget_tiers_reserved_output_by_window() {
-    // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
+    // Serialize with other tests that mutate output-token env vars so
     // both branches below see a stable env.
     let _lock = lock_test_env();
     // Large-context (>=500K) models reserve the full TURN_MAX_OUTPUT_TOKENS

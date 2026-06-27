@@ -1943,11 +1943,10 @@ impl RuntimeThreadManager {
             }
         }
 
-        // Compaction defaults to disabled in v0.6.6 — the cycle architecture
-        // (issue #124) handles long-context resets. Threads keep the
-        // legacy summarizer wired off unless an operator opts in via config.
+        // Provider-neutral automatic compaction is enabled by default so
+        // smaller-context thread engines compact before provider hard limits.
         let compaction = CompactionConfig {
-            enabled: false,
+            enabled: true,
             model: thread.model.clone(),
             token_threshold: compaction_threshold_for_model(&thread.model),
             ..Default::default()

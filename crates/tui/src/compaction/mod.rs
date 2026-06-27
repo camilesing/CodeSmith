@@ -42,9 +42,8 @@ pub struct CompactionConfig {
     /// Hard floor — `should_compact` returns `false` when total session
     /// tokens fall below this number, regardless of `enabled` or
     /// `token_threshold`. Defaults to [`MINIMUM_AUTO_COMPACTION_TOKENS`]
-    /// (500K) for v0.8.11+. Tests that want to exercise the threshold
-    /// logic at small fixture sizes can set this to `0` to disable the
-    /// floor.
+    /// (0) so sub-500K providers can compact before provider rejection.
+    /// Tests or explicit callers can set this when they need a later floor.
     pub auto_floor_tokens: usize,
 }
 
@@ -58,16 +57,10 @@ impl Default for CompactionConfig {
             // `compaction_threshold_for_model_and_effort`. Real per-model
             // values are still derived through that helper.
             enabled: true,
-            // v0.8.11: 50K was a 128K-era leftover that biased every
-            // unconfigured caller toward "compact almost immediately on V4."
-            // Bumped to 800K (80% of V4's 1M window) so the dead-code
-            // default matches the hard automatic compaction guardrail. This
-            // is intentionally later than the model-visible 60% "suggest
-            // /compact during sustained work" guidance; automatic replacement
-            // compaction rewrites the cacheable prefix and remains opt-in.
-            // Real call sites override this via
-            // `compaction_threshold_for_model_and_effort`.
-            token_threshold: 800_000,
+            // Provider-neutral default: near the effective context window after
+            // reserving summary output and a safety buffer. Real call sites
+            // override this via `compaction_threshold_for_model_and_effort`.
+            token_threshold: 967_000,
             model: DEFAULT_TEXT_MODEL.to_string(),
             cache_summary: true,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
@@ -75,22 +68,14 @@ impl Default for CompactionConfig {
     }
 }
 
-/// Hard floor for automatic compaction in v0.8.11+.
+/// Hard floor for automatic compaction in provider-neutral mode.
 ///
-/// Below this token count, `should_compact` returns `false` regardless of
-/// `enabled` or `token_threshold`. The point of the floor is V4 prefix-cache
-/// economics: compaction rewrites the stable prefix, which destroys the KV
-/// cache. At low token counts the prefix cache is healthy and compaction's
-/// cost (full re-prefill at miss prices) dwarfs its benefit (a tiny budget
-/// reclaim). Above the floor compaction can still be net-positive — cache
-/// is already pressured, the prefix has drifted, and freeing budget matters.
-///
-/// Manual `/compact` slash command bypasses this floor with explicit user
-/// agency.
-///
-/// Constant rather than configurable for v0.8.11. If anyone needs to dial
-/// it (smaller models, opinionated workflows), we can add a setting later.
-pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 500_000;
+/// Automatic compaction now follows the model's effective context window instead
+/// of a DeepSeek V4-specific cache floor. Keeping the default at zero ensures
+/// 128K/200K providers can compact before they hit provider hard limits. Users
+/// and tests can still set `auto_floor_tokens` when they intentionally want a
+/// later trigger.
+pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 0;
 
 pub const KEEP_RECENT_MESSAGES: usize = 4;
 const RECENT_WORKING_SET_WINDOW: usize = 12;
@@ -110,6 +95,8 @@ const TOOL_PRUNE_STOP_CHECK_BYTES: usize = 16 * 1024;
 const LARGE_CONTEXT_SUMMARY_MAX_TOKENS: u32 = 2_048;
 const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
 const CACHE_ALIGNED_SUMMARY_CONTEXT_BUDGET_PERCENT: usize = 85;
+const SUMMARY_PROMPT_TOO_LONG_MAX_RETRIES: u32 = 4;
+const SUMMARY_PROMPT_TOO_LONG_PEEL_PERCENT: usize = 20;
 
 #[derive(Debug, Clone, Copy)]
 struct SummaryInputLimits {
@@ -660,11 +647,10 @@ pub fn should_compact(
         return false;
     }
 
-    // v0.8.11: hard floor enforcement. Below the floor (default 500K tokens
-    // — see `MINIMUM_AUTO_COMPACTION_TOKENS`), automatic compaction is
-    // refused because rewriting the prefix kills V4's prefix cache for
-    // little budget recovery. Manual `/compact` and the `compact_now` tool
-    // bypass this floor by going through different code paths.
+    // Optional hard floor enforcement. The provider-neutral default is zero so
+    // 128K/200K providers can auto-compact before hard context rejection. Manual
+    // `/compact` and the `compact_now` tool bypass this floor by going through
+    // different code paths.
     if config.auto_floor_tokens > 0 {
         let total_session_tokens: usize = messages
             .iter()
@@ -1016,12 +1002,12 @@ pub async fn compact_messages_safe(
         )
         .await
         {
-            Ok((msgs, prompt, removed)) => {
+            Ok((msgs, prompt, removed, summary_retries)) => {
                 return Ok(CompactionResult {
                     messages: msgs,
                     summary_prompt: prompt,
                     removed_messages: removed,
-                    retries_used: attempt,
+                    retries_used: attempt.saturating_add(summary_retries),
                 });
             }
             Err(e) => {
@@ -1082,6 +1068,12 @@ fn anchor_summary_section(workspace: Option<&Path>) -> String {
     section
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SummaryResult {
+    pub(crate) text: String,
+    pub(crate) retries_used: u32,
+}
+
 pub async fn compact_messages(
     client: &dyn LlmClient,
     messages: &[Message],
@@ -1089,9 +1081,9 @@ pub async fn compact_messages(
     workspace: Option<&Path>,
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
-) -> Result<(Vec<Message>, Option<SystemPrompt>, Vec<Message>)> {
+) -> Result<(Vec<Message>, Option<SystemPrompt>, Vec<Message>, u32)> {
     if messages.is_empty() {
-        return Ok((Vec::new(), None, Vec::new()));
+        return Ok((Vec::new(), None, Vec::new(), 0));
     }
 
     let plan = plan_compaction(
@@ -1102,7 +1094,7 @@ pub async fn compact_messages(
         external_working_set_paths,
     );
     if plan.summarize_indices.is_empty() {
-        return Ok((messages.to_vec(), None, Vec::new()));
+        return Ok((messages.to_vec(), None, Vec::new(), 0));
     }
 
     let to_summarize: Vec<Message> = plan
@@ -1112,7 +1104,8 @@ pub async fn compact_messages(
         .collect();
 
     // Create a summary of the unpinned portion of the conversation
-    let summary = create_summary(client, &to_summarize, &config.model).await?;
+    let summary_result = create_summary(client, &to_summarize, &config.model).await?;
+    let summary = summary_result.text;
 
     // Extract workflow context (files touched, tasks in progress, etc.)
     let workflow_context = extract_workflow_context(&to_summarize, workspace);
@@ -1156,52 +1149,93 @@ pub async fn compact_messages(
         pinned_messages,
         Some(SystemPrompt::Blocks(vec![summary_block])),
         to_summarize,
+        summary_result.retries_used,
     ))
 }
 
-async fn create_summary(
+pub(crate) async fn create_summary(
     client: &dyn LlmClient,
     messages: &[Message],
     model: &str,
-) -> Result<String> {
+) -> Result<SummaryResult> {
     let limits = summary_input_limits_for_model(model);
     let used_cache_aligned = should_use_cache_aligned_summary(model, messages);
-    let request = if used_cache_aligned {
-        build_cache_aligned_summary_request(model, messages, limits)
-    } else {
-        build_formatted_summary_request(model, messages, limits)
-    };
-
-    let mut telemetry_cache_aligned = used_cache_aligned;
-    let response = match client.create_message(request).await {
-        Ok(response) => response,
-        Err(err) if used_cache_aligned && is_context_window_error(&err) => {
-            logging::warn(format!(
-                "Cache-aligned compaction summary exceeded the model context window ({err}); \
-                 retrying with bounded formatted summary input"
-            ));
-            telemetry_cache_aligned = false;
-            let fallback_request = build_formatted_summary_request(model, messages, limits);
-            client.create_message(fallback_request).await?
+    if used_cache_aligned {
+        let request = build_cache_aligned_summary_request(model, messages, limits);
+        match client.create_message(request).await {
+            Ok(response) => {
+                crate::cost_status::report(&response.model, &response.usage);
+                log_summary_cache_telemetry(true, &response.usage);
+                return Ok(SummaryResult {
+                    text: extract_summary_text(&response),
+                    retries_used: 0,
+                });
+            }
+            Err(err) if is_context_window_error(&err) => {
+                logging::warn(format!(
+                    "Cache-aligned compaction summary exceeded the model context window ({err}); \
+                     retrying with bounded formatted summary input"
+                ));
+            }
+            Err(err) => return Err(err),
         }
-        Err(err) => return Err(err),
-    };
-    // Compaction summary calls are billed by DeepSeek; route the
-    // tokens through the side-channel so the dashboard total
-    // matches the website (#526).
-    crate::cost_status::report(&response.model, &response.usage);
+    }
 
-    // #584: emit one debug-level event per summary call so the
-    // V4 cache-aligned win is observable post-deploy without
-    // adding UI surface. The event is emitted with
-    // `target = "compaction"`, so the filter is
-    // `RUST_LOG=compaction=debug` (the module-path form
-    // `codesmith_tui::compaction=debug` does NOT match — `EnvFilter`
-    // matches the explicit target string when one is set).
-    log_summary_cache_telemetry(telemetry_cache_aligned, &response.usage);
+    create_formatted_summary_with_peel_retry(
+        client,
+        messages.to_vec(),
+        model,
+        limits,
+        u32::from(used_cache_aligned),
+    )
+    .await
+}
 
-    // Extract text from response
-    let summary = response
+async fn create_formatted_summary_with_peel_retry(
+    client: &dyn LlmClient,
+    mut candidate_messages: Vec<Message>,
+    model: &str,
+    limits: SummaryInputLimits,
+    initial_retries_used: u32,
+) -> Result<SummaryResult> {
+    let mut retries_used = initial_retries_used;
+    loop {
+        let request = build_formatted_summary_request(model, &candidate_messages, limits);
+        match client.create_message(request).await {
+            Ok(response) => {
+                crate::cost_status::report(&response.model, &response.usage);
+                log_summary_cache_telemetry(false, &response.usage);
+                return Ok(SummaryResult {
+                    text: extract_summary_text(&response),
+                    retries_used,
+                });
+            }
+            Err(err) if is_context_window_error(&err) => {
+                if retries_used >= SUMMARY_PROMPT_TOO_LONG_MAX_RETRIES {
+                    return Err(err);
+                }
+                let before = candidate_messages.len();
+                let peeled = peel_summary_messages_for_retry(&candidate_messages);
+                if peeled.len() >= before {
+                    return Err(err);
+                }
+                retries_used = retries_used.saturating_add(1);
+                logging::warn(format!(
+                    "Formatted compaction summary exceeded the model context window ({err}); \
+                     peeled old messages for retry {retries_used}/{} ({} -> {} messages)",
+                    SUMMARY_PROMPT_TOO_LONG_MAX_RETRIES,
+                    before,
+                    peeled.len()
+                ));
+                candidate_messages = peeled;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn extract_summary_text(response: &crate::models::MessageResponse) -> String {
+    response
         .content
         .iter()
         .filter_map(|block| match block {
@@ -1209,9 +1243,38 @@ async fn create_summary(
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
 
-    Ok(summary)
+fn peel_summary_messages_for_retry(messages: &[Message]) -> Vec<Message> {
+    if messages.len() <= 1 {
+        return messages.to_vec();
+    }
+
+    let mut pinned = BTreeSet::new();
+    let recent_start = messages.len().saturating_sub(KEEP_RECENT_MESSAGES);
+    pinned.extend(recent_start..messages.len());
+    enforce_tool_call_pairs(messages, &mut pinned);
+
+    let removable: Vec<usize> = (0..messages.len())
+        .filter(|idx| !pinned.contains(idx))
+        .collect();
+    if removable.is_empty() {
+        return messages.to_vec();
+    }
+
+    let remove_count = removable
+        .len()
+        .saturating_mul(SUMMARY_PROMPT_TOO_LONG_PEEL_PERCENT)
+        .div_ceil(100)
+        .max(1);
+    let remove_set: HashSet<usize> = removable.into_iter().take(remove_count).collect();
+
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, msg)| (!remove_set.contains(&idx)).then_some(msg.clone()))
+        .collect()
 }
 
 fn is_context_window_error(e: &anyhow::Error) -> bool {
@@ -1583,6 +1646,9 @@ pub fn merge_system_prompts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm_client::mock::MockLlmClient;
+    use crate::llm_client::{LlmClient, StreamEventBox};
+    use crate::models::{MessageResponse, Usage};
     use serde_json::json;
 
     fn msg(role: &str, text: &str) -> Message {
@@ -1914,6 +1980,152 @@ mod tests {
             &last.content[..],
             [ContentBlock::Text { text, .. }] if text.contains("conversation above")
         ));
+    }
+
+    #[test]
+    fn peel_summary_messages_for_retry_drops_old_messages_and_keeps_recent_tail() {
+        let messages = (0..10)
+            .map(|idx| {
+                msg(
+                    if idx % 2 == 0 { "user" } else { "assistant" },
+                    &format!("turn {idx}"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let peeled = peel_summary_messages_for_retry(&messages);
+
+        assert_eq!(peeled.len(), 8);
+        assert_eq!(message_text(&peeled[0]).trim(), "turn 2");
+        assert_eq!(message_text(&peeled[4]).trim(), "turn 6");
+        assert_eq!(message_text(&peeled[7]).trim(), "turn 9");
+    }
+
+    #[test]
+    fn peel_summary_messages_for_retry_preserves_recent_tool_pairs() {
+        let messages = vec![
+            msg("user", "old 0"),
+            msg("assistant", "old 1"),
+            msg("user", "old 2"),
+            tool_use("call_recent", "read_file", json!({ "path": "src/lib.rs" })),
+            tool_result("call_recent", "recent result"),
+        ];
+
+        let peeled = peel_summary_messages_for_retry(&messages);
+
+        assert_eq!(peeled.len(), 4);
+        assert!(matches!(
+            &peeled[2].content[..],
+            [ContentBlock::ToolUse { id, .. }] if id == "call_recent"
+        ));
+        assert!(matches!(
+            &peeled[3].content[..],
+            [ContentBlock::ToolResult { tool_use_id, .. }] if tool_use_id == "call_recent"
+        ));
+    }
+
+    struct PromptTooLongThenSummaryClient {
+        inner: MockLlmClient,
+        failed: std::sync::atomic::AtomicBool,
+    }
+
+    impl PromptTooLongThenSummaryClient {
+        fn new() -> Self {
+            let inner = MockLlmClient::new(Vec::new());
+            inner.push_message_response(MessageResponse {
+                id: "summary".to_string(),
+                r#type: "message".to_string(),
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "peeled summary".to_string(),
+                    cache_control: None,
+                }],
+                model: "mock-model".to_string(),
+                stop_reason: Some("end_turn".to_string()),
+                stop_sequence: None,
+                container: None,
+                usage: Usage::default(),
+            });
+            Self {
+                inner,
+                failed: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+
+        fn captured_requests(&self) -> Vec<MessageRequest> {
+            self.inner.captured_requests()
+        }
+    }
+
+    impl LlmClient for PromptTooLongThenSummaryClient {
+        fn provider_name(&self) -> &'static str {
+            self.inner.provider_name()
+        }
+
+        fn model(&self) -> &str {
+            self.inner.model()
+        }
+
+        fn create_message(
+            &self,
+            request: MessageRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<crate::models::MessageResponse>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    self.inner.record_request(&request);
+                    return Err(anyhow::anyhow!(
+                        "invalid_request_error: prompt is too long for the current model"
+                    ));
+                }
+                self.inner.create_message(request).await
+            })
+        }
+
+        fn create_message_stream(
+            &self,
+            request: MessageRequest,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StreamEventBox>> + Send + '_>>
+        {
+            self.inner.create_message_stream(request)
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_prompt_too_long_peels_old_messages_and_retries() {
+        let mock = PromptTooLongThenSummaryClient::new();
+        let messages = (0..10)
+            .map(|idx| {
+                msg(
+                    if idx % 2 == 0 { "user" } else { "assistant" },
+                    &format!("turn {idx}"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let result = create_summary(&mock, &messages, "deepseek-v3.2-128k")
+            .await
+            .expect("summary should succeed after peel retry");
+
+        assert_eq!(result.text, "peeled summary");
+        assert_eq!(result.retries_used, 1);
+        let requests = mock.captured_requests();
+        assert_eq!(requests.len(), 2);
+        let ContentBlock::Text {
+            text: retry_text, ..
+        } = &requests[1].messages[0].content[0]
+        else {
+            panic!("expected formatted summary text");
+        };
+        assert!(!retry_text.contains("turn 0"));
+        assert!(!retry_text.contains("turn 1"));
+        assert!(retry_text.contains("turn 2"));
+        assert!(retry_text.contains("turn 9"));
     }
 
     #[test]
@@ -2485,46 +2697,44 @@ mod tests {
         assert!(!should_compact(&messages, &config, None, None, None));
     }
 
-    /// v0.8.11: the 500K hard floor blocks auto-compaction even when the
-    /// token-percentage threshold would otherwise fire. This is the V4
-    /// prefix-cache protection — below 500K total tokens, rewriting the
-    /// prefix loses cache for tiny budget gains.
     #[test]
-    fn auto_compaction_floor_blocks_below_500k_even_when_threshold_says_yes() {
+    fn auto_compaction_default_floor_allows_sub_500k_providers() {
         let config = CompactionConfig {
             enabled: true,
-            token_threshold: 100, // would normally fire instantly
-            // Use the production default explicitly so this test pins the
-            // floor's contract rather than relying on `Default`.
+            token_threshold: 100,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
             ..Default::default()
         };
 
         let messages: Vec<Message> = (0..10).map(|_| msg("user", &"x".repeat(50))).collect();
-        // Total tokens way under 500K, so floor blocks compaction.
-        assert!(!should_compact(&messages, &config, None, None, None));
+        assert!(should_compact(&messages, &config, None, None, None));
     }
 
-    /// v0.8.11: when total tokens cross the 500K floor, the existing
-    /// threshold/message-count logic takes over again.
     #[test]
-    fn auto_compaction_floor_yields_to_threshold_logic_above_500k() {
+    fn explicit_auto_compaction_floor_still_blocks_when_requested() {
         let config = CompactionConfig {
             enabled: true,
-            token_threshold: 2_000_000,
-            auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
+            token_threshold: 100,
+            auto_floor_tokens: 500_000,
             ..Default::default()
         };
 
-        // Each message ~500 tokens; 1100 messages → ~550K total tokens.
-        // That's above the floor (500K) AND below the deliberately high
-        // token_threshold, so auto-compaction stays off — by threshold,
-        // not floor.
+        let messages: Vec<Message> = (0..10).map(|_| msg("user", &"x".repeat(50))).collect();
+        assert!(!should_compact(&messages, &config, None, None, None));
+    }
+
+    #[test]
+    fn explicit_auto_compaction_floor_yields_to_threshold_logic_above_floor() {
+        let config = CompactionConfig {
+            enabled: true,
+            token_threshold: 2_000_000,
+            auto_floor_tokens: 500_000,
+            ..Default::default()
+        };
+
         let messages: Vec<Message> = (0..1100).map(|_| msg("user", &"x".repeat(2000))).collect();
         assert!(!should_compact(&messages, &config, None, None, None));
 
-        // Crank threshold below total → compaction fires now that we're
-        // past the floor.
         let config_lower = CompactionConfig {
             token_threshold: 100_000,
             ..config
@@ -2532,14 +2742,11 @@ mod tests {
         assert!(should_compact(&messages, &config_lower, None, None, None));
     }
 
-    /// `CompactionConfig::default()` ships with the 500K floor on by
-    /// default — production callers via `..Default::default()` get the
-    /// safety guarantee automatically.
     #[test]
-    fn compaction_config_default_carries_500k_floor() {
+    fn compaction_config_default_has_no_provider_specific_floor() {
         let config = CompactionConfig::default();
         assert_eq!(config.auto_floor_tokens, MINIMUM_AUTO_COMPACTION_TOKENS);
-        assert_eq!(config.auto_floor_tokens, 500_000);
+        assert_eq!(config.auto_floor_tokens, 0);
     }
 
     #[test]

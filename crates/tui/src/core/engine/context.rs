@@ -5,8 +5,9 @@
 //! engine module from accumulating unrelated context-policy details.
 
 use crate::compaction::estimate_tokens;
+use crate::config::{ApiProvider, provider_capability};
 use crate::error_taxonomy::ErrorCategory;
-use crate::models::{Message, SystemPrompt, context_window_for_model};
+use crate::models::{Message, SystemPrompt, context_window_for_model, max_output_tokens_for_model};
 use crate::tools::spec::ToolResult;
 
 /// Max output tokens requested for normal agent turns. Generous on purpose:
@@ -20,39 +21,57 @@ pub(super) const TURN_MAX_OUTPUT_TOKENS: u32 = 262_144;
 /// Safe max output tokens sent in the API request. This must be low enough to
 /// work with providers that have smaller context limits than the model's native
 /// window (e.g., self-hosted vLLM/SGLang with `--max-model-len 131072`).
-/// DeepSeek's API will still produce as many tokens as needed for thinking;
-/// this cap just prevents HTTP 400 from providers with tight limits.
+/// Large-output providers can opt into higher caps through provider capability
+/// metadata or explicit user overrides.
 const API_MAX_OUTPUT_TOKENS: u32 = 65_536;
 
-/// Compute the effective `max_tokens` to send in the API request for a given
-/// model. Uses `API_MAX_OUTPUT_TOKENS` (64K) which fits within common provider
-/// limits (128K+ total). For non-V4 models with smaller context windows, caps
-/// at half the context window.
-///
-/// Override: when the env var `DEEPSEEK_MAX_OUTPUT_TOKENS` is set to a positive
-/// integer, this function returns that value directly. Use this for self-hosted
-/// providers (vLLM/SGLang) whose `max-model-len` is tight and where the
-/// model-table heuristic above would over-allocate. Example: vLLM serving
-/// Qwen3.6 with `--max-model-len 65536` should set
-/// `DEEPSEEK_MAX_OUTPUT_TOKENS=16384` so input + output stays well under the
-/// provider's hard limit.
-pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
-    if let Ok(raw) = std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS")
-        && let Ok(n) = raw.trim().parse::<u32>()
-        && n > 0
-    {
-        return n;
+fn parse_env_max_output_tokens(var: &str) -> Option<u32> {
+    std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|&n| n > 0)
+}
+
+fn env_max_output_tokens() -> Option<u32> {
+    parse_env_max_output_tokens("CODESMITH_MAX_OUTPUT_TOKENS")
+        .or_else(|| parse_env_max_output_tokens("DEEPSEEK_MAX_OUTPUT_TOKENS"))
+}
+
+fn heuristic_max_output_tokens(model: &str) -> u32 {
+    if let Some(model_cap) = max_output_tokens_for_model(model) {
+        return model_cap.min(API_MAX_OUTPUT_TOKENS);
     }
     let window = context_window_for_model(model).unwrap_or(128_000);
     if window >= 500_000 {
-        // V4-class models on large-context providers: use 64K which is safe
-        // for most deployments while still allowing substantial output.
         API_MAX_OUTPUT_TOKENS
     } else {
-        // Smaller models: cap at half the context window (leave room for input)
         let capped = window / 2;
         capped.min(API_MAX_OUTPUT_TOKENS)
     }
+}
+
+/// Compute the effective `max_tokens` to send in the API request for a given
+/// model when the provider is not known. Kept for tests and legacy callers;
+/// turn construction should use [`effective_max_output_tokens_for_provider`].
+pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
+    env_max_output_tokens().unwrap_or_else(|| heuristic_max_output_tokens(model))
+}
+
+/// Compute provider-aware `max_tokens` for normal agent turns.
+///
+/// Priority:
+/// 1. `CODESMITH_MAX_OUTPUT_TOKENS` (or legacy `DEEPSEEK_MAX_OUTPUT_TOKENS`),
+/// 2. provider capability matrix,
+/// 3. model table / context-window heuristic.
+pub(super) fn effective_max_output_tokens_for_provider(provider: ApiProvider, model: &str) -> u32 {
+    if let Some(override_tokens) = env_max_output_tokens() {
+        return override_tokens;
+    }
+    let capability = provider_capability(provider, model);
+    if capability.max_output > 0 {
+        return capability.max_output.min(API_MAX_OUTPUT_TOKENS);
+    }
+    heuristic_max_output_tokens(model)
 }
 /// Keep this many most recent messages when emergency trimming is required.
 pub(super) const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
@@ -388,18 +407,39 @@ const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
 ///     `256K - 262K - 1K`, which underflows `checked_sub` to `None` and
 ///     *silently disables every preflight and emergency recovery path* — the
 ///     session then runs until the provider hard-rejects on context length.
-pub(super) fn context_input_budget(model: &str) -> Option<usize> {
-    let window_tokens = context_window_for_model(model)?;
+fn input_budget_from_window_and_output(window_tokens: u32, reserved_output: u32) -> Option<usize> {
     let window = usize::try_from(window_tokens).ok()?;
-    let reserved_output = if window_tokens >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD {
-        TURN_MAX_OUTPUT_TOKENS
-    } else {
-        effective_max_output_tokens(model)
-    };
     let output = usize::try_from(reserved_output).ok()?;
     window
         .checked_sub(output)
         .and_then(|v| v.checked_sub(CONTEXT_HEADROOM_TOKENS))
+}
+
+fn reserved_output_for_input_budget(window_tokens: u32, fallback_output: u32) -> u32 {
+    if window_tokens >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD {
+        TURN_MAX_OUTPUT_TOKENS
+    } else {
+        fallback_output
+    }
+}
+
+pub(super) fn context_input_budget(model: &str) -> Option<usize> {
+    let window_tokens = context_window_for_model(model)?;
+    let reserved_output =
+        reserved_output_for_input_budget(window_tokens, effective_max_output_tokens(model));
+    input_budget_from_window_and_output(window_tokens, reserved_output)
+}
+
+pub(super) fn context_input_budget_for_provider(
+    provider: ApiProvider,
+    model: &str,
+) -> Option<usize> {
+    let capability = provider_capability(provider, model);
+    let reserved_output = reserved_output_for_input_budget(
+        capability.context_window,
+        effective_max_output_tokens_for_provider(provider, model),
+    );
+    input_budget_from_window_and_output(capability.context_window, reserved_output)
 }
 
 pub(super) fn turn_response_headroom_tokens() -> u64 {

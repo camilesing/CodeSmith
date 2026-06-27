@@ -5,6 +5,7 @@
 //! This module re-injects those states as user messages with
 //! system-reminder blocks so the model can continue working.
 
+use crate::core::session::RecentReadFile;
 use crate::models::{ContentBlock, Message};
 
 /// Types of attachments that can be re-injected after compaction.
@@ -16,6 +17,8 @@ pub enum AttachmentType {
     Skills { definitions: Vec<String> },
     /// Running subagents.
     SubAgents { agent_summaries: Vec<AgentSummary> },
+    /// Recent file reads.
+    ReadFiles { paths: Vec<String> },
 }
 
 /// Summary of a running subagent.
@@ -98,6 +101,26 @@ pub fn reinject_subagent_attachments(agent_summaries: &[AgentSummary]) -> Option
     )))
 }
 
+/// Re-inject recent read_file outputs after compaction.
+pub fn reinject_read_file_attachments(read_files: &[RecentReadFile]) -> Option<Message> {
+    if read_files.is_empty() {
+        return None;
+    }
+    let mut content = String::from(
+        "Recent read_file outputs retained after context compaction. Treat these as reminders only; re-read files before making claims that require fresh contents.\n\n",
+    );
+    for entry in read_files.iter().rev() {
+        let _ = std::fmt::Write::write_fmt(
+            &mut content,
+            format_args!(
+                "## `{}`\nInput: `{}`\n\n```\n{}\n```\n\n",
+                entry.path, entry.input, entry.output_preview
+            ),
+        );
+    }
+    Some(build_reinject_message(content.trim_end().to_string()))
+}
+
 /// Re-inject all available attachments after compaction.
 ///
 /// Checks session state for active plans, skills, and subagents,
@@ -106,6 +129,7 @@ pub fn reinject_all_attachments(
     plan_summary: Option<&str>,
     skill_definitions: &[String],
     agent_summaries: &[AgentSummary],
+    read_files: &[RecentReadFile],
 ) -> AttachmentReinjectResult {
     let mut injected_messages = Vec::new();
     let mut types_reinjected = Vec::new();
@@ -130,6 +154,13 @@ pub fn reinject_all_attachments(
         injected_messages.push(msg);
         types_reinjected.push(AttachmentType::SubAgents {
             agent_summaries: agent_summaries.to_vec(),
+        });
+    }
+
+    if let Some(msg) = reinject_read_file_attachments(read_files) {
+        injected_messages.push(msg);
+        types_reinjected.push(AttachmentType::ReadFiles {
+            paths: read_files.iter().map(|entry| entry.path.clone()).collect(),
         });
     }
 
@@ -202,6 +233,30 @@ mod tests {
     }
 
     #[test]
+    fn reinject_read_files_with_recent_outputs() {
+        let read_files = vec![RecentReadFile {
+            path: "src/lib.rs".to_string(),
+            input: serde_json::json!({"path": "src/lib.rs", "limit": 20}),
+            output_preview: "fn main() {}".to_string(),
+        }];
+
+        let msg = reinject_read_file_attachments(&read_files);
+        assert!(msg.is_some());
+        let text = &msg.unwrap().content[0];
+        if let ContentBlock::Text { text, .. } = text {
+            assert!(text.contains("Recent read_file outputs retained"));
+            assert!(text.contains("re-read files before making claims"));
+            assert!(text.contains("src/lib.rs"));
+            assert!(text.contains("fn main() {}"));
+        }
+    }
+
+    #[test]
+    fn reinject_read_files_empty_returns_none() {
+        assert!(reinject_read_file_attachments(&[]).is_none());
+    }
+
+    #[test]
     fn reinject_all_combines_multiple_types() {
         let result = reinject_all_attachments(
             Some("Plan: step 1"),
@@ -211,14 +266,19 @@ mod tests {
                 status: "running".to_string(),
                 description: "working".to_string(),
             }],
+            &[RecentReadFile {
+                path: "src/lib.rs".to_string(),
+                input: serde_json::json!({"path": "src/lib.rs"}),
+                output_preview: "contents".to_string(),
+            }],
         );
-        assert_eq!(result.injected_messages.len(), 3);
-        assert_eq!(result.types_reinjected.len(), 3);
+        assert_eq!(result.injected_messages.len(), 4);
+        assert_eq!(result.types_reinjected.len(), 4);
     }
 
     #[test]
     fn reinject_all_with_nothing_returns_empty() {
-        let result = reinject_all_attachments(None, &[], &[]);
+        let result = reinject_all_attachments(None, &[], &[], &[]);
         assert!(result.injected_messages.is_empty());
         assert!(result.types_reinjected.is_empty());
     }

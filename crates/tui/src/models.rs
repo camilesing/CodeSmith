@@ -7,14 +7,11 @@ use serde::{Deserialize, Serialize};
 pub const LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 /// Last-resort compaction trigger when [`context_window_for_model`] returns
-/// `None` (an unrecognised model id). v0.8.11 raised this from `50_000` to
-/// `102_400` (80% of [`LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS`]) so unknown
-/// models inherit the same late-trigger discipline as V4 instead of paying
-/// the prefix-cache hit at 5% of the V4 window. Known DeepSeek / Claude
-/// models resolve to their own scaled value via
-/// [`compaction_threshold_for_model`] (#664).
-pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 102_400;
-const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
+/// `None` (an unrecognised model id). Keep this provider-neutral and sized for
+/// common 128K deployments rather than DeepSeek V4 cache economics.
+pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 95_000;
+const AUTO_COMPACT_SUMMARY_RESERVE_TOKENS: u32 = 20_000;
+const AUTO_COMPACT_BUFFER_TOKENS: u32 = 13_000;
 
 // === Core Message Types ===
 
@@ -337,28 +334,40 @@ fn explicit_context_window_hint(model_lower: &str) -> Option<u32> {
     None
 }
 
-/// Derive a compaction token threshold from model context window.
+/// Effective input window used by automatic compaction.
 ///
-/// Keeps headroom for tool outputs and assistant completion by defaulting to 80%
-/// of known context windows. This is the hard automatic compaction threshold
-/// used only when `auto_compact` is enabled; model-facing guidance still
-/// suggests manual `/compact` earlier (~60%) during sustained work.
+/// Automatic compaction needs room for the summary response itself. Claude Code
+/// reserves at most 20K output tokens for that summary; using the same policy
+/// here keeps the trigger provider-neutral instead of tuning around one large
+/// DeepSeek V4 window.
+#[must_use]
+pub fn auto_compact_effective_window_for_model(model: &str) -> Option<u32> {
+    let window = context_window_for_model(model)?;
+    let reserve = max_output_tokens_for_model(model)
+        .unwrap_or(AUTO_COMPACT_SUMMARY_RESERVE_TOKENS)
+        .min(AUTO_COMPACT_SUMMARY_RESERVE_TOKENS);
+    Some(window.saturating_sub(reserve))
+}
+
+/// Derive the automatic compaction threshold from the effective context window.
+///
+/// Trigger when the summarizable portion approaches the effective input window,
+/// leaving a 13K safety buffer for turn metadata, tool schemas, and estimator
+/// drift. Unknown models use a conservative 128K-class fallback.
 #[must_use]
 pub fn compaction_threshold_for_model(model: &str) -> usize {
-    let Some(window) = context_window_for_model(model) else {
+    let Some(effective_window) = auto_compact_effective_window_for_model(model) else {
         return DEFAULT_COMPACTION_TOKEN_THRESHOLD;
     };
-
-    let threshold = (u64::from(window) * u64::from(COMPACTION_THRESHOLD_PERCENT)) / 100;
-    usize::try_from(threshold).unwrap_or(DEFAULT_COMPACTION_TOKEN_THRESHOLD)
+    usize::try_from(effective_window.saturating_sub(AUTO_COMPACT_BUFFER_TOKENS))
+        .unwrap_or(DEFAULT_COMPACTION_TOKEN_THRESHOLD)
 }
 
 /// Compaction threshold keyed by model and caller-supplied effort tier.
 ///
-/// Replacement-style compaction rewrites the stable prefix, which works against
-/// DeepSeek V4 prefix-cache economics. Reasoning effort must not lower V4's
-/// automatic replacement threshold; V4-family models use the same late
-/// 80%-of-window hard guard as `compaction_threshold_for_model`.
+/// Replacement-style compaction is no longer tuned only around DeepSeek V4
+/// prefix-cache economics. All providers use the same effective-window policy;
+/// explicit user settings remain the way to disable automatic compaction.
 #[must_use]
 pub fn compaction_threshold_for_model_and_effort(
     model: &str,
@@ -534,66 +543,65 @@ mod tests {
     }
 
     #[test]
-    fn compaction_threshold_scales_with_context_window() {
+    fn compaction_threshold_reserves_summary_and_buffer() {
         assert_eq!(
-            compaction_threshold_for_model("deepseek-v3.2-128k"),
-            102_400
+            auto_compact_effective_window_for_model("deepseek-v3.2-128k"),
+            Some(108_000)
         );
-        // v0.8.11 (#664): unknown-model fallback also resolves to 80% of
-        // `LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS` (128K legacy DeepSeek
-        // fallback) — same late-trigger discipline as the V4 path. Was
-        // `50_000` pre-v0.8.11; that hardcoded value compacted at ~5% of a
-        // 1M window when model detection silently fell through, which is
-        // exactly the prefix-cache-burning behaviour we're getting away from.
-        assert_eq!(compaction_threshold_for_model("unknown-model"), 102_400);
+        assert_eq!(compaction_threshold_for_model("deepseek-v3.2-128k"), 95_000);
+        assert_eq!(compaction_threshold_for_model("unknown-model"), 95_000);
     }
 
     #[test]
     fn compaction_scales_for_deepseek_v4_1m_context() {
-        assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 800_000);
+        assert_eq!(
+            auto_compact_effective_window_for_model("deepseek-v4-pro"),
+            Some(980_000)
+        );
+        assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 967_000);
     }
 
     #[test]
-    fn v4_replacement_compaction_ignores_reasoning_effort() {
+    fn replacement_compaction_uses_provider_neutral_threshold_for_effort() {
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("off")),
-            800_000
+            967_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("high")),
-            800_000
+            967_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("max")),
-            800_000
+            967_000
         );
     }
 
     #[test]
-    fn v4_soft_caps_only_apply_to_v4_models() {
+    fn provider_neutral_thresholds_apply_to_non_v4_models() {
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v3.2-128k", Some("max")),
-            102_400
+            95_000
         );
-        // v0.8.11 (#664): unknown-model fallback also lands on the
-        // 80%-of-128K legacy DeepSeek fallback instead of the legacy
-        // hardcoded 50K, so model-detection-fall-through doesn't quietly
-        // burn V4 prefix cache at 5%-of-window.
+        assert_eq!(
+            compaction_threshold_for_model_and_effort("claude-sonnet-4-20250514", Some("max")),
+            167_000
+        );
         assert_eq!(
             compaction_threshold_for_model_and_effort("unknown-model", Some("max")),
-            102_400
+            95_000
         );
     }
 
     #[test]
-    fn v4_replacement_compaction_defaults_to_late_guard_when_effort_unknown() {
+    fn replacement_compaction_defaults_to_effective_window_when_effort_unknown() {
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", None),
-            800_000
+            967_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("unknown")),
-            800_000
+            967_000
         );
     }
 }

@@ -1215,6 +1215,44 @@ impl SubAgentManager {
         &self.current_session_boot_id
     }
 
+    #[cfg(test)]
+    pub(crate) fn insert_test_live_agent(
+        &mut self,
+        id: String,
+        assignment: SubAgentAssignment,
+    ) -> String {
+        let (input_tx, _input_rx) = mpsc::unbounded_channel();
+        let mut agent = SubAgent::new(
+            id,
+            SubAgentType::Explore,
+            assignment.objective.clone(),
+            assignment,
+            "deepseek-v4-flash".to_string(),
+            Some("Blue".to_string()),
+            Some(vec!["read_file".to_string()]),
+            input_tx,
+            self.current_session_boot_id.clone(),
+        );
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        agent.task_handle = Some(handle);
+        let agent_id = agent.id.clone();
+        self.agents.insert(agent_id.clone(), agent);
+        agent_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn abort_test_agent(&mut self, agent_id: &str) {
+        if let Some(handle) = self
+            .agents
+            .get_mut(agent_id)
+            .and_then(|agent| agent.task_handle.take())
+        {
+            handle.abort();
+        }
+    }
+
     /// Classify an agent by its `session_boot_id`: `true` when the
     /// agent was either (a) loaded from disk with no id, or (b) carries
     /// a different id than the manager's current boot. Filters
@@ -1345,23 +1383,31 @@ impl SubAgentManager {
         Ok(())
     }
 
+    fn is_live_running(agent: &SubAgent) -> bool {
+        if agent.status != SubAgentStatus::Running {
+            return false;
+        }
+        let Some(handle) = agent.task_handle.as_ref() else {
+            return false;
+        };
+        !handle.is_finished()
+    }
+
     /// Count running agents.
     pub fn running_count(&self) -> usize {
         self.agents
             .values()
-            .filter(|agent| {
-                // Exclude non-running statuses
-                if agent.status != SubAgentStatus::Running {
-                    return false;
-                }
-                // Exclude persisted agents with no task_handle (they're not actually running)
-                let Some(handle) = agent.task_handle.as_ref() else {
-                    return false;
-                };
-                // Exclude agents whose task has finished (status will be updated to Completed shortly)
-                !handle.is_finished()
-            })
+            .filter(|agent| Self::is_live_running(agent))
             .count()
+    }
+
+    /// Snapshot sub-agents that are actually running in this process.
+    pub fn live_running_snapshots(&self) -> Vec<SubAgentResult> {
+        self.agents
+            .values()
+            .filter(|agent| Self::is_live_running(agent))
+            .map(|agent| self.snapshot_for_listing(agent))
+            .collect()
     }
 
     /// Spawn a new background sub-agent.

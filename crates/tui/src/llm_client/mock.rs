@@ -198,7 +198,7 @@ impl MockLlmClient {
             .cloned()
     }
 
-    fn record_request(&self, request: &MessageRequest) {
+    pub(crate) fn record_request(&self, request: &MessageRequest) {
         self.captured_requests
             .lock()
             .expect("MockLlmClient.captured_requests mutex poisoned")
