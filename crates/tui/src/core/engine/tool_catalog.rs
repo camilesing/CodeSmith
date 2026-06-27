@@ -123,6 +123,11 @@ pub(super) fn build_model_tool_catalog(
     // never shifts a built-in's position.
     native_tools.sort_by(|a, b| a.name.cmp(&b.name));
     mcp_tools.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut seen = HashSet::new();
+    native_tools.retain(|tool| seen.insert(tool.name.clone()));
+    mcp_tools.retain(|tool| seen.insert(tool.name.clone()));
+
     native_tools.extend(mcp_tools);
     native_tools
 }

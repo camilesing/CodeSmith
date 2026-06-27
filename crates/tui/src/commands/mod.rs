@@ -270,7 +270,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "mcp",
         aliases: &[],
-        usage: "/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
+        usage: "/mcp [init|add stdio <name> <command> [args...]|add <http|sse|sse-ide|ws|ws-ide> <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
         description_id: MessageId::CmdMcpDescription,
     },
     CommandInfo {

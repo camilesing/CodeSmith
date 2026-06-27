@@ -7,18 +7,25 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex as TokioMutex;
+use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
 
 use crate::child_env;
 use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
@@ -29,6 +36,57 @@ use crate::utils::write_atomic;
 /// Bytes of a non-2xx response body to surface in connection errors.
 const ERROR_BODY_PREVIEW_BYTES: usize = 200;
 const MCP_HTTP_ACCEPT: &str = "application/json, text/event-stream";
+const MAX_MCP_DESCRIPTION_LENGTH: usize = 2048;
+const MCP_AUTH_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
+const MCP_LOCAL_CONNECTION_BATCH_SIZE: usize = 3;
+const MCP_REMOTE_CONNECTION_BATCH_SIZE: usize = 20;
+const ALLOWED_IDE_TOOLS: &[&str] = &["mcp__ide__getDiagnostics", "mcp__ide__getOpenEditorFiles"];
+
+pub fn truncate_mcp_description(description: &str) -> String {
+    if description.chars().count() <= MAX_MCP_DESCRIPTION_LENGTH {
+        return description.to_string();
+    }
+    description
+        .chars()
+        .take(MAX_MCP_DESCRIPTION_LENGTH)
+        .collect()
+}
+
+fn qualify_mcp_tool_name(server: &str, tool: &str) -> String {
+    format!("mcp__{server}__{tool}")
+}
+
+fn parse_mcp_tool_name(prefixed_name: &str) -> Result<(&str, &str)> {
+    if let Some(rest) = prefixed_name.strip_prefix("mcp__") {
+        let Some((server, tool)) = rest.split_once("__") else {
+            anyhow::bail!("Invalid MCP tool name format: {prefixed_name}");
+        };
+        if server.is_empty() || tool.is_empty() {
+            anyhow::bail!("Invalid MCP tool name format: {prefixed_name}");
+        }
+        return Ok((server, tool));
+    }
+
+    if let Some(rest) = prefixed_name.strip_prefix("mcp_") {
+        let Some((server, tool)) = rest.split_once('_') else {
+            anyhow::bail!("Invalid MCP tool name format: {prefixed_name}");
+        };
+        if server.is_empty() || tool.is_empty() {
+            anyhow::bail!("Invalid MCP tool name format: {prefixed_name}");
+        }
+        return Ok((server, tool));
+    }
+
+    anyhow::bail!("Invalid MCP tool name: {prefixed_name}");
+}
+
+pub fn parse_mcp_tool_model_name(prefixed_name: &str) -> Result<(&str, &str)> {
+    parse_mcp_tool_name(prefixed_name)
+}
+
+fn is_allowed_ide_tool(model_name: &str) -> bool {
+    ALLOWED_IDE_TOOLS.contains(&model_name)
+}
 
 fn with_default_mcp_http_headers(
     request: reqwest::RequestBuilder,
@@ -55,34 +113,54 @@ fn validate_mcp_config_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Predicate for [`StreamableHttpTransport::send`]'s custom-header pass.
+/// Predicate for custom-header passes.
 ///
-/// We accept whatever reqwest's `HeaderName::try_from` /
-/// `HeaderValue::try_from` would accept, but with three extra rules:
+/// We accept whatever each HTTP implementation would accept, but with extra
+/// rules:
 ///
-/// 1. Reject empty / whitespace-only keys — these would surface as a
-///    request-builder error mid-send and abort the whole connection.
-/// 2. Reject keys that duplicate the framing we already emit
-///    (`Accept`, `Content-Type`). The MCP Streamable HTTP transport
-///    relies on those exact values for protocol negotiation; a stray
-///    user override could silently break tool discovery.
-/// 3. Reject values containing ASCII CR or LF. reqwest already
-///    rejects those, but the explicit check makes the failure path
-///    visible (a `tracing::warn!` instead of an obscure
-///    builder error) and documents the response-splitting
-///    defense.
+/// 1. Reject empty / whitespace-only keys.
+/// 2. Reject keys that duplicate protocol framing headers. The default HTTP
+///    transport reserves `Accept` and `Content-Type`; WebSocket handshakes also
+///    reserve upgrade-specific headers.
+/// 3. Reject values containing ASCII CR or LF.
 ///
-/// Returning `false` means "skip this header"; the rest of the
-/// request still goes out.
-fn is_safe_custom_header(key: &str, value: &str) -> bool {
+/// Returning `false` means "skip this header"; the rest of the request still
+/// goes out.
+fn is_safe_custom_header_with_reserved(key: &str, value: &str, reserved: &[&str]) -> bool {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return false;
     }
-    if trimmed.eq_ignore_ascii_case("accept") || trimmed.eq_ignore_ascii_case("content-type") {
+    if reserved
+        .iter()
+        .any(|header| trimmed.eq_ignore_ascii_case(header))
+    {
         return false;
     }
     !value.contains('\r') && !value.contains('\n')
+}
+
+fn is_safe_custom_header(key: &str, value: &str) -> bool {
+    is_safe_custom_header_with_reserved(key, value, &["accept", "content-type"])
+}
+
+fn is_safe_websocket_header(key: &str, value: &str) -> bool {
+    is_safe_custom_header_with_reserved(
+        key,
+        value,
+        &[
+            "accept",
+            "connection",
+            "content-type",
+            "host",
+            "sec-websocket-accept",
+            "sec-websocket-extensions",
+            "sec-websocket-key",
+            "sec-websocket-protocol",
+            "sec-websocket-version",
+            "upgrade",
+        ],
+    )
 }
 
 fn apply_safe_custom_headers(
@@ -101,6 +179,137 @@ fn apply_safe_custom_headers(
         request = request.header(key.as_str(), value.as_str());
     }
     request
+}
+
+fn apply_safe_websocket_headers(
+    mut request: tokio_tungstenite::tungstenite::http::Request<()>,
+    headers: &HashMap<String, String>,
+) -> tokio_tungstenite::tungstenite::http::Request<()> {
+    for (key, value) in headers {
+        if !is_safe_websocket_header(key, value) {
+            tracing::warn!(
+                target: "mcp",
+                "skipping unsafe MCP WebSocket header {:?} (empty/control-char/reserved)",
+                key
+            );
+            continue;
+        }
+        let Ok(name) = HeaderName::from_bytes(key.as_bytes()) else {
+            tracing::warn!(target: "mcp", "skipping invalid MCP WebSocket header {:?}", key);
+            continue;
+        };
+        let Ok(value) = HeaderValue::from_str(value) else {
+            tracing::warn!(target: "mcp", "skipping invalid MCP WebSocket header value for {:?}", key);
+            continue;
+        };
+        request.headers_mut().insert(name, value);
+    }
+    request
+}
+
+fn with_websocket_bearer_header(
+    mut request: tokio_tungstenite::tungstenite::http::Request<()>,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> tokio_tungstenite::tungstenite::http::Request<()> {
+    if claude_ai_host(url)
+        && !headers
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case("authorization"))
+        && let Some(token) = configured_claude_access_token(headers)
+        && let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}"))
+    {
+        request
+            .headers_mut()
+            .insert(HeaderName::from_static("authorization"), value);
+    }
+    request
+}
+
+fn claude_ai_host(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "claude.ai" || host.ends_with(".claude.ai"))
+}
+
+fn configured_claude_access_token(headers: &HashMap<String, String>) -> Option<String> {
+    if let Ok(token) = std::env::var("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN")
+        && !token.trim().is_empty()
+    {
+        return Some(token);
+    }
+    headers.iter().find_map(|(key, value)| {
+        if key.eq_ignore_ascii_case("authorization") {
+            value
+                .trim()
+                .strip_prefix("Bearer ")
+                .map(|token| token.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+async fn refresh_claude_access_token() -> Result<Option<String>> {
+    let Ok(command) = std::env::var("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND") else {
+        return Ok(None);
+    };
+    if command.trim().is_empty() {
+        return Ok(None);
+    }
+    let parts = shlex::split(&command).context("Invalid CODESMITH_MCP_CLAUDE_REFRESH_COMMAND")?;
+    let Some((program, args)) = parts.split_first() else {
+        return Ok(None);
+    };
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await
+        .with_context(|| "Failed to run CODESMITH_MCP_CLAUDE_REFRESH_COMMAND")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "CODESMITH_MCP_CLAUDE_REFRESH_COMMAND failed with status {}",
+            output.status
+        );
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(token))
+    }
+}
+
+fn with_bearer_header(
+    request: reqwest::RequestBuilder,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> reqwest::RequestBuilder {
+    if claude_ai_host(url)
+        && !headers
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case("authorization"))
+        && let Some(token) = configured_claude_access_token(headers)
+    {
+        return request.bearer_auth(token);
+    }
+    request
+}
+
+async fn maybe_refresh_claude_headers(
+    url: &str,
+    status: StatusCode,
+    headers: &mut HashMap<String, String>,
+) -> Result<bool> {
+    if status != StatusCode::UNAUTHORIZED || !claude_ai_host(url) {
+        return Ok(false);
+    }
+    let Some(token) = refresh_claude_access_token().await? else {
+        return Ok(false);
+    };
+    headers.insert("Authorization".to_string(), format!("Bearer {token}"));
+    Ok(true)
 }
 
 /// Mask a URL so any embedded credentials in the userinfo portion (e.g.
@@ -239,7 +448,56 @@ impl Default for McpTimeouts {
     }
 }
 
-/// Configuration for a single MCP server
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpTransportKind {
+    StreamableHttp,
+    Sse,
+    SseIde,
+    WebSocket,
+    WebSocketIde,
+}
+
+impl McpTransportKind {
+    fn parse(transport: Option<&str>) -> Result<Self> {
+        let Some(raw) = transport else {
+            return Ok(Self::StreamableHttp);
+        };
+        let normalized = raw.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "" | "http" | "streamable" | "streamable-http" => Ok(Self::StreamableHttp),
+            "sse" => Ok(Self::Sse),
+            "sse-ide" => Ok(Self::SseIde),
+            "ws" | "websocket" => Ok(Self::WebSocket),
+            "ws-ide" | "websocket-ide" => Ok(Self::WebSocketIde),
+            _ => anyhow::bail!(
+                "Unsupported MCP transport '{raw}'. Supported values: http, streamable-http, sse, sse-ide, ws, ws-ide"
+            ),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::StreamableHttp => "http/sse",
+            Self::Sse => "sse",
+            Self::SseIde => "sse-ide",
+            Self::WebSocket => "ws",
+            Self::WebSocketIde => "ws-ide",
+        }
+    }
+
+    fn is_sse(self) -> bool {
+        matches!(self, Self::Sse | Self::SseIde)
+    }
+
+    fn is_websocket(self) -> bool {
+        matches!(self, Self::WebSocket | Self::WebSocketIde)
+    }
+
+    fn is_ide(self) -> bool {
+        matches!(self, Self::SseIde | Self::WebSocketIde)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
     pub command: Option<String>,
@@ -248,13 +506,13 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
     pub url: Option<String>,
-    /// Optional explicit HTTP transport override.
+    /// Optional explicit URL transport override.
     ///
     /// By default URL-based MCP servers use Streamable HTTP first and fall
     /// back to legacy SSE only when the server rejects Streamable HTTP with
-    /// a known incompatible status. Set this to `"sse"` for legacy SSE
-    /// endpoints that must start with a long-lived GET endpoint discovery
-    /// stream and cannot accept an initial POST to the configured URL.
+    /// a known incompatible status. Set this to `"sse"`/`"sse-ide"` for
+    /// legacy SSE endpoints that must start with endpoint discovery, or
+    /// `"ws"`/`"ws-ide"` for WebSocket MCP endpoints.
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
@@ -614,6 +872,65 @@ enum StreamableSendError {
     Other(anyhow::Error),
 }
 
+struct WebSocketTransport {
+    stream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+}
+
+impl WebSocketTransport {
+    async fn connect(url: String, headers: HashMap<String, String>) -> Result<Self> {
+        let request = url
+            .as_str()
+            .into_client_request()
+            .with_context(|| format!("Invalid MCP WebSocket URL: {}", mask_url_secrets(&url)))?;
+        let request = apply_safe_websocket_headers(request, &headers);
+        let request = with_websocket_bearer_header(request, &url, &headers);
+        let (stream, _) = connect_async(request).await.with_context(|| {
+            format!(
+                "MCP WebSocket connect failed (transport=ws url={})",
+                mask_url_secrets(&url)
+            )
+        })?;
+        Ok(Self { stream })
+    }
+}
+
+#[async_trait::async_trait]
+impl McpTransport for WebSocketTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        let text = String::from_utf8(msg).context("MCP WebSocket payload was not valid UTF-8")?;
+        self.stream.send(Message::Text(text.into())).await?;
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        loop {
+            let message = self
+                .stream
+                .next()
+                .await
+                .context("WebSocket transport closed")??;
+            match message {
+                Message::Text(text) => return Ok(text.as_str().as_bytes().to_vec()),
+                Message::Binary(bytes) => return Ok(bytes.to_vec()),
+                Message::Ping(payload) => {
+                    self.stream.send(Message::Pong(payload)).await?;
+                }
+                Message::Pong(_) | Message::Frame(_) => {}
+                Message::Close(frame) => {
+                    let detail = frame
+                        .map(|f| format!("code={} reason={}", f.code, f.reason))
+                        .unwrap_or_else(|| "no close frame".to_string());
+                    anyhow::bail!("WebSocket transport closed ({detail})");
+                }
+            }
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        let _ = self.stream.close(None).await;
+    }
+}
+
 impl SseTransport {
     pub async fn connect(
         client: reqwest::Client,
@@ -681,8 +998,12 @@ impl SseTransport {
         tx: tokio::sync::mpsc::UnboundedSender<SseInbound>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<()> {
-        let response = apply_safe_custom_headers(
-            with_default_mcp_http_headers(client.get(&url), false),
+        let response = with_bearer_header(
+            apply_safe_custom_headers(
+                with_default_mcp_http_headers(client.get(&url), false),
+                &headers,
+            ),
+            &url,
             &headers,
         )
         .send()
@@ -877,8 +1198,12 @@ impl HttpTransport {
             HttpTransportMode::Sse(_) => return Ok(()),
         };
 
-        let request = apply_safe_custom_headers(
-            with_default_mcp_http_headers(transport.client.get(&transport.url), false),
+        let request = with_bearer_header(
+            apply_safe_custom_headers(
+                with_default_mcp_http_headers(transport.client.get(&transport.url), false),
+                &transport.headers,
+            ),
+            &transport.url,
             &transport.headers,
         );
         let response = tokio::time::timeout(Duration::from_secs(5), request.send())
@@ -968,10 +1293,30 @@ impl StreamableHttpTransport {
     }
 
     async fn send(&mut self, msg: Vec<u8>) -> std::result::Result<(), StreamableSendError> {
+        let response = self.send_once(msg.clone()).await?;
+        let status = response.status();
+        if !status.is_success()
+            && let Ok(true) =
+                maybe_refresh_claude_headers(&self.url, status, &mut self.headers).await
+        {
+            let response = self.send_once(msg).await?;
+            return self.handle_response(response).await;
+        }
+        self.handle_response(response).await
+    }
+
+    async fn send_once(
+        &mut self,
+        msg: Vec<u8>,
+    ) -> std::result::Result<reqwest::Response, StreamableSendError> {
         // Apply user-configured custom headers after protocol framing so
         // reserved Accept / Content-Type overrides can be filtered out.
-        let mut request = apply_safe_custom_headers(
-            with_default_mcp_http_headers(self.client.post(&self.url), true),
+        let mut request = with_bearer_header(
+            apply_safe_custom_headers(
+                with_default_mcp_http_headers(self.client.post(&self.url), true),
+                &self.headers,
+            ),
+            &self.url,
             &self.headers,
         );
         // Attach any previously captured session ID per the Streamable
@@ -980,12 +1325,17 @@ impl StreamableHttpTransport {
         if let Some(ref sid) = self.session_id {
             request = request.header("Mcp-Session-Id", sid.as_str());
         }
-        let response = request
+        request
             .body(msg)
             .send()
             .await
-            .map_err(|err| StreamableSendError::Other(err.into()))?;
+            .map_err(|err| StreamableSendError::Other(err.into()))
+    }
 
+    async fn handle_response(
+        &mut self,
+        response: reqwest::Response,
+    ) -> std::result::Result<(), StreamableSendError> {
         let status = response.status();
 
         // Capture session ID from any response (2xx, 202, 4xx, …). The
@@ -1009,9 +1359,14 @@ impl StreamableHttpTransport {
             if self.session_id.is_some()
                 && is_streamable_http_stale_session_status(status, &body_excerpt)
             {
-                return Err(StreamableSendError::StaleSession(format!(
-                    "status={status} body={body_excerpt}"
-                )));
+                let detail = if status == StatusCode::NOT_FOUND
+                    && body_has_jsonrpc_error_code(&body_excerpt, -32001)
+                {
+                    format!("status={status} jsonrpc_error=-32001 body={body_excerpt}")
+                } else {
+                    format!("status={status} body={body_excerpt}")
+                };
+                return Err(StreamableSendError::StaleSession(detail));
             }
             if is_streamable_http_incompatible_status(status) {
                 return Err(StreamableSendError::Incompatible(format!(
@@ -1090,7 +1445,38 @@ fn is_streamable_http_stale_session_status(status: StatusCode, body_excerpt: &st
     body.contains("session") && (body.contains("expired") || body.contains("invalid"))
 }
 
+fn body_has_jsonrpc_error_code(body: &str, code: i64) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/code")
+                .and_then(serde_json::Value::as_i64)
+        })
+        == Some(code)
+}
+
+fn is_mcp_auth_error_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("status=401")
+        || lower.contains("status=403")
+        || lower.contains(" 401")
+        || lower.contains(" 403")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("needs-auth")
+        || lower.contains("step-up")
+        || lower.contains("step up")
+}
+
+fn is_mcp_auth_error(err: &anyhow::Error) -> bool {
+    is_mcp_auth_error_text(&format!("{err:#}"))
+}
+
 fn is_mcp_stale_session_body(body: &str) -> bool {
+    if body_has_jsonrpc_error_code(body, -32001) {
+        return true;
+    }
     let body = body.to_ascii_lowercase();
     body.contains("session") && (body.contains("expired") || body.contains("invalid"))
 }
@@ -1100,6 +1486,7 @@ fn is_mcp_stale_session_error(err: &anyhow::Error) -> bool {
     err.contains("MCP Streamable HTTP session expired")
         || err.contains("MCP session expired")
         || err.contains("SSE transport closed")
+        || err.contains("WebSocket transport closed")
         || is_mcp_stale_session_body(&err)
 }
 
@@ -1146,22 +1533,28 @@ fn sse_field_value<'a>(line: &'a str, field: &str) -> Option<&'a str> {
     Some(value.strip_prefix(' ').unwrap_or(value))
 }
 
+fn transport_kind(config: &McpServerConfig) -> Result<McpTransportKind> {
+    McpTransportKind::parse(config.transport.as_deref())
+}
+
 fn is_legacy_sse_transport(config: &McpServerConfig) -> bool {
-    config
-        .transport
-        .as_deref()
-        .map(|transport| transport.trim().eq_ignore_ascii_case("sse"))
-        .unwrap_or(false)
+    transport_kind(config).is_ok_and(McpTransportKind::is_sse)
 }
 
 fn validate_mcp_transport(transport: Option<&str>) -> Result<()> {
-    let Some(transport) = transport else {
-        return Ok(());
-    };
-    if transport.trim().eq_ignore_ascii_case("sse") {
-        return Ok(());
+    McpTransportKind::parse(transport).map(|_| ())
+}
+
+pub fn mcp_transport_label(transport: Option<&str>, has_url: bool) -> Result<&'static str> {
+    if has_url {
+        McpTransportKind::parse(transport).map(McpTransportKind::label)
+    } else {
+        Ok("stdio")
     }
-    anyhow::bail!("Unsupported MCP transport '{transport}'. Supported values: sse");
+}
+
+pub fn validate_mcp_transport_option(transport: Option<&str>) -> Result<()> {
+    validate_mcp_transport(transport)
 }
 
 fn response_id_matches(id: Option<&serde_json::Value>, expected_id: &str) -> bool {
@@ -1183,27 +1576,48 @@ impl McpTransport for SseTransport {
             .endpoint_url
             .as_ref()
             .context("SSE endpoint not yet discovered")?;
-        let response = apply_safe_custom_headers(
-            with_default_mcp_http_headers(self.client.post(endpoint), true),
+        let endpoint_owned = endpoint.clone();
+        let mut response = with_bearer_header(
+            apply_safe_custom_headers(
+                with_default_mcp_http_headers(self.client.post(&endpoint_owned), true),
+                &self.headers,
+            ),
+            &endpoint_owned,
             &self.headers,
         )
-        .body(msg)
+        .body(msg.clone())
         .send()
         .await?;
-        let status = response.status();
+        let mut status = response.status();
+        if !status.is_success()
+            && maybe_refresh_claude_headers(&endpoint_owned, status, &mut self.headers).await?
+        {
+            response = with_bearer_header(
+                apply_safe_custom_headers(
+                    with_default_mcp_http_headers(self.client.post(&endpoint_owned), true),
+                    &self.headers,
+                ),
+                &endpoint_owned,
+                &self.headers,
+            )
+            .body(msg)
+            .send()
+            .await?;
+            status = response.status();
+        }
         if !status.is_success() {
             let body_excerpt = bounded_body_excerpt(response, ERROR_BODY_PREVIEW_BYTES).await;
             if is_mcp_stale_session_body(&body_excerpt) {
                 anyhow::bail!(
                     "MCP session expired (transport=sse endpoint={} status={}): {}",
-                    mask_url_secrets(endpoint),
+                    mask_url_secrets(&endpoint_owned),
                     status,
                     body_excerpt
                 );
             }
             anyhow::bail!(
                 "MCP SSE POST rejected (transport=sse endpoint={} status={}): {}",
-                mask_url_secrets(endpoint),
+                mask_url_secrets(&endpoint_owned),
                 status,
                 body_excerpt
             );
@@ -1319,7 +1733,10 @@ impl McpConnection {
                 }
             }
             let client = client_builder.build()?;
-            if is_legacy_sse_transport(&config) {
+            let kind = transport_kind(&config)?;
+            if kind.is_websocket() {
+                Box::new(WebSocketTransport::connect(url.clone(), config.headers.clone()).await?)
+            } else if kind.is_sse() {
                 Box::new(
                     SseTransport::connect(
                         client,
@@ -1857,6 +2274,97 @@ impl Drop for McpConnection {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct McpAuthCache {
+    #[serde(default)]
+    servers: HashMap<String, McpAuthCacheEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct McpAuthCacheEntry {
+    marked_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport: Option<String>,
+    reason: String,
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn default_mcp_auth_cache_path() -> Option<PathBuf> {
+    crate::config::effective_home_dir()
+        .map(|home| home.join(".codesmith").join("mcp-needs-auth-cache.json"))
+}
+
+impl McpAuthCache {
+    fn load() -> Self {
+        let Some(path) = default_mcp_auth_cache_path() else {
+            return Self::default();
+        };
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    fn fresh_entry(&self, server: &str) -> Option<&McpAuthCacheEntry> {
+        let entry = self.servers.get(server)?;
+        let age = Duration::from_millis(now_millis().saturating_sub(entry.marked_at_ms));
+        (age < MCP_AUTH_CACHE_TTL).then_some(entry)
+    }
+
+    fn mark(server: &str, config: &McpServerConfig, reason: &str) {
+        let Some(path) = default_mcp_auth_cache_path() else {
+            return;
+        };
+        let mut cache = Self::load();
+        cache.servers.insert(
+            server.to_string(),
+            McpAuthCacheEntry {
+                marked_at_ms: now_millis(),
+                url: config.url.as_ref().map(|url| mask_url_secrets(url)),
+                transport: config.transport.clone(),
+                reason: reason.to_string(),
+            },
+        );
+        if let Some(parent) = path.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            tracing::warn!(target: "mcp", ?err, path = %parent.display(), "failed to create MCP auth cache directory");
+            return;
+        }
+        match serde_json::to_string_pretty(&cache) {
+            Ok(contents) => {
+                if let Err(err) = write_atomic(&path, contents.as_bytes()) {
+                    tracing::warn!(target: "mcp", ?err, path = %path.display(), "failed to write MCP auth cache");
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+                }
+            }
+            Err(err) => tracing::warn!(target: "mcp", ?err, "failed to serialize MCP auth cache"),
+        }
+    }
+}
+
+fn needs_auth_error(server: &str, entry: &McpAuthCacheEntry) -> anyhow::Error {
+    anyhow::anyhow!(
+        "MCP server '{server}' needs-auth (cached for {}s): {}",
+        MCP_AUTH_CACHE_TTL.as_secs(),
+        entry.reason
+    )
+}
+
 // === McpPool - Connection Pool Management ===
 
 /// Pool of MCP connections for reuse
@@ -1877,6 +2385,69 @@ pub struct McpPool {
     /// Most recently observed mtime of `config_source`. Updated whenever the
     /// reload check runs (whether or not it triggered a reload).
     last_mtime: Option<std::time::SystemTime>,
+}
+
+fn connection_batch_size(env_name: &str, default: usize) -> usize {
+    std::env::var(env_name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+#[derive(Clone)]
+struct McpConnectTask {
+    name: String,
+    config: McpServerConfig,
+}
+
+async fn connect_task(
+    task: McpConnectTask,
+    timeouts: McpTimeouts,
+    policy: Option<NetworkPolicyDecider>,
+) -> (String, Result<McpConnection>) {
+    let result = if task.config.url.is_some()
+        && let Some(entry) = McpAuthCache::load().fresh_entry(&task.name)
+    {
+        Err(needs_auth_error(&task.name, entry))
+    } else {
+        let connected = McpConnection::connect_with_policy(
+            task.name.clone(),
+            task.config.clone(),
+            &timeouts,
+            policy.as_ref(),
+        )
+        .await;
+        match connected {
+            Ok(conn) => Ok(conn),
+            Err(err) if task.config.url.is_some() && is_mcp_auth_error(&err) => {
+                McpAuthCache::mark(&task.name, &task.config, &format!("{err:#}"));
+                Err(needs_auth_error(
+                    &task.name,
+                    McpAuthCache::load()
+                        .fresh_entry(&task.name)
+                        .expect("auth cache entry just written"),
+                ))
+            }
+            Err(err) => Err(err),
+        }
+    };
+    (task.name, result)
+}
+
+async fn connect_tasks_batched(
+    tasks: Vec<McpConnectTask>,
+    limit: usize,
+    timeouts: McpTimeouts,
+    policy: Option<NetworkPolicyDecider>,
+) -> Vec<(String, Result<McpConnection>)> {
+    futures_util::stream::iter(tasks.into_iter().map(|task| {
+        let policy = policy.clone();
+        async move { connect_task(task, timeouts, policy).await }
+    }))
+    .buffer_unordered(limit)
+    .collect()
+    .await
 }
 
 impl McpPool {
@@ -2000,13 +2571,32 @@ impl McpPool {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
         }
 
-        let connection = McpConnection::connect_with_policy(
+        if server_config.url.is_some()
+            && let Some(entry) = McpAuthCache::load().fresh_entry(server_name)
+        {
+            return Err(needs_auth_error(server_name, entry));
+        }
+
+        let connection = match McpConnection::connect_with_policy(
             server_name.to_string(),
-            server_config,
+            server_config.clone(),
             &self.config.timeouts,
             self.network_policy.as_ref(),
         )
-        .await?;
+        .await
+        {
+            Ok(connection) => connection,
+            Err(err) if server_config.url.is_some() && is_mcp_auth_error(&err) => {
+                McpAuthCache::mark(server_name, &server_config, &format!("{err:#}"));
+                return Err(needs_auth_error(
+                    server_name,
+                    McpAuthCache::load()
+                        .fresh_entry(server_name)
+                        .expect("auth cache entry just written"),
+                ));
+            }
+            Err(err) => return Err(err),
+        };
 
         self.connections.insert(server_name.to_string(), connection);
         self.connections
@@ -2016,18 +2606,65 @@ impl McpPool {
 
     /// Connect to all enabled servers, returning errors for failed connections
     pub async fn connect_all(&mut self) -> Vec<(String, anyhow::Error)> {
-        let mut errors = Vec::new();
-        let names: Vec<String> = self
-            .config
-            .servers
-            .keys()
-            .filter(|n| self.config.servers[*n].is_enabled())
-            .cloned()
-            .collect();
+        let _ = self.reload_if_config_changed().await;
 
-        for name in names {
-            if let Err(e) = self.get_or_connect(&name).await {
-                errors.push((name, e));
+        let mut local_tasks = Vec::new();
+        let mut remote_tasks = Vec::new();
+        for (name, config) in &self.config.servers {
+            if !config.is_enabled() {
+                continue;
+            }
+            if self
+                .connections
+                .get(name)
+                .is_some_and(McpConnection::is_ready)
+            {
+                continue;
+            }
+            let task = McpConnectTask {
+                name: name.clone(),
+                config: config.clone(),
+            };
+            if config.url.is_some() {
+                remote_tasks.push(task);
+            } else {
+                local_tasks.push(task);
+            }
+        }
+
+        let local_limit = connection_batch_size(
+            "MCP_SERVER_CONNECTION_BATCH_SIZE",
+            MCP_LOCAL_CONNECTION_BATCH_SIZE,
+        );
+        let remote_limit = connection_batch_size(
+            "MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE",
+            MCP_REMOTE_CONNECTION_BATCH_SIZE,
+        );
+
+        let mut errors = Vec::new();
+        let mut results = connect_tasks_batched(
+            local_tasks,
+            local_limit,
+            self.config.timeouts,
+            self.network_policy.clone(),
+        )
+        .await;
+        results.extend(
+            connect_tasks_batched(
+                remote_tasks,
+                remote_limit,
+                self.config.timeouts,
+                self.network_policy.clone(),
+            )
+            .await,
+        );
+
+        for (name, result) in results {
+            match result {
+                Ok(connection) => {
+                    self.connections.insert(name, connection);
+                }
+                Err(err) => errors.push((name, err)),
             }
         }
 
@@ -2049,16 +2686,27 @@ impl McpPool {
         errors
     }
 
+    fn is_ide_server(&self, server: &str, conn: &McpConnection) -> bool {
+        server == "ide" && transport_kind(conn.config()).is_ok_and(McpTransportKind::is_ide)
+    }
+
+    fn should_expose_tool(&self, server: &str, conn: &McpConnection, tool: &McpTool) -> bool {
+        if !conn.config().is_tool_enabled(&tool.name) {
+            return false;
+        }
+        let model_name = qualify_mcp_tool_name(server, &tool.name);
+        !self.is_ide_server(server, conn) || is_allowed_ide_tool(&model_name)
+    }
+
     /// Get all discovered tools with server-prefixed names
     pub fn all_tools(&self) -> Vec<(String, &McpTool)> {
         let mut tools = Vec::new();
         for (server, conn) in &self.connections {
             for tool in conn.tools() {
-                if !conn.config().is_tool_enabled(&tool.name) {
+                if !self.should_expose_tool(server, conn, tool) {
                     continue;
                 }
-                // Format: mcp_{server}_{tool}
-                tools.push((format!("mcp_{}_{}", server, tool.name), tool));
+                tools.push((qualify_mcp_tool_name(server, &tool.name), tool));
             }
         }
         // Sort by prefixed name so iteration order across servers is
@@ -2075,7 +2723,7 @@ impl McpPool {
                 // Format: mcp_{server}_{resource_name}
                 // Note: resource names might contain spaces, we should probably slugify them
                 let safe_name = resource.name.replace(' ', "_").to_lowercase();
-                resources.push((format!("mcp_{server}_{safe_name}"), resource));
+                resources.push((qualify_mcp_tool_name(server, &safe_name), resource));
             }
         }
         resources
@@ -2088,7 +2736,7 @@ impl McpPool {
         for (server, conn) in &self.connections {
             for template in conn.resource_templates() {
                 let safe_name = template.name.replace(' ', "_").to_lowercase();
-                templates.push((format!("mcp_{server}_{safe_name}"), template));
+                templates.push((qualify_mcp_tool_name(server, &safe_name), template));
             }
         }
         templates
@@ -2173,7 +2821,7 @@ impl McpPool {
         for (server, conn) in &self.connections {
             for prompt in conn.prompts() {
                 // Format: mcp_{server}_{prompt}
-                prompts.push((format!("mcp_{}_{}", server, prompt.name), prompt));
+                prompts.push((qualify_mcp_tool_name(server, &prompt.name), prompt));
             }
         }
         prompts
@@ -2206,14 +2854,7 @@ impl McpPool {
 
     /// Parse a prefixed name into (server_name, tool_name)
     fn parse_prefixed_name<'a>(&self, prefixed_name: &'a str) -> Result<(&'a str, &'a str)> {
-        if !prefixed_name.starts_with("mcp_") {
-            anyhow::bail!("Invalid MCP tool name: {prefixed_name}");
-        }
-        let rest = &prefixed_name[4..];
-        let Some((server, tool)) = rest.split_once('_') else {
-            anyhow::bail!("Invalid MCP tool name format: {prefixed_name}");
-        };
-        Ok((server, tool))
+        parse_mcp_tool_name(prefixed_name)
     }
 
     /// Convert discovered tools to API Tool format
@@ -2225,7 +2866,9 @@ impl McpPool {
             api_tools.push(crate::models::Tool {
                 tool_type: None,
                 name,
-                description: tool.description.clone().unwrap_or_default(),
+                description: truncate_mcp_description(
+                    tool.description.as_deref().unwrap_or_default(),
+                ),
                 input_schema: tool.input_schema.clone(),
                 output_schema: None,
                 allowed_callers: Some(vec!["direct".to_string()]),
@@ -2351,7 +2994,7 @@ impl McpPool {
         api_tools
     }
 
-    /// Call a tool by its prefixed name (mcp_{server}_{tool})
+    /// Call a tool by its prefixed name (mcp__{server}__{tool}; legacy mcp_{server}_{tool} accepted)
     pub async fn call_tool(
         &mut self,
         prefixed_name: &str,
@@ -2416,6 +3059,17 @@ impl McpPool {
         }
 
         let (server_name, tool_name) = self.parse_prefixed_name(prefixed_name)?;
+        let server_config_for_auth = self
+            .config
+            .servers
+            .get(server_name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?;
+        if server_config_for_auth.url.is_some()
+            && let Some(entry) = McpAuthCache::load().fresh_entry(server_name)
+        {
+            return Err(needs_auth_error(server_name, entry));
+        }
         // Copy the global timeouts to avoid borrow conflict
         let global_timeouts = self.config.timeouts;
         let conn = self.get_or_connect(server_name).await?;
@@ -2440,6 +3094,15 @@ impl McpPool {
                 }
                 let timeout = conn.config().effective_execute_timeout(&global_timeouts);
                 conn.call_tool(tool_name, arguments, timeout).await
+            }
+            Err(err) if is_mcp_auth_error(&err) && server_config_for_auth.url.is_some() => {
+                McpAuthCache::mark(server_name, &server_config_for_auth, &format!("{err:#}"));
+                Err(needs_auth_error(
+                    server_name,
+                    McpAuthCache::load()
+                        .fresh_entry(server_name)
+                        .expect("auth cache entry just written"),
+                ))
             }
             Err(err) => Err(err),
         }
@@ -2497,10 +3160,15 @@ impl McpPool {
 
     /// Check if a tool name is an MCP tool
     pub fn is_mcp_tool(name: &str) -> bool {
-        name.starts_with("mcp_")
+        name.starts_with("mcp__")
+            || (name.starts_with("mcp_") && parse_mcp_tool_name(name).is_ok())
             || matches!(
                 name,
-                "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
+                "list_mcp_resources"
+                    | "list_mcp_resource_templates"
+                    | "mcp_read_resource"
+                    | "read_mcp_resource"
+                    | "mcp_get_prompt"
             )
     }
 }
@@ -2746,11 +3414,9 @@ fn snapshot_from_config(
         .iter()
         .map(|(name, server)| {
             let transport = if server.url.is_some() {
-                if is_legacy_sse_transport(server) {
-                    "sse"
-                } else {
-                    "http/sse"
-                }
+                transport_kind(server)
+                    .map(McpTransportKind::label)
+                    .unwrap_or("invalid")
             } else {
                 "stdio"
             };
@@ -2794,11 +3460,11 @@ fn snapshot_from_config(
                     snapshot.tools = conn
                         .tools()
                         .iter()
-                        .filter(|tool| conn.config().is_tool_enabled(&tool.name))
+                        .filter(|tool| pool.should_expose_tool(name, conn, tool))
                         .map(|tool| McpDiscoveredItem {
                             name: tool.name.clone(),
-                            model_name: format!("mcp_{}_{}", name, tool.name),
-                            description: tool.description.clone(),
+                            model_name: qualify_mcp_tool_name(name, &tool.name),
+                            description: tool.description.as_deref().map(truncate_mcp_description),
                         })
                         .collect();
                     snapshot.resources =
@@ -2806,20 +3472,18 @@ fn snapshot_from_config(
                             .iter()
                             .map(|resource| McpDiscoveredItem {
                                 name: resource.name.clone(),
-                                model_name: format!(
-                                    "mcp_{}_{}",
+                                model_name: qualify_mcp_tool_name(
                                     name,
-                                    resource.name.replace(' ', "_").to_lowercase()
+                                    &resource.name.replace(' ', "_").to_lowercase(),
                                 ),
                                 description: resource.description.clone(),
                             })
                             .chain(conn.resource_templates().iter().map(|template| {
                                 McpDiscoveredItem {
                                     name: template.name.clone(),
-                                    model_name: format!(
-                                        "mcp_{}_{}",
+                                    model_name: qualify_mcp_tool_name(
                                         name,
-                                        template.name.replace(' ', "_").to_lowercase()
+                                        &template.name.replace(' ', "_").to_lowercase(),
                                     ),
                                     description: template.description.clone(),
                                 }
@@ -2830,7 +3494,7 @@ fn snapshot_from_config(
                         .iter()
                         .map(|prompt| McpDiscoveredItem {
                             name: prompt.name.clone(),
-                            model_name: format!("mcp_{}_{}", name, prompt.name),
+                            model_name: qualify_mcp_tool_name(name, &prompt.name),
                             description: prompt.description.clone(),
                         })
                         .collect();
@@ -2891,11 +3555,124 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::sync::{Arc, Mutex, OnceLock};
 
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
     async fn lock_mcp_loopback_tests() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
             .lock()
             .await
+    }
+
+    #[test]
+    fn truncate_mcp_description_is_utf8_safe_and_limited() {
+        let description = "界".repeat(MAX_MCP_DESCRIPTION_LENGTH + 5);
+        let truncated = truncate_mcp_description(&description);
+        assert_eq!(truncated.chars().count(), MAX_MCP_DESCRIPTION_LENGTH);
+        assert!(truncated.chars().all(|ch| ch == '界'));
+    }
+
+    #[test]
+    fn mcp_transport_kind_accepts_url_transport_aliases() {
+        assert_eq!(
+            McpTransportKind::parse(None).unwrap(),
+            McpTransportKind::StreamableHttp
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("http")).unwrap(),
+            McpTransportKind::StreamableHttp
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("streamable")).unwrap(),
+            McpTransportKind::StreamableHttp
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("streamable-http")).unwrap(),
+            McpTransportKind::StreamableHttp
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("sse")).unwrap(),
+            McpTransportKind::Sse
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("sse-ide")).unwrap(),
+            McpTransportKind::SseIde
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("ws")).unwrap(),
+            McpTransportKind::WebSocket
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("websocket")).unwrap(),
+            McpTransportKind::WebSocket
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("ws-ide")).unwrap(),
+            McpTransportKind::WebSocketIde
+        );
+        assert_eq!(
+            McpTransportKind::parse(Some("websocket-ide")).unwrap(),
+            McpTransportKind::WebSocketIde
+        );
+        assert!(McpTransportKind::parse(Some("ftp")).is_err());
+    }
+
+    #[test]
+    fn mcp_transport_labels_match_configured_transport() {
+        assert_eq!(mcp_transport_label(None, false).unwrap(), "stdio");
+        assert_eq!(mcp_transport_label(None, true).unwrap(), "http/sse");
+        assert_eq!(mcp_transport_label(Some("sse"), true).unwrap(), "sse");
+        assert_eq!(
+            mcp_transport_label(Some("sse-ide"), true).unwrap(),
+            "sse-ide"
+        );
+        assert_eq!(mcp_transport_label(Some("ws"), true).unwrap(), "ws");
+        assert_eq!(mcp_transport_label(Some("ws-ide"), true).unwrap(), "ws-ide");
+    }
+
+    #[test]
+    fn websocket_headers_reject_protocol_overrides_and_add_claude_bearer() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN");
+        unsafe {
+            std::env::set_var("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN", "test-token");
+        }
+
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom".to_string(), "ok".to_string());
+        headers.insert("Sec-WebSocket-Key".to_string(), "bad".to_string());
+        let request = "wss://claude.ai/api/mcp".into_client_request().unwrap();
+        let request = apply_safe_websocket_headers(request, &headers);
+        let request = with_websocket_bearer_header(request, "wss://claude.ai/api/mcp", &headers);
+
+        assert_eq!(
+            request
+                .headers()
+                .get("x-custom")
+                .and_then(|v| v.to_str().ok()),
+            Some("ok")
+        );
+        assert_ne!(
+            request
+                .headers()
+                .get("sec-websocket-key")
+                .and_then(|v| v.to_str().ok()),
+            Some("bad")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer test-token")
+        );
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN", value),
+                None => std::env::remove_var("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN"),
+            }
+        }
     }
 
     #[test]
@@ -3148,30 +3925,37 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_config_adds_explicit_sse_transport() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mcp.json");
+    fn test_mcp_config_adds_explicit_url_transports() {
+        for (transport, expected_label) in [
+            ("sse", "sse"),
+            ("sse-ide", "sse-ide"),
+            ("ws", "ws"),
+            ("ws-ide", "ws-ide"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("mcp.json");
 
-        add_server_config(
-            &path,
-            "legacy".to_string(),
-            None,
-            Some("https://example.com/v1/mcp/sse".to_string()),
-            Vec::new(),
-            Some("sse".to_string()),
-        )
-        .unwrap();
+            add_server_config(
+                &path,
+                "remote".to_string(),
+                None,
+                Some("https://example.com/v1/mcp".to_string()),
+                Vec::new(),
+                Some(transport.to_string()),
+            )
+            .unwrap();
 
-        let cfg = load_config(&path).unwrap();
-        assert_eq!(
-            cfg.servers
-                .get("legacy")
-                .and_then(|server| server.transport.as_deref()),
-            Some("sse")
-        );
+            let cfg = load_config(&path).unwrap();
+            assert_eq!(
+                cfg.servers
+                    .get("remote")
+                    .and_then(|server| server.transport.as_deref()),
+                Some(transport)
+            );
 
-        let snapshot = manager_snapshot_from_config(&path, false).unwrap();
-        assert_eq!(snapshot.servers[0].transport, "sse");
+            let snapshot = manager_snapshot_from_config(&path, false).unwrap();
+            assert_eq!(snapshot.servers[0].transport, expected_label);
+        }
     }
 
     #[test]
@@ -3185,7 +3969,7 @@ mod tests {
             None,
             Some("https://example.com/mcp".to_string()),
             Vec::new(),
-            Some("streamable".to_string()),
+            Some("ftp".to_string()),
         )
         .expect_err("unknown transport should fail");
 
@@ -3223,6 +4007,8 @@ mod tests {
 
     #[test]
     fn test_mcp_pool_is_mcp_tool() {
+        assert!(McpPool::is_mcp_tool("mcp__filesystem__read"));
+        assert!(McpPool::is_mcp_tool("mcp__git__status"));
         assert!(McpPool::is_mcp_tool("mcp_filesystem_read"));
         assert!(McpPool::is_mcp_tool("mcp_git_status"));
         assert!(McpPool::is_mcp_tool("list_mcp_resources"));
@@ -3570,11 +4356,14 @@ mod tests {
             timeouts: McpTimeouts::default(),
             servers: HashMap::new(),
         });
+        pool.config
+            .servers
+            .insert("dephy".to_string(), test_server_config());
         pool.connections.insert("dephy".to_string(), conn);
 
         let result = pool
             .call_tool(
-                "mcp_dephy_company--search",
+                "mcp__dephy__company--search",
                 serde_json::json!({"query": "dephy"}),
             )
             .await
@@ -3588,6 +4377,231 @@ mod tests {
             sent[0]["params"]["arguments"],
             serde_json::json!({"query": "dephy"})
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_pool_all_tools_uses_canonical_names_and_truncates_descriptions() {
+        let mut conn = test_connection(Box::new(ScriptedValueTransport {
+            sent: Arc::new(Mutex::new(Vec::new())),
+            responses: VecDeque::new(),
+        }));
+        conn.name = "files".to_string();
+        conn.tools = vec![McpTool {
+            name: "read".to_string(),
+            description: Some("x".repeat(MAX_MCP_DESCRIPTION_LENGTH + 10)),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+
+        let mut pool = McpPool::new(McpConfig::default());
+        pool.connections.insert("files".to_string(), conn);
+        pool.config
+            .servers
+            .insert("files".to_string(), test_server_config());
+
+        let tools = pool.all_tools();
+        assert_eq!(tools[0].0, "mcp__files__read");
+        let api_tools = pool.to_api_tools();
+        let api_tool = api_tools
+            .iter()
+            .find(|tool| tool.name == "mcp__files__read")
+            .expect("canonical MCP tool should be exposed");
+        assert_eq!(
+            api_tool.description.chars().count(),
+            MAX_MCP_DESCRIPTION_LENGTH
+        );
+    }
+
+    #[tokio::test]
+    async fn ide_servers_only_expose_allowed_tools() {
+        let mut config = test_server_config();
+        config.url = Some("http://127.0.0.1:1/sse".to_string());
+        config.transport = Some("sse-ide".to_string());
+        let mut conn = test_connection(Box::new(ScriptedValueTransport {
+            sent: Arc::new(Mutex::new(Vec::new())),
+            responses: VecDeque::new(),
+        }));
+        conn.name = "ide".to_string();
+        conn.config = config;
+        conn.tools = vec![
+            McpTool {
+                name: "getDiagnostics".to_string(),
+                description: None,
+                input_schema: serde_json::json!({}),
+            },
+            McpTool {
+                name: "getOpenEditorFiles".to_string(),
+                description: None,
+                input_schema: serde_json::json!({}),
+            },
+            McpTool {
+                name: "executeCode".to_string(),
+                description: None,
+                input_schema: serde_json::json!({}),
+            },
+        ];
+
+        let mut pool = McpPool::new(McpConfig::default());
+        pool.connections.insert("ide".to_string(), conn);
+
+        let names: Vec<String> = pool.all_tools().into_iter().map(|(name, _)| name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "mcp__ide__getDiagnostics".to_string(),
+                "mcp__ide__getOpenEditorFiles".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn call_tool_accepts_legacy_and_canonical_names() {
+        for prefixed_name in ["mcp__dephy__search", "mcp_dephy_search"] {
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let transport = ScriptedValueTransport {
+                sent: Arc::clone(&sent),
+                responses: VecDeque::from([json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"ok": true}
+                }))]),
+            };
+            let mut conn = test_connection(Box::new(transport));
+            conn.name = "dephy".to_string();
+            conn.tools = vec![McpTool {
+                name: "search".to_string(),
+                description: None,
+                input_schema: serde_json::json!({}),
+            }];
+
+            let mut pool = McpPool::new(McpConfig::default());
+            pool.config
+                .servers
+                .insert("dephy".to_string(), test_server_config());
+            pool.connections.insert("dephy".to_string(), conn);
+
+            let result = pool
+                .call_tool(prefixed_name, serde_json::json!({"query": "dephy"}))
+                .await
+                .unwrap();
+            assert_eq!(result, serde_json::json!({"ok": true}));
+            assert_eq!(sent.lock().unwrap()[0]["params"]["name"], "search");
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_failures_are_cached_as_needs_auth() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var("USERPROFILE", home.path());
+        }
+
+        let mut config = test_server_config();
+        config.url = Some("https://user:secret@example.invalid/mcp".to_string());
+        config.transport = Some("ws".to_string());
+        McpAuthCache::mark("remote", &config, "401 Unauthorized");
+        let cache = McpAuthCache::load();
+        let entry = cache
+            .fresh_entry("remote")
+            .expect("auth entry should be fresh");
+        assert_eq!(
+            entry.url.as_deref(),
+            Some("https://***:***@example.invalid/mcp")
+        );
+        assert_eq!(entry.transport.as_deref(), Some("ws"));
+        assert!(
+            needs_auth_error("remote", entry)
+                .to_string()
+                .contains("needs-auth")
+        );
+
+        let mut pool = McpPool::new(McpConfig::default());
+        pool.config.servers.insert("remote".to_string(), config);
+        let err = match pool.get_or_connect("remote").await {
+            Ok(_) => panic!("fresh auth cache should short-circuit connection"),
+            Err(err) => err,
+        };
+        assert!(format!("{err:#}").contains("needs-auth"));
+
+        unsafe {
+            match previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match previous_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+
+    #[test]
+    fn connect_tasks_respect_env_batch_size_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("MCP_SERVER_CONNECTION_BATCH_SIZE");
+        unsafe {
+            std::env::remove_var("MCP_SERVER_CONNECTION_BATCH_SIZE");
+        }
+        assert_eq!(
+            connection_batch_size("MCP_SERVER_CONNECTION_BATCH_SIZE", 3),
+            3
+        );
+        unsafe {
+            std::env::set_var("MCP_SERVER_CONNECTION_BATCH_SIZE", "7");
+        }
+        assert_eq!(
+            connection_batch_size("MCP_SERVER_CONNECTION_BATCH_SIZE", 3),
+            7
+        );
+        unsafe {
+            std::env::set_var("MCP_SERVER_CONNECTION_BATCH_SIZE", "0");
+        }
+        assert_eq!(
+            connection_batch_size("MCP_SERVER_CONNECTION_BATCH_SIZE", 3),
+            3
+        );
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("MCP_SERVER_CONNECTION_BATCH_SIZE", value),
+                None => std::env::remove_var("MCP_SERVER_CONNECTION_BATCH_SIZE"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_transport_round_trips_json_rpc() {
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let message = websocket.next().await.unwrap().unwrap();
+            assert_eq!(message.to_text().unwrap(), "{\"jsonrpc\":\"2.0\",\"id\":1}");
+            websocket
+                .send(Message::Text(
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}".into(),
+                ))
+                .await
+                .unwrap();
+            let _ = websocket.close(None).await;
+        });
+
+        let mut transport = WebSocketTransport::connect(format!("ws://{addr}/mcp"), HashMap::new())
+            .await
+            .unwrap();
+        transport
+            .send(b"{\"jsonrpc\":\"2.0\",\"id\":1}".to_vec())
+            .await
+            .unwrap();
+        let response = transport.recv().await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(value["result"]["ok"], true);
+
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -4619,7 +5633,10 @@ mod tests {
         let mut pool = McpPool::new(cfg);
 
         let result = pool
-            .call_tool("mcp_dephy_search", serde_json::json!({ "query": "dephy" }))
+            .call_tool(
+                "mcp__dephy__search",
+                serde_json::json!({ "query": "dephy" }),
+            )
             .await
             .unwrap();
 
@@ -4873,7 +5890,10 @@ mod tests {
         let mut pool = McpPool::new(cfg);
 
         let result = pool
-            .call_tool("mcp_dephy_search", serde_json::json!({ "query": "dephy" }))
+            .call_tool(
+                "mcp__dephy__search",
+                serde_json::json!({ "query": "dephy" }),
+            )
             .await
             .unwrap();
 

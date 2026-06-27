@@ -576,7 +576,10 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
             api_tool("edit_file"),
             api_tool("project_map"),
         ],
-        vec![api_tool("list_mcp_resources"), api_tool("mcp_server_write")],
+        vec![
+            api_tool("list_mcp_resources"),
+            api_tool("mcp__server__write"),
+        ],
         AppMode::Agent,
         &always_load,
     );
@@ -594,7 +597,7 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
     assert_eq!(defer_loading("edit_file"), Some(false));
     assert_eq!(defer_loading("project_map"), Some(true));
     assert_eq!(defer_loading("list_mcp_resources"), Some(false));
-    assert_eq!(defer_loading("mcp_server_write"), Some(true));
+    assert_eq!(defer_loading("mcp__server__write"), Some(true));
 }
 
 #[test]
@@ -816,7 +819,7 @@ fn model_tool_catalog_defers_non_core_native_tools_in_yolo_mode() {
     let always_load = HashSet::new();
     let catalog = build_model_tool_catalog(
         vec![api_tool("read_file"), api_tool("project_map")],
-        vec![api_tool("mcp_server_write")],
+        vec![api_tool("mcp__server__write")],
         AppMode::Yolo,
         &always_load,
     );
@@ -830,7 +833,7 @@ fn model_tool_catalog_defers_non_core_native_tools_in_yolo_mode() {
 
     assert_eq!(defer_loading("read_file"), Some(false));
     assert_eq!(defer_loading("project_map"), Some(true));
-    assert_eq!(defer_loading("mcp_server_write"), Some(false));
+    assert_eq!(defer_loading("mcp__server__write"), Some(false));
 }
 
 #[test]
@@ -845,7 +848,7 @@ fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
             api_tool("apply_patch"),
             api_tool("exec_shell"),
         ],
-        vec![api_tool("mcp_zoo_b"), api_tool("mcp_aardvark_a")],
+        vec![api_tool("mcp__zoo__b"), api_tool("mcp__aardvark__a")],
         AppMode::Yolo,
         &always_load,
     );
@@ -857,8 +860,8 @@ fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
             "apply_patch",
             "exec_shell",
             "read_file",
-            "mcp_aardvark_a",
-            "mcp_zoo_b",
+            "mcp__aardvark__a",
+            "mcp__zoo__b",
         ],
         "built-ins must be alphabetical and contiguous; MCP tools follow, alphabetical",
     );
@@ -889,6 +892,26 @@ fn active_tool_list_pushes_deferred_activations_to_the_tail() {
         names,
         vec!["a_load_now", "b_load_now", "search_via_toolsearch"],
         "deferred-but-active tools must come after always-loaded tools",
+    );
+}
+
+#[test]
+fn model_tool_catalog_deduplicates_with_native_priority() {
+    let always_load = HashSet::new();
+    let catalog = build_model_tool_catalog(
+        vec![api_tool("read_file"), api_tool("mcp__server__search")],
+        vec![
+            api_tool("mcp__server__search"),
+            api_tool("mcp__server__write"),
+        ],
+        AppMode::Agent,
+        &always_load,
+    );
+
+    let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["mcp__server__search", "read_file", "mcp__server__write"]
     );
 }
 

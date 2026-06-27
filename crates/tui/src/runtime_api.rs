@@ -347,6 +347,7 @@ struct McpServerEntry {
     required: bool,
     command: Option<String>,
     url: Option<String>,
+    transport: String,
     connected: bool,
     enabled_tools: Vec<String>,
     disabled_tools: Vec<String>,
@@ -1251,6 +1252,12 @@ async fn list_mcp_servers(
             required: server_cfg.required,
             command: server_cfg.command.clone(),
             url: server_cfg.url.clone(),
+            transport: crate::mcp::mcp_transport_label(
+                server_cfg.transport.as_deref(),
+                server_cfg.url.is_some(),
+            )
+            .unwrap_or("invalid")
+            .to_string(),
             connected: connected.contains(&name),
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
@@ -1271,10 +1278,7 @@ async fn list_mcp_tools(
 
     let mut tools = Vec::new();
     for (prefixed_name, tool) in pool.all_tools() {
-        let Some(rest) = prefixed_name.strip_prefix("mcp_") else {
-            continue;
-        };
-        let Some((server, name)) = rest.split_once('_') else {
+        let Ok((server, name)) = crate::mcp::parse_mcp_tool_model_name(&prefixed_name) else {
             continue;
         };
 

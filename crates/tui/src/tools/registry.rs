@@ -906,6 +906,9 @@ impl ToolRegistryBuilder {
             for (name, tool) in pool.all_tools() {
                 let adapter = Arc::new(McpToolAdapter {
                     name: name.clone(),
+                    description: crate::mcp::truncate_mcp_description(
+                        tool.description.as_deref().unwrap_or(&name),
+                    ),
                     tool: tool.clone(),
                     pool: mcp_pool.clone(),
                 });
@@ -1202,6 +1205,7 @@ fn to_snake_case(s: &str) -> String {
 #[allow(dead_code)]
 struct McpToolAdapter {
     name: String,
+    description: String,
     tool: crate::mcp::McpTool,
     pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
 }
@@ -1213,9 +1217,7 @@ impl ToolSpec for McpToolAdapter {
     }
 
     fn description(&self) -> &str {
-        // McpTool.description is Option<String>; fall back to the
-        // prefixed name when absent.
-        self.tool.description.as_deref().unwrap_or(&self.name)
+        &self.description
     }
 
     fn input_schema(&self) -> Value {

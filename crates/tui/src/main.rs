@@ -685,10 +685,10 @@ enum McpCommand {
         /// Command to launch stdio server
         #[arg(long, conflicts_with = "url")]
         command: Option<String>,
-        /// URL for streamable HTTP/SSE server
+        /// URL for streamable HTTP/SSE/WebSocket server
         #[arg(long, conflicts_with = "command")]
         url: Option<String>,
-        /// Explicit URL transport override. Use "sse" for legacy SSE endpoints.
+        /// Explicit URL transport override (http, streamable-http, sse, sse-ide, ws, ws-ide).
         #[arg(long, requires = "url")]
         transport: Option<String>,
         /// Arguments for command-based servers
@@ -4342,10 +4342,8 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
             if command.is_none() && url.is_none() {
                 bail!("Provide either --command or --url for `mcp add`.");
             }
-            if let Some(transport) = transport.as_deref()
-                && !transport.trim().eq_ignore_ascii_case("sse")
-            {
-                bail!("Unsupported MCP transport '{transport}'. Supported values: sse");
+            if let Some(transport) = transport.as_deref() {
+                crate::mcp::validate_mcp_transport_option(Some(transport))?;
             }
             let mut cfg = load_mcp_config(&config_path)?;
             cfg.servers.insert(
@@ -4498,9 +4496,11 @@ fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
         return McpServerDoctorStatus::Error("no command or url configured".to_string());
     }
 
-    // URL-based server — just report the URL.
+    // URL-based server — report the configured transport and URL.
     if let Some(ref url) = server.url {
-        return McpServerDoctorStatus::Ok(format!("HTTP/SSE server at {url}"));
+        let label =
+            crate::mcp::mcp_transport_label(server.transport.as_deref(), true).unwrap_or("invalid");
+        return McpServerDoctorStatus::Ok(format!("{label} server at {url}"));
     }
 
     // Command-based: validate command path exists.
@@ -7109,8 +7109,28 @@ mod doctor_mcp_tests {
     fn test_url_server_is_ok() {
         let server = make_server(None, &[], Some("http://localhost:3000/mcp"));
         match doctor_check_mcp_server(&server) {
-            McpServerDoctorStatus::Ok(detail) => assert!(detail.contains("HTTP/SSE")),
+            McpServerDoctorStatus::Ok(detail) => assert!(detail.contains("http/sse")),
             other => panic!("Expected Ok, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_url_server_transport_labels() {
+        for (transport, expected) in [
+            (Some("sse"), "sse server"),
+            (Some("sse-ide"), "sse-ide server"),
+            (Some("ws"), "ws server"),
+            (Some("ws-ide"), "ws-ide server"),
+        ] {
+            let mut server = make_server(None, &[], Some("http://localhost:3000/mcp"));
+            server.transport = transport.map(String::from);
+            match doctor_check_mcp_server(&server) {
+                McpServerDoctorStatus::Ok(detail) => assert!(
+                    detail.contains(expected),
+                    "expected {expected}, got {detail}"
+                ),
+                other => panic!("Expected Ok, got {other:?}"),
+            }
         }
     }
 

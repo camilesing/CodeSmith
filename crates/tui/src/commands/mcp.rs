@@ -32,7 +32,7 @@ pub fn mcp(_app: &mut App, args: Option<&str>) -> CommandResult {
         "validate" => CommandResult::action(AppAction::Mcp(McpUiAction::Validate)),
         "reload" | "reconnect" => CommandResult::action(AppAction::Mcp(McpUiAction::Reload)),
         _ => CommandResult::error(
-            "Usage: /mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
+            "Usage: /mcp [init|add stdio <name> <command> [args...]|add <http|sse|sse-ide|ws|ws-ide> <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
         ),
     }
 }
@@ -47,7 +47,7 @@ fn parse_name(name: Option<&str>, usage: &str) -> Result<String, String> {
 fn parse_add(parts: Vec<&str>) -> CommandResult {
     if parts.len() < 3 {
         return CommandResult::error(
-            "Usage: /mcp add stdio <name> <command> [args...] OR /mcp add http <name> <url>",
+            "Usage: /mcp add stdio <name> <command> [args...] OR /mcp add <http|sse|sse-ide|ws|ws-ide> <name> <url>",
         );
     }
     match parts[0].to_ascii_lowercase().as_str() {
@@ -56,18 +56,17 @@ fn parse_add(parts: Vec<&str>) -> CommandResult {
             command: parts[2].to_string(),
             args: parts[3..].iter().map(|s| (*s).to_string()).collect(),
         })),
-        "http" => CommandResult::action(AppAction::Mcp(McpUiAction::AddHttp {
+        transport @ ("http" | "streamable" | "streamable-http" | "sse" | "sse-ide" | "ws"
+        | "ws-ide") => CommandResult::action(AppAction::Mcp(McpUiAction::AddHttp {
             name: parts[1].to_string(),
             url: parts[2].to_string(),
-            transport: None,
-        })),
-        "sse" => CommandResult::action(AppAction::Mcp(McpUiAction::AddHttp {
-            name: parts[1].to_string(),
-            url: parts[2].to_string(),
-            transport: Some("sse".to_string()),
+            transport: match transport {
+                "http" | "streamable" | "streamable-http" => None,
+                other => Some(other.to_string()),
+            },
         })),
         _ => CommandResult::error(
-            "Usage: /mcp add stdio <name> <command> [args...] OR /mcp add http <name> <url>",
+            "Usage: /mcp add stdio <name> <command> [args...] OR /mcp add <http|sse|sse-ide|ws|ws-ide> <name> <url>",
         ),
     }
 }
@@ -121,5 +120,33 @@ mod tests {
             validate.action,
             Some(AppAction::Mcp(McpUiAction::Validate))
         ));
+    }
+
+    #[test]
+    fn parses_add_url_transports() {
+        let mut app = app();
+        for (transport, expected) in [
+            ("http", None),
+            ("streamable", None),
+            ("streamable-http", None),
+            ("sse", Some("sse")),
+            ("sse-ide", Some("sse-ide")),
+            ("ws", Some("ws")),
+            ("ws-ide", Some("ws-ide")),
+        ] {
+            let add = mcp(
+                &mut app,
+                Some(&format!("add {transport} remote https://example.com/mcp")),
+            );
+            assert!(
+                matches!(
+                    add.action,
+                    Some(AppAction::Mcp(McpUiAction::AddHttp { ref name, ref url, ref transport }))
+                        if name == "remote" && url == "https://example.com/mcp" && transport.as_deref() == expected
+                ),
+                "failed to parse {transport}: {:?}",
+                add.message
+            );
+        }
     }
 }

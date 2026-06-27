@@ -62,6 +62,7 @@ schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
 shellexpand = "3"
 toml = "0.9.7"
 tokio = { version = "1.49.0", features = ["full"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7.16", features = ["io"] }
 unicode-width = "0.2"
 unicode-segmentation = "1.12"
