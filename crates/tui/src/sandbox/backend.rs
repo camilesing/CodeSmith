@@ -6,9 +6,26 @@
 //! — the external backend *replaces* local execution entirely when configured.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+use super::SandboxPolicy;
+
+/// Request sent to a sandbox backend execution service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxExecRequest {
+    pub cmd: String,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    pub cwd: PathBuf,
+    pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
+    pub policy: SandboxPolicy,
+}
 
 /// Output from a sandbox backend execution.
 #[derive(Debug, Clone)]
@@ -59,10 +76,7 @@ impl SandboxKind {
 #[async_trait]
 pub trait SandboxBackend: Send + Sync {
     /// Execute a shell command and return its output.
-    ///
-    /// `cmd` is the full shell command string (e.g. `"ls -la"`).
-    /// `env` contains additional environment variables to set.
-    async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput>;
+    async fn exec(&self, request: SandboxExecRequest) -> Result<SandboxOutput>;
 }
 
 use crate::config::Config;

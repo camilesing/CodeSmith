@@ -86,6 +86,17 @@ impl Default for SandboxPolicy {
 }
 
 impl SandboxPolicy {
+    /// Stable policy name for metadata and backend requests.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            SandboxPolicy::DangerFullAccess => "danger-full-access",
+            SandboxPolicy::ReadOnly => "read-only",
+            SandboxPolicy::ExternalSandbox { .. } => "external-sandbox",
+            SandboxPolicy::WorkspaceWrite { .. } => "workspace-write",
+        }
+    }
+
     /// Create a workspace-write policy with network access enabled.
     pub fn workspace_with_network() -> Self {
         SandboxPolicy::WorkspaceWrite {
@@ -188,17 +199,7 @@ impl SandboxPolicy {
                 roots
                     .into_iter()
                     .map(|root| {
-                        let mut read_only_subpaths = Vec::new();
-
-                        // Protect .codesmith/ and .deepseek/ directories from modification
-                        let codesmith_dir = root.join(".codesmith");
-                        if codesmith_dir.is_dir() {
-                            read_only_subpaths.push(codesmith_dir);
-                        }
-                        let deepseek_dir = root.join(".deepseek");
-                        if deepseek_dir.is_dir() {
-                            read_only_subpaths.push(deepseek_dir);
-                        }
+                        let mut read_only_subpaths = protected_control_plane_subpaths(&root);
 
                         WritableRoot {
                             root,
@@ -209,6 +210,53 @@ impl SandboxPolicy {
             }
         }
     }
+}
+
+fn protected_control_plane_subpaths(root: &Path) -> Vec<PathBuf> {
+    const PROTECTED_DIRS: &[&str] = &[
+        ".codesmith",
+        ".deepseek",
+        ".codewhale",
+        ".claude",
+        ".opencode",
+        ".cursor",
+        "skills",
+    ];
+    const PROTECTED_NESTED_DIRS: &[&[&str]] = &[&[".agents", "skills"]];
+    const PROTECTED_FILES: &[&[&str]] = &[
+        &[".codesmith", "config.toml"],
+        &[".codesmith", "mcp.json"],
+        &[".deepseek", "config.toml"],
+        &[".deepseek", "mcp.json"],
+        &["CLAUDE.md"],
+        &["AGENTS.md"],
+        &[".cursorrules"],
+    ];
+
+    let mut protected = Vec::new();
+    for name in PROTECTED_DIRS {
+        let path = root.join(name);
+        if path.exists() {
+            protected.push(path);
+        }
+    }
+    for parts in PROTECTED_NESTED_DIRS {
+        let path = parts
+            .iter()
+            .fold(root.to_path_buf(), |acc, part| acc.join(part));
+        if path.exists() {
+            protected.push(path);
+        }
+    }
+    for parts in PROTECTED_FILES {
+        let path = parts
+            .iter()
+            .fold(root.to_path_buf(), |acc, part| acc.join(part));
+        if path.exists() {
+            protected.push(path);
+        }
+    }
+    protected
 }
 
 /// A directory tree where writes are allowed, with optional read-only subpaths.

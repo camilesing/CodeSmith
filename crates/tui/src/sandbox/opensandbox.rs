@@ -1,28 +1,21 @@
 //! Alibaba OpenSandbox backend adapter.
 //!
 //! Sends shell commands to an OpenSandbox-compatible HTTP API for remote
-//! execution.  The API endpoint is `POST {base_url}/v1/sandbox/run` with
-//! JSON body `{"cmd": "...", "env": {...}}` and expects a JSON response
+//! execution.  The API endpoint is `POST {base_url}/v1/sandbox/run` with a
+//! structured JSON body containing `cmd`, `env`, `cwd`, `timeout_ms`, optional
+//! `stdin`, and `policy`, and expects a JSON response
 //! `{"stdout": "...", "stderr": "...", "exit_code": 0}`.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde::Serialize;
 
-use super::backend::{SandboxBackend, SandboxOutput};
+use super::backend::{SandboxBackend, SandboxExecRequest, SandboxOutput};
 
 /// Request body sent to the OpenSandbox `/v1/sandbox/run` endpoint.
-#[derive(Debug, Serialize)]
-struct SandboxRunRequest {
-    /// Full shell command to execute.
-    cmd: String,
-    /// Environment variables to set in the sandbox.
-    env: HashMap<String, String>,
-}
+type SandboxRunRequest = SandboxExecRequest;
 
 /// Response body from the OpenSandbox `/v1/sandbox/run` endpoint.
 #[derive(Debug, Deserialize)]
@@ -75,12 +68,7 @@ impl OpenSandboxBackend {
 
 #[async_trait]
 impl SandboxBackend for OpenSandboxBackend {
-    async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput> {
-        let request_body = SandboxRunRequest {
-            cmd: cmd.to_string(),
-            env: env.clone(),
-        };
-
+    async fn exec(&self, request_body: SandboxRunRequest) -> Result<SandboxOutput> {
         let mut req = self.client.post(self.run_url()).json(&request_body);
 
         if let Some(ref api_key) = self.api_key {

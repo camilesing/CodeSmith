@@ -95,9 +95,9 @@ for `Bad system call`, `bad system call`, `SIGSYS`, `seccomp`.
 
 ### 4. Bubblewrap / bwrap (Linux, optional)
 
-**When it runs:** If `/usr/bin/bwrap` is present AND the config key
-`[sandbox] prefer_bwrap = true` is set. Runs as an outer wrapper around
-the child command.
+**When it runs:** If `/usr/bin/bwrap` is present AND either the legacy
+`prefer_bwrap = true` key or `[sandbox] prefer_bwrap = true` is set. Runs as
+an outer wrapper around the child command.
 
 **What it does:**
 - Creates a new mount namespace with `--unshare-all`
@@ -123,8 +123,10 @@ the child command.
 
 CodeSmith does NOT vendor bwrap.
 
-**Fallback:** If bwrap is not installed, the sandbox falls back to Landlock
-only.
+**Fallback:** If bwrap is not installed, CodeSmith falls back to Landlock in
+permissive mode. Set `[sandbox] fail_if_unavailable = true` (or
+`DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE=true`) to fail closed instead of running
+without the requested sandbox backend.
 
 ### 5. Seatbelt (macOS)
 
@@ -199,6 +201,32 @@ sandbox_mode = "workspace-write"  # read-only | workspace-write | danger-full-ac
 # Linux bubblewrap passthrough
 prefer_bwrap = false              # requires `bubblewrap` package installed
 
+# Structured runtime policy. These keys are optional and layer on top of
+# the legacy flat keys above.
+[sandbox]
+enabled = true
+fail_if_unavailable = false       # true = fail closed instead of unsandboxed fallback
+enabled_platforms = ["macos", "linux"]
+excluded_commands = []            # program names or command prefixes
+auto_allow_bash_if_sandboxed = true
+prefer_bwrap = false
+
+[sandbox.filesystem]
+mode = "workspace-write"          # read-only | workspace-write | danger-full-access | external-sandbox
+writable_roots = []
+allow_read = []
+deny_read = []
+allow_write = []
+deny_write = []
+exclude_tmpdir = true
+exclude_slash_tmp = false
+
+[sandbox.network]
+enabled = true
+allow_managed_domains_only = false # local OS sandboxes cannot enforce host allow-lists
+allow = []
+deny = []
+
 # External sandbox backend
 sandbox_backend = "none"          # "none" or "opensandbox"
 sandbox_url = "http://localhost:8080"
@@ -212,10 +240,19 @@ Environment variable overrides:
 - `DEEPSEEK_SANDBOX_BACKEND` → `sandbox_backend`
 - `DEEPSEEK_SANDBOX_URL` → `sandbox_url`
 - `DEEPSEEK_SANDBOX_API_KEY` → `sandbox_api_key`
+- `DEEPSEEK_SANDBOX_ENABLED=true|false` → `[sandbox].enabled`
+- `DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE=true|false` → `[sandbox].fail_if_unavailable`
+- `DEEPSEEK_SANDBOX_ENABLED_PLATFORMS=macos,linux` → `[sandbox].enabled_platforms`
+- `DEEPSEEK_SANDBOX_EXCLUDED_COMMANDS=cmd1,cmd2` → `[sandbox].excluded_commands`
+- `DEEPSEEK_AUTO_ALLOW_BASH_IF_SANDBOXED=true|false` → `[sandbox].auto_allow_bash_if_sandboxed`
 
 ## Detecting sandbox denials
 
-When a command fails, the sandbox manager checks for denial patterns:
+When a command fails, the sandbox manager checks for denial patterns. Shell tool
+metadata also reports whether sandboxing was requested and whether it was
+actually effective (`sandbox_requested`, `sandbox_effective`,
+`sandbox_backend`, `sandbox_unavailable_reason`, `sandbox_fallback_allowed`,
+`sandbox_excluded_command`, and `sandbox_fail_closed`).
 
 | Platform | Denial mechanism | Exit code | Stderr patterns |
 |---|---|---|---|
@@ -232,8 +269,15 @@ checks. The `denial_message()` method returns a human-readable explanation.
 
 ### What the sandbox does NOT protect against
 
-- **Network attacks** — only macOS Seatbelt can block network; Linux and
-  Windows v1 leave network open
+- **Network attacks** — only macOS Seatbelt can block network locally. Linux
+  and Windows v1 leave network open unless a backend is added that implements
+  network policy. `[sandbox.network].allow_managed_domains_only = true` is
+  therefore treated as deny-network for local OS sandboxes and is passed through
+  to external sandbox requests for backend-side enforcement.
+- **Git hook/fsmonitor execution** — CodeSmith injects empty `core.fsmonitor`
+  and `core.hooksPath` values into shell git config when no explicit indexed
+  `GIT_CONFIG_*` environment is already provided, preventing workspace git
+  configuration from launching host-side helpers during sandboxed tool calls.
 - **Memory attacks** — no platform prevents a child process from reading
   its own memory or exploiting memory corruption bugs
 - **Timing side channels** — allowed syscalls on Linux can be used for
@@ -248,8 +292,10 @@ checks. The `denial_message()` method returns a human-readable explanation.
 
 ### Platform-specific gaps
 
-- **Linux:** Landlock only protects filesystem access. seccomp adds syscall
-  filtering but uses a whitelist that may need updates for new syscalls.
+- **Linux:** Landlock protects filesystem access and bubblewrap can provide a
+  namespace view when available/preferred. seccomp adds syscall filtering but
+  uses a whitelist that may need updates for new syscalls. Host allow-list
+  network policy is not enforced locally.
 - **macOS:** Seatbelt profiles are generated at runtime. A misconfigured
   profile could be too permissive.
 - **Windows v1:** No filesystem ACL enforcement at spawn time. Network is

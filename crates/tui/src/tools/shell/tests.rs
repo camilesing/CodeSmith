@@ -78,6 +78,12 @@ fn network_restricted_context(tmp: &std::path::Path) -> ToolContext {
         .with_shell_network_denied_hint(
             "Shell command blocked: Plan mode runs shell commands in a network-restricted sandbox.",
         )
+        .with_sandbox_runtime(SandboxRuntimeConfig {
+            enabled: true,
+            fail_if_unavailable: false,
+            auto_allow_bash_if_sandboxed: true,
+            ..SandboxRuntimeConfig::default()
+        })
 }
 
 fn failed_network_shell_result(stdout: &str, stderr: &str) -> ShellResult {
@@ -97,7 +103,143 @@ fn failed_network_shell_result(stdout: &str, stderr: &str) -> ShellResult {
         sandboxed: true,
         sandbox_type: Some("seatbelt".to_string()),
         sandbox_denied: false,
+        sandbox_requested: true,
+        sandbox_effective: true,
+        sandbox_backend: Some("seatbelt".to_string()),
+        sandbox_unavailable_reason: None,
+        sandbox_fallback_allowed: false,
+        sandbox_excluded_command: None,
+        sandbox_fail_closed: false,
     }
+}
+
+#[test]
+fn exec_shell_auto_allows_only_when_sandbox_would_enforce() {
+    let tmp = tempdir().expect("tempdir");
+    let tool = ExecShellTool;
+    let input = json!({ "command": "printf ok" });
+
+    let unsandboxed = ToolContext::new(tmp.path()).with_sandbox_runtime(SandboxRuntimeConfig {
+        enabled: false,
+        auto_allow_bash_if_sandboxed: true,
+        ..SandboxRuntimeConfig::default()
+    });
+    assert_eq!(
+        tool.approval_requirement_for_input(&input, &unsandboxed),
+        ApprovalRequirement::Required
+    );
+
+    let external = ToolContext::new(tmp.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::ExternalSandbox {
+            network_access: true,
+        })
+        .with_sandbox_backend(std::sync::Arc::new(
+            crate::sandbox::opensandbox::OpenSandboxBackend::new(
+                "http://127.0.0.1".to_string(),
+                None,
+                30,
+            )
+            .expect("backend"),
+        ))
+        .with_sandbox_runtime(SandboxRuntimeConfig {
+            auto_allow_bash_if_sandboxed: true,
+            ..SandboxRuntimeConfig::default()
+        });
+    assert_eq!(
+        tool.approval_requirement_for_input(&input, &external),
+        ApprovalRequirement::Auto
+    );
+}
+
+#[test]
+fn shell_result_metadata_reports_sandbox_effective_state() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let mut result = failed_network_shell_result("000", "");
+    result.sandbox_fallback_allowed = true;
+    result.sandbox_unavailable_reason = Some("sandbox backend missing".to_string());
+    result.sandbox_effective = false;
+    result.sandboxed = false;
+    result.sandbox_type = None;
+    result.sandbox_backend = None;
+
+    let tool_result = build_shell_delta_tool_result(
+        ShellDeltaResult {
+            command: "curl https://api.github.com".to_string(),
+            result,
+            stdout_total_len: 3,
+            stderr_total_len: 0,
+        },
+        &ctx,
+    );
+
+    let metadata = tool_result.metadata.expect("metadata");
+    assert_eq!(metadata["sandbox_requested"], json!(true));
+    assert_eq!(metadata["sandbox_effective"], json!(false));
+    assert_eq!(metadata["sandbox_fallback_allowed"], json!(true));
+    assert_eq!(
+        metadata["sandbox_unavailable_reason"],
+        json!("sandbox backend missing")
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn shell_execution_scrubs_git_fsmonitor_and_hookspath() {
+    let _guard = env_lock().lock().expect("env lock");
+    let previous_count = std::env::var_os("GIT_CONFIG_COUNT");
+    let previous_key0 = std::env::var_os("GIT_CONFIG_KEY_0");
+    let previous_value0 = std::env::var_os("GIT_CONFIG_VALUE_0");
+    let previous_key1 = std::env::var_os("GIT_CONFIG_KEY_1");
+    let previous_value1 = std::env::var_os("GIT_CONFIG_VALUE_1");
+    unsafe {
+        std::env::remove_var("GIT_CONFIG_COUNT");
+        std::env::remove_var("GIT_CONFIG_KEY_0");
+        std::env::remove_var("GIT_CONFIG_VALUE_0");
+        std::env::remove_var("GIT_CONFIG_KEY_1");
+        std::env::remove_var("GIT_CONFIG_VALUE_1");
+    }
+
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+    let result = manager
+        .execute_with_options_env(
+            "printf '%s\\n%s\\n%s\\n%s\\n%s\\n' \"${GIT_CONFIG_COUNT-unset}\" \"${GIT_CONFIG_KEY_0-unset}\" \"${GIT_CONFIG_VALUE_0-unset}\" \"${GIT_CONFIG_KEY_1-unset}\" \"${GIT_CONFIG_VALUE_1-unset}\"",
+            None,
+            5000,
+            false,
+            None,
+            false,
+            None,
+            std::collections::HashMap::new(),
+        )
+        .expect("execute");
+
+    unsafe {
+        match previous_count {
+            Some(value) => std::env::set_var("GIT_CONFIG_COUNT", value),
+            None => std::env::remove_var("GIT_CONFIG_COUNT"),
+        }
+        match previous_key0 {
+            Some(value) => std::env::set_var("GIT_CONFIG_KEY_0", value),
+            None => std::env::remove_var("GIT_CONFIG_KEY_0"),
+        }
+        match previous_value0 {
+            Some(value) => std::env::set_var("GIT_CONFIG_VALUE_0", value),
+            None => std::env::remove_var("GIT_CONFIG_VALUE_0"),
+        }
+        match previous_key1 {
+            Some(value) => std::env::set_var("GIT_CONFIG_KEY_1", value),
+            None => std::env::remove_var("GIT_CONFIG_KEY_1"),
+        }
+        match previous_value1 {
+            Some(value) => std::env::set_var("GIT_CONFIG_VALUE_1", value),
+            None => std::env::remove_var("GIT_CONFIG_VALUE_1"),
+        }
+    }
+
+    assert_eq!(result.status, ShellStatus::Completed);
+    assert_eq!(result.stdout, "2\ncore.fsmonitor\n\ncore.hooksPath\n\n");
 }
 
 #[test]
@@ -432,6 +574,13 @@ fn shell_delta_result_includes_cargo_failure_summary() {
         sandboxed: false,
         sandbox_type: None,
         sandbox_denied: false,
+        sandbox_requested: false,
+        sandbox_effective: false,
+        sandbox_backend: None,
+        sandbox_unavailable_reason: None,
+        sandbox_fallback_allowed: false,
+        sandbox_excluded_command: None,
+        sandbox_fail_closed: false,
     };
 
     let tool_result = build_shell_delta_tool_result(
@@ -483,6 +632,13 @@ fn shell_delta_result_keeps_existing_summary_for_generic_cargo_failure() {
         sandboxed: false,
         sandbox_type: None,
         sandbox_denied: false,
+        sandbox_requested: false,
+        sandbox_effective: false,
+        sandbox_backend: None,
+        sandbox_unavailable_reason: None,
+        sandbox_fallback_allowed: false,
+        sandbox_excluded_command: None,
+        sandbox_fail_closed: false,
     };
 
     let tool_result = build_shell_delta_tool_result(
@@ -861,6 +1017,13 @@ fn make_failed_result(stderr: &str) -> ShellResult {
         sandbox_type: None,
         sandbox_denied: false,
         stderr_truncated: false,
+        sandbox_requested: false,
+        sandbox_effective: false,
+        sandbox_backend: None,
+        sandbox_unavailable_reason: None,
+        sandbox_fallback_allowed: false,
+        sandbox_excluded_command: None,
+        sandbox_fail_closed: false,
     }
 }
 

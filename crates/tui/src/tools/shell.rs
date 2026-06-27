@@ -29,8 +29,11 @@ use crate::child_env;
 use crate::sandbox::{
     CommandSpec,
     ExecEnv,
+    SandboxDecision,
+    SandboxExecRequest,
     SandboxManager,
     SandboxPolicy as ExecutionSandboxPolicy, // Rename to avoid conflict with spec::SandboxPolicy
+    SandboxRuntimeConfig,
     SandboxType,
 };
 
@@ -80,6 +83,20 @@ pub struct ShellResult {
     /// Whether the command was blocked by sandbox restrictions.
     #[serde(default)]
     pub sandbox_denied: bool,
+    #[serde(default)]
+    pub sandbox_requested: bool,
+    #[serde(default)]
+    pub sandbox_effective: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_unavailable_reason: Option<String>,
+    #[serde(default)]
+    pub sandbox_fallback_allowed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_excluded_command: Option<String>,
+    #[serde(default)]
+    pub sandbox_fail_closed: bool,
 }
 
 /// Compact, UI-oriented view of a tracked background shell job.
@@ -317,6 +334,40 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
     })
 }
 
+fn result_sandbox_fields(
+    sandbox_type: SandboxType,
+) -> (bool, Option<String>, bool, bool, Option<String>) {
+    let sandboxed = !matches!(sandbox_type, SandboxType::None);
+    let backend = if sandboxed {
+        Some(sandbox_type.to_string())
+    } else {
+        None
+    };
+    (sandboxed, backend.clone(), sandboxed, sandboxed, backend)
+}
+
+fn apply_shell_result_sandbox_metadata(result: &mut ShellResult, sandbox_type: SandboxType) {
+    let (sandboxed, sandbox_type_str, requested, effective, backend) =
+        result_sandbox_fields(sandbox_type);
+    result.sandboxed = sandboxed;
+    result.sandbox_type = sandbox_type_str;
+    result.sandbox_requested = requested;
+    result.sandbox_effective = effective;
+    result.sandbox_backend = backend;
+}
+
+fn apply_shell_result_decision_metadata(result: &mut ShellResult, decision: &SandboxDecision) {
+    result.sandbox_requested = decision.sandbox_requested;
+    result.sandbox_effective = decision.sandbox_effective;
+    result.sandboxed = decision.sandbox_effective;
+    result.sandbox_type = decision.sandbox_backend.clone();
+    result.sandbox_backend = decision.sandbox_backend.clone();
+    result.sandbox_unavailable_reason = decision.sandbox_unavailable_reason.clone();
+    result.sandbox_fallback_allowed = decision.sandbox_fallback_allowed;
+    result.sandbox_excluded_command = decision.sandbox_excluded_command.clone();
+    result.sandbox_fail_closed = decision.sandbox_fail_closed;
+}
+
 /// A background shell process being tracked
 pub struct BackgroundShell {
     pub id: String,
@@ -326,6 +377,7 @@ pub struct BackgroundShell {
     pub exit_code: Option<i32>,
     pub started_at: Instant,
     pub sandbox_type: SandboxType,
+    pub sandbox_decision: SandboxDecision,
     pub linked_task_id: Option<String>,
     stdout_buffer: Arc<Mutex<Vec<u8>>>,
     stderr_buffer: Option<Arc<Mutex<Vec<u8>>>>,
@@ -481,11 +533,11 @@ impl BackgroundShell {
     /// Get a snapshot of the current state
     #[allow(dead_code)]
     pub fn snapshot(&self) -> ShellResult {
-        let sandboxed = !matches!(self.sandbox_type, SandboxType::None);
+        let sandboxed = self.sandbox_decision.sandbox_effective;
         let (stdout_full, stderr_full, _, _) = self.full_output();
         let (stdout, stdout_meta) = truncate_with_meta(&stdout_full);
         let (stderr, stderr_meta) = truncate_with_meta(&stderr_full);
-        ShellResult {
+        let mut result = ShellResult {
             task_id: Some(self.id.clone()),
             status: self.status.clone(),
             exit_code: self.exit_code,
@@ -505,7 +557,16 @@ impl BackgroundShell {
                 None
             },
             sandbox_denied: self.sandbox_denied(),
-        }
+            sandbox_requested: false,
+            sandbox_effective: false,
+            sandbox_backend: None,
+            sandbox_unavailable_reason: None,
+            sandbox_fallback_allowed: false,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: false,
+        };
+        apply_shell_result_decision_metadata(&mut result, &self.sandbox_decision);
+        result
     }
 
     fn job_snapshot(&self) -> ShellJobSnapshot {
@@ -559,6 +620,191 @@ impl Drop for BackgroundShell {
     }
 }
 
+fn apply_runtime_filesystem_policy(
+    policy: &mut ExecutionSandboxPolicy,
+    runtime: &SandboxRuntimeConfig,
+) {
+    if let Some(mode) = runtime.filesystem.mode.as_deref() {
+        let normalized = mode.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "read-only" | "readonly" => {
+                *policy = ExecutionSandboxPolicy::ReadOnly;
+                return;
+            }
+            "danger-full-access" | "danger_full_access" | "none" => {
+                *policy = ExecutionSandboxPolicy::DangerFullAccess;
+                return;
+            }
+            "external-sandbox" | "external_sandbox" => {
+                *policy = ExecutionSandboxPolicy::ExternalSandbox {
+                    network_access: runtime.network.enabled.unwrap_or(true),
+                };
+                return;
+            }
+            "workspace-write" | "workspace_write" | "workspace" => {}
+            _ => {}
+        }
+    }
+
+    let ExecutionSandboxPolicy::WorkspaceWrite {
+        writable_roots,
+        network_access,
+        exclude_tmpdir,
+        exclude_slash_tmp,
+        ..
+    } = policy
+    else {
+        return;
+    };
+
+    if let Some(enabled) = runtime.network.enabled {
+        *network_access = enabled;
+    }
+    if runtime.network.allow_managed_domains_only {
+        // Local OS sandboxes cannot enforce host allow-lists; keep the command
+        // network-restricted unless a backend with domain policy support runs it.
+        *network_access = false;
+    }
+
+    for root in &runtime.filesystem.writable_roots {
+        if !writable_roots.iter().any(|existing| existing == root) {
+            writable_roots.push(root.clone());
+        }
+    }
+    for root in &runtime.filesystem.allow_write {
+        if !writable_roots.iter().any(|existing| existing == root) {
+            writable_roots.push(root.clone());
+        }
+    }
+    if let Some(value) = runtime.filesystem.exclude_tmpdir {
+        *exclude_tmpdir = value;
+    }
+    if let Some(value) = runtime.filesystem.exclude_slash_tmp {
+        *exclude_slash_tmp = value;
+    }
+}
+
+fn sandbox_unavailable_reason(prefer_bwrap: bool) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = prefer_bwrap;
+        if !crate::sandbox::seatbelt::is_available() {
+            return "macOS sandbox-exec is unavailable".to_string();
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if prefer_bwrap && !crate::sandbox::bwrap::is_available() {
+            return "bubblewrap was requested but /usr/bin/bwrap is unavailable".to_string();
+        }
+        if !crate::sandbox::landlock::is_available() && !crate::sandbox::bwrap::is_available() {
+            return "no Linux sandbox backend is available (Landlock or bubblewrap)".to_string();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = prefer_bwrap;
+        if !crate::sandbox::windows::is_available() {
+            return "Windows sandbox helper is unavailable".to_string();
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = prefer_bwrap;
+        return "no sandbox backend is available on this platform".to_string();
+    }
+    "sandbox backend is unavailable".to_string()
+}
+
+fn decide_sandbox(
+    manager: &SandboxManager,
+    runtime: &SandboxRuntimeConfig,
+    policy: &ExecutionSandboxPolicy,
+    command: &str,
+    program: &str,
+) -> crate::sandbox::SandboxDecision {
+    if !policy.should_sandbox() {
+        return crate::sandbox::SandboxDecision::unsandboxed(policy);
+    }
+    if !runtime.enabled {
+        return crate::sandbox::SandboxDecision::disabled(
+            policy,
+            "sandbox disabled by configuration",
+        );
+    }
+    if !runtime.platform_enabled() {
+        return crate::sandbox::SandboxDecision::disabled(
+            policy,
+            format!(
+                "sandbox disabled for platform {}",
+                crate::sandbox::runtime::current_platform()
+            ),
+        );
+    }
+    if runtime.command_is_excluded(program, command) {
+        return crate::sandbox::SandboxDecision::excluded(policy, program.to_string());
+    }
+
+    let sandbox_type = manager.select_sandbox(policy);
+    if matches!(sandbox_type, SandboxType::None) {
+        return crate::sandbox::SandboxDecision::unavailable(
+            policy,
+            sandbox_unavailable_reason(runtime.prefer_bwrap),
+            runtime.fail_if_unavailable,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    if matches!(sandbox_type, SandboxType::LinuxLandlock) {
+        return crate::sandbox::SandboxDecision::unavailable(
+            policy,
+            "Linux Landlock helper is not wired for child-process enforcement; enable prefer_bwrap or configure an external sandbox backend",
+            runtime.fail_if_unavailable,
+        );
+    }
+
+    crate::sandbox::SandboxDecision::enforcing(policy, sandbox_type)
+}
+
+fn command_would_be_sandboxed(context: &ToolContext, command: &str) -> bool {
+    let mut policy = context.elevated_sandbox_policy.clone().unwrap_or_default();
+    let runtime = context.sandbox_runtime.clone();
+    apply_runtime_filesystem_policy(&mut policy, &runtime);
+    let spec = CommandSpec::shell(command, context.cwd.clone(), Duration::from_millis(1000))
+        .with_policy(policy.clone());
+
+    if context.sandbox_backend.is_some()
+        && runtime.enabled
+        && runtime.platform_enabled()
+        && !runtime.command_is_excluded(&spec.program, command)
+    {
+        return true;
+    }
+
+    let mut manager = SandboxManager::new();
+    manager.set_prefer_bwrap(runtime.prefer_bwrap);
+    decide_sandbox(&manager, &runtime, &policy, command, &spec.program).sandbox_effective
+}
+
+fn git_scrub_env() -> HashMap<String, String> {
+    HashMap::from([
+        ("GIT_CONFIG_COUNT".to_string(), "2".to_string()),
+        ("GIT_CONFIG_KEY_0".to_string(), "core.fsmonitor".to_string()),
+        ("GIT_CONFIG_VALUE_0".to_string(), "".to_string()),
+        ("GIT_CONFIG_KEY_1".to_string(), "core.hooksPath".to_string()),
+        ("GIT_CONFIG_VALUE_1".to_string(), "".to_string()),
+    ])
+}
+
+fn merge_git_scrub_env(env: &mut HashMap<String, String>) {
+    if env.contains_key("GIT_CONFIG_COUNT") {
+        // Respect explicit caller configuration rather than constructing a
+        // potentially conflicting indexed git-config environment.
+        return;
+    }
+    env.extend(git_scrub_env());
+}
+
 /// Manages background shell processes with optional sandboxing.
 pub struct ShellManager {
     processes: HashMap<String, BackgroundShell>,
@@ -566,6 +812,7 @@ pub struct ShellManager {
     default_workspace: PathBuf,
     sandbox_manager: SandboxManager,
     sandbox_policy: ExecutionSandboxPolicy,
+    sandbox_runtime: SandboxRuntimeConfig,
     foreground_background_requested: bool,
 }
 
@@ -593,6 +840,7 @@ impl ShellManager {
             default_workspace: workspace,
             sandbox_manager: SandboxManager::new(),
             sandbox_policy: ExecutionSandboxPolicy::default(),
+            sandbox_runtime: SandboxRuntimeConfig::default(),
             foreground_background_requested: false,
         }
     }
@@ -606,6 +854,7 @@ impl ShellManager {
             default_workspace: workspace,
             sandbox_manager: SandboxManager::new(),
             sandbox_policy: policy,
+            sandbox_runtime: SandboxRuntimeConfig::default(),
             foreground_background_requested: false,
         }
     }
@@ -629,6 +878,12 @@ impl ShellManager {
     #[allow(dead_code)] // Wired from EngineConfig in follow-up PR
     pub fn set_prefer_bwrap(&mut self, prefer: bool) {
         self.sandbox_manager.set_prefer_bwrap(prefer);
+        self.sandbox_runtime.prefer_bwrap = prefer;
+    }
+
+    pub fn set_sandbox_runtime(&mut self, runtime: SandboxRuntimeConfig) {
+        self.sandbox_manager.set_prefer_bwrap(runtime.prefer_bwrap);
+        self.sandbox_runtime = runtime;
     }
 
     /// Request that the active foreground shell wait detach and leave its
@@ -740,23 +995,74 @@ impl ShellManager {
         let timeout_ms = timeout_ms.clamp(1000, 600_000);
 
         // Use override policy if provided, otherwise use the manager's policy
-        let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
+        let mut policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
+        apply_runtime_filesystem_policy(&mut policy, &self.sandbox_runtime);
+
+        let mut env = extra_env;
+        merge_git_scrub_env(&mut env);
 
         // Create command spec and prepare sandboxed environment
         let spec = CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
-            .with_policy(policy)
-            .with_env(extra_env);
-        let exec_env = self.sandbox_manager.prepare(&spec);
+            .with_policy(policy.clone())
+            .with_env(env);
+        let decision = decide_sandbox(
+            &self.sandbox_manager,
+            &self.sandbox_runtime,
+            &policy,
+            command,
+            &spec.program,
+        );
+        if !decision.allows_execution() {
+            return Ok(ShellResult {
+                task_id: None,
+                status: ShellStatus::Failed,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: decision
+                    .sandbox_unavailable_reason
+                    .clone()
+                    .unwrap_or_else(|| "sandbox unavailable".to_string()),
+                duration_ms: 0,
+                stdout_len: 0,
+                stderr_len: decision
+                    .sandbox_unavailable_reason
+                    .as_ref()
+                    .map_or(0, String::len),
+                stdout_omitted: 0,
+                stderr_omitted: 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                sandboxed: false,
+                sandbox_type: None,
+                sandbox_denied: true,
+                sandbox_requested: decision.sandbox_requested,
+                sandbox_effective: decision.sandbox_effective,
+                sandbox_backend: decision.sandbox_backend.clone(),
+                sandbox_unavailable_reason: decision.sandbox_unavailable_reason.clone(),
+                sandbox_fallback_allowed: decision.sandbox_fallback_allowed,
+                sandbox_excluded_command: decision.sandbox_excluded_command.clone(),
+                sandbox_fail_closed: decision.sandbox_fail_closed,
+            });
+        }
+        let exec_env = if decision.sandbox_effective {
+            self.sandbox_manager.prepare(&spec)
+        } else {
+            SandboxManager::prepare_unsandboxed_for_fallback(&spec)
+        };
 
         if background {
-            self.spawn_background_sandboxed(command, &work_dir, &exec_env, stdin_data, tty)
+            self.spawn_background_sandboxed(
+                command, &work_dir, &exec_env, stdin_data, tty, &decision,
+            )
         } else {
             if tty {
                 return Err(anyhow!(
                     "TTY mode requires background execution (set background: true)."
                 ));
             }
-            Self::execute_sync_sandboxed(command, &work_dir, timeout_ms, stdin_data, &exec_env)
+            Self::execute_sync_sandboxed(
+                command, &work_dir, timeout_ms, stdin_data, &exec_env, &decision,
+            )
         }
     }
 
@@ -802,14 +1108,61 @@ impl ShellManager {
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
         let timeout_ms = timeout_ms.clamp(1000, 600_000);
-        let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
+        let mut policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
+        apply_runtime_filesystem_policy(&mut policy, &self.sandbox_runtime);
+
+        let mut env = extra_env;
+        merge_git_scrub_env(&mut env);
 
         let spec = CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
-            .with_policy(policy)
-            .with_env(extra_env);
-        let exec_env = self.sandbox_manager.prepare(&spec);
+            .with_policy(policy.clone())
+            .with_env(env);
+        let decision = decide_sandbox(
+            &self.sandbox_manager,
+            &self.sandbox_runtime,
+            &policy,
+            command,
+            &spec.program,
+        );
+        if !decision.allows_execution() {
+            return Ok(ShellResult {
+                task_id: None,
+                status: ShellStatus::Failed,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: decision
+                    .sandbox_unavailable_reason
+                    .clone()
+                    .unwrap_or_else(|| "sandbox unavailable".to_string()),
+                duration_ms: 0,
+                stdout_len: 0,
+                stderr_len: decision
+                    .sandbox_unavailable_reason
+                    .as_ref()
+                    .map_or(0, String::len),
+                stdout_omitted: 0,
+                stderr_omitted: 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                sandboxed: false,
+                sandbox_type: None,
+                sandbox_denied: true,
+                sandbox_requested: decision.sandbox_requested,
+                sandbox_effective: decision.sandbox_effective,
+                sandbox_backend: decision.sandbox_backend.clone(),
+                sandbox_unavailable_reason: decision.sandbox_unavailable_reason.clone(),
+                sandbox_fallback_allowed: decision.sandbox_fallback_allowed,
+                sandbox_excluded_command: decision.sandbox_excluded_command.clone(),
+                sandbox_fail_closed: decision.sandbox_fail_closed,
+            });
+        }
+        let exec_env = if decision.sandbox_effective {
+            self.sandbox_manager.prepare(&spec)
+        } else {
+            SandboxManager::prepare_unsandboxed_for_fallback(&spec)
+        };
 
-        Self::execute_interactive_sandboxed(command, &work_dir, timeout_ms, &exec_env)
+        Self::execute_interactive_sandboxed(command, &work_dir, timeout_ms, &exec_env, &decision)
     }
 
     /// Execute command synchronously with timeout (sandboxed).
@@ -819,11 +1172,12 @@ impl ShellManager {
         timeout_ms: u64,
         stdin_data: Option<&str>,
         exec_env: &ExecEnv,
+        decision: &crate::sandbox::SandboxDecision,
     ) -> Result<ShellResult> {
         let started = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
         let sandbox_type = exec_env.sandbox_type;
-        let sandboxed = exec_env.is_sandboxed();
+        let sandboxed = decision.sandbox_effective;
 
         // Build the command from ExecEnv
         let program = exec_env.program();
@@ -910,7 +1264,7 @@ impl ShellManager {
             let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
             let (stderr, stderr_meta) = truncate_with_meta(&stderr_str);
 
-            Ok(ShellResult {
+            let mut result = ShellResult {
                 task_id: None,
                 status: if status.success() {
                     ShellStatus::Completed
@@ -934,7 +1288,16 @@ impl ShellManager {
                     None
                 },
                 sandbox_denied,
-            })
+                sandbox_requested: false,
+                sandbox_effective: false,
+                sandbox_backend: None,
+                sandbox_unavailable_reason: None,
+                sandbox_fallback_allowed: false,
+                sandbox_excluded_command: None,
+                sandbox_fail_closed: false,
+            };
+            apply_shell_result_decision_metadata(&mut result, decision);
+            Ok(result)
         } else {
             // Timeout - kill the process
             #[cfg(unix)]
@@ -949,7 +1312,7 @@ impl ShellManager {
             let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
             let (stderr, stderr_meta) = truncate_with_meta(&stderr_str);
 
-            Ok(ShellResult {
+            let mut result = ShellResult {
                 task_id: None,
                 status: ShellStatus::TimedOut,
                 exit_code: status.and_then(|s| s.code()),
@@ -969,7 +1332,16 @@ impl ShellManager {
                     None
                 },
                 sandbox_denied: false,
-            })
+                sandbox_requested: false,
+                sandbox_effective: false,
+                sandbox_backend: None,
+                sandbox_unavailable_reason: None,
+                sandbox_fallback_allowed: false,
+                sandbox_excluded_command: None,
+                sandbox_fail_closed: false,
+            };
+            apply_shell_result_decision_metadata(&mut result, decision);
+            Ok(result)
         }
     }
 
@@ -979,11 +1351,12 @@ impl ShellManager {
         working_dir: &std::path::Path,
         timeout_ms: u64,
         exec_env: &ExecEnv,
+        decision: &crate::sandbox::SandboxDecision,
     ) -> Result<ShellResult> {
         let started = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
         let sandbox_type = exec_env.sandbox_type;
-        let sandboxed = exec_env.is_sandboxed();
+        let sandboxed = decision.sandbox_effective;
 
         let program = exec_env.program();
         let args = exec_env.args();
@@ -1027,7 +1400,7 @@ impl ShellManager {
             .with_context(|| format!("Failed to execute: {original_command}"))?;
 
         if let Some(status) = child.wait_timeout(timeout)? {
-            Ok(ShellResult {
+            let mut result = ShellResult {
                 task_id: None,
                 status: if status.success() {
                     ShellStatus::Completed
@@ -1051,7 +1424,16 @@ impl ShellManager {
                     None
                 },
                 sandbox_denied: false,
-            })
+                sandbox_requested: false,
+                sandbox_effective: false,
+                sandbox_backend: None,
+                sandbox_unavailable_reason: None,
+                sandbox_fallback_allowed: false,
+                sandbox_excluded_command: None,
+                sandbox_fail_closed: false,
+            };
+            apply_shell_result_decision_metadata(&mut result, decision);
+            Ok(result)
         } else {
             #[cfg(unix)]
             let _ = kill_child_process_group(&mut child);
@@ -1059,7 +1441,7 @@ impl ShellManager {
             let _ = child.kill();
             let status = child.wait().ok();
 
-            Ok(ShellResult {
+            let mut result = ShellResult {
                 task_id: None,
                 status: ShellStatus::TimedOut,
                 exit_code: status.and_then(|s| s.code()),
@@ -1079,7 +1461,16 @@ impl ShellManager {
                     None
                 },
                 sandbox_denied: false,
-            })
+                sandbox_requested: false,
+                sandbox_effective: false,
+                sandbox_backend: None,
+                sandbox_unavailable_reason: None,
+                sandbox_fallback_allowed: false,
+                sandbox_excluded_command: None,
+                sandbox_fail_closed: false,
+            };
+            apply_shell_result_decision_metadata(&mut result, decision);
+            Ok(result)
         }
     }
 
@@ -1091,11 +1482,12 @@ impl ShellManager {
         exec_env: &ExecEnv,
         stdin_data: Option<&str>,
         tty: bool,
+        decision: &SandboxDecision,
     ) -> Result<ShellResult> {
         let task_id = format!("shell_{}", &Uuid::new_v4().to_string()[..8]);
         let started = Instant::now();
         let sandbox_type = exec_env.sandbox_type;
-        let sandboxed = exec_env.is_sandboxed();
+        let sandboxed = decision.sandbox_effective;
 
         // Build the command from ExecEnv
         let program = exec_env.program();
@@ -1194,6 +1586,7 @@ impl ShellManager {
             exit_code: None,
             started_at: started,
             sandbox_type,
+            sandbox_decision: decision.clone(),
             linked_task_id: None,
             stdout_buffer,
             stderr_buffer,
@@ -1211,7 +1604,7 @@ impl ShellManager {
 
         self.processes.insert(task_id.clone(), bg_shell);
 
-        Ok(ShellResult {
+        let mut result = ShellResult {
             task_id: Some(task_id),
             status: ShellStatus::Running,
             exit_code: None,
@@ -1231,7 +1624,16 @@ impl ShellManager {
                 None
             },
             sandbox_denied: false,
-        })
+            sandbox_requested: false,
+            sandbox_effective: false,
+            sandbox_backend: None,
+            sandbox_unavailable_reason: None,
+            sandbox_fallback_allowed: false,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: false,
+        };
+        apply_shell_result_decision_metadata(&mut result, decision);
+        Ok(result)
     }
 
     /// Get output from a background process
@@ -1315,10 +1717,10 @@ impl ShellManager {
         ) = shell.take_delta();
         let (stdout, stdout_meta) = truncate_with_meta(&stdout_delta);
         let (stderr, stderr_meta) = truncate_with_meta(&stderr_delta);
-        let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
+        let sandboxed = shell.sandbox_decision.sandbox_effective;
 
         let command = shell.command.clone();
-        let result = ShellResult {
+        let mut result = ShellResult {
             task_id: Some(shell.id.clone()),
             status: shell.status.clone(),
             exit_code: shell.exit_code,
@@ -1338,7 +1740,15 @@ impl ShellManager {
                 None
             },
             sandbox_denied: shell.sandbox_denied(),
+            sandbox_requested: false,
+            sandbox_effective: false,
+            sandbox_backend: None,
+            sandbox_unavailable_reason: None,
+            sandbox_fallback_allowed: false,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: false,
         };
+        apply_shell_result_decision_metadata(&mut result, &shell.sandbox_decision);
 
         Ok(ShellDeltaResult {
             command,
@@ -1700,6 +2110,7 @@ async fn execute_foreground_via_background(
     tty: bool,
     policy_override: Option<ExecutionSandboxPolicy>,
     extra_env: HashMap<String, String>,
+    sandbox_runtime: SandboxRuntimeConfig,
 ) -> Result<ShellResult> {
     let timeout_ms = timeout_ms.clamp(1000, 600_000);
     let spawned = {
@@ -1708,6 +2119,7 @@ async fn execute_foreground_via_background(
             .lock()
             .map_err(|_| anyhow!("shell manager lock poisoned"))?;
         manager.clear_foreground_background_request();
+        manager.set_sandbox_runtime(sandbox_runtime);
         manager.execute_with_options_env(
             command,
             None,
@@ -1840,6 +2252,23 @@ impl ToolSpec for ExecShellTool {
         ApprovalRequirement::Required
     }
 
+    fn approval_requirement_for_input(
+        &self,
+        input: &serde_json::Value,
+        context: &ToolContext,
+    ) -> ApprovalRequirement {
+        let Ok(command) = required_str(input, "command") else {
+            return ApprovalRequirement::Required;
+        };
+        if context.sandbox_runtime.auto_allow_bash_if_sandboxed
+            && command_would_be_sandboxed(context, command)
+        {
+            ApprovalRequirement::Auto
+        } else {
+            self.approval_requirement()
+        }
+    }
+
     fn is_interactive(&self, input: &serde_json::Value) -> bool {
         optional_bool(input, "interactive", false)
     }
@@ -1932,6 +2361,7 @@ impl ToolSpec for ExecShellTool {
         }
 
         let policy_override = context.elevated_sandbox_policy.clone();
+        let effective_runtime = context.sandbox_runtime.clone();
         let working_dir = match input
             .get("cwd")
             .or_else(|| input.get("working_dir"))
@@ -1977,13 +2407,33 @@ impl ToolSpec for ExecShellTool {
             }
 
             let started = std::time::Instant::now();
-            let backend_result = backend.exec(command, &extra_env).await;
+            let cwd = working_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| context.cwd.clone());
+            let mut policy = policy_override.clone().unwrap_or_else(|| {
+                ExecutionSandboxPolicy::ExternalSandbox {
+                    network_access: true,
+                }
+            });
+            apply_runtime_filesystem_policy(&mut policy, &effective_runtime);
+            let mut backend_env = extra_env;
+            merge_git_scrub_env(&mut backend_env);
+            let request = SandboxExecRequest {
+                cmd: command.to_string(),
+                env: backend_env,
+                cwd,
+                timeout_ms,
+                stdin: stdin_data.clone(),
+                policy,
+            };
+            let backend_result = backend.exec(request).await;
 
             let result = match backend_result {
                 Ok(output) => {
                     let (stdout, stdout_meta) = truncate_with_meta(&output.stdout);
                     let (stderr, stderr_meta) = truncate_with_meta(&output.stderr);
-                    ShellResult {
+                    let mut result = ShellResult {
                         task_id: None,
                         status: if output.exit_code == 0 {
                             ShellStatus::Completed
@@ -2004,7 +2454,17 @@ impl ToolSpec for ExecShellTool {
                         sandboxed: true,
                         sandbox_type: Some("opensandbox".to_string()),
                         sandbox_denied: false,
-                    }
+                        sandbox_requested: true,
+                        sandbox_effective: true,
+                        sandbox_backend: Some("opensandbox".to_string()),
+                        sandbox_unavailable_reason: None,
+                        sandbox_fallback_allowed: false,
+                        sandbox_excluded_command: None,
+                        sandbox_fail_closed: false,
+                    };
+                    result.sandbox_type = Some("opensandbox".to_string());
+                    result.sandbox_backend = Some("opensandbox".to_string());
+                    result
                 }
                 Err(e) => {
                     return Ok(ToolResult::error(format!("Sandbox backend error: {e}")));
@@ -2028,26 +2488,32 @@ impl ToolSpec for ExecShellTool {
             };
 
             let mut metadata = json!({
-                "exit_code": result.exit_code,
-                "status": format!("{:?}", result.status),
-                "duration_ms": result.duration_ms,
-                "sandboxed": true,
-                "sandbox_type": "opensandbox",
-                "sandbox_denied": false,
-                "task_id": result.task_id,
-                "stdout_len": result.stdout_len,
-                "stderr_len": result.stderr_len,
-                "stdout_truncated": result.stdout_truncated,
-                "stderr_truncated": result.stderr_truncated,
-                "stdout_omitted": result.stdout_omitted,
-                "stderr_omitted": result.stderr_omitted,
-                "summary": summary,
-                "stdout_summary": stdout_summary,
-                "stderr_summary": stderr_summary,
-                "safety_level": format!("{:?}", safety.level),
-                "interactive": false,
-                "canceled": false,
+            "exit_code": result.exit_code,
+            "status": format!("{:?}", result.status),
+            "duration_ms": result.duration_ms,
+            "sandboxed": true,
+            "sandbox_type": "opensandbox",
+            "sandbox_denied": false,
+            "task_id": result.task_id,
+            "stdout_len": result.stdout_len,
+            "stderr_len": result.stderr_len,
+            "stdout_truncated": result.stdout_truncated,
+            "stderr_truncated": result.stderr_truncated,
+            "stdout_omitted": result.stdout_omitted,
+            "stderr_omitted": result.stderr_omitted,
+            "summary": summary,
+            "stdout_summary": stdout_summary,
+            "stderr_summary": stderr_summary,
+            "safety_level": format!("{:?}", safety.level),
+            "interactive": false,
+            "canceled": false,
                 "sandbox_backend": "opensandbox",
+                "sandbox_requested": result.sandbox_requested,
+                "sandbox_effective": result.sandbox_effective,
+                "sandbox_unavailable_reason": result.sandbox_unavailable_reason,
+                "sandbox_fallback_allowed": result.sandbox_fallback_allowed,
+                "sandbox_excluded_command": result.sandbox_excluded_command,
+                "sandbox_fail_closed": result.sandbox_fail_closed,
             });
             attach_cargo_failure_summary(&mut metadata, command, &result);
 
@@ -2063,6 +2529,7 @@ impl ToolSpec for ExecShellTool {
                 .shell_manager
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            manager.set_sandbox_runtime(effective_runtime.clone());
             manager.execute_interactive_with_policy_env(
                 command,
                 working_dir.as_deref(),
@@ -2075,6 +2542,7 @@ impl ToolSpec for ExecShellTool {
                 .shell_manager
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            manager.set_sandbox_runtime(effective_runtime.clone());
             manager.execute_with_options_env(
                 command,
                 working_dir.as_deref(),
@@ -2094,6 +2562,7 @@ impl ToolSpec for ExecShellTool {
                 combined_output,
                 policy_override,
                 extra_env,
+                effective_runtime.clone(),
             )
             .await
         };
@@ -2178,6 +2647,13 @@ impl ToolSpec for ExecShellTool {
                     "sandboxed": result.sandboxed,
                     "sandbox_type": result.sandbox_type,
                     "sandbox_denied": result.sandbox_denied,
+                    "sandbox_requested": result.sandbox_requested,
+                    "sandbox_effective": result.sandbox_effective,
+                    "sandbox_backend": result.sandbox_backend,
+                    "sandbox_unavailable_reason": result.sandbox_unavailable_reason,
+                    "sandbox_fallback_allowed": result.sandbox_fallback_allowed,
+                    "sandbox_excluded_command": result.sandbox_excluded_command,
+                    "sandbox_fail_closed": result.sandbox_fail_closed,
                     "task_id": result.task_id,
                     "stdout_len": result.stdout_len,
                     "stderr_len": result.stderr_len,
@@ -2310,6 +2786,13 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext)
         "sandboxed": result.sandboxed,
         "sandbox_type": result.sandbox_type,
         "sandbox_denied": result.sandbox_denied,
+        "sandbox_requested": result.sandbox_requested,
+        "sandbox_effective": result.sandbox_effective,
+        "sandbox_backend": result.sandbox_backend,
+        "sandbox_unavailable_reason": result.sandbox_unavailable_reason,
+        "sandbox_fallback_allowed": result.sandbox_fallback_allowed,
+        "sandbox_excluded_command": result.sandbox_excluded_command,
+        "sandbox_fail_closed": result.sandbox_fail_closed,
         "task_id": result.task_id,
         "stdout_len": result.stdout_len,
         "stderr_len": result.stderr_len,

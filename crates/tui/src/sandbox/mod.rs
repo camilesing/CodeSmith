@@ -31,6 +31,7 @@ pub mod backend;
 pub mod opensandbox;
 pub mod policy;
 pub mod process_hardening;
+pub mod runtime;
 
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
@@ -51,7 +52,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub use backend::SandboxExecRequest;
 pub use policy::SandboxPolicy;
+pub use runtime::{
+    SandboxBackendKind, SandboxDecision, SandboxFilesystemConfig, SandboxNetworkConfig,
+    SandboxRuntimeConfig,
+};
 
 /// Specification for a command to be executed, potentially within a sandbox.
 ///
@@ -226,6 +232,10 @@ pub enum SandboxType {
     #[cfg(target_os = "linux")]
     LinuxLandlock,
 
+    /// Linux Bubblewrap mount namespace sandboxing.
+    #[cfg(target_os = "linux")]
+    LinuxBwrap,
+
     /// Windows process-containment helper.
     ///
     /// Not advertised until a helper enforces Job Object cleanup. This does
@@ -242,6 +252,8 @@ impl std::fmt::Display for SandboxType {
             SandboxType::MacosSeatbelt => write!(f, "macos-seatbelt"),
             #[cfg(target_os = "linux")]
             SandboxType::LinuxLandlock => write!(f, "linux-landlock"),
+            #[cfg(target_os = "linux")]
+            SandboxType::LinuxBwrap => write!(f, "linux-bwrap"),
             #[cfg(target_os = "windows")]
             SandboxType::Windows => write!(f, "windows-sandbox"),
         }
@@ -393,6 +405,12 @@ impl SandboxManager {
         }
 
         // Use platform default
+        #[cfg(target_os = "linux")]
+        {
+            if self.prefer_bwrap && bwrap::is_available() {
+                return SandboxType::LinuxBwrap;
+            }
+        }
         get_platform_sandbox().unwrap_or(SandboxType::None)
     }
 
@@ -413,9 +431,16 @@ impl SandboxManager {
             #[cfg(target_os = "linux")]
             SandboxType::LinuxLandlock => self.prepare_landlock(spec),
 
+            #[cfg(target_os = "linux")]
+            SandboxType::LinuxBwrap => Self::prepare_bwrap(spec),
+
             #[cfg(target_os = "windows")]
             SandboxType::Windows => Self::prepare_windows(spec),
         }
+    }
+
+    pub fn prepare_unsandboxed_for_fallback(spec: &CommandSpec) -> ExecEnv {
+        Self::prepare_unsandboxed(spec)
     }
 
     /// Prepare an unsandboxed execution environment.
@@ -462,31 +487,37 @@ impl SandboxManager {
         }
     }
 
+    /// Prepare a bwrap-sandboxed execution environment (Linux).
+    #[cfg(target_os = "linux")]
+    fn prepare_bwrap(spec: &CommandSpec) -> ExecEnv {
+        let command =
+            bwrap::build_bwrap_command(&spec.cwd, &spec.program, &spec.args, &spec.sandbox_policy);
+
+        let mut env = spec.env.clone();
+        env.insert("DEEPSEEK_SANDBOX".to_string(), "bwrap".to_string());
+
+        ExecEnv {
+            command,
+            cwd: spec.cwd.clone(),
+            env,
+            timeout: spec.timeout,
+            sandbox_type: SandboxType::LinuxBwrap,
+            policy: spec.sandbox_policy.clone(),
+        }
+    }
+
     /// Prepare a Landlock-sandboxed execution environment (Linux).
     ///
-    /// If `prefer_bwrap` is set and `/usr/bin/bwrap` is available, routes the
-    /// command through bubblewrap for stronger filesystem isolation (#2184).
-    /// Otherwise falls back to Landlock markers.
+    /// Landlock is currently only advertised when the platform probe succeeds;
+    /// this path keeps metadata truthful and does not claim bwrap enforcement.
     #[cfg(target_os = "linux")]
     fn prepare_landlock(&self, spec: &CommandSpec) -> ExecEnv {
-        // Check if bwrap passthrough should be used (#2184).
-        if self.prefer_bwrap && bwrap::is_available() {
-            let command = bwrap::build_bwrap_command(&spec.cwd, &spec.program, &spec.args);
-
-            let mut env = spec.env.clone();
-            env.insert("DEEPSEEK_SANDBOX".to_string(), "bwrap".to_string());
-
-            return ExecEnv {
-                command,
-                cwd: spec.cwd.clone(),
-                env,
-                timeout: spec.timeout,
-                sandbox_type: SandboxType::LinuxLandlock,
-                policy: spec.sandbox_policy.clone(),
-            };
-        }
-
-        // Fall back to Landlock (marker only — full implementation needs a helper).
+        let _ = self;
+        // Full Landlock enforcement requires applying rules inside the child
+        // process before exec. Until that helper path is wired, report this as
+        // a marker only when selected by tests/platform detection and let the
+        // higher-level decision layer fail closed when strict enforcement is
+        // required.
         let mut command = vec![spec.program.clone()];
         command.extend(spec.args.clone());
 
@@ -549,7 +580,9 @@ impl SandboxManager {
             SandboxType::MacosSeatbelt => seatbelt::detect_denial(exit_code, stderr),
 
             #[cfg(target_os = "linux")]
-            SandboxType::LinuxLandlock => landlock::detect_denial(exit_code, stderr),
+            SandboxType::LinuxLandlock | SandboxType::LinuxBwrap => {
+                landlock::detect_denial(exit_code, stderr)
+            }
 
             #[cfg(target_os = "windows")]
             SandboxType::Windows => windows::detect_denial(exit_code, stderr),
@@ -579,7 +612,7 @@ impl SandboxManager {
             }
 
             #[cfg(target_os = "linux")]
-            SandboxType::LinuxLandlock => {
+            SandboxType::LinuxLandlock | SandboxType::LinuxBwrap => {
                 // Seccomp patterns checked first because they are more specific (#2182).
                 if stderr.contains("Bad system call")
                     || stderr.contains("bad system call")
@@ -826,9 +859,9 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn test_parity_linux_landlock_available() {
+    fn test_parity_linux_sandbox_available_reports_available_backend() {
         let st = get_platform_sandbox();
-        assert!(matches!(st, Some(SandboxType::LinuxLandlock)));
+        assert!(matches!(st, Some(SandboxType::LinuxLandlock)) || st.is_none());
     }
 
     #[test]

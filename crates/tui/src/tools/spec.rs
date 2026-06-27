@@ -18,6 +18,7 @@ use crate::lsp::LspManager;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::rlm::session::SessionObjectSnapshot;
 use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
+use crate::sandbox::SandboxRuntimeConfig;
 use crate::sandbox::backend::SandboxBackend;
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
@@ -163,6 +164,8 @@ pub struct ToolContext {
     /// When set, exec_shell routes commands through this instead of spawning
     /// a local process.
     pub sandbox_backend: Option<std::sync::Arc<dyn SandboxBackend>>,
+    /// Effective local sandbox runtime controls for shell and network tools.
+    pub sandbox_runtime: SandboxRuntimeConfig,
     /// Path to the user memory file. `None` when the user-memory feature
     /// (#489) is disabled — tools that read or write the file should
     /// short-circuit on `None` rather than fall back to a workspace-local
@@ -237,6 +240,7 @@ impl ToolContext {
             session_objects: None,
             cancel_token: None,
             sandbox_backend: None,
+            sandbox_runtime: SandboxRuntimeConfig::default(),
             memory_path: None,
             memory_dir: None,
             agent_memory_dir: None,
@@ -280,6 +284,7 @@ impl ToolContext {
             session_objects: None,
             cancel_token: None,
             sandbox_backend: None,
+            sandbox_runtime: SandboxRuntimeConfig::default(),
             memory_path: None,
             memory_dir: None,
             agent_memory_dir: None,
@@ -323,6 +328,7 @@ impl ToolContext {
             session_objects: None,
             cancel_token: None,
             sandbox_backend: None,
+            sandbox_runtime: SandboxRuntimeConfig::default(),
             memory_path: None,
             memory_dir: None,
             agent_memory_dir: None,
@@ -369,6 +375,13 @@ impl ToolContext {
     #[allow(dead_code)]
     pub fn with_sandbox_backend(mut self, backend: std::sync::Arc<dyn SandboxBackend>) -> Self {
         self.sandbox_backend = Some(backend);
+        self
+    }
+
+    /// Attach effective sandbox runtime controls.
+    #[must_use]
+    pub fn with_sandbox_runtime(mut self, runtime: SandboxRuntimeConfig) -> Self {
+        self.sandbox_runtime = runtime;
         self
     }
 

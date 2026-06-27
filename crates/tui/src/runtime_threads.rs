@@ -2021,6 +2021,7 @@ impl RuntimeThreadManager {
                 self.config.subagent_api_timeout_secs(),
             ),
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
+            sandbox_runtime: self.config.sandbox_runtime_config(),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             kod_enabled: self.config.kod_enabled(),

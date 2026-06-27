@@ -17,6 +17,9 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use crate::audit::log_sensitive_event;
 use crate::features::{Features, FeaturesToml, is_known_feature_key};
 use crate::hooks::HooksConfig;
+use crate::sandbox::{
+    SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
+};
 
 pub const DEFAULT_MAX_SUBAGENTS: usize = 10;
 pub const MAX_SUBAGENTS: usize = 20;
@@ -649,6 +652,60 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
 }
 
 // === Types ===
+
+/// Structured `[sandbox]` table. Every field is optional so legacy flat keys
+/// and per-mode defaults can fill the gaps.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SandboxConfigToml {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub fail_if_unavailable: Option<bool>,
+    #[serde(default)]
+    pub enabled_platforms: Option<Vec<String>>,
+    #[serde(default)]
+    pub excluded_commands: Option<Vec<String>>,
+    #[serde(default)]
+    pub auto_allow_bash_if_sandboxed: Option<bool>,
+    #[serde(default)]
+    pub prefer_bwrap: Option<bool>,
+    #[serde(default)]
+    pub filesystem: Option<SandboxFilesystemConfigToml>,
+    #[serde(default)]
+    pub network: Option<SandboxNetworkConfigToml>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SandboxFilesystemConfigToml {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub writable_roots: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_read: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny_read: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_write: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny_write: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude_tmpdir: Option<bool>,
+    #[serde(default)]
+    pub exclude_slash_tmp: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SandboxNetworkConfigToml {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub allow_managed_domains_only: Option<bool>,
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny: Option<Vec<String>>,
+}
 
 /// Raw retry configuration loaded from config files.
 #[derive(Debug, Clone, Deserialize)]
@@ -1413,6 +1470,10 @@ pub struct Config {
     pub sandbox_url: Option<String>,
     /// Optional API key for the external sandbox backend (sent as Bearer token).
     pub sandbox_api_key: Option<String>,
+    /// Optional structured sandbox controls. Legacy top-level sandbox fields are
+    /// still accepted and are merged into the runtime view for compatibility.
+    #[serde(default)]
+    pub sandbox: Option<SandboxConfigToml>,
     /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
     /// through bubblewrap instead of relying solely on Landlock (#2184).
     /// Defaults to false. Requires the `bubblewrap` package to be installed
@@ -2486,6 +2547,101 @@ impl Config {
         self.allow_shell.unwrap_or(false)
     }
 
+    /// Build the effective runtime sandbox controls.
+    #[must_use]
+    pub fn sandbox_runtime_config(&self) -> SandboxRuntimeConfig {
+        let mut runtime = SandboxRuntimeConfig::default();
+        if let Some(backend) = self.sandbox_backend.as_deref() {
+            runtime.backend = if backend.trim().eq_ignore_ascii_case("opensandbox") {
+                SandboxBackendKind::OpenSandbox
+            } else {
+                SandboxBackendKind::Local
+            };
+        }
+        runtime.prefer_bwrap = self.prefer_bwrap.unwrap_or(false);
+
+        if let Some(sandbox) = self.sandbox.as_ref() {
+            if let Some(enabled) = sandbox.enabled {
+                runtime.enabled = enabled;
+            }
+            if let Some(fail_if_unavailable) = sandbox.fail_if_unavailable {
+                runtime.fail_if_unavailable = fail_if_unavailable;
+            }
+            if let Some(platforms) = sandbox.enabled_platforms.clone() {
+                runtime.enabled_platforms = platforms;
+            }
+            if let Some(excluded) = sandbox.excluded_commands.clone() {
+                runtime.excluded_commands = excluded;
+            }
+            if let Some(auto_allow) = sandbox.auto_allow_bash_if_sandboxed {
+                runtime.auto_allow_bash_if_sandboxed = auto_allow;
+            }
+            if let Some(prefer_bwrap) = sandbox.prefer_bwrap {
+                runtime.prefer_bwrap = prefer_bwrap;
+            }
+            if let Some(fs) = sandbox.filesystem.as_ref() {
+                runtime.filesystem = SandboxFilesystemConfig {
+                    mode: fs.mode.clone(),
+                    writable_roots: fs
+                        .writable_roots
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    allow_read: fs
+                        .allow_read
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    deny_read: fs
+                        .deny_read
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    allow_write: fs
+                        .allow_write
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    deny_write: fs
+                        .deny_write
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    exclude_tmpdir: fs.exclude_tmpdir,
+                    exclude_slash_tmp: fs.exclude_slash_tmp,
+                };
+            }
+            if let Some(network) = sandbox.network.as_ref() {
+                let mut allow = network.allow.clone().unwrap_or_default();
+                if network.allow_managed_domains_only.unwrap_or(false) {
+                    for domain in crate::sandbox::runtime::managed_domains() {
+                        if !allow.iter().any(|existing| existing == &domain) {
+                            allow.push(domain);
+                        }
+                    }
+                }
+                runtime.network = SandboxNetworkConfig {
+                    enabled: network.enabled,
+                    allow_managed_domains_only: network.allow_managed_domains_only.unwrap_or(false),
+                    allow,
+                    deny: network.deny.clone().unwrap_or_default(),
+                };
+            }
+        }
+
+        runtime
+    }
+
     /// Return the maximum number of concurrent sub-agents.
     /// Checks `[subagents] max_concurrent` first, then top-level `max_subagents`,
     /// then falls back to `DEFAULT_MAX_SUBAGENTS`.
@@ -2972,6 +3128,22 @@ fn codesmith_env_var(
         .ok_or(std::env::VarError::NotPresent)
 }
 
+fn parse_env_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "yes" | "y" | "enabled"
+    )
+}
+
+fn parse_env_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = codesmith_env_var("CODESMITH_PROVIDER", "DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
@@ -3406,17 +3578,14 @@ fn apply_env_overrides(config: &mut Config) {
         config.memory_path = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_MEMORY") {
-        let on = matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "on" | "true" | "yes" | "y" | "enabled"
-        );
+        let on = parse_env_bool(&value);
         config
             .memory
             .get_or_insert_with(MemoryConfig::default)
             .enabled = Some(on);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_ALLOW_SHELL") {
-        config.allow_shell = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+        config.allow_shell = Some(parse_env_bool(&value));
     }
     if let Ok(value) = std::env::var("DEEPSEEK_APPROVAL_POLICY") {
         config.approval_policy = Some(value);
@@ -3425,7 +3594,7 @@ fn apply_env_overrides(config: &mut Config) {
         config.sandbox_mode = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_YOLO") {
-        config.yolo = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+        config.yolo = Some(parse_env_bool(&value));
     }
     if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_BACKEND") {
         config.sandbox_backend = Some(value);
@@ -3435,6 +3604,44 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_API_KEY") {
         config.sandbox_api_key = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_PREFER_BWRAP") {
+        let on = parse_env_bool(&value);
+        config.prefer_bwrap = Some(on);
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .prefer_bwrap = Some(on);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_ENABLED") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .enabled = Some(parse_env_bool(&value));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .fail_if_unavailable = Some(parse_env_bool(&value));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_ENABLED_PLATFORMS") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .enabled_platforms = Some(parse_env_list(&value));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_EXCLUDED_COMMANDS") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .excluded_commands = Some(parse_env_list(&value));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_AUTO_ALLOW_BASH_IF_SANDBOXED") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .auto_allow_bash_if_sandboxed = Some(parse_env_bool(&value));
     }
     if let Ok(value) = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH") {
         config.managed_config_path = Some(value);
@@ -3883,6 +4090,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         sandbox_backend: override_cfg.sandbox_backend.or(base.sandbox_backend),
         sandbox_url: override_cfg.sandbox_url.or(base.sandbox_url),
         sandbox_api_key: override_cfg.sandbox_api_key.or(base.sandbox_api_key),
+        sandbox: override_cfg.sandbox.or(base.sandbox),
         prefer_bwrap: override_cfg.prefer_bwrap.or(base.prefer_bwrap),
         managed_config_path: override_cfg
             .managed_config_path

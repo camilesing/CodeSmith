@@ -6,9 +6,10 @@
 //!
 //! # How it works
 //!
-//! When `/usr/bin/bwrap` is present AND the config key `[sandbox] prefer_bwrap`
-//! is set to `true`, exec_shell commands are routed through bwrap instead of
-//! relying solely on Landlock. The bwrap invocation looks like:
+//! When `/usr/bin/bwrap` is present and either the legacy `prefer_bwrap = true`
+//! key or `[sandbox] prefer_bwrap = true` is set, exec_shell commands are routed
+//! through bwrap instead of relying solely on Landlock. The bwrap invocation
+//! looks like:
 //!
 //! ```text
 //! bwrap \
@@ -64,8 +65,14 @@ pub fn is_available() -> bool {
 ///
 /// A `Vec<String>` representing the full bwrap invocation.
 #[cfg(target_os = "linux")]
-pub fn build_bwrap_command(cwd: &std::path::Path, program: &str, args: &[String]) -> Vec<String> {
-    let mut cmd: Vec<String> = Vec::with_capacity(10 + args.len());
+pub fn build_bwrap_command(
+    cwd: &std::path::Path,
+    program: &str,
+    args: &[String],
+    policy: &crate::sandbox::SandboxPolicy,
+) -> Vec<String> {
+    let writable_roots = policy.get_writable_roots(cwd);
+    let mut cmd: Vec<String> = Vec::with_capacity(16 + args.len() + writable_roots.len() * 3);
 
     cmd.push(BWRAP_PATH.to_string());
 
@@ -74,13 +81,25 @@ pub fn build_bwrap_command(cwd: &std::path::Path, program: &str, args: &[String]
     cmd.push("/".to_string());
     cmd.push("/".to_string());
 
-    // Bind-mount the working directory with read-write access.
-    let cwd_str = cwd.to_string_lossy().to_string();
-    cmd.push("--bind".to_string());
-    cmd.push(cwd_str.clone());
-    cmd.push(cwd_str.clone());
+    // Re-bind only policy writable roots as read-write.
+    for writable_root in writable_roots {
+        let root = writable_root.root.to_string_lossy().to_string();
+        cmd.push("--bind".to_string());
+        cmd.push(root.clone());
+        cmd.push(root);
+
+        // Re-bind protected control-plane subpaths read-only after the parent
+        // bind so bubblewrap's later mount wins for the narrower path.
+        for read_only in writable_root.read_only_subpaths {
+            let path = read_only.to_string_lossy().to_string();
+            cmd.push("--ro-bind".to_string());
+            cmd.push(path.clone());
+            cmd.push(path);
+        }
+    }
 
     // Change to the working directory inside the container.
+    let cwd_str = cwd.to_string_lossy().to_string();
     cmd.push("--chdir".to_string());
     cmd.push(cwd_str);
 
@@ -110,7 +129,17 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_build_bwrap_command_structure() {
         let cwd = std::path::Path::new("/home/user/project");
-        let cmd = build_bwrap_command(cwd, "sh", &["-c".to_string(), "echo hi".to_string()]);
+        let cmd = build_bwrap_command(
+            cwd,
+            "sh",
+            &["-c".to_string(), "echo hi".to_string()],
+            &crate::sandbox::SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![],
+                network_access: false,
+                exclude_tmpdir: true,
+                exclude_slash_tmp: true,
+            },
+        );
 
         // Should start with bwrap
         assert_eq!(cmd[0], "/usr/bin/bwrap");

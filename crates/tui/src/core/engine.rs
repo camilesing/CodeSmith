@@ -46,6 +46,7 @@ use crate::models::{
 };
 use crate::prompts;
 use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, run_purge};
+use crate::sandbox::SandboxRuntimeConfig;
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::goal::{SharedGoalState, new_shared_goal_state};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -211,6 +212,8 @@ pub struct EngineConfig {
     /// through bubblewrap instead of relying solely on Landlock (#2184).
     #[allow(dead_code)] // Wired through ShellManager in follow-up PR
     pub prefer_bwrap: bool,
+    /// Effective runtime sandbox controls.
+    pub sandbox_runtime: SandboxRuntimeConfig,
     /// Tool override and plugin configuration (`[tools]` table in config.toml).
     /// Applied to the per-turn tool registry after built-in tools are registered.
     /// When `None`, no overrides or plugin loading occurs.
@@ -271,6 +274,7 @@ impl Default for EngineConfig {
             ),
             tools_always_load: HashSet::new(),
             prefer_bwrap: false,
+            sandbox_runtime: SandboxRuntimeConfig::default(),
             tools: None,
             team_context: None,
         }
@@ -749,6 +753,10 @@ impl Engine {
             .shell_manager
             .clone()
             .unwrap_or_else(|| new_shared_shell_manager(config.workspace.clone()));
+        if let Ok(mut manager) = shell_manager.lock() {
+            manager.set_prefer_bwrap(config.sandbox_runtime.prefer_bwrap || config.prefer_bwrap);
+            manager.set_sandbox_runtime(config.sandbox_runtime.clone());
+        }
         let capacity_controller = CapacityController::new(config.capacity.clone());
 
         // Create Flash seam manager for layered context (#159). v0.7.5 keeps
@@ -2445,7 +2453,9 @@ impl Engine {
         ctx.search_api_key = self.config.search_api_key.clone();
 
         let policy = sandbox_policy_for_mode(mode, &self.session.workspace);
-        let mut ctx = ctx.with_elevated_sandbox_policy(policy);
+        let mut ctx = ctx
+            .with_elevated_sandbox_policy(policy)
+            .with_sandbox_runtime(self.config.sandbox_runtime.clone());
         if matches!(mode, AppMode::Plan) {
             ctx = ctx.with_shell_network_denied_hint(
                 "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/mode agent`) for any command that creates or modifies files, or that needs network access.",

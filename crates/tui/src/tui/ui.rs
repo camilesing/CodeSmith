@@ -788,6 +788,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
+        sandbox_runtime: config.sandbox_runtime_config(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         kod_enabled: config.kod_enabled(),
