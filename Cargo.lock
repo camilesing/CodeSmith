@@ -820,6 +820,7 @@ name = "codesmith-agent-runtime"
 version = "0.8.48"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "codesmith-agent",
@@ -828,6 +829,7 @@ dependencies = [
  "fd-lock",
  "futures-util",
  "ignore",
+ "libc",
  "multimap",
  "portable-pty",
  "pretty_assertions",
@@ -841,6 +843,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml 0.9.11+spec-1.1.0",
  "tracing",

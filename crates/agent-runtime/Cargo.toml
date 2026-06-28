@@ -8,6 +8,7 @@ description = "Unified agent execution core (engine, turn loop, compaction, sand
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
 clap.workspace = true
 codesmith-agent = { path = "../agent", version = "0.8.48" }
@@ -16,10 +17,11 @@ dirs.workspace = true
 fd-lock = "4.0.4"
 futures-util = "0.3.31"
 ignore = "0.4"
+libc = "0.2"
 multimap = "0.10.0"
 portable-pty = "0.9"
 regex = "1.11"
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -28,6 +30,7 @@ starlark = "0.13.0"
 tempfile = "3.16"
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true
 tracing.workspace = true

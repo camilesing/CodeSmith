@@ -30,6 +30,7 @@ pub mod dependencies;
 pub mod execpolicy;
 pub mod features;
 pub mod knowledge;
+pub mod mcp;
 pub mod network_policy;
 pub mod prefix_cache;
 pub mod pricing;

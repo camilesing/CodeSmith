@@ -10,6 +10,49 @@ use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use serde_json::Value;
 
+// === Home Directory Resolution ===
+
+/// Resolve the effective user home directory.
+///
+/// Checks `HOME` (Unix), `USERPROFILE` (Windows), and the
+/// `HOMEDRIVE`+`HOMEPATH` pair (Windows) before falling back to
+/// [`dirs::home_dir`]. Empty values are treated as unset.
+///
+/// This was relocated from the TUI `config` module so that runtime
+/// modules (e.g. `mcp`) can resolve the home directory without depending
+/// on the TUI's `config` module; the TUI re-exports it as
+/// `crate::config::effective_home_dir` for backwards compatibility.
+pub fn effective_home_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("HOME") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+
+    if let Some(path) = std::env::var_os("USERPROFILE") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let (Some(drive), Some(homepath)) =
+            (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH"))
+        {
+            let mut path = PathBuf::from(drive);
+            path.push(homepath);
+            if !path.as_os_str().is_empty() {
+                return Some(path);
+            }
+        }
+    }
+
+    dirs::home_dir()
+}
+
 // === Project Mapping Helpers ===
 
 /// Identify if a file is a "key" file for project identification.
