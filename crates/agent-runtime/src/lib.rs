@@ -38,6 +38,7 @@ pub mod execpolicy;
 pub mod features;
 pub mod hooks;
 pub mod knowledge;
+pub mod mailbox;
 pub mod mcp;
 pub mod mode;
 pub mod network_policy;
