@@ -1,3 +1,9 @@
+#![allow(unsafe_code)]
+// `unsafe` rationale: `PolicyBuilder` implements a starlark `unsafe` trait
+// (`ProvidesStaticType`-family) as required by the starlark embedding API. The
+// obligation is the trait's static-type invariant, satisfied by starlark's
+// macro machinery. Matches the upstream `codesmith-tui` usage.
+
 use multimap::MultiMap;
 use shlex;
 use starlark::any::ProvidesStaticType;

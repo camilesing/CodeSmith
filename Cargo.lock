@@ -820,9 +820,29 @@ name = "codesmith-agent-runtime"
 version = "0.8.48"
 dependencies = [
  "anyhow",
+ "chrono",
+ "clap",
  "codesmith-agent",
  "codesmith-config",
+ "dirs",
+ "fd-lock",
+ "futures-util",
+ "ignore",
+ "multimap",
+ "portable-pty",
+ "pretty_assertions",
+ "regex",
+ "reqwest",
  "serde",
+ "serde_json",
+ "shlex",
+ "starlark",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml 0.9.11+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -1012,6 +1032,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "codesmith-agent",
+ "codesmith-agent-runtime",
  "codesmith-config",
  "codesmith-protocol",
  "codesmith-release",

@@ -33,6 +33,7 @@ path = "src/bin/deepseek_tui_legacy_shim.rs"
 anyhow = "1.0.100"
 arboard = "3.4"
 codesmith-agent = { path = "../agent", version = "0.8.48" }
+codesmith-agent-runtime = { path = "../agent-runtime", version = "0.8.48" }
 codesmith-config = { path = "../config", version = "0.8.48" }
 codesmith-protocol = { path = "../protocol", version = "0.8.48" }
 codesmith-release = { path = "../release", version = "0.8.48" }

@@ -117,7 +117,7 @@ impl Rule for PrefixRule {
 }
 
 /// Count how many rules match each provided example and error if any example is unmatched.
-pub(crate) fn validate_match_examples(rules: &[RuleRef], matches: &[Vec<String>]) -> Result<()> {
+pub fn validate_match_examples(rules: &[RuleRef], matches: &[Vec<String>]) -> Result<()> {
     let mut unmatched_examples = Vec::new();
 
     for example in matches {
@@ -142,10 +142,7 @@ pub(crate) fn validate_match_examples(rules: &[RuleRef], matches: &[Vec<String>]
 }
 
 /// Ensure that no rule matches any provided negative example.
-pub(crate) fn validate_not_match_examples(
-    rules: &[RuleRef],
-    not_matches: &[Vec<String>],
-) -> Result<()> {
+pub fn validate_not_match_examples(rules: &[RuleRef], not_matches: &[Vec<String>]) -> Result<()> {
     for example in not_matches {
         if let Some(rule) = rules.iter().find(|rule| rule.matches(example).is_some()) {
             return Err(Error::ExampleDidMatch {

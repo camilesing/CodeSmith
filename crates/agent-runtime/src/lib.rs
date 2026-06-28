@@ -12,4 +12,23 @@
 //! thin re-export shims (`pub use codesmith_agent_runtime::…`) so existing
 //! `use crate::<module>` paths keep resolving.
 
-#![forbid(unsafe_code)]
+// `deny` (not `forbid`): the execution core legitimately uses `unsafe` for
+// `std::env` mutation in `child_env` (documented single-threaded pre-spawn
+// pattern) and starlark trait impls in `execpolicy::parser`. Each is gated
+// with a file-local `#![allow(unsafe_code)]` + safety note.
+#![deny(unsafe_code)]
+
+// Re-export the agent "primitives" layer so modules moved into this crate can
+// keep referencing `crate::models` / `crate::llm_client` / `crate::retry`
+// without hard-coding `codesmith_agent::` paths.
+pub use codesmith_agent::{llm_client, models, retry};
+
+pub mod child_env;
+pub mod command_safety;
+pub mod cost_status;
+pub mod execpolicy;
+pub mod knowledge;
+pub mod network_policy;
+pub mod pricing;
+pub mod retry_status;
+pub mod utils;
