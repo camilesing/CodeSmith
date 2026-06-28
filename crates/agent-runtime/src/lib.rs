@@ -24,6 +24,7 @@
 pub use codesmith_agent::{llm_client, models, retry};
 
 pub mod capacity;
+pub mod capacity_memory;
 pub mod child_env;
 pub mod coherence;
 pub mod command_safety;

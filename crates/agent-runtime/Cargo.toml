@@ -35,6 +35,8 @@ tokio-tungstenite = { version = "0.28", default-features = false, features = ["c
 tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true
 tracing.workspace = true
+uuid.workspace = true
+shellexpand = "3"
 
 [dev-dependencies]
 pretty_assertions = "1.4"
