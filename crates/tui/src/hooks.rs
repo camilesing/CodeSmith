@@ -63,6 +63,14 @@ pub enum HookEvent {
     /// Observer-only; cannot block completion.
     #[serde(rename = "task_completed")]
     TaskCompleted,
+    /// Triggered immediately before context compaction (manual `/compact`,
+    /// auto-compaction, or emergency capacity compaction). The hook's stdout
+    /// is collected as "context to preserve" and merged into the compaction
+    /// summary so key facts survive the summarization. Hooks that fail or
+    /// time out are logged but never abort compaction — the turn must
+    /// proceed (#485).
+    #[serde(rename = "pre_compact")]
+    PreCompact,
 }
 
 impl HookEvent {
@@ -80,6 +88,7 @@ impl HookEvent {
             HookEvent::ShellEnv => "shell_env",
             HookEvent::TaskCreated => "task_created",
             HookEvent::TaskCompleted => "task_completed",
+            HookEvent::PreCompact => "pre_compact",
         }
     }
 }
@@ -695,6 +704,76 @@ impl HookExecutor {
         } else {
             MessageSubmitOutcome::replaced(current_text).with_warning(warning)
         }
+    }
+
+    /// Run configured `pre_compact` hooks and collect their stdout as
+    /// "context to preserve".
+    ///
+    /// Fires before context compaction (manual, auto, or emergency). Each
+    /// matching non-background hook's stdout is concatenated (separated by
+    /// `---` rules) into a single preserve-context blob that the compaction
+    /// layer merges into its summary so the material survives summarization.
+    ///
+    /// Deliberately non-blocking: a hook that fails, times out, or exits
+    /// non-zero contributes nothing and a `tracing::warn!` lands, but
+    /// compaction always proceeds (#485). Background hooks are
+    /// fire-and-forget and do not contribute preserve context.
+    pub fn execute_pre_compact_hook(&self, context: &HookContext) -> Option<String> {
+        if !self.config.enabled {
+            return None;
+        }
+        let hooks = self.config.hooks_for_event(HookEvent::PreCompact);
+        if hooks.is_empty() {
+            return None;
+        }
+
+        let mut preserved: Option<String> = None;
+        for hook in hooks {
+            if !self.matches_condition(hook, context) {
+                continue;
+            }
+            let env_vars = context.to_env_vars();
+            if hook.background {
+                let _ = self.execute_background(hook, &env_vars);
+                continue;
+            }
+
+            let payload = serde_json::json!({
+                "hook_event_name": "pre_compact",
+                "session_id": context.session_id,
+                "workspace": context.workspace.as_ref().map(|p| p.display().to_string()),
+                "model": context.model,
+                "total_tokens": context.total_tokens,
+            });
+            let result = self.execute_sync_with_stdin(hook, &env_vars, &payload);
+
+            if !result.success {
+                tracing::warn!(
+                    target: "hooks",
+                    hook = result.name.as_deref().unwrap_or("(unnamed)"),
+                    event = "pre_compact",
+                    exit_code = ?result.exit_code,
+                    duration_ms = result.duration.as_millis() as u64,
+                    error = result.error.as_deref().unwrap_or(""),
+                    stderr_head = %result.stderr.lines().next().unwrap_or(""),
+                    "pre_compact hook failed; contributing no preserve context"
+                );
+                continue;
+            }
+
+            let stdout = result.stdout.trim();
+            if stdout.is_empty() {
+                continue;
+            }
+            let is_first = preserved.is_none();
+            let buf = preserved.get_or_insert_with(String::new);
+            if !is_first {
+                buf.push_str("\n\n---\n\n");
+            }
+            buf.push_str(stdout);
+        }
+
+        preserved
     }
 
     /// Run every `ShellEnv` hook for this context and merge their stdout
@@ -1567,6 +1646,170 @@ printf '%s\n' '{"text":"ignored"}'
         assert_eq!(
             executor.execute_message_submit_transform(&HookContext::new(), "original"),
             MessageSubmitOutcome::unchanged()
+        );
+    }
+
+    #[test]
+    fn pre_compact_hook_without_configured_hooks_is_none() {
+        let executor = HookExecutor::new(HooksConfig::default(), PathBuf::from("."));
+
+        assert_eq!(
+            executor.execute_pre_compact_hook(&HookContext::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn pre_compact_hook_disabled_when_global_enabled_false() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = write_hook_script(&dir, "echo.sh", "printf 'remember the milk'");
+        let config = HooksConfig {
+            enabled: false,
+            hooks: vec![Hook::new(HookEvent::PreCompact, &command)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        assert_eq!(
+            executor.execute_pre_compact_hook(&submit_context(&dir)),
+            None
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pre_compact_hook_collects_stdout_as_preserve_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = write_hook_script(&dir, "preserve.sh", "printf 'remember the milk'");
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::PreCompact, &command)
+                .with_name("preserve")
+                .with_timeout(10)],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        let result = executor.execute_pre_compact_hook(&submit_context(&dir));
+        assert_eq!(result.as_deref(), Some("remember the milk"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pre_compact_hook_concatenates_multiple_hooks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = write_hook_script(&dir, "first.sh", "printf 'fact A'");
+        let second = write_hook_script(&dir, "second.sh", "printf 'fact B'");
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![
+                Hook::new(HookEvent::PreCompact, &first),
+                Hook::new(HookEvent::PreCompact, &second),
+            ],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        let result = executor.execute_pre_compact_hook(&submit_context(&dir));
+        let preserved = result.expect("at least one hook contributed");
+        assert!(preserved.contains("fact A"));
+        assert!(preserved.contains("fact B"));
+        assert!(preserved.contains("---"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pre_compact_hook_failed_hook_contributes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ok = write_hook_script(&dir, "ok.sh", "printf 'kept'");
+        let bad = write_hook_script(&dir, "bad.sh", "printf 'lost'; exit 3");
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![
+                Hook::new(HookEvent::PreCompact, &bad),
+                Hook::new(HookEvent::PreCompact, &ok),
+            ],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        // The failing hook's output is dropped; the successful one survives.
+        let result = executor.execute_pre_compact_hook(&submit_context(&dir));
+        let preserved = result.expect("successful hook contributed");
+        assert!(preserved.contains("kept"));
+        assert!(!preserved.contains("lost"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pre_compact_hook_background_hook_is_observer_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = write_hook_script(&dir, "bg.sh", "printf 'ignored'");
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::PreCompact, &command).background()],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        assert_eq!(
+            executor.execute_pre_compact_hook(&submit_context(&dir)),
+            None
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pre_compact_hook_receives_stdin_payload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Echo a sentinel derived from the stdin JSON so we can assert the
+        // structured payload actually reached the hook.
+        let command = write_hook_script(
+            &dir,
+            "echo_payload.sh",
+            r#"#!/bin/sh
+payload=$(cat)
+case "$payload" in
+  *'"hook_event_name":"pre_compact"'*) printf 'saw pre_compact payload' ;;
+  *) printf 'wrong payload' ;;
+esac
+"#,
+        );
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::PreCompact, &command)],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        let result = executor.execute_pre_compact_hook(&submit_context(&dir));
+        assert_eq!(result.as_deref(), Some("saw pre_compact payload"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pre_compact_hook_skips_non_matching_condition() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = write_hook_script(&dir, "conditional.sh", "printf 'should not run'");
+        let hook = Hook::new(HookEvent::PreCompact, &command)
+            .with_condition(HookCondition::Mode { mode: "plan".into() });
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![hook],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        // submit_context sets mode = "agent", so a plan-only hook is skipped.
+        assert_eq!(
+            executor.execute_pre_compact_hook(&submit_context(&dir)),
+            None
         );
     }
 

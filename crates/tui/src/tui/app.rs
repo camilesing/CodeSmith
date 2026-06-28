@@ -2225,6 +2225,16 @@ impl App {
         }
 
         if entering_yolo {
+            // Entering YOLO implies auto-approve + trust mode. Catastrophic
+            // commands are still stripped at the elevation chokepoint
+            // (`auto_mode::decide_auto_elevation`); this stash records the
+            // pre-YOLO approval/trust state so leaving YOLO restores it —
+            // mirroring Claude's `stripDangerousPermissionsForAutoMode` /
+            // `restoreDangerousPermissions` lifecycle.
+            tracing::info!(
+                previous_mode = previous_mode.label(),
+                "auto-mode dangerous-command strip active (YOLO)"
+            );
             self.yolo_restore = Some(YoloRestoreState {
                 allow_shell: self.allow_shell,
                 trust_mode: self.trust_mode,
@@ -2234,6 +2244,9 @@ impl App {
             self.trust_mode = true;
             self.approval_mode = ApprovalMode::Auto;
         } else if leaving_yolo && let Some(restore) = self.yolo_restore.take() {
+            tracing::info!(
+                "auto-mode dangerous-command strip restored (leaving YOLO)"
+            );
             self.allow_shell = restore.allow_shell;
             self.trust_mode = restore.trust_mode;
             self.approval_mode = restore.approval_mode;

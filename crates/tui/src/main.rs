@@ -22,6 +22,7 @@ mod automation_manager;
 mod background_task;
 mod child_env;
 mod client;
+mod auto_mode;
 mod command_safety;
 mod commands;
 mod compaction;
@@ -284,6 +285,15 @@ enum Commands {
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
+    /// Run a single teammate turn in this process.
+    ///
+    /// Used by the tmux / iTerm2 pane backends: the leader spawns a pane
+    /// running `codesmith team-teammate …`, which loads the teammate's
+    /// registration from the on-disk team file, runs the assigned prompt
+    /// through the headless agent engine with the team context attached,
+    /// reports a completion summary to the lead's mailbox, and marks the
+    /// member inactive.
+    TeamTeammate(TeamTeammateArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -348,6 +358,40 @@ enum ExecOutputFormat {
     Text,
     #[value(name = "stream-json")]
     StreamJson,
+}
+
+/// Arguments for the `team-teammate` subcommand (pane-backed teammate loop).
+#[derive(Args, Debug, Clone)]
+struct TeamTeammateArgs {
+    /// Team name the teammate belongs to.
+    #[arg(long, required = true)]
+    team: String,
+    /// Teammate name (must already be registered in the team file).
+    #[arg(long, required = true)]
+    name: String,
+    /// Initial prompt / objective. If omitted, the registered prompt from the
+    /// team file is used.
+    #[arg(long)]
+    prompt: Option<String>,
+    /// Read the initial prompt from a file (and unlink it after reading).
+    /// Takes precedence over `--prompt`.
+    #[arg(long = "prompt-file", value_name = "PATH")]
+    prompt_file: Option<PathBuf>,
+    /// Override the registered model.
+    #[arg(long)]
+    model: Option<String>,
+    /// Working directory for the teammate run.
+    #[arg(long, value_name = "DIR")]
+    cwd: Option<PathBuf>,
+    /// Sub-agent type (defaults to `team`).
+    #[arg(long = "agent-type", default_value = "team")]
+    agent_type: String,
+    /// Permission mode: `auto` (auto-approve tools) or `ask`.
+    #[arg(long = "permission-mode", default_value = "ask")]
+    permission_mode: String,
+    /// Optional comma-separated tool allowlist.
+    #[arg(long = "allowed-tools", value_name = "CSV")]
+    allowed_tools: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1054,6 +1098,10 @@ async fn main() -> Result<()> {
                 let workspace = resolve_workspace(&cli);
                 let new_session_id = fork_session(session_id, last, &workspace)?;
                 run_interactive(&cli, &config, Some(new_session_id), None).await
+            }
+            Commands::TeamTeammate(args) => {
+                let config = load_config_from_cli(&cli)?;
+                run_team_teammate(&config, args).await
             }
         };
     }
@@ -5553,6 +5601,7 @@ async fn run_exec_agent(
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
+        hooks: None,
     };
 
     let engine_handle = spawn_engine(engine_config, config);
@@ -5786,15 +5835,36 @@ async fn run_exec_agent(
             Event::ElevationRequired {
                 tool_id,
                 tool_name,
+                command,
                 denial_reason,
                 ..
             } => {
                 if auto_approve {
-                    if output_format == ExecOutputFormat::Text && !json_output {
-                        eprintln!("sandbox denied {tool_name}: {denial_reason} (auto-elevating)");
+                    // Strip catastrophic commands; elevate the rest only with
+                    // the trust/YOLO opt-in. Never silently auto-elevate to
+                    // DangerFullAccess — that conflates approval-bypass with
+                    // sandbox-bypass.
+                    let decision = crate::auto_mode::decide_auto_elevation(
+                        command.as_deref(),
+                        trust_mode,
+                        crate::sandbox::SandboxPolicy::DangerFullAccess,
+                    );
+                    match decision {
+                        crate::auto_mode::AutoElevationDecision::Deny { reason } => {
+                            if output_format == ExecOutputFormat::Text && !json_output {
+                                eprintln!("sandbox denied {tool_name}: {reason}");
+                            }
+                            let _ = engine_handle.deny_tool_call(tool_id).await;
+                        }
+                        crate::auto_mode::AutoElevationDecision::ElevateTo(policy) => {
+                            if output_format == ExecOutputFormat::Text && !json_output {
+                                eprintln!(
+                                    "sandbox denied {tool_name}: {denial_reason} (auto-elevating)"
+                                );
+                            }
+                            let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
+                        }
                     }
-                    let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
-                    let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
                 } else {
                     if output_format == ExecOutputFormat::Text && !json_output {
                         eprintln!("sandbox denied {tool_name}: {denial_reason}");
@@ -5904,6 +5974,340 @@ async fn run_exec_agent(
         bail!("exec turn ended with status {status}");
     }
 
+    Ok(())
+}
+
+/// `codesmith team-teammate` — run a single teammate turn in this process.
+///
+/// Invoked by the tmux / iTerm2 pane backends. Loads the teammate's
+/// registration from the on-disk team file, runs the assigned prompt
+/// through the headless agent engine with the team context attached (so
+/// team tools — `send_message`, task claiming — work), reports a
+/// completion summary to the lead's mailbox, and marks the member
+/// inactive.
+///
+/// This is a bounded single-turn run, not the long-polling mailbox loop
+/// (`run_teammate_loop`). Full swarm participation (idle notifications,
+/// inbox polling, shutdown protocol) unifies with the exec path under
+/// Phase 6's execution-core extraction.
+async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()> {
+    use crate::compaction::CompactionConfig;
+    use crate::core::engine::{EngineConfig, spawn_engine};
+    use crate::core::events::Event;
+    use crate::core::ops::Op;
+    use crate::models::compaction_threshold_for_model;
+    use crate::tools::plan::new_shared_plan_state;
+    use crate::tools::task_v2::new_shared_task_v2_manager;
+    use crate::tools::team::{
+        TeamContext, TeammateMessage, find_member_by_name, new_shared_team_context,
+        read_team_config, set_member_inactive, team_config_path, team_lead_name,
+        write_team_config, write_to_mailbox,
+    };
+    use crate::tools::todo::new_shared_todo_list;
+    use crate::tui::app::AppMode;
+
+    // 1. Load team + member registration from disk.
+    let team_file = read_team_config(&args.team)
+        .with_context(|| format!("team '{}' not found on disk", args.team))?;
+    let member = find_member_by_name(&team_file, &args.name).with_context(|| {
+        format!("teammate '{}' not found in team '{}'", args.name, args.team)
+    })?;
+
+    // 2. Resolve prompt: --prompt-file (read + unlink) > --prompt > registered.
+    let prompt = if let Some(pf) = args.prompt_file.as_ref() {
+        let text = std::fs::read_to_string(pf)
+            .with_context(|| format!("read prompt file {}", pf.display()))?;
+        let _ = std::fs::remove_file(pf);
+        text
+    } else if let Some(p) = args.prompt.clone() {
+        p
+    } else if let Some(mp) = member.prompt.clone() {
+        mp
+    } else {
+        bail!(
+            "no prompt for teammate '{}': pass --prompt/--prompt-file or register one in the team file",
+            args.name
+        );
+    };
+
+    // 3. Resolve model / cwd / permission / tool allowlist.
+    let model = args
+        .model
+        .clone()
+        .or(member.model.clone())
+        .unwrap_or_else(|| config.default_model());
+    let cwd = args
+        .cwd
+        .clone()
+        .or_else(|| {
+            if member.cwd.is_empty() {
+                None
+            } else {
+                PathBuf::from(&member.cwd).canonicalize().ok()
+            }
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let auto_approve = args.permission_mode.eq_ignore_ascii_case("auto");
+    let allowed_tools: Option<Vec<String>> = args.allowed_tools.as_ref().map(|csv| {
+        csv.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
+    // 4. Build a TeamContext loaded from disk so team tools resolve the team.
+    let task_v2_manager =
+        new_shared_task_v2_manager(&args.team).context("failed to create task manager")?;
+    let team_file_path = team_config_path(&args.team).unwrap_or_default();
+    let team_context = new_shared_team_context();
+    {
+        let mut slot = team_context.lock().await;
+        *slot = Some(TeamContext {
+            team_name: args.team.clone(),
+            team_file_path,
+            lead_agent_id: team_file.lead_agent_id.clone(),
+            task_v2_manager: task_v2_manager.clone(),
+            teammates: std::collections::HashMap::new(),
+            teammate_cancel_tokens: std::collections::HashMap::new(),
+        });
+    }
+
+    // 5. Build the headless engine config (mirrors `run_exec_agent`, with the
+    //    team context + sender wired so this process participates as the
+    //    teammate rather than as an anonymous exec caller).
+    let route = resolve_cli_auto_route(config, &model, &prompt).await;
+    let effective_model = route.model;
+    let effective_reasoning_effort = route
+        .reasoning_effort
+        .map(|effort| effort.as_setting().to_string());
+
+    let compaction = CompactionConfig {
+        enabled: true,
+        model: effective_model.clone(),
+        token_threshold: compaction_threshold_for_model(&effective_model),
+        ..Default::default()
+    };
+    let network_policy = config.network.clone().map(|toml_cfg| {
+        crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
+    });
+    let lsp_config = config
+        .lsp
+        .clone()
+        .map(crate::config::LspConfigToml::into_runtime);
+    let settings = crate::settings::Settings::load().unwrap_or_default();
+
+    let mut runtime_services = crate::tools::spec::RuntimeToolServices::default();
+    runtime_services.team_sender = Some(args.name.clone());
+    runtime_services.task_v2_manager = Some(task_v2_manager);
+
+    let engine_config = EngineConfig {
+        model: effective_model.clone(),
+        workspace: cwd.clone(),
+        allow_shell: auto_approve || config.allow_shell(),
+        trust_mode: auto_approve,
+        notes_path: config.notes_path(),
+        mcp_config_path: config.mcp_config_path(),
+        skills_dir: config.skills_dir(),
+        instructions: config
+            .instructions_paths()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        override_system_prompt: None,
+        custom_system_prompt: None,
+        coordinator_system_prompt: None,
+        agent_system_prompt: None,
+        append_system_prompts: vec![],
+        cache_breaker: None,
+        project_context_pack_enabled: config.project_context_pack_enabled(),
+        translation_enabled: false,
+        show_thinking: settings.show_thinking,
+        max_steps: 100,
+        max_subagents: config.max_subagents(),
+        features: config.features(),
+        compaction,
+        cycle: crate::cycle_manager::CycleConfig::default(),
+        capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
+        todos: new_shared_todo_list(),
+        plan_state: new_shared_plan_state(),
+        plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
+        task_v2_manager: None,
+        goal_state: crate::tools::goal::new_shared_goal_state(),
+        worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
+        max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+        network_policy,
+        snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_max_workspace_bytes: config
+            .snapshots_config()
+            .max_workspace_gb
+            .saturating_mul(1024 * 1024 * 1024),
+        lsp_config,
+        runtime_services,
+        subagent_model_overrides: config.subagent_model_overrides(),
+        subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
+        sandbox_runtime: config.sandbox_runtime_config(),
+        memory_enabled: config.memory_enabled(),
+        memory_path: config.memory_path(),
+        kod_enabled: config.kod_enabled(),
+        memory_dir: config.memory_dir(),
+        vision_config: config.vision_model_config(),
+        strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
+        goal_objective: None,
+        allowed_tools: allowed_tools.clone(),
+        locale_tag: crate::localization::resolve_locale(&settings.locale)
+            .tag()
+            .to_string(),
+        workshop: config.workshop.clone(),
+        search_provider: config.search_provider(),
+        search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        tools_always_load: config.tools_always_load(),
+        tools: config.tools.clone(),
+        team_context: Some(team_context),
+        hooks: None,
+    };
+
+    let engine_handle = spawn_engine(engine_config, config);
+    let mode = if auto_approve {
+        AppMode::Yolo
+    } else {
+        AppMode::Agent
+    };
+
+    engine_handle
+        .send(Op::SendMessage {
+            content: prompt.clone(),
+            mode,
+            model: effective_model.clone(),
+            goal_objective: None,
+            allowed_tools: None,
+            reasoning_effort: effective_reasoning_effort,
+            reasoning_effort_auto: route.auto_model,
+            auto_model: route.auto_model,
+            allow_shell: auto_approve || config.allow_shell(),
+            trust_mode: auto_approve,
+            auto_approve,
+            translation_enabled: false,
+            show_thinking: settings.show_thinking,
+            approval_mode: if auto_approve {
+                crate::tui::approval::ApprovalMode::Auto
+            } else {
+                config
+                    .approval_policy
+                    .as_deref()
+                    .and_then(crate::tui::approval::ApprovalMode::from_config_value)
+                    .unwrap_or_default()
+            },
+        })
+        .await?;
+
+    // 6. Drive the turn to completion, streaming assistant text to the pane.
+    let mut output = String::new();
+    let mut turn_error: Option<String> = None;
+    let mut turn_status: Option<String> = None;
+    loop {
+        let event = {
+            let mut rx = engine_handle.rx_event.write().await;
+            rx.recv().await
+        };
+        let Some(event) = event else {
+            break;
+        };
+        match event {
+            Event::MessageDelta { content, .. } => {
+                output.push_str(&content);
+                print!("{content}");
+                let _ = io::stdout().flush();
+            }
+            Event::ApprovalRequired { id, .. } => {
+                if auto_approve {
+                    let _ = engine_handle.approve_tool_call(id).await;
+                } else {
+                    // Headless teammate cannot prompt a human; deny so the
+                    // model gets a tool error it can react to.
+                    let _ = engine_handle.deny_tool_call(id).await;
+                }
+            }
+            Event::ElevationRequired {
+                tool_id,
+                tool_name,
+                command,
+                denial_reason,
+                ..
+            } => {
+                if auto_approve {
+                    let decision = crate::auto_mode::decide_auto_elevation(
+                        command.as_deref(),
+                        auto_approve,
+                        crate::sandbox::SandboxPolicy::DangerFullAccess,
+                    );
+                    match decision {
+                        crate::auto_mode::AutoElevationDecision::Deny { reason } => {
+                            eprintln!("sandbox denied {tool_name}: {reason}");
+                            let _ = engine_handle.deny_tool_call(tool_id).await;
+                        }
+                        crate::auto_mode::AutoElevationDecision::ElevateTo(policy) => {
+                            eprintln!(
+                                "sandbox denied {tool_name}: {denial_reason} (auto-elevating)"
+                            );
+                            let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
+                        }
+                    }
+                } else {
+                    eprintln!("sandbox denied {tool_name}: {denial_reason}");
+                    let _ = engine_handle.deny_tool_call(tool_id).await;
+                }
+            }
+            Event::Error { envelope, .. } => {
+                turn_error = Some(envelope.message.clone());
+                eprintln!("error: {}", envelope.message);
+            }
+            Event::TurnComplete {
+                status, error, ..
+            } => {
+                turn_status = Some(format!("{status:?}").to_lowercase());
+                if let Some(e) = error {
+                    turn_error = Some(e);
+                }
+                let _ = engine_handle.send(Op::Shutdown).await;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    // 7. Report completion to the lead's mailbox + mark the member inactive.
+    let lead = team_lead_name();
+    let body = if output.trim().is_empty() {
+        "(no output)".to_string()
+    } else {
+        output.trim().to_string()
+    };
+    let summary_text = format!(
+        "[teammate {}] turn complete (status: {})\n{body}",
+        args.name,
+        turn_status.as_deref().unwrap_or("unknown"),
+    );
+    let _ = write_to_mailbox(
+        lead,
+        &args.team,
+        TeammateMessage {
+            from: args.name.clone(),
+            text: summary_text,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            read: false,
+            color: member.color.clone(),
+            summary: Some(format!("teammate {} complete", args.name)),
+        },
+    );
+    if let Ok(mut tf) = read_team_config(&args.team) {
+        let _ = set_member_inactive(&mut tf, &args.name);
+        let _ = write_team_config(&tf);
+    }
+
+    if let Some(err) = turn_error.as_ref().filter(|e| !e.trim().is_empty()) {
+        bail!("team-teammate turn failed: {err}");
+    }
     Ok(())
 }
 
@@ -6295,6 +6699,70 @@ mod terminal_mode_tests {
         };
 
         assert!(args.continue_session);
+    }
+
+    #[test]
+    fn team_teammate_parses_required_flags_and_defaults() {
+        let cli = parse_cli(&[
+            "codesmith",
+            "team-teammate",
+            "--team",
+            "demo",
+            "--name",
+            "worker-1",
+            "--prompt",
+            "hi",
+        ]);
+        let Some(Commands::TeamTeammate(args)) = cli.command else {
+            panic!("expected team-teammate command");
+        };
+
+        assert_eq!(args.team, "demo");
+        assert_eq!(args.name, "worker-1");
+        assert_eq!(args.prompt.as_deref(), Some("hi"));
+        assert!(args.prompt_file.is_none());
+        assert!(args.model.is_none());
+        assert!(args.cwd.is_none());
+        assert_eq!(args.agent_type, "team");
+        assert_eq!(args.permission_mode, "ask");
+        assert!(args.allowed_tools.is_none());
+    }
+
+    #[test]
+    fn team_teammate_accepts_all_optional_overrides() {
+        let cli = parse_cli(&[
+            "codesmith",
+            "team-teammate",
+            "--team",
+            "demo",
+            "--name",
+            "worker-2",
+            "--prompt-file",
+            "/tmp/prompt.txt",
+            "--model",
+            "deepseek-chat",
+            "--cwd",
+            "/tmp/work",
+            "--agent-type",
+            "general",
+            "--permission-mode",
+            "auto",
+            "--allowed-tools",
+            "Read,Write",
+        ]);
+        let Some(Commands::TeamTeammate(args)) = cli.command else {
+            panic!("expected team-teammate command");
+        };
+
+        assert_eq!(args.team, "demo");
+        assert_eq!(args.name, "worker-2");
+        assert!(args.prompt.is_none());
+        assert_eq!(args.prompt_file.as_deref(), Some(std::path::Path::new("/tmp/prompt.txt")));
+        assert_eq!(args.model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(args.cwd.as_deref(), Some(std::path::Path::new("/tmp/work")));
+        assert_eq!(args.agent_type, "general");
+        assert_eq!(args.permission_mode, "auto");
+        assert_eq!(args.allowed_tools.as_deref(), Some("Read,Write"));
     }
 
     #[test]

@@ -2760,6 +2760,45 @@ async fn spawn_team_teammate(
     effective_prompt: String,
     validated_cwd: Option<PathBuf>,
 ) -> Result<SubAgentResult, ToolError> {
+    let kind = crate::tools::team::backend::detect::detect_backend_kind();
+    match kind {
+        crate::tools::team::backend::BackendKind::InProcess => {
+            spawn_team_teammate_in_process(
+                manager,
+                runtime,
+                spawn_request,
+                effective_model,
+                effective_prompt,
+                validated_cwd,
+            )
+            .await
+        }
+        crate::tools::team::backend::BackendKind::Tmux
+        | crate::tools::team::backend::BackendKind::Iter => {
+            spawn_team_teammate_in_pane(
+                kind,
+                runtime,
+                spawn_request,
+                effective_model,
+                effective_prompt,
+                validated_cwd,
+            )
+            .await
+        }
+    }
+}
+
+/// In-process teammate spawn — the original path: register the teammate in
+/// the leader's `TeamContext` + on-disk team file, construct a
+/// `TeammateRuntime`, and drive `run_teammate_loop` in a supervised task.
+async fn spawn_team_teammate_in_process(
+    manager: SharedSubAgentManager,
+    runtime: SubAgentRuntime,
+    spawn_request: SpawnRequest,
+    effective_model: Option<String>,
+    effective_prompt: String,
+    validated_cwd: Option<PathBuf>,
+) -> Result<SubAgentResult, ToolError> {
     let shared_team_context = runtime
         .context
         .runtime
@@ -2917,6 +2956,162 @@ async fn spawn_team_teammate(
         status: SubAgentStatus::Running,
         agent_memory: None,
         result: Some(format!("Teammate spawned in team '{team_name}'")),
+        steps_taken: 0,
+        duration_ms: 0,
+        from_prior_session: false,
+    })
+}
+
+/// Pane-backed teammate spawn (tmux / iTerm2). Registers the teammate
+/// leader-side (on-disk team file + in-memory `TeamContext` entry) so the
+/// leader can list / message it, then launches `codesmith team-teammate …`
+/// in a new pane/tab via the detected [`TeammateBackend`].
+///
+/// Unlike the in-process path, there is no leader-side cancellation token or
+/// cleanup task: the pane process owns its own lifecycle and marks itself
+/// inactive in the team file when it exits. The leader's in-memory entry is
+/// best-effort and reconciled on next team-file read.
+async fn spawn_team_teammate_in_pane(
+    kind: crate::tools::team::backend::BackendKind,
+    runtime: SubAgentRuntime,
+    spawn_request: SpawnRequest,
+    effective_model: Option<String>,
+    effective_prompt: String,
+    validated_cwd: Option<PathBuf>,
+) -> Result<SubAgentResult, ToolError> {
+    use crate::tools::team::backend::{
+        TeammateBackend, TeammateSpawnSpec, iterm::ITermBackend, tmux::TmuxBackend,
+    };
+
+    let shared_team_context = runtime
+        .context
+        .runtime
+        .team_context
+        .clone()
+        .ok_or_else(|| ToolError::not_available("AgentTeams runtime is not attached"))?;
+
+    let agent_id = format!("team_agent_{}", &Uuid::new_v4().to_string()[..8]);
+    let agent_name = spawn_request
+        .session_name
+        .clone()
+        .unwrap_or_else(|| agent_id.clone());
+    let agent_type = spawn_request.agent_type.clone();
+    let cwd = validated_cwd.unwrap_or_else(|| runtime.context.cwd.clone());
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // Leader-side registration: validate the active team, write the member to
+    // the on-disk team file, and insert an in-memory entry so `team_list` /
+    // `send_message` see the teammate before the pane comes up.
+    let team_name = {
+        let mut slot = shared_team_context.lock().await;
+        let ctx = slot.as_mut().ok_or_else(|| {
+            ToolError::invalid_input("No active team. Call team_create before spawning teammates.")
+        })?;
+        if let Some(requested) = spawn_request.team_name.as_ref()
+            && requested != &ctx.team_name
+        {
+            return Err(ToolError::invalid_input(format!(
+                "Active team is '{}', not '{}'",
+                ctx.team_name, requested
+            )));
+        }
+        if ctx.teammates.values().any(|existing| existing.name == agent_name) {
+            return Err(ToolError::invalid_input(format!(
+                "Teammate '{agent_name}' already exists"
+            )));
+        }
+
+        let mut team_file = read_team_config(&ctx.team_name).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read team config: {e}"))
+        })?;
+        add_member(
+            &mut team_file,
+            TeamMember {
+                agent_id: agent_id.clone(),
+                name: agent_name.clone(),
+                agent_type: Some(agent_type.as_str().to_string()),
+                model: effective_model.clone(),
+                prompt: Some(effective_prompt.clone()),
+                color: None,
+                joined_at: now,
+                cwd: cwd.to_string_lossy().to_string(),
+                worktree_path: None,
+                session_id: None,
+                is_active: true,
+            },
+        );
+        write_team_config(&team_file)
+            .map_err(|e| ToolError::execution_failed(format!("Failed to write team config: {e}")))?;
+
+        ctx.teammates.insert(
+            agent_id.clone(),
+            TeammateInfo {
+                name: agent_name.clone(),
+                agent_type: agent_type.as_str().to_string(),
+                color: None,
+                cwd: cwd.clone(),
+                spawned_at: now,
+            },
+        );
+        ctx.team_name.clone()
+    };
+
+    let permission_mode = if runtime.context.auto_approve {
+        "auto".to_string()
+    } else {
+        "ask".to_string()
+    };
+    let mut spec = TeammateSpawnSpec::new(agent_id.clone(), agent_name.clone(), team_name.clone());
+    spec.agent_type = agent_type.as_str().to_string();
+    spec.prompt = effective_prompt.clone();
+    spec.model = effective_model.clone();
+    spec.cwd = cwd.clone();
+    spec.allowed_tools = spawn_request.allowed_tools.clone();
+    spec.permission_mode = permission_mode;
+
+    let backend: Box<dyn TeammateBackend> = match kind {
+        crate::tools::team::backend::BackendKind::Tmux => Box::new(TmuxBackend::new()),
+        crate::tools::team::backend::BackendKind::Iter => Box::new(ITermBackend::new()),
+        crate::tools::team::backend::BackendKind::InProcess => {
+            // Unreachable: caller only routes pane backends here.
+            return Err(ToolError::execution_failed(
+                "in-process backend routed to pane spawn path",
+            ));
+        }
+    };
+
+    let spawned = match backend.spawn(&spec).await {
+        Ok(s) => s,
+        Err(e) => {
+            // Roll back the leader-side registration so a failed spawn does
+            // not leave a phantom teammate in the team file / context.
+            if let Ok(mut team_file) = read_team_config(&team_name) {
+                let _ = crate::tools::team::remove_member_by_name(&mut team_file, &agent_name);
+                let _ = write_team_config(&team_file);
+            }
+            let mut slot = shared_team_context.lock().await;
+            if let Some(ctx) = slot.as_mut() {
+                ctx.teammates.remove(&agent_id);
+            }
+            return Err(e.into_tool_error());
+        }
+    };
+
+    Ok(SubAgentResult {
+        name: agent_name,
+        agent_id,
+        context_mode: format!("team:{}", spawned.backend.as_str()),
+        fork_context: false,
+        agent_type,
+        assignment: spawn_request.assignment,
+        model: effective_model.unwrap_or_else(|| runtime.model.clone()),
+        nickname: None,
+        status: SubAgentStatus::Running,
+        agent_memory: None,
+        result: Some(format!(
+            "Teammate spawned in team '{team_name}' via {} backend",
+            spawned.backend.as_str()
+        )),
         steps_taken: 0,
         duration_ms: 0,
         from_prior_session: false,

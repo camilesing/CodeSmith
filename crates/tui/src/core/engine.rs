@@ -27,8 +27,10 @@ use crate::compaction::session_memory_compact::{
     session_memory_compact, should_use_session_memory_compact,
 };
 use crate::compaction::{
-    CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
+    CompactionConfig, CompactionEnhancements, SessionMemorySidecar, compact_messages_safe,
+    merge_system_prompts, should_compact,
 };
+use crate::hooks::{HookContext, HookExecutor};
 use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::cycle_manager::{
     CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
@@ -235,6 +237,12 @@ pub struct EngineConfig {
     /// `None` disables AgentTeams runtime services. `Some(Mutex(None))` means
     /// AgentTeams is available but no team is active yet.
     pub team_context: Option<crate::tools::team::SharedTeamContext>,
+    /// Hook executor used to fire `PreCompact` (and future compaction-related)
+    /// hooks from the engine's compaction path. `None` when the host (e.g.
+    /// headless CLI / runtime threads) doesn't wire hooks; the TUI threads
+    /// `App::hooks` here so compaction fires `pre_compact` hooks and merges
+    /// their stdout into the summary (#485).
+    pub hooks: Option<HookExecutor>,
 }
 
 impl Default for EngineConfig {
@@ -297,6 +305,7 @@ impl Default for EngineConfig {
             sandbox_runtime: SandboxRuntimeConfig::default(),
             tools: None,
             team_context: None,
+            hooks: None,
         }
     }
 }
@@ -2075,6 +2084,7 @@ impl Engine {
         let mut turn_status = TurnOutcomeStatus::Completed;
         let mut turn_error = None;
 
+        let enhancements = self.build_compaction_enhancements();
         match compact_messages_safe(
             &*client,
             &self.session.messages,
@@ -2082,6 +2092,7 @@ impl Engine {
             Some(&self.session.workspace),
             Some(&compaction_pins),
             Some(&compaction_paths),
+            enhancements.as_ref(),
         )
         .await
         {
@@ -2304,6 +2315,57 @@ impl Engine {
         }
 
         Ok(None)
+    }
+
+    /// Build the [`HookContext`] used when firing `PreCompact` hooks from
+    /// the compaction path. Kept minimal: workspace, model, and current
+    /// input-token estimate — enough for a hook to decide what to preserve.
+    fn build_compaction_hook_context(&self) -> HookContext {
+        HookContext::new()
+            .with_workspace(self.session.workspace.clone())
+            .with_model(&self.session.model)
+            .with_tokens(self.estimated_input_tokens().min(u32::MAX as usize) as u32)
+    }
+
+    /// Assemble the optional enhancements handed to [`compact_messages_safe`]:
+    /// a cloned `HookExecutor` (so the caller may mutate session state after
+    /// the call) plus whatever session-memory content is currently on disk.
+    ///
+    /// Returns `None` when neither hooks nor session-memory material is
+    /// available, so the compaction primitive takes its untouched fast path.
+    fn build_compaction_enhancements(&self) -> Option<CompactionEnhancements> {
+        let hooks = self.config.hooks.clone().map(|executor| {
+            let session_id = executor.session_id().to_string();
+            let context = self
+                .build_compaction_hook_context()
+                .with_session_id(&session_id);
+            (executor, context)
+        });
+
+        let session_memory = match self.session_memory_compaction_content() {
+            Ok(Some((_source, content))) => Some(SessionMemorySidecar {
+                memory_content: content,
+                config: self.session.session_memory_compact_config.clone(),
+            }),
+            Ok(None) => None,
+            Err(err) => {
+                tracing::warn!(
+                    target: "compaction",
+                    error = %err,
+                    "failed to load session memory for session-memory-first compaction; skipping",
+                );
+                None
+            }
+        };
+
+        if hooks.is_none() && session_memory.is_none() {
+            None
+        } else {
+            Some(CompactionEnhancements {
+                hooks,
+                session_memory,
+            })
+        }
     }
 
     async fn handle_purge(&mut self) {
@@ -2553,6 +2615,7 @@ impl Engine {
         // of cache cost.
         forced_config.auto_floor_tokens = 0;
 
+        let enhancements = self.build_compaction_enhancements();
         match compact_messages_safe(
             &*client,
             &self.session.messages,
@@ -2560,6 +2623,7 @@ impl Engine {
             Some(&self.session.workspace),
             None,
             None,
+            enhancements.as_ref(),
         )
         .await
         {
@@ -3542,7 +3606,7 @@ mod streaming;
 mod team_inbox;
 mod tool_catalog;
 mod tool_execution;
-mod tool_setup;
+pub(crate) mod tool_setup;
 mod turn_loop;
 
 pub(crate) fn default_active_native_tool_names() -> &'static [&'static str] {

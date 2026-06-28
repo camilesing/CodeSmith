@@ -897,14 +897,19 @@ impl Default for SnapshotsConfig {
 
 /// User-level memory configuration (#489).
 ///
-/// Default is opt-in: when this table is absent or `enabled = false`, the
-/// memory file is neither read nor written, and `# foo` quick-adds in the
-/// composer fall through to the normal turn-submission path.
+/// Default is **on** (mirrors Claude Code's `isAutoMemoryEnabled`): when this
+/// table is absent, the memory file is read/written and `# foo` quick-adds in
+/// the composer append to it. The effective enablement is resolved by
+/// [`Config::memory_enabled`], which applies a five-level priority cascade
+/// (disable env > bare/simple > remote-without-storage > explicit setting >
+/// default on). Set `enabled = false` (or `DEEPSEEK_DISABLE_AUTO_MEMORY=1`) to
+/// opt out.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MemoryConfig {
     /// When `true`, load the user memory file at `Config::memory_path()`
     /// into the system prompt as a `<user_memory>` block, and intercept
-    /// `# foo` typed in the composer to append to that file. Default `false`.
+    /// `# foo` typed in the composer to append to that file. When `None`,
+    /// the cascade default (`true`) applies.
     #[serde(default)]
     pub enabled: Option<bool>,
     /// When `true`, evolve memory from a single file to a directory-based
@@ -2539,16 +2544,46 @@ impl Config {
         }
     }
 
-    /// Whether the user-memory feature is enabled. The default is **off**
-    /// to preserve zero-overhead behavior for users who haven't opted in.
-    /// Flips to `true` when `[memory] enabled = true` in `config.toml` or
-    /// `DEEPSEEK_MEMORY=on` is set in the environment.
+    /// Whether the user-memory feature is enabled, using a Claude Code-style
+    /// priority cascade (highest precedence first):
+    ///
+    /// 1. `DEEPSEEK_DISABLE_AUTO_MEMORY` env — truthy closes memory, a
+    ///    defined-but-falsy value (e.g. `0`/`false`) explicitly opens it.
+    /// 2. bare/simple mode (`--bare` / `DEEPSEEK_SIMPLE` / `CODESMITH_SIMPLE`
+    ///    / `CODEWHALE_SIMPLE` truthy) — closes memory.
+    /// 3. remote mode (`DEEPSEEK_REMOTE` / `CODESMITH_REMOTE` truthy) without
+    ///    a `DEEPSEEK_REMOTE_MEMORY_DIR` — closes memory (no persistent store).
+    /// 4. `[memory] enabled` in `config.toml` or `DEEPSEEK_MEMORY` env — the
+    ///    explicit user setting.
+    /// 5. default **on**.
+    ///
+    /// Env vars are read at call time so runtime overrides (e.g. `--bare`)
+    /// take effect without reloading config.
     #[must_use]
     pub fn memory_enabled(&self) -> bool {
-        self.memory
-            .as_ref()
-            .and_then(|m| m.enabled)
-            .unwrap_or(false)
+        // 1. Explicit disable env (truthy -> off; defined-falsy -> on).
+        if let Ok(value) = std::env::var("DEEPSEEK_DISABLE_AUTO_MEMORY") {
+            return !parse_env_bool(&value);
+        }
+        // 2. bare/simple mode -> off.
+        if env_flag_truthy_any(&["DEEPSEEK_SIMPLE", "CODESMITH_SIMPLE", "CODEWHALE_SIMPLE"]) {
+            return false;
+        }
+        // 3. remote mode without a persistent memory dir -> off.
+        if env_flag_truthy_any(&["DEEPSEEK_REMOTE", "CODESMITH_REMOTE"])
+            && std::env::var("DEEPSEEK_REMOTE_MEMORY_DIR")
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true)
+        {
+            return false;
+        }
+        // 4. Explicit user setting (config.toml or DEEPSEEK_MEMORY, the latter
+        //    folded into `memory.enabled` by `apply_env_overrides`).
+        if let Some(enabled) = self.memory.as_ref().and_then(|m| m.enabled) {
+            return enabled;
+        }
+        // 5. default on.
+        true
     }
 
     /// Whether Knowledge On Demand is enabled. Requires both `memory.enabled = true`
@@ -3189,6 +3224,13 @@ fn parse_env_bool(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "on" | "true" | "yes" | "y" | "enabled"
     )
+}
+
+/// Returns `true` if any of the named env vars is set to a truthy value.
+fn env_flag_truthy_any(names: &[&str]) -> bool {
+    names
+        .iter()
+        .any(|name| std::env::var(name).map(|v| parse_env_bool(&v)).unwrap_or(false))
 }
 
 fn parse_env_list(value: &str) -> Vec<String> {
@@ -5162,7 +5204,7 @@ pub fn clear_api_key() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::lock_test_env;
+    use crate::test_support::{lock_test_env, EnvVarGuard};
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
@@ -9203,5 +9245,146 @@ model = "deepseek-ai/deepseek-v4-pro"
         assert_eq!(items[1], StatusItem::Model);
         assert_eq!(items[2], StatusItem::Cost);
         assert_eq!(items[3], StatusItem::Status);
+    }
+
+    // === memory_enabled cascade (Claude-style isAutoMemoryEnabled) ===
+
+    /// Remove every env var the cascade consults, returning guards that restore
+    /// them on drop. Callers must hold `lock_test_env()` for the guard lifetime.
+    fn clear_memory_env() -> [EnvVarGuard; 5] {
+        [
+            EnvVarGuard::remove("DEEPSEEK_DISABLE_AUTO_MEMORY"),
+            EnvVarGuard::remove("DEEPSEEK_SIMPLE"),
+            EnvVarGuard::remove("CODESMITH_SIMPLE"),
+            EnvVarGuard::remove("DEEPSEEK_REMOTE"),
+            EnvVarGuard::remove("DEEPSEEK_REMOTE_MEMORY_DIR"),
+        ]
+    }
+
+    #[test]
+    fn memory_enabled_defaults_on_when_unset() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        assert!(Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_disable_env_closes() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "1");
+        assert!(!Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_disable_env_falsy_opens() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "false");
+        assert!(Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_bare_mode_closes() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _s = EnvVarGuard::set("DEEPSEEK_SIMPLE", "true");
+        assert!(!Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_codesmith_simple_alias_closes() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _s = EnvVarGuard::set("CODESMITH_SIMPLE", "on");
+        assert!(!Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_remote_without_dir_closes() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _r = EnvVarGuard::set("DEEPSEEK_REMOTE", "true");
+        let _dir = EnvVarGuard::remove("DEEPSEEK_REMOTE_MEMORY_DIR");
+        assert!(!Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_remote_with_dir_stays_open() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _r = EnvVarGuard::set("DEEPSEEK_REMOTE", "true");
+        let _dir = EnvVarGuard::set("DEEPSEEK_REMOTE_MEMORY_DIR", "/tmp/mem");
+        assert!(Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_explicit_setting_overrides_default() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let off = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(false),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(!off.memory_enabled());
+
+        let on = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(true),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(on.memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_disable_env_beats_explicit_enable() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "1");
+        let on = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(true),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        // Priority 1 (disable env) wins over priority 4 (explicit setting).
+        assert!(!on.memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_bare_beats_explicit_enable() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _s = EnvVarGuard::set("DEEPSEEK_SIMPLE", "true");
+        let on = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(true),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        // Priority 2 (bare) wins over priority 4 (explicit setting).
+        assert!(!on.memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_kod_requires_memory_enabled() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let off = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(false),
+                kod_enabled: Some(true),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(!off.kod_enabled());
     }
 }

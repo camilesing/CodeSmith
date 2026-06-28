@@ -815,6 +815,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
+        hooks: Some(app.hooks.clone()),
     }
 }
 
@@ -2192,7 +2193,10 @@ async fn run_event_loop(
                         blocked_network,
                         blocked_write,
                     } => {
-                        // In YOLO mode, auto-elevate to full access
+                        // In Auto mode, strip catastrophic commands and elevate
+                        // the rest only with the trust/YOLO opt-in. Never
+                        // silently auto-elevate to DangerFullAccess — that
+                        // conflates approval-bypass with sandbox-bypass.
                         if app.approval_mode == ApprovalMode::Auto {
                             log_sensitive_event(
                                 "tool.sandbox.auto_elevate",
@@ -2203,14 +2207,34 @@ async fn run_event_loop(
                                     "session_id": app.current_session_id,
                                 }),
                             );
-                            app.add_message(HistoryCell::System {
-                                content: format!(
-                                    "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to full access"
-                                ),
-                            });
-                            // Auto-elevate to full access (no sandbox)
-                            let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
-                            let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
+                            let elevation_target = crate::core::engine::tool_setup::sandbox_policy_for_mode(
+                                app.mode,
+                                &app.workspace,
+                            );
+                            let allow_elevation = app.trust_mode || app.mode == AppMode::Yolo;
+                            match crate::auto_mode::decide_auto_elevation(
+                                command.as_deref(),
+                                allow_elevation,
+                                elevation_target,
+                            ) {
+                                crate::auto_mode::AutoElevationDecision::Deny { reason } => {
+                                    app.add_message(HistoryCell::System {
+                                        content: format!(
+                                            "Sandbox denied {tool_name}: {reason}"
+                                        ),
+                                    });
+                                    let _ = engine_handle.deny_tool_call(tool_id.clone()).await;
+                                }
+                                crate::auto_mode::AutoElevationDecision::ElevateTo(policy) => {
+                                    app.add_message(HistoryCell::System {
+                                        content: format!(
+                                            "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to mode sandbox"
+                                        ),
+                                    });
+                                    let _ =
+                                        engine_handle.retry_tool_with_policy(tool_id.clone(), policy).await;
+                                }
+                            }
                         } else {
                             log_sensitive_event(
                                 "tool.sandbox.prompt_elevation",

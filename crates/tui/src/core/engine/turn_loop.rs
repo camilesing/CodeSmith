@@ -355,6 +355,7 @@ impl Engine {
                     .send(Event::status("Auto-compacting context...".to_string()))
                     .await;
                 let auto_messages_before = self.session.messages.len();
+                let enhancements = self.build_compaction_enhancements();
                 match compact_messages_safe(
                     &*client,
                     &self.session.messages,
@@ -362,6 +363,7 @@ impl Engine {
                     Some(&self.session.workspace),
                     Some(&compaction_pins),
                     Some(&compaction_paths),
+                    enhancements.as_ref(),
                 )
                 .await
                 {

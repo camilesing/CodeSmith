@@ -2051,6 +2051,7 @@ impl RuntimeThreadManager {
             tools_always_load: self.config.tools_always_load(),
             tools: self.config.tools.clone(),
             team_context: None,
+            hooks: None,
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);
@@ -2807,6 +2808,7 @@ impl RuntimeThreadManager {
                 EngineEvent::ElevationRequired {
                     tool_id,
                     tool_name,
+                    command,
                     denial_reason,
                     ..
                 } => {
@@ -2828,12 +2830,37 @@ impl RuntimeThreadManager {
                         .unwrap_or((false, false));
                     match Self::approval_decision(auto_approve, trust_mode, true) {
                         RuntimeApprovalDecision::RetryWithFullAccess => {
-                            let _ = engine
-                                .retry_tool_with_policy(
-                                    tool_id,
-                                    crate::sandbox::SandboxPolicy::DangerFullAccess,
-                                )
-                                .await;
+                            // `approval_decision` only reaches this branch
+                            // when `auto_approve && trust_mode` (YOLO opt-in).
+                            // Still strip catastrophic commands — they must
+                            // never be auto-elevated, even in trust mode.
+                            let decision = crate::auto_mode::decide_auto_elevation(
+                                command.as_deref(),
+                                true,
+                                crate::sandbox::SandboxPolicy::DangerFullAccess,
+                            );
+                            match decision {
+                                crate::auto_mode::AutoElevationDecision::Deny { reason } => {
+                                    self.emit_event(
+                                        &thread_id,
+                                        Some(&turn_id),
+                                        None,
+                                        "sandbox.denied.stripped",
+                                        json!({
+                                            "tool_id": tool_id,
+                                            "tool_name": tool_name,
+                                            "reason": reason,
+                                        }),
+                                    )
+                                    .await?;
+                                    let _ = engine.deny_tool_call(tool_id).await;
+                                }
+                                crate::auto_mode::AutoElevationDecision::ElevateTo(policy) => {
+                                    let _ = engine
+                                        .retry_tool_with_policy(tool_id, policy)
+                                        .await;
+                                }
+                            }
                         }
                         RuntimeApprovalDecision::ApproveTool
                         | RuntimeApprovalDecision::DenyTool => {

@@ -18,6 +18,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::config::DEFAULT_TEXT_MODEL;
+use crate::hooks::{HookContext, HookExecutor};
 use crate::llm_client::LlmClient;
 use crate::logging;
 use crate::models::{
@@ -901,6 +902,76 @@ fn is_transient_error(e: &anyhow::Error) -> bool {
     )
 }
 
+/// Optional enhancements applied around the LLM compaction retry loop.
+///
+/// Passed to [`compact_messages_safe`] to enable two Claude-Code-parity
+/// behaviors (#485):
+///
+/// - `hooks`: fire `PreCompact` hooks and merge their stdout
+///   ("context to preserve") into the compaction summary so key facts
+///   survive summarization.
+/// - `session_memory`: try session-memory compaction *first*, using the
+///   `MEMORY.md` / Knowledge-on-Demand content as the summary. Returns
+///   early (no LLM call) when it clears the compaction threshold.
+///
+/// The struct is **owned** — it clones the `HookExecutor` and memory
+/// content — so the caller is free to mutate session state after the
+/// compaction call returns without holding a borrow.
+#[derive(Debug, Clone, Default)]
+pub struct CompactionEnhancements {
+    /// `PreCompact` hook executor + context. `None` skips the hook.
+    pub hooks: Option<(HookExecutor, HookContext)>,
+    /// Session-memory sidecar. `None` skips session-memory-first.
+    pub session_memory: Option<SessionMemorySidecar>,
+}
+
+/// Memory content + config for session-memory-first compaction.
+#[derive(Debug, Clone)]
+pub struct SessionMemorySidecar {
+    /// Raw memory text (e.g. `MEMORY.md` contents or KoD entrypoint).
+    pub memory_content: String,
+    /// Retain-budget configuration.
+    pub config: session_memory_compact::SessionMemoryCompactConfig,
+}
+
+/// Merge hook-provided "context to preserve" into a compaction summary.
+///
+/// `None`/empty `preserve` leaves `summary` untouched. Otherwise the
+/// preserve text is appended as a labeled [`SystemBlock`] so it survives
+/// summarization and is visible to the model on the next turn.
+fn merge_preserve_context(
+    summary: Option<SystemPrompt>,
+    preserve: Option<&str>,
+) -> Option<SystemPrompt> {
+    let Some(preserve) = preserve else {
+        return summary;
+    };
+    let preserve = preserve.trim();
+    if preserve.is_empty() {
+        return summary;
+    }
+    let block = SystemBlock {
+        block_type: "text".to_string(),
+        text: format!("## Context to Preserve (PreCompact hook)\n\n{preserve}"),
+        cache_control: None,
+    };
+    match summary {
+        None => Some(SystemPrompt::Blocks(vec![block])),
+        Some(SystemPrompt::Text(t)) => Some(SystemPrompt::Blocks(vec![
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: t,
+                cache_control: None,
+            },
+            block,
+        ])),
+        Some(SystemPrompt::Blocks(mut blocks)) => {
+            blocks.push(block);
+            Some(SystemPrompt::Blocks(blocks))
+        }
+    }
+}
+
 /// Compact messages with retry and backoff for transient errors.
 ///
 /// This function wraps `compact_messages` with retry logic to handle
@@ -918,6 +989,7 @@ pub async fn compact_messages_safe(
     workspace: Option<&Path>,
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
+    enhancements: Option<&CompactionEnhancements>,
 ) -> Result<CompactionResult> {
     const MAX_RETRIES: u32 = 3;
     const BASE_DELAY_MS: u64 = 1000;
@@ -929,6 +1001,15 @@ pub async fn compact_messages_safe(
         external_pins,
         external_working_set_paths,
     );
+
+    // Fire PreCompact hooks once, up front, so their "context to preserve"
+    // is available on every return path (local-prune early return,
+    // session-memory early return, and the LLM summary). Hooks are
+    // non-blocking: failures log a warning and contribute nothing (#485).
+    let preserve_context: Option<String> = enhancements
+        .and_then(|e| e.hooks.as_ref())
+        .and_then(|(executor, context)| executor.execute_pre_compact_hook(context));
+
     let mut pruned_messages = messages.to_vec();
     let mut now_under_threshold = false;
     let mut next_stop_check_bytes = 0usize;
@@ -973,7 +1054,7 @@ pub async fn compact_messages_safe(
         if was_over_threshold && now_under_threshold {
             return Ok(CompactionResult {
                 messages: pruned_messages,
-                summary_prompt: None,
+                summary_prompt: merge_preserve_context(None, preserve_context.as_deref()),
                 removed_messages: Vec::new(),
                 retries_used: 0,
             });
@@ -982,6 +1063,48 @@ pub async fn compact_messages_safe(
     } else {
         messages
     };
+
+    // Session-memory-first: when memory content is available and the
+    // conversation exceeds the session-memory threshold, compact using the
+    // memory file as the summary — no LLM call. Only returns early when it
+    // actually clears the compaction threshold; otherwise fall through to
+    // the LLM path which can summarize the full transcript.
+    if let Some(sidecar) = enhancements.and_then(|e| e.session_memory.as_ref()) {
+        if session_memory_compact::should_use_session_memory_compact(
+            &sidecar.memory_content,
+            compaction_input,
+            &sidecar.config,
+        ) {
+            let sm = session_memory_compact::session_memory_compact(
+                compaction_input,
+                &sidecar.memory_content,
+                &sidecar.config,
+            );
+            if sm.removed_count > 0
+                && !should_compact(
+                    &sm.messages,
+                    config,
+                    workspace,
+                    external_pins,
+                    external_working_set_paths,
+                )
+            {
+                logging::info(format!(
+                    "Session-memory-first compaction removed {} messages without an LLM call",
+                    sm.removed_count
+                ));
+                return Ok(CompactionResult {
+                    messages: sm.messages,
+                    summary_prompt: merge_preserve_context(
+                        sm.summary_prompt,
+                        preserve_context.as_deref(),
+                    ),
+                    removed_messages: Vec::new(),
+                    retries_used: 0,
+                });
+            }
+        }
+    }
 
     let mut last_error: Option<anyhow::Error> = None;
 
@@ -1005,7 +1128,7 @@ pub async fn compact_messages_safe(
             Ok((msgs, prompt, removed, summary_retries)) => {
                 return Ok(CompactionResult {
                     messages: msgs,
-                    summary_prompt: prompt,
+                    summary_prompt: merge_preserve_context(prompt, preserve_context.as_deref()),
                     removed_messages: removed,
                     retries_used: attempt.saturating_add(summary_retries),
                 });
@@ -3066,5 +3189,281 @@ mod tests {
             None,
         );
         assert!(plan.pinned_indices.contains(&0)); // src/main.rs mention
+    }
+
+    // === PreCompact hook + session-memory-first enhancements (#485) ===
+
+    use crate::compaction::session_memory_compact::SessionMemoryCompactConfig;
+    use crate::hooks::{Hook, HookContext, HookEvent, HookExecutor, HooksConfig};
+
+    fn over_threshold_config() -> CompactionConfig {
+        CompactionConfig {
+            enabled: true,
+            token_threshold: 10,
+            model: "deepseek-v3.2-128k".to_string(),
+            cache_summary: false,
+            auto_floor_tokens: 0,
+        }
+    }
+
+    /// 12 messages, ~400 chars each (~130 tokens) → well over the tiny test
+    /// threshold and enough for `plan_compaction` to mark 8 for summarization.
+    fn long_conversation() -> Vec<Message> {
+        let long = "x".repeat(400);
+        (0..12)
+            .map(|i| {
+                msg(
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    &format!("{long} turn {i}"),
+                )
+            })
+            .collect()
+    }
+
+    fn collect_summary_text(prompt: &Option<SystemPrompt>) -> String {
+        match prompt {
+            Some(SystemPrompt::Text(t)) => t.clone(),
+            Some(SystemPrompt::Blocks(blocks)) => blocks
+                .iter()
+                .map(|b| b.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            None => String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_messages_safe_session_memory_first_avoids_llm_call() {
+        let mock = MockLlmClient::new(Vec::new());
+        let config = over_threshold_config();
+        let messages = long_conversation();
+
+        let enhancements = CompactionEnhancements {
+            hooks: None,
+            session_memory: Some(SessionMemorySidecar {
+                memory_content: "## Project memory\n- fact A\n- fact B".to_string(),
+                config: SessionMemoryCompactConfig {
+                    enabled: true,
+                    min_retain_tokens: 50,
+                    max_retain_tokens: 200,
+                },
+            }),
+        };
+
+        let result = compact_messages_safe(
+            &mock,
+            &messages,
+            &config,
+            None,
+            None,
+            None,
+            Some(&enhancements),
+        )
+        .await
+        .expect("session-memory-first compaction should succeed");
+
+        // No LLM call was made — the mock queue is untouched.
+        assert_eq!(
+            mock.call_count(),
+            0,
+            "session-memory-first must not hit the LLM"
+        );
+        assert!(result.messages.len() < messages.len());
+        assert!(result.summary_prompt.is_some());
+        let prompt_text = collect_summary_text(&result.summary_prompt);
+        assert!(prompt_text.contains("Session Memory"));
+    }
+
+    #[tokio::test]
+    async fn compact_messages_safe_session_memory_falls_through_to_llm_when_nothing_removed() {
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(MessageResponse {
+            id: "summary".to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "llm summary".to_string(),
+                cache_control: None,
+            }],
+            model: "deepseek-v3.2-128k".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+        });
+
+        let config = over_threshold_config();
+        let messages = long_conversation();
+
+        // Session-memory applies (memory present, over min_retain) but the
+        // huge max_retain means nothing is removed → must fall through to LLM.
+        let enhancements = CompactionEnhancements {
+            hooks: None,
+            session_memory: Some(SessionMemorySidecar {
+                memory_content: "## Project memory\n- fact A".to_string(),
+                config: SessionMemoryCompactConfig {
+                    enabled: true,
+                    min_retain_tokens: 50,
+                    max_retain_tokens: 10_000_000,
+                },
+            }),
+        };
+
+        let result = compact_messages_safe(
+            &mock,
+            &messages,
+            &config,
+            None,
+            None,
+            None,
+            Some(&enhancements),
+        )
+        .await
+        .expect("fall-through LLM compaction should succeed");
+
+        assert!(mock.call_count() >= 1, "should have fallen through to the LLM");
+        let prompt_text = collect_summary_text(&result.summary_prompt);
+        assert!(prompt_text.contains("llm summary"));
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn compact_messages_safe_pre_compact_hook_merges_preserve_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hook = Hook::new(HookEvent::PreCompact, "printf 'preserve-this-fact'");
+        let hooks_config = HooksConfig {
+            enabled: true,
+            hooks: vec![hook],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(hooks_config, dir.path().to_path_buf());
+
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(MessageResponse {
+            id: "summary".to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "llm summary body".to_string(),
+                cache_control: None,
+            }],
+            model: "deepseek-v3.2-128k".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+        });
+
+        let config = over_threshold_config();
+        let messages = long_conversation();
+
+        let enhancements = CompactionEnhancements {
+            hooks: Some((executor, HookContext::new())),
+            session_memory: None,
+        };
+
+        let result = compact_messages_safe(
+            &mock,
+            &messages,
+            &config,
+            None,
+            None,
+            None,
+            Some(&enhancements),
+        )
+        .await
+        .expect("LLM compaction with hook should succeed");
+
+        assert!(mock.call_count() >= 1, "LLM compaction should have run");
+        let prompt_text = collect_summary_text(&result.summary_prompt);
+        assert!(prompt_text.contains("llm summary body"));
+        assert!(prompt_text.contains("preserve-this-fact"));
+        assert!(prompt_text.contains("Context to Preserve"));
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn compact_messages_safe_pre_compact_hook_merges_into_session_memory_early_return() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hook = Hook::new(HookEvent::PreCompact, "printf 'keep-this-forever'");
+        let hooks_config = HooksConfig {
+            enabled: true,
+            hooks: vec![hook],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(hooks_config, dir.path().to_path_buf());
+
+        let mock = MockLlmClient::new(Vec::new());
+        let config = over_threshold_config();
+        let messages = long_conversation();
+
+        let enhancements = CompactionEnhancements {
+            hooks: Some((executor, HookContext::new())),
+            session_memory: Some(SessionMemorySidecar {
+                memory_content: "## Project memory\n- fact A".to_string(),
+                config: SessionMemoryCompactConfig {
+                    enabled: true,
+                    min_retain_tokens: 50,
+                    max_retain_tokens: 200,
+                },
+            }),
+        };
+
+        let result = compact_messages_safe(
+            &mock,
+            &messages,
+            &config,
+            None,
+            None,
+            None,
+            Some(&enhancements),
+        )
+        .await
+        .expect("session-memory-first + hook should succeed");
+
+        // Early return — no LLM call.
+        assert_eq!(mock.call_count(), 0);
+        let prompt_text = collect_summary_text(&result.summary_prompt);
+        assert!(prompt_text.contains("Session Memory"));
+        assert!(prompt_text.contains("keep-this-forever"));
+    }
+
+    #[test]
+    fn merge_preserve_context_leaves_summary_untouched_when_empty() {
+        let summary = Some(SystemPrompt::Text("orig".to_string()));
+        assert_eq!(merge_preserve_context(summary.clone(), None), summary);
+        assert_eq!(merge_preserve_context(summary.clone(), Some("   ")), summary);
+    }
+
+    #[test]
+    fn merge_preserve_context_appends_block_to_blocks_summary() {
+        let summary = Some(SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "orig block".to_string(),
+            cache_control: None,
+        }]));
+        let merged = merge_preserve_context(summary, Some("save me")).expect("Some");
+        match merged {
+            SystemPrompt::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert!(blocks[1].text.contains("save me"));
+                assert!(blocks[1].text.contains("Context to Preserve"));
+            }
+            _ => panic!("expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn merge_preserve_context_creates_blocks_when_summary_none() {
+        let merged = merge_preserve_context(None, Some("brand new")).expect("Some");
+        match merged {
+            SystemPrompt::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                assert!(blocks[0].text.contains("brand new"));
+            }
+            _ => panic!("expected Blocks"),
+        }
     }
 }

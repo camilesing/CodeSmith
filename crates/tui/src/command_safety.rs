@@ -528,7 +528,7 @@ const WORKSPACE_SAFE_COMMANDS: &[&str] = &[
 /// docker rm, chown, etc. have been removed because they generate
 /// unnecessary approval prompts for routine operations the user can
 /// still veto via the approval dialog.
-const DANGEROUS_PATTERNS: &[(&str, &str)] = &[
+pub(crate) const DANGEROUS_PATTERNS: &[(&str, &str)] = &[
     ("rm -rf /", "Attempts to recursively delete root filesystem"),
     (
         "rm -rf /*",
@@ -541,6 +541,21 @@ const DANGEROUS_PATTERNS: &[(&str, &str)] = &[
     ),
     (":(){ :|:& };:", "Fork bomb — will crash the system"),
 ];
+
+/// Returns the reason if `command` literally matches one of the
+/// catastrophic [`DANGEROUS_PATTERNS`] (case-insensitive substring).
+///
+/// This is checked independently of [`analyze_command`]'s control flow so
+/// that catastrophic shapes which contain `;` / `&&` (e.g. the fork bomb)
+/// are still flagged `Dangerous` even when `analyze_command` would
+/// short-circuit them to `RequiresApproval` via the chaining branch.
+pub(crate) fn literal_dangerous_pattern_reason(command: &str) -> Option<&'static str> {
+    let lower = command.to_lowercase();
+    DANGEROUS_PATTERNS
+        .iter()
+        .find(|(pat, _)| lower.contains(&pat.to_lowercase()))
+        .map(|(_, reason)| *reason)
+}
 
 /// Commands that require elevated privileges
 const PRIVILEGED_PATTERNS: &[&str] = &["sudo", "su ", "doas", "pkexec", "gksudo", "kdesudo"];
@@ -594,6 +609,17 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         return analysis;
     }
 
+    // Catastrophic literal patterns (`rm -rf /`, fork bomb, …) must be
+    // flagged Dangerous even when chained with `;` / `&&`, so check them
+    // before the chaining branch short-circuits to RequiresApproval.
+    if let Some(reason) = literal_dangerous_pattern_reason(command) {
+        return SafetyAnalysis::dangerous(
+            command,
+            vec![reason.to_string()],
+            vec!["Review the command carefully before execution".to_string()],
+        );
+    }
+
     if command.contains("&&") || command.contains("||") || command.contains(';') {
         // Chains of known-safe commands (cargo/git/zig/npm/etc.) are
         // routine for build+test workflows. Instead of hard-blocking,
@@ -624,19 +650,6 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
             command,
             vec!["Command substitution detected".to_string()],
         );
-    }
-
-    // Check for dangerous patterns first. The token-aware pass above handles
-    // spacing and quoting variants; these literal patterns remain as a compact
-    // fallback for legacy shapes.
-    for (pattern, reason) in DANGEROUS_PATTERNS {
-        if command_lower.contains(&pattern.to_lowercase()) {
-            return SafetyAnalysis::dangerous(
-                command,
-                vec![(*reason).to_string()],
-                vec!["Review the command carefully before execution".to_string()],
-            );
-        }
     }
 
     // Check for privileged commands

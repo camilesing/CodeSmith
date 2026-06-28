@@ -60,7 +60,15 @@ impl ToolRegistry {
     }
 
     /// Register a tool in the registry.
+    ///
+    /// Every registration flows through [`build_tool`], the single
+    /// fail-closed chokepoint: a tool whose name or schema cannot be
+    /// resolved to a well-formed API definition is substituted with a
+    /// [`FailClosedTool`] stub so a single malformed plugin/MCP tool can
+    /// never 400 the whole request or panic mid-turn. Mirrors Claude
+    /// Code's `buildTool` contract.
     pub fn register(&mut self, tool: Arc<dyn ToolSpec>) {
+        let tool = build_tool(tool);
         let name = tool.name().to_string();
         if self.tools.insert(name.clone(), tool).is_some() {
             tracing::warn!("Overwriting existing tool: {}", name);
@@ -1215,8 +1223,152 @@ fn to_snake_case(s: &str) -> String {
     out
 }
 
-/// Adapter that wraps an MCP tool definition so it can live in the
-/// unified `ToolRegistry` alongside native tools (§5.B).
+// === Fail-closed tool construction ===
+
+/// Maximum length for a tool name. Mirrors the API tool-name ceiling so a
+/// single over-long plugin name can never reject the whole request.
+const MAX_TOOL_NAME_LEN: usize = 64;
+
+/// Validate a tool at the registration chokepoint and substitute a
+/// fail-closed stub if it is malformed.
+///
+/// This is CodeSmith's analogue of Claude Code's `buildTool`. A tool whose
+/// name or input schema cannot be resolved to a well-formed API definition
+/// is replaced by a [`FailClosedTool`] so the model still sees a stable,
+/// API-legal tool slot but any execution attempt returns a safe error.
+/// Without this, a single bad plugin/MCP tool definition would either
+/// panic mid-turn or trigger a 400 that disables *every* tool for the rest
+/// of the session.
+///
+/// Validation is intentionally minimal and semantics-preserving: deep
+/// schema normalisation still happens in `build_api_tools` via
+/// `schema_sanitize::sanitize`. Here we only reject shapes the API cannot
+/// accept at all — a non-object root schema or a name that breaks the
+/// `^[a-zA-Z0-9_-]{1,64}$` contract every chat-completions backend
+/// enforces for `tools[].name`.
+fn build_tool(tool: Arc<dyn ToolSpec>) -> Arc<dyn ToolSpec> {
+    let name = tool.name();
+    if !is_valid_tool_name(name) {
+        tracing::warn!(
+            tool = %name,
+            reason = "invalid tool name",
+            "tool failed construction; substituting fail-closed stub",
+        );
+        return Arc::new(FailClosedTool::new(name, "invalid tool name"));
+    }
+    let schema = tool.input_schema();
+    if !is_valid_input_schema(&schema) {
+        tracing::warn!(
+            tool = %name,
+            reason = "non-object input schema",
+            "tool failed construction; substituting fail-closed stub",
+        );
+        return Arc::new(FailClosedTool::new(name, "invalid input schema"));
+    }
+    tool
+}
+
+/// A tool name must be a non-empty ASCII identifier of letters, digits,
+/// `_`, or `-`, no longer than [`MAX_TOOL_NAME_LEN`]. This matches the
+/// contract every chat-completions backend enforces for `tools[].name`.
+fn is_valid_tool_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > MAX_TOOL_NAME_LEN {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Coerce an arbitrary string into a valid tool name so a fail-closed stub
+/// can still be keyed under something the API accepts. Invalid characters
+/// collapse to `_`; an all-invalid or empty name falls back to
+/// `fail_closed_tool`.
+fn sanitize_tool_name(name: impl Into<String>) -> String {
+    let mut s: String = name
+        .into()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if s.len() > MAX_TOOL_NAME_LEN {
+        s.truncate(MAX_TOOL_NAME_LEN);
+    }
+    if s.is_empty() {
+        s.push_str("fail_closed_tool");
+    }
+    s
+}
+
+/// A tool's `input_schema` must be a JSON object — the API serialises it as
+/// `{"type": "object", ...}`. A non-object root (`null`, array, string…)
+/// would either be silently dropped or 400 the request.
+fn is_valid_input_schema(schema: &Value) -> bool {
+    schema.is_object()
+}
+
+/// Fail-closed placeholder substituted when a tool fails construction.
+///
+/// Keeps the (sanitised) tool name visible so the model-facing catalog
+/// stays stable, advertises a permissive object schema, and refuses every
+/// execution with a `NotAvailable` error describing the original failure.
+/// Capabilities are conservatively `RequiresApproval` + `Network` so the
+/// stub can never auto-execute in any mode — this generalises the stance
+/// `McpToolAdapter::capabilities` already takes for unknown MCP tools.
+pub(crate) struct FailClosedTool {
+    name: String,
+    reason: String,
+}
+
+impl FailClosedTool {
+    pub(crate) fn new(name: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            name: sanitize_tool_name(name),
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolSpec for FailClosedTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        "Unavailable: this tool failed to initialise and is fail-closed. Do not call it."
+    }
+
+    fn input_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        // Fail-closed: never auto-execute. Treat as approval-required and
+        // network-capable (conservative, mirrors McpToolAdapter's stance).
+        vec![ToolCapability::RequiresApproval, ToolCapability::Network]
+    }
+
+    async fn execute(
+        &self,
+        _input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        Err(ToolError::not_available(format!(
+            "tool '{}' is unavailable: {}",
+            self.name, self.reason
+        )))
+    }
+}
+
 #[allow(dead_code)]
 struct McpToolAdapter {
     name: String,
@@ -1294,7 +1446,7 @@ mod tests {
         ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
     };
 
-    use super::ToolRegistry;
+    use super::{ToolRegistry, is_valid_tool_name, sanitize_tool_name, MAX_TOOL_NAME_LEN};
 
     /// A simple test tool for unit testing
     struct TestTool {
@@ -1760,5 +1912,162 @@ mod tests {
             registry.contains("task_shell_wait"),
             "task_shell_wait should be included when allow_shell is true"
         );
+    }
+
+    // === Fail-closed buildTool tests ===
+
+    /// A configurable tool whose name/schema can be malformed, used to
+    /// exercise the `build_tool` chokepoint.
+    struct MalformedTool {
+        name: String,
+        schema: Value,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for MalformedTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "A malformed test tool"
+        }
+        fn input_schema(&self) -> Value {
+            self.schema.clone()
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("real tool ran"))
+        }
+    }
+
+    #[test]
+    fn build_tool_passes_valid_tool_through_unchanged() {
+        // A well-formed tool must reach the registry untouched: it stays
+        // executable and keeps its real schema.
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        registry.register(Arc::new(MalformedTool {
+            name: "valid_name".to_string(),
+            schema: json!({"type": "object", "properties": {}}),
+        }));
+
+        let tool = registry.get("valid_name").expect("valid tool registered");
+        assert_eq!(
+            tool.input_schema(),
+            json!({"type": "object", "properties": {}}),
+            "valid tool schema must not be replaced by the stub schema"
+        );
+    }
+
+    #[test]
+    fn build_tool_substitutes_stub_for_invalid_name() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        // A space in the name breaks the API tool-name contract; the stub
+        // is keyed under the sanitised name instead.
+        registry.register(Arc::new(MalformedTool {
+            name: "bad name".to_string(),
+            schema: json!({"type": "object", "properties": {}}),
+        }));
+
+        assert!(
+            !registry.contains("bad name"),
+            "original invalid name must not be reachable"
+        );
+        assert!(
+            registry.contains("bad_name"),
+            "sanitised name should key the fail-closed stub"
+        );
+
+        // The catalog stays API-legal: stub name has no whitespace.
+        let api_tools = registry.to_api_tools();
+        assert_eq!(api_tools.len(), 1);
+        assert_eq!(api_tools[0].name, "bad_name");
+        assert!(
+            api_tools[0]
+                .input_schema
+                .get("type")
+                .and_then(Value::as_str)
+                == Some("object"),
+            "stub must advertise an object schema"
+        );
+    }
+
+    #[test]
+    fn build_tool_substitutes_stub_for_non_object_schema() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        registry.register(Arc::new(MalformedTool {
+            name: "broken_schema".to_string(),
+            schema: json!("not an object"),
+        }));
+
+        let api_tools = registry.to_api_tools();
+        assert_eq!(api_tools.len(), 1);
+        // The stub overrides the broken schema with a permissive object.
+        assert!(
+            api_tools[0].input_schema.is_object(),
+            "stub schema must be an object even when the original was malformed"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_closed_tool_execute_returns_not_available() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        registry.register(Arc::new(MalformedTool {
+            name: "bad name".to_string(),
+            schema: json!({"type": "object", "properties": {}}),
+        }));
+
+        let err = registry
+            .execute_full("bad_name", json!({}))
+            .await
+            .expect_err("stub must refuse execution");
+        assert!(
+            matches!(err, ToolError::NotAvailable { .. }),
+            "fail-closed stub should return NotAvailable, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("invalid tool name"),
+            "error should carry the original failure reason"
+        );
+    }
+
+    #[test]
+    fn build_tool_validates_name_helper() {
+        // Direct unit checks for the name contract.
+        assert!(is_valid_tool_name("read_file"));
+        assert!(is_valid_tool_name("read-file"));
+        assert!(is_valid_tool_name("ReadFile123"));
+        assert!(is_valid_tool_name(&"a".repeat(MAX_TOOL_NAME_LEN)));
+        assert!(!is_valid_tool_name(""));
+        assert!(!is_valid_tool_name("bad name"));
+        assert!(!is_valid_tool_name("bad/name"));
+        assert!(!is_valid_tool_name(&"a".repeat(MAX_TOOL_NAME_LEN + 1)));
+    }
+
+    #[test]
+    fn sanitize_tool_name_collapses_invalid_chars() {
+        assert_eq!(sanitize_tool_name("bad name"), "bad_name");
+        assert_eq!(sanitize_tool_name("a/b@c"), "a_b_c");
+        assert_eq!(sanitize_tool_name("  "), "__");
+        assert_eq!(sanitize_tool_name(""), "fail_closed_tool");
+        let long = sanitize_tool_name(&"x".repeat(MAX_TOOL_NAME_LEN + 100));
+        assert_eq!(long.len(), MAX_TOOL_NAME_LEN);
     }
 }
