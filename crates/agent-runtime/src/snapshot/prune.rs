@@ -30,6 +30,7 @@ pub fn prune_older_than(workspace: &Path, max_age: Duration) -> io::Result<usize
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // tests mutate HOME under the process-wide env lock (2024-edition set_var is unsafe)
 mod tests {
     use super::*;
     use crate::test_support::lock_test_env;

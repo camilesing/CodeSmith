@@ -937,6 +937,7 @@ fn is_safe_relative_path(path: &Path) -> bool {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // tests mutate HOME/USERPROFILE under the process-wide env lock (2024-edition set_var is unsafe)
 mod tests {
     use super::*;
     use crate::test_support::lock_test_env;
