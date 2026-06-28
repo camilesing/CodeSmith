@@ -29,6 +29,7 @@ pub mod child_env;
 pub mod coherence;
 pub mod command_safety;
 pub mod cost_status;
+pub mod cycle_manager;
 pub mod dependencies;
 pub mod error_taxonomy;
 pub mod execpolicy;
