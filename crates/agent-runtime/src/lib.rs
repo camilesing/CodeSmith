@@ -57,6 +57,7 @@ pub mod subagent;
 pub mod team;
 pub mod test_support;
 pub mod tool_dispatch;
+pub mod turn;
 pub mod user_input;
 pub mod utils;
 pub mod working_set;
