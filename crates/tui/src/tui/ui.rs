@@ -533,6 +533,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         task_mailbox: None,
         team_context: None,
         permission_request_registry: None,
+        background_task_registry: app.runtime_services.background_task_registry.clone(),
+        team_sender: None,
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
@@ -743,6 +745,16 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .into_iter()
             .map(Into::into)
             .collect(),
+        override_system_prompt: config.system_prompt_override_text(),
+        custom_system_prompt: None,
+        coordinator_system_prompt: None,
+        agent_system_prompt: None,
+        append_system_prompts: config
+            .append_system_prompt_paths()
+            .into_iter()
+            .map(crate::prompts::PromptAppendSource::file)
+            .collect(),
+        cache_breaker: None,
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: app.translation_enabled,
         show_thinking: app.show_thinking,

@@ -1,7 +1,5 @@
 //! Team inbox dispatch handler — processes InboxDispatch from the inbox poller.
 
-use std::collections::HashMap;
-
 use crate::core::engine::Engine;
 use crate::core::events::Event;
 use crate::tools::team::{InboxDispatch, proto_shutdown_approval};
@@ -48,14 +46,16 @@ impl Engine {
                 // Find and cancel the teammate's CancellationToken.
                 // Remove from team file and unassign tasks.
                 if let Some(shared_tc) = self.config.team_context.as_ref() {
-                    let team_ctx = shared_tc.lock().await;
-                    if let Some(ctx) = team_ctx.as_ref() {
+                    let mut team_ctx = shared_tc.lock().await;
+                    if let Some(ctx) = team_ctx.as_mut() {
                         let _ = proto_shutdown_approval(
                             &request_id,
                             &from,
                             &ctx.team_name,
-                            &HashMap::new(),
+                            &ctx.teammate_cancel_tokens,
                         );
+                        ctx.teammate_cancel_tokens.remove(&from);
+                        ctx.teammates.retain(|_, info| info.name != from);
                     }
                 }
                 let msg = format!("Teammate {} has shut down (request {}).", from, request_id);

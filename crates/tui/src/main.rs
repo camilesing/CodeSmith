@@ -55,6 +55,7 @@ mod prefix_cache;
 mod pricing;
 mod project_context;
 mod project_doc;
+mod prompt_runtime;
 mod prompt_zones;
 mod prompts;
 mod purge;
@@ -325,6 +326,21 @@ struct ExecArgs {
     /// Output format for exec mode
     #[arg(long, value_enum, default_value_t = ExecOutputFormat::Text)]
     output_format: ExecOutputFormat,
+    /// Override the system prompt for this exec run
+    #[arg(long = "system-prompt", value_name = "TEXT")]
+    system_prompt: Option<String>,
+    /// Override the system prompt from a file for this exec run
+    #[arg(long = "system-prompt-file", value_name = "PATH")]
+    system_prompt_file: Option<PathBuf>,
+    /// Append extra system prompt text after the selected base prompt
+    #[arg(long = "append-system-prompt", value_name = "TEXT")]
+    append_system_prompt: Vec<String>,
+    /// Append extra system prompt text from files after the selected base prompt
+    #[arg(long = "append-system-prompt-file", value_name = "PATH")]
+    append_system_prompt_file: Vec<PathBuf>,
+    /// Add a dynamic cache-breaker section for prompt-cache debugging
+    #[arg(long = "prompt-cache-breaker", value_name = "TEXT")]
+    prompt_cache_breaker: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -905,6 +921,9 @@ async fn main() -> Result<()> {
                 // the DEEPSEEK_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
+                let system_prompt_override = resolve_exec_system_prompt_override(&config, &args)?;
+                let append_system_prompts = resolve_exec_append_system_prompts(&config, &args);
+                let prompt_cache_breaker = args.prompt_cache_breaker.clone();
                 let needs_engine = args.auto
                     || yolo
                     || resume_session_id.is_some()
@@ -926,12 +945,15 @@ async fn main() -> Result<()> {
                         args.json,
                         resume_session_id,
                         args.output_format,
+                        system_prompt_override,
+                        append_system_prompts,
+                        prompt_cache_breaker,
                     )
                     .await
                 } else if args.json {
-                    run_one_shot_json(&config, &model, &prompt).await
+                    run_one_shot_json(&config, &model, &prompt, system_prompt_override).await
                 } else {
-                    run_one_shot(&config, &model, &prompt).await
+                    run_one_shot(&config, &model, &prompt, system_prompt_override).await
                 }
             }
             Commands::Swebench(args) => {
@@ -1181,6 +1203,13 @@ async fn run_swebench_command(
                 false,
                 None,
                 args.output_format,
+                config.system_prompt_override_text(),
+                config
+                    .append_system_prompt_paths()
+                    .into_iter()
+                    .map(crate::prompts::PromptAppendSource::file)
+                    .collect(),
+                None,
             )
             .await?;
 
@@ -5165,7 +5194,62 @@ async fn resolve_cli_auto_route(config: &Config, model: &str, prompt: &str) -> C
     }
 }
 
-async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> {
+fn resolve_exec_system_prompt_override(config: &Config, args: &ExecArgs) -> Result<Option<String>> {
+    if let Some(inline) = args
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(Some(inline.to_string()));
+    }
+    if let Some(path) = args.system_prompt_file.as_ref() {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if !content.trim().is_empty() {
+            return Ok(Some(content));
+        }
+    }
+    Ok(config.system_prompt_override_text())
+}
+
+fn resolve_exec_append_system_prompts(
+    config: &Config,
+    args: &ExecArgs,
+) -> Vec<crate::prompts::PromptAppendSource> {
+    let mut sources = config
+        .append_system_prompt_paths()
+        .into_iter()
+        .map(crate::prompts::PromptAppendSource::file)
+        .collect::<Vec<_>>();
+    sources.extend(
+        args.append_system_prompt
+            .iter()
+            .enumerate()
+            .filter_map(|(index, content)| {
+                (!content.trim().is_empty()).then(|| {
+                    crate::prompts::PromptAppendSource::inline(
+                        format!("cli:inline:{}", index + 1),
+                        content.clone(),
+                    )
+                })
+            }),
+    );
+    sources.extend(
+        args.append_system_prompt_file
+            .iter()
+            .cloned()
+            .map(crate::prompts::PromptAppendSource::file),
+    );
+    sources
+}
+
+async fn run_one_shot(
+    config: &Config,
+    model: &str,
+    prompt: &str,
+    system_prompt_override: Option<String>,
+) -> Result<()> {
     use crate::client::DeepSeekClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
 
@@ -5185,7 +5269,7 @@ async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> 
             }],
         }],
         max_tokens: 4096,
-        system: None,
+        system: system_prompt_override.map(crate::models::SystemPrompt::Text),
         tools: None,
         tool_choice: None,
         metadata: None,
@@ -5207,7 +5291,12 @@ async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> 
     Ok(())
 }
 
-async fn run_one_shot_json(config: &Config, model: &str, prompt: &str) -> Result<()> {
+async fn run_one_shot_json(
+    config: &Config,
+    model: &str,
+    prompt: &str,
+    system_prompt_override: Option<String>,
+) -> Result<()> {
     use crate::client::DeepSeekClient;
     use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
@@ -5227,9 +5316,9 @@ async fn run_one_shot_json(config: &Config, model: &str, prompt: &str) -> Result
             }],
         }],
         max_tokens: 4096,
-        system: Some(SystemPrompt::Text(
-            "You are a coding assistant. Give concise, actionable responses.".to_string(),
-        )),
+        system: Some(SystemPrompt::Text(system_prompt_override.unwrap_or_else(
+            || "You are a coding assistant. Give concise, actionable responses.".to_string(),
+        ))),
         tools: None,
         tool_choice: None,
         metadata: None,
@@ -5360,6 +5449,9 @@ async fn run_exec_agent(
     json_output: bool,
     resume_session_id: Option<String>,
     output_format: ExecOutputFormat,
+    system_prompt_override: Option<String>,
+    append_system_prompts: Vec<crate::prompts::PromptAppendSource>,
+    prompt_cache_breaker: Option<String>,
 ) -> Result<()> {
     use crate::compaction::CompactionConfig;
     use crate::core::engine::{EngineConfig, spawn_engine};
@@ -5410,6 +5502,12 @@ async fn run_exec_agent(
             .into_iter()
             .map(Into::into)
             .collect(),
+        override_system_prompt: system_prompt_override,
+        custom_system_prompt: None,
+        coordinator_system_prompt: None,
+        agent_system_prompt: None,
+        append_system_prompts,
+        cache_breaker: prompt_cache_breaker,
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: false,
         show_thinking: settings.show_thinking,

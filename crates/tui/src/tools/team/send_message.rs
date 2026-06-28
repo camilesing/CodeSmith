@@ -135,7 +135,14 @@ impl ToolSpec for SendMessageTool {
         let (team_name, sender_name) = {
             let tc = self.team_context.lock().await;
             match tc.as_ref() {
-                Some(ctx) => (ctx.team_name.clone(), team_lead_name().to_string()),
+                Some(ctx) => (
+                    ctx.team_name.clone(),
+                    context
+                        .runtime
+                        .team_sender
+                        .clone()
+                        .unwrap_or_else(|| team_lead_name().to_string()),
+                ),
                 None => {
                     return Err(ToolError::invalid_input(
                         "Not in a team. Cannot send messages.",

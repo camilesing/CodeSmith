@@ -9,8 +9,13 @@
 
 use crate::models::SystemPrompt;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
+use crate::prompt_runtime::{
+    EffectiveSystemPromptInput, PromptBundle, PromptCachePolicy, PromptSection,
+    PromptSectionSource, PromptSectionStability, build_effective_system_prompt,
+};
 use crate::tui::app::AppMode;
 use crate::tui::approval::ApprovalMode;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -42,6 +47,76 @@ pub struct PromptSessionContext<'a> {
     /// When false, the prompt should not spend localization pressure on
     /// `reasoning_content` the user will never see.
     pub show_thinking: bool,
+}
+
+impl<'a> PromptSessionContext<'a> {
+    pub fn runtime(self) -> PromptRuntimeContext<'a> {
+        PromptRuntimeContext {
+            session: self,
+            override_system_prompt: None,
+            custom_system_prompt: None,
+            coordinator_system_prompt: None,
+            agent_system_prompt: None,
+            append_system_prompts: &[],
+            cache_breaker: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PromptRuntimeContext<'a> {
+    pub session: PromptSessionContext<'a>,
+    /// Optional complete system prompt override. This replaces the default
+    /// assembled section bundle while still allowing append sections below.
+    pub override_system_prompt: Option<&'a str>,
+    /// Optional custom system prompt. Lower priority than override/role-specific
+    /// prompts; append sections still apply.
+    pub custom_system_prompt: Option<&'a str>,
+    /// Optional role-specific coordinator prompt override.
+    pub coordinator_system_prompt: Option<&'a str>,
+    /// Optional role-specific agent prompt override.
+    pub agent_system_prompt: Option<&'a str>,
+    /// Extra append sections rendered after the selected prompt base.
+    pub append_system_prompts: &'a [PromptAppendSource],
+    /// Optional dynamic cache breaker for debugging provider prefix behavior.
+    pub cache_breaker: Option<&'a str>,
+}
+
+impl<'a> Default for PromptRuntimeContext<'a> {
+    fn default() -> Self {
+        PromptSessionContext::default().runtime()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptAppendSource {
+    Inline { name: String, content: String },
+    File(PathBuf),
+}
+
+impl PromptAppendSource {
+    pub fn inline(name: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::Inline {
+            name: name.into(),
+            content: content.into(),
+        }
+    }
+
+    pub fn file(path: impl Into<PathBuf>) -> Self {
+        Self::File(path.into())
+    }
+}
+
+impl From<PathBuf> for PromptAppendSource {
+    fn from(path: PathBuf) -> Self {
+        Self::File(path)
+    }
+}
+
+impl From<&PathBuf> for PromptAppendSource {
+    fn from(path: &PathBuf) -> Self {
+        Self::File(path.clone())
+    }
 }
 
 impl Default for PromptSessionContext<'_> {
@@ -582,6 +657,94 @@ dự án có là tiếng Anh, quá trình suy nghĩ của bạn cũng không đ�
 tích lũy trong ngữ cảnh. Trừ khi người dùng yêu cầu rõ ràng việc chuyển đổi (ví dụ \"think in English\"), \
 hãy tiếp tục suy nghĩ và trả lời bằng tiếng Việt.";
 
+/// Memory extraction worker prompt — used by `/memory extract --dry-run` and
+/// future background memory consolidation jobs. The prompt is intentionally a
+/// narrow protocol: inspect only the supplied recent conversation transcript,
+/// propose durable memory candidates, and do not read or modify workspace files.
+pub const MEMORY_EXTRACTION_PROMPT: &str = "\
+## Memory Extraction Protocol\n\
+\n\
+You are CodeSmith's memory extraction worker. Your only job is to identify durable, user-approved memory candidates from the supplied recent conversation transcript.\n\
+\n\
+Rules:\n\
+- Use only the transcript included in the user's message. Do not request tools, inspect the repository, or infer facts from outside the transcript.\n\
+- Extract only stable preferences, recurring workflow conventions, project facts, or explicit user instructions that are likely useful in future sessions.\n\
+- Do not extract one-off task details, secrets, credentials, volatile status, temporary debugging notes, or facts the user explicitly rejected.\n\
+- Preserve uncertainty. If a candidate is implied but not explicit, mark confidence as `low` and explain why.\n\
+- Prefer declarative memories (for example, `User prefers concise status updates`) over imperatives (for example, `Always be concise`).\n\
+- Return Markdown only, with this exact shape:\n\
+\n\
+```markdown\n\
+## Memory candidates\n\
+- memory: <durable memory text>\n\
+  scope: user|project\n\
+  confidence: high|medium|low\n\
+  evidence: <short quote or message reference>\n\
+\n\
+## Rejected\n\
+- <brief reason no candidate was extracted from a notable item>\n\
+```\n\
+\n\
+If there are no candidates, write `- none` under `## Memory candidates` and explain the main rejection reason under `## Rejected`.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryExtractionMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryExtractionPrompt {
+    pub system_prompt: &'static str,
+    pub user_prompt: String,
+}
+
+pub fn build_memory_extraction_prompt(
+    messages: &[MemoryExtractionMessage],
+    existing_memory: Option<&str>,
+    max_messages: usize,
+) -> MemoryExtractionPrompt {
+    let selected: Vec<&MemoryExtractionMessage> = messages
+        .iter()
+        .rev()
+        .filter(|message| !message.content.trim().is_empty())
+        .take(max_messages)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    let mut user_prompt = String::new();
+    user_prompt.push_str("Extract durable memory candidates from this recent conversation transcript. This is a dry-run proposal; do not write memory.\n\n");
+
+    if let Some(existing) = existing_memory.and_then(|memory| {
+        let trimmed = memory.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }) {
+        user_prompt.push_str("## Existing memory\n\n");
+        user_prompt.push_str(existing);
+        user_prompt.push_str("\n\n");
+    }
+
+    user_prompt.push_str("## Recent transcript\n\n");
+    if selected.is_empty() {
+        user_prompt.push_str("(no recent transcript messages available)\n");
+    } else {
+        for (index, message) in selected.iter().enumerate() {
+            let role = message.role.trim();
+            let role = if role.is_empty() { "unknown" } else { role };
+            let _ = writeln!(user_prompt, "### Message {} — {}", index + 1, role);
+            user_prompt.push_str(message.content.trim());
+            user_prompt.push_str("\n\n");
+        }
+    }
+
+    MemoryExtractionPrompt {
+        system_prompt: MEMORY_EXTRACTION_PROMPT,
+        user_prompt,
+    }
+}
+
 /// Personality overlays — voice and tone.
 pub const CALM_PERSONALITY: &str = include_str!("prompts/personalities/calm.md");
 pub const PLAYFUL_PERSONALITY: &str = include_str!("prompts/personalities/playful.md");
@@ -923,7 +1086,81 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
     )
 }
 
-pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
+fn append_section(
+    bundle: &mut PromptBundle,
+    id: impl Into<String>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    stability: PromptSectionStability,
+    source: PromptSectionSource,
+) {
+    let body = body.into();
+    if body.trim().is_empty() {
+        return;
+    }
+    bundle.push(PromptSection::cacheable(id, title, body, stability, source));
+}
+
+fn context_management_prompt() -> &'static str {
+    "## Context Management\n\n\
+     When the conversation gets long (you'll see a context usage indicator), you can:\n\
+     1. Use `/compact` to summarize earlier context and free up space\n\
+     2. The system will preserve important information (files you're working on, recent messages, tool results)\n\
+     3. After compaction, you'll see a summary of what was discussed and can continue seamlessly\n\n\
+     If you notice context is getting long (>60% during sustained work), proactively suggest using `/compact` to the user.\n\n\
+     ### Prompt-cache awareness\n\n\
+     DeepSeek caches the longest *byte-stable prefix* of every request and charges roughly 100× less for cache-hit tokens than miss tokens. The system prompt above is layered most-static-first specifically so the prefix stays stable turn-over-turn. To keep cache hits high:\n\
+     - **Working set location:** the current repo working set is stored on new user messages inside a `<turn_meta>` block. Treat it as high-priority turn metadata, not as a stable system-prompt section.\n\
+     - **Append, don't reorder.** New context goes at the end (latest user / tool messages). Reshuffling earlier messages or rewriting their content invalidates the cache for everything after the change.\n\
+     - **Don't paraphrase quoted content.** If you've already read a file, refer to it by path or line range instead of re-quoting it with different formatting.\n\
+     - **Use `/compact` as a hard reset, not a tweak.** Compaction is meant for when the cache is already losing — it intentionally rewrites the prefix to a shorter summary. Don't trigger it for small wins.\n\
+     - **Read once, refer back.** Re-reading the same file produces a different tool-result envelope than the prior read; it's cheaper to scroll back than to re-fetch.\n\
+     - **Footer chip:** the `cache hit %` chip turns red below 40% and yellow below 80%. If it's been red for several turns, that's a signal to consolidate."
+}
+
+fn render_append_system_prompt_block(sources: &[PromptAppendSource]) -> Option<String> {
+    let mut sections: Vec<String> = Vec::new();
+    for source in sources {
+        let (raw_source_name, raw_content): (String, String) = match source {
+            PromptAppendSource::File(path) => match std::fs::read_to_string(path) {
+                Ok(raw) => (path.display().to_string(), raw),
+                Err(err) => {
+                    tracing::warn!(
+                        target: "prompt_runtime",
+                        ?err,
+                        ?path,
+                        "skipping unreadable append-system-prompt file"
+                    );
+                    continue;
+                }
+            },
+            PromptAppendSource::Inline { name, content } => (name.clone(), content.clone()),
+        };
+        let trimmed = raw_content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let body = if trimmed.len() > INSTRUCTIONS_FILE_MAX_BYTES {
+            let head_end = (0..=INSTRUCTIONS_FILE_MAX_BYTES)
+                .rev()
+                .find(|&i| trimmed.is_char_boundary(i))
+                .unwrap_or(0);
+            format!("{}\n[…elided]", &trimmed[..head_end])
+        } else {
+            trimmed.to_string()
+        };
+        sections.push(format!(
+            "<system_prompt_append source=\"{raw_source_name}\">\n{body}\n</system_prompt_append>"
+        ));
+    }
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
+}
+
+pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
     mode: AppMode,
     workspace: &Path,
     _working_set_summary: Option<&str>,
@@ -931,199 +1168,307 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     instructions: Option<&[InstructionSource]>,
     session_context: PromptSessionContext<'_>,
     approval_mode: ApprovalMode,
-) -> SystemPrompt {
+) -> PromptBundle {
     let mode_prompt =
         compose_mode_prompt_with_approval_and_model(mode, approval_mode, session_context.model_id);
 
-    // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
+    let mut bundle = PromptBundle::new();
 
-    // 0. Locale-native reinforcement preamble (#1118 follow-up). When the
-    // user's UI locale is non-English we prepend a short native-script
-    // passage so the model's first exposure to the prompt is an explicit
-    // "think and reply in {locale}" directive in the user's own writing
-    // system — defeats the "task context is English, so the model thinks
-    // in English even though `lang: zh-Hans` is set" failure mode that
-    // PR #1398 partially addressed. English (and unknown) locales get
-    // `None` and keep the previous behavior unchanged.
-    let preamble = if session_context.show_thinking {
-        locale_reinforcement_preamble(session_context.locale_tag)
-    } else {
-        None
-    };
+    if session_context.show_thinking
+        && let Some(preamble) = locale_reinforcement_preamble(session_context.locale_tag)
+    {
+        append_section(
+            &mut bundle,
+            "locale_preamble",
+            "Locale reinforcement preamble",
+            preamble,
+            PromptSectionStability::Session,
+            PromptSectionSource::Builtin,
+        );
+    }
 
-    // 1–2. Mode prompt + project context.
-    // `load_project_context_with_parents` auto-generates .codesmith/instructions.md
-    // (or .deepseek/instructions.md as fallback) when no context file exists,
-    // so the fallback should always be available.
-    let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
-        format!("{mode_prompt}\n\n{project_block}")
+    append_section(
+        &mut bundle,
+        "global_system_prefix",
+        "Global system prefix",
+        mode_prompt,
+        PromptSectionStability::Static,
+        PromptSectionSource::Builtin,
+    );
+
+    if let Some(project_block) = project_context.as_system_block() {
+        append_section(
+            &mut bundle,
+            "project_context",
+            "Project context",
+            project_block,
+            PromptSectionStability::Workspace,
+            PromptSectionSource::ProjectContext,
+        );
     } else {
-        // Extremely unlikely: context generation failed (e.g. filesystem error).
-        // Use mode prompt alone rather than panic.
         tracing::warn!("No project context available and auto-generation failed");
-        mode_prompt
-    };
-
-    if let Some(preamble) = preamble {
-        full_prompt = format!("{preamble}\n\n{full_prompt}");
     }
 
     if session_context.project_context_pack_enabled
         && let Some(pack) = crate::project_context::generate_project_context_pack(workspace)
     {
-        full_prompt = format!("{full_prompt}\n\n{pack}");
-    }
-
-    // 2.3a. Translation output instruction — when enabled, instruct
-    // the model to respond in the resolved session locale. Stays
-    // above the volatile-content boundary because it's a per-session
-    // flag, not a per-turn one: enabling `/translate` is a session
-    // toggle, so the prompt-prefix bytes don't drift turn-over-turn.
-    if session_context.translation_enabled {
-        full_prompt = format!(
-            "{full_prompt}\n\n{}",
-            translation_output_instruction(session_context.locale_tag)
+        append_section(
+            &mut bundle,
+            "project_context_pack",
+            "Project context pack",
+            pack,
+            PromptSectionStability::Workspace,
+            PromptSectionSource::ProjectContext,
         );
     }
 
-    // 3. Skills block. #432: walks every candidate workspace
-    // skills directory (`.agents/skills`, `skills`,
-    // `.opencode/skills`, `.claude/skills`, `.cursor/skills`) plus global
-    // `~/.agents/skills` / `~/.deepseek/skills` so skills installed for any
-    // AI-tool convention show up in the catalogue. The legacy
-    // single-`skills_dir` path is
-    // honoured as a fallback for callers that don't supply a
-    // workspace-aware view; it falls through to the same merged
-    // registry when available.
+    if session_context.translation_enabled {
+        append_section(
+            &mut bundle,
+            "translation_requirement",
+            "Translation output requirement",
+            translation_output_instruction(session_context.locale_tag),
+            PromptSectionStability::Session,
+            PromptSectionSource::Builtin,
+        );
+    }
+
     let skills_block = crate::skills::render_available_skills_context_for_workspace(workspace)
         .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context));
     if let Some(block) = skills_block {
-        full_prompt = format!("{full_prompt}\n\n{block}");
-    }
-
-    // 4. Context Management (Agent / Yolo only).
-    if matches!(mode, AppMode::Agent | AppMode::Yolo) {
-        full_prompt.push_str(
-            "\n\n## Context Management\n\n\
-             When the conversation gets long (you'll see a context usage indicator), you can:\n\
-             1. Use `/compact` to summarize earlier context and free up space\n\
-             2. The system will preserve important information (files you're working on, recent messages, tool results)\n\
-             3. After compaction, you'll see a summary of what was discussed and can continue seamlessly\n\n\
-             If you notice context is getting long (>60% during sustained work), proactively suggest using `/compact` to the user.\n\n\
-             ### Prompt-cache awareness\n\n\
-             DeepSeek caches the longest *byte-stable prefix* of every request and charges roughly 100× less for cache-hit tokens than miss tokens. The system prompt above is layered most-static-first specifically so the prefix stays stable turn-over-turn. To keep cache hits high:\n\
-             - **Working set location:** the current repo working set is stored on new user messages inside a `<turn_meta>` block. Treat it as high-priority turn metadata, not as a stable system-prompt section.\n\
-             - **Append, don't reorder.** New context goes at the end (latest user / tool messages). Reshuffling earlier messages or rewriting their content invalidates the cache for everything after the change.\n\
-             - **Don't paraphrase quoted content.** If you've already read a file, refer to it by path or line range instead of re-quoting it with different formatting.\n\
-             - **Use `/compact` as a hard reset, not a tweak.** Compaction is meant for when the cache is already losing — it intentionally rewrites the prefix to a shorter summary. Don't trigger it for small wins.\n\
-             - **Read once, refer back.** Re-reading the same file produces a different tool-result envelope than the prior read; it's cheaper to scroll back than to re-fetch.\n\
-             - **Footer chip:** the `cache hit %` chip turns red below 40% and yellow below 80%. If it's been red for several turns, that's a signal to consolidate."
+        append_section(
+            &mut bundle,
+            "skills",
+            "Skills",
+            block,
+            PromptSectionStability::Workspace,
+            PromptSectionSource::Skills,
         );
     }
 
-    // 5. Compaction relay template — so the model knows the format to use
-    //    when writing `.codesmith/handoff.md` on exit / `/compact`.
-    full_prompt.push_str("\n\n");
-    full_prompt.push_str(COMPACT_TEMPLATE);
+    if matches!(mode, AppMode::Agent | AppMode::Yolo) {
+        append_section(
+            &mut bundle,
+            "context_management",
+            "Context management",
+            context_management_prompt(),
+            PromptSectionStability::Static,
+            PromptSectionSource::Builtin,
+        );
+    }
 
-    // ── Volatile-content boundary ─────────────────────────────────────────
-    // Everything below drifts mid-session and busts the prefix cache for
-    // bytes that follow. All static layers (mode, project context, env,
-    // skills, context management, compact template) live above this line
-    // so DeepSeek's KV prefix cache can hit on the entire system prompt
-    // regardless of per-session edits to memory, goals, or instructions.
-
-    // 6. Environment block — platform, shell, pwd, locale.
-    //
-    // Placed below the volatile-content boundary. The original comment claimed
-    // "workspace path is fixed for the run" → static-cacheable, which is true
-    // for the terminal use case (one process owns one workspace for its
-    // lifetime). It is **not** true for embedders that swap workspaces between
-    // sessions (the Op::SyncSession path, multi-engine pools, IDE
-    // integrations binding the engine to a per-tab workspace, etc.):
-    // `pwd` drifts session-to-session and drags the entire static prefix
-    // out of cache reuse. Moving the block below the volatile boundary keeps
-    // mode / project / skills / context-mgmt / compact-template byte-stable
-    // across sessions while preserving the pwd info the model needs for
-    // `exec_shell` and structured search tools.
-    full_prompt = format!(
-        "{full_prompt}\n\n{}",
-        render_environment_block(workspace, session_context.locale_tag),
+    append_section(
+        &mut bundle,
+        "compact_template",
+        "Compact template",
+        COMPACT_TEMPLATE,
+        PromptSectionStability::Static,
+        PromptSectionSource::Builtin,
     );
 
-    // 6a. Configured `instructions = [...]` files (#454). Loaded
-    // and concatenated in declared order. Placed below the volatile boundary
-    // because these files are workspace-scoped and may differ between
-    // sessions; any edit to them would otherwise bust the prefix cache for
-    // all subsequent static layers.
+    append_section(
+        &mut bundle,
+        "environment",
+        "Environment",
+        render_environment_block(workspace, session_context.locale_tag),
+        PromptSectionStability::Session,
+        PromptSectionSource::Builtin,
+    );
+
     if let Some(sources) = instructions
         && let Some(block) = render_instructions_block(sources)
     {
-        full_prompt = format!("{full_prompt}\n\n{block}");
-    }
-
-    // 6b. Knowledge On Demand block — when KoD is enabled, this replaces
-    // the legacy <user_memory> block. Same volatile position so prefix
-    // cache stays intact when KoD is toggled (one invalidation per toggle).
-    if let Some(knowledge_block) = session_context.knowledge_prompt_block
-        && !knowledge_block.trim().is_empty()
-    {
-        full_prompt = format!("{full_prompt}\n\n{knowledge_block}\n\n{KNOWLEDGE_GUIDANCE}");
-    } else if let Some(memory_block) = session_context.user_memory_block
-        && !memory_block.trim().is_empty()
-    {
-        full_prompt = format!("{full_prompt}\n\n{memory_block}\n\n{MEMORY_GUIDANCE}");
-    }
-
-    // 6c. Current session goal. Also volatile: users set / change goals
-    // during a session via `/goal`. Placed below the boundary for the
-    // same reason as memory.
-    if let Some(goal_objective) = session_context.goal_objective
-        && !goal_objective.trim().is_empty()
-    {
-        full_prompt = format!(
-            "{full_prompt}\n\n## Current Hunt\n\n<session_goal>\n{}\n</session_goal>",
-            goal_objective.trim()
+        append_section(
+            &mut bundle,
+            "configured_instructions",
+            "Configured instructions",
+            block,
+            PromptSectionStability::Session,
+            PromptSectionSource::Config,
         );
     }
 
-    // 7. Previous-session relay (file-backed, rewritten by `/compact`).
-    if let Some(handoff_block) = load_handoff_block(workspace) {
-        full_prompt = format!("{full_prompt}\n\n{handoff_block}");
+    if let Some(knowledge_block) = session_context.knowledge_prompt_block
+        && !knowledge_block.trim().is_empty()
+    {
+        append_section(
+            &mut bundle,
+            "memory_or_knowledge",
+            "Knowledge memory",
+            format!("{knowledge_block}\n\n{KNOWLEDGE_GUIDANCE}"),
+            PromptSectionStability::Session,
+            PromptSectionSource::Memory,
+        );
+    } else if let Some(memory_block) = session_context.user_memory_block
+        && !memory_block.trim().is_empty()
+    {
+        append_section(
+            &mut bundle,
+            "memory_or_knowledge",
+            "User memory",
+            format!("{memory_block}\n\n{MEMORY_GUIDANCE}"),
+            PromptSectionStability::Session,
+            PromptSectionSource::Memory,
+        );
     }
 
-    // 7a. Authority recap — the final tier reminder before user messages.
-    // Uses recency bias constructively: this is the last content the model
-    // sees before the user's turn, reinforcing the Constitutional hierarchy.
-    let authority_recap = effective_authority_recap();
-    full_prompt = format!("{full_prompt}\n\n{authority_recap}");
+    if let Some(goal_objective) = session_context.goal_objective
+        && !goal_objective.trim().is_empty()
+    {
+        append_section(
+            &mut bundle,
+            "session_goal",
+            "Current Hunt",
+            format!(
+                "## Current Hunt\n\n<session_goal>\n{}\n</session_goal>",
+                goal_objective.trim()
+            ),
+            PromptSectionStability::Session,
+            PromptSectionSource::Config,
+        );
+    }
 
-    // 8. Locale-native closing reinforcement (#1118 follow-up #2). The
-    // opening preamble alone wasn't enough — community feedback (the
-    // WeChat thread about XML-tagged bilingual bookends) flagged that as
-    // English context accumulates turn-over-turn, the model's recency
-    // bias pulls thinking back to English. Putting the same directive at
-    // the END of the system prompt — right before the user's next
-    // message — uses recency bias *in our favor*: the model sees the
-    // native-script "keep thinking in Chinese / Japanese / Portuguese"
-    // rule immediately before it generates `reasoning_content` for the
-    // turn. English (and unknown) locales return `None` and the prompt
-    // stays byte-identical to the pre-bookend behavior.
+    if let Some(handoff_block) = load_handoff_block(workspace) {
+        append_section(
+            &mut bundle,
+            "previous_session_relay",
+            "Previous session relay",
+            handoff_block,
+            PromptSectionStability::Dynamic,
+            PromptSectionSource::Handoff,
+        );
+    }
+
+    append_section(
+        &mut bundle,
+        "authority_recap",
+        "Authority recap",
+        effective_authority_recap(),
+        PromptSectionStability::Session,
+        PromptSectionSource::Builtin,
+    );
+
     if let Some(closer) = session_context
         .show_thinking
         .then(|| locale_reinforcement_closer(session_context.locale_tag))
         .flatten()
     {
-        full_prompt = format!("{full_prompt}\n\n{closer}");
+        append_section(
+            &mut bundle,
+            "locale_closer",
+            "Locale reinforcement closer",
+            closer,
+            PromptSectionStability::Session,
+            PromptSectionSource::Builtin,
+        );
     } else if !session_context.show_thinking {
-        full_prompt = format!(
-            "{full_prompt}\n\n{}",
-            hidden_thinking_language_instruction(session_context.locale_tag)
+        append_section(
+            &mut bundle,
+            "hidden_thinking_language",
+            "Hidden thinking language",
+            hidden_thinking_language_instruction(session_context.locale_tag),
+            PromptSectionStability::Session,
+            PromptSectionSource::Builtin,
         );
     }
 
-    SystemPrompt::Text(full_prompt)
+    bundle
+}
+
+pub fn effective_prompt_bundle_for_mode_with_runtime_context_and_approval(
+    mode: AppMode,
+    workspace: &Path,
+    working_set_summary: Option<&str>,
+    skills_dir: Option<&Path>,
+    instructions: Option<&[InstructionSource]>,
+    runtime_context: PromptRuntimeContext<'_>,
+    approval_mode: ApprovalMode,
+) -> PromptBundle {
+    let default_bundle = default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
+        mode,
+        workspace,
+        working_set_summary,
+        skills_dir,
+        instructions,
+        runtime_context.session.clone(),
+        approval_mode,
+    );
+
+    let mut append_sections = Vec::new();
+    if let Some(block) = render_append_system_prompt_block(runtime_context.append_system_prompts) {
+        append_sections.push(PromptSection::cacheable(
+            "append_system_prompt",
+            "Append system prompt",
+            block,
+            PromptSectionStability::Session,
+            PromptSectionSource::Cli,
+        ));
+    }
+    if let Some(cache_breaker) = runtime_context.cache_breaker
+        && !cache_breaker.trim().is_empty()
+    {
+        append_sections.push(PromptSection::new(
+            "cache_breaker",
+            "Cache breaker",
+            format!("<cache_breaker>{}</cache_breaker>", cache_breaker.trim()),
+            PromptSectionStability::Dynamic,
+            PromptCachePolicy::CacheBreaker,
+            PromptSectionSource::Debug,
+        ));
+    }
+
+    build_effective_system_prompt(EffectiveSystemPromptInput {
+        default_bundle,
+        custom_system_prompt: runtime_context.custom_system_prompt.map(str::to_string),
+        agent_system_prompt: runtime_context.agent_system_prompt.map(str::to_string),
+        coordinator_system_prompt: runtime_context
+            .coordinator_system_prompt
+            .map(str::to_string),
+        override_system_prompt: runtime_context.override_system_prompt.map(str::to_string),
+        append_sections,
+    })
+}
+
+pub fn effective_prompt_bundle_for_mode_with_context_skills_session_and_approval(
+    mode: AppMode,
+    workspace: &Path,
+    working_set_summary: Option<&str>,
+    skills_dir: Option<&Path>,
+    instructions: Option<&[InstructionSource]>,
+    session_context: PromptSessionContext<'_>,
+    approval_mode: ApprovalMode,
+) -> PromptBundle {
+    effective_prompt_bundle_for_mode_with_runtime_context_and_approval(
+        mode,
+        workspace,
+        working_set_summary,
+        skills_dir,
+        instructions,
+        session_context.runtime(),
+        approval_mode,
+    )
+}
+
+pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
+    mode: AppMode,
+    workspace: &Path,
+    working_set_summary: Option<&str>,
+    skills_dir: Option<&Path>,
+    instructions: Option<&[InstructionSource]>,
+    session_context: PromptSessionContext<'_>,
+    approval_mode: ApprovalMode,
+) -> SystemPrompt {
+    effective_prompt_bundle_for_mode_with_context_skills_session_and_approval(
+        mode,
+        workspace,
+        working_set_summary,
+        skills_dir,
+        instructions,
+        session_context,
+        approval_mode,
+    )
+    .render_system_prompt()
 }
 
 /// Build a system prompt with explicit project context
@@ -1146,6 +1491,32 @@ mod tests {
     /// Discriminator unique to the injected relay block (not present in the
     /// agent prompt's own discussion of the convention).
     const HANDOFF_BLOCK_MARKER: &str = "left a relay artifact at `.codesmith/handoff.md`";
+
+    #[test]
+    fn memory_extraction_prompt_uses_recent_messages_and_existing_memory() {
+        let messages = vec![
+            MemoryExtractionMessage {
+                role: "user".to_string(),
+                content: "first".to_string(),
+            },
+            MemoryExtractionMessage {
+                role: "assistant".to_string(),
+                content: "second".to_string(),
+            },
+            MemoryExtractionMessage {
+                role: "user".to_string(),
+                content: "third".to_string(),
+            },
+        ];
+
+        let prompt = build_memory_extraction_prompt(&messages, Some("Existing preference"), 2);
+        assert!(prompt.system_prompt.contains("Memory Extraction Protocol"));
+        assert!(prompt.user_prompt.contains("## Existing memory"));
+        assert!(prompt.user_prompt.contains("Existing preference"));
+        assert!(!prompt.user_prompt.contains("first"));
+        assert!(prompt.user_prompt.contains("second"));
+        assert!(prompt.user_prompt.contains("third"));
+    }
 
     #[test]
     fn prompt_override_storage_reports_duplicate_sets() {

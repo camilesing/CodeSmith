@@ -246,7 +246,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "memory",
         aliases: &[],
-        usage: "/memory [show|path|clear|edit|help]",
+        usage: "/memory [show|path|clear|edit|extract --dry-run|help]",
         description_id: MessageId::CmdMemoryDescription,
     },
     CommandInfo {

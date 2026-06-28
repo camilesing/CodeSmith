@@ -37,7 +37,7 @@ pub use protocol_handlers::{
     handle_plan_approval_rejection as proto_plan_reject,
     handle_shutdown_approval as proto_shutdown_approval,
     handle_shutdown_rejection as proto_shutdown_rejection,
-    handle_shutdown_request as proto_shutdown_request,
+    handle_shutdown_request as proto_shutdown_request, new_shared_permission_registry,
 };
 pub use send_message::SendMessageTool;
 pub use team_create::TeamCreateTool;
@@ -86,8 +86,11 @@ pub struct TeamContext {
     pub team_name: String,
     pub team_file_path: PathBuf,
     pub lead_agent_id: String,
+    pub task_v2_manager: crate::tools::task_v2::SharedTaskV2Manager,
     /// Active teammates keyed by agent ID.
     pub teammates: HashMap<String, TeammateInfo>,
+    /// Cancellation tokens for active in-process teammates keyed by agent name.
+    pub teammate_cancel_tokens: HashMap<String, tokio_util::sync::CancellationToken>,
 }
 
 /// Thread-safe shared reference to optional TeamContext.

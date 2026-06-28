@@ -39,6 +39,10 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_u64, required_str,
 };
+use crate::tools::team::{
+    TeamMember, TeammateInfo, TeammateRuntime, add_member, read_team_config, run_teammate_loop,
+    write_team_config,
+};
 use crate::tools::todo::{SharedTodoList, TodoList};
 use crate::utils::spawn_supervised;
 
@@ -734,6 +738,8 @@ struct SpawnRequest {
     max_depth: Option<u32>,
     /// Optional scoped persistent memory for this agent type.
     memory: Option<AgentMemoryRequest>,
+    /// Optional team name for in-process teammate lifecycle spawns.
+    team_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1919,6 +1925,9 @@ impl SubAgentManager {
         let mut changed = false;
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.status = result.status;
+            if agent.status != SubAgentStatus::Running {
+                release_resident_leases_for(agent_id);
+            }
             agent.assignment = result.assignment;
             agent.result = result.result;
             agent.steps_taken = result.steps_taken;
@@ -2549,8 +2558,8 @@ impl ToolSpec for AgentSpawnTool {
         if let Some(max_depth) = spawn_request.max_depth {
             child_runtime.max_spawn_depth = child_runtime.spawn_depth.saturating_add(max_depth);
         }
-        if let Some(cwd) = validated_cwd {
-            child_runtime.context.workspace = cwd;
+        if let Some(cwd) = validated_cwd.as_ref() {
+            child_runtime.context.workspace = cwd.clone();
             child_runtime.context.cwd = child_runtime.context.workspace.clone();
         }
         let resolved_agent_memory = if let Some(memory_request) = spawn_request.memory.clone() {
@@ -2607,7 +2616,7 @@ impl ToolSpec for AgentSpawnTool {
                 };
                 (prefixed, conflict)
             } else {
-                (spawn_request.prompt, None)
+                (spawn_request.prompt.clone(), None)
             };
 
         let route = resolve_subagent_assignment_route(
@@ -2621,6 +2630,22 @@ impl ToolSpec for AgentSpawnTool {
         child_runtime.reasoning_effort = route.reasoning_effort.clone();
         child_runtime.reasoning_effort_auto = false;
         let effective_model = route.model;
+
+        if matches!(spawn_request.agent_type, SubAgentType::Team)
+            || spawn_request.team_name.is_some()
+        {
+            let result = spawn_team_teammate(
+                Arc::clone(&self.manager),
+                child_runtime,
+                spawn_request,
+                Some(effective_model.clone()),
+                effective_prompt,
+                validated_cwd,
+            )
+            .await?;
+            return ToolResult::json(&result)
+                .map_err(|e| ToolError::execution_failed(e.to_string()));
+        }
 
         let mut manager = self.manager.write().await;
 
@@ -2641,6 +2666,31 @@ impl ToolSpec for AgentSpawnTool {
                 },
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
+        drop(manager);
+
+        if let Some(bg_registry) = self
+            .runtime
+            .context
+            .runtime
+            .background_task_registry
+            .as_ref()
+        {
+            let description = if result.assignment.objective.trim().is_empty() {
+                result
+                    .result
+                    .clone()
+                    .unwrap_or_else(|| "background agent".to_string())
+            } else {
+                result.assignment.objective.clone()
+            };
+            let mut registry = bg_registry.lock().await;
+            registry.register_agent_task(
+                result.agent_id.clone(),
+                result.agent_type.clone(),
+                result.model.clone(),
+                description,
+            );
+        }
 
         // Replace the "pending" lease placeholder with the real agent id now that
         // the manager has assigned one. Without this, `release_resident_leases_for`
@@ -2699,6 +2749,178 @@ impl ToolSpec for AgentSpawnTool {
         }
         Ok(tool_result)
     }
+}
+
+/// Create and start an in-process teammate runtime for AgentTeams.
+async fn spawn_team_teammate(
+    manager: SharedSubAgentManager,
+    runtime: SubAgentRuntime,
+    spawn_request: SpawnRequest,
+    effective_model: Option<String>,
+    effective_prompt: String,
+    validated_cwd: Option<PathBuf>,
+) -> Result<SubAgentResult, ToolError> {
+    let shared_team_context = runtime
+        .context
+        .runtime
+        .team_context
+        .clone()
+        .ok_or_else(|| ToolError::not_available("AgentTeams runtime is not attached"))?;
+
+    let cancel_token = CancellationToken::new();
+    let agent_id = format!("team_agent_{}", &Uuid::new_v4().to_string()[..8]);
+    let agent_name = spawn_request
+        .session_name
+        .clone()
+        .unwrap_or_else(|| agent_id.clone());
+    let agent_type = spawn_request.agent_type.clone();
+    let cwd = validated_cwd.unwrap_or_else(|| runtime.context.cwd.clone());
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let (team_name, task_v2_manager, permission_registry) = {
+        let mut slot = shared_team_context.lock().await;
+        let ctx = slot.as_mut().ok_or_else(|| {
+            ToolError::invalid_input("No active team. Call team_create before spawning teammates.")
+        })?;
+        if let Some(requested) = spawn_request.team_name.as_ref()
+            && requested != &ctx.team_name
+        {
+            return Err(ToolError::invalid_input(format!(
+                "Active team is '{}', not '{}'",
+                ctx.team_name, requested
+            )));
+        }
+        if ctx
+            .teammates
+            .values()
+            .any(|existing| existing.name == agent_name)
+            || ctx.teammate_cancel_tokens.contains_key(&agent_name)
+        {
+            return Err(ToolError::invalid_input(format!(
+                "Teammate '{agent_name}' already exists"
+            )));
+        }
+
+        let mut team_file = read_team_config(&ctx.team_name)
+            .map_err(|e| ToolError::execution_failed(format!("Failed to read team config: {e}")))?;
+        add_member(
+            &mut team_file,
+            TeamMember {
+                agent_id: agent_id.clone(),
+                name: agent_name.clone(),
+                agent_type: Some(agent_type.as_str().to_string()),
+                model: effective_model.clone(),
+                prompt: Some(effective_prompt.clone()),
+                color: None,
+                joined_at: now,
+                cwd: cwd.to_string_lossy().to_string(),
+                worktree_path: None,
+                session_id: None,
+                is_active: true,
+            },
+        );
+        write_team_config(&team_file).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to write team config: {e}"))
+        })?;
+
+        ctx.teammates.insert(
+            agent_id.clone(),
+            TeammateInfo {
+                name: agent_name.clone(),
+                agent_type: agent_type.as_str().to_string(),
+                color: None,
+                cwd: cwd.clone(),
+                spawned_at: now,
+            },
+        );
+        ctx.teammate_cancel_tokens
+            .insert(agent_name.clone(), cancel_token.clone());
+
+        let permission_registry = runtime
+            .context
+            .runtime
+            .permission_request_registry
+            .clone()
+            .unwrap_or_else(crate::tools::team::new_shared_permission_registry);
+
+        (
+            ctx.team_name.clone(),
+            ctx.task_v2_manager.clone(),
+            permission_registry,
+        )
+    };
+
+    let mut teammate_context = runtime.context.clone();
+    teammate_context.cwd = cwd.clone();
+    teammate_context.runtime.team_sender = Some(agent_name.clone());
+    let mut teammate_runtime = runtime
+        .child_runtime()
+        .with_cancel_token(cancel_token.clone());
+    teammate_runtime.context = teammate_context.clone();
+    if let Some(model) = effective_model.as_ref() {
+        teammate_runtime.model = model.clone();
+    }
+
+    let rt = TeammateRuntime {
+        agent_id: agent_id.clone(),
+        agent_name: agent_name.clone(),
+        team_name: team_name.clone(),
+        color: None,
+        cancel_token: cancel_token.clone(),
+        task_v2_manager,
+        initial_prompt: effective_prompt.clone(),
+        permission_mode: if runtime.context.auto_approve {
+            "auto".to_string()
+        } else {
+            "ask".to_string()
+        },
+        permission_registry,
+        subagent_manager: manager.clone(),
+        subagent_runtime: teammate_runtime,
+        tool_context: teammate_context,
+        agent_type: agent_type.clone(),
+        model: effective_model.clone(),
+        allowed_tools: spawn_request.allowed_tools.clone(),
+    };
+
+    let cleanup_team_context = shared_team_context.clone();
+    let cleanup_agent_id = agent_id.clone();
+    let cleanup_agent_name = agent_name.clone();
+    let cleanup_team_name = team_name.clone();
+    spawn_supervised(
+        "team-teammate-loop",
+        std::panic::Location::caller(),
+        async move {
+            let _result = run_teammate_loop(rt).await;
+            let mut slot = cleanup_team_context.lock().await;
+            if let Some(ctx) = slot.as_mut() {
+                ctx.teammates.remove(&cleanup_agent_id);
+                ctx.teammate_cancel_tokens.remove(&cleanup_agent_name);
+            }
+            if let Ok(mut team_file) = read_team_config(&cleanup_team_name) {
+                let _ =
+                    crate::tools::team::set_member_inactive(&mut team_file, &cleanup_agent_name);
+                let _ = write_team_config(&team_file);
+            }
+        },
+    );
+
+    Ok(SubAgentResult {
+        name: agent_name,
+        agent_id,
+        context_mode: "team".to_string(),
+        fork_context: false,
+        agent_type,
+        assignment: spawn_request.assignment,
+        model: effective_model.unwrap_or_else(|| runtime.model.clone()),
+        nickname: None,
+        status: SubAgentStatus::Running,
+        agent_memory: None,
+        result: Some(format!("Teammate spawned in team '{team_name}'")),
+        steps_taken: 0,
+        duration_ms: 0,
+        from_prior_session: false,
+    })
 }
 
 // === Sync foreground sub-agent (agent_run) ===
@@ -5384,6 +5606,10 @@ fn parse_spawn_request_with_workspace(
             .unwrap_or(false);
     let max_depth = parse_optional_max_depth(input)?;
     let memory = parse_memory_with_definition(input, definition.as_ref())?;
+    let team_name = optional_input_str(input, &["team_name", "team"])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     Ok(SpawnRequest {
         session_name,
@@ -5397,6 +5623,7 @@ fn parse_spawn_request_with_workspace(
         fork_context,
         max_depth,
         memory,
+        team_name,
     })
 }
 
@@ -5938,6 +6165,13 @@ impl SubAgentToolRegistry {
                 }
             }
         }
+        if context.runtime.team_sender.is_some() {
+            if let Some(list) = explicit_allowed_tools.as_mut()
+                && !list.iter().any(|name| name == "send_message")
+            {
+                list.push("send_message".to_string());
+            }
+        }
         let mut registry = ToolRegistryBuilder::new().with_full_agent_surface(
             Some(runtime.client.clone()),
             runtime.model.clone(),
@@ -5947,6 +6181,11 @@ impl SubAgentToolRegistry {
             todo_list,
             plan_state,
         );
+        if matches!(agent_type, SubAgentType::Team)
+            && let Some(team_context) = context.runtime.team_context.clone()
+        {
+            registry = registry.with_send_message_tool(team_context);
+        }
 
         if let Some(pool) = runtime.mcp_pool.as_ref() {
             registry = registry.with_mcp_tools(std::sync::Arc::clone(pool));
@@ -5976,6 +6215,11 @@ impl SubAgentToolRegistry {
     /// Whether a given tool name is permitted under this child's filter.
     /// `None` filter = everything permitted.
     fn is_tool_allowed(&self, name: &str) -> bool {
+        if matches!(self.agent_type, SubAgentType::CoordinatorWorker)
+            && WORKER_EXCLUDED_TOOLS.contains(&name)
+        {
+            return false;
+        }
         match &self.allowed_tools {
             None => true,
             Some(list) => list.iter().any(|t| t == name),
@@ -6005,6 +6249,7 @@ impl SubAgentToolRegistry {
                 "rlm_configure",
                 "rlm_close",
             ][..],
+            SubAgentType::CoordinatorWorker => WORKER_EXCLUDED_TOOLS,
             _ => &[][..],
         };
         let api_tools = self.registry.to_api_tools();

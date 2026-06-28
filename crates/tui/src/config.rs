@@ -1458,6 +1458,13 @@ pub struct Config {
     /// at 100 KiB, and skipped (with a warning) on read errors so a
     /// missing optional file doesn't fail the launch.
     pub instructions: Option<Vec<String>>,
+    /// Full system prompt override. Replaces the built-in assembled prompt but
+    /// still preserves explicit append sections after it.
+    pub system_prompt: Option<String>,
+    /// Path to a file containing the full system prompt override.
+    pub system_prompt_file: Option<String>,
+    /// Additional system-prompt append sources rendered after the selected base.
+    pub append_system_prompt: Option<Vec<String>>,
     pub allow_shell: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
@@ -2481,6 +2488,55 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(expand_path)
             .collect()
+    }
+
+    /// Resolve append-system-prompt paths from config. Inline append content is
+    /// represented by `system_prompt` / CLI sources, so config append entries are
+    /// path-only for predictable TOML semantics.
+    #[must_use]
+    pub fn append_system_prompt_paths(&self) -> Vec<PathBuf> {
+        self.append_system_prompt
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(expand_path)
+            .collect()
+    }
+
+    /// Resolve the configured full system-prompt override from inline config or
+    /// `system_prompt_file`. Inline config wins over the file path.
+    #[must_use]
+    pub fn system_prompt_override_text(&self) -> Option<String> {
+        if let Some(inline) = self
+            .system_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(inline.to_string());
+        }
+        let path = self
+            .system_prompt_file
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(expand_path)?;
+        match std::fs::read_to_string(&path) {
+            Ok(content) if !content.trim().is_empty() => Some(content),
+            Ok(_) => None,
+            Err(err) => {
+                tracing::warn!(
+                    target: "prompt_runtime",
+                    ?err,
+                    ?path,
+                    "skipping unreadable system_prompt_file"
+                );
+                None
+            }
+        }
     }
 
     /// Whether the user-memory feature is enabled. The default is **off**
@@ -4083,6 +4139,11 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         // wholesale. The typical "merge" pattern is for users who want
         // both — they list `~/global.md` inside the project array.
         instructions: override_cfg.instructions.or(base.instructions),
+        system_prompt: override_cfg.system_prompt.or(base.system_prompt),
+        system_prompt_file: override_cfg.system_prompt_file.or(base.system_prompt_file),
+        append_system_prompt: override_cfg
+            .append_system_prompt
+            .or(base.append_system_prompt),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         yolo: override_cfg.yolo.or(base.yolo),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),

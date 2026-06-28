@@ -59,6 +59,11 @@ pub struct RuntimeToolServices {
     pub team_context: Option<crate::tools::team::SharedTeamContext>,
     /// Permission request registry for team permission delegation.
     pub permission_request_registry: Option<crate::tools::team::SharedPermissionRequestRegistry>,
+    /// Unified background task registry for model-visible background lifecycle tools.
+    pub background_task_registry: Option<crate::background_task::SharedBackgroundTaskRegistry>,
+    /// Sender identity used by team messaging tools. Defaults to the team lead
+    /// when unset; teammate runtimes set this to their agent name.
+    pub team_sender: Option<String>,
 }
 
 impl Default for RuntimeToolServices {
@@ -77,6 +82,8 @@ impl Default for RuntimeToolServices {
             task_mailbox: None,
             team_context: None,
             permission_request_registry: None,
+            background_task_registry: None,
+            team_sender: None,
         }
     }
 }
@@ -96,6 +103,15 @@ impl std::fmt::Debug for RuntimeToolServices {
             .field("rlm_sessions", &true)
             .field("task_mailbox", &self.task_mailbox.is_some())
             .field("team_context", &self.team_context.is_some())
+            .field(
+                "permission_request_registry",
+                &self.permission_request_registry.is_some(),
+            )
+            .field(
+                "background_task_registry",
+                &self.background_task_registry.is_some(),
+            )
+            .field("team_sender", &self.team_sender)
             .finish()
     }
 }

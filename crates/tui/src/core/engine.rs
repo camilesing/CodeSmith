@@ -21,6 +21,7 @@ use serde_json::json;
 use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::background_task::BackgroundTaskStatus;
 use crate::client::DeepSeekClient;
 use crate::compaction::session_memory_compact::{
     session_memory_compact, should_use_session_memory_compact,
@@ -50,6 +51,7 @@ use crate::sandbox::SandboxRuntimeConfig;
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::goal::{SharedGoalState, new_shared_goal_state};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
+use crate::tools::shell::ShellStatus;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
@@ -106,6 +108,19 @@ pub struct EngineConfig {
     /// without staging a disk file. `From<PathBuf>` impl keeps existing callers
     /// working with `.into()` at the call site.
     pub instructions: Vec<crate::prompts::InstructionSource>,
+    /// Optional full system-prompt override from config/CLI. Replaces the
+    /// assembled default prompt; append sections still render after it.
+    pub override_system_prompt: Option<String>,
+    /// Optional custom system prompt, lower priority than role/runtime override.
+    pub custom_system_prompt: Option<String>,
+    /// Optional coordinator-specific system prompt override.
+    pub coordinator_system_prompt: Option<String>,
+    /// Optional agent-specific system prompt override.
+    pub agent_system_prompt: Option<String>,
+    /// Additional prompt sections appended after the selected prompt base.
+    pub append_system_prompts: Vec<crate::prompts::PromptAppendSource>,
+    /// Dynamic cache breaker appended for debugging provider prefix behavior.
+    pub cache_breaker: Option<String>,
     pub project_context_pack_enabled: bool,
     /// When true, the model is instructed to respond in the current locale
     /// and a post-hoc translation layer replaces remaining English output.
@@ -217,7 +232,8 @@ pub struct EngineConfig {
     /// When `None`, no overrides or plugin loading occurs.
     pub tools: Option<crate::config::ToolsConfig>,
     /// Shared team context for multi-agent coordination.
-    /// None when AgentTeams feature is disabled or no team exists.
+    /// `None` disables AgentTeams runtime services. `Some(Mutex(None))` means
+    /// AgentTeams is available but no team is active yet.
     pub team_context: Option<crate::tools::team::SharedTeamContext>,
 }
 
@@ -232,6 +248,12 @@ impl Default for EngineConfig {
             mcp_config_path: PathBuf::from("mcp.json"),
             skills_dir: crate::skills::default_skills_dir(),
             instructions: Vec::new(),
+            override_system_prompt: None,
+            custom_system_prompt: None,
+            coordinator_system_prompt: None,
+            agent_system_prompt: None,
+            append_system_prompts: Vec::new(),
+            cache_breaker: None,
             project_context_pack_enabled: true,
             translation_enabled: false,
             show_thinking: true,
@@ -403,6 +425,9 @@ pub struct Engine {
     /// Unified background task registry bridging ShellManager, SubAgentManager,
     /// and TaskManager into a single lifecycle surface.
     bg_registry: crate::background_task::SharedBackgroundTaskRegistry,
+    /// Sender half of the engine op channel. Cloned into long-lived background
+    /// lifecycle tasks such as the team inbox poller watcher.
+    tx_op: mpsc::Sender<Op>,
 }
 
 // === Internal tool helpers ===
@@ -651,7 +676,7 @@ impl Engine {
     }
 
     fn new_impl(
-        config: EngineConfig,
+        mut config: EngineConfig,
         api_config: &Config,
         injected_client: Option<LlmClientHandle>,
     ) -> (Self, EngineHandle) {
@@ -669,6 +694,24 @@ impl Engine {
         let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
         let cancel_reason: Arc<StdMutex<Option<CancelReason>>> = Arc::new(StdMutex::new(None));
         let tool_exec_lock = Arc::new(RwLock::new(()));
+
+        if config.features.enabled(Feature::AgentTeams) {
+            let team_context = config
+                .team_context
+                .clone()
+                .or_else(|| config.runtime_services.team_context.clone())
+                .unwrap_or_else(crate::tools::team::new_shared_team_context);
+            config.team_context = Some(team_context.clone());
+            config.runtime_services.team_context = Some(team_context);
+            if config
+                .runtime_services
+                .permission_request_registry
+                .is_none()
+            {
+                config.runtime_services.permission_request_registry =
+                    Some(crate::tools::team::new_shared_permission_registry());
+            }
+        }
 
         // Create clients for both providers
         let (llm_client, llm_client_error) = match injected_client {
@@ -710,25 +753,36 @@ impl Engine {
         };
         let prompt_goal_objective =
             goal_objective_for_prompt(config.goal_objective.as_deref(), &config.goal_state);
+        let runtime_context = prompts::PromptSessionContext {
+            user_memory_block: user_memory_block.as_deref(),
+            knowledge_prompt_block: knowledge_prompt_block.as_deref(),
+            goal_objective: prompt_goal_objective.as_deref(),
+            project_context_pack_enabled: config.project_context_pack_enabled,
+            locale_tag: &config.locale_tag,
+            translation_enabled: config.translation_enabled,
+            model_id: &config.model,
+            show_thinking: config.show_thinking,
+        }
+        .runtime();
         let system_prompt =
-            prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
+            prompts::effective_prompt_bundle_for_mode_with_runtime_context_and_approval(
                 AppMode::Agent,
                 &config.workspace,
                 None,
                 Some(&config.skills_dir),
                 Some(&config.instructions),
-                prompts::PromptSessionContext {
-                    user_memory_block: user_memory_block.as_deref(),
-                    knowledge_prompt_block: knowledge_prompt_block.as_deref(),
-                    goal_objective: prompt_goal_objective.as_deref(),
-                    project_context_pack_enabled: config.project_context_pack_enabled,
-                    locale_tag: &config.locale_tag,
-                    translation_enabled: config.translation_enabled,
-                    model_id: &config.model,
-                    show_thinking: config.show_thinking,
+                prompts::PromptRuntimeContext {
+                    override_system_prompt: config.override_system_prompt.as_deref(),
+                    custom_system_prompt: config.custom_system_prompt.as_deref(),
+                    coordinator_system_prompt: config.coordinator_system_prompt.as_deref(),
+                    agent_system_prompt: config.agent_system_prompt.as_deref(),
+                    append_system_prompts: &config.append_system_prompts,
+                    cache_breaker: config.cache_breaker.as_deref(),
+                    ..runtime_context
                 },
                 session.approval_mode,
-            );
+            )
+            .render_system_prompt();
         let stable_prompt = Some(system_prompt);
         session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
         session.system_prompt = stable_prompt;
@@ -835,6 +889,7 @@ impl Engine {
                 bg_data_dir,
             ),
         ));
+        config.runtime_services.background_task_registry = Some(bg_registry.clone());
 
         let api_provider = api_config.api_provider();
         let mut engine = Engine {
@@ -869,6 +924,7 @@ impl Engine {
             workshop_vars,
             sandbox_backend,
             bg_registry,
+            tx_op: tx_op.clone(),
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -933,6 +989,60 @@ impl Engine {
                                 .await;
                         }
                         registry.evict_notified();
+                    }
+                },
+            );
+        }
+
+        // Spawn AgentTeams leader inbox lifecycle watcher. The watcher starts a
+        // poller when TeamContext becomes active and cancels it when the team is
+        // deleted or the engine shuts down.
+        if self.config.features.enabled(Feature::AgentTeams)
+            && let Some(team_context) = self.config.team_context.clone()
+        {
+            let tx_op = self.tx_op.clone();
+            let cancel_token = self.cancel_token.clone();
+            spawn_supervised(
+                "team-lifecycle-watcher",
+                std::panic::Location::caller(),
+                async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                    let mut active_team: Option<String> = None;
+                    let mut poller_token: Option<CancellationToken> = None;
+                    loop {
+                        interval.tick().await;
+                        if cancel_token.is_cancelled() {
+                            if let Some(token) = poller_token.take() {
+                                token.cancel();
+                            }
+                            break;
+                        }
+
+                        let current_team = {
+                            let ctx = team_context.lock().await;
+                            ctx.as_ref().map(|ctx| ctx.team_name.clone())
+                        };
+
+                        if current_team != active_team {
+                            if let Some(token) = poller_token.take() {
+                                token.cancel();
+                            }
+                            active_team = current_team.clone();
+                            if let Some(team_name) = current_team {
+                                let child_token = cancel_token.child_token();
+                                poller_token = Some(child_token.clone());
+                                let tx_op = tx_op.clone();
+                                spawn_supervised(
+                                    "team-leader-inbox-poller",
+                                    std::panic::Location::caller(),
+                                    crate::tools::team::run_leader_inbox_poller(
+                                        team_name,
+                                        tx_op,
+                                        child_token,
+                                    ),
+                                );
+                            }
+                        }
                     }
                 },
             );
@@ -1200,38 +1310,166 @@ impl Engine {
                     break;
                 }
 
-                // Background task operations — stubs for Phase 7 engine integration
+                // Background task operations.
                 #[allow(dead_code)]
                 Op::StartBackgroundShell {
                     command,
                     cwd,
                     timeout_secs,
                 } => {
-                    // TODO: delegate to ShellManager + BackgroundTaskRegistry
+                    let timeout_ms = timeout_secs.unwrap_or(600).saturating_mul(1_000);
+                    let cwd_str = cwd.as_ref().map(|path| path.to_string_lossy().to_string());
+                    let result = {
+                        let mut shell =
+                            self.shell_manager.lock().unwrap_or_else(|p| p.into_inner());
+                        shell.execute(&command, cwd_str.as_deref(), timeout_ms, true)
+                    };
+                    match result {
+                        Ok(shell_result) => {
+                            if let Some(shell_id) = shell_result.task_id.clone() {
+                                let cwd = cwd.unwrap_or_else(|| self.session.cwd.clone());
+                                let task = {
+                                    let mut registry = self.bg_registry.lock().await;
+                                    registry.register_shell_task(shell_id, command, cwd)
+                                };
+                                let _ = self
+                                    .tx_event
+                                    .send(Event::BackgroundTaskStarted {
+                                        id: task.id,
+                                        task_type: task.task_type,
+                                        description: task.description,
+                                    })
+                                    .await;
+                            } else {
+                                let status = if shell_result.status == ShellStatus::Completed {
+                                    "completed"
+                                } else {
+                                    "failed"
+                                };
+                                let _ = self
+                                    .tx_event
+                                    .send(Event::status(format!(
+                                        "Background shell {status} without task id"
+                                    )))
+                                    .await;
+                            }
+                        }
+                        Err(err) => {
+                            let _ = self
+                                .tx_event
+                                .send(Event::error(ErrorEnvelope::fatal(format!(
+                                    "Failed to start background shell: {err}"
+                                ))))
+                                .await;
+                        }
+                    }
                 }
                 #[allow(dead_code)]
                 Op::CancelBackgroundTask { id } => {
-                    // TODO: delegate to BackgroundTaskRegistry::cancel_task
+                    let result = {
+                        let mut registry = self.bg_registry.lock().await;
+                        registry.cancel_task(&id).await
+                    };
+                    match result {
+                        Ok(()) => {
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!("Cancelled background task {id}")))
+                                .await;
+                        }
+                        Err(err) => {
+                            let _ = self
+                                .tx_event
+                                .send(Event::error(ErrorEnvelope::transient(format!(
+                                    "Failed to cancel background task {id}: {err}"
+                                ))))
+                                .await;
+                        }
+                    }
                 }
                 #[allow(dead_code)]
                 Op::ListBackgroundTasks => {
-                    // TODO: delegate to BackgroundTaskRegistry::list_tasks
+                    let tasks = {
+                        let registry = self.bg_registry.lock().await;
+                        registry.list_tasks()
+                    };
+                    let _ = self
+                        .tx_event
+                        .send(Event::BackgroundTaskList { tasks })
+                        .await;
                 }
                 #[allow(dead_code)]
                 Op::PollBackgroundTask { id } => {
-                    // TODO: delegate to BackgroundTaskRegistry::read_output_delta
+                    let delta = {
+                        let mut registry = self.bg_registry.lock().await;
+                        registry.read_output_delta(&id)
+                    };
+                    if let Some(output_delta) = delta.filter(|delta| !delta.is_empty()) {
+                        let _ = self
+                            .tx_event
+                            .send(Event::BackgroundTaskProgress {
+                                id,
+                                output_delta,
+                                stall_detected: false,
+                            })
+                            .await;
+                    }
                 }
                 #[allow(dead_code)]
                 Op::BackgroundCurrentShell => {
-                    // TODO: delegate to BackgroundTaskRegistry::background_all
+                    let tasks = {
+                        let mut registry = self.bg_registry.lock().await;
+                        registry.background_all()
+                    };
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Requested backgrounding for {} shell task(s)",
+                            tasks.len()
+                        )))
+                        .await;
                 }
                 #[allow(dead_code)]
                 Op::BackgroundAll => {
-                    // TODO: delegate to BackgroundTaskRegistry::background_all
+                    let tasks = {
+                        let mut registry = self.bg_registry.lock().await;
+                        registry.background_all()
+                    };
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Requested backgrounding for {} shell task(s)",
+                            tasks.len()
+                        )))
+                        .await;
                 }
                 #[allow(dead_code)]
                 Op::StartDreamTask { memory_path } => {
-                    // TODO: spawn DreamTaskRunner via BackgroundTaskRegistry
+                    let path = memory_path
+                        .or_else(|| self.config.runtime_services.task_data_dir.clone())
+                        .unwrap_or_else(|| {
+                            self.session.workspace.join(".codesmith").join("memory")
+                        });
+                    let task = {
+                        let mut registry = self.bg_registry.lock().await;
+                        registry.register_dream_task(path)
+                    };
+                    let _ = self
+                        .tx_event
+                        .send(Event::BackgroundTaskStarted {
+                            id: task.id.clone(),
+                            task_type: task.task_type,
+                            description: task.description.clone(),
+                        })
+                        .await;
+                    {
+                        let mut registry = self.bg_registry.lock().await;
+                        let _ = registry.update_task_status(
+                            &task.id,
+                            BackgroundTaskStatus::Completed,
+                            None,
+                        );
+                    }
                 }
                 Op::TeamInboxDispatch { dispatch } => {
                     self.handle_team_inbox_dispatch(dispatch).await;
@@ -1683,6 +1921,7 @@ impl Engine {
                 {
                     builder = builder.with_send_message_tool(tc);
                 }
+                builder = builder.with_task_stop_tool();
                 Some(builder.build(tool_context))
             }
             _ => Some(builder.build(tool_context)),
@@ -2848,24 +3087,35 @@ impl Engine {
             self.config.goal_objective.as_deref(),
             &self.config.goal_state,
         );
-        let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
+        let runtime_context = prompts::PromptSessionContext {
+            user_memory_block: user_memory_block.as_deref(),
+            knowledge_prompt_block: knowledge_prompt_block.as_deref(),
+            goal_objective: prompt_goal_objective.as_deref(),
+            project_context_pack_enabled: self.config.project_context_pack_enabled,
+            locale_tag: &self.config.locale_tag,
+            translation_enabled: self.config.translation_enabled,
+            model_id: &self.config.model,
+            show_thinking: self.config.show_thinking,
+        }
+        .runtime();
+        let base = prompts::effective_prompt_bundle_for_mode_with_runtime_context_and_approval(
             mode,
             &self.config.workspace,
             None,
             Some(&self.config.skills_dir),
             Some(&self.config.instructions),
-            prompts::PromptSessionContext {
-                user_memory_block: user_memory_block.as_deref(),
-                knowledge_prompt_block: knowledge_prompt_block.as_deref(),
-                goal_objective: prompt_goal_objective.as_deref(),
-                project_context_pack_enabled: self.config.project_context_pack_enabled,
-                locale_tag: &self.config.locale_tag,
-                translation_enabled: self.config.translation_enabled,
-                model_id: &self.config.model,
-                show_thinking: self.config.show_thinking,
+            prompts::PromptRuntimeContext {
+                override_system_prompt: self.config.override_system_prompt.as_deref(),
+                custom_system_prompt: self.config.custom_system_prompt.as_deref(),
+                coordinator_system_prompt: self.config.coordinator_system_prompt.as_deref(),
+                agent_system_prompt: self.config.agent_system_prompt.as_deref(),
+                append_system_prompts: &self.config.append_system_prompts,
+                cache_breaker: self.config.cache_breaker.as_deref(),
+                ..runtime_context
             },
             self.session.approval_mode,
-        );
+        )
+        .render_system_prompt();
         let mut stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
 

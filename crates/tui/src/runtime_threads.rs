@@ -1974,6 +1974,17 @@ impl RuntimeThreadManager {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            override_system_prompt: self.config.system_prompt_override_text(),
+            custom_system_prompt: None,
+            coordinator_system_prompt: None,
+            agent_system_prompt: None,
+            append_system_prompts: self
+                .config
+                .append_system_prompt_paths()
+                .into_iter()
+                .map(crate::prompts::PromptAppendSource::file)
+                .collect(),
+            cache_breaker: None,
             project_context_pack_enabled: self.config.project_context_pack_enabled(),
             translation_enabled: false,
             show_thinking: settings.show_thinking,
@@ -2014,6 +2025,8 @@ impl RuntimeThreadManager {
                 task_mailbox: None,
                 team_context: None,
                 permission_request_registry: None,
+                background_task_registry: None,
+                team_sender: None,
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             subagent_api_timeout: std::time::Duration::from_secs(

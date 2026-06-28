@@ -144,7 +144,8 @@ pub fn cache(app: &mut App, arg: Option<&str>) -> CommandResult {
         let flags = flags.trim();
         let verbose = flags.split_whitespace().any(|flag| flag == "--verbose");
         let json_mode = flags.split_whitespace().any(|flag| flag == "--json");
-        return CommandResult::message(format_cache_inspect(app, verbose, json_mode));
+        let full_mode = flags.split_whitespace().any(|flag| flag == "--full");
+        return CommandResult::message(format_cache_inspect(app, verbose, json_mode, full_mode));
     }
     if matches!(arg, Some("warmup")) {
         return CommandResult::action(AppAction::CacheWarmup);
@@ -169,9 +170,12 @@ pub fn cache(app: &mut App, arg: Option<&str>) -> CommandResult {
     CommandResult::message(format_cache_history(app, count, app.ui_locale))
 }
 
-fn format_cache_inspect(app: &mut App, verbose: bool, json_mode: bool) -> String {
+fn format_cache_inspect(app: &mut App, verbose: bool, json_mode: bool, full_mode: bool) -> String {
     if verbose && json_mode {
         return "cache inspect: --json and --verbose cannot be combined".to_string();
+    }
+    if full_mode && json_mode {
+        return "cache inspect: --json and --full cannot be combined".to_string();
     }
 
     let reasoning_effort = if app.reasoning_effort == crate::tui::app::ReasoningEffort::Auto {
@@ -249,6 +253,14 @@ fn format_cache_inspect(app: &mut App, verbose: bool, json_mode: bool) -> String
     out.push_str(&format_static_prefix_status(previous, &inspection));
     out.push_str(&format_first_divergence(previous, &inspection));
     out.push_str(&warmup_status);
+    if let Some(path) = std::env::var_os("CODESMITH_PROMPT_REQUEST_LOG")
+        .or_else(|| std::env::var_os("DEEPSEEK_PROMPT_REQUEST_LOG"))
+    {
+        out.push_str(&format!(
+            "Prompt request JSONL: {}\n",
+            std::path::PathBuf::from(path).display()
+        ));
+    }
     let total_tokens: usize = inspection
         .layers
         .iter()
@@ -289,6 +301,12 @@ fn format_cache_inspect(app: &mut App, verbose: bool, json_mode: bool) -> String
         }
         out.push_str(&line);
     }
+    if full_mode {
+        out.push_str("\nFull rendered prompt\n");
+        out.push_str("─────────────────────────────\n");
+        out.push_str(&render_full_prompt_for_inspect(app));
+        out.push('\n');
+    }
     if verbose {
         out.push_str("\nVerbose diff\n");
         if let Some(previous) = previous {
@@ -299,6 +317,18 @@ fn format_cache_inspect(app: &mut App, verbose: bool, json_mode: bool) -> String
     }
     app.session.last_cache_inspection = Some(inspection);
     out
+}
+
+fn render_full_prompt_for_inspect(app: &App) -> String {
+    match &app.system_prompt {
+        Some(SystemPrompt::Text(text)) => text.clone(),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| block.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n"),
+        None => "(no system prompt)".to_string(),
+    }
 }
 
 fn format_warmup_status(last_warmup: Option<&CacheWarmupKey>, current: &CacheWarmupKey) -> String {

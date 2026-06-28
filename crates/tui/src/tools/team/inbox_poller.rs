@@ -84,8 +84,8 @@ pub enum InboxDispatch {
 }
 
 /// Channel type for sending ops to the engine.
-pub type TeamInboxTx = mpsc::UnboundedSender<Op>;
-pub type TeamInboxRx = mpsc::UnboundedReceiver<Op>;
+pub type TeamInboxTx = mpsc::Sender<Op>;
+pub type TeamInboxRx = mpsc::Receiver<Op>;
 
 // ---------------------------------------------------------------------------
 // Classification
@@ -427,114 +427,134 @@ pub async fn run_leader_inbox_poller(
                 &team_name,
                 "auto",
             );
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::PlanApprovalAutoApprove {
-                    from: entry.from.clone(),
-                    request_id: entry.request_id.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::PlanApprovalAutoApprove {
+                        from: entry.from.clone(),
+                        request_id: entry.request_id.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch shutdown approvals.
         for entry in &cls.shutdown_approvals {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::ShutdownApprovalAction {
-                    from: entry.from.clone(),
-                    request_id: entry.request_id.clone(),
-                    backend_type: entry.backend_type.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::ShutdownApprovalAction {
+                        from: entry.from.clone(),
+                        request_id: entry.request_id.clone(),
+                        backend_type: entry.backend_type.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch shutdown rejections (informational).
         for entry in &cls.shutdown_rejections {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::ShutdownRejectionInfo {
-                    from: entry.from.clone(),
-                    request_id: entry.request_id.clone(),
-                    reason: entry.reason.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::ShutdownRejectionInfo {
+                        from: entry.from.clone(),
+                        request_id: entry.request_id.clone(),
+                        reason: entry.reason.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch permission requests.
         for entry in &cls.permission_requests {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::PermissionRequestPending {
-                    request_id: entry.request_id.clone(),
-                    agent_id: entry.agent_id.clone(),
-                    tool_name: entry.tool_name.clone(),
-                    tool_use_id: entry.tool_use_id.clone(),
-                    description: entry.description.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::PermissionRequestPending {
+                        request_id: entry.request_id.clone(),
+                        agent_id: entry.agent_id.clone(),
+                        tool_name: entry.tool_name.clone(),
+                        tool_use_id: entry.tool_use_id.clone(),
+                        description: entry.description.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch idle notifications.
         for entry in &cls.idle_notifications {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::IdleNotificationInfo {
-                    from: entry.from.clone(),
-                    idle_reason: entry.idle_reason.clone(),
-                    summary: entry.summary.clone(),
-                    completed_task_id: entry.completed_task_id.clone(),
-                    completed_status: entry.completed_status.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::IdleNotificationInfo {
+                        from: entry.from.clone(),
+                        idle_reason: entry.idle_reason.clone(),
+                        summary: entry.summary.clone(),
+                        completed_task_id: entry.completed_task_id.clone(),
+                        completed_status: entry.completed_status.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch mode set requests.
         for entry in &cls.mode_set_requests {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::ModeSetRequestAction {
-                    from: entry.from.clone(),
-                    permission_mode: entry.permission_mode.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::ModeSetRequestAction {
+                        from: entry.from.clone(),
+                        permission_mode: entry.permission_mode.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch team permission updates.
         for entry in &cls.team_permission_updates {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::TeamPermissionUpdateInfo {
-                    from: entry.from.clone(),
-                    allowed_tools: entry.allowed_tools.clone(),
-                    denied_tools: entry.denied_tools.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::TeamPermissionUpdateInfo {
+                        from: entry.from.clone(),
+                        allowed_tools: entry.allowed_tools.clone(),
+                        denied_tools: entry.denied_tools.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch task assignments (informational).
         for entry in &cls.task_assignments {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::TeammateMessage {
-                    from: entry.assigned_by.clone(),
-                    text: format!("Task assigned: {} - {}", entry.subject, entry.description),
-                    summary: Some(format!("task: {}", entry.subject)),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::TeammateMessage {
+                        from: entry.assigned_by.clone(),
+                        text: format!("Task assigned: {} - {}", entry.subject, entry.description),
+                        summary: Some(format!("task: {}", entry.subject)),
+                    },
+                })
+                .await;
         }
 
         // Dispatch permission responses.
         for entry in &cls.permission_responses {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::PermissionResponseReceived {
-                    request_id: entry.request_id.clone(),
-                    subtype: entry.subtype.clone(),
-                    error: entry.error.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::PermissionResponseReceived {
+                        request_id: entry.request_id.clone(),
+                        subtype: entry.subtype.clone(),
+                        error: entry.error.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch regular text messages.
         for msg in &cls.regular_messages {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::TeammateMessage {
-                    from: msg.from.clone(),
-                    text: msg.text.clone(),
-                    summary: msg.summary.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::TeammateMessage {
+                        from: msg.from.clone(),
+                        text: msg.text.clone(),
+                        summary: msg.summary.clone(),
+                    },
+                })
+                .await;
         }
     }
 }

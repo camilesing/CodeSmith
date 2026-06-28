@@ -5,6 +5,8 @@
 //! all live here.
 
 use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -64,6 +66,9 @@ use crate::models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, MessageResponse,
     StreamEvent, SystemPrompt, Tool, ToolCaller, Usage,
 };
+use crate::prompt_runtime::{
+    PromptCachePolicy, PromptSectionStability, parse_rendered_sections, system_prompt_to_text,
+};
 
 use super::{
     DeepSeekClient, ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK,
@@ -89,6 +94,8 @@ impl DeepSeekClient {
         request: &MessageRequest,
     ) -> Result<MessageResponse> {
         let messages = build_chat_messages_for_request_and_provider(request, self.api_provider);
+        let inspection = inspect_wire_request(request.tools.as_deref(), &messages);
+        log_prompt_request_if_enabled(self.api_provider, request, &inspection);
         let mut body = json!({
             "model": request.model,
             "messages": messages,
@@ -153,6 +160,75 @@ impl DeepSeekClient {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct PromptRequestLogRecord {
+    timestamp_ms: u128,
+    model: String,
+    provider: String,
+    base_static_prefix_hash: String,
+    full_request_prefix_hash: String,
+    tool_catalog_hash: String,
+    message_count: usize,
+    tool_count: usize,
+    layers: Vec<PromptLayerInspection>,
+}
+
+fn log_prompt_request_if_enabled(
+    provider: ApiProvider,
+    request: &MessageRequest,
+    inspection: &PromptInspection,
+) {
+    let Some(path) = std::env::var_os("CODESMITH_PROMPT_REQUEST_LOG")
+        .or_else(|| std::env::var_os("DEEPSEEK_PROMPT_REQUEST_LOG"))
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        logging::warn(format!(
+            "failed to create prompt request log directory {}: {err}",
+            parent.display()
+        ));
+        return;
+    }
+
+    let record = PromptRequestLogRecord {
+        timestamp_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default(),
+        model: request.model.clone(),
+        provider: format!("{provider:?}"),
+        base_static_prefix_hash: inspection.base_static_prefix_hash.clone(),
+        full_request_prefix_hash: inspection.full_request_prefix_hash.clone(),
+        tool_catalog_hash: inspection.tool_catalog_hash.clone(),
+        message_count: request.messages.len(),
+        tool_count: request.tools.as_ref().map_or(0, Vec::len),
+        layers: inspection.layers.clone(),
+    };
+    let Ok(line) = serde_json::to_string(&record) else {
+        return;
+    };
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut file) => {
+            if let Err(err) = writeln!(file, "{line}") {
+                logging::warn(format!(
+                    "failed to write prompt request log {}: {err}",
+                    path.display()
+                ));
+            }
+        }
+        Err(err) => logging::warn(format!(
+            "failed to open prompt request log {}: {err}",
+            path.display()
+        )),
+    }
+}
+
 impl DeepSeekClient {
     pub(super) async fn handle_chat_completion_stream(
         &self,
@@ -160,6 +236,8 @@ impl DeepSeekClient {
     ) -> Result<StreamEventBox> {
         // Try true SSE streaming via chat completions (widely supported)
         let messages = build_chat_messages_for_request_and_provider(&request, self.api_provider);
+        let inspection = inspect_wire_request(request.tools.as_deref(), &messages);
+        log_prompt_request_if_enabled(self.api_provider, &request, &inspection);
         let mut body = json!({
             "model": request.model,
             "messages": messages,
@@ -799,6 +877,21 @@ fn turn_meta_inspection_for_message(message: &Value) -> Option<TurnMetaInspectio
 }
 
 fn split_system_layers(content: &str) -> Vec<(String, PromptLayerStability, &str)> {
+    if let Some(sections) = parse_rendered_sections(content) {
+        return sections
+            .into_iter()
+            .map(|section| {
+                let name = section
+                    .title
+                    .or(section.id)
+                    .unwrap_or_else(|| "System prompt section".to_string());
+                let stability =
+                    prompt_layer_stability_for_section(section.stability, section.cache_policy);
+                (name, stability, section.body)
+            })
+            .collect();
+    }
+
     let markers = [
         ("Project context", "<project_instructions"),
         ("Project context pack", "## Project Context Pack"),
@@ -850,6 +943,23 @@ fn split_system_layers(content: &str) -> Vec<(String, PromptLayerStability, &str
     layers
 }
 
+fn prompt_layer_stability_for_section(
+    stability: Option<PromptSectionStability>,
+    cache_policy: Option<PromptCachePolicy>,
+) -> PromptLayerStability {
+    if cache_policy.is_some_and(|policy| policy != PromptCachePolicy::Cacheable) {
+        return PromptLayerStability::Dynamic;
+    }
+    match stability {
+        Some(PromptSectionStability::Static | PromptSectionStability::Workspace) => {
+            PromptLayerStability::Static
+        }
+        Some(PromptSectionStability::Session) => PromptLayerStability::History,
+        Some(PromptSectionStability::Dynamic) => PromptLayerStability::Dynamic,
+        None => PromptLayerStability::History,
+    }
+}
+
 fn is_static_base_layer(name: &str) -> bool {
     matches!(
         name,
@@ -864,7 +974,9 @@ fn is_static_base_layer(name: &str) -> bool {
 }
 
 fn stable_system_prompt(system: Option<&SystemPrompt>) -> Option<SystemPrompt> {
-    let instructions = system_to_instructions(system.cloned())?;
+    let instructions = system
+        .as_ref()
+        .and_then(|system| system_prompt_to_text(system))?;
     let stable = split_system_layers(&instructions)
         .into_iter()
         .filter_map(|(_, stability, body)| {

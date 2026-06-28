@@ -119,9 +119,16 @@ impl ToolSpec for TeamDeleteTool {
             ToolError::execution_failed(format!("Failed to delete team directories: {}", e))
         })?;
 
-        // Clear TeamContext.
+        // Clear TeamContext and defensively cancel any stored teammate tokens.
         {
             let mut tc = self.team_context.lock().await;
+            if let Some(ctx) = tc.as_mut() {
+                for token in ctx.teammate_cancel_tokens.values() {
+                    token.cancel();
+                }
+                ctx.teammate_cancel_tokens.clear();
+                ctx.teammates.clear();
+            }
             *tc = None;
         }
 

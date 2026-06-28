@@ -670,12 +670,14 @@ impl ToolRegistryBuilder {
         use super::tasks::{
             PrAttemptListTool, PrAttemptPreflightTool, PrAttemptReadTool, PrAttemptRecordTool,
             TaskCancelTool, TaskCreateTool, TaskGateRunTool, TaskListTool, TaskReadTool,
+            TaskStopTool,
         };
 
         self.with_tool(Arc::new(TaskCreateTool))
             .with_tool(Arc::new(TaskListTool))
             .with_tool(Arc::new(TaskReadTool))
             .with_tool(Arc::new(TaskCancelTool))
+            .with_tool(Arc::new(TaskStopTool))
             .with_tool(Arc::new(TaskGateRunTool))
             .with_tool(Arc::new(GithubIssueContextTool))
             .with_tool(Arc::new(GithubPrContextTool))
@@ -694,6 +696,14 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(GithubCommentTool))
             .with_tool(Arc::new(GithubCloseIssueTool))
             .with_tool(Arc::new(GithubClosePrTool))
+    }
+
+    /// Include the unified stop tool for background tasks, workers, teammates,
+    /// shell jobs, and durable tasks.
+    #[must_use]
+    pub fn with_task_stop_tool(self) -> Self {
+        use super::tasks::TaskStopTool;
+        self.with_tool(Arc::new(TaskStopTool))
     }
 
     /// Include shell-related task tools (`task_shell_start`, `task_shell_wait`).
@@ -1091,10 +1101,15 @@ impl ToolRegistryBuilder {
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
         use super::subagent::{
-            AgentCloseTool, AgentEvalTool, AgentOpenTool, SubagentRunTool, ToolAgentTool,
+            AgentCloseTool, AgentEvalTool, AgentOpenTool, AgentSpawnTool, SubagentRunTool,
+            ToolAgentTool,
         };
 
         self.with_tool(Arc::new(AgentOpenTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
+        .with_tool(Arc::new(AgentSpawnTool::new(
             manager.clone(),
             runtime.clone(),
         )))
