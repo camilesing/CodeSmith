@@ -1,0 +1,13 @@
+[package]
+name = "codesmith-agent-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified agent execution core (engine, turn loop, compaction, sandbox) for CodeSmith"
+
+[dependencies]
+anyhow.workspace = true
+codesmith-agent = { path = "../agent", version = "0.8.48" }
+codesmith-config = { path = "../config", version = "0.8.48" }
+serde.workspace = true
