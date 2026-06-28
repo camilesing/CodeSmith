@@ -30,6 +30,7 @@ pub mod coherence;
 pub mod command_safety;
 pub mod cost_status;
 pub mod dependencies;
+pub mod error_taxonomy;
 pub mod execpolicy;
 pub mod features;
 pub mod hooks;
