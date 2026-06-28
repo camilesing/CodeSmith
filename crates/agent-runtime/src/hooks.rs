@@ -361,4 +361,6 @@ pub trait HookHost: Send + Sync {
     fn has_hooks_for_event(&self, event: HookEvent) -> bool;
     /// Whether hook execution is enabled at all.
     fn is_enabled(&self) -> bool;
+    /// Session ID, used when building `HookContext` for tool-call hooks.
+    fn session_id(&self) -> &str;
 }

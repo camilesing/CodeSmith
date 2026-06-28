@@ -230,6 +230,10 @@ impl codesmith_agent_runtime::hooks::HookHost for HookExecutor {
     fn is_enabled(&self) -> bool {
         HookExecutor::is_enabled(self)
     }
+
+    fn session_id(&self) -> &str {
+        HookExecutor::session_id(self)
+    }
 }
 
 impl HookExecutor {

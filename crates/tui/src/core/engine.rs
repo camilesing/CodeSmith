@@ -3602,6 +3602,7 @@ use context::{
 mod dispatch;
 mod loop_guard;
 mod lsp_hooks;
+mod runtime_traits;
 mod streaming;
 mod team_inbox;
 mod tool_catalog;
