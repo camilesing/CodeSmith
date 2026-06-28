@@ -29,6 +29,7 @@ pub mod capacity_memory;
 pub mod child_env;
 pub mod coherence;
 pub mod command_safety;
+pub mod compaction;
 pub mod cost_status;
 pub mod cycle_manager;
 pub mod dependencies;
