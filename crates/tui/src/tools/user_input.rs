@@ -1,100 +1,19 @@
 //! Tool and types for requesting user input via the TUI.
+//!
+//! The shared data types ([`UserInputOption`], [`UserInputQuestion`],
+//! [`UserInputRequest`], [`UserInputAnswer`], [`UserInputResponse`]) now live
+//! in `codesmith_agent_runtime::user_input` and are re-exported here so that
+//! existing `crate::tools::user_input` references keep resolving. The
+//! [`RequestUserInputTool`] [`ToolSpec`](super::spec::ToolSpec) implementation
+//! stays in the TUI because it is bound to the TUI-local tool trait.
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputOption {
-    pub label: String,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputQuestion {
-    pub header: String,
-    pub id: String,
-    pub question: String,
-    pub options: Vec<UserInputOption>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputRequest {
-    pub questions: Vec<UserInputQuestion>,
-}
-
-impl UserInputRequest {
-    pub fn from_value(value: &Value) -> Result<Self, ToolError> {
-        let request: UserInputRequest = serde_json::from_value(value.clone()).map_err(|e| {
-            ToolError::invalid_input(format!("Invalid request_user_input payload: {e}"))
-        })?;
-        request.validate()?;
-        Ok(request)
-    }
-
-    pub fn validate(&self) -> Result<(), ToolError> {
-        if self.questions.is_empty() {
-            return Err(ToolError::invalid_input(
-                "request_user_input.questions must be non-empty",
-            ));
-        }
-        if self.questions.len() > 3 {
-            return Err(ToolError::invalid_input(
-                "request_user_input.questions must contain 1 to 3 items",
-            ));
-        }
-        for q in &self.questions {
-            if q.header.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.header cannot be empty",
-                ));
-            }
-            if q.id.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.id cannot be empty",
-                ));
-            }
-            if q.question.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.question cannot be empty",
-                ));
-            }
-            if q.options.len() < 2 || q.options.len() > 3 {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.options must contain 2 or 3 items",
-                ));
-            }
-            for opt in &q.options {
-                if opt.label.trim().is_empty() {
-                    return Err(ToolError::invalid_input(
-                        "request_user_input option label cannot be empty",
-                    ));
-                }
-                if opt.description.trim().is_empty() {
-                    return Err(ToolError::invalid_input(
-                        "request_user_input option description cannot be empty",
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputAnswer {
-    pub id: String,
-    pub label: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputResponse {
-    pub answers: Vec<UserInputAnswer>,
-}
+pub use codesmith_agent_runtime::user_input::*;
 
 pub struct RequestUserInputTool;
 
@@ -174,52 +93,6 @@ impl ToolSpec for RequestUserInputTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn validates_request_shape() {
-        let request = UserInputRequest {
-            questions: vec![UserInputQuestion {
-                header: "Pick".to_string(),
-                id: "choice".to_string(),
-                question: "Which option?".to_string(),
-                options: vec![
-                    UserInputOption {
-                        label: "A".to_string(),
-                        description: "Option A".to_string(),
-                    },
-                    UserInputOption {
-                        label: "B".to_string(),
-                        description: "Option B".to_string(),
-                    },
-                ],
-            }],
-        };
-        assert!(request.validate().is_ok());
-    }
-
-    #[test]
-    fn rejects_too_many_questions() {
-        let request = UserInputRequest {
-            questions: (0..4)
-                .map(|idx| UserInputQuestion {
-                    header: format!("Q{idx}"),
-                    id: format!("choice_{idx}"),
-                    question: "Pick one".to_string(),
-                    options: vec![
-                        UserInputOption {
-                            label: "A".to_string(),
-                            description: "Option A".to_string(),
-                        },
-                        UserInputOption {
-                            label: "B".to_string(),
-                            description: "Option B".to_string(),
-                        },
-                    ],
-                })
-                .collect(),
-        };
-        assert!(request.validate().is_err());
-    }
 
     #[test]
     fn tool_spec_validate_input_uses_request_shape() {

@@ -49,5 +49,6 @@ pub mod runtime_ui;
 pub mod snapshot;
 pub mod test_support;
 pub mod tool_dispatch;
+pub mod user_input;
 pub mod utils;
 pub mod workspace_discovery;
