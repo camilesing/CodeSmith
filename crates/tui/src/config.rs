@@ -23,10 +23,6 @@ use crate::sandbox::{
 
 
 pub const MAX_SUBAGENTS: usize = 20;
-/// Default per-step DeepSeek API timeout for sub-agent requests, in seconds.
-/// Matches the legacy hardcoded value so existing configs keep their old
-/// behavior when `[subagents] api_timeout_secs` is unset (#1806, #1808).
-pub const DEFAULT_SUBAGENT_API_TIMEOUT_SECS: u64 = 120;
 /// Minimum accepted `[subagents] api_timeout_secs`. Anything lower (including
 /// `0`, which would otherwise produce an immediate timeout footgun) clamps
 /// up to this value before the runtime sees it.
@@ -1190,7 +1186,10 @@ impl StatusItem {
 
 /// Re-export of the resolved retry policy (canonical home: `codesmith_agent::retry`).
 pub use codesmith_agent::retry::RetryPolicy;
-pub use codesmith_agent_runtime::config_types::{DEFAULT_MAX_SUBAGENTS, SearchProvider, ToolOverride, ToolsConfig, VisionModelConfig};
+pub use codesmith_agent_runtime::config_types::{
+    DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, SearchProvider, ToolOverride,
+    ToolsConfig, VisionModelConfig,
+};
 
 /// Capacity-controller config loaded from config files/environment.
 #[derive(Debug, Clone, Deserialize)]

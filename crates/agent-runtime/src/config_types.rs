@@ -175,3 +175,8 @@ pub struct ToolsConfig {
     #[serde(default)]
     pub overrides: Option<HashMap<String, ToolOverride>>,
 }
+
+/// Default per-step DeepSeek API timeout for sub-agent requests, in seconds.
+/// Matches the legacy hardcoded value so existing configs keep their old
+/// behavior when `[subagents] api_timeout_secs` is unset (#1806, #1808).
+pub const DEFAULT_SUBAGENT_API_TIMEOUT_SECS: u64 = 120;

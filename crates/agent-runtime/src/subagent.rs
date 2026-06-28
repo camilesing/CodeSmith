@@ -456,3 +456,7 @@ pub struct SubAgentResult {
 fn is_false(b: &bool) -> bool {
     !*b
 }
+
+/// Default cap on sub-agent recursion depth. Override via
+/// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
+pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;

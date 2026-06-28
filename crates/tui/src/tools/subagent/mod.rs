@@ -331,7 +331,9 @@ fn wrap_with_deprecation_notice(
 ///
 /// Re-exported from `codesmith_agent_runtime::subagent` so the engine and
 /// TUI share the same sub-agent taxonomy.
-pub use codesmith_agent_runtime::subagent::{SubAgentAssignment, SubAgentStatus, SubAgentType};
+pub use codesmith_agent_runtime::subagent::{
+    DEFAULT_MAX_SPAWN_DEPTH, SubAgentAssignment, SubAgentStatus, SubAgentType,
+};
 
 /// Snapshot of sub-agent state for tool results.
 ///
@@ -487,10 +489,6 @@ impl Default for PersistedSubAgentState {
         }
     }
 }
-
-/// Default cap on sub-agent recursion depth. Override via
-/// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
-pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
 
 /// Terminal-state notification emitted to the engine's parent turn loop
 /// when one of its direct children finishes (issue #756). Carries the
