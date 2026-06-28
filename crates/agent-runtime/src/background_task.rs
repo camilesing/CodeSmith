@@ -104,6 +104,30 @@ pub struct BackgroundTaskSummary {
     pub error: Option<String>,
 }
 
+/// Result of a single background-task poll: the status transition + any output
+/// delta produced since the last poll. Plain data so the host poller (and the
+/// engine core once moved) can consume it without depending on the concrete
+/// `BackgroundTaskRegistry`, which stays in the TUI.
+#[derive(Debug, Clone)]
+pub struct BackgroundTaskPollResult {
+    pub task_id: String,
+    pub old_status: BackgroundTaskStatus,
+    pub new_status: BackgroundTaskStatus,
+    pub output_delta: Option<String>,
+    /// True if a stall (interactive prompt) was detected on a shell task.
+    pub stall_detected: bool,
+}
+
+/// Atomic snapshot returned by [`crate::host_services::BgRegistryApi::poll_once`]:
+/// the poll results plus the notifications drained in the same locked pass.
+/// Returning them together lets the host poller emit events without holding
+/// the registry lock across `Event`-channel awaits.
+#[derive(Debug, Clone)]
+pub struct BackgroundTaskPollSnapshot {
+    pub results: Vec<BackgroundTaskPollResult>,
+    pub notifications: Vec<BackgroundTaskNotification>,
+}
+
 /// Format a background task notification for injection into conversation.
 /// Mirrors Claude Code's `<task_notification>` XML format.
 pub fn format_notification_message(notification: &BackgroundTaskNotification) -> String {

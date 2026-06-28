@@ -84,6 +84,11 @@ use super::turn::{TurnContext, TurnToolCall, post_turn_snapshot, pre_turn_snapsh
 /// (canonical home: `codesmith_agent_runtime::engine_config`).
 pub use codesmith_agent_runtime::engine_config::EngineConfig;
 
+/// Host-services trait in scope so the engine body can call
+/// `self.host.lsp()` / `self.host.bg_registry()` etc. (impl lives in
+/// `runtime_traits`).
+use codesmith_agent_runtime::host_services::HostServices;
+
 /// Reason the active turn was cancelled. The token from `tokio_util`
 /// does not carry a cause, so the engine keeps a sibling latch for
 /// approval and user-input waits that need to explain cancellation.
@@ -234,9 +239,6 @@ pub struct Engine {
     /// Knowledge On Demand prefetch orchestrator. Tracks already-surfaced
     /// memory paths and session byte budget across turns.
     knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch,
-    /// Unified background task registry bridging ShellManager, SubAgentManager,
-    /// and TaskManager into a single lifecycle surface.
-    bg_registry: crate::background_task::SharedBackgroundTaskRegistry,
     /// Sender half of the engine op channel. Cloned into long-lived background
     /// lifecycle tasks such as the team inbox poller watcher.
     tx_op: mpsc::Sender<Op>,
@@ -727,7 +729,7 @@ impl Engine {
                 bg_data_dir,
             ),
         ));
-        host.runtime_services.background_task_registry = Some(bg_registry.clone());
+        host.runtime_services.background_task_registry = Some(bg_registry);
 
         let api_provider = api_config.api_provider();
         let mut engine = Engine {
@@ -761,7 +763,6 @@ impl Engine {
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),
             workshop_vars,
             sandbox_backend,
-            bg_registry,
             tx_op: tx_op.clone(),
             runtime_ui: Arc::new(runtime_traits::TuiRuntimeUi),
         };
@@ -786,7 +787,7 @@ impl Engine {
         // Spawn background task poller — polls registry every 2s for status
         // changes, stalls, and completion notifications.
         {
-            let bg_registry = self.bg_registry.clone();
+            let bg_registry = self.host.bg_registry();
             let tx_event = self.tx_event.clone();
             let cancel_token = self.cancel_token.clone();
             spawn_supervised(
@@ -799,9 +800,12 @@ impl Engine {
                         if cancel_token.is_cancelled() {
                             break;
                         }
-                        let mut registry = bg_registry.lock().await;
-                        let poll_results = registry.poll_tasks().await;
-                        for result in poll_results {
+                        // `poll_once` does poll + drain + evict under one
+                        // registry lock and hands back the results so we can
+                        // emit events without holding the lock across the
+                        // `Event`-channel awaits.
+                        let snapshot = bg_registry.poll_once().await;
+                        for result in snapshot.results {
                             if result.stall_detected {
                                 let _ = tx_event
                                     .send(Event::BackgroundTaskProgress {
@@ -821,13 +825,11 @@ impl Engine {
                             }
                         }
                         // Drain notifications and emit as events
-                        let notifications = registry.drain_notifications();
-                        for notification in notifications {
+                        for notification in snapshot.notifications {
                             let _ = tx_event
                                 .send(Event::BackgroundTaskNotification { notification })
                                 .await;
                         }
-                        registry.evict_notified();
                     }
                 },
             );
@@ -1167,10 +1169,11 @@ impl Engine {
                         Ok(shell_result) => {
                             if let Some(shell_id) = shell_result.task_id.clone() {
                                 let cwd = cwd.unwrap_or_else(|| self.session.cwd.clone());
-                                let task = {
-                                    let mut registry = self.bg_registry.lock().await;
-                                    registry.register_shell_task(shell_id, command, cwd)
-                                };
+                                let task = self
+                                    .host
+                                    .bg_registry()
+                                    .register_shell_task(shell_id, command, cwd)
+                                    .await;
                                 let _ = self
                                     .tx_event
                                     .send(Event::BackgroundTaskStarted {
@@ -1205,10 +1208,7 @@ impl Engine {
                 }
                 #[allow(dead_code)]
                 Op::CancelBackgroundTask { id } => {
-                    let result = {
-                        let mut registry = self.bg_registry.lock().await;
-                        registry.cancel_task(&id).await
-                    };
+                    let result = self.host.bg_registry().cancel_task(&id).await;
                     match result {
                         Ok(()) => {
                             let _ = self
@@ -1228,10 +1228,7 @@ impl Engine {
                 }
                 #[allow(dead_code)]
                 Op::ListBackgroundTasks => {
-                    let tasks = {
-                        let registry = self.bg_registry.lock().await;
-                        registry.list_tasks()
-                    };
+                    let tasks = self.host.bg_registry().list_tasks().await;
                     let _ = self
                         .tx_event
                         .send(Event::BackgroundTaskList { tasks })
@@ -1239,10 +1236,7 @@ impl Engine {
                 }
                 #[allow(dead_code)]
                 Op::PollBackgroundTask { id } => {
-                    let delta = {
-                        let mut registry = self.bg_registry.lock().await;
-                        registry.read_output_delta(&id)
-                    };
+                    let delta = self.host.bg_registry().read_output_delta(&id).await;
                     if let Some(output_delta) = delta.filter(|delta| !delta.is_empty()) {
                         let _ = self
                             .tx_event
@@ -1256,10 +1250,7 @@ impl Engine {
                 }
                 #[allow(dead_code)]
                 Op::BackgroundCurrentShell => {
-                    let tasks = {
-                        let mut registry = self.bg_registry.lock().await;
-                        registry.background_all()
-                    };
+                    let tasks = self.host.bg_registry().background_all().await;
                     let _ = self
                         .tx_event
                         .send(Event::status(format!(
@@ -1270,10 +1261,7 @@ impl Engine {
                 }
                 #[allow(dead_code)]
                 Op::BackgroundAll => {
-                    let tasks = {
-                        let mut registry = self.bg_registry.lock().await;
-                        registry.background_all()
-                    };
+                    let tasks = self.host.bg_registry().background_all().await;
                     let _ = self
                         .tx_event
                         .send(Event::status(format!(
@@ -1289,10 +1277,7 @@ impl Engine {
                         .unwrap_or_else(|| {
                             self.session.workspace.join(".codesmith").join("memory")
                         });
-                    let task = {
-                        let mut registry = self.bg_registry.lock().await;
-                        registry.register_dream_task(path)
-                    };
+                    let task = self.host.bg_registry().register_dream_task(path).await;
                     let _ = self
                         .tx_event
                         .send(Event::BackgroundTaskStarted {
@@ -1301,14 +1286,11 @@ impl Engine {
                             description: task.description.clone(),
                         })
                         .await;
-                    {
-                        let mut registry = self.bg_registry.lock().await;
-                        let _ = registry.update_task_status(
-                            &task.id,
-                            BackgroundTaskStatus::Completed,
-                            None,
-                        );
-                    }
+                    let _ = self
+                        .host
+                        .bg_registry()
+                        .update_task_status(&task.id, BackgroundTaskStatus::Completed, None)
+                        .await;
                 }
                 Op::TeamInboxDispatch { dispatch } => {
                     self.handle_team_inbox_dispatch(dispatch).await;

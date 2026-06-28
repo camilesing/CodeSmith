@@ -7,8 +7,6 @@
 
 use std::path::PathBuf;
 
-use codesmith_agent_runtime::host_services::HostServices;
-
 use crate::tools::apply_patch::preflight_apply_patch;
 
 use super::*;

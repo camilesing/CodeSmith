@@ -101,16 +101,6 @@ pub struct StallPattern {
     pub description: String,
 }
 
-/// Result of a single task poll.
-pub struct BackgroundTaskPollResult {
-    pub task_id: String,
-    pub old_status: BackgroundTaskStatus,
-    pub new_status: BackgroundTaskStatus,
-    pub output_delta: Option<String>,
-    /// True if stall was detected on a shell task.
-    pub stall_detected: bool,
-}
-
 impl From<&BackgroundTaskState> for BackgroundTaskSummary {
     fn from(s: &BackgroundTaskState) -> Self {
         let duration_ms = s

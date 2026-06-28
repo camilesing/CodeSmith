@@ -13,7 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use codesmith_agent::models::Tool;
-use codesmith_agent_runtime::host_services::{HostServices, LspManagerApi};
+use codesmith_agent_runtime::background_task::{
+    BackgroundTaskPollResult, BackgroundTaskPollSnapshot, BackgroundTaskStatus,
+    BackgroundTaskSummary,
+};
+use codesmith_agent_runtime::host_services::{BgRegistryApi, HostServices, LspManagerApi};
 use codesmith_agent_runtime::hooks::HookHost;
 use codesmith_agent_runtime::lsp_config::LspConfig;
 use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
@@ -22,6 +26,7 @@ use codesmith_agent_runtime::tool_dispatch::{ToolDispatcher, ToolMetadata};
 use codesmith_tools::{ApprovalRequirement, ToolError, ToolResult};
 use serde_json::Value;
 
+use crate::background_task::SharedBackgroundTaskRegistry;
 use crate::lsp::LspManager;
 use crate::tools::ToolRegistry;
 
@@ -148,5 +153,91 @@ impl LspManagerApi for LspManager {
 impl HostServices for super::EngineHost {
     fn lsp(&self) -> &dyn LspManagerApi {
         &*self.lsp_manager
+    }
+
+    fn bg_registry(&self) -> Arc<dyn BgRegistryApi> {
+        // `new_impl` always seeds `runtime_services.background_task_registry`
+        // before the engine runs, so this is `Some` for any engine that reaches
+        // `run()`. The clone is a cheap `Arc` bump.
+        let registry = self
+            .runtime_services
+            .background_task_registry
+            .as_ref()
+            .expect("background_task_registry is set by new_impl before run()")
+            .clone();
+        Arc::new(BgRegistryHost(registry))
+    }
+}
+
+/// Bridge the TUI's [`SharedBackgroundTaskRegistry`] onto the engine-core
+/// trait [`BgRegistryApi`]. A newtype is required: the orphan rule forbids
+/// `impl`-ing a foreign trait for `Arc<Mutex<..>>`. Each method locks the
+/// inner registry and converts `BackgroundTaskState` results into the
+/// portable `BackgroundTaskSummary`, so callers never hold a guard across an
+/// `Event`-channel await.
+#[derive(Clone)]
+pub(crate) struct BgRegistryHost(pub SharedBackgroundTaskRegistry);
+
+#[async_trait::async_trait]
+impl BgRegistryApi for BgRegistryHost {
+    async fn register_shell_task(
+        &self,
+        shell_id: String,
+        command: String,
+        cwd: PathBuf,
+    ) -> BackgroundTaskSummary {
+        let mut g = self.0.lock().await;
+        BackgroundTaskSummary::from(&g.register_shell_task(shell_id, command, cwd))
+    }
+
+    async fn cancel_task(&self, id: &str) -> anyhow::Result<()> {
+        let mut g = self.0.lock().await;
+        g.cancel_task(id).await
+    }
+
+    async fn list_tasks(&self) -> Vec<BackgroundTaskSummary> {
+        let g = self.0.lock().await;
+        g.list_tasks()
+    }
+
+    async fn read_output_delta(&self, id: &str) -> Option<String> {
+        let mut g = self.0.lock().await;
+        g.read_output_delta(id)
+    }
+
+    async fn background_all(&self) -> Vec<BackgroundTaskSummary> {
+        let mut g = self.0.lock().await;
+        g.background_all()
+            .iter()
+            .map(BackgroundTaskSummary::from)
+            .collect()
+    }
+
+    async fn register_dream_task(&self, memory_path: PathBuf) -> BackgroundTaskSummary {
+        let mut g = self.0.lock().await;
+        BackgroundTaskSummary::from(&g.register_dream_task(memory_path))
+    }
+
+    async fn update_task_status(
+        &self,
+        id: &str,
+        new_status: BackgroundTaskStatus,
+        error: Option<String>,
+    ) -> Option<BackgroundTaskPollResult> {
+        let mut g = self.0.lock().await;
+        g.update_task_status(id, new_status, error)
+    }
+
+    async fn poll_once(&self) -> BackgroundTaskPollSnapshot {
+        // One locked pass: poll, drain notifications, evict notified tasks.
+        // Mirrors the previous poller loop's lock granularity exactly.
+        let mut g = self.0.lock().await;
+        let results = g.poll_tasks().await;
+        let notifications = g.drain_notifications();
+        g.evict_notified();
+        BackgroundTaskPollSnapshot {
+            results,
+            notifications,
+        }
     }
 }
