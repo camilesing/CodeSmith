@@ -8,9 +8,7 @@ pub mod paths;
 pub mod prompt;
 pub mod snapshot;
 
-use std::fmt;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -22,48 +20,9 @@ pub use prompt::compose_agent_memory_prompt;
 pub use snapshot::{AgentMemorySnapshotMode, initialize_or_update_snapshot, load_snapshot_status};
 
 /// Scope for an agent memory directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentMemoryScope {
-    /// User-wide memory shared across workspaces for this agent type.
-    User,
-    /// Project memory committed/stored with the workspace state directory.
-    Project,
-    /// Local project memory that should not be shared.
-    Local,
-}
-
-impl AgentMemoryScope {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Project => "project",
-            Self::Local => "local",
-        }
-    }
-}
-
-impl fmt::Display for AgentMemoryScope {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for AgentMemoryScope {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "user" => Ok(Self::User),
-            "project" | "workspace" | "repo" => Ok(Self::Project),
-            "local" => Ok(Self::Local),
-            other => Err(format!(
-                "invalid agent memory scope '{other}', expected user, project, or local"
-            )),
-        }
-    }
-}
+///
+/// Re-exported from `codesmith_agent_runtime::subagent::AgentMemoryScope`.
+pub use codesmith_agent_runtime::subagent::AgentMemoryScope;
 
 /// Model-facing request to enable memory for a sub-agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,12 +50,10 @@ pub struct ResolvedAgentMemory {
     pub prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentMemoryMetadata {
-    pub agent_type: String,
-    pub scope: AgentMemoryScope,
-    pub dir: PathBuf,
-}
+/// Metadata for an agent memory binding attached to a sub-agent result.
+///
+/// Re-exported from `codesmith_agent_runtime::subagent::AgentMemoryMetadata`.
+pub use codesmith_agent_runtime::subagent::AgentMemoryMetadata;
 
 impl From<&ResolvedAgentMemory> for AgentMemoryMetadata {
     fn from(memory: &ResolvedAgentMemory) -> Self {

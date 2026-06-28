@@ -7,6 +7,10 @@
 //! *implementation* (spawn orchestration, context forking, result aggregation)
 //! still lives in the TUI for now.
 
+use std::fmt;
+use std::path::PathBuf;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -370,3 +374,85 @@ const COORDINATOR_WORKER_INTRO: &str = concat!(
     "You cannot use team management tools or send messages to other agents — focus solely on your assigned task.\n\n"
 );
 
+
+/// Scope for an agent memory directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentMemoryScope {
+    /// User-wide memory shared across workspaces for this agent type.
+    User,
+    /// Project memory committed/stored with the workspace state directory.
+    Project,
+    /// Local project memory that should not be shared.
+    Local,
+}
+
+impl AgentMemoryScope {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Local => "local",
+        }
+    }
+}
+
+impl fmt::Display for AgentMemoryScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AgentMemoryScope {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "user" => Ok(Self::User),
+            "project" | "workspace" | "repo" => Ok(Self::Project),
+            "local" => Ok(Self::Local),
+            other => Err(format!(
+                "invalid agent memory scope '{other}', expected user, project, or local"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentMemoryMetadata {
+    pub agent_type: String,
+    pub scope: AgentMemoryScope,
+    pub dir: PathBuf,
+}
+
+/// Snapshot of sub-agent state for tool results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubAgentResult {
+    pub name: String,
+    pub agent_id: String,
+    pub context_mode: String,
+    pub fork_context: bool,
+    pub agent_type: SubAgentType,
+    pub assignment: SubAgentAssignment,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    pub status: SubAgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_memory: Option<AgentMemoryMetadata>,
+    pub result: Option<String>,
+    pub steps_taken: u32,
+    pub duration_ms: u64,
+    /// `true` when this agent was loaded from a prior-session persisted
+    /// state file rather than spawned in the current session (#405).
+    /// Lets `agent_list` filter out historical noise by default while
+    /// keeping the records reachable via `include_archived=true`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub from_prior_session: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}

@@ -334,31 +334,9 @@ fn wrap_with_deprecation_notice(
 pub use codesmith_agent_runtime::subagent::{SubAgentAssignment, SubAgentStatus, SubAgentType};
 
 /// Snapshot of sub-agent state for tool results.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubAgentResult {
-    pub name: String,
-    pub agent_id: String,
-    pub context_mode: String,
-    pub fork_context: bool,
-    pub agent_type: SubAgentType,
-    pub assignment: SubAgentAssignment,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nickname: Option<String>,
-    pub status: SubAgentStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_memory: Option<AgentMemoryMetadata>,
-    pub result: Option<String>,
-    pub steps_taken: u32,
-    pub duration_ms: u64,
-    /// `true` when this agent was loaded from a prior-session persisted
-    /// state file rather than spawned in the current session (#405).
-    /// Lets `agent_list` filter out historical noise by default while
-    /// keeping the records reachable via `include_archived=true`.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub from_prior_session: bool,
-}
+///
+/// Re-exported from `codesmith_agent_runtime::subagent::SubAgentResult`.
+pub use codesmith_agent_runtime::subagent::SubAgentResult;
 
 fn is_false(b: &bool) -> bool {
     !*b
