@@ -46,6 +46,7 @@ pub mod network_policy;
 pub mod ops;
 pub mod prefix_cache;
 pub mod pricing;
+pub mod project_context;
 pub mod prompt_runtime;
 pub mod prompt_zones;
 pub mod retry_status;
