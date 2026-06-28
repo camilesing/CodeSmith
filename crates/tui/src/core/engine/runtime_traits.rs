@@ -35,6 +35,7 @@ impl ToolDispatcher for ToolRegistry {
         let spec = self.get(name)?;
         Some(ToolMetadata {
             name: spec.name().to_string(),
+            description: spec.description().to_string(),
             capabilities: spec.capabilities(),
             approval_requirement: spec.approval_requirement(),
             is_read_only: spec.is_read_only(),
@@ -105,7 +106,6 @@ impl ToolDispatcher for ToolRegistry {
 /// Zero-sized TUI runtime-UI bridge: delegates to the TUI's notification and
 /// clipboard free functions. Constructed where the engine needs
 /// `Arc<dyn RuntimeUi>`.
-#[allow(dead_code)] // wired into the engine in Step 5.1c
 pub(crate) struct TuiRuntimeUi;
 
 impl RuntimeUi for TuiRuntimeUi {

@@ -7,6 +7,8 @@
 
 use super::*;
 
+use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+
 use crate::models::context_window_for_model;
 
 impl Engine {
@@ -519,15 +521,14 @@ impl Engine {
             mcp_tool_is_parallel_safe(&candidate.name)
         } else {
             tool_registry
-                .and_then(|registry| registry.get(&candidate.name))
-                .is_some_and(|spec| spec.supports_parallel())
+                .and_then(|registry| registry.metadata(&candidate.name))
+                .is_some_and(|metadata| metadata.supports_parallel)
         };
         let interactive = if McpPool::is_mcp_tool(&candidate.name) {
             false
         } else {
             tool_registry
-                .and_then(|registry| registry.get(&candidate.name))
-                .is_some_and(|spec| spec.is_interactive(&candidate.input))
+                .is_some_and(|registry| registry.is_interactive(&candidate.name, &candidate.input))
         };
 
         let replay_result = Self::execute_tool_with_lock(
@@ -767,8 +768,8 @@ impl Engine {
             return mcp_tool_is_read_only(tool_name);
         }
         tool_registry
-            .and_then(|registry| registry.get(tool_name))
-            .is_some_and(|spec| spec.is_read_only())
+            .and_then(|registry| registry.metadata(tool_name))
+            .is_some_and(|metadata| metadata.is_read_only)
     }
 
     pub(super) fn build_canonical_state(

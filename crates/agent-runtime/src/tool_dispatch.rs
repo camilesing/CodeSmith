@@ -27,6 +27,8 @@ use crate::hooks::HookHost;
 pub struct ToolMetadata {
     /// Canonical tool name.
     pub name: String,
+    /// Human-readable description of what the tool does.
+    pub description: String,
     /// Capability flags (e.g. `WritesFiles`, `ExecutesCode`).
     pub capabilities: Vec<ToolCapability>,
     /// Static approval requirement (input-independent baseline).

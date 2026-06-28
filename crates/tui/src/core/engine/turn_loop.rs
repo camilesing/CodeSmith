@@ -7,6 +7,8 @@
 
 use super::*;
 
+use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+
 fn loop_guard_block_tool_result(message: String) -> ToolResult {
     ToolResult::error(message).with_metadata(json!({"loop_guard": "identical_tool_call"}))
 }
@@ -61,12 +63,12 @@ fn tool_hook_env(session: &Session, mode: AppMode) -> ToolHookEnv {
 
 fn tool_hook_executor(
     registry: Option<&crate::tools::ToolRegistry>,
-) -> Option<std::sync::Arc<crate::hooks::HookExecutor>> {
-    registry.and_then(|registry| registry.context().runtime.hook_executor.clone())
+) -> Option<std::sync::Arc<dyn crate::hooks::HookHost>> {
+    registry.and_then(|registry| registry.hook_host())
 }
 
 fn build_tool_hook_context(
-    hook_executor: &crate::hooks::HookExecutor,
+    hook_executor: &dyn crate::hooks::HookHost,
     env: &ToolHookEnv,
     tool_name: &str,
     tool_input: &serde_json::Value,
@@ -82,7 +84,7 @@ fn build_tool_hook_context(
 }
 
 fn execute_pre_tool_hook(
-    hook_executor: Option<&crate::hooks::HookExecutor>,
+    hook_executor: Option<&dyn crate::hooks::HookHost>,
     env: &ToolHookEnv,
     tool_name: &str,
     tool_input: &serde_json::Value,
@@ -98,7 +100,7 @@ fn execute_pre_tool_hook(
 }
 
 fn execute_post_tool_hook(
-    hook_executor: Option<&crate::hooks::HookExecutor>,
+    hook_executor: Option<&dyn crate::hooks::HookHost>,
     env: &ToolHookEnv,
     tool_name: &str,
     tool_input: &serde_json::Value,
@@ -177,7 +179,7 @@ fn early_tool_start_safe(preflight: EarlyToolStart<'_>) -> bool {
     if !caller_allowed_for_tool(preflight.tool_state.caller.as_ref(), tool_def) {
         return false;
     }
-    let Some(spec) = preflight.registry.get(&tool_name) else {
+    let Some(metadata) = preflight.registry.metadata(&tool_name) else {
         return false;
     };
     if preflight.plan_mode_active {
@@ -185,7 +187,7 @@ fn early_tool_start_safe(preflight: EarlyToolStart<'_>) -> bool {
             tool_name.as_str(),
             "write_plan_file" | "exit_plan_mode" | "enter_plan_mode"
         );
-        if !allowed && !spec.is_read_only() {
+        if !allowed && !metadata.is_read_only {
             return false;
         }
     }
@@ -211,14 +213,17 @@ fn early_tool_start_safe(preflight: EarlyToolStart<'_>) -> bool {
         return false;
     }
 
-    spec.is_read_only()
-        && spec.supports_parallel()
-        && !spec.is_interactive(preflight.tool_input)
-        && spec
-            .validate_input(preflight.tool_input, preflight.registry.context())
+    metadata.is_read_only
+        && metadata.supports_parallel
+        && !preflight.registry.is_interactive(&tool_name, preflight.tool_input)
+        && preflight
+            .registry
+            .validate_input(&tool_name, preflight.tool_input)
             .is_ok()
-        && spec.approval_requirement_for_input(preflight.tool_input, preflight.registry.context())
-            == ApprovalRequirement::Auto
+        && preflight
+            .registry
+            .approval_requirement_for(&tool_name, preflight.tool_input)
+            == Some(ApprovalRequirement::Auto)
 }
 
 impl Engine {
@@ -231,9 +236,10 @@ impl Engine {
         force_update_plan_first: bool,
     ) -> (TurnOutcomeStatus, Option<String>) {
         // Signal to the terminal / taskbar that a turn is in progress
-        // (OSC 9 ; 4 indeterminate progress + title spinner).
-        crate::tui::notifications::set_taskbar_progress_busy();
-        crate::tui::notifications::start_title_animation("CodeSmith");
+        // (OSC 9 ; 4 indeterminate progress + title spinner). Routed through
+        // the `RuntimeUi` trait so the engine stays terminal-agnostic.
+        self.runtime_ui.notify_busy();
+        self.runtime_ui.start_title_animation("CodeSmith");
 
         // KoD prefetch: spawn at turn start so the side-query runs
         // concurrently with streaming and tool execution.
@@ -1605,16 +1611,9 @@ impl Engine {
                     );
                     if !allowed {
                         // Check tool capabilities from the registry
-                        let tool_caps = tool_registry
-                            .and_then(|r| r.get(&tool_name))
-                            .map(|t| t.capabilities())
-                            .unwrap_or_default();
-                        let is_read_only_tool = tool_caps
-                            .contains(&crate::tools::spec::ToolCapability::ReadOnly)
-                            && !tool_caps
-                                .contains(&crate::tools::spec::ToolCapability::WritesFiles)
-                            && !tool_caps
-                                .contains(&crate::tools::spec::ToolCapability::ExecutesCode);
+                        let is_read_only_tool = tool_registry
+                            .and_then(|r| r.metadata(&tool_name))
+                            .is_some_and(|m| m.is_read_only);
                         if !is_read_only_tool {
                             blocked_error = Some(ToolError::permission_denied(format!(
                                 "Tool '{tool_name}' is blocked in plan mode. Only read-only tools \
@@ -1657,20 +1656,21 @@ impl Engine {
                     approval_required = !read_only;
                     approval_description = mcp_tool_approval_description(&tool_name);
                 } else if let Some(registry) = tool_registry
-                    && let Some(spec) = registry.get(&tool_name)
+                    && let Some(metadata) = registry.metadata(&tool_name)
                 {
                     if blocked_error.is_none()
-                        && let Err(err) = spec.validate_input(&tool_input, registry.context())
+                        && let Err(err) = registry.validate_input(&tool_name, &tool_input)
                     {
                         blocked_error = Some(err);
                     }
-                    let requirement =
-                        spec.approval_requirement_for_input(&tool_input, registry.context());
+                    let requirement = registry
+                        .approval_requirement_for(&tool_name, &tool_input)
+                        .unwrap_or(metadata.approval_requirement);
                     approval_required = requirement != ApprovalRequirement::Auto;
-                    approval_description = spec.description().to_string();
-                    supports_parallel = spec.supports_parallel();
-                    read_only = spec.is_read_only();
-                    interactive = spec.is_interactive(&tool_input);
+                    approval_description = metadata.description;
+                    supports_parallel = metadata.supports_parallel;
+                    read_only = metadata.is_read_only;
+                    interactive = registry.is_interactive(&tool_name, &tool_input);
                 } else if tool_name == CODE_EXECUTION_TOOL_NAME {
                     approval_required = true;
                     approval_description =
@@ -2216,10 +2216,10 @@ impl Engine {
                             continue;
                         }
 
-                        // Handle approval flow: returns (result_override, context_override)
-                        let (result_override, context_override): (
+                        // Handle approval flow: returns (result_override, sandbox_override)
+                        let (result_override, sandbox_override): (
                             Option<Result<ToolResult, ToolError>>,
-                            Option<crate::tools::ToolContext>,
+                            Option<serde_json::Value>,
                         ) = if plan.approval_required {
                             emit_tool_audit(json!({
                                 "event": "tool.approval_required",
@@ -2289,10 +2289,16 @@ impl Engine {
                                         "policy": format!("{policy:?}"),
                                         "caller": caller_type_for_tool_use(tool_caller.as_ref()),
                                     }));
-                                    let elevated_context = tool_registry.map(|r| {
-                                        r.context().clone().with_elevated_sandbox_policy(policy)
-                                    });
-                                    (None, elevated_context)
+                                    // Serialize the elevated sandbox policy; the
+                                    // registry-side `ToolDispatcher::execute` impl
+                                    // deserializes it back into a `SandboxPolicy` and
+                                    // rebuilds the tool context. Only meaningful when a
+                                    // registry backs the tool (matches the old
+                                    // `tool_registry.map` guard).
+                                    let elevated_override = tool_registry
+                                        .map(|_| serde_json::to_value(&policy).ok())
+                                        .flatten();
+                                    (None, elevated_override)
                                 }
                                 Err(err) => (Some(Err(err)), None),
                             }
@@ -2338,7 +2344,7 @@ impl Engine {
                                 tool_input.clone(),
                                 tool_registry,
                                 mcp_pool.clone(),
-                                context_override,
+                                sandbox_override,
                             )
                             .await
                         };
@@ -2604,7 +2610,7 @@ impl Engine {
         continuations_this_turn: &mut u32,
     ) -> Option<String> {
         let registry = tool_registry?;
-        if !registry.contains("update_goal") {
+        if !registry.has_tool("update_goal") {
             return None;
         }
 
@@ -2706,14 +2712,14 @@ fn resolve_tool_definition<'a>(
     // ReadFile are checked against the canonical registered tool name.
     if tool_def.is_none()
         && let Some(registry) = tool_registry
-        && let Some(canonical) = registry.resolve(tool_name.as_str())
+        && let Some(canonical) = ToolDispatcher::resolve(registry, tool_name.as_str())
     {
         crate::logging::info(format!(
             "Resolved hallucinated tool name '{tool_name}' -> '{canonical}'"
         ));
         tool_def = tool_catalog.iter().find(|d| d.name == canonical);
         if tool_def.is_some() {
-            *tool_name = canonical.to_string();
+            *tool_name = canonical;
         }
     }
 

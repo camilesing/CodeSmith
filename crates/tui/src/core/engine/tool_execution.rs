@@ -8,6 +8,8 @@ use std::{fs::OpenOptions, io::Write, sync::Arc, time::Duration};
 
 use super::*;
 
+use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+
 /// RAII guard that pauses the TUI's terminal-state ownership for the duration
 /// of an interactive tool, then restores it on drop.
 ///
@@ -185,22 +187,22 @@ impl Engine {
                     )));
                 }
             } else {
-                let Some(spec) = registry.get(&tool_name) else {
+                let Some(metadata) = registry.metadata(&tool_name) else {
                     return Err(ToolError::not_available(format!(
                         "tool '{tool_name}' is not registered"
                     )));
                 };
-                if !spec.is_read_only() {
+                if !metadata.is_read_only {
                     return Err(ToolError::invalid_input(format!(
                         "Tool '{tool_name}' is not read-only and cannot run in parallel"
                     )));
                 }
-                if spec.approval_requirement() != ApprovalRequirement::Auto {
+                if metadata.approval_requirement != ApprovalRequirement::Auto {
                     return Err(ToolError::invalid_input(format!(
                         "Tool '{tool_name}' requires approval and cannot run in parallel"
                     )));
                 }
-                if !spec.supports_parallel() {
+                if !metadata.supports_parallel {
                     return Err(ToolError::invalid_input(format!(
                         "Tool '{tool_name}' does not support parallel execution"
                     )));
@@ -269,7 +271,7 @@ impl Engine {
         tool_input: serde_json::Value,
         registry: Option<&crate::tools::ToolRegistry>,
         mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
-        context_override: Option<crate::tools::ToolContext>,
+        sandbox_override: Option<serde_json::Value>,
     ) -> Result<ToolResult, ToolError> {
         let started_at = std::time::Instant::now();
         let dispatch = if McpPool::is_mcp_tool(&tool_name) {
@@ -314,9 +316,7 @@ impl Engine {
                 )))
             }
         } else if let Some(registry) = registry {
-            registry
-                .execute_full_with_context(&tool_name, tool_input, context_override.as_ref())
-                .await
+            ToolDispatcher::execute(registry, &tool_name, tool_input, sandbox_override).await
         } else {
             Err(ToolError::not_available(format!(
                 "tool '{tool_name}' is not registered"

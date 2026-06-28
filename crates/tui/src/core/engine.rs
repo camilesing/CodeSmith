@@ -437,6 +437,11 @@ pub struct Engine {
     /// Sender half of the engine op channel. Cloned into long-lived background
     /// lifecycle tasks such as the team inbox poller watcher.
     tx_op: mpsc::Sender<Op>,
+    /// Terminal-agnostic UI bridge (notifications + clipboard). Backed by
+    /// [`runtime_traits::TuiRuntimeUi`] here; the trait object keeps the
+    /// engine core decoupled from concrete terminal services so it can later
+    /// move to `codesmith-agent-runtime`.
+    runtime_ui: Arc<dyn codesmith_agent_runtime::runtime_ui::RuntimeUi>,
 }
 
 // === Internal tool helpers ===
@@ -934,6 +939,7 @@ impl Engine {
             sandbox_backend,
             bg_registry,
             tx_op: tx_op.clone(),
+            runtime_ui: Arc::new(runtime_traits::TuiRuntimeUi),
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -2699,8 +2705,7 @@ impl Engine {
         // refresh hook.
         let trusted = crate::workspace_trust::WorkspaceTrust::load_for(&self.session.workspace);
         let mut trusted_external_paths = trusted.paths().to_vec();
-        let clipboard_images_dir =
-            crate::tui::clipboard::clipboard_images_dir(&self.session.workspace);
+        let clipboard_images_dir = self.runtime_ui.clipboard_images_dir(&self.session.workspace);
         if !trusted_external_paths
             .iter()
             .any(|path| path == &clipboard_images_dir)
