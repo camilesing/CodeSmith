@@ -34,6 +34,7 @@ pub mod cost_status;
 pub mod cycle_manager;
 pub mod dependencies;
 pub mod error_taxonomy;
+pub mod events;
 pub mod execpolicy;
 pub mod features;
 pub mod hooks;
