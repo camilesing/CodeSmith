@@ -40,6 +40,8 @@ pub mod execpolicy;
 pub mod features;
 pub mod hooks;
 pub mod knowledge;
+pub mod lsp_config;
+pub mod lsp_registry;
 pub mod mailbox;
 pub mod mcp;
 pub mod mode;
