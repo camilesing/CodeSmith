@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+use codesmith_agent_runtime::host_services::HostServices;
+
 use crate::tools::apply_patch::preflight_apply_patch;
 
 use super::*;
@@ -49,7 +51,7 @@ impl Engine {
         tool_name: &str,
         tool_input: &serde_json::Value,
     ) {
-        if !self.lsp_manager.config().enabled {
+        if !self.host.lsp().config().enabled {
             return;
         }
         let paths = edited_paths_for_tool(tool_name, tool_input);
@@ -63,7 +65,7 @@ impl Engine {
             // log output stays correlated even though we do not currently
             // batch by sequence.
             let seq = self.turn_counter;
-            if let Some(block) = self.lsp_manager.diagnostics_for(&absolute, seq).await {
+            if let Some(block) = self.host.lsp().diagnostics_for(&absolute, seq).await {
                 self.pending_lsp_blocks.push(block);
             }
         }

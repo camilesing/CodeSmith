@@ -9,16 +9,20 @@
 //! `codesmith-agent-runtime`) invoke tools and UI side-effects through trait
 //! objects without depending on the concrete TUI types.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use codesmith_agent::models::Tool;
+use codesmith_agent_runtime::host_services::{HostServices, LspManagerApi};
 use codesmith_agent_runtime::hooks::HookHost;
+use codesmith_agent_runtime::lsp_config::LspConfig;
+use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
 use codesmith_agent_runtime::runtime_ui::RuntimeUi;
 use codesmith_agent_runtime::tool_dispatch::{ToolDispatcher, ToolMetadata};
 use codesmith_tools::{ApprovalRequirement, ToolError, ToolResult};
 use serde_json::Value;
 
+use crate::lsp::LspManager;
 use crate::tools::ToolRegistry;
 
 #[async_trait::async_trait]
@@ -119,5 +123,30 @@ impl RuntimeUi for TuiRuntimeUi {
 
     fn clipboard_images_dir(&self, workspace: &std::path::Path) -> PathBuf {
         crate::tui::clipboard::clipboard_images_dir(workspace)
+    }
+}
+
+/// Bridge the TUI's concrete [`LspManager`] onto the engine-core trait
+/// [`LspManagerApi`] by delegating to its inherent `config` /
+/// `diagnostics_for`. Uses fully-qualified call syntax so the trait method
+/// and the inherent method (same names) stay unambiguous.
+#[async_trait::async_trait]
+impl LspManagerApi for LspManager {
+    fn config(&self) -> &LspConfig {
+        LspManager::config(self)
+    }
+
+    async fn diagnostics_for(&self, file: &Path, edit_seq: u64) -> Option<DiagnosticBlock> {
+        LspManager::diagnostics_for(self, file, edit_seq).await
+    }
+}
+
+/// Bridge the TUI's concrete [`EngineHost`] onto the engine-core trait
+/// [`HostServices`]. Each accessor returns a trait-erased view of a service
+/// whose concrete type lives in the host; `lsp` is the first, others follow
+/// as the remaining `Engine` fields are decoupled.
+impl HostServices for super::EngineHost {
+    fn lsp(&self) -> &dyn LspManagerApi {
+        &*self.lsp_manager
     }
 }

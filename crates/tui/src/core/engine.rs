@@ -159,6 +159,11 @@ pub struct EngineHost {
     pub runtime_services: crate::tools::spec::RuntimeToolServices,
     /// Hook executor for `pre_compact` (and future compaction-related) hooks.
     pub hooks: Option<crate::hooks::HookExecutor>,
+    /// Post-edit LSP diagnostics manager. Defaults to a disabled manager;
+    /// `new_impl` replaces it with the config-resolved one. Held on the host
+    /// (not `EngineConfig`) so the engine body reaches it through the
+    /// [`HostServices::lsp`] trait and stays free of the concrete `LspManager`.
+    pub lsp_manager: std::sync::Arc<crate::lsp::LspManager>,
 }
 
 impl Default for EngineHost {
@@ -166,6 +171,7 @@ impl Default for EngineHost {
         Self {
             runtime_services: crate::tools::spec::RuntimeToolServices::default(),
             hooks: None,
+            lsp_manager: std::sync::Arc::new(crate::lsp::LspManager::disabled()),
         }
     }
 }
@@ -209,10 +215,6 @@ pub struct Engine {
     seam_manager: Option<SeamManager>,
     coherence_state: CoherenceState,
     turn_counter: u64,
-    /// Post-edit LSP diagnostics injection (#136). Populated unconditionally
-    /// — when LSP is disabled in config, this is an inert manager that
-    /// always returns `None` from `diagnostics_for`.
-    lsp_manager: Arc<crate::lsp::LspManager>,
     /// Session-scoped workshop variable store (#548). Shared across all tool
     /// calls so `last_tool_result` persists within the session and can be
     /// promoted to the parent context via `promote_to_context`.
@@ -681,7 +683,9 @@ impl Engine {
             SeamManager::new(main_client.clone(), seam_config)
         });
 
-        let lsp_manager = Arc::new(match config.lsp_config.clone() {
+        // The host owns the LSP manager so the engine body reaches it through
+        // the `HostServices::lsp` trait rather than a concrete `Engine` field.
+        host.lsp_manager = Arc::new(match config.lsp_config.clone() {
             Some(cfg) => crate::lsp::LspManager::new(cfg, config.workspace.clone()),
             None => crate::lsp::LspManager::disabled(),
         });
@@ -752,7 +756,6 @@ impl Engine {
             seam_manager,
             coherence_state: CoherenceState::default(),
             turn_counter: 0,
-            lsp_manager,
             pending_lsp_blocks: Vec::new(),
             slop_ledger_gate_cache: None,
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),

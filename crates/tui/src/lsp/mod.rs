@@ -70,6 +70,19 @@ pub struct LspManager {
     test_transports: AsyncMutex<HashMap<Language, Arc<dyn LspTransport>>>,
 }
 
+/// Manual `Debug`: the transports are runtime-held `Arc<dyn LspTransport>`
+/// (not `Debug`) and are not useful to inspect, so we surface only the
+/// resolved config + workspace. Required so `EngineHost` (which holds an
+/// `Arc<LspManager>`) can keep its `derive(Debug)`.
+impl std::fmt::Debug for LspManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LspManager")
+            .field("enabled", &self.config.enabled)
+            .field("workspace", &self.workspace)
+            .finish()
+    }
+}
+
 impl LspManager {
     /// Build a new manager. Does not spawn any LSP servers — that is lazy.
     #[must_use]

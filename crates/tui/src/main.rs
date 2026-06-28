@@ -6165,6 +6165,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
     let engine_host = crate::core::engine::EngineHost {
         runtime_services,
         hooks: None,
+        ..Default::default()
     };
     let engine_handle = spawn_engine(engine_config, config, engine_host);
     let mode = if auto_approve {

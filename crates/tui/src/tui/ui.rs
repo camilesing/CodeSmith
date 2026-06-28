@@ -826,6 +826,7 @@ fn build_engine_host(app: &App) -> crate::core::engine::EngineHost {
     crate::core::engine::EngineHost {
         runtime_services: app.runtime_services.clone(),
         hooks: Some(app.hooks.clone()),
+        ..Default::default()
     }
 }
 

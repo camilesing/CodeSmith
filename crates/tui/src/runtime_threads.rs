@@ -2056,6 +2056,7 @@ impl RuntimeThreadManager {
         let engine = spawn_engine(engine_cfg, &self.config, crate::core::engine::EngineHost {
                 runtime_services,
                 hooks: None,
+                ..Default::default()
             });
 
         let turns = self.store.list_turns_for_thread(&thread.id)?;

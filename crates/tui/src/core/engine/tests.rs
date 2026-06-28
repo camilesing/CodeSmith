@@ -3136,6 +3136,7 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
         message: "expected i32, found &str".to_string(),
     }]));
     engine
+        .host
         .lsp_manager
         .install_test_transport(Language::Rust, fake)
         .await;
@@ -3219,6 +3220,7 @@ async fn post_edit_hook_skips_unknown_tool_names() {
         message: "should not be reported".to_string(),
     }]));
     engine
+        .host
         .lsp_manager
         .install_test_transport(Language::Rust, fake.clone())
         .await;
