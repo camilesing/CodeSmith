@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 
 use crate::task_manager::SharedTaskManager;
 use crate::tools::shell::{SharedShellManager, ShellJobSnapshot, ShellStatus};
-use crate::tools::subagent::{SharedSubAgentManager, SubAgentResult, SubAgentStatus, SubAgentType};
+use crate::tools::subagent::{SharedSubAgentManager, SubAgentType};
 
 pub use agent_bridge::{map_subagent_status, subagent_error};
 pub use dream_task::{DreamResult, DreamStatus, DreamTaskRunner};
@@ -42,19 +42,6 @@ impl From<ShellStatus> for BackgroundTaskStatus {
             ShellStatus::Failed => Self::Failed,
             ShellStatus::Killed => Self::Killed,
             ShellStatus::TimedOut => Self::Failed,
-        }
-    }
-}
-
-/// Map SubAgentStatus → BackgroundTaskStatus.
-impl From<SubAgentStatus> for BackgroundTaskStatus {
-    fn from(s: SubAgentStatus) -> Self {
-        match s {
-            SubAgentStatus::Running => Self::Running,
-            SubAgentStatus::Completed => Self::Completed,
-            SubAgentStatus::Interrupted(_) => Self::Failed,
-            SubAgentStatus::Failed(_) => Self::Failed,
-            SubAgentStatus::Cancelled => Self::Cancelled,
         }
     }
 }
