@@ -1960,6 +1960,23 @@ impl RuntimeThreadManager {
             .clone()
             .map(crate::config::LspConfigToml::into_runtime);
         let settings = crate::settings::Settings::load().unwrap_or_default();
+        let runtime_services = crate::tools::spec::RuntimeToolServices {
+                task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),
+                automations: self.automations.lock().ok().and_then(|slot| slot.clone()),
+                task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
+                active_task_id: thread.task_id.clone(),
+                active_thread_id: Some(thread.id.clone()),
+                shell_manager: None,
+                hook_executor: None,
+                handle_store: crate::tools::handle::new_shared_handle_store(),
+                rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
+                task_v2_manager: None,
+                task_mailbox: None,
+                team_context: None,
+                permission_request_registry: None,
+                background_task_registry: None,
+                team_sender: None,
+        };
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
@@ -2011,23 +2028,6 @@ impl RuntimeThreadManager {
                 .max_workspace_gb
                 .saturating_mul(1024 * 1024 * 1024),
             lsp_config,
-            runtime_services: crate::tools::spec::RuntimeToolServices {
-                task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),
-                automations: self.automations.lock().ok().and_then(|slot| slot.clone()),
-                task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
-                active_task_id: thread.task_id.clone(),
-                active_thread_id: Some(thread.id.clone()),
-                shell_manager: None,
-                hook_executor: None,
-                handle_store: crate::tools::handle::new_shared_handle_store(),
-                rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
-                task_v2_manager: None,
-                task_mailbox: None,
-                team_context: None,
-                permission_request_registry: None,
-                background_task_registry: None,
-                team_sender: None,
-            },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),
@@ -2051,10 +2051,12 @@ impl RuntimeThreadManager {
             tools_always_load: self.config.tools_always_load(),
             tools: self.config.tools.clone(),
             team_context: None,
-            hooks: None,
         };
 
-        let engine = spawn_engine(engine_cfg, &self.config);
+        let engine = spawn_engine(engine_cfg, &self.config, crate::core::engine::EngineHost {
+                runtime_services,
+                hooks: None,
+            });
 
         let turns = self.store.list_turns_for_thread(&thread.id)?;
         let session_messages = self.reconstruct_messages_from_turns(&turns)?;

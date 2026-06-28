@@ -541,7 +541,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let engine_config = build_engine_config(&app, config);
 
     // Spawn the Engine - it will handle all API communication
-    let engine_handle = spawn_engine(engine_config, config);
+    let engine_handle = spawn_engine(engine_config, config, build_engine_host(&app));
     // The translation client is optional: it never crashes the TUI on
     // startup, even when the API key is missing, the base URL is malformed,
     // or the network is unavailable.
@@ -796,7 +796,6 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .lsp
             .clone()
             .map(crate::config::LspConfigToml::into_runtime),
-        runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
@@ -815,6 +814,17 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
+    }
+}
+
+/// Build the host-injected runtime services + hooks for an engine spawn.
+///
+/// `RuntimeToolServices` and `HookExecutor` are terminal-side types that
+/// `EngineConfig` no longer carries; the TUI wires them here from `App`
+/// state so `spawn_engine` can thread them via [`EngineHost`].
+fn build_engine_host(app: &App) -> crate::core::engine::EngineHost {
+    crate::core::engine::EngineHost {
+        runtime_services: app.runtime_services.clone(),
         hooks: Some(app.hooks.clone()),
     }
 }
@@ -2787,7 +2797,7 @@ async fn run_event_loop(
                                     let mut refreshed_config = config.clone();
                                     refreshed_config.api_key = Some(key);
                                     let engine_config = build_engine_config(app, &refreshed_config);
-                                    engine_handle = spawn_engine(engine_config, &refreshed_config);
+                                    engine_handle = spawn_engine(engine_config, &refreshed_config, build_engine_host(app));
                                     app.offline_mode = false;
                                     app.api_key_env_only = false;
 
@@ -4987,7 +4997,7 @@ async fn switch_provider(
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);
-    *engine_handle = spawn_engine(engine_config, config);
+    *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -5474,7 +5484,7 @@ async fn apply_command_result(
                         // Rebuild the engine with the new config so API key/model/base URL take effect.
                         let _ = engine_handle.send(Op::Shutdown).await;
                         let engine_config = build_engine_config(app, config);
-                        *engine_handle = spawn_engine(engine_config, config);
+                        *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
@@ -5595,7 +5605,7 @@ async fn switch_workspace(
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);
-    *engine_handle = spawn_engine(engine_config, config);
+    *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {

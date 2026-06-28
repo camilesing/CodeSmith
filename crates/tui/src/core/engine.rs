@@ -37,7 +37,7 @@ use crate::cycle_manager::{
 };
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
 use crate::features::{Feature, Features};
-use crate::hooks::{HookContext, HookExecutor};
+use crate::hooks::HookContext;
 use crate::llm_client::LlmClient;
 use crate::llm_client::LlmClientHandle;
 use crate::mcp::McpPool;
@@ -55,7 +55,6 @@ use crate::tools::goal::{SharedGoalState, new_shared_goal_state};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::ShellStatus;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
-use crate::tools::spec::RuntimeToolServices;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
     Mailbox, SharedSubAgentManager, SubAgentCompletion, SubAgentForkContext, SubAgentRuntime,
@@ -174,8 +173,6 @@ pub struct EngineConfig {
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
     pub lsp_config: Option<crate::lsp::LspConfig>,
-    /// Durable runtime services exposed to model-visible tools.
-    pub runtime_services: RuntimeToolServices,
     /// Task V2 manager for conversation-scoped task tracking.
     pub task_v2_manager: Option<crate::tools::task_v2::SharedTaskV2Manager>,
     /// Per-role/type sub-agent model overrides already resolved from config.
@@ -237,12 +234,10 @@ pub struct EngineConfig {
     /// `None` disables AgentTeams runtime services. `Some(Mutex(None))` means
     /// AgentTeams is available but no team is active yet.
     pub team_context: Option<crate::tools::team::SharedTeamContext>,
-    /// Hook executor used to fire `PreCompact` (and future compaction-related)
-    /// hooks from the engine's compaction path. `None` when the host (e.g.
-    /// headless CLI / runtime threads) doesn't wire hooks; the TUI threads
-    /// `App::hooks` here so compaction fires `pre_compact` hooks and merges
-    /// their stdout into the summary (#485).
-    pub hooks: Option<HookExecutor>,
+    // Note: `runtime_services` (RuntimeToolServices) and `hooks`
+    // (HookExecutor) were shed from `EngineConfig` so it stays portable to
+    // `codesmith-agent-runtime`. They are host-injected via [`EngineHost`]
+    // (see `host.runtime_services` and `host.hooks`).
 }
 
 impl Default for EngineConfig {
@@ -282,7 +277,6 @@ impl Default for EngineConfig {
             snapshots_max_workspace_bytes:
                 crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT,
             lsp_config: None,
-            runtime_services: RuntimeToolServices::default(),
             task_v2_manager: None,
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
@@ -305,7 +299,6 @@ impl Default for EngineConfig {
             sandbox_runtime: SandboxRuntimeConfig::default(),
             tools: None,
             team_context: None,
-            hooks: None,
         }
     }
 }
@@ -370,9 +363,36 @@ pub struct EngineHandle {
 
 // === Engine ===
 
+/// Host-injected runtime services the engine needs but whose concrete types
+/// (`ShellManager`, `TaskManager`, `AutomationManager`, `HookExecutor`, …)
+/// stay terminal-side. Kept out of `EngineConfig` so `EngineConfig` can live
+/// in `codesmith-agent-runtime` without dragging ~10k lines of OS-bridging
+/// managers across the crate boundary (per the boundary documented in
+/// `agent_runtime::background_task`).
+///
+/// When the Engine itself moves to agent-runtime (5.2.7) this becomes an
+/// `Arc<dyn HostServices>` trait object; for now it is a concrete tui struct.
+#[derive(Debug, Clone)]
+pub struct EngineHost {
+    /// Durable runtime services exposed to model-visible tools.
+    pub runtime_services: crate::tools::spec::RuntimeToolServices,
+    /// Hook executor for `pre_compact` (and future compaction-related) hooks.
+    pub hooks: Option<crate::hooks::HookExecutor>,
+}
+
+impl Default for EngineHost {
+    fn default() -> Self {
+        Self {
+            runtime_services: crate::tools::spec::RuntimeToolServices::default(),
+            hooks: None,
+        }
+    }
+}
+
 /// The core engine that processes operations and emits events
 pub struct Engine {
     config: EngineConfig,
+    host: EngineHost,
     llm_client: Option<LlmClientHandle>,
     llm_client_error: Option<String>,
     api_key_env_only_recovery: Option<String>,
@@ -671,28 +691,47 @@ impl Engine {
         format!("{message}\n\n{hint}")
     }
 
-    /// Create a new engine with the given configuration
+    /// Create a new engine with the given configuration.
+    ///
+    /// Uses a default [`EngineHost`] (empty `RuntimeToolServices`, no hooks).
+    /// Production callers that wire real tool services / hooks should use
+    /// [`Engine::new_with_host`] instead.
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
-        Self::new_impl(config, api_config, None)
+        Self::new_impl(config, api_config, None, EngineHost::default())
     }
 
     /// Create a new engine with an injected LLM client (for integration tests).
     ///
     /// The provided `LlmClientHandle` replaces the client that `Engine::new`
     /// would construct from `api_config`, enabling `MockLlmClient` injection
-    /// without network dependency.
+    /// without network dependency. Uses a default [`EngineHost`].
     pub fn new_with_client(
         config: EngineConfig,
         api_config: &Config,
         client: LlmClientHandle,
     ) -> (Self, EngineHandle) {
-        Self::new_impl(config, api_config, Some(client))
+        Self::new_impl(config, api_config, Some(client), EngineHost::default())
+    }
+
+    /// Create a new engine with host-injected runtime services and hooks.
+    ///
+    /// Production wiring (`spawn_engine`, teammate runtime, …) passes the
+    /// concrete `ShellManager`/`TaskManager`/`HookExecutor` handles here
+    /// rather than on `EngineConfig`, keeping `EngineConfig` portable to
+    /// `codesmith-agent-runtime`.
+    pub fn new_with_host(
+        config: EngineConfig,
+        api_config: &Config,
+        host: EngineHost,
+    ) -> (Self, EngineHandle) {
+        Self::new_impl(config, api_config, None, host)
     }
 
     fn new_impl(
         mut config: EngineConfig,
         api_config: &Config,
         injected_client: Option<LlmClientHandle>,
+        mut host: EngineHost,
     ) -> (Self, EngineHandle) {
         if let Some(objective) = normalized_goal_objective(config.goal_objective.as_deref()) {
             sync_goal_state_from_host(&config.goal_state, Some(&objective), None, false);
@@ -713,16 +752,16 @@ impl Engine {
             let team_context = config
                 .team_context
                 .clone()
-                .or_else(|| config.runtime_services.team_context.clone())
+                .or_else(|| host.runtime_services.team_context.clone())
                 .unwrap_or_else(crate::tools::team::new_shared_team_context);
             config.team_context = Some(team_context.clone());
-            config.runtime_services.team_context = Some(team_context);
-            if config
+            host.runtime_services.team_context = Some(team_context);
+            if host
                 .runtime_services
                 .permission_request_registry
                 .is_none()
             {
-                config.runtime_services.permission_request_registry =
+                host.runtime_services.permission_request_registry =
                     Some(crate::tools::team::new_shared_permission_registry());
             }
         }
@@ -815,7 +854,7 @@ impl Engine {
 
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
-        let shell_manager = config
+        let shell_manager = host
             .runtime_services
             .shell_manager
             .clone()
@@ -903,11 +942,12 @@ impl Engine {
                 bg_data_dir,
             ),
         ));
-        config.runtime_services.background_task_registry = Some(bg_registry.clone());
+        host.runtime_services.background_task_registry = Some(bg_registry.clone());
 
         let api_provider = api_config.api_provider();
         let mut engine = Engine {
             config,
+            host,
             llm_client,
             llm_client_error,
             api_key_env_only_recovery,
@@ -1461,7 +1501,7 @@ impl Engine {
                 #[allow(dead_code)]
                 Op::StartDreamTask { memory_path } => {
                     let path = memory_path
-                        .or_else(|| self.config.runtime_services.task_data_dir.clone())
+                        .or_else(|| self.host.runtime_services.task_data_dir.clone())
                         .unwrap_or_else(|| {
                             self.session.workspace.join(".codesmith").join("memory")
                         });
@@ -2340,7 +2380,7 @@ impl Engine {
     /// Returns `None` when neither hooks nor session-memory material is
     /// available, so the compaction primitive takes its untouched fast path.
     fn build_compaction_enhancements(&self) -> Option<CompactionEnhancements> {
-        let hooks = self.config.hooks.clone().map(|executor| {
+        let hooks = self.host.hooks.clone().map(|executor| {
             let session_id = executor.session_id().to_string();
             let context = self
                 .build_compaction_hook_context()
@@ -2722,7 +2762,7 @@ impl Engine {
         .with_state_namespace(self.session.id.clone())
         .with_features(self.config.features.clone())
         .with_shell_manager(self.shell_manager.clone())
-        .with_runtime_services(self.config.runtime_services.clone())
+        .with_runtime_services(self.host.runtime_services.clone())
         .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
             self.session.id.clone(),
             self.session.model.clone(),
@@ -3510,9 +3550,16 @@ fn goal_objective_for_prompt(
     normalized_goal_objective(configured_goal)
 }
 
-/// Spawn the engine in a background task
-pub fn spawn_engine(config: EngineConfig, api_config: &Config) -> EngineHandle {
-    let (engine, handle) = Engine::new(config, api_config);
+/// Spawn the engine in a background task.
+///
+/// `host` carries the terminal-side runtime services (`RuntimeToolServices`)
+/// and hook executor that `EngineConfig` no longer holds directly.
+pub fn spawn_engine(
+    config: EngineConfig,
+    api_config: &Config,
+    host: EngineHost,
+) -> EngineHandle {
+    let (engine, handle) = Engine::new_with_host(config, api_config, host);
 
     spawn_supervised(
         "engine-event-loop",

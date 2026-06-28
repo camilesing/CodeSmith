@@ -5579,7 +5579,6 @@ async fn run_exec_agent(
             .max_workspace_gb
             .saturating_mul(1024 * 1024 * 1024),
         lsp_config,
-        runtime_services: crate::tools::spec::RuntimeToolServices::default(),
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
@@ -5601,10 +5600,9 @@ async fn run_exec_agent(
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
-        hooks: None,
     };
 
-    let engine_handle = spawn_engine(engine_config, config);
+    let engine_handle = spawn_engine(engine_config, config, crate::core::engine::EngineHost::default());
     let mode = if auto_approve {
         AppMode::Yolo
     } else {
@@ -6141,7 +6139,6 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
             .max_workspace_gb
             .saturating_mul(1024 * 1024 * 1024),
         lsp_config,
-        runtime_services,
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
@@ -6163,10 +6160,13 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: Some(team_context),
-        hooks: None,
     };
 
-    let engine_handle = spawn_engine(engine_config, config);
+    let engine_host = crate::core::engine::EngineHost {
+        runtime_services,
+        hooks: None,
+    };
+    let engine_handle = spawn_engine(engine_config, config, engine_host);
     let mode = if auto_approve {
         AppMode::Yolo
     } else {
