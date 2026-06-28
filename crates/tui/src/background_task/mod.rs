@@ -27,62 +27,11 @@ pub use agent_bridge::{map_subagent_status, subagent_error};
 pub use dream_task::{DreamResult, DreamStatus, DreamTaskRunner};
 pub use output::BackgroundTaskOutputManager;
 pub use shell_bridge::default_stall_patterns;
+pub use codesmith_agent_runtime::background_task::*;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/// Background task type — mirrors Claude Code's `TaskType`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BackgroundTaskType {
-    /// Shell command running in background (bridged from ShellManager).
-    Shell,
-    /// Background sub-agent (bridged from SubAgentManager).
-    Agent,
-    /// Durable persistent task (bridged from TaskManager).
-    Durable,
-    /// Memory consolidation / dream task.
-    Dream,
-}
-
-impl BackgroundTaskType {
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Shell => "shell",
-            Self::Agent => "agent",
-            Self::Durable => "durable",
-            Self::Dream => "dream",
-        }
-    }
-}
-
-/// Unified background task status — normalizes the three subsystem status enums
-/// plus adds `Stalled` for interactive-prompt detection.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BackgroundTaskStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-    Killed,
-    Cancelled,
-    /// Shell command appears stalled (interactive prompt detected).
-    Stalled,
-}
-
-impl BackgroundTaskStatus {
-    /// True if the status is terminal (won't transition further).
-    #[must_use]
-    pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Failed | Self::Killed | Self::Cancelled
-        )
-    }
-}
 
 /// Map ShellStatus → BackgroundTaskStatus.
 impl From<ShellStatus> for BackgroundTaskStatus {
@@ -173,32 +122,6 @@ pub struct BackgroundTaskPollResult {
     pub output_delta: Option<String>,
     /// True if stall was detected on a shell task.
     pub stall_detected: bool,
-}
-
-/// Notification ready for injection into conversation.
-/// Mirrors Claude Code's `<task_notification>` XML format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackgroundTaskNotification {
-    pub task_id: String,
-    pub task_type: BackgroundTaskType,
-    pub status: BackgroundTaskStatus,
-    pub description: String,
-    pub result_summary: Option<String>,
-    pub duration_ms: Option<u64>,
-}
-
-/// Summary for task listing (TUI panel, /jobs command).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackgroundTaskSummary {
-    pub id: String,
-    pub source_id: String,
-    pub task_type: BackgroundTaskType,
-    pub status: BackgroundTaskStatus,
-    pub description: String,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: Option<DateTime<Utc>>,
-    pub duration_ms: Option<u64>,
-    pub error: Option<String>,
 }
 
 impl From<&BackgroundTaskState> for BackgroundTaskSummary {
@@ -615,38 +538,6 @@ impl BackgroundTaskRegistry {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Format a background task notification for injection into conversation.
-/// Mirrors Claude Code's `<task_notification>` XML format.
-pub fn format_notification_message(notification: &BackgroundTaskNotification) -> String {
-    let status_label = match notification.status {
-        BackgroundTaskStatus::Completed => "completed",
-        BackgroundTaskStatus::Failed => "failed",
-        BackgroundTaskStatus::Killed => "killed",
-        BackgroundTaskStatus::Cancelled => "cancelled",
-        BackgroundTaskStatus::Stalled => "stalled",
-        _ => "unknown",
-    };
-    format!(
-        "<background_task_notification>\n\
-         <task_id>{}</task_id>\n\
-         <task_type>{}</task_type>\n\
-         <status>{}</status>\n\
-         <description>{}</description>\n\
-         <result_summary>{}</result_summary>\n\
-         <duration_ms>{}</duration_ms>\n\
-         </background_task_notification>",
-        notification.task_id,
-        notification.task_type.as_str(),
-        status_label,
-        notification.description,
-        notification
-            .result_summary
-            .as_deref()
-            .unwrap_or("(no output)"),
-        notification.duration_ms.unwrap_or(0),
-    )
-}
-
 fn summarize_command(cmd: &str, max_len: usize) -> String {
     if cmd.len() <= max_len {
         cmd.to_string()
@@ -694,35 +585,5 @@ mod tests {
         assert!(result.ends_with('…'));
     }
 
-    #[test]
-    fn background_task_status_is_terminal() {
-        assert!(BackgroundTaskStatus::Completed.is_terminal());
-        assert!(BackgroundTaskStatus::Failed.is_terminal());
-        assert!(BackgroundTaskStatus::Killed.is_terminal());
-        assert!(BackgroundTaskStatus::Cancelled.is_terminal());
-        assert!(!BackgroundTaskStatus::Running.is_terminal());
-        assert!(!BackgroundTaskStatus::Pending.is_terminal());
-        assert!(!BackgroundTaskStatus::Stalled.is_terminal());
-    }
-
-    #[test]
-    fn format_notification_message_produces_xml_structure() {
-        let notification = BackgroundTaskNotification {
-            task_id: "bg-001".to_string(),
-            task_type: BackgroundTaskType::Shell,
-            status: BackgroundTaskStatus::Completed,
-            description: "cargo build".to_string(),
-            result_summary: Some("Build succeeded".to_string()),
-            duration_ms: Some(5000),
-        };
-        let xml = format_notification_message(&notification);
-        assert!(xml.contains("<background_task_notification>"));
-        assert!(xml.contains("<task_id>bg-001</task_id>"));
-        assert!(xml.contains("<task_type>shell</task_type>"));
-        assert!(xml.contains("<status>completed</status>"));
-        assert!(xml.contains("<description>cargo build</description>"));
-        assert!(xml.contains("<result_summary>Build succeeded</result_summary>"));
-        assert!(xml.contains("<duration_ms>5000</duration_ms>"));
-        assert!(xml.contains("</background_task_notification>"));
-    }
 }
+
