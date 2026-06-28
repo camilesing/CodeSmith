@@ -17,12 +17,12 @@ mod acp_server;
 mod agent_memory;
 mod artifacts;
 mod audit;
+mod auto_mode;
 mod auto_reasoning;
 mod automation_manager;
 mod background_task;
 mod child_env;
 mod client;
-mod auto_mode;
 mod command_safety;
 mod commands;
 mod compaction;
@@ -6000,8 +6000,8 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
     use crate::tools::task_v2::new_shared_task_v2_manager;
     use crate::tools::team::{
         TeamContext, TeammateMessage, find_member_by_name, new_shared_team_context,
-        read_team_config, set_member_inactive, team_config_path, team_lead_name,
-        write_team_config, write_to_mailbox,
+        read_team_config, set_member_inactive, team_config_path, team_lead_name, write_team_config,
+        write_to_mailbox,
     };
     use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
@@ -6009,9 +6009,8 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
     // 1. Load team + member registration from disk.
     let team_file = read_team_config(&args.team)
         .with_context(|| format!("team '{}' not found on disk", args.team))?;
-    let member = find_member_by_name(&team_file, &args.name).with_context(|| {
-        format!("teammate '{}' not found in team '{}'", args.name, args.team)
-    })?;
+    let member = find_member_by_name(&team_file, &args.name)
+        .with_context(|| format!("teammate '{}' not found in team '{}'", args.name, args.team))?;
 
     // 2. Resolve prompt: --prompt-file (read + unlink) > --prompt > registered.
     let prompt = if let Some(pf) = args.prompt_file.as_ref() {
@@ -6262,9 +6261,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
                 turn_error = Some(envelope.message.clone());
                 eprintln!("error: {}", envelope.message);
             }
-            Event::TurnComplete {
-                status, error, ..
-            } => {
+            Event::TurnComplete { status, error, .. } => {
                 turn_status = Some(format!("{status:?}").to_lowercase());
                 if let Some(e) = error {
                     turn_error = Some(e);
@@ -6757,7 +6754,10 @@ mod terminal_mode_tests {
         assert_eq!(args.team, "demo");
         assert_eq!(args.name, "worker-2");
         assert!(args.prompt.is_none());
-        assert_eq!(args.prompt_file.as_deref(), Some(std::path::Path::new("/tmp/prompt.txt")));
+        assert_eq!(
+            args.prompt_file.as_deref(),
+            Some(std::path::Path::new("/tmp/prompt.txt"))
+        );
         assert_eq!(args.model.as_deref(), Some("deepseek-chat"));
         assert_eq!(args.cwd.as_deref(), Some(std::path::Path::new("/tmp/work")));
         assert_eq!(args.agent_type, "general");

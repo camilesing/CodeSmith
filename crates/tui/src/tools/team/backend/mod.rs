@@ -143,10 +143,16 @@ pub enum BackendError {
     TeamMismatch { active: String, requested: String },
     /// Spawning the pane/process failed.
     #[error("backend `{backend}` failed to spawn teammate: {message}")]
-    SpawnFailed { backend: &'static str, message: String },
+    SpawnFailed {
+        backend: &'static str,
+        message: String,
+    },
     /// The backend's runtime (tmux/iTerm) is not available in this context.
     #[error("backend `{backend}` not available: {message}")]
-    Unavailable { backend: &'static str, message: String },
+    Unavailable {
+        backend: &'static str,
+        message: String,
+    },
 }
 
 impl BackendError {
@@ -286,7 +292,10 @@ mod tests {
         assert!(spec.model.is_none());
         assert!(spec.allowed_tools.is_none());
         assert!(spec.env.is_empty());
-        let bin_name = spec.codesmith_bin.file_name().map(|s| s.to_string_lossy().into_owned());
+        let bin_name = spec
+            .codesmith_bin
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned());
         let expected = std::env::current_exe()
             .ok()
             .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));

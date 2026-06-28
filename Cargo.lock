@@ -825,6 +825,7 @@ dependencies = [
  "clap",
  "codesmith-agent",
  "codesmith-config",
+ "codesmith-tools",
  "dirs",
  "fd-lock",
  "futures-util",

@@ -3015,15 +3015,18 @@ async fn spawn_team_teammate_in_pane(
                 ctx.team_name, requested
             )));
         }
-        if ctx.teammates.values().any(|existing| existing.name == agent_name) {
+        if ctx
+            .teammates
+            .values()
+            .any(|existing| existing.name == agent_name)
+        {
             return Err(ToolError::invalid_input(format!(
                 "Teammate '{agent_name}' already exists"
             )));
         }
 
-        let mut team_file = read_team_config(&ctx.team_name).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to read team config: {e}"))
-        })?;
+        let mut team_file = read_team_config(&ctx.team_name)
+            .map_err(|e| ToolError::execution_failed(format!("Failed to read team config: {e}")))?;
         add_member(
             &mut team_file,
             TeamMember {
@@ -3040,8 +3043,9 @@ async fn spawn_team_teammate_in_pane(
                 is_active: true,
             },
         );
-        write_team_config(&team_file)
-            .map_err(|e| ToolError::execution_failed(format!("Failed to write team config: {e}")))?;
+        write_team_config(&team_file).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to write team config: {e}"))
+        })?;
 
         ctx.teammates.insert(
             agent_id.clone(),

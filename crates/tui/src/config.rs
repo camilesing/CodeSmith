@@ -3180,9 +3180,11 @@ fn parse_env_bool(value: &str) -> bool {
 
 /// Returns `true` if any of the named env vars is set to a truthy value.
 fn env_flag_truthy_any(names: &[&str]) -> bool {
-    names
-        .iter()
-        .any(|name| std::env::var(name).map(|v| parse_env_bool(&v)).unwrap_or(false))
+    names.iter().any(|name| {
+        std::env::var(name)
+            .map(|v| parse_env_bool(&v))
+            .unwrap_or(false)
+    })
 }
 
 fn parse_env_list(value: &str) -> Vec<String> {
@@ -5156,7 +5158,7 @@ pub fn clear_api_key() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{lock_test_env, EnvVarGuard};
+    use crate::test_support::{EnvVarGuard, lock_test_env};
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;

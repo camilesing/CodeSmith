@@ -3321,7 +3321,10 @@ mod tests {
         .await
         .expect("fall-through LLM compaction should succeed");
 
-        assert!(mock.call_count() >= 1, "should have fallen through to the LLM");
+        assert!(
+            mock.call_count() >= 1,
+            "should have fallen through to the LLM"
+        );
         let prompt_text = collect_summary_text(&result.summary_prompt);
         assert!(prompt_text.contains("llm summary"));
     }
@@ -3434,7 +3437,10 @@ mod tests {
     fn merge_preserve_context_leaves_summary_untouched_when_empty() {
         let summary = Some(SystemPrompt::Text("orig".to_string()));
         assert_eq!(merge_preserve_context(summary.clone(), None), summary);
-        assert_eq!(merge_preserve_context(summary.clone(), Some("   ")), summary);
+        assert_eq!(
+            merge_preserve_context(summary.clone(), Some("   ")),
+            summary
+        );
     }
 
     #[test]

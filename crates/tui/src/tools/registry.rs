@@ -1446,7 +1446,7 @@ mod tests {
         ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
     };
 
-    use super::{ToolRegistry, is_valid_tool_name, sanitize_tool_name, MAX_TOOL_NAME_LEN};
+    use super::{MAX_TOOL_NAME_LEN, ToolRegistry, is_valid_tool_name, sanitize_tool_name};
 
     /// A simple test tool for unit testing
     struct TestTool {

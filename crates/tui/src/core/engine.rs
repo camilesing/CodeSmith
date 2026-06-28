@@ -30,7 +30,6 @@ use crate::compaction::{
     CompactionConfig, CompactionEnhancements, SessionMemorySidecar, compact_messages_safe,
     merge_system_prompts, should_compact,
 };
-use crate::hooks::{HookContext, HookExecutor};
 use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::cycle_manager::{
     CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
@@ -38,6 +37,7 @@ use crate::cycle_manager::{
 };
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
 use crate::features::{Feature, Features};
+use crate::hooks::{HookContext, HookExecutor};
 use crate::llm_client::LlmClient;
 use crate::llm_client::LlmClientHandle;
 use crate::mcp::McpPool;

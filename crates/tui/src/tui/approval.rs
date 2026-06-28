@@ -35,36 +35,11 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Determines when tool executions require user approval
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ApprovalMode {
-    /// Auto-approve all tools (YOLO mode / --yolo flag)
-    Auto,
-    /// Suggest approval for non-safe tools (non-YOLO modes)
-    #[default]
-    Suggest,
-    /// Never execute tools requiring approval
-    Never,
-}
-
-impl ApprovalMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            ApprovalMode::Auto => "AUTO",
-            ApprovalMode::Suggest => "SUGGEST",
-            ApprovalMode::Never => "NEVER",
-        }
-    }
-
-    pub fn from_config_value(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "auto" => Some(ApprovalMode::Auto),
-            "suggest" | "suggested" | "on-request" | "untrusted" => Some(ApprovalMode::Suggest),
-            "never" | "deny" | "denied" => Some(ApprovalMode::Never),
-            _ => None,
-        }
-    }
-}
+/// Determines when tool executions require user approval.
+///
+/// Re-exported from `codesmith-agent-runtime`; see
+/// [`codesmith_agent_runtime::mode::ApprovalMode`].
+pub use codesmith_agent_runtime::mode::ApprovalMode;
 
 /// User's decision for a pending approval
 #[derive(Debug, Clone, PartialEq, Eq)]

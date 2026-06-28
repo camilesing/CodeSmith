@@ -127,15 +127,11 @@ fn onboarding_is_workspace_trust_gate(
 }
 
 /// Supported application modes for the TUI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppMode {
-    Agent,
-    Yolo,
-    Plan,
-    /// Coordinator mode — LLM acts as orchestrator only, delegates work to
-    /// worker sub-agents. Cannot directly read/write files or run commands.
-    Coordinator,
-}
+///
+/// Re-exported from `codesmith-agent-runtime` so the runtime can mode-switch
+/// toolsets without depending on the terminal binary; see
+/// [`codesmith_agent_runtime::mode::AppMode`].
+pub use codesmith_agent_runtime::mode::AppMode;
 
 /// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
 #[derive(Debug, Clone)]
@@ -739,50 +735,8 @@ fn match_kitty_csi_fragment(chars: &[char], start: usize) -> Option<usize> {
 const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
 const MAX_DRAFT_HISTORY: usize = 50;
 
-impl AppMode {
-    #[must_use]
-    pub fn from_setting(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "plan" => Self::Plan,
-            "yolo" => Self::Yolo,
-            "coordinator" | "coordinator_mode" => Self::Coordinator,
-            _ => Self::Agent,
-        }
-    }
-
-    #[must_use]
-    pub fn as_setting(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Yolo => "yolo",
-            Self::Plan => "plan",
-            Self::Coordinator => "coordinator",
-        }
-    }
-
-    /// Short label used in the UI footer.
-    pub fn label(self) -> &'static str {
-        match self {
-            AppMode::Agent => "AGENT",
-            AppMode::Yolo => "YOLO",
-            AppMode::Plan => "PLAN",
-            AppMode::Coordinator => "COORDINATOR",
-        }
-    }
-
-    #[allow(dead_code)]
-    /// Description shown in help or onboarding text.
-    pub fn description(self) -> &'static str {
-        match self {
-            AppMode::Agent => "Agent mode - autonomous task execution with tools",
-            AppMode::Yolo => "YOLO mode - full tool access without approvals",
-            AppMode::Plan => "Plan mode - design before implementing",
-            AppMode::Coordinator => {
-                "Coordinator mode - orchestrator only, delegates work to workers"
-            }
-        }
-    }
-}
+// `AppMode` impl (`from_setting`/`as_setting`/`label`/`description`) lives in
+// `codesmith-agent-runtime::mode`; the enum is re-exported above.
 
 /// Configuration required to bootstrap the TUI.
 #[derive(Clone)]
@@ -2244,9 +2198,7 @@ impl App {
             self.trust_mode = true;
             self.approval_mode = ApprovalMode::Auto;
         } else if leaving_yolo && let Some(restore) = self.yolo_restore.take() {
-            tracing::info!(
-                "auto-mode dangerous-command strip restored (leaving YOLO)"
-            );
+            tracing::info!("auto-mode dangerous-command strip restored (leaving YOLO)");
             self.allow_shell = restore.allow_shell;
             self.trust_mode = restore.trust_mode;
             self.approval_mode = restore.approval_mode;

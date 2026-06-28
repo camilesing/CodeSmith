@@ -36,11 +36,12 @@ pub fn detect_backend_kind_uncached() -> BackendKind {
 
 /// Pure decision table over a snapshot of the process environment.
 #[must_use]
-pub fn detect_backend_kind_from_env(env: &std::collections::HashMap<String, String>) -> BackendKind {
+pub fn detect_backend_kind_from_env(
+    env: &std::collections::HashMap<String, String>,
+) -> BackendKind {
     // 1. Explicit override.
     if let Some(value) = env.get("CODESMITH_TEAM_BACKEND") {
-        return parse_backend_kind(value)
-            .unwrap_or_else(|| fallback_from_env(env));
+        return parse_backend_kind(value).unwrap_or_else(|| fallback_from_env(env));
     }
     fallback_from_env(env)
 }
@@ -73,12 +74,18 @@ mod tests {
     use std::collections::HashMap;
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn default_is_in_process() {
-        assert_eq!(detect_backend_kind_from_env(&env(&[])), BackendKind::InProcess);
+        assert_eq!(
+            detect_backend_kind_from_env(&env(&[])),
+            BackendKind::InProcess
+        );
     }
 
     #[test]

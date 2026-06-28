@@ -23,75 +23,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
-/// Events that can trigger hook execution
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum HookEvent {
-    /// Triggered when a new session starts
-    #[serde(rename = "session_start")]
-    SessionStart,
-    /// Triggered when a session ends (quit, Ctrl+C)
-    #[serde(rename = "session_end")]
-    SessionEnd,
-    /// Triggered before a user message is sent to the LLM
-    #[serde(rename = "message_submit")]
-    MessageSubmit,
-    /// Triggered before a tool is executed (`pre_tool_use` alias supported)
-    #[serde(rename = "tool_call_before", alias = "pre_tool_use")]
-    ToolCallBefore,
-    /// Triggered after a tool completes (success or failure) (`post_tool_use` alias supported)
-    #[serde(rename = "tool_call_after", alias = "post_tool_use")]
-    ToolCallAfter,
-    /// Triggered when the user changes modes (Plan, Agent, Yolo)
-    #[serde(rename = "mode_change")]
-    ModeChange,
-    /// Triggered when an error occurs
-    #[serde(rename = "on_error")]
-    OnError,
-    /// Triggered immediately before each `exec_shell` invocation. The hook's
-    /// stdout is parsed as `KEY=VALUE\n` lines and merged on top of the
-    /// shell command's environment — useful for ephemeral credentials,
-    /// per-skill PATH adjustments, or short-lived tokens (#456). Hooks that
-    /// fail or time out are logged but do *not* abort the shell call; they
-    /// simply contribute no env vars.
-    #[serde(rename = "shell_env")]
-    ShellEnv,
-    /// Triggered after a TaskV2 task is created. Hooks can block creation
-    /// by exiting with code 2.
-    #[serde(rename = "task_created")]
-    TaskCreated,
-    /// Triggered when a TaskV2 task status transitions to completed.
-    /// Observer-only; cannot block completion.
-    #[serde(rename = "task_completed")]
-    TaskCompleted,
-    /// Triggered immediately before context compaction (manual `/compact`,
-    /// auto-compaction, or emergency capacity compaction). The hook's stdout
-    /// is collected as "context to preserve" and merged into the compaction
-    /// summary so key facts survive the summarization. Hooks that fail or
-    /// time out are logged but never abort compaction — the turn must
-    /// proceed (#485).
-    #[serde(rename = "pre_compact")]
-    PreCompact,
-}
-
-impl HookEvent {
-    /// Get string representation for environment variable
-    #[allow(dead_code)] // Used in tests and future hook dispatch
-    pub fn as_str(self) -> &'static str {
-        match self {
-            HookEvent::SessionStart => "session_start",
-            HookEvent::SessionEnd => "session_end",
-            HookEvent::MessageSubmit => "message_submit",
-            HookEvent::ToolCallBefore => "tool_call_before",
-            HookEvent::ToolCallAfter => "tool_call_after",
-            HookEvent::ModeChange => "mode_change",
-            HookEvent::OnError => "on_error",
-            HookEvent::ShellEnv => "shell_env",
-            HookEvent::TaskCreated => "task_created",
-            HookEvent::TaskCompleted => "task_completed",
-            HookEvent::PreCompact => "pre_compact",
-        }
-    }
-}
+// Hook value types (`HookEvent`, `HookContext`, `HookResult`,
+// `MessageSubmitOutcome`) and the `HookHost` trait live in
+// `codesmith-agent-runtime::hooks`; re-exported here so existing
+// `crate::hooks::HookEvent` etc. paths keep resolving.
+pub use codesmith_agent_runtime::hooks::{
+    HookContext, HookEvent, HookHost, HookResult, MessageSubmitOutcome,
+};
 
 /// Condition for when a hook should run
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,284 +186,6 @@ impl HooksConfig {
     }
 }
 
-/// Context passed to hooks via environment variables
-#[derive(Debug, Clone, Default)]
-pub struct HookContext {
-    /// Tool name (for ToolCallBefore/After)
-    pub tool_name: Option<String>,
-    /// Tool arguments as JSON string
-    pub tool_args: Option<String>,
-    /// Tool result output (truncated)
-    pub tool_result: Option<String>,
-    /// Tool exit code if applicable
-    pub tool_exit_code: Option<i32>,
-    /// Whether tool succeeded
-    pub tool_success: Option<bool>,
-    /// Current mode
-    pub mode: Option<String>,
-    /// Previous mode (for `ModeChange`)
-    pub previous_mode: Option<String>,
-    /// Session ID
-    pub session_id: Option<String>,
-    /// User message content
-    pub message: Option<String>,
-    /// Error message (for `OnError`)
-    pub error_message: Option<String>,
-    /// Workspace path
-    pub workspace: Option<PathBuf>,
-    /// Current model name
-    pub model: Option<String>,
-    /// Total tokens used
-    pub total_tokens: Option<u32>,
-    /// Session cost in USD
-    pub session_cost: Option<f64>,
-    /// Task ID (for TaskCreated/TaskCompleted)
-    pub task_id: Option<String>,
-    /// Task subject (for TaskCreated/TaskCompleted)
-    pub task_subject: Option<String>,
-    /// Task status (for TaskCreated/TaskCompleted)
-    pub task_status: Option<String>,
-}
-
-impl HookContext {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[allow(dead_code)] // Public builder API, used in tests
-    pub fn with_tool_name(mut self, name: &str) -> Self {
-        self.tool_name = Some(name.to_string());
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API
-    pub fn with_tool_args(mut self, args: &serde_json::Value) -> Self {
-        self.tool_args = Some(args.to_string());
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API
-    pub fn with_tool_result(mut self, result: &str, success: bool, exit_code: Option<i32>) -> Self {
-        self.tool_result = Some(result.to_string());
-        self.tool_success = Some(success);
-        self.tool_exit_code = exit_code;
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API, used in tests
-    pub fn with_mode(mut self, mode: &str) -> Self {
-        self.mode = Some(mode.to_string());
-        self
-    }
-
-    pub fn with_previous_mode(mut self, mode: &str) -> Self {
-        self.previous_mode = Some(mode.to_string());
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API, used in tests
-    pub fn with_workspace(mut self, path: PathBuf) -> Self {
-        self.workspace = Some(path);
-        self
-    }
-
-    pub fn with_model(mut self, model: &str) -> Self {
-        self.model = Some(model.to_string());
-        self
-    }
-
-    pub fn with_session_id(mut self, session_id: &str) -> Self {
-        self.session_id = Some(session_id.to_string());
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API
-    pub fn with_message(mut self, message: &str) -> Self {
-        self.message = Some(message.to_string());
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API
-    pub fn with_error(mut self, error: &str) -> Self {
-        self.error_message = Some(error.to_string());
-        self
-    }
-
-    pub fn with_tokens(mut self, tokens: u32) -> Self {
-        self.total_tokens = Some(tokens);
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API
-    pub fn with_cost(mut self, cost: f64) -> Self {
-        self.session_cost = Some(cost);
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API
-    pub fn with_task_id(mut self, id: &str) -> Self {
-        self.task_id = Some(id.to_string());
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API
-    pub fn with_task_subject(mut self, subject: &str) -> Self {
-        self.task_subject = Some(subject.to_string());
-        self
-    }
-
-    #[allow(dead_code)] // Public builder API
-    pub fn with_task_status(mut self, status: &str) -> Self {
-        self.task_status = Some(status.to_string());
-        self
-    }
-
-    /// Convert to environment variables
-    pub fn to_env_vars(&self) -> HashMap<String, String> {
-        let mut env = HashMap::new();
-
-        if let Some(ref name) = self.tool_name {
-            env.insert("DEEPSEEK_TOOL_NAME".to_string(), name.clone());
-        }
-        if let Some(ref args) = self.tool_args {
-            env.insert("DEEPSEEK_TOOL_ARGS".to_string(), args.clone());
-        }
-        if let Some(ref result) = self.tool_result {
-            // Truncate result to 10KB to avoid environment variable size limits
-            let truncated = if result.len() > 10000 {
-                let safe_end = result
-                    .char_indices()
-                    .take_while(|(i, _)| *i < 10000)
-                    .last()
-                    .map(|(i, c)| i + c.len_utf8())
-                    .unwrap_or(0);
-                format!("{}...[truncated]", &result[..safe_end])
-            } else {
-                result.clone()
-            };
-            env.insert("DEEPSEEK_TOOL_RESULT".to_string(), truncated);
-        }
-        if let Some(code) = self.tool_exit_code {
-            env.insert("DEEPSEEK_TOOL_EXIT_CODE".to_string(), code.to_string());
-        }
-        if let Some(success) = self.tool_success {
-            env.insert("DEEPSEEK_TOOL_SUCCESS".to_string(), success.to_string());
-        }
-        if let Some(ref mode) = self.mode {
-            env.insert("DEEPSEEK_MODE".to_string(), mode.clone());
-        }
-        if let Some(ref prev) = self.previous_mode {
-            env.insert("DEEPSEEK_PREVIOUS_MODE".to_string(), prev.clone());
-        }
-        if let Some(ref session_id) = self.session_id {
-            env.insert("DEEPSEEK_SESSION_ID".to_string(), session_id.clone());
-        }
-        if let Some(ref message) = self.message {
-            // Truncate message to prevent env var issues
-            let truncated = if message.len() > 5000 {
-                let safe_end = message
-                    .char_indices()
-                    .take_while(|(i, _)| *i < 5000)
-                    .last()
-                    .map(|(i, c)| i + c.len_utf8())
-                    .unwrap_or(0);
-                format!("{}...[truncated]", &message[..safe_end])
-            } else {
-                message.clone()
-            };
-            env.insert("DEEPSEEK_MESSAGE".to_string(), truncated);
-        }
-        if let Some(ref error) = self.error_message {
-            env.insert("DEEPSEEK_ERROR".to_string(), error.clone());
-        }
-        if let Some(ref ws) = self.workspace {
-            env.insert("DEEPSEEK_WORKSPACE".to_string(), ws.display().to_string());
-        }
-        if let Some(ref model) = self.model {
-            env.insert("DEEPSEEK_MODEL".to_string(), model.clone());
-        }
-        if let Some(tokens) = self.total_tokens {
-            env.insert("DEEPSEEK_TOTAL_TOKENS".to_string(), tokens.to_string());
-        }
-        if let Some(cost) = self.session_cost {
-            env.insert("DEEPSEEK_SESSION_COST".to_string(), format!("{cost:.6}"));
-        }
-        if let Some(ref task_id) = self.task_id {
-            env.insert("DEEPSEEK_TASK_ID".to_string(), task_id.clone());
-        }
-        if let Some(ref task_subject) = self.task_subject {
-            env.insert("DEEPSEEK_TASK_SUBJECT".to_string(), task_subject.clone());
-        }
-        if let Some(ref task_status) = self.task_status {
-            env.insert("DEEPSEEK_TASK_STATUS".to_string(), task_status.clone());
-        }
-
-        env
-    }
-}
-
-/// Result of a hook execution
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields are part of public API for hook consumers
-pub struct HookResult {
-    /// Hook name (if specified)
-    pub name: Option<String>,
-    /// Whether the hook succeeded
-    pub success: bool,
-    /// Exit code from the hook command
-    pub exit_code: Option<i32>,
-    /// Standard output
-    pub stdout: String,
-    /// Standard error
-    pub stderr: String,
-    /// Time taken to execute
-    pub duration: Duration,
-    /// Error message if execution failed
-    pub error: Option<String>,
-}
-
-/// Result of running mutable `message_submit` hooks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MessageSubmitOutcome {
-    /// No hook changed the submitted text.
-    Unchanged { warning: Option<String> },
-    /// One or more hooks replaced the submitted text.
-    Replaced {
-        text: String,
-        warning: Option<String>,
-    },
-    /// A hook intentionally blocked the submission.
-    Blocked { reason: String },
-}
-
-impl MessageSubmitOutcome {
-    pub fn unchanged() -> Self {
-        Self::Unchanged { warning: None }
-    }
-
-    pub fn replaced(text: String) -> Self {
-        Self::Replaced {
-            text,
-            warning: None,
-        }
-    }
-
-    fn with_warning(self, warning: Option<String>) -> Self {
-        match self {
-            Self::Unchanged { .. } => Self::Unchanged { warning },
-            Self::Replaced { text, .. } => Self::Replaced { text, warning },
-            Self::Blocked { reason } => Self::Blocked { reason },
-        }
-    }
-
-    pub fn warning(&self) -> Option<&str> {
-        match self {
-            Self::Unchanged { warning } | Self::Replaced { warning, .. } => warning.as_deref(),
-            Self::Blocked { .. } => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MessageSubmitStdout {
     Unchanged,
@@ -539,6 +199,37 @@ pub struct HookExecutor {
     config: HooksConfig,
     default_working_dir: PathBuf,
     session_id: String,
+}
+
+/// Trait-impl bridge: the runtime holds `Arc<dyn HookHost>` and invokes
+/// lifecycle hooks through this surface; `HookExecutor` delegates to its
+/// inherent (process-spawning) methods. Fully-qualified call syntax
+/// (`HookExecutor::execute(self, …)`) disambiguates from the trait method
+/// of the same name.
+impl codesmith_agent_runtime::hooks::HookHost for HookExecutor {
+    fn execute(&self, event: HookEvent, context: &HookContext) -> Vec<HookResult> {
+        HookExecutor::execute(self, event, context)
+    }
+
+    fn execute_pre_compact_hook(&self, context: &HookContext) -> Option<String> {
+        HookExecutor::execute_pre_compact_hook(self, context)
+    }
+
+    fn execute_message_submit_transform(
+        &self,
+        context: &HookContext,
+        original_text: &str,
+    ) -> MessageSubmitOutcome {
+        HookExecutor::execute_message_submit_transform(self, context, original_text)
+    }
+
+    fn has_hooks_for_event(&self, event: HookEvent) -> bool {
+        HookExecutor::has_hooks_for_event(self, event)
+    }
+
+    fn is_enabled(&self) -> bool {
+        HookExecutor::is_enabled(self)
+    }
 }
 
 impl HookExecutor {
@@ -1653,10 +1344,7 @@ printf '%s\n' '{"text":"ignored"}'
     fn pre_compact_hook_without_configured_hooks_is_none() {
         let executor = HookExecutor::new(HooksConfig::default(), PathBuf::from("."));
 
-        assert_eq!(
-            executor.execute_pre_compact_hook(&HookContext::new()),
-            None
-        );
+        assert_eq!(executor.execute_pre_compact_hook(&HookContext::new()), None);
     }
 
     #[test]
@@ -1683,9 +1371,11 @@ printf '%s\n' '{"text":"ignored"}'
         let command = write_hook_script(&dir, "preserve.sh", "printf 'remember the milk'");
         let config = HooksConfig {
             enabled: true,
-            hooks: vec![Hook::new(HookEvent::PreCompact, &command)
-                .with_name("preserve")
-                .with_timeout(10)],
+            hooks: vec![
+                Hook::new(HookEvent::PreCompact, &command)
+                    .with_name("preserve")
+                    .with_timeout(10),
+            ],
             working_dir: Some(dir.path().to_path_buf()),
             ..HooksConfig::default()
         };
@@ -1796,8 +1486,9 @@ esac
     fn pre_compact_hook_skips_non_matching_condition() {
         let dir = tempfile::tempdir().expect("tempdir");
         let command = write_hook_script(&dir, "conditional.sh", "printf 'should not run'");
-        let hook = Hook::new(HookEvent::PreCompact, &command)
-            .with_condition(HookCondition::Mode { mode: "plan".into() });
+        let hook = Hook::new(HookEvent::PreCompact, &command).with_condition(HookCondition::Mode {
+            mode: "plan".into(),
+        });
         let config = HooksConfig {
             enabled: true,
             hooks: vec![hook],

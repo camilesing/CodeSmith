@@ -26,6 +26,9 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+pub use backend::{
+    BackendError, BackendKind, SpawnedTeammate, TeammateBackend, TeammateHandle, TeammateSpawnSpec,
+};
 pub use inbox_poller::{
     InboxClassification, InboxDispatch, TeamInboxRx, TeamInboxTx, classify_inbox_messages,
     run_leader_inbox_poller,
@@ -66,10 +69,6 @@ pub use teammate_mailbox::{
     IdleReason, StructuredProtocolMessage, TeammateMessage, clear_mailbox,
     is_structured_protocol_message, mark_messages_as_read, parse_structured_protocol, read_mailbox,
     read_unread_messages, write_to_mailbox,
-};
-pub use backend::{
-    BackendError, BackendKind, SpawnedTeammate, TeammateBackend, TeammateHandle,
-    TeammateSpawnSpec,
 };
 
 /// Runtime info about a teammate tracked in the session-level TeamContext.

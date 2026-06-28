@@ -2207,10 +2207,11 @@ async fn run_event_loop(
                                     "session_id": app.current_session_id,
                                 }),
                             );
-                            let elevation_target = crate::core::engine::tool_setup::sandbox_policy_for_mode(
-                                app.mode,
-                                &app.workspace,
-                            );
+                            let elevation_target =
+                                crate::core::engine::tool_setup::sandbox_policy_for_mode(
+                                    app.mode,
+                                    &app.workspace,
+                                );
                             let allow_elevation = app.trust_mode || app.mode == AppMode::Yolo;
                             match crate::auto_mode::decide_auto_elevation(
                                 command.as_deref(),
@@ -2219,9 +2220,7 @@ async fn run_event_loop(
                             ) {
                                 crate::auto_mode::AutoElevationDecision::Deny { reason } => {
                                     app.add_message(HistoryCell::System {
-                                        content: format!(
-                                            "Sandbox denied {tool_name}: {reason}"
-                                        ),
+                                        content: format!("Sandbox denied {tool_name}: {reason}"),
                                     });
                                     let _ = engine_handle.deny_tool_call(tool_id.clone()).await;
                                 }
@@ -2231,8 +2230,9 @@ async fn run_event_loop(
                                             "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to mode sandbox"
                                         ),
                                     });
-                                    let _ =
-                                        engine_handle.retry_tool_with_policy(tool_id.clone(), policy).await;
+                                    let _ = engine_handle
+                                        .retry_tool_with_policy(tool_id.clone(), policy)
+                                        .await;
                                 }
                             }
                         } else {

@@ -54,9 +54,7 @@ pub fn dangerous_command_reason(command: &str) -> Option<String> {
 pub enum AutoElevationDecision {
     /// Strip: the command is catastrophic and must be denied even in auto
     /// mode. Carries the reason so the model sees *why* it was blocked.
-    Deny {
-        reason: String,
-    },
+    Deny { reason: String },
     /// Elevate to the caller-supplied baseline sandbox policy. The caller
     /// chooses this target (the active mode's baseline) and only receives
     /// this variant when `allow_elevation` was true, so `DangerFullAccess`
@@ -131,11 +129,8 @@ mod tests {
     #[test]
     fn decide_strips_dangerous_even_with_full_access_target() {
         // YOLO opt-in must still strip catastrophic commands.
-        let decision = decide_auto_elevation(
-            Some("rm -rf /"),
-            true,
-            SandboxPolicy::DangerFullAccess,
-        );
+        let decision =
+            decide_auto_elevation(Some("rm -rf /"), true, SandboxPolicy::DangerFullAccess);
         assert!(matches!(decision, AutoElevationDecision::Deny { .. }));
         if let AutoElevationDecision::Deny { reason } = decision {
             assert!(reason.contains("stripped"));
@@ -144,11 +139,8 @@ mod tests {
 
     #[test]
     fn decide_elevates_when_allowed_and_not_dangerous() {
-        let decision = decide_auto_elevation(
-            Some("cargo build"),
-            true,
-            SandboxPolicy::DangerFullAccess,
-        );
+        let decision =
+            decide_auto_elevation(Some("cargo build"), true, SandboxPolicy::DangerFullAccess);
         assert!(matches!(
             decision,
             AutoElevationDecision::ElevateTo(SandboxPolicy::DangerFullAccess)
@@ -159,11 +151,8 @@ mod tests {
     fn decide_denies_when_not_allowed_and_not_dangerous() {
         // Agent + Auto (no trust): approval is bypassed but the sandbox is
         // not — a sandbox-denied tool is denied, not auto-elevated.
-        let decision = decide_auto_elevation(
-            Some("cargo build"),
-            false,
-            SandboxPolicy::DangerFullAccess,
-        );
+        let decision =
+            decide_auto_elevation(Some("cargo build"), false, SandboxPolicy::DangerFullAccess);
         assert!(matches!(decision, AutoElevationDecision::Deny { .. }));
         if let AutoElevationDecision::Deny { reason } = decision {
             assert!(reason.contains("does not bypass the sandbox"));

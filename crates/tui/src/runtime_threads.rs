@@ -2856,9 +2856,7 @@ impl RuntimeThreadManager {
                                     let _ = engine.deny_tool_call(tool_id).await;
                                 }
                                 crate::auto_mode::AutoElevationDecision::ElevateTo(policy) => {
-                                    let _ = engine
-                                        .retry_tool_with_policy(tool_id, policy)
-                                        .await;
+                                    let _ = engine.retry_tool_with_policy(tool_id, policy).await;
                                 }
                             }
                         }

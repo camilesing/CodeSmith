@@ -14,8 +14,8 @@ use async_trait::async_trait;
 use tokio::process::Command;
 
 use super::{
-    BackendError, BackendKind, SpawnedTeammate, TeammateBackend, TeammateHandle,
-    TeammateSpawnSpec, build_team_teammate_command, write_prompt_file,
+    BackendError, BackendKind, SpawnedTeammate, TeammateBackend, TeammateHandle, TeammateSpawnSpec,
+    build_team_teammate_command, write_prompt_file,
 };
 
 /// Stateless tmux pane backend.
