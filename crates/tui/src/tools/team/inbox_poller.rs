@@ -20,68 +20,10 @@ use crate::tools::team::{
 // ---------------------------------------------------------------------------
 
 /// A single dispatch item from the inbox poller to the engine.
-#[derive(Debug, Clone)]
-pub enum InboxDispatch {
-    /// Regular teammate message to inject into leader conversation.
-    TeammateMessage {
-        from: String,
-        text: String,
-        summary: Option<String>,
-    },
-    /// Permission request that needs leader's approval dialog.
-    PermissionRequestPending {
-        request_id: String,
-        agent_id: String,
-        tool_name: String,
-        tool_use_id: String,
-        description: String,
-    },
-    /// Permission response received from leader for a worker's request.
-    PermissionResponseReceived {
-        request_id: String,
-        subtype: String,
-        error: Option<String>,
-    },
-    /// Shutdown request — passed through as message for model decision.
-    ShutdownRequestMessage {
-        from: String,
-        request_id: String,
-        reason: Option<String>,
-    },
-    /// Shutdown approval — leader must kill teammate, remove from team.
-    ShutdownApprovalAction {
-        from: String,
-        request_id: String,
-        backend_type: Option<String>,
-    },
-    /// Shutdown rejection — informational.
-    ShutdownRejectionInfo {
-        from: String,
-        request_id: String,
-        reason: String,
-    },
-    /// Plan approval request — auto-approved by poller; dispatch info.
-    PlanApprovalAutoApprove { from: String, request_id: String },
-    /// Idle notification — informational for leader.
-    IdleNotificationInfo {
-        from: String,
-        idle_reason: Option<IdleReason>,
-        summary: Option<String>,
-        completed_task_id: Option<String>,
-        completed_status: Option<String>,
-    },
-    /// Mode set request — worker should change permission mode.
-    ModeSetRequestAction {
-        from: String,
-        permission_mode: String,
-    },
-    /// Team permission update — informational ack.
-    TeamPermissionUpdateInfo {
-        from: String,
-        allowed_tools: Vec<String>,
-        denied_tools: Vec<String>,
-    },
-}
+///
+/// Re-exported from `codesmith_agent_runtime::team::InboxDispatch` so the
+/// engine and inbox poller share the same dispatch type.
+pub use codesmith_agent_runtime::team::InboxDispatch;
 
 /// Channel type for sending ops to the engine.
 pub type TeamInboxTx = mpsc::Sender<Op>;

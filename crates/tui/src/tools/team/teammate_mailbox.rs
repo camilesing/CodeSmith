@@ -38,16 +38,10 @@ fn default_timestamp() -> String {
 }
 
 /// Idle reason variants — why a teammate went idle.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum IdleReason {
-    /// Turn completed normally, available for new work.
-    Available,
-    /// Interrupted by external signal (cancel, etc).
-    Interrupted,
-    /// Failed during turn execution.
-    Failed,
-}
+///
+/// Re-exported from `codesmith_agent_runtime::team::IdleReason` so the
+/// engine and TUI share the same dispatch taxonomy.
+pub use codesmith_agent_runtime::team::IdleReason;
 
 /// Structured protocol messages carried inside TeammateMessage.text as JSON.
 /// Parsed when `is_structured_protocol_message()` returns true.
