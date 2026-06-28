@@ -21,20 +21,13 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 
 use crate::logging;
+pub use codesmith_agent_runtime::skills::default_skills_dir;
 
 const MAX_SKILL_DESCRIPTION_CHARS: usize = 280;
 const MAX_AVAILABLE_SKILLS_CHARS: usize = 12_000;
 
 // === Defaults ===
 
-#[allow(dead_code)]
-#[must_use]
-pub fn default_skills_dir() -> PathBuf {
-    dirs::home_dir().map_or_else(
-        || PathBuf::from("/tmp/codesmith/skills"),
-        |p| p.join(".codesmith").join("skills"),
-    )
-}
 
 /// Global agentskills.io-compatible skills directory (`~/.agents/skills`).
 #[must_use]
