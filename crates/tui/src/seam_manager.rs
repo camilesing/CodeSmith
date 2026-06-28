@@ -112,6 +112,12 @@ pub struct SeamMetadata {
 }
 
 /// The Flash seam manager — produces `<archived_context>` blocks.
+///
+/// `Clone` is cheap: the flash client handle and the active-seam registry are
+/// both `Arc`-wrapped, so a clone is a shared handle to the same manager
+/// state. Required so `EngineHost` (which holds an `Option<SeamManager>`) can
+/// keep its `derive(Clone)`.
+#[derive(Clone)]
 pub struct SeamManager {
     /// Flash client for summarization work.
     flash_client: LlmClientHandle,
@@ -119,6 +125,18 @@ pub struct SeamManager {
     config: SeamConfig,
     /// Currently active seams in order (oldest first).
     active_seams: Arc<Mutex<Vec<SeamMetadata>>>,
+}
+
+/// Manual `Debug`: the flash client handle and active seams are not useful to
+/// inspect and `LlmClientHandle` is not `Debug`. Required so `EngineHost`
+/// (which holds an `Option<SeamManager>`) can keep its `derive(Debug)`.
+impl std::fmt::Debug for SeamManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeamManager")
+            .field("enabled", &self.config.enabled)
+            .field("seam_model", &self.config.seam_model)
+            .finish()
+    }
 }
 
 impl SeamManager {

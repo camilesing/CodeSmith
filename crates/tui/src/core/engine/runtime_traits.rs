@@ -17,10 +17,11 @@ use codesmith_agent_runtime::background_task::{
     BackgroundTaskPollResult, BackgroundTaskPollSnapshot, BackgroundTaskStatus,
     BackgroundTaskSummary,
 };
-use codesmith_agent_runtime::host_services::{BgRegistryApi, HostServices, LspManagerApi};
+use codesmith_agent_runtime::host_services::{BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi};
 use codesmith_agent_runtime::hooks::HookHost;
 use codesmith_agent_runtime::lsp_config::LspConfig;
 use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
+use codesmith_agent_runtime::models::Message;
 use codesmith_agent_runtime::runtime_ui::RuntimeUi;
 use codesmith_agent_runtime::tool_dispatch::{ToolDispatcher, ToolMetadata};
 use codesmith_tools::{ApprovalRequirement, ToolError, ToolResult};
@@ -28,6 +29,7 @@ use serde_json::Value;
 
 use crate::background_task::SharedBackgroundTaskRegistry;
 use crate::lsp::LspManager;
+use crate::seam_manager::SeamManager;
 use crate::tools::ToolRegistry;
 
 #[async_trait::async_trait]
@@ -166,6 +168,91 @@ impl HostServices for super::EngineHost {
             .expect("background_task_registry is set by new_impl before run()")
             .clone();
         Arc::new(BgRegistryHost(registry))
+    }
+
+    fn seam(&self) -> Option<&dyn SeamManagerApi> {
+        match &self.seam_manager {
+            Some(s) => Some(s),
+            None => None,
+        }
+    }
+}
+
+/// Bridge the TUI's concrete [`SeamManager`] onto the engine-core trait
+/// [`SeamManagerApi`] by delegating to its inherent API. `enabled` substitutes
+/// for the old `config().enabled` read so `SeamConfig` stays TUI-local.
+#[async_trait::async_trait]
+impl SeamManagerApi for SeamManager {
+    fn enabled(&self) -> bool {
+        SeamManager::config(self).enabled
+    }
+
+    fn seam_level_for(
+        &self,
+        active_input_tokens: usize,
+        highest_existing_level: Option<u8>,
+    ) -> Option<u8> {
+        SeamManager::seam_level_for(self, active_input_tokens, highest_existing_level)
+    }
+
+    fn verbatim_window_start(&self, message_count: usize) -> usize {
+        SeamManager::verbatim_window_start(self, message_count)
+    }
+
+    async fn seam_count(&self) -> usize {
+        SeamManager::seam_count(self).await
+    }
+
+    async fn highest_level(&self) -> Option<u8> {
+        SeamManager::highest_level(self).await
+    }
+
+    async fn collect_seam_texts(&self, messages: &[Message]) -> Vec<String> {
+        SeamManager::collect_seam_texts(self, messages).await
+    }
+
+    async fn produce_soft_seam(
+        &self,
+        messages: &[Message],
+        level: u8,
+        start_idx: usize,
+        end_idx: usize,
+        workspace: Option<&Path>,
+        pinned_indices: &[usize],
+    ) -> anyhow::Result<String> {
+        SeamManager::produce_soft_seam(
+            self,
+            messages,
+            level,
+            start_idx,
+            end_idx,
+            workspace,
+            pinned_indices,
+        )
+        .await
+    }
+
+    async fn recompact(
+        &self,
+        existing_seams: &[String],
+        new_messages: &[&Message],
+        level: u8,
+        start_idx: usize,
+        end_idx: usize,
+    ) -> anyhow::Result<String> {
+        SeamManager::recompact(self, existing_seams, new_messages, level, start_idx, end_idx).await
+    }
+
+    async fn produce_flash_briefing(
+        &self,
+        existing_seams: &[String],
+        structured_state: Option<&str>,
+    ) -> anyhow::Result<String> {
+        SeamManager::produce_flash_briefing(self, existing_seams, structured_state).await
+    }
+
+    async fn reset(&self) {
+        SeamManager::reset(self).await;
     }
 }
 

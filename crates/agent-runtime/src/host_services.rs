@@ -26,6 +26,7 @@ use crate::background_task::{
 };
 use crate::lsp_config::LspConfig;
 use crate::lsp_diagnostics::DiagnosticBlock;
+use crate::models::Message;
 
 /// Terminal-agnostic LSP manager surface.
 ///
@@ -87,6 +88,64 @@ pub trait BgRegistryApi: Send + Sync {
     async fn poll_once(&self) -> BackgroundTaskPollSnapshot;
 }
 
+/// Terminal-agnostic seam (layered-context) manager surface.
+///
+/// The engine core queries the Flash seam manager through this trait so it
+/// need not depend on the TUI's concrete `SeamManager` (which drives the
+/// compaction path). `enabled` replaces the `config().enabled` the engine
+/// used to read, so the `SeamConfig` struct can stay TUI-local.
+#[async_trait::async_trait]
+pub trait SeamManagerApi: Send + Sync {
+    /// Whether the layered-context manager is enabled.
+    fn enabled(&self) -> bool;
+    /// Pick a seam level for the current input size, or `None` if no seam
+    /// applies.
+    fn seam_level_for(
+        &self,
+        active_input_tokens: usize,
+        highest_existing_level: Option<u8>,
+    ) -> Option<u8>;
+    /// Start index of the verbatim (never-summarized) window.
+    fn verbatim_window_start(&self, message_count: usize) -> usize;
+    /// Number of active seams.
+    async fn seam_count(&self) -> usize;
+    /// Highest seam level currently recorded, if any.
+    async fn highest_level(&self) -> Option<u8>;
+    /// Extract `<archived_context>` blocks from the message history.
+    async fn collect_seam_texts(&self, messages: &[Message]) -> Vec<String>;
+    /// Produce a soft seam (`<archived_context>` block) for the given message
+    /// range and level. Returns the XML block as a string, ready to append as
+    /// an assistant message; empty when there is nothing to summarize.
+    async fn produce_soft_seam(
+        &self,
+        messages: &[Message],
+        level: u8,
+        start_idx: usize,
+        end_idx: usize,
+        workspace: Option<&Path>,
+        pinned_indices: &[usize],
+    ) -> anyhow::Result<String>;
+    /// Re-compact existing seams into a denser, higher-level block, fusing
+    /// prior `<archived_context>` content with newer messages.
+    async fn recompact(
+        &self,
+        existing_seams: &[String],
+        new_messages: &[&Message],
+        level: u8,
+        start_idx: usize,
+        end_idx: usize,
+    ) -> anyhow::Result<String>;
+    /// Produce a cycle briefing (`<carry_forward>` block) from existing seams
+    /// and optional structured-state text. Uses the Flash side-channel.
+    async fn produce_flash_briefing(
+        &self,
+        existing_seams: &[String],
+        structured_state: Option<&str>,
+    ) -> anyhow::Result<String>;
+    /// Clear seam tracking (hard cycle reset).
+    async fn reset(&self);
+}
+
 /// Host services injected into the engine.
 ///
 /// Each accessor returns a trait-erased view of a service that the engine
@@ -101,4 +160,9 @@ pub trait HostServices: Send + Sync {
     /// Background-task registry. Returned as an owned, cloneable handle so
     /// the engine's background poller can capture it across a `spawn`.
     fn bg_registry(&self) -> Arc<dyn BgRegistryApi>;
+
+    /// Layered-context (seam) manager, when configured. `None` when the
+    /// feature is disabled — callers early-return, matching the previous
+    /// `if let Some(seam_mgr) = self.seam_manager` guards.
+    fn seam(&self) -> Option<&dyn SeamManagerApi>;
 }

@@ -169,6 +169,12 @@ pub struct EngineHost {
     /// (not `EngineConfig`) so the engine body reaches it through the
     /// [`HostServices::lsp`] trait and stays free of the concrete `LspManager`.
     pub lsp_manager: std::sync::Arc<crate::lsp::LspManager>,
+    /// Flash seam (layered-context) manager, when configured. `None` when the
+    /// feature is disabled. Held on the host (not `EngineConfig`) so the engine
+    /// body reaches it through the [`HostServices::seam`] trait and stays free
+    /// of the concrete `SeamManager`; `new_impl` replaces it with the
+    /// config-resolved one.
+    pub seam_manager: Option<crate::seam_manager::SeamManager>,
 }
 
 impl Default for EngineHost {
@@ -177,6 +183,7 @@ impl Default for EngineHost {
             runtime_services: crate::tools::spec::RuntimeToolServices::default(),
             hooks: None,
             lsp_manager: std::sync::Arc::new(crate::lsp::LspManager::disabled()),
+            seam_manager: None,
         }
     }
 }
@@ -215,9 +222,6 @@ pub struct Engine {
     pub(super) cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
     tool_exec_lock: Arc<RwLock<()>>,
     capacity_controller: CapacityController,
-    /// Append-only layered context manager (#159). Opt-in for v0.7.5 while
-    /// cache-hit behavior is audited.
-    seam_manager: Option<SeamManager>,
     coherence_state: CoherenceState,
     turn_counter: u64,
     /// Session-scoped workshop variable store (#548). Shared across all tool
@@ -685,6 +689,10 @@ impl Engine {
             SeamManager::new(main_client.clone(), seam_config)
         });
 
+        // The host owns the seam manager so the engine body reaches it through
+        // the `HostServices::seam` trait rather than a concrete `Engine` field.
+        host.seam_manager = seam_manager;
+
         // The host owns the LSP manager so the engine body reaches it through
         // the `HostServices::lsp` trait rather than a concrete `Engine` field.
         host.lsp_manager = Arc::new(match config.lsp_config.clone() {
@@ -755,7 +763,6 @@ impl Engine {
             cancel_reason: cancel_reason.clone(),
             tool_exec_lock,
             capacity_controller,
-            seam_manager,
             coherence_state: CoherenceState::default(),
             turn_counter: 0,
             pending_lsp_blocks: Vec::new(),
@@ -2644,10 +2651,10 @@ impl Engine {
     /// assistant message. Called from `handle_deepseek_turn` before each API
     /// request so the model always has the latest navigation aids.
     async fn layered_context_checkpoint(&mut self) {
-        let Some(ref seam_mgr) = self.seam_manager else {
+        let Some(seam_mgr) = self.host.seam() else {
             return;
         };
-        if !seam_mgr.config().enabled {
+        if !seam_mgr.enabled() {
             return;
         }
 
@@ -2783,7 +2790,7 @@ impl Engine {
         // 1. Generate the model-curated briefing. Prefer the Flash seam
         //    manager (#159) for cost and speed; fall back to the main model
         //    (legacy produce_briefing) when the seam manager isn't available.
-        let briefing_text = if let Some(ref seam_mgr) = self.seam_manager {
+        let briefing_text = if let Some(seam_mgr) = self.host.seam() {
             let seams = seam_mgr.collect_seam_texts(&self.session.messages).await;
             let state_text = {
                 let s = StructuredState::capture(
@@ -2913,7 +2920,7 @@ impl Engine {
         self.session.current_cycle_started = now;
         self.session.cycle_briefings.push(briefing.clone());
         // Reset seam tracking for the new cycle.
-        if let Some(ref seam_mgr) = self.seam_manager {
+        if let Some(seam_mgr) = self.host.seam() {
             seam_mgr.reset().await;
         }
         // Drop any compaction summary — that path is incompatible with the
