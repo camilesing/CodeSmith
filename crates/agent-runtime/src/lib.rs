@@ -51,6 +51,7 @@ pub mod prompt_runtime;
 pub mod prompt_zones;
 pub mod retry_status;
 pub mod runtime_ui;
+pub mod session;
 pub mod snapshot;
 pub mod subagent;
 pub mod team;
