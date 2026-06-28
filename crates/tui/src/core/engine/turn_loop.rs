@@ -62,7 +62,7 @@ fn tool_hook_env(session: &Session, mode: AppMode) -> ToolHookEnv {
 }
 
 fn tool_hook_executor(
-    registry: Option<&crate::tools::ToolRegistry>,
+    registry: Option<&dyn ToolDispatcher>,
 ) -> Option<std::sync::Arc<dyn crate::hooks::HookHost>> {
     registry.and_then(|registry| registry.hook_host())
 }
@@ -134,7 +134,7 @@ pub(super) struct EarlyToolTask {
 struct EarlyToolStart<'a> {
     tool_state: &'a ToolUseState,
     tool_input: &'a serde_json::Value,
-    registry: &'a crate::tools::ToolRegistry,
+    registry: &'a dyn ToolDispatcher,
     tool_catalog: &'a [Tool],
     active_tools_at_batch_start: &'a std::collections::HashSet<String>,
     allowed_tools: Option<&'a [String]>,
@@ -230,11 +230,22 @@ impl Engine {
     pub(super) async fn handle_deepseek_turn(
         &mut self,
         turn: &mut TurnContext,
-        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_registry: Option<std::sync::Arc<dyn ToolDispatcher>>,
         tools: Option<Vec<Tool>>,
         mode: AppMode,
         force_update_plan_first: bool,
     ) -> (TurnOutcomeStatus, Option<String>) {
+        // The dispatcher arrives as an owned `Arc<dyn ToolDispatcher>` so the
+        // early-tool-start `tokio::spawn` can clone it into a `'static` task.
+        // Retain that handle as `tool_registry_arc`, then expose a borrowed
+        // `&dyn ToolDispatcher` view for the turn body: every method used
+        // below (`metadata`, `is_interactive`, `validate_input`,
+        // `approval_requirement_for`, `has_tool`, `resolve`, `execute`,
+        // `hook_host`) is on the trait. This decouples the turn loop from the
+        // concrete `ToolRegistry` — step 1 of moving `Engine` to
+        // `codesmith-agent-runtime`.
+        let tool_registry_arc = tool_registry;
+        let tool_registry: Option<&dyn ToolDispatcher> = tool_registry_arc.as_deref();
         // Signal to the terminal / taskbar that a turn is in progress
         // (OSC 9 ; 4 indeterminate progress + title spinner). Routed through
         // the `RuntimeUi` trait so the engine stays terminal-agnostic.
@@ -1024,12 +1035,12 @@ impl Engine {
                                 })
                                 .await;
 
-                            if let Some(registry) = tool_registry {
+                            if let Some(registry) = &tool_registry_arc {
                                 let is_safe_for_early_start =
                                     early_tool_start_safe(EarlyToolStart {
                                         tool_state,
                                         tool_input: &tool_input,
-                                        registry,
+                                        registry: &**registry,
                                         tool_catalog: &tool_catalog,
                                         active_tools_at_batch_start: &active_tools_at_stream_start,
                                         allowed_tools: self.config.allowed_tools.as_deref(),
@@ -1038,7 +1049,7 @@ impl Engine {
                                     });
                                 if is_safe_for_early_start {
                                     let key = early_tool_key(&tool_state.id, &tool_state.name);
-                                    let registry = registry.clone();
+                                    let registry = std::sync::Arc::clone(registry);
                                     let tool_exec_lock = self.tool_exec_lock.clone();
                                     let tx_event = self.tx_event.clone();
                                     let session_id = self.session.id.clone();
@@ -1062,7 +1073,7 @@ impl Engine {
                                             tx_event,
                                             tool_name.clone(),
                                             input_for_task.clone(),
-                                            Some(&registry),
+                                            Some(&*registry),
                                             None,
                                             None,
                                         )
@@ -2606,7 +2617,7 @@ impl Engine {
 
     async fn goal_continuation_message_if_needed(
         &self,
-        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_registry: Option<&dyn ToolDispatcher>,
         continuations_this_turn: &mut u32,
     ) -> Option<String> {
         let registry = tool_registry?;
@@ -2702,7 +2713,7 @@ fn command_allows_tool(allowed_tools: Option<&[String]>, tool_name: &str) -> boo
 fn resolve_tool_definition<'a>(
     tool_name: &mut String,
     tool_catalog: &'a [Tool],
-    tool_registry: Option<&crate::tools::ToolRegistry>,
+    tool_registry: Option<&dyn ToolDispatcher>,
 ) -> Option<&'a Tool> {
     let mut tool_def = tool_catalog
         .iter()

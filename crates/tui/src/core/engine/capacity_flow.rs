@@ -40,7 +40,7 @@ impl Engine {
         &mut self,
         turn: &TurnContext,
         mode: AppMode,
-        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_registry: Option<&dyn ToolDispatcher>,
         tool_exec_lock: Arc<RwLock<()>>,
         mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
         _step_error_count: usize,
@@ -504,7 +504,7 @@ impl Engine {
         turn: &TurnContext,
         mode: AppMode,
         snapshot: Option<&CapacitySnapshot>,
-        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_registry: Option<&dyn ToolDispatcher>,
         tool_exec_lock: Arc<RwLock<()>>,
         mut mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     ) -> bool {
@@ -743,7 +743,7 @@ impl Engine {
     pub(super) fn select_replay_candidate(
         &self,
         turn: &TurnContext,
-        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_registry: Option<&dyn ToolDispatcher>,
     ) -> Option<TurnToolCall> {
         turn.tool_calls
             .iter()
@@ -759,7 +759,7 @@ impl Engine {
     pub(super) fn tool_is_replayable_read_only(
         &self,
         tool_name: &str,
-        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_registry: Option<&dyn ToolDispatcher>,
     ) -> bool {
         if tool_name == MULTI_TOOL_PARALLEL_NAME || tool_name == REQUEST_USER_INPUT_NAME {
             return false;

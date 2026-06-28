@@ -89,6 +89,11 @@ pub use codesmith_agent_runtime::engine_config::EngineConfig;
 /// `runtime_traits`).
 use codesmith_agent_runtime::host_services::HostServices;
 
+/// Tool-dispatcher trait in scope so the engine body can pass the per-turn
+/// registry to the turn loop as `Option<Arc<dyn ToolDispatcher>>` (decoupling
+/// the loop from the concrete `ToolRegistry`).
+use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+
 /// Reason the active turn was cancelled. The token from `tokio_util`
 /// does not carry a cause, so the engine keeps a sibling latch for
 /// approval and user-input waits that need to explain cancellation.
@@ -1793,7 +1798,7 @@ impl Engine {
         let (status, error) = self
             .handle_deepseek_turn(
                 &mut turn,
-                tool_registry.as_ref(),
+                tool_registry.map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn ToolDispatcher>),
                 tools,
                 mode,
                 force_update_plan_first,

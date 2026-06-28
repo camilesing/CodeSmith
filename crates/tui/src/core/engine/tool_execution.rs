@@ -156,7 +156,7 @@ impl Engine {
     pub(super) async fn execute_parallel_tool(
         &mut self,
         input: serde_json::Value,
-        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_registry: Option<&dyn ToolDispatcher>,
         tool_exec_lock: Arc<RwLock<()>>,
     ) -> Result<ToolResult, ToolError> {
         let calls = parse_parallel_tool_calls(&input)?;
@@ -269,7 +269,7 @@ impl Engine {
         tx_event: mpsc::Sender<Event>,
         tool_name: String,
         tool_input: serde_json::Value,
-        registry: Option<&crate::tools::ToolRegistry>,
+        registry: Option<&dyn ToolDispatcher>,
         mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
         sandbox_override: Option<serde_json::Value>,
     ) -> Result<ToolResult, ToolError> {
