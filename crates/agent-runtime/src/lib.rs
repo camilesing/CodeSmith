@@ -57,4 +57,5 @@ pub mod test_support;
 pub mod tool_dispatch;
 pub mod user_input;
 pub mod utils;
+pub mod working_set;
 pub mod workspace_discovery;
