@@ -59,3 +59,4 @@ pub mod user_input;
 pub mod utils;
 pub mod working_set;
 pub mod workspace_discovery;
+pub mod workspace_trust;
