@@ -23,7 +23,9 @@
 // without hard-coding `codesmith_agent::` paths.
 pub use codesmith_agent::{llm_client, models, retry};
 
+pub mod capacity;
 pub mod child_env;
+pub mod coherence;
 pub mod command_safety;
 pub mod cost_status;
 pub mod dependencies;

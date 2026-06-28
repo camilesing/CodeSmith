@@ -1993,7 +1993,7 @@ impl RuntimeThreadManager {
             features: self.config.features(),
             compaction,
             cycle: crate::cycle_manager::CycleConfig::default(),
-            capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(
+            capacity: crate::core::capacity::capacity_controller_config_from_app(
                 &self.config,
             ),
             todos: new_shared_todo_list(),
