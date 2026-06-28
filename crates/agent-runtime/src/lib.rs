@@ -42,6 +42,7 @@ pub mod mailbox;
 pub mod mcp;
 pub mod mode;
 pub mod network_policy;
+pub mod ops;
 pub mod prefix_cache;
 pub mod pricing;
 pub mod prompt_runtime;
