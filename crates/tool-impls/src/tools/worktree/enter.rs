@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use codesmith_tools::{ApprovalRequirement, ToolCapability, ToolError, ToolResult};
 
-use crate::tools::spec::{ToolContext, ToolSpec};
+use codesmith_agent_runtime::tools::spec::{ToolContext, ToolSpec};
 
 use super::{
     SharedWorktreeSessionState, find_canonical_git_root, generate_random_slug, get_current_branch,
@@ -75,7 +75,7 @@ impl ToolSpec for EnterWorktreeTool {
         }
 
         // 2. Validate/generate slug
-        let slug = match crate::tools::spec::optional_str(&input, "name") {
+        let slug = match codesmith_agent_runtime::tools::spec::optional_str(&input, "name") {
             Some(name) => {
                 validate_worktree_slug(name)?;
                 name.to_string()

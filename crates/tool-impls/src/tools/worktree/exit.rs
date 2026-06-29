@@ -7,7 +7,7 @@ use codesmith_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_str, required_str,
 };
 
-use crate::tools::spec::{ToolContext, ToolSpec};
+use codesmith_agent_runtime::tools::spec::{ToolContext, ToolSpec};
 
 use super::{
     SharedWorktreeSessionState, cleanup_worktree, count_worktree_changes, find_canonical_git_root,
@@ -77,7 +77,7 @@ impl ToolSpec for ExitWorktreeTool {
                 "Invalid action \"{action}\". Must be \"keep\" or \"remove\"."
             )));
         }
-        let discard_changes = crate::tools::spec::optional_bool(&input, "discard_changes", false);
+        let discard_changes = codesmith_agent_runtime::tools::spec::optional_bool(&input, "discard_changes", false);
 
         // 1. Check if worktree session is active
         let (worktree_path, worktree_branch, original_cwd, original_head_commit) = {

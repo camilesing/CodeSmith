@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::dependencies::ExternalTool;
+use codesmith_agent_runtime::dependencies::ExternalTool;
 use codesmith_tools::ToolError;
 
 mod enter;
@@ -162,7 +162,7 @@ mod tests {
 
 /// Run a git command with no-credential-prompt env vars.
 fn run_git(working_dir: &Path, args: &[&str]) -> Result<std::process::Output, ToolError> {
-    let output = crate::dependencies::Git::output(args, working_dir)
+    let output = codesmith_agent_runtime::dependencies::Git::output(args, working_dir)
         .map_err(|e| ToolError::execution_failed(format!("git command failed: {e}")));
     output
 }

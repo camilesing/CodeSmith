@@ -43,3 +43,4 @@ pub mod tool_result_retrieval;
 pub mod file_search;
 pub mod plan_mode;
 pub mod rlm;
+pub mod worktree;

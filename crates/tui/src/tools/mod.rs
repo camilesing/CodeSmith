@@ -66,7 +66,7 @@ pub mod user_input;
 pub use codesmith_tool_impls::tools::validate_data;
 pub use codesmith_tool_impls::tools::web_run;
 pub mod web_search;
-pub mod worktree;
+pub use codesmith_tool_impls::tools::worktree;
 
 pub use registry::{ToolRegistry, ToolRegistryBuilder, ToolRegistryPluginExt};
 pub use review::ReviewOutput;
