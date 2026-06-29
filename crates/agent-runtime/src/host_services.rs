@@ -20,13 +20,26 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
 use crate::background_task::{
     BackgroundTaskPollResult, BackgroundTaskPollSnapshot, BackgroundTaskStatus,
     BackgroundTaskSummary,
 };
+use crate::engine_config::EngineConfig;
+use crate::events::Event;
+use crate::llm_client::LlmClientHandle;
 use crate::lsp_config::LspConfig;
 use crate::lsp_diagnostics::DiagnosticBlock;
-use crate::models::Message;
+use crate::mcp::McpPool;
+use crate::mode::AppMode;
+use crate::models::{Message, Tool};
+use crate::runtime_ui::RuntimeUi;
+use crate::session::Session;
+use crate::subagent::SubAgentCompletion;
+use crate::tool_dispatch::ToolDispatcher;
 
 /// Terminal-agnostic LSP manager surface.
 ///
@@ -153,6 +166,7 @@ pub trait SeamManagerApi: Send + Sync {
 /// trait is extended incrementally as more services are decoupled from the
 /// `Engine` struct (LSP first; background-task registry next; subagent
 /// manager, seam manager, shell, workshop to follow).
+#[async_trait::async_trait]
 pub trait HostServices: Send + Sync {
     /// Post-edit LSP diagnostics service.
     fn lsp(&self) -> &dyn LspManagerApi;
@@ -165,4 +179,65 @@ pub trait HostServices: Send + Sync {
     /// feature is disabled — callers early-return, matching the previous
     /// `if let Some(seam_mgr) = self.seam_manager` guards.
     fn seam(&self) -> Option<&dyn SeamManagerApi>;
+
+    /// Assemble the per-turn tool dispatcher and model-visible tool catalog.
+    ///
+    /// This is the host-side factory that combines portable engine state
+    /// (carried in [`TurnDispatchRequest`]) with the host's own
+    /// terminal-coupled managers (`ShellManager`, `SubAgentManager`,
+    /// `SandboxBackend`, …) to build the `ToolContext` /
+    /// `ToolRegistryBuilder` / `SubAgentRuntime` that stay host-side, then
+    /// returns the trait-erased registry (`Arc<dyn ToolDispatcher>`) and the
+    /// catalog the streaming turn loop consumes. Keeping the assembly host-side
+    /// is what lets the `Engine` body move to `codesmith-agent-runtime`
+    /// without dragging those concrete types across the crate boundary.
+    async fn build_turn_dispatcher(&self, req: TurnDispatchRequest<'_>) -> TurnDispatchPlan;
+}
+
+/// Inputs the engine body supplies to [`HostServices::build_turn_dispatcher`].
+///
+/// Every field is a portable (runtime-crate) type so the request can cross the
+/// `Arc<dyn HostServices>` boundary once the `Engine` moves into
+/// `codesmith-agent-runtime`. The host combines these with its own
+/// terminal-coupled managers to build the `ToolContext` /
+/// `ToolRegistryBuilder` / `SubAgentRuntime` that stay host-side.
+pub struct TurnDispatchRequest<'a> {
+    /// Active application mode (drives toolset + sandbox policy).
+    pub mode: AppMode,
+    /// Whether tool calls auto-approve this turn.
+    pub auto_approve: bool,
+    /// Live session (workspace, messages, model, working set, …).
+    pub session: &'a Session,
+    /// Resolved engine config (features, todos/plan state, sandbox, …).
+    pub config: &'a EngineConfig,
+    /// Cloned LLM client handle (used by review/rlm/fim tools + subagent runtime).
+    pub llm_client: Option<LlmClientHandle>,
+    /// Per-turn cancellation token (wired into `ToolContext` + mailbox).
+    pub cancel_token: CancellationToken,
+    /// Engine event channel (subagent mailbox drainer + runtime events).
+    pub tx_event: mpsc::Sender<Event>,
+    /// Channel fan-out for direct child sub-agent completion (#756).
+    pub tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+    /// Resolved MCP pool (already ensured by the engine body), when enabled.
+    pub mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    /// MCP tool definitions (already connected by the engine body).
+    pub mcp_tools: Vec<Tool>,
+    /// Terminal-agnostic UI bridge (clipboard / notifications).
+    pub runtime_ui: &'a Arc<dyn RuntimeUi>,
+}
+
+/// Output of [`HostServices::build_turn_dispatcher`].
+///
+/// Carries the trait-erased tool registry and the model-visible catalog built
+/// for this turn; the engine body feeds both into the streaming turn loop and
+/// the `TurnComplete` event. `tools` is `None` iff `tool_registry` is `None`
+/// (mirroring the pre-factory `tool_registry.as_ref().map(build_catalog)`
+/// derivation).
+pub struct TurnDispatchPlan {
+    /// Trait-erased registry (`ToolRegistry` in the TUI host) when tools are
+    /// available for this mode, else `None`.
+    pub tool_registry: Option<Arc<dyn ToolDispatcher>>,
+    /// Model-visible tool catalog (built-ins + MCP, with deferral applied),
+    /// paired with `tool_registry`.
+    pub tools: Option<Vec<Tool>>,
 }

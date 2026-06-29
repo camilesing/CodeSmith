@@ -26,13 +26,13 @@ use crate::compaction::session_memory_compact::{
     session_memory_compact, should_use_session_memory_compact,
 };
 use crate::compaction::{
-    CompactionEnhancements, SessionMemorySidecar, compact_messages_safe,
-    merge_system_prompts, should_compact,
+    CompactionEnhancements, SessionMemorySidecar, compact_messages_safe, merge_system_prompts,
+    should_compact,
 };
 use crate::config::{ApiProvider, Config, DEFAULT_TEXT_MODEL};
 use crate::cycle_manager::{
-    CycleBriefing, StructuredState, archive_cycle, build_seed_messages,
-    estimate_briefing_tokens, produce_briefing, should_advance_cycle,
+    CycleBriefing, StructuredState, archive_cycle, build_seed_messages, estimate_briefing_tokens,
+    produce_briefing, should_advance_cycle,
 };
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
 use crate::features::Feature;
@@ -86,8 +86,9 @@ pub use codesmith_agent_runtime::engine_config::EngineConfig;
 
 /// Host-services trait in scope so the engine body can call
 /// `self.host.lsp()` / `self.host.bg_registry()` etc. (impl lives in
-/// `runtime_traits`).
-use codesmith_agent_runtime::host_services::HostServices;
+/// `runtime_traits`). `TurnDispatchRequest` / `TurnDispatchPlan` are the
+/// portable contract for the per-turn tool-dispatcher factory.
+use codesmith_agent_runtime::host_services::{HostServices, TurnDispatchPlan, TurnDispatchRequest};
 
 /// Tool-dispatcher trait in scope so the engine body can pass the per-turn
 /// registry to the turn loop as `Option<Arc<dyn ToolDispatcher>>` (decoupling
@@ -569,11 +570,7 @@ impl Engine {
                 .unwrap_or_else(crate::tools::team::new_shared_team_context);
             config.team_context = Some(team_context.clone());
             host.runtime_services.team_context = Some(team_context);
-            if host
-                .runtime_services
-                .permission_request_registry
-                .is_none()
-            {
+            if host.runtime_services.permission_request_registry.is_none() {
                 host.runtime_services.permission_request_registry =
                     Some(crate::tools::team::new_shared_permission_registry());
             }
@@ -1198,8 +1195,11 @@ impl Engine {
                     let timeout_ms = timeout_secs.unwrap_or(600).saturating_mul(1_000);
                     let cwd_str = cwd.as_ref().map(|path| path.to_string_lossy().to_string());
                     let result = {
-                        let mut shell =
-                            self.host.shell_manager.lock().unwrap_or_else(|p| p.into_inner());
+                        let mut shell = self
+                            .host
+                            .shell_manager
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
                         shell.execute(&command, cwd_str.as_deref(), timeout_ms, true)
                     };
                     match result {
@@ -1625,195 +1625,38 @@ impl Engine {
         self.refresh_system_prompt(mode);
         self.emit_session_updated().await;
 
-        // Build tool registry and tool list for the current mode
-        let todo_list = self.config.todos.clone();
-        let plan_state = self.config.plan_state.clone();
-
-        let tool_context = self.build_tool_context(mode, auto_approve);
-        let mut builder = self.build_turn_tool_registry_builder(mode, todo_list, plan_state);
-
-        let fork_context_for_runtime = if self.config.features.enabled(Feature::Subagents) {
-            let state = StructuredState::capture(
-                mode.label(),
-                self.config.workspace.clone(),
-                std::env::current_dir().ok(),
-                &self.session.working_set,
-                &self.config.todos,
-                &self.config.plan_state,
-                Some(&self.host.subagent_manager),
-            )
-            .await;
-            Some(SubAgentForkContext {
-                system: self.session.system_prompt.clone(),
-                messages: self.messages_with_turn_metadata(),
-                structured_state_block: state.to_system_block(),
-                current_assistant_text: None,
-                current_turn_tool_calls: None,
-            })
-        } else {
-            None
-        };
-
-        // Mailbox for structured sub-agent envelopes (#128/#130). One per
-        // turn: the receiver is drained by a short-lived task that converts
-        // envelopes into `Event::SubAgentMailbox` so the UI can route them
-        // to the matching in-transcript card. The drainer exits naturally
-        // when every cloned sender is dropped at turn-end.
-        let mailbox_for_runtime = if self.config.features.enabled(Feature::Subagents) {
-            let cancel_token = self.cancel_token.child_token();
-            let (mailbox, mut receiver) = Mailbox::new(cancel_token.clone());
-            let tx_event_clone = self.tx_event.clone();
-            spawn_supervised(
-                "subagent-mailbox-drainer",
-                std::panic::Location::caller(),
-                async move {
-                    while let Some(envelope) = receiver.recv().await {
-                        if tx_event_clone
-                            .send(Event::SubAgentMailbox {
-                                seq: envelope.seq,
-                                message: envelope.message,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                },
-            );
-            Some((mailbox, cancel_token))
-        } else {
-            None
-        };
-
+        // Build tool registry and tool list for the current mode via the host
+        // turn-dispatcher factory. MCP pool/tools are resolved here (they
+        // mutate `self.mcp_pool` / call `self.mcp_tools()`) and handed to the
+        // factory as already-connected portable values; everything else
+        // (`ToolContext`, `ToolRegistryBuilder`, `SubAgentRuntime`, plugin
+        // tools, catalog) is assembled host-side by `build_turn_dispatcher`.
         let mcp_pool = if self.config.features.enabled(Feature::Mcp) {
             self.ensure_mcp_pool().await.ok()
         } else {
             None
         };
-
-        let mut tool_registry = match mode {
-            AppMode::Agent | AppMode::Yolo => {
-                if self.config.features.enabled(Feature::Subagents) {
-                    let runtime = if let Some(client) = self.llm_client.clone() {
-                        let mut rt = SubAgentRuntime::new(
-                            client,
-                            self.session.model.clone(),
-                            tool_context.clone(),
-                            self.session.allow_shell,
-                            Some(self.tx_event.clone()),
-                            Arc::clone(&self.host.subagent_manager),
-                        )
-                        .with_role_models(self.config.subagent_model_overrides.clone())
-                        .with_auto_model(self.session.auto_model)
-                        .with_reasoning_effort(
-                            self.session.reasoning_effort.clone(),
-                            self.session.reasoning_effort_auto,
-                        )
-                        .with_max_spawn_depth(self.config.max_spawn_depth)
-                        .with_step_api_timeout(self.config.subagent_api_timeout)
-                        .with_mcp_pool(mcp_pool.clone())
-                        .with_parent_completion_tx(self.tx_subagent_completion.clone());
-                        if let Some(context) = fork_context_for_runtime.clone() {
-                            rt = rt.with_fork_context(context);
-                        }
-                        if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
-                            rt = rt
-                                .with_mailbox(mailbox.clone())
-                                .with_cancel_token(cancel_token.clone());
-                        }
-                        Some(rt)
-                    } else {
-                        None
-                    };
-                    Some(
-                        builder
-                            .with_subagent_tools(
-                                self.host.subagent_manager.clone(),
-                                runtime.expect("sub-agent runtime should exist with active client"),
-                            )
-                            .build(tool_context),
-                    )
-                } else {
-                    Some(builder.build(tool_context))
-                }
-            }
-            AppMode::Coordinator => {
-                // Coordinator mode requires subagents — it must be able to
-                // spawn worker agents. Add subagent + send_message tools.
-                if self.config.features.enabled(Feature::Subagents)
-                    && let Some(client) = self.llm_client.clone()
-                {
-                    let mut rt = SubAgentRuntime::new(
-                        client,
-                        self.session.model.clone(),
-                        tool_context.clone(),
-                        true, // Coordinator workers need shell access
-                        Some(self.tx_event.clone()),
-                        Arc::clone(&self.host.subagent_manager),
-                    )
-                    .with_role_models(self.config.subagent_model_overrides.clone())
-                    .with_auto_model(self.session.auto_model)
-                    .with_reasoning_effort(
-                        self.session.reasoning_effort.clone(),
-                        self.session.reasoning_effort_auto,
-                    )
-                    .with_max_spawn_depth(self.config.max_spawn_depth)
-                    .with_step_api_timeout(self.config.subagent_api_timeout)
-                    .with_mcp_pool(mcp_pool.clone())
-                    .with_parent_completion_tx(self.tx_subagent_completion.clone());
-                    if let Some(context) = fork_context_for_runtime.clone() {
-                        rt = rt.with_fork_context(context);
-                    }
-                    if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
-                        rt = rt
-                            .with_mailbox(mailbox.clone())
-                            .with_cancel_token(cancel_token.clone());
-                    }
-                    builder = builder.with_subagent_tools(self.host.subagent_manager.clone(), rt);
-                }
-                // send_message — coordinator needs messaging but NOT
-                // team_create/team_delete.
-                if self.config.features.enabled(Feature::AgentTeams)
-                    && let Some(tc) = self.config.team_context.clone()
-                {
-                    builder = builder.with_send_message_tool(tc);
-                }
-                builder = builder.with_task_stop_tool();
-                Some(builder.build(tool_context))
-            }
-            _ => Some(builder.build(tool_context)),
-        };
-
-        // Load plugin tools from the user's tools directory and apply any
-        // config.toml overrides. Explicit overrides win over auto-discovered
-        // scripts with the same tool name.
-        let mut plugin_tool_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        if let Some(ref mut tool_registry) = tool_registry {
-            plugin_tool_names = configure_plugin_tools(tool_registry, self.config.tools.as_ref());
-        }
-
         let mcp_tools = if self.config.features.enabled(Feature::Mcp) {
             self.mcp_tools().await
         } else {
             Vec::new()
         };
-        let tools = tool_registry.as_ref().map(|registry| {
-            let mut catalog = build_model_tool_catalog(
-                registry.to_api_tools_with_cache(true),
-                mcp_tools,
-                mode,
-                &self.config.tools_always_load,
-            );
-            for tool in &mut catalog {
-                if plugin_tool_names.contains(&tool.name) {
-                    tool.defer_loading = Some(false);
-                }
-            }
-            catalog
-        });
-        let tool_catalog_for_event = tools.clone();
+
+        let req = TurnDispatchRequest {
+            mode,
+            auto_approve,
+            session: &self.session,
+            config: &self.config,
+            llm_client: self.llm_client.clone(),
+            cancel_token: self.cancel_token.clone(),
+            tx_event: self.tx_event.clone(),
+            tx_subagent_completion: self.tx_subagent_completion.clone(),
+            mcp_pool,
+            mcp_tools,
+            runtime_ui: &self.runtime_ui,
+        };
+        let plan = self.host.build_turn_dispatcher(req).await;
+        let tool_catalog_for_event = plan.tools.clone();
         let base_url_for_event = self
             .llm_client
             .as_ref()
@@ -1823,8 +1666,8 @@ impl Engine {
         let (status, error) = self
             .handle_deepseek_turn(
                 &mut turn,
-                tool_registry.map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn ToolDispatcher>),
-                tools,
+                plan.tool_registry,
+                plan.tools,
                 mode,
                 force_update_plan_first,
             )
@@ -2542,98 +2385,15 @@ impl Engine {
     }
 
     fn build_tool_context(&self, mode: AppMode, auto_approve: bool) -> ToolContext {
-        // Load the per-workspace trusted-paths list (#29) on every tool-context
-        // build. Cheap (a small JSON file) and always reflects the latest
-        // `/trust add` / `/trust remove` mutations without an explicit cache
-        // refresh hook.
-        let trusted = crate::workspace_trust::WorkspaceTrust::load_for(&self.session.workspace);
-        let mut trusted_external_paths = trusted.paths().to_vec();
-        let clipboard_images_dir = self.runtime_ui.clipboard_images_dir(&self.session.workspace);
-        if !trusted_external_paths
-            .iter()
-            .any(|path| path == &clipboard_images_dir)
-        {
-            trusted_external_paths.push(clipboard_images_dir);
-        }
-        let mut ctx = ToolContext::with_auto_approve(
-            self.session.workspace.clone(),
-            self.session.trust_mode,
-            self.session.notes_path.clone(),
-            self.session.mcp_config_path.clone(),
-            mode == AppMode::Yolo || mode == AppMode::Coordinator || auto_approve,
+        build_tool_context_for(
+            &self.host,
+            &self.session,
+            &self.config,
+            mode,
+            auto_approve,
+            self.cancel_token.clone(),
+            &self.runtime_ui,
         )
-        .with_state_namespace(self.session.id.clone())
-        .with_features(self.config.features.clone())
-        .with_shell_manager(self.host.shell_manager.clone())
-        .with_runtime_services(self.host.runtime_services.clone())
-        .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
-            self.session.id.clone(),
-            self.session.model.clone(),
-            self.session.workspace.clone(),
-            self.session.system_prompt.clone(),
-            self.session.messages.clone(),
-        ))
-        .with_cancel_token(self.cancel_token.clone())
-        .with_trusted_external_paths(trusted_external_paths);
-
-        // Set effective cwd: if a worktree session is active, shift cwd
-        // to the worktree path so relative paths resolve inside it.
-        {
-            let wt_state = self.config.worktree_state.lock().unwrap();
-            if wt_state.active && wt_state.worktree_path.is_some() {
-                ctx = ctx.with_cwd(wt_state.worktree_path.clone().unwrap());
-            } else {
-                ctx = ctx.with_cwd(self.session.cwd.clone());
-            }
-        }
-
-        // Hand the user-memory path to tools so the model-callable
-        // `remember` tool can append entries (#489). `None` when the
-        // feature is disabled — tools short-circuit on that.
-        if self.config.memory_enabled {
-            ctx.memory_path = Some(self.config.memory_path.clone());
-        }
-        if self.config.kod_enabled {
-            ctx.memory_dir = Some(self.config.memory_dir.clone());
-        }
-
-        if let Some(decider) = self.config.network_policy.as_ref() {
-            ctx = ctx.with_network_policy(decider.clone());
-        }
-
-        // Wire the large-output router (#548). Only attaches when the
-        // [workshop] config table is present; sub-agents don't inherit the
-        // router (their ToolContext is built separately) to prevent recursive
-        // routing of the synthesis call itself.
-        if let Some(workshop_cfg) = self.config.workshop.as_ref()
-            && let Some(vars_arc) = self.host.workshop_vars.as_ref()
-        {
-            let router =
-                crate::tools::large_output_router::LargeOutputRouter::new(workshop_cfg.clone());
-            ctx = ctx.with_large_output_router(router, vars_arc.clone());
-        }
-
-        // Wire the external sandbox backend (#516). exec_shell checks this
-        // field and routes commands through the backend instead of spawning
-        // a local process when it's set.
-        if let Some(backend) = self.host.sandbox_backend.as_ref() {
-            ctx = ctx.with_sandbox_backend(std::sync::Arc::clone(backend));
-        }
-
-        // Wire search provider config.
-        ctx.search_provider = self.config.search_provider;
-        ctx.search_api_key = self.config.search_api_key.clone();
-
-        let policy = sandbox_policy_for_mode(mode, &self.session.workspace);
-        let mut ctx = ctx
-            .with_elevated_sandbox_policy(policy)
-            .with_sandbox_runtime(self.config.sandbox_runtime.clone());
-        if matches!(mode, AppMode::Plan) {
-            ctx = ctx.with_shell_network_denied_hint(
-                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/mode agent`) for any command that creates or modifies files, or that needs network access.",
-            );
-        }
-        ctx
     }
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
@@ -3166,7 +2926,8 @@ impl Engine {
     async fn compaction_subagent_summaries(
         &self,
     ) -> Vec<crate::compaction::attachment_reinject::AgentSummary> {
-        self.host.subagent_manager
+        self.host
+            .subagent_manager
             .read()
             .await
             .live_running_snapshots()
@@ -3357,11 +3118,7 @@ fn goal_objective_for_prompt(
 ///
 /// `host` carries the terminal-side runtime services (`RuntimeToolServices`)
 /// and hook executor that `EngineConfig` no longer holds directly.
-pub fn spawn_engine(
-    config: EngineConfig,
-    api_config: &Config,
-    host: EngineHost,
-) -> EngineHandle {
+pub fn spawn_engine(config: EngineConfig, api_config: &Config, host: EngineHost) -> EngineHandle {
     let (engine, handle) = Engine::new_with_host(config, api_config, host);
 
     spawn_supervised(
@@ -3503,7 +3260,9 @@ use self::tool_catalog::{
     preflight_requested_deferred_tool, should_default_defer_tool,
 };
 use self::tool_execution::emit_tool_audit;
-use self::tool_setup::sandbox_policy_for_mode;
+use self::tool_setup::{
+    build_tool_context_for, build_turn_tool_registry_builder_for, sandbox_policy_for_mode,
+};
 use crate::tools::js_execution::execute_js_execution_tool;
 
 #[cfg(test)]

@@ -17,8 +17,11 @@ use codesmith_agent_runtime::background_task::{
     BackgroundTaskPollResult, BackgroundTaskPollSnapshot, BackgroundTaskStatus,
     BackgroundTaskSummary,
 };
-use codesmith_agent_runtime::host_services::{BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi};
 use codesmith_agent_runtime::hooks::HookHost;
+use codesmith_agent_runtime::host_services::{
+    BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi, TurnDispatchPlan,
+    TurnDispatchRequest,
+};
 use codesmith_agent_runtime::lsp_config::LspConfig;
 use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
 use codesmith_agent_runtime::models::Message;
@@ -27,10 +30,19 @@ use codesmith_agent_runtime::tool_dispatch::{ToolDispatcher, ToolMetadata};
 use codesmith_tools::{ApprovalRequirement, ToolError, ToolResult};
 use serde_json::Value;
 
+use super::{
+    Event, build_model_tool_catalog, build_tool_context_for, build_turn_tool_registry_builder_for,
+    configure_plugin_tools,
+};
 use crate::background_task::SharedBackgroundTaskRegistry;
+use crate::cycle_manager::StructuredState;
+use crate::features::Feature;
 use crate::lsp::LspManager;
 use crate::seam_manager::SeamManager;
 use crate::tools::ToolRegistry;
+use crate::tools::subagent::{Mailbox, SubAgentForkContext, SubAgentRuntime};
+use crate::tui::app::AppMode;
+use crate::utils::spawn_supervised;
 
 #[async_trait::async_trait]
 impl ToolDispatcher for ToolRegistry {
@@ -149,9 +161,17 @@ impl LspManagerApi for LspManager {
 }
 
 /// Bridge the TUI's concrete [`EngineHost`] onto the engine-core trait
-/// [`HostServices`]. Each accessor returns a trait-erased view of a service
-/// whose concrete type lives in the host; `lsp` is the first, others follow
-/// as the remaining `Engine` fields are decoupled.
+/// [`HostServices`]. The sync accessors (`lsp` / `bg_registry` / `seam`)
+/// return trait-erased views of services whose concrete types live in the
+/// host; the async [`HostServices::build_turn_dispatcher`] factory assembles
+/// the per-turn `ToolContext` / `ToolRegistryBuilder` / `SubAgentRuntime`
+/// from a portable [`TurnDispatchRequest`] plus the host's own
+/// terminal-coupled managers, returning the trait-erased registry and
+/// catalog the streaming turn loop consumes. Keeping all of this here (the
+/// bridge file) means the `Engine` body — which moves to
+/// `codesmith-agent-runtime` in a later phase — only calls the trait method
+/// and stays free of these concrete TUI types.
+#[async_trait::async_trait]
 impl HostServices for super::EngineHost {
     fn lsp(&self) -> &dyn LspManagerApi {
         &*self.lsp_manager
@@ -174,6 +194,213 @@ impl HostServices for super::EngineHost {
         match &self.seam_manager {
             Some(s) => Some(s),
             None => None,
+        }
+    }
+
+    async fn build_turn_dispatcher(&self, req: TurnDispatchRequest<'_>) -> TurnDispatchPlan {
+        let mode = req.mode;
+        let auto_approve = req.auto_approve;
+        let session = req.session;
+        let config = req.config;
+
+        let todo_list = config.todos.clone();
+        let plan_state = config.plan_state.clone();
+
+        let tool_context = build_tool_context_for(
+            self,
+            session,
+            config,
+            mode,
+            auto_approve,
+            req.cancel_token.clone(),
+            req.runtime_ui,
+        );
+        let mut builder = build_turn_tool_registry_builder_for(
+            session,
+            config,
+            &req.llm_client,
+            mode,
+            todo_list,
+            plan_state,
+        );
+
+        let fork_context_for_runtime = if config.features.enabled(Feature::Subagents) {
+            let state = StructuredState::capture(
+                mode.label(),
+                config.workspace.clone(),
+                std::env::current_dir().ok(),
+                &session.working_set,
+                &config.todos,
+                &config.plan_state,
+                Some(&self.subagent_manager),
+            )
+            .await;
+            Some(SubAgentForkContext {
+                system: session.system_prompt.clone(),
+                messages: session.messages.clone(),
+                structured_state_block: state.to_system_block(),
+                current_assistant_text: None,
+                current_turn_tool_calls: None,
+            })
+        } else {
+            None
+        };
+
+        // Mailbox for structured sub-agent envelopes (#128/#130). One per
+        // turn: the receiver is drained by a short-lived task that converts
+        // envelopes into `Event::SubAgentMailbox` so the UI can route them
+        // to the matching in-transcript card. The drainer exits naturally
+        // when every cloned sender is dropped at turn-end.
+        let mailbox_for_runtime = if config.features.enabled(Feature::Subagents) {
+            let mailbox_cancel = req.cancel_token.child_token();
+            let (mailbox, mut receiver) = Mailbox::new(mailbox_cancel.clone());
+            let tx_event_clone = req.tx_event.clone();
+            spawn_supervised(
+                "subagent-mailbox-drainer",
+                std::panic::Location::caller(),
+                async move {
+                    while let Some(envelope) = receiver.recv().await {
+                        if tx_event_clone
+                            .send(Event::SubAgentMailbox {
+                                seq: envelope.seq,
+                                message: envelope.message,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                },
+            );
+            Some((mailbox, mailbox_cancel))
+        } else {
+            None
+        };
+
+        let mcp_pool = req.mcp_pool;
+
+        let mut tool_registry = match mode {
+            AppMode::Agent | AppMode::Yolo => {
+                if config.features.enabled(Feature::Subagents) {
+                    let runtime = if let Some(client) = req.llm_client.clone() {
+                        let mut rt = SubAgentRuntime::new(
+                            client,
+                            session.model.clone(),
+                            tool_context.clone(),
+                            session.allow_shell,
+                            Some(req.tx_event.clone()),
+                            Arc::clone(&self.subagent_manager),
+                        )
+                        .with_role_models(config.subagent_model_overrides.clone())
+                        .with_auto_model(session.auto_model)
+                        .with_reasoning_effort(
+                            session.reasoning_effort.clone(),
+                            session.reasoning_effort_auto,
+                        )
+                        .with_max_spawn_depth(config.max_spawn_depth)
+                        .with_step_api_timeout(config.subagent_api_timeout)
+                        .with_mcp_pool(mcp_pool.clone())
+                        .with_parent_completion_tx(req.tx_subagent_completion.clone());
+                        if let Some(context) = fork_context_for_runtime.clone() {
+                            rt = rt.with_fork_context(context);
+                        }
+                        if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
+                            rt = rt
+                                .with_mailbox(mailbox.clone())
+                                .with_cancel_token(cancel_token.clone());
+                        }
+                        Some(rt)
+                    } else {
+                        None
+                    };
+                    Some(
+                        builder
+                            .with_subagent_tools(
+                                self.subagent_manager.clone(),
+                                runtime.expect("sub-agent runtime should exist with active client"),
+                            )
+                            .build(tool_context),
+                    )
+                } else {
+                    Some(builder.build(tool_context))
+                }
+            }
+            AppMode::Coordinator => {
+                // Coordinator mode requires subagents — it must be able to
+                // spawn worker agents. Add subagent + send_message tools.
+                if config.features.enabled(Feature::Subagents)
+                    && let Some(client) = req.llm_client.clone()
+                {
+                    let mut rt = SubAgentRuntime::new(
+                        client,
+                        session.model.clone(),
+                        tool_context.clone(),
+                        true, // Coordinator workers need shell access
+                        Some(req.tx_event.clone()),
+                        Arc::clone(&self.subagent_manager),
+                    )
+                    .with_role_models(config.subagent_model_overrides.clone())
+                    .with_auto_model(session.auto_model)
+                    .with_reasoning_effort(
+                        session.reasoning_effort.clone(),
+                        session.reasoning_effort_auto,
+                    )
+                    .with_max_spawn_depth(config.max_spawn_depth)
+                    .with_step_api_timeout(config.subagent_api_timeout)
+                    .with_mcp_pool(mcp_pool.clone())
+                    .with_parent_completion_tx(req.tx_subagent_completion.clone());
+                    if let Some(context) = fork_context_for_runtime.clone() {
+                        rt = rt.with_fork_context(context);
+                    }
+                    if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
+                        rt = rt
+                            .with_mailbox(mailbox.clone())
+                            .with_cancel_token(cancel_token.clone());
+                    }
+                    builder = builder.with_subagent_tools(self.subagent_manager.clone(), rt);
+                }
+                // send_message — coordinator needs messaging but NOT
+                // team_create/team_delete.
+                if config.features.enabled(Feature::AgentTeams)
+                    && let Some(tc) = config.team_context.clone()
+                {
+                    builder = builder.with_send_message_tool(tc);
+                }
+                builder = builder.with_task_stop_tool();
+                Some(builder.build(tool_context))
+            }
+            _ => Some(builder.build(tool_context)),
+        };
+
+        // Load plugin tools from the user's tools directory and apply any
+        // config.toml overrides. Explicit overrides win over auto-discovered
+        // scripts with the same tool name.
+        let mut plugin_tool_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        if let Some(ref mut tool_registry) = tool_registry {
+            plugin_tool_names = configure_plugin_tools(tool_registry, config.tools.as_ref());
+        }
+
+        let mcp_tools = req.mcp_tools;
+        let tools = tool_registry.as_ref().map(|registry| {
+            let mut catalog = build_model_tool_catalog(
+                registry.to_api_tools_with_cache(true),
+                mcp_tools,
+                mode,
+                &config.tools_always_load,
+            );
+            for tool in &mut catalog {
+                if plugin_tool_names.contains(&tool.name) {
+                    tool.defer_loading = Some(false);
+                }
+            }
+            catalog
+        });
+
+        TurnDispatchPlan {
+            tool_registry: tool_registry.map(|r| Arc::new(r) as Arc<dyn ToolDispatcher>),
+            tools,
         }
     }
 }
@@ -240,7 +467,15 @@ impl SeamManagerApi for SeamManager {
         start_idx: usize,
         end_idx: usize,
     ) -> anyhow::Result<String> {
-        SeamManager::recompact(self, existing_seams, new_messages, level, start_idx, end_idx).await
+        SeamManager::recompact(
+            self,
+            existing_seams,
+            new_messages,
+            level,
+            start_idx,
+            end_idx,
+        )
+        .await
     }
 
     async fn produce_flash_briefing(
