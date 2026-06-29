@@ -10,11 +10,11 @@ use std::process::Output;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
-use crate::dependencies::ExternalTool;
+use codesmith_agent_runtime::dependencies::ExternalTool;
 
 const MAX_OUTPUT_CHARS: usize = 40_000;
 const DEFAULT_LOG_MAX_COUNT: u64 = 20;
@@ -446,7 +446,7 @@ fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
 }
 
 fn run_git_command(working_dir: &Path, args: &[String]) -> Result<Output, ToolError> {
-    let Some(mut cmd) = crate::dependencies::Git::command() else {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Git::command() else {
         return Err(ToolError::not_available(
             "git is not installed or not in PATH",
         ));
@@ -508,11 +508,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn git_available() -> bool {
-        crate::dependencies::Git::available()
+        codesmith_agent_runtime::dependencies::Git::available()
     }
 
     fn run_git(root: &Path, args: &[&str]) {
-        let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
+        let status = codesmith_agent_runtime::dependencies::Git::status(args, root).expect("git should spawn");
         assert!(status.success(), "git {:?} failed", args);
     }
 

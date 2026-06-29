@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::dependencies::ExternalTool;
+use codesmith_agent_runtime::dependencies::ExternalTool;
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64,
 };
@@ -262,7 +262,7 @@ fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
 }
 
 fn run_git_command(working_dir: &Path, args: &[String]) -> Result<std::process::Output, ToolError> {
-    let Some(mut cmd) = crate::dependencies::Git::command() else {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Git::command() else {
         return Err(ToolError::not_available(
             "git is not installed or not in PATH",
         ));
@@ -323,12 +323,12 @@ mod tests {
     use tempfile::tempdir;
 
     fn git_available() -> bool {
-        crate::dependencies::Git::available()
+        codesmith_agent_runtime::dependencies::Git::available()
     }
 
     fn init_git_repo(root: &Path) {
         let run = |args: &[&str]| {
-            let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codesmith_agent_runtime::dependencies::Git::status(args, root).expect("git should spawn");
             assert!(status.success(), "git {:?} failed", args);
         };
 
@@ -339,7 +339,7 @@ mod tests {
 
     fn commit_all(root: &Path, message: &str) {
         let run = |args: &[&str]| {
-            let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codesmith_agent_runtime::dependencies::Git::status(args, root).expect("git should spawn");
             assert!(status.success(), "git {:?} failed", args);
         };
         run(&["add", "."]);
@@ -428,7 +428,7 @@ mod tests {
         assert!(uncached.content.contains("lib.rs"));
 
         let _ =
-            crate::dependencies::Git::status(&["add", "src/lib.rs"], tmp.path()).expect("git add");
+            codesmith_agent_runtime::dependencies::Git::status(&["add", "src/lib.rs"], tmp.path()).expect("git add");
 
         let cached = tool
             .execute(json!({ "path": "src", "cached": true }), &ctx)

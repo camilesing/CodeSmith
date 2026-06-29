@@ -1,3 +1,10 @@
+// SAFETY: `image_ocr` drives the macOS Vision framework through `objc2`
+// `msg_send!` FFI and raw `*mut` pointers. The unsafe is confined to the
+// `macos_vision` submodule and the `#[link]` extern block; inputs are
+// validated before any FFI call and retained objects are released via
+// `objc2::rc::Retained`. Per the crate convention (see lib.rs), this file
+// carries a local `#![allow(unsafe_code)]`.
+#![allow(unsafe_code)]
 //! `image_ocr` tool — extract text from an image via local OCR.
 //!
 //! Tesseract is the cross-platform workhorse for "convert this image
@@ -15,7 +22,7 @@ use std::process::{Command, Stdio};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str};
+use codesmith_agent_runtime::tools::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str};
 
 /// Tool implementing `image_ocr`. Runs a local OCR backend and returns the
 /// extracted text on success.
@@ -67,16 +74,16 @@ impl ToolSpec for ImageOcrTool {
     }
 }
 
-pub(crate) fn ocr_available() -> bool {
-    crate::dependencies::resolve_tesseract().is_some() || native_ocr_available()
+pub fn ocr_available() -> bool {
+    codesmith_agent_runtime::dependencies::resolve_tesseract().is_some() || native_ocr_available()
 }
 
-pub(crate) fn ocr_image_path(image_path: &Path) -> Result<String, ToolError> {
+pub fn ocr_image_path(image_path: &Path) -> Result<String, ToolError> {
     if let Some(text) = try_native_ocr(image_path)? {
         return Ok(text);
     }
 
-    if let Some(tesseract) = crate::dependencies::resolve_tesseract() {
+    if let Some(tesseract) = codesmith_agent_runtime::dependencies::resolve_tesseract() {
         return ocr_with_tesseract(&tesseract, image_path);
     }
 

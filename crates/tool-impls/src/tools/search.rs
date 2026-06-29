@@ -3,7 +3,7 @@
 //! These tools provide powerful code search capabilities within the workspace,
 //! similar to ripgrep/grep functionality.
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_bool, optional_str,
     optional_u64, required_str,
 };
@@ -449,7 +449,7 @@ fn should_include(path: &str, patterns: &[String]) -> bool {
 
 /// Simple glob pattern matching
 /// Supports: * (any chars), ** (any path), ? (single char)
-pub(crate) fn matches_glob(path: &str, pattern: &str) -> bool {
+pub fn matches_glob(path: &str, pattern: &str) -> bool {
     // Handle ** for any path
     if pattern.contains("**") {
         let parts: Vec<&str> = pattern.split("**").collect();
@@ -543,7 +543,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;
 
-    use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
+    use codesmith_agent_runtime::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
 
     use super::{GrepFilesTool, matches_glob};
 

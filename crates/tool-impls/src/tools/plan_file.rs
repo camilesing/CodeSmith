@@ -130,7 +130,7 @@ pub fn find_recent_plan() -> Result<Option<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
 
     #[test]
     fn generate_plan_slug_starts_with_prefix() {

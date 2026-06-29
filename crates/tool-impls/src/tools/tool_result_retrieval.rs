@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_str, optional_u64,
     required_str,
 };
@@ -154,7 +154,7 @@ impl ToolSpec for RetrieveToolResultTool {
 /// The error message on a miss enumerates which forms were tried so the
 /// model can correct course without a second blind guess.
 fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<PathBuf, ToolError> {
-    let root = crate::tools::truncate::spillover_root().ok_or_else(|| {
+    let root = codesmith_agent_runtime::tools::truncate::spillover_root().ok_or_else(|| {
         ToolError::execution_failed("could not resolve ~/.codesmith/tool_outputs")
     })?;
     let root_canonical = root.canonicalize().ok();
@@ -172,9 +172,9 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
     // `resolves_art_prefix_via_session_artifacts` exercises the real
     // path.
     let session_artifacts_root = if !session_id.is_empty() {
-        crate::artifacts::session_artifact_absolute_path(
+        codesmith_agent_runtime::artifacts::session_artifact_absolute_path(
             session_id,
-            std::path::Path::new(crate::artifacts::ARTIFACTS_DIR_NAME),
+            std::path::Path::new(codesmith_agent_runtime::artifacts::ARTIFACTS_DIR_NAME),
         )
     } else {
         None
@@ -249,8 +249,8 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
         .or_else(|| stripped.strip_prefix("sha_"))
         .unwrap_or(stripped)
         .trim();
-    if crate::tools::truncate::is_valid_sha256(&sha_candidate.to_ascii_lowercase())
-        && let Some(p) = crate::tools::truncate::sha_spillover_path(sha_candidate)
+    if codesmith_agent_runtime::tools::truncate::is_valid_sha256(&sha_candidate.to_ascii_lowercase())
+        && let Some(p) = codesmith_agent_runtime::tools::truncate::sha_spillover_path(sha_candidate)
         && let Some(found) = try_path(p, &mut tried)
     {
         return Ok(found);
@@ -283,7 +283,7 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
     }
 
     // Form 1: bare id → legacy `tool_outputs/<id>.txt`.
-    if let Some(p) = crate::tools::truncate::spillover_path(stripped)
+    if let Some(p) = codesmith_agent_runtime::tools::truncate::spillover_path(stripped)
         && let Some(found) = try_path(p, &mut tried)
     {
         return Ok(found);
@@ -298,7 +298,7 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
                 return Ok(found);
             }
         }
-        if let Some(p) = crate::tools::truncate::spillover_path(stripped_art)
+        if let Some(p) = codesmith_agent_runtime::tools::truncate::spillover_path(stripped_art)
             && let Some(found) = try_path(p, &mut tried)
         {
             return Ok(found);
@@ -679,12 +679,12 @@ mod tests {
 
     impl Drop for SpilloverRootGuard {
         fn drop(&mut self) {
-            crate::tools::truncate::set_test_spillover_root(self.prior.take());
+            codesmith_agent_runtime::tools::truncate::set_test_spillover_root(self.prior.take());
         }
     }
 
     fn set_spillover_root(path: PathBuf) -> SpilloverRootGuard {
-        let prior = crate::tools::truncate::set_test_spillover_root(Some(path));
+        let prior = codesmith_agent_runtime::tools::truncate::set_test_spillover_root(Some(path));
         SpilloverRootGuard { prior }
     }
 
@@ -694,7 +694,7 @@ mod tests {
     }
 
     fn test_lock() -> MutexGuard<'static, ()> {
-        crate::tools::truncate::TEST_SPILLOVER_GUARD
+        codesmith_agent_runtime::tools::truncate::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner())
     }
@@ -712,7 +712,7 @@ mod tests {
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
-        crate::tools::truncate::write_spillover(
+        codesmith_agent_runtime::tools::truncate::write_spillover(
             "call-abc",
             "checking crate\nerror[E0425]: missing value\nwarning: unused import\nfinished",
         )
@@ -732,7 +732,7 @@ mod tests {
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
-        crate::tools::truncate::write_spillover(
+        codesmith_agent_runtime::tools::truncate::write_spillover(
             "call-query",
             "one\ntwo before\nneedle here\nafter\nlast",
         )
@@ -760,7 +760,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let root = tmp.path().join("tool_outputs");
         let _guard = set_spillover_root(root.clone());
-        crate::tools::truncate::write_spillover("call-lines", "a\nb\nc\nd").unwrap();
+        codesmith_agent_runtime::tools::truncate::write_spillover("call-lines", "a\nb\nc\nd").unwrap();
 
         let result = execute_tool(json!({
             "ref": "call-lines.txt",
@@ -814,7 +814,7 @@ mod tests {
             hasher.update(body.as_bytes());
             format!("{:x}", hasher.finalize())
         };
-        crate::tools::truncate::write_sha_spillover(&sha, &body).unwrap();
+        codesmith_agent_runtime::tools::truncate::write_sha_spillover(&sha, &body).unwrap();
 
         // Form: `sha:<hex>`
         let result = execute_tool(json!({"ref": format!("sha:{sha}")})).unwrap();
@@ -834,7 +834,7 @@ mod tests {
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
-        crate::tools::truncate::write_spillover("call_xyz", "line1\nline2\nline3").unwrap();
+        codesmith_agent_runtime::tools::truncate::write_spillover("call_xyz", "line1\nline2\nline3").unwrap();
 
         let result = execute_tool(json!({"ref": "art_call_xyz"})).unwrap();
         assert!(result.success, "art_ prefix should resolve to legacy id");
@@ -874,14 +874,14 @@ mod tests {
         let tmp = tempdir().unwrap();
         let _spill_guard = set_spillover_root(tmp.path().join("tool_outputs"));
         let _art_guard = {
-            let prior = crate::artifacts::set_test_artifact_sessions_root(Some(
+            let prior = codesmith_agent_runtime::artifacts::set_test_artifact_sessions_root(Some(
                 tmp.path().join("sessions"),
             ));
             scopeguard_for_test(prior)
         };
         let session_id = "session-abc";
         let body = "this is the canonical session artifact body, not a legacy file";
-        crate::artifacts::write_session_artifact(session_id, "art_call_real", body).unwrap();
+        codesmith_agent_runtime::artifacts::write_session_artifact(session_id, "art_call_real", body).unwrap();
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -909,7 +909,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let _spill_guard = set_spillover_root(tmp.path().join("tool_outputs"));
         let _art_guard = {
-            let prior = crate::artifacts::set_test_artifact_sessions_root(Some(
+            let prior = codesmith_agent_runtime::artifacts::set_test_artifact_sessions_root(Some(
                 tmp.path().join("sessions"),
             ));
             scopeguard_for_test(prior)
@@ -948,7 +948,7 @@ mod tests {
     }
     impl Drop for ArtifactRootGuard {
         fn drop(&mut self) {
-            crate::artifacts::set_test_artifact_sessions_root(self.prior.take());
+            codesmith_agent_runtime::artifacts::set_test_artifact_sessions_root(self.prior.take());
         }
     }
     fn scopeguard_for_test(prior: Option<PathBuf>) -> ArtifactRootGuard {

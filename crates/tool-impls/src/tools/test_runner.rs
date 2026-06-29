@@ -9,13 +9,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::cargo_failure_summary::summarize_cargo_failure;
-use super::spec::{
+use codesmith_agent_runtime::tools::cargo_failure_summary::summarize_cargo_failure;
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str,
 };
 
-use crate::dependencies::ExternalTool;
+use codesmith_agent_runtime::dependencies::ExternalTool;
 
 const MAX_OUTPUT_CHARS: usize = 40_000;
 
@@ -122,7 +122,7 @@ impl ToolSpec for RunTestsTool {
 // === Helpers ===
 
 fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Output, ToolError> {
-    let Some(mut cmd) = crate::dependencies::Cargo::command() else {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Cargo::command() else {
         return Err(ToolError::not_available(
             "cargo is not installed or not in PATH",
         ));
@@ -194,7 +194,7 @@ mod tests {
     fn init_cargo_project(root: &Path) -> std::path::PathBuf {
         let project_dir = root.join("project");
         fs::create_dir_all(&project_dir).expect("create project dir");
-        let status = crate::dependencies::Cargo::command()
+        let status = codesmith_agent_runtime::dependencies::Cargo::command()
             .expect("cargo not found")
             .args([
                 "init",

@@ -8,10 +8,10 @@
 //! when the model wants to do its own parsing.
 
 use super::handle::query_jsonpath;
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
-use crate::network_policy::{Decision, NetworkPolicyDecider};
+use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicyDecider};
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Serialize;
@@ -496,7 +496,7 @@ fn decode_entities(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::spec::ToolContext;
+    use codesmith_agent_runtime::tools::spec::ToolContext;
     use std::path::PathBuf;
 
     fn ctx() -> ToolContext {
@@ -650,7 +650,7 @@ mod tests {
 
     #[tokio::test]
     async fn network_policy_denies_blocked_host() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
         let policy = NetworkPolicy {
             default: Decision::Deny.into(),
             allow: vec!["api.deepseek.com".to_string()],
@@ -730,7 +730,7 @@ mod tests {
 
     #[tokio::test]
     async fn redirected_host_respects_network_policy() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
         let policy = NetworkPolicy {
             default: Decision::Deny.into(),
             allow: vec!["api.deepseek.com".to_string()],
@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn proxy_opt_in_allows_restricted_dns_for_matching_host() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
         let policy = NetworkPolicy {
             default: Decision::Allow.into(),
@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn proxy_opt_in_does_not_allow_unlisted_host() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
         let policy = NetworkPolicy {
             default: Decision::Allow.into(),
@@ -795,7 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_opt_in_does_not_allow_restricted_ip_literal() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
         let policy = NetworkPolicy {
             default: Decision::Allow.into(),
@@ -818,7 +818,7 @@ mod tests {
 
     #[test]
     fn proxy_dns_allow_is_audited() {
-        use crate::network_policy::{
+        use codesmith_agent_runtime::network_policy::{
             Decision, NetworkAuditor, NetworkPolicy, NetworkPolicyDecider,
         };
         use tempfile::tempdir;

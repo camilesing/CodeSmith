@@ -31,8 +31,13 @@ toml.workspace = true
 ignore = "0.4"
 base64 = "0.22.1"
 pdf-extract = "0.7"
+tokio-util = { version = "0.7.16", features = ["io"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
 tempfile = "3.16"
 wiremock = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL"] }

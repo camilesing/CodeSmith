@@ -9,7 +9,7 @@
 //! changelog as ..." workflows that previously required the user
 //! to drop into a terminal between turns.
 //!
-//! Registration is gated by [`crate::dependencies::resolve_pandoc`]
+//! Registration is gated by [`codesmith_agent_runtime::dependencies::resolve_pandoc`]
 //! (see [`crate::tools::registry::ToolRegistryBuilder::with_pandoc_tools`]).
 //! When pandoc isn't installed the tool simply doesn't appear in the
 //! catalog, so the model never sees a binary it can't actually use.
@@ -35,7 +35,7 @@ use std::process::{Command, Stdio};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, required_str,
 };
@@ -145,7 +145,7 @@ impl ToolSpec for PandocConvertTool {
         // catalog build and the model's call should produce a clear
         // error rather than the cryptic "program not found" from raw
         // Command::spawn.
-        let pandoc = crate::dependencies::resolve_pandoc().ok_or_else(|| {
+        let pandoc = codesmith_agent_runtime::dependencies::resolve_pandoc().ok_or_else(|| {
             ToolError::execution_failed(
                 "pandoc_convert: pandoc binary not found on PATH. \
                  Install pandoc (macOS: `brew install pandoc`; \
@@ -206,7 +206,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn pandoc_present() -> bool {
-        crate::dependencies::resolve_pandoc().is_some()
+        codesmith_agent_runtime::dependencies::resolve_pandoc().is_some()
     }
 
     #[test]
