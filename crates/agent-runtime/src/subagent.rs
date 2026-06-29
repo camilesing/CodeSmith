@@ -457,6 +457,26 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Terminal-state notification emitted to the engine's parent turn loop
+/// when one of its direct children finishes (issue #756). Carries the
+/// already-rendered `<codesmith:subagent.done>` sentinel that the model
+/// expects in the transcript per `prompts/base.md`.
+///
+/// Lives in the runtime crate because the engine's turn loop (which drains
+/// the paired receiver) is terminal-agnostic; the TUI re-exports it at the
+/// historical `crate::tools::subagent` path.
+#[derive(Debug, Clone)]
+pub struct SubAgentCompletion {
+    /// The completing child's agent id. Held for routing/logging — the
+    /// engine's turn loop does not currently key on it (it just injects the
+    /// payload), but downstream tooling and tests need the field.
+    #[allow(dead_code)]
+    pub agent_id: String,
+    /// Human summary on line 1, sentinel on line 2. Same payload shape as
+    /// `Event::AgentComplete::result`.
+    pub payload: String,
+}
+
 /// Default cap on sub-agent recursion depth. Override via
 /// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
 pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;

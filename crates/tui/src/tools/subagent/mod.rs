@@ -332,7 +332,8 @@ fn wrap_with_deprecation_notice(
 /// Re-exported from `codesmith_agent_runtime::subagent` so the engine and
 /// TUI share the same sub-agent taxonomy.
 pub use codesmith_agent_runtime::subagent::{
-    DEFAULT_MAX_SPAWN_DEPTH, SubAgentAssignment, SubAgentStatus, SubAgentType,
+    DEFAULT_MAX_SPAWN_DEPTH, SubAgentAssignment, SubAgentCompletion, SubAgentStatus,
+    SubAgentType,
 };
 
 /// Snapshot of sub-agent state for tool results.
@@ -488,22 +489,6 @@ impl Default for PersistedSubAgentState {
             agents: Vec::new(),
         }
     }
-}
-
-/// Terminal-state notification emitted to the engine's parent turn loop
-/// when one of its direct children finishes (issue #756). Carries the
-/// already-rendered `<codesmith:subagent.done>` sentinel that the model
-/// expects in the transcript per `prompts/base.md`.
-#[derive(Debug, Clone)]
-pub struct SubAgentCompletion {
-    /// The completing child's agent id. Held for routing/logging — the
-    /// engine's turn loop does not currently key on it (it just injects
-    /// the payload), but downstream tooling and tests need the field.
-    #[allow(dead_code)]
-    pub agent_id: String,
-    /// Human summary on line 1, sentinel on line 2. Same payload shape as
-    /// `Event::AgentComplete::result`.
-    pub payload: String,
 }
 
 /// Parent transcript snapshot available to sub-agents that opt into context
