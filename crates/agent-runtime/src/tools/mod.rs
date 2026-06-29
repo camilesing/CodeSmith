@@ -26,4 +26,10 @@ pub mod shell_output;
 pub mod shell_types;
 pub mod spec;
 pub mod task_types;
+pub mod tool_catalog;
 pub mod truncate;
+
+// Re-export the default active native tool set so callers can write
+// `crate::tools::default_active_native_tool_names()` without qualifying
+// into the `tool_catalog` submodule.
+pub use tool_catalog::*;

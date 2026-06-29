@@ -3234,7 +3234,10 @@ pub(crate) mod tool_setup;
 mod turn_loop;
 
 pub(crate) fn default_active_native_tool_names() -> &'static [&'static str] {
-    tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS
+    // Delegates to `codesmith_agent_runtime::tools::tool_catalog` so the
+    // prompt builder (now in agent-runtime) can share the same list
+    // without a circular crate dependency.
+    codesmith_agent_runtime::tools::default_active_native_tool_names()
 }
 
 use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};

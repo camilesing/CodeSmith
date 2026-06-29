@@ -17,6 +17,11 @@ use crate::tui::app::AppMode;
 
 use crate::dependencies::ExternalTool;
 
+// The default active native tool set now lives in
+// `codesmith_agent_runtime::tools::tool_catalog` so the prompt builder
+// (in agent-runtime) can reference it without a circular dependency.
+use codesmith_agent_runtime::tools::tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS;
+
 pub(super) const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
 pub(super) const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
 pub(super) const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
@@ -33,33 +38,8 @@ pub(super) fn is_tool_search_tool(name: &str) -> bool {
     matches!(name, TOOL_SEARCH_REGEX_NAME | TOOL_SEARCH_BM25_NAME)
 }
 
-pub(super) const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
-    "agent_open",
-    "apply_patch",
-    "checklist_write",
-    "edit_file",
-    "exec_interact",
-    "exec_shell",
-    "exec_shell_interact",
-    "exec_shell_wait",
-    "exec_wait",
-    "fetch_url",
-    "file_search",
-    "git_diff",
-    "git_status",
-    "grep_files",
-    "list_dir",
-    "read_file",
-    "run_tests",
-    "task_create",
-    "task_list",
-    "task_read",
-    "task_shell_start",
-    "task_shell_wait",
-    "update_plan",
-    "web_search",
-    "write_file",
-];
+// `DEFAULT_ACTIVE_NATIVE_TOOLS` relocated to
+// `codesmith_agent_runtime::tools::tool_catalog` (re-exported above).
 
 pub(super) fn should_default_defer_tool(
     name: &str,
