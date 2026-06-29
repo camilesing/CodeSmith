@@ -10,7 +10,7 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, optional_u64,
 };
@@ -43,7 +43,7 @@ impl FinanceEndpoints {
         format!(
             "{}?symbols={}",
             self.quote_base.trim_end_matches('/'),
-            crate::utils::url_encode(symbol)
+            codesmith_agent_runtime::utils::url_encode(symbol)
         )
     }
 
@@ -51,7 +51,7 @@ impl FinanceEndpoints {
         format!(
             "{}/{}?interval=1d&range=5d",
             self.chart_base.trim_end_matches('/'),
-            crate::utils::url_encode(symbol)
+            codesmith_agent_runtime::utils::url_encode(symbol)
         )
     }
 }

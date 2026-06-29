@@ -10,9 +10,9 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::llm_client::LlmClientHandle;
+use codesmith_agent_runtime::llm_client::LlmClientHandle;
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_u64, required_str,
 };

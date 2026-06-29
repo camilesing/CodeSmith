@@ -1,12 +1,12 @@
 //! Project mapping tool for understanding codebase structure.
 
-use crate::utils::{is_key_file, project_tree, summarize_project};
+use codesmith_agent_runtime::utils::{is_key_file, project_tree, summarize_project};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
 

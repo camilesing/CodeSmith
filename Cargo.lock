@@ -1025,6 +1025,7 @@ dependencies = [
  "codesmith-config",
  "codesmith-tools",
  "dirs",
+ "ignore",
  "libc",
  "pretty_assertions",
  "regex",
@@ -1040,6 +1041,7 @@ dependencies = [
  "toml 0.9.11+spec-1.1.0",
  "tracing",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
