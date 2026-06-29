@@ -33,6 +33,7 @@ const DEFAULT_WORKERS: usize = 2;
 const MAX_WORKERS: usize = 8;
 const ARTIFACT_THRESHOLD: usize = 1200;
 
+pub use codesmith_agent_runtime::host_services::TaskManagerHost;
 pub use codesmith_agent_runtime::tools::task_types::*;
 
 /// Task manager startup options.
@@ -1397,6 +1398,51 @@ pub async fn wait_for_terminal_state(
         }
         sleep(StdDuration::from_millis(50)).await;
     }
+}
+
+/// Tool-facing durable task surface. Delegates to the inherent `TaskManager`
+/// methods via fully-qualified `TaskManager::<method>` so the calls resolve to
+/// the inherent impl rather than recursing through the trait method of the
+/// same name. `SharedTaskManager` carries no outer mutex, so no extra locking
+/// is needed: async methods forward to the inherent async methods (which lock
+/// the interior `tokio::Mutex`), and the lock-free sync helpers forward
+/// verbatim.
+#[async_trait]
+impl TaskManagerHost for TaskManager {
+    async fn add_task(&self, req: NewTaskRequest) -> Result<TaskRecord> {
+        TaskManager::add_task(self, req).await
+    }
+    async fn list_tasks(&self, limit: Option<usize>) -> Vec<TaskSummary> {
+        TaskManager::list_tasks(self, limit).await
+    }
+    async fn get_task(&self, id_or_prefix: &str) -> Result<TaskRecord> {
+        TaskManager::get_task(self, id_or_prefix).await
+    }
+    async fn cancel_task(&self, id_or_prefix: &str) -> Result<TaskRecord> {
+        TaskManager::cancel_task(self, id_or_prefix).await
+    }
+    async fn record_tool_metadata(
+        &self,
+        id_or_prefix: &str,
+        metadata: &Value,
+    ) -> Result<TaskRecord> {
+        TaskManager::record_tool_metadata(self, id_or_prefix, metadata).await
+    }
+    fn artifact_absolute_path(&self, path: &Path) -> PathBuf {
+        TaskManager::artifact_absolute_path(self, path)
+    }
+    fn write_task_artifact(&self, task_id: &str, label: &str, content: &str) -> Result<PathBuf> {
+        TaskManager::write_task_artifact(self, task_id, label, content)
+    }
+}
+
+/// Trait-erase a concrete [`SharedTaskManager`] into the portable
+/// [`TaskManagerHost`] surface used by `RuntimeToolServices`.
+/// `SharedTaskManager` is `Arc<TaskManager>`, so this is an unsized coercion —
+/// no bridge needed.
+#[must_use]
+pub fn wrap_task_manager(tm: SharedTaskManager) -> Arc<dyn TaskManagerHost> {
+    tm
 }
 
 #[cfg(test)]

@@ -25,6 +25,7 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::automation_manager::wrap_automation_manager;
 use crate::compaction::CompactionConfig;
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::core::coherence::CoherenceState;
@@ -32,6 +33,7 @@ use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::Op;
 use crate::models::{ContentBlock, Message, SystemPrompt, Usage, compaction_threshold_for_model};
+use crate::task_manager::wrap_task_manager;
 use crate::tools::plan::new_shared_plan_state;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tools::todo::new_shared_todo_list;
@@ -1961,8 +1963,18 @@ impl RuntimeThreadManager {
             .map(crate::config::LspConfigToml::into_runtime);
         let settings = crate::settings::Settings::load().unwrap_or_default();
         let runtime_services = crate::tools::spec::RuntimeToolServices {
-            task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),
-            automations: self.automations.lock().ok().and_then(|slot| slot.clone()),
+            task_manager: self
+                .task_manager
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .map(wrap_task_manager),
+            automations: self
+                .automations
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .map(wrap_automation_manager),
             task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
             active_task_id: thread.task_id.clone(),
             active_thread_id: Some(thread.id.clone()),

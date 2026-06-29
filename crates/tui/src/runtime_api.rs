@@ -45,6 +45,7 @@ use crate::session_manager::{SavedSession, SessionManager, SessionMetadata, defa
 use crate::skill_state::SkillStateStore;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
+    wrap_task_manager,
 };
 
 #[derive(Clone)]
@@ -1358,8 +1359,9 @@ async fn run_automation(
     Path(id): Path<String>,
 ) -> Result<Json<AutomationRunRecord>, ApiError> {
     let manager = state.automations.lock().await;
+    let task_manager = wrap_task_manager(state.task_manager.clone());
     let run = manager
-        .run_now(&id, &state.task_manager)
+        .run_now(&id, &task_manager)
         .await
         .map_err(map_automation_err)?;
     Ok(Json(run))

@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::automation_manager::AutomationManagerHost;
 use crate::features::Features;
 use crate::lsp::LspManager;
 use crate::network_policy::NetworkPolicyDecider;
@@ -20,6 +21,7 @@ use crate::rlm::session::SessionObjectSnapshot;
 use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
 use crate::sandbox::SandboxRuntimeConfig;
 use crate::sandbox::backend::SandboxBackend;
+use crate::task_manager::TaskManagerHost;
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use crate::tools::shell::{ShellManagerApi, new_shared_shell_manager, wrap_shell_manager};
 #[allow(unused_imports)]
@@ -37,8 +39,8 @@ pub use codesmith_tools::{
 #[derive(Clone)]
 pub struct RuntimeToolServices {
     pub shell_manager: Option<Arc<dyn ShellManagerApi>>,
-    pub task_manager: Option<crate::task_manager::SharedTaskManager>,
-    pub automations: Option<crate::automation_manager::SharedAutomationManager>,
+    pub task_manager: Option<Arc<dyn TaskManagerHost>>,
+    pub automations: Option<Arc<dyn AutomationManagerHost>>,
     pub task_data_dir: Option<PathBuf>,
     pub active_task_id: Option<String>,
     pub active_thread_id: Option<String>,

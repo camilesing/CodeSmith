@@ -64,7 +64,6 @@ impl ToolSpec for AutomationCreateTool {
             .automations
             .as_ref()
             .ok_or_else(|| ToolError::not_available("AutomationManager is not attached"))?;
-        let manager = manager.lock().await;
         let req = CreateAutomationRequest {
             name: required_str(&input, "name")?.to_string(),
             prompt: required_str(&input, "prompt")?.to_string(),
@@ -87,6 +86,7 @@ impl ToolSpec for AutomationCreateTool {
         };
         let automation = manager
             .create_automation(req)
+            .await
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         ToolResult::json(&automation).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
@@ -122,9 +122,9 @@ impl ToolSpec for AutomationListTool {
             .automations
             .as_ref()
             .ok_or_else(|| ToolError::not_available("AutomationManager is not attached"))?;
-        let manager = manager.lock().await;
         let mut automations = manager
             .list_automations()
+            .await
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         automations.truncate(optional_u64(&input, "limit", 50).clamp(1, 100) as usize);
         ToolResult::json(&automations).map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -159,13 +159,14 @@ impl ToolSpec for AutomationReadTool {
             .automations
             .as_ref()
             .ok_or_else(|| ToolError::not_available("AutomationManager is not attached"))?;
-        let manager = manager.lock().await;
         let id = required_str(&input, "automation_id")?;
         let automation = manager
             .get_automation(id)
+            .await
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         let runs = manager
             .list_runs(id, Some(20))
+            .await
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         ToolResult::json(&json!({ "automation": automation, "recent_runs": runs }))
             .map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -212,7 +213,6 @@ impl ToolSpec for AutomationUpdateTool {
             .automations
             .as_ref()
             .ok_or_else(|| ToolError::not_available("AutomationManager is not attached"))?;
-        let manager = manager.lock().await;
         let status = optional_str(&input, "status").map(|value| match value {
             "paused" => AutomationStatus::Paused,
             _ => AutomationStatus::Active,
@@ -235,6 +235,7 @@ impl ToolSpec for AutomationUpdateTool {
         };
         let automation = manager
             .update_automation(required_str(&input, "automation_id")?, req)
+            .await
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         ToolResult::json(&automation).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
@@ -268,9 +269,9 @@ macro_rules! write_automation_tool {
                     context.runtime.automations.as_ref().ok_or_else(|| {
                         ToolError::not_available("AutomationManager is not attached")
                     })?;
-                let manager = manager.lock().await;
                 let automation = manager
                     .$method(required_str(&input, "automation_id")?)
+                    .await
                     .map_err(|e| ToolError::execution_failed(e.to_string()))?;
                 ToolResult::json(&automation)
                     .map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -331,7 +332,6 @@ impl ToolSpec for AutomationRunTool {
             .task_manager
             .as_ref()
             .ok_or_else(|| ToolError::not_available("TaskManager is not attached"))?;
-        let manager = manager.lock().await;
         let run = manager
             .run_now(required_str(&input, "automation_id")?, task_manager)
             .await

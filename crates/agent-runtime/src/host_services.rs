@@ -46,7 +46,11 @@ use crate::subagent::{SubAgentCompletion, SubAgentResult};
 use crate::tool_dispatch::ToolDispatcher;
 use crate::tool_state::plan::SharedPlanState;
 use crate::tool_state::todo::SharedTodoList;
+use crate::tools::automation_types::{
+    AutomationRecord, AutomationRunRecord, CreateAutomationRequest, UpdateAutomationRequest,
+};
 use crate::tools::shell_types::{ShellDeltaResult, ShellJobDetail, ShellJobSnapshot, ShellResult};
+use crate::tools::task_types::{NewTaskRequest, TaskRecord, TaskSummary};
 use crate::working_set::WorkingSet;
 
 /// Terminal-agnostic LSP manager surface.
@@ -331,6 +335,82 @@ pub trait ShellManagerApi: Send + Sync {
     /// background at the next poll. Mirrors
     /// `ShellManager::request_foreground_background`.
     fn request_foreground_background(&self);
+}
+
+/// Terminal-agnostic durable task-manager surface.
+///
+/// The `task_*` family of tools drives durable background tasks through this
+/// trait so `spec.rs` (and, downstream, `codesmith-tool-impls`) need not
+/// depend on the TUI's concrete `TaskManager`. `SharedTaskManager` is
+/// `Arc<TaskManager>` with interior `tokio::Mutex` state, so the trait is
+/// implemented directly for `TaskManager` (no bridge, no extra locking): async
+/// methods forward to the inherent async methods (which lock internally), and
+/// the lock-free sync helpers (`artifact_absolute_path`, `write_task_artifact`)
+/// forward verbatim.
+#[async_trait::async_trait]
+pub trait TaskManagerHost: Send + Sync {
+    /// Enqueue a new durable task; returns the persisted record.
+    async fn add_task(&self, req: NewTaskRequest) -> anyhow::Result<TaskRecord>;
+    /// Recent durable tasks, newest first.
+    async fn list_tasks(&self, limit: Option<usize>) -> Vec<TaskSummary>;
+    /// Fetch a task by id or unambiguous prefix.
+    async fn get_task(&self, id_or_prefix: &str) -> anyhow::Result<TaskRecord>;
+    /// Cancel a queued/running task by id or prefix.
+    async fn cancel_task(&self, id_or_prefix: &str) -> anyhow::Result<TaskRecord>;
+    /// Apply model-visible tool metadata to a task and persist it.
+    async fn record_tool_metadata(
+        &self,
+        id_or_prefix: &str,
+        metadata: &serde_json::Value,
+    ) -> anyhow::Result<TaskRecord>;
+    /// Resolve a task artifact reference to an absolute path.
+    fn artifact_absolute_path(&self, path: &Path) -> PathBuf;
+    /// Write a durable task artifact and return the persisted path reference.
+    fn write_task_artifact(
+        &self,
+        task_id: &str,
+        label: &str,
+        content: &str,
+    ) -> anyhow::Result<PathBuf>;
+}
+
+/// Terminal-agnostic automation-manager surface.
+///
+/// The `automation_*` family of tools drives durable scheduled jobs through
+/// this trait so `spec.rs` (and, downstream, `codesmith-tool-impls`) need not
+/// depend on the TUI's concrete `AutomationManager`. `SharedAutomationManager`
+/// is `Arc<Mutex<AutomationManager>>` (tokio `Mutex`), so a small bridge
+/// struct wraps the concrete handle and locks internally per call — matching
+/// the pre-trait `.lock().await.method()` call sites. `run_now` takes a
+/// trait-erased [`TaskManagerHost`] (portable) so the cross-manager enqueue
+/// path stays within the runtime crate.
+#[async_trait::async_trait]
+pub trait AutomationManagerHost: Send + Sync {
+    async fn create_automation(
+        &self,
+        req: CreateAutomationRequest,
+    ) -> anyhow::Result<AutomationRecord>;
+    async fn list_automations(&self) -> anyhow::Result<Vec<AutomationRecord>>;
+    async fn get_automation(&self, id: &str) -> anyhow::Result<AutomationRecord>;
+    async fn list_runs(
+        &self,
+        id: &str,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<AutomationRunRecord>>;
+    async fn update_automation(
+        &self,
+        id: &str,
+        req: UpdateAutomationRequest,
+    ) -> anyhow::Result<AutomationRecord>;
+    async fn pause_automation(&self, id: &str) -> anyhow::Result<AutomationRecord>;
+    async fn resume_automation(&self, id: &str) -> anyhow::Result<AutomationRecord>;
+    async fn delete_automation(&self, id: &str) -> anyhow::Result<AutomationRecord>;
+    /// Run an automation now, enqueuing a durable task via `task_manager`.
+    async fn run_now(
+        &self,
+        automation_id: &str,
+        task_manager: &Arc<dyn TaskManagerHost>,
+    ) -> anyhow::Result<AutomationRunRecord>;
 }
 
 /// Host services injected into the engine.

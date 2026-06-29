@@ -34,7 +34,9 @@ use tracing;
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
 use crate::audit::log_sensitive_event;
-use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
+use crate::automation_manager::{
+    AutomationManager, AutomationSchedulerConfig, spawn_scheduler, wrap_automation_manager,
+};
 use crate::client::{
     CacheWarmupKey, DeepSeekClient, PromptInspection, build_cache_warmup_request,
     inspect_prompt_for_request,
@@ -62,6 +64,7 @@ use crate::session_manager::{
 };
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
+    wrap_task_manager,
 };
 use crate::tools::spec::{RuntimeToolServices, ToolResult};
 use crate::tools::subagent::SubAgentStatus;
@@ -518,8 +521,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let shell_manager = crate::tools::shell::wrap_shell_manager(app.shell_manager.clone());
     app.runtime_services = RuntimeToolServices {
         shell_manager: Some(shell_manager),
-        task_manager: Some(task_manager.clone()),
-        automations: Some(automations),
+        task_manager: Some(wrap_task_manager(task_manager.clone())),
+        automations: Some(wrap_automation_manager(automations)),
         task_data_dir: Some(task_manager.data_dir()),
         active_task_id: None,
         active_thread_id: None,

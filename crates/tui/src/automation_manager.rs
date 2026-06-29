@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Timelike, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -17,9 +18,10 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskStatus};
+use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskStatus, wrap_task_manager};
 use crate::utils::spawn_supervised;
 
+pub use codesmith_agent_runtime::host_services::{AutomationManagerHost, TaskManagerHost};
 pub use codesmith_agent_runtime::tools::automation_types::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,7 +454,7 @@ impl AutomationManager {
         &self,
         automation: &AutomationRecord,
         run: &mut AutomationRunRecord,
-        task_manager: &SharedTaskManager,
+        task_manager: &Arc<dyn TaskManagerHost>,
     ) -> Result<()> {
         let workspace = automation.cwds.first().cloned();
 
@@ -488,7 +490,7 @@ impl AutomationManager {
     pub async fn run_now(
         &self,
         automation_id: &str,
-        task_manager: &SharedTaskManager,
+        task_manager: &Arc<dyn TaskManagerHost>,
     ) -> Result<AutomationRunRecord> {
         let mut automation = self.get_automation(automation_id)?;
         let now = Utc::now();
@@ -525,7 +527,7 @@ impl AutomationManager {
         Ok(run)
     }
 
-    pub async fn scheduler_tick(&self, task_manager: &SharedTaskManager) -> Result<()> {
+    pub async fn scheduler_tick(&self, task_manager: &Arc<dyn TaskManagerHost>) -> Result<()> {
         let now = Utc::now();
         let mut automations = self.list_automations()?;
 
@@ -588,7 +590,10 @@ impl AutomationManager {
         Ok(())
     }
 
-    pub async fn reconcile_run_statuses(&self, task_manager: &SharedTaskManager) -> Result<()> {
+    pub async fn reconcile_run_statuses(
+        &self,
+        task_manager: &Arc<dyn TaskManagerHost>,
+    ) -> Result<()> {
         let automations = self.list_automations()?;
         for automation in automations {
             let runs = self.list_runs(&automation.id, Some(100))?;
@@ -743,6 +748,7 @@ pub fn spawn_scheduler(
         "automation-scheduler",
         std::panic::Location::caller(),
         async move {
+            let task_manager: Arc<dyn TaskManagerHost> = wrap_task_manager(task_manager);
             let interval = config.tick_interval_secs.max(5);
             loop {
                 if cancel.is_cancelled() {
@@ -766,6 +772,66 @@ pub fn spawn_scheduler(
             }
         },
     )
+}
+
+/// Bridge that adapts the concrete `SharedAutomationManager`
+/// (`Arc<Mutex<AutomationManager>>`, tokio `Mutex`) to the portable
+/// [`AutomationManagerHost`] trait. Each method locks the inner manager and
+/// forwards — matching the pre-trait `.lock().await.method()` call sites.
+/// `run_now` is held across its await (as before) because it enqueues a task
+/// through `task_manager` while the automation lock is taken.
+pub(crate) struct AutomationManagerHostBridge(pub SharedAutomationManager);
+
+#[async_trait]
+impl AutomationManagerHost for AutomationManagerHostBridge {
+    async fn create_automation(&self, req: CreateAutomationRequest) -> Result<AutomationRecord> {
+        self.0.lock().await.create_automation(req)
+    }
+    async fn list_automations(&self) -> Result<Vec<AutomationRecord>> {
+        self.0.lock().await.list_automations()
+    }
+    async fn get_automation(&self, id: &str) -> Result<AutomationRecord> {
+        self.0.lock().await.get_automation(id)
+    }
+    async fn list_runs(&self, id: &str, limit: Option<usize>) -> Result<Vec<AutomationRunRecord>> {
+        self.0.lock().await.list_runs(id, limit)
+    }
+    async fn update_automation(
+        &self,
+        id: &str,
+        req: UpdateAutomationRequest,
+    ) -> Result<AutomationRecord> {
+        self.0.lock().await.update_automation(id, req)
+    }
+    async fn pause_automation(&self, id: &str) -> Result<AutomationRecord> {
+        self.0.lock().await.pause_automation(id)
+    }
+    async fn resume_automation(&self, id: &str) -> Result<AutomationRecord> {
+        self.0.lock().await.resume_automation(id)
+    }
+    async fn delete_automation(&self, id: &str) -> Result<AutomationRecord> {
+        self.0.lock().await.delete_automation(id)
+    }
+    async fn run_now(
+        &self,
+        automation_id: &str,
+        task_manager: &Arc<dyn TaskManagerHost>,
+    ) -> Result<AutomationRunRecord> {
+        self.0
+            .lock()
+            .await
+            .run_now(automation_id, task_manager)
+            .await
+    }
+}
+
+/// Trait-erase a concrete [`SharedAutomationManager`] into the portable
+/// [`AutomationManagerHost`] surface used by `RuntimeToolServices`. Wraps the
+/// handle in the [`AutomationManagerHostBridge`] since the concrete manager
+/// sits behind a tokio `Mutex`.
+#[must_use]
+pub fn wrap_automation_manager(am: SharedAutomationManager) -> Arc<dyn AutomationManagerHost> {
+    Arc::new(AutomationManagerHostBridge(am))
 }
 
 #[cfg(test)]
