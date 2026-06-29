@@ -8,6 +8,13 @@ use std::collections::HashMap;
 
 pub const DEFAULT_MAX_SUBAGENTS: usize = 10;
 
+/// Hard cap on the number of concurrent sub-agents a single session may spawn.
+/// Distinct from [`DEFAULT_MAX_SUBAGENTS`] (the value used when the user leaves
+/// `[subagents] max_concurrent` unset): this is the ceiling that user-set
+/// values are clamped to. Migrated from the TUI so the sub-agent tool (which
+/// moves to `codesmith-tool-impls`) can reference it without a TUI dependency.
+pub const MAX_SUBAGENTS: usize = 20;
+
 /// Search provider enumeration — selects which backend `web_search` uses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

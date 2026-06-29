@@ -21,8 +21,8 @@ pub use snapshot::{AgentMemorySnapshotMode, initialize_or_update_snapshot, load_
 
 /// Scope for an agent memory directory.
 ///
-/// Re-exported from `codesmith_agent_runtime::subagent::AgentMemoryScope`.
-pub use codesmith_agent_runtime::subagent::AgentMemoryScope;
+/// Re-exported from `crate::subagent::AgentMemoryScope`.
+pub use crate::subagent::AgentMemoryScope;
 
 /// Model-facing request to enable memory for a sub-agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,8 +52,8 @@ pub struct ResolvedAgentMemory {
 
 /// Metadata for an agent memory binding attached to a sub-agent result.
 ///
-/// Re-exported from `codesmith_agent_runtime::subagent::AgentMemoryMetadata`.
-pub use codesmith_agent_runtime::subagent::AgentMemoryMetadata;
+/// Re-exported from `crate::subagent::AgentMemoryMetadata`.
+pub use crate::subagent::AgentMemoryMetadata;
 
 impl From<&ResolvedAgentMemory> for AgentMemoryMetadata {
     fn from(memory: &ResolvedAgentMemory) -> Self {

@@ -21,7 +21,12 @@ use crate::sandbox::{
     SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
 };
 
-pub const MAX_SUBAGENTS: usize = 20;
+/// Hard cap on concurrent sub-agents. Re-exported from
+/// `codesmith_agent_runtime::config_types::MAX_SUBAGENTS` so the runtime,
+/// `codesmith-tool-impls`, and the TUI share one value. Distinct from
+/// `DEFAULT_MAX_SUBAGENTS` (= 10), which is the value used when the user
+/// leaves `[subagents] max_concurrent` unset.
+pub use codesmith_agent_runtime::config_types::MAX_SUBAGENTS;
 /// Minimum accepted `[subagents] api_timeout_secs`. Anything lower (including
 /// `0`, which would otherwise produce an immediate timeout footgun) clamps
 /// up to this value before the runtime sees it.
