@@ -7,11 +7,11 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::knowledge::age::{memory_age_label, memory_freshness_text};
-use crate::knowledge::budget::{MAX_BYTES_PER_MEMORY, MAX_LINES_PER_MEMORY};
-use crate::knowledge::scan::scan_memory_files;
+use codesmith_agent_runtime::knowledge::age::{memory_age_label, memory_freshness_text};
+use codesmith_agent_runtime::knowledge::budget::{MAX_BYTES_PER_MEMORY, MAX_LINES_PER_MEMORY};
+use codesmith_agent_runtime::knowledge::scan::scan_memory_files;
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
 
@@ -98,7 +98,7 @@ impl ToolSpec for KnowledgeRetrievalTool {
         let mut output = String::new();
         for header in matching.iter().take(3) {
             if let Some(content) = std::fs::read_to_string(&header.file_path).ok() {
-                let (_fm, body) = crate::knowledge::scan::parse_frontmatter(&content);
+                let (_fm, body) = codesmith_agent_runtime::knowledge::scan::parse_frontmatter(&content);
                 let age_label = memory_age_label(header.mtime_ms);
                 let freshness = memory_freshness_text(header.mtime_ms);
 
@@ -110,7 +110,7 @@ impl ToolSpec for KnowledgeRetrievalTool {
                 }
                 let mut body_text = lines.join("\n");
                 if body_text.len() > MAX_BYTES_PER_MEMORY {
-                    let cutoff = crate::knowledge::entrypoint::previous_char_boundary(
+                    let cutoff = codesmith_agent_runtime::knowledge::entrypoint::previous_char_boundary(
                         &body_text,
                         MAX_BYTES_PER_MEMORY,
                     );

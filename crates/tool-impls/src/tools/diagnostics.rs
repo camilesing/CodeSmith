@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
@@ -86,7 +86,7 @@ impl ToolSpec for DiagnosticsTool {
         };
 
         let git = probe_git(&context.workspace);
-        let sandbox_type = crate::sandbox::get_platform_sandbox().map(|s| s.to_string());
+        let sandbox_type = codesmith_agent_runtime::sandbox::get_platform_sandbox().map(|s| s.to_string());
         let sandbox_available = sandbox_type.is_some();
 
         // Bubblewrap availability (#2184).
@@ -157,7 +157,7 @@ fn probe_git(workspace: &Path) -> GitProbe {
 fn probe_bwrap_available() -> bool {
     #[cfg(target_os = "linux")]
     {
-        crate::sandbox::bwrap::is_available()
+        codesmith_agent_runtime::sandbox::bwrap::is_available()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -228,18 +228,18 @@ fn run_command(program: &str, args: &[&str], cwd: &Path) -> CommandProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dependencies::ExternalTool;
+    use codesmith_agent_runtime::dependencies::ExternalTool;
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
 
     fn git_available() -> bool {
-        crate::dependencies::Git::available()
+        codesmith_agent_runtime::dependencies::Git::available()
     }
 
     fn init_git_repo(root: &Path) {
         let run = |args: &[&str]| {
-            let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codesmith_agent_runtime::dependencies::Git::status(args, root).expect("git should spawn");
             assert!(status.success(), "git {args:?} failed");
         };
         run(&["init", "-q"]);

@@ -29,6 +29,8 @@ tracing.workspace = true
 uuid.workspace = true
 toml.workspace = true
 ignore = "0.4"
+base64 = "0.22.1"
+pdf-extract = "0.7"
 
 [dev-dependencies]
 pretty_assertions = "1.4"

@@ -3,11 +3,11 @@
 //! This mirrors the Codex harness `web.run` interface so models can use a single
 //! tool call to perform multiple web actions and cite sources with ref_ids.
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_u64, required_str,
 };
-use crate::network_policy::{Decision, host_from_url};
+use codesmith_agent_runtime::network_policy::{Decision, host_from_url};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
 use regex::Regex;
@@ -1628,7 +1628,7 @@ fn percent_decode(input: &str) -> String {
 }
 
 fn url_encode(input: &str) -> String {
-    crate::utils::url_encode(input)
+    codesmith_agent_runtime::utils::url_encode(input)
 }
 
 // === Tests ===
@@ -1808,7 +1808,7 @@ mod tests {
 
     #[test]
     fn network_policy_denies_direct_open_url() {
-        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
         let policy = NetworkPolicy {
             default: Decision::Deny.into(),

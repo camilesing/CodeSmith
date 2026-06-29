@@ -1019,6 +1019,7 @@ version = "0.8.48"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "chrono",
  "codesmith-agent",
  "codesmith-agent-runtime",
@@ -1027,6 +1028,7 @@ dependencies = [
  "dirs",
  "ignore",
  "libc",
+ "pdf-extract",
  "pretty_assertions",
  "regex",
  "reqwest",

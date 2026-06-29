@@ -11,10 +11,10 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
-use crate::snapshot::SnapshotRepo;
+use codesmith_agent_runtime::snapshot::SnapshotRepo;
 
 /// Default offset: revert the most-recent turn (i.e. the last `pre-turn:*`
 /// snapshot in history).
@@ -132,13 +132,14 @@ fn short_sha(sha: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(unsafe_code)]
     use super::*;
-    use crate::test_support::lock_test_env;
+    use codesmith_agent_runtime::test_support::lock_test_env;
     use std::sync::MutexGuard;
     use tempfile::tempdir;
 
     /// Pins HOME to a tempdir for the duration of the test under the
-    /// process-wide env mutex (`crate::test_support::lock_test_env`).
+    /// process-wide env mutex (`codesmith_agent_runtime::test_support::lock_test_env`).
     struct HomeGuard {
         prev: Option<std::ffi::OsString>,
         _lock: MutexGuard<'static, ()>,

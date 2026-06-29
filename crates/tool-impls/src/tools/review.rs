@@ -7,12 +7,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::dependencies::ExternalTool;
-use crate::llm_client::{LlmClient, LlmClientHandle};
-use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
-use crate::utils::truncate_with_ellipsis;
+use codesmith_agent_runtime::dependencies::ExternalTool;
+use codesmith_agent_runtime::llm_client::LlmClientHandle;
+use codesmith_agent_runtime::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
+use codesmith_agent_runtime::utils::truncate_with_ellipsis;
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
@@ -360,7 +360,7 @@ fn resolve_diff_target(
     staged: bool,
     base: Option<&str>,
 ) -> Result<String, ToolError> {
-    let Some(mut cmd) = crate::dependencies::Git::command() else {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Git::command() else {
         return Err(ToolError::execution_failed("git not found"));
     };
     cmd.arg("diff");
@@ -392,7 +392,7 @@ fn resolve_diff_target(
 }
 
 fn gh_pr_diff(pr: &PullRequestRef, workspace: &Path) -> Result<String, ToolError> {
-    let Some(mut cmd) = crate::dependencies::Gh::command() else {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Gh::command() else {
         return Err(ToolError::execution_failed("gh not found"));
     };
     cmd.arg("pr")
