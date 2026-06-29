@@ -1014,6 +1014,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "codesmith-tool-impls"
+version = "0.8.48"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "codesmith-agent",
+ "codesmith-agent-runtime",
+ "codesmith-config",
+ "codesmith-tools",
+ "dirs",
+ "libc",
+ "pretty_assertions",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shlex",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "codesmith-tools"
 version = "0.8.48"
 dependencies = [

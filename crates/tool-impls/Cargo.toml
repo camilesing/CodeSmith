@@ -1,0 +1,33 @@
+[package]
+name = "codesmith-tool-impls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Model-visible tool implementations for CodeSmith (concrete impl ToolSpec blocks)"
+
+[dependencies]
+codesmith-agent = { path = "../agent", version = "0.8.48" }
+codesmith-agent-runtime = { path = "../agent-runtime", version = "0.8.48" }
+codesmith-config = { path = "../config", version = "0.8.48" }
+codesmith-tools = { path = "../tools", version = "0.8.48" }
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+libc = "0.2"
+regex = "1.11"
+reqwest = { workspace = true, features = ["stream"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+shlex = "1.3.0"
+similar = "2"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+tempfile = "3.16"
