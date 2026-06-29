@@ -1305,7 +1305,7 @@ impl Engine {
                 }
                 if completions.is_empty() {
                     let running = {
-                        let mgr = self.subagent_manager.read().await;
+                        let mgr = self.host.subagent_manager.read().await;
                         mgr.running_count()
                     };
                     if should_hold_turn_for_subagents(completions.len(), running) {
@@ -1517,7 +1517,7 @@ impl Engine {
                 if thinking_only_no_sendable {
                     let holding_for_subagents = {
                         let running = {
-                            let mgr = self.subagent_manager.read().await;
+                            let mgr = self.host.subagent_manager.read().await;
                             mgr.running_count()
                         };
                         should_hold_turn_for_subagents(0, running)

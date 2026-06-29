@@ -871,6 +871,19 @@ pub struct SubAgentManager {
     current_session_boot_id: String,
 }
 
+// `EngineHost` (which holds a `SharedSubAgentManager`) derives `Debug`; the
+// manager owns runtime handles that are not `Debug`, so format a summary
+// instead of draining the full agent map. Mirrors `ShellManager`'s impl.
+impl std::fmt::Debug for SubAgentManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubAgentManager")
+            .field("agent_count", &self.agents.len())
+            .field("workspace", &self.workspace)
+            .field("max_agents", &self.max_agents)
+            .finish()
+    }
+}
+
 impl SubAgentManager {
     /// Create a new manager for sub-agents.
     #[must_use]

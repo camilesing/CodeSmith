@@ -1341,7 +1341,7 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
         role: Some("researcher".to_string()),
     };
     let agent_id = {
-        let mut manager = engine.subagent_manager.write().await;
+        let mut manager = engine.host.subagent_manager.write().await;
         manager.insert_test_live_agent("agent_live".to_string(), assignment)
     };
 
@@ -1364,7 +1364,7 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
     assert!(combined.contains("researcher"));
     assert!(combined.contains(&agent_id));
     engine
-        .subagent_manager
+        .host.subagent_manager
         .write()
         .await
         .abort_test_agent(&agent_id);

@@ -74,7 +74,7 @@ impl SandboxKind {
 /// structured output. The trait is `Send + Sync` so it can be stored in an
 /// `Arc` and shared across async tasks.
 #[async_trait]
-pub trait SandboxBackend: Send + Sync {
+pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
     /// Execute a shell command and return its output.
     async fn exec(&self, request: SandboxExecRequest) -> Result<SandboxOutput>;
 }

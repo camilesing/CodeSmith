@@ -32,6 +32,7 @@ struct SandboxRunResponse {
 ///
 /// Constructed with a base URL (e.g. `"http://localhost:8080"`), an optional
 /// API key sent as a `Bearer` token, and a timeout in seconds.
+#[derive(Debug)]
 pub struct OpenSandboxBackend {
     base_url: String,
     api_key: Option<String>,

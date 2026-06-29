@@ -180,6 +180,26 @@ pub struct EngineHost {
     /// of the concrete `SeamManager`; `new_impl` replaces it with the
     /// config-resolved one.
     pub seam_manager: Option<crate::seam_manager::SeamManager>,
+    /// Background shell process manager. Held on the host so the engine body
+    /// reaches it through the host turn-dispatcher factory / shell trait and
+    /// stays free of the concrete `ShellManager`; `new_impl` replaces the
+    /// default with the config-resolved one. The type is terminal-coupled
+    /// (pty / process management) so it cannot live on the runtime crate.
+    pub shell_manager: SharedShellManager,
+    /// Sub-agent process manager. Held on the host for the same reason as
+    /// `shell_manager`; `new_impl` replaces the default with the
+    /// config-resolved one. Terminal-coupled (sub-agent spawn / lifecycle).
+    pub subagent_manager: SharedSubAgentManager,
+    /// Session-scoped workshop variable store (#548). `None` when no
+    /// `[workshop]` config is present. Held on the host because it is wired
+    /// into `ToolContext` (a terminal-coupled type) at turn-dispatch time.
+    pub workshop_vars: Option<
+        std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
+    >,
+    /// External sandbox backend (#516). `None` when no backend is configured.
+    /// Held on the host because it is wired into `ToolContext` at
+    /// turn-dispatch time. Already an `Arc<dyn SandboxBackend>` trait object.
+    pub sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
 }
 
 impl Default for EngineHost {
@@ -189,6 +209,16 @@ impl Default for EngineHost {
             hooks: None,
             lsp_manager: std::sync::Arc::new(crate::lsp::LspManager::disabled()),
             seam_manager: None,
+            // Placeholder managers replaced by `new_impl` with the
+            // config-resolved instances; every construction path flows
+            // through `new_impl`, so these dummies are always overwritten.
+            shell_manager: new_shared_shell_manager(std::path::PathBuf::new()),
+            subagent_manager: new_shared_subagent_manager(
+                std::path::PathBuf::new(),
+                crate::config::MAX_SUBAGENTS,
+            ),
+            workshop_vars: None,
+            sandbox_backend: None,
         }
     }
 }
@@ -202,8 +232,6 @@ pub struct Engine {
     api_key_env_only_recovery: Option<String>,
     session: Session,
     api_provider: ApiProvider,
-    subagent_manager: SharedSubAgentManager,
-    shell_manager: SharedShellManager,
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     rx_op: mpsc::Receiver<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
@@ -229,15 +257,6 @@ pub struct Engine {
     capacity_controller: CapacityController,
     coherence_state: CoherenceState,
     turn_counter: u64,
-    /// Session-scoped workshop variable store (#548). Shared across all tool
-    /// calls so `last_tool_result` persists within the session and can be
-    /// promoted to the parent context via `promote_to_context`.
-    workshop_vars: Option<
-        std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
-    >,
-    /// External sandbox backend (#516). When `Some`, exec_shell routes commands
-    /// through this instead of spawning a local process.
-    sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
@@ -744,6 +763,16 @@ impl Engine {
         ));
         host.runtime_services.background_task_registry = Some(bg_registry);
 
+        // The host owns the shell/subagent managers, workshop variable store,
+        // and sandbox backend so the engine body reaches them through the
+        // host turn-dispatcher factory / service traits rather than concrete
+        // `Engine` fields (Phase A: keep TUI-coupled types off the engine body
+        // so it can move to `codesmith-agent-runtime`).
+        host.shell_manager = shell_manager;
+        host.subagent_manager = subagent_manager;
+        host.workshop_vars = workshop_vars;
+        host.sandbox_backend = sandbox_backend;
+
         let api_provider = api_config.api_provider();
         let mut engine = Engine {
             config,
@@ -753,8 +782,6 @@ impl Engine {
             api_key_env_only_recovery,
             session,
             api_provider,
-            subagent_manager,
-            shell_manager,
             mcp_pool: None,
             rx_op,
             rx_approval,
@@ -773,8 +800,6 @@ impl Engine {
             pending_lsp_blocks: Vec::new(),
             slop_ledger_gate_cache: None,
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),
-            workshop_vars,
-            sandbox_backend,
             tx_op: tx_op.clone(),
             runtime_ui: Arc::new(runtime_traits::TuiRuntimeUi),
         };
@@ -983,7 +1008,7 @@ impl Engine {
                         self.build_tool_context(AppMode::Agent, self.session.auto_approve),
                         self.session.allow_shell,
                         Some(self.tx_event.clone()),
-                        Arc::clone(&self.subagent_manager),
+                        Arc::clone(&self.host.subagent_manager),
                     )
                     .with_role_models(self.config.subagent_model_overrides.clone())
                     .with_auto_model(self.session.auto_model)
@@ -1007,9 +1032,9 @@ impl Engine {
                     runtime.reasoning_effort_auto = false;
 
                     let result = {
-                        let mut manager = self.subagent_manager.write().await;
+                        let mut manager = self.host.subagent_manager.write().await;
                         manager.spawn_background(
-                            Arc::clone(&self.subagent_manager),
+                            Arc::clone(&self.host.subagent_manager),
                             runtime,
                             SubAgentType::General,
                             prompt.clone(),
@@ -1039,7 +1064,7 @@ impl Engine {
                 }
                 Op::ListSubAgents => {
                     let agents = {
-                        let mut manager = self.subagent_manager.write().await;
+                        let mut manager = self.host.subagent_manager.write().await;
                         manager.cleanup(Duration::from_secs(60 * 60));
                         manager.list()
                     };
@@ -1174,7 +1199,7 @@ impl Engine {
                     let cwd_str = cwd.as_ref().map(|path| path.to_string_lossy().to_string());
                     let result = {
                         let mut shell =
-                            self.shell_manager.lock().unwrap_or_else(|p| p.into_inner());
+                            self.host.shell_manager.lock().unwrap_or_else(|p| p.into_inner());
                         shell.execute(&command, cwd_str.as_deref(), timeout_ms, true)
                     };
                     match result {
@@ -1615,7 +1640,7 @@ impl Engine {
                 &self.session.working_set,
                 &self.config.todos,
                 &self.config.plan_state,
-                Some(&self.subagent_manager),
+                Some(&self.host.subagent_manager),
             )
             .await;
             Some(SubAgentForkContext {
@@ -1677,7 +1702,7 @@ impl Engine {
                             tool_context.clone(),
                             self.session.allow_shell,
                             Some(self.tx_event.clone()),
-                            Arc::clone(&self.subagent_manager),
+                            Arc::clone(&self.host.subagent_manager),
                         )
                         .with_role_models(self.config.subagent_model_overrides.clone())
                         .with_auto_model(self.session.auto_model)
@@ -1704,7 +1729,7 @@ impl Engine {
                     Some(
                         builder
                             .with_subagent_tools(
-                                self.subagent_manager.clone(),
+                                self.host.subagent_manager.clone(),
                                 runtime.expect("sub-agent runtime should exist with active client"),
                             )
                             .build(tool_context),
@@ -1725,7 +1750,7 @@ impl Engine {
                         tool_context.clone(),
                         true, // Coordinator workers need shell access
                         Some(self.tx_event.clone()),
-                        Arc::clone(&self.subagent_manager),
+                        Arc::clone(&self.host.subagent_manager),
                     )
                     .with_role_models(self.config.subagent_model_overrides.clone())
                     .with_auto_model(self.session.auto_model)
@@ -1745,7 +1770,7 @@ impl Engine {
                             .with_mailbox(mailbox.clone())
                             .with_cancel_token(cancel_token.clone());
                     }
-                    builder = builder.with_subagent_tools(self.subagent_manager.clone(), rt);
+                    builder = builder.with_subagent_tools(self.host.subagent_manager.clone(), rt);
                 }
                 // send_message — coordinator needs messaging but NOT
                 // team_create/team_delete.
@@ -2539,7 +2564,7 @@ impl Engine {
         )
         .with_state_namespace(self.session.id.clone())
         .with_features(self.config.features.clone())
-        .with_shell_manager(self.shell_manager.clone())
+        .with_shell_manager(self.host.shell_manager.clone())
         .with_runtime_services(self.host.runtime_services.clone())
         .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
             self.session.id.clone(),
@@ -2581,7 +2606,7 @@ impl Engine {
         // router (their ToolContext is built separately) to prevent recursive
         // routing of the synthesis call itself.
         if let Some(workshop_cfg) = self.config.workshop.as_ref()
-            && let Some(vars_arc) = self.workshop_vars.as_ref()
+            && let Some(vars_arc) = self.host.workshop_vars.as_ref()
         {
             let router =
                 crate::tools::large_output_router::LargeOutputRouter::new(workshop_cfg.clone());
@@ -2591,7 +2616,7 @@ impl Engine {
         // Wire the external sandbox backend (#516). exec_shell checks this
         // field and routes commands through the backend instead of spawning
         // a local process when it's set.
-        if let Some(backend) = self.sandbox_backend.as_ref() {
+        if let Some(backend) = self.host.sandbox_backend.as_ref() {
             ctx = ctx.with_sandbox_backend(std::sync::Arc::clone(backend));
         }
 
@@ -2805,7 +2830,7 @@ impl Engine {
                     &self.session.working_set,
                     &self.config.todos,
                     &self.config.plan_state,
-                    Some(&self.subagent_manager),
+                    Some(&self.host.subagent_manager),
                 )
                 .await;
                 s.to_system_block()
@@ -2906,7 +2931,7 @@ impl Engine {
             &self.session.working_set,
             &self.config.todos,
             &self.config.plan_state,
-            Some(&self.subagent_manager),
+            Some(&self.host.subagent_manager),
         )
         .await;
         let state_block = state.to_system_block();
@@ -3141,7 +3166,7 @@ impl Engine {
     async fn compaction_subagent_summaries(
         &self,
     ) -> Vec<crate::compaction::attachment_reinject::AgentSummary> {
-        self.subagent_manager
+        self.host.subagent_manager
             .read()
             .await
             .live_running_snapshots()
