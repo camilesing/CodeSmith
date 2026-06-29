@@ -8,7 +8,7 @@
 //! around so the engine compatibility dispatcher and historical sessions
 //! still resolve it cleanly.
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 use async_trait::async_trait;

@@ -16,3 +16,6 @@
 //!   their paths unchanged.
 
 pub mod notify;
+pub mod apply_patch;
+pub mod parallel;
+pub mod validate_data;

@@ -8,7 +8,7 @@ use std::fs;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_str,
 };
 

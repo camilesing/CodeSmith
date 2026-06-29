@@ -9,7 +9,7 @@
 #![deny(clippy::print_stderr)]
 
 pub mod agent_memory;
-pub mod apply_patch;
+pub use codesmith_tool_impls::tools::apply_patch;
 pub mod approval_cache;
 pub mod arg_repair;
 pub mod automation;
@@ -33,7 +33,7 @@ pub mod knowledge_recall;
 pub mod large_output_router;
 pub use codesmith_tool_impls::tools::notify;
 pub mod pandoc;
-pub mod parallel;
+pub use codesmith_tool_impls::tools::parallel;
 pub mod plan;
 pub mod plan_file;
 pub mod plan_mode;
@@ -63,7 +63,7 @@ pub mod todo;
 pub mod tool_result_retrieval;
 pub mod truncate;
 pub mod user_input;
-pub mod validate_data;
+pub use codesmith_tool_impls::tools::validate_data;
 pub mod web_run;
 pub mod web_search;
 pub mod worktree;
