@@ -41,11 +41,11 @@ pub struct RlmBridge {
 }
 
 impl RlmBridge {
-    pub(crate) fn new(
-        client: Arc<dyn LlmClient>,
-        child_model: String,
-        depth_remaining: u32,
-    ) -> Self {
+    /// Construct a bridge bound to `client` for servicing `llm_query` /
+    /// `rlm_query` RPCs during one RLM turn. `pub` (not `pub(crate)`) so the
+    /// TUI-side `rlm` tool — which stays in `codesmith-tui` — can construct
+    /// it across the crate boundary.
+    pub fn new(client: Arc<dyn LlmClient>, child_model: String, depth_remaining: u32) -> Self {
         Self {
             client,
             child_model,
@@ -298,7 +298,85 @@ impl RpcDispatcher for RlmBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::mock::MockLlmClient;
+    use crate::llm_client::StreamEventBox;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    // Minimal queue-driven `LlmClient` stub for the bridge tests. The real
+    // `MockLlmClient` lives in `codesmith-tui`'s test-only `llm_client::mock`
+    // module (which depends on TUI-local test types, so it can't be imported
+    // from a downstream crate). The bridge only ever calls `create_message`,
+    // so a tiny stub here is enough to keep these tests working after the
+    // module migrated into `codesmith-agent-runtime`.
+    struct MockLlmClient {
+        canned: std::sync::Mutex<std::collections::VecDeque<MessageResponse>>,
+        captured: std::sync::Mutex<Vec<MessageRequest>>,
+    }
+
+    impl MockLlmClient {
+        fn new(_canned: Vec<()>) -> Self {
+            Self {
+                canned: std::sync::Mutex::new(std::collections::VecDeque::new()),
+                captured: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn push_message_response(&self, response: MessageResponse) {
+            self.canned
+                .lock()
+                .expect("MockLlmClient.canned mutex poisoned")
+                .push_back(response);
+        }
+
+        fn captured_requests(&self) -> Vec<MessageRequest> {
+            self.captured
+                .lock()
+                .expect("MockLlmClient.captured mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl LlmClient for MockLlmClient {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+
+        fn model(&self) -> &str {
+            "mock-model"
+        }
+
+        fn create_message(
+            &self,
+            request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+            Box::pin(async move {
+                self.captured
+                    .lock()
+                    .expect("MockLlmClient.captured mutex poisoned")
+                    .push(request);
+                match self
+                    .canned
+                    .lock()
+                    .expect("MockLlmClient.canned mutex poisoned")
+                    .pop_front()
+                {
+                    Some(response) => Ok(response),
+                    None => Err(anyhow::anyhow!("MockLlmClient: no canned response queued")),
+                }
+            })
+        }
+
+        fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+            Box::pin(async move {
+                Err(anyhow::anyhow!(
+                    "streaming not supported by MockLlmClient stub"
+                ))
+            })
+        }
+    }
 
     fn mock_response_with_usage(text: &str, usage: Usage) -> MessageResponse {
         MessageResponse {
