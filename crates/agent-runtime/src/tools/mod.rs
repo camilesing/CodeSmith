@@ -12,4 +12,5 @@
 //! crate so agent-runtime never depends on them (avoiding a circular dependency).
 
 pub mod arg_repair;
+pub mod handle;
 pub mod schema_sanitize;
