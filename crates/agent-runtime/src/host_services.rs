@@ -19,6 +19,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
@@ -38,8 +39,11 @@ use crate::mode::AppMode;
 use crate::models::{Message, Tool};
 use crate::runtime_ui::RuntimeUi;
 use crate::session::Session;
-use crate::subagent::SubAgentCompletion;
+use crate::subagent::{SubAgentCompletion, SubAgentResult};
 use crate::tool_dispatch::ToolDispatcher;
+use crate::tool_state::plan::SharedPlanState;
+use crate::tool_state::todo::SharedTodoList;
+use crate::working_set::WorkingSet;
 
 /// Terminal-agnostic LSP manager surface.
 ///
@@ -159,6 +163,78 @@ pub trait SeamManagerApi: Send + Sync {
     async fn reset(&self);
 }
 
+/// Terminal-agnostic sub-agent manager surface.
+///
+/// The engine core counts/lists/evicts sub-agents through this trait so it
+/// need not depend on the TUI's concrete `SubAgentManager` (which drives
+/// sub-agent lifecycle and persistence). Each method acquires the inner
+/// `RwLock` itself and returns plain data, so callers never hold a guard
+/// across an `Event`-channel await. Spawning — which assembles the
+/// terminal-coupled `SubAgentRuntime` — goes through the
+/// [`HostServices::spawn_subagent`] factory instead.
+#[async_trait::async_trait]
+pub trait SubAgentApi: Send + Sync {
+    /// Number of sub-agents currently running in this process.
+    async fn running_count(&self) -> usize;
+    /// Snapshot of every tracked sub-agent (for `AgentList`).
+    async fn list(&self) -> Vec<SubAgentResult>;
+    /// Evict completed agents older than `max_age`.
+    async fn cleanup(&self, max_age: Duration);
+}
+
+/// Portable shell-execution status. Mirrors the TUI's `ShellStatus`; the
+/// `Running` variant is kept because backgrounded commands return immediately
+/// with a live process (and a task id).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellExecStatus {
+    Running,
+    Completed,
+    Failed,
+    Killed,
+    TimedOut,
+}
+
+/// Portable shell-execution result. Carries the fields the engine body reads
+/// (task id, terminal status) plus the common output metadata. Mirrors the
+/// TUI's `ShellResult` minus truncation bookkeeping that only the shell tool
+/// surfaces.
+#[derive(Debug, Clone)]
+pub struct ShellExecResult {
+    /// Backgrounded-task id, when `background` was requested and the command
+    /// detached successfully.
+    pub task_id: Option<String>,
+    /// Terminal (or `Running`) status of the command.
+    pub status: ShellExecStatus,
+    /// Process exit code, when available.
+    pub exit_code: Option<i32>,
+    /// Captured stdout.
+    pub stdout: String,
+    /// Captured stderr.
+    pub stderr: String,
+    /// Wall-clock duration in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Terminal-agnostic shell-manager surface.
+///
+/// The engine core runs background shell commands through this trait so it
+/// need not depend on the TUI's concrete `ShellManager` (pty / process
+/// management). `execute` is synchronous: the host locks its `std::sync::Mutex`,
+/// runs the command, and returns before any `Event`-channel await — matching
+/// the pre-trait call site.
+pub trait ShellApi: Send + Sync {
+    /// Execute a shell command. `background = true` requests a detached
+    /// background task (the result then carries a `task_id` and a `Running`
+    /// status). Mirrors `ShellManager::execute`.
+    fn execute(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        background: bool,
+    ) -> anyhow::Result<ShellExecResult>;
+}
+
 /// Host services injected into the engine.
 ///
 /// Each accessor returns a trait-erased view of a service that the engine
@@ -180,6 +256,14 @@ pub trait HostServices: Send + Sync {
     /// `if let Some(seam_mgr) = self.seam_manager` guards.
     fn seam(&self) -> Option<&dyn SeamManagerApi>;
 
+    /// Sub-agent manager. Returned as an owned, cloneable handle so the
+    /// engine's turn loop can count running sub-agents without naming the
+    /// concrete `SubAgentManager`.
+    fn subagents(&self) -> Arc<dyn SubAgentApi>;
+
+    /// Shell-manager surface for background shell execution.
+    fn shell(&self) -> Arc<dyn ShellApi>;
+
     /// Assemble the per-turn tool dispatcher and model-visible tool catalog.
     ///
     /// This is the host-side factory that combines portable engine state
@@ -192,6 +276,25 @@ pub trait HostServices: Send + Sync {
     /// is what lets the `Engine` body move to `codesmith-agent-runtime`
     /// without dragging those concrete types across the crate boundary.
     async fn build_turn_dispatcher(&self, req: TurnDispatchRequest<'_>) -> TurnDispatchPlan;
+
+    /// Spawn a background sub-agent of type `General` from `prompt`.
+    ///
+    /// Assembles the terminal-coupled `SubAgentRuntime` (which the engine
+    /// body cannot name) host-side, resolves the assignment route, and
+    /// registers the agent with the host's `SubAgentManager`. Returns the new
+    /// agent id on success.
+    async fn spawn_subagent(
+        &self,
+        req: SpawnSubAgentRequest<'_>,
+    ) -> anyhow::Result<SubAgentSpawnResult>;
+
+    /// Capture deterministic cross-cycle state (todos / plan / working-set /
+    /// sub-agents) and render it as a system block.
+    ///
+    /// `StructuredState` itself is terminal-coupled (rendered host-side using
+    /// the host's own `SubAgentManager`); the engine body only needs the
+    /// rendered `Option<String>` to feed the cycle briefing / seed messages.
+    async fn capture_structured_state(&self, req: StructuredStateRequest<'_>) -> Option<String>;
 }
 
 /// Inputs the engine body supplies to [`HostServices::build_turn_dispatcher`].
@@ -240,4 +343,60 @@ pub struct TurnDispatchPlan {
     /// Model-visible tool catalog (built-ins + MCP, with deferral applied),
     /// paired with `tool_registry`.
     pub tools: Option<Vec<Tool>>,
+}
+
+/// Inputs the engine body supplies to [`HostServices::spawn_subagent`].
+///
+/// Every field is a portable (runtime-crate) type so the request crosses the
+/// `Arc<dyn HostServices>` boundary once the `Engine` moves into
+/// `codesmith-agent-runtime`. The host combines these with its own
+/// terminal-coupled `SubAgentRuntime` assembly (which the engine body cannot
+/// name) to spawn the agent. The body resolves the MCP pool itself (via
+/// `ensure_mcp_pool`) and checks the LLM client for `None` before calling.
+pub struct SpawnSubAgentRequest<'a> {
+    /// Prompt for the spawned sub-agent.
+    pub prompt: &'a str,
+    /// Cloned LLM client handle (body guarantees `Some`).
+    pub llm_client: LlmClientHandle,
+    /// Live session (model, working set, allow_shell, auto_model, …).
+    pub session: &'a Session,
+    /// Resolved engine config (features, model overrides, timeouts, …).
+    pub config: &'a EngineConfig,
+    /// Per-turn cancellation token (wired into the `ToolContext`).
+    pub cancel_token: CancellationToken,
+    /// Engine event channel.
+    pub tx_event: mpsc::Sender<Event>,
+    /// Channel fan-out for direct child sub-agent completion (#756).
+    pub tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+    /// Resolved MCP pool (already ensured by the engine body), when enabled.
+    pub mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    /// Terminal-agnostic UI bridge (clipboard / notifications).
+    pub runtime_ui: &'a Arc<dyn RuntimeUi>,
+}
+
+/// Output of [`HostServices::spawn_subagent`].
+pub struct SubAgentSpawnResult {
+    /// Id of the newly-spawned sub-agent.
+    pub agent_id: String,
+}
+
+/// Inputs the engine body supplies to
+/// [`HostServices::capture_structured_state`].
+///
+/// Every field is a portable (runtime-crate) type. The host renders the
+/// snapshot using its own `SubAgentManager` (the one TUI-local input) and
+/// returns the rendered system block.
+pub struct StructuredStateRequest<'a> {
+    /// Active mode label (e.g. `"agent"`).
+    pub mode_label: &'a str,
+    /// Session workspace root.
+    pub workspace: PathBuf,
+    /// Effective cwd, when known.
+    pub cwd: Option<PathBuf>,
+    /// Live working set.
+    pub working_set: &'a WorkingSet,
+    /// Shared todo list.
+    pub todos: &'a SharedTodoList,
+    /// Shared plan state.
+    pub plan_state: &'a SharedPlanState,
 }

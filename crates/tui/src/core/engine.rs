@@ -31,8 +31,8 @@ use crate::compaction::{
 };
 use crate::config::{ApiProvider, Config, DEFAULT_TEXT_MODEL};
 use crate::cycle_manager::{
-    CycleBriefing, StructuredState, archive_cycle, build_seed_messages, estimate_briefing_tokens,
-    produce_briefing, should_advance_cycle,
+    CycleBriefing, archive_cycle, build_seed_messages, estimate_briefing_tokens, produce_briefing,
+    should_advance_cycle,
 };
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
 use crate::features::Feature;
@@ -50,12 +50,10 @@ use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, 
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::goal::SharedGoalState;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
-use crate::tools::shell::ShellStatus;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
-    Mailbox, SharedSubAgentManager, SubAgentCompletion, SubAgentForkContext, SubAgentRuntime,
-    SubAgentType, new_shared_subagent_manager, resolve_subagent_assignment_route,
+    SharedSubAgentManager, SubAgentCompletion, new_shared_subagent_manager,
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
@@ -85,15 +83,16 @@ use super::turn::{TurnContext, TurnToolCall, post_turn_snapshot, pre_turn_snapsh
 pub use codesmith_agent_runtime::engine_config::EngineConfig;
 
 /// Host-services trait in scope so the engine body can call
-/// `self.host.lsp()` / `self.host.bg_registry()` etc. (impl lives in
-/// `runtime_traits`). `TurnDispatchRequest` / `TurnDispatchPlan` are the
-/// portable contract for the per-turn tool-dispatcher factory.
-use codesmith_agent_runtime::host_services::{HostServices, TurnDispatchPlan, TurnDispatchRequest};
-
-/// Tool-dispatcher trait in scope so the engine body can pass the per-turn
-/// registry to the turn loop as `Option<Arc<dyn ToolDispatcher>>` (decoupling
-/// the loop from the concrete `ToolRegistry`).
-use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+/// `self.host.lsp()` / `self.host.bg_registry()` / `self.host.subagents()`
+/// / `self.host.shell()` etc. (impl lives in `runtime_traits`).
+/// `TurnDispatchRequest` is the portable contract for the per-turn
+/// tool-dispatcher factory; `SpawnSubAgentRequest` / `StructuredStateRequest`
+/// for the spawn / cycle-state factories; `ShellExecStatus` for comparing a
+/// background shell's terminal status.
+use codesmith_agent_runtime::host_services::{
+    HostServices, ShellExecStatus, SpawnSubAgentRequest, StructuredStateRequest,
+    TurnDispatchRequest,
+};
 
 /// Reason the active turn was cancelled. The token from `tokio_util`
 /// does not carry a cause, so the engine keeps a sibling latch for
@@ -998,48 +997,18 @@ impl Engine {
                         None
                     };
 
-                    let mut runtime = SubAgentRuntime::new(
-                        client,
-                        self.session.model.clone(),
-                        // Sub-agents don't inherit YOLO mode - use Agent mode defaults
-                        self.build_tool_context(AppMode::Agent, self.session.auto_approve),
-                        self.session.allow_shell,
-                        Some(self.tx_event.clone()),
-                        Arc::clone(&self.host.subagent_manager),
-                    )
-                    .with_role_models(self.config.subagent_model_overrides.clone())
-                    .with_auto_model(self.session.auto_model)
-                    .with_reasoning_effort(
-                        self.session.reasoning_effort.clone(),
-                        self.session.reasoning_effort_auto,
-                    )
-                    .with_max_spawn_depth(self.config.max_spawn_depth)
-                    .with_step_api_timeout(self.config.subagent_api_timeout)
-                    .with_mcp_pool(mcp_pool)
-                    .background_runtime();
-                    let route = resolve_subagent_assignment_route(
-                        &runtime,
-                        None,
-                        &prompt,
-                        &SubAgentType::General,
-                    )
-                    .await;
-                    runtime.model = route.model;
-                    runtime.reasoning_effort = route.reasoning_effort;
-                    runtime.reasoning_effort_auto = false;
-
-                    let result = {
-                        let mut manager = self.host.subagent_manager.write().await;
-                        manager.spawn_background(
-                            Arc::clone(&self.host.subagent_manager),
-                            runtime,
-                            SubAgentType::General,
-                            prompt.clone(),
-                            None,
-                        )
+                    let req = SpawnSubAgentRequest {
+                        prompt: &prompt,
+                        llm_client: client,
+                        session: &self.session,
+                        config: &self.config,
+                        cancel_token: self.cancel_token.clone(),
+                        tx_event: self.tx_event.clone(),
+                        tx_subagent_completion: self.tx_subagent_completion.clone(),
+                        mcp_pool,
+                        runtime_ui: &self.runtime_ui,
                     };
-
-                    match result {
+                    match self.host.spawn_subagent(req).await {
                         Ok(snapshot) => {
                             let _ = self
                                 .tx_event
@@ -1060,11 +1029,9 @@ impl Engine {
                     }
                 }
                 Op::ListSubAgents => {
-                    let agents = {
-                        let mut manager = self.host.subagent_manager.write().await;
-                        manager.cleanup(Duration::from_secs(60 * 60));
-                        manager.list()
-                    };
+                    let subagents = self.host.subagents();
+                    subagents.cleanup(Duration::from_secs(60 * 60)).await;
+                    let agents = subagents.list().await;
                     let _ = self.tx_event.send(Event::AgentList { agents }).await;
                 }
                 Op::ChangeMode { mode } => {
@@ -1194,14 +1161,10 @@ impl Engine {
                 } => {
                     let timeout_ms = timeout_secs.unwrap_or(600).saturating_mul(1_000);
                     let cwd_str = cwd.as_ref().map(|path| path.to_string_lossy().to_string());
-                    let result = {
-                        let mut shell = self
-                            .host
-                            .shell_manager
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner());
-                        shell.execute(&command, cwd_str.as_deref(), timeout_ms, true)
-                    };
+                    let result =
+                        self.host
+                            .shell()
+                            .execute(&command, cwd_str.as_deref(), timeout_ms, true);
                     match result {
                         Ok(shell_result) => {
                             if let Some(shell_id) = shell_result.task_id.clone() {
@@ -1220,7 +1183,7 @@ impl Engine {
                                     })
                                     .await;
                             } else {
-                                let status = if shell_result.status == ShellStatus::Completed {
+                                let status = if shell_result.status == ShellExecStatus::Completed {
                                     "completed"
                                 } else {
                                     "failed"
@@ -2384,6 +2347,13 @@ impl Engine {
         false
     }
 
+    /// Thin delegator retained so engine tests can keep calling
+    /// `engine.build_tool_context(...)` while the assembly itself lives in the
+    /// host-side free function `build_tool_context_for` (shared with the
+    /// [`HostServices::build_turn_dispatcher`] and
+    /// [`HostServices::spawn_subagent`] factories). Non-test callers reach the
+    /// assembly through those factories instead.
+    #[cfg(test)]
     fn build_tool_context(&self, mode: AppMode, auto_approve: bool) -> ToolContext {
         build_tool_context_for(
             &self.host,
@@ -2583,17 +2553,16 @@ impl Engine {
         let briefing_text = if let Some(seam_mgr) = self.host.seam() {
             let seams = seam_mgr.collect_seam_texts(&self.session.messages).await;
             let state_text = {
-                let s = StructuredState::capture(
-                    mode.label(),
-                    self.config.workspace.clone(),
-                    std::env::current_dir().ok(),
-                    &self.session.working_set,
-                    &self.config.todos,
-                    &self.config.plan_state,
-                    Some(&self.host.subagent_manager),
-                )
-                .await;
-                s.to_system_block()
+                self.host
+                    .capture_structured_state(StructuredStateRequest {
+                        mode_label: mode.label(),
+                        workspace: self.config.workspace.clone(),
+                        cwd: std::env::current_dir().ok(),
+                        working_set: &self.session.working_set,
+                        todos: &self.config.todos,
+                        plan_state: &self.config.plan_state,
+                    })
+                    .await
             };
             match seam_mgr
                 .produce_flash_briefing(&seams, state_text.as_deref())
@@ -2684,17 +2653,17 @@ impl Engine {
         }
 
         // 3. Capture structured state. Locks are held only for the snapshot.
-        let state = StructuredState::capture(
-            mode.label(),
-            self.config.workspace.clone(),
-            std::env::current_dir().ok(),
-            &self.session.working_set,
-            &self.config.todos,
-            &self.config.plan_state,
-            Some(&self.host.subagent_manager),
-        )
-        .await;
-        let state_block = state.to_system_block();
+        let state_block = self
+            .host
+            .capture_structured_state(StructuredStateRequest {
+                mode_label: mode.label(),
+                workspace: self.config.workspace.clone(),
+                cwd: std::env::current_dir().ok(),
+                working_set: &self.session.working_set,
+                todos: &self.config.todos,
+                plan_state: &self.config.plan_state,
+            })
+            .await;
 
         // 4. Build the seed messages. The next cycle starts with the
         //    base system prompt (refreshed below) and these seeds.

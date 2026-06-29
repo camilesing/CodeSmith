@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use codesmith_agent::models::Tool;
 use codesmith_agent_runtime::background_task::{
@@ -19,8 +20,9 @@ use codesmith_agent_runtime::background_task::{
 };
 use codesmith_agent_runtime::hooks::HookHost;
 use codesmith_agent_runtime::host_services::{
-    BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi, TurnDispatchPlan,
-    TurnDispatchRequest,
+    BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi, ShellApi, ShellExecResult,
+    ShellExecStatus, SpawnSubAgentRequest, StructuredStateRequest, SubAgentApi,
+    SubAgentSpawnResult, TurnDispatchPlan, TurnDispatchRequest,
 };
 use codesmith_agent_runtime::lsp_config::LspConfig;
 use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
@@ -40,7 +42,11 @@ use crate::features::Feature;
 use crate::lsp::LspManager;
 use crate::seam_manager::SeamManager;
 use crate::tools::ToolRegistry;
-use crate::tools::subagent::{Mailbox, SubAgentForkContext, SubAgentRuntime};
+use crate::tools::shell::{SharedShellManager, ShellManager, ShellResult, ShellStatus};
+use crate::tools::subagent::{
+    Mailbox, SharedSubAgentManager, SubAgentForkContext, SubAgentManager, SubAgentResult,
+    SubAgentRuntime, SubAgentType, resolve_subagent_assignment_route,
+};
 use crate::tui::app::AppMode;
 use crate::utils::spawn_supervised;
 
@@ -195,6 +201,83 @@ impl HostServices for super::EngineHost {
             Some(s) => Some(s),
             None => None,
         }
+    }
+
+    fn subagents(&self) -> Arc<dyn SubAgentApi> {
+        Arc::new(SubAgentManagerHost(Arc::clone(&self.subagent_manager)))
+    }
+
+    fn shell(&self) -> Arc<dyn ShellApi> {
+        Arc::new(ShellManagerHost(Arc::clone(&self.shell_manager)))
+    }
+
+    async fn spawn_subagent(
+        &self,
+        req: SpawnSubAgentRequest<'_>,
+    ) -> anyhow::Result<SubAgentSpawnResult> {
+        // Sub-agents don't inherit YOLO mode — use Agent-mode defaults, same
+        // as the pre-factory `Op::SpawnSubAgent` body did.
+        let tool_context = build_tool_context_for(
+            self,
+            req.session,
+            req.config,
+            AppMode::Agent,
+            req.session.auto_approve,
+            req.cancel_token.clone(),
+            req.runtime_ui,
+        );
+        let mut runtime = SubAgentRuntime::new(
+            req.llm_client,
+            req.session.model.clone(),
+            tool_context,
+            req.session.allow_shell,
+            Some(req.tx_event.clone()),
+            Arc::clone(&self.subagent_manager),
+        )
+        .with_role_models(req.config.subagent_model_overrides.clone())
+        .with_auto_model(req.session.auto_model)
+        .with_reasoning_effort(
+            req.session.reasoning_effort.clone(),
+            req.session.reasoning_effort_auto,
+        )
+        .with_max_spawn_depth(req.config.max_spawn_depth)
+        .with_step_api_timeout(req.config.subagent_api_timeout)
+        .with_mcp_pool(req.mcp_pool)
+        .background_runtime();
+        let route =
+            resolve_subagent_assignment_route(&runtime, None, req.prompt, &SubAgentType::General)
+                .await;
+        runtime.model = route.model;
+        runtime.reasoning_effort = route.reasoning_effort;
+        runtime.reasoning_effort_auto = false;
+
+        let result = {
+            let mut manager = self.subagent_manager.write().await;
+            manager.spawn_background(
+                Arc::clone(&self.subagent_manager),
+                runtime,
+                SubAgentType::General,
+                req.prompt.to_string(),
+                None,
+            )
+        };
+        result.map(|snapshot| SubAgentSpawnResult {
+            agent_id: snapshot.agent_id,
+        })
+    }
+
+    async fn capture_structured_state(&self, req: StructuredStateRequest<'_>) -> Option<String> {
+        let state = StructuredState::capture(
+            req.mode_label,
+            req.workspace,
+            req.cwd,
+            req.working_set,
+            req.todos,
+            req.plan_state,
+            Some(&self.subagent_manager),
+        )
+        .await;
+        state.to_system_block()
     }
 
     async fn build_turn_dispatcher(&self, req: TurnDispatchRequest<'_>) -> TurnDispatchPlan {
@@ -561,5 +644,73 @@ impl BgRegistryApi for BgRegistryHost {
             results,
             notifications,
         }
+    }
+}
+
+/// Bridge the TUI's [`SharedSubAgentManager`] onto the engine-core trait
+/// [`SubAgentApi`]. A newtype is required (orphan rule forbids impl-ing a
+/// foreign trait for `Arc<RwLock<..>>`); each method locks the inner `RwLock`
+/// itself and fully-qualifies the inherent call so the trait method and the
+/// inherent method (same names) stay unambiguous — mirroring the
+/// [`LspManagerApi`] / [`SeamManagerApi`] bridges above.
+#[derive(Clone)]
+pub(crate) struct SubAgentManagerHost(pub SharedSubAgentManager);
+
+#[async_trait::async_trait]
+impl SubAgentApi for SubAgentManagerHost {
+    async fn running_count(&self) -> usize {
+        let g = self.0.read().await;
+        SubAgentManager::running_count(&g)
+    }
+
+    async fn list(&self) -> Vec<SubAgentResult> {
+        let g = self.0.read().await;
+        SubAgentManager::list(&g)
+    }
+
+    async fn cleanup(&self, max_age: Duration) {
+        let mut g = self.0.write().await;
+        SubAgentManager::cleanup(&mut g, max_age);
+    }
+}
+
+/// Bridge the TUI's [`SharedShellManager`] onto the engine-core trait
+/// [`ShellApi`]. A newtype is required (orphan rule); `execute` locks the
+/// inner `std::sync::Mutex` synchronously and converts the TUI-local
+/// [`ShellResult`] into the portable [`ShellExecResult`].
+pub(crate) struct ShellManagerHost(pub SharedShellManager);
+
+impl ShellApi for ShellManagerHost {
+    fn execute(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        background: bool,
+    ) -> anyhow::Result<ShellExecResult> {
+        let mut shell = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        ShellManager::execute(&mut shell, command, working_dir, timeout_ms, background)
+            .map(shell_exec_result_from)
+    }
+}
+
+/// Convert the TUI-local [`ShellResult`] into the portable
+/// [`ShellExecResult`]. A free function (not `impl From`) because the orphan
+/// rule forbids `impl From<ShellResult> for ShellExecResult` from the TUI
+/// crate (both the trait and the target type are foreign).
+fn shell_exec_result_from(r: ShellResult) -> ShellExecResult {
+    ShellExecResult {
+        task_id: r.task_id,
+        status: match r.status {
+            ShellStatus::Running => ShellExecStatus::Running,
+            ShellStatus::Completed => ShellExecStatus::Completed,
+            ShellStatus::Failed => ShellExecStatus::Failed,
+            ShellStatus::Killed => ShellExecStatus::Killed,
+            ShellStatus::TimedOut => ShellExecStatus::TimedOut,
+        },
+        exit_code: r.exit_code,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        duration_ms: r.duration_ms,
     }
 }

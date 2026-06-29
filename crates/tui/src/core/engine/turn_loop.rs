@@ -1304,10 +1304,7 @@ impl Engine {
                     completions.push(c);
                 }
                 if completions.is_empty() {
-                    let running = {
-                        let mgr = self.host.subagent_manager.read().await;
-                        mgr.running_count()
-                    };
+                    let running = self.host.subagents().running_count().await;
                     if should_hold_turn_for_subagents(completions.len(), running) {
                         let _ = self
                             .tx_event
@@ -1516,10 +1513,7 @@ impl Engine {
 
                 if thinking_only_no_sendable {
                     let holding_for_subagents = {
-                        let running = {
-                            let mgr = self.host.subagent_manager.read().await;
-                            mgr.running_count()
-                        };
+                        let running = self.host.subagents().running_count().await;
                         should_hold_turn_for_subagents(0, running)
                     };
                     if should_emit_thinking_only_status(
