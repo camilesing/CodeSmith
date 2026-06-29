@@ -64,6 +64,7 @@ pub mod runtime_ui;
 pub mod sandbox;
 pub mod session;
 pub mod shell_dispatcher;
+pub mod shell_manager;
 pub mod skills;
 pub mod snapshot;
 pub mod subagent;
