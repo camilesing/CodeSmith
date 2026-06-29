@@ -47,6 +47,25 @@ pub use codesmith_agent_runtime::tools::shell_types::{
 // `spec.rs` / `tool-impls` can name `Arc<dyn ShellManagerApi>` without
 // depending on the concrete `ShellManager`).
 pub use codesmith_agent_runtime::host_services::ShellManagerApi;
+use codesmith_agent_runtime::shell_manager::{ShellTerminalControl, default_terminal_control};
+
+/// RAII guard that restores terminal raw mode on drop when `restore` is set.
+///
+/// Holds an `Arc<dyn ShellTerminalControl>` so it can be dropped without
+/// borrowing `ShellManager` — the guard outlives the `&self` borrow taken by
+/// the surrounding spawn call.
+struct RawModeGuard {
+    restore: bool,
+    terminal: Arc<dyn ShellTerminalControl>,
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        if self.restore {
+            self.terminal.enable_raw_mode();
+        }
+    }
+}
 
 enum ShellChild {
     Process(Child),
@@ -710,6 +729,10 @@ pub struct ShellManager {
     sandbox_policy: ExecutionSandboxPolicy,
     sandbox_runtime: SandboxRuntimeConfig,
     foreground_background_requested: bool,
+    /// Terminal raw-mode controller. The TUI injects a crossterm-backed
+    /// implementation; non-TUI hosts (tests) get a no-op. Trait-erased so
+    /// `ShellManager` can live in the terminal-agnostic runtime crate.
+    terminal: Arc<dyn ShellTerminalControl>,
 }
 
 impl std::fmt::Debug for ShellManager {
@@ -728,7 +751,8 @@ impl std::fmt::Debug for ShellManager {
 }
 
 impl ShellManager {
-    /// Create a new `ShellManager` with default (no sandbox) policy.
+    /// Create a new `ShellManager` with default (no sandbox) policy and a
+    /// no-op terminal controller (raw mode is never enabled outside the TUI).
     pub fn new(workspace: PathBuf) -> Self {
         Self {
             processes: HashMap::new(),
@@ -738,6 +762,7 @@ impl ShellManager {
             sandbox_policy: ExecutionSandboxPolicy::default(),
             sandbox_runtime: SandboxRuntimeConfig::default(),
             foreground_background_requested: false,
+            terminal: default_terminal_control(),
         }
     }
 
@@ -752,6 +777,27 @@ impl ShellManager {
             sandbox_policy: policy,
             sandbox_runtime: SandboxRuntimeConfig::default(),
             foreground_background_requested: false,
+            terminal: default_terminal_control(),
+        }
+    }
+
+    /// Create a new `ShellManager` with an explicit terminal raw-mode
+    /// controller. The TUI uses this to inject its crossterm-backed
+    /// implementation so sandboxed sync/interactive exec can save/restore
+    /// raw mode around child spawn.
+    pub fn with_terminal_control(
+        workspace: PathBuf,
+        terminal: Arc<dyn ShellTerminalControl>,
+    ) -> Self {
+        Self {
+            processes: HashMap::new(),
+            stale_jobs: HashMap::new(),
+            default_workspace: workspace,
+            sandbox_manager: SandboxManager::new(),
+            sandbox_policy: ExecutionSandboxPolicy::default(),
+            sandbox_runtime: SandboxRuntimeConfig::default(),
+            foreground_background_requested: false,
+            terminal,
         }
     }
 
@@ -957,7 +1003,13 @@ impl ShellManager {
                 ));
             }
             Self::execute_sync_sandboxed(
-                command, &work_dir, timeout_ms, stdin_data, &exec_env, &decision,
+                command,
+                &work_dir,
+                timeout_ms,
+                stdin_data,
+                &exec_env,
+                &decision,
+                &self.terminal,
             )
         }
     }
@@ -1058,7 +1110,14 @@ impl ShellManager {
             SandboxManager::prepare_unsandboxed_for_fallback(&spec)
         };
 
-        Self::execute_interactive_sandboxed(command, &work_dir, timeout_ms, &exec_env, &decision)
+        Self::execute_interactive_sandboxed(
+            command,
+            &work_dir,
+            timeout_ms,
+            &exec_env,
+            &decision,
+            &self.terminal,
+        )
     }
 
     /// Execute command synchronously with timeout (sandboxed).
@@ -1069,6 +1128,7 @@ impl ShellManager {
         stdin_data: Option<&str>,
         exec_env: &ExecEnv,
         decision: &crate::sandbox::SandboxDecision,
+        terminal: &Arc<dyn ShellTerminalControl>,
     ) -> Result<ShellResult> {
         let started = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
@@ -1097,23 +1157,16 @@ impl ShellManager {
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
         // Disable raw mode before spawn; restore only if raw mode was active
-        // on entry (issue #1690).
-        let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        // on entry (issue #1690). Trait-erased so `ShellManager` can live in
+        // the terminal-agnostic runtime crate; the TUI injects a crossterm
+        // implementation, non-TUI hosts get a no-op.
+        let raw_mode_was_enabled = terminal.raw_mode_enabled();
         if raw_mode_was_enabled {
-            let _ = crossterm::terminal::disable_raw_mode();
+            terminal.disable_raw_mode();
         }
-        struct SyncRawModeGuard {
-            restore: bool,
-        }
-        impl Drop for SyncRawModeGuard {
-            fn drop(&mut self) {
-                if self.restore {
-                    let _ = crossterm::terminal::enable_raw_mode();
-                }
-            }
-        }
-        let _guard = SyncRawModeGuard {
+        let _guard = RawModeGuard {
             restore: raw_mode_was_enabled,
+            terminal: Arc::clone(terminal),
         };
 
         let mut child = cmd
@@ -1248,6 +1301,7 @@ impl ShellManager {
         timeout_ms: u64,
         exec_env: &ExecEnv,
         decision: &crate::sandbox::SandboxDecision,
+        terminal: &Arc<dyn ShellTerminalControl>,
     ) -> Result<ShellResult> {
         let started = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
@@ -1270,23 +1324,16 @@ impl ShellManager {
         install_parent_death_signal(&mut cmd);
 
         // Disable raw mode before spawn; restore only if raw mode was active
-        // on entry (issue #1690).
-        let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        // on entry (issue #1690). Trait-erased so `ShellManager` can live in
+        // the terminal-agnostic runtime crate; the TUI injects a crossterm
+        // implementation, non-TUI hosts get a no-op.
+        let raw_mode_was_enabled = terminal.raw_mode_enabled();
         if raw_mode_was_enabled {
-            let _ = crossterm::terminal::disable_raw_mode();
+            terminal.disable_raw_mode();
         }
-        struct InteractiveRawModeGuard {
-            restore: bool,
-        }
-        impl Drop for InteractiveRawModeGuard {
-            fn drop(&mut self) {
-                if self.restore {
-                    let _ = crossterm::terminal::enable_raw_mode();
-                }
-            }
-        }
-        let _guard = InteractiveRawModeGuard {
+        let _guard = RawModeGuard {
             restore: raw_mode_was_enabled,
+            terminal: Arc::clone(terminal),
         };
 
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
@@ -1843,12 +1890,42 @@ fn job_status_rank(status: &ShellStatus, stale: bool) -> u8 {
     }
 }
 
+/// crossterm-backed [`ShellTerminalControl`] for the TUI.
+///
+/// Used by [`new_shared_shell_manager`] so `ShellManager`'s sandboxed
+/// sync/interactive exec paths can save/restore terminal raw mode around
+/// child spawn (#1690) without the runtime crate depending on crossterm.
+struct CrosstermTerminalControl;
+
+impl ShellTerminalControl for CrosstermTerminalControl {
+    fn raw_mode_enabled(&self) -> bool {
+        crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
+    }
+    fn disable_raw_mode(&self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+    fn enable_raw_mode(&self) {
+        let _ = crossterm::terminal::enable_raw_mode();
+    }
+}
+
+/// Construct the TUI's crossterm-backed terminal controller for injection
+/// into [`ShellManager::with_terminal_control`].
+fn crossterm_terminal_control() -> Arc<dyn ShellTerminalControl> {
+    Arc::new(CrosstermTerminalControl)
+}
+
 /// Thread-safe wrapper for `ShellManager`
 pub type SharedShellManager = Arc<Mutex<ShellManager>>;
 
-/// Create a new shared shell manager with default sandbox policy.
+/// Create a new shared shell manager with default sandbox policy and the
+/// TUI's crossterm-backed terminal raw-mode controller (so sandboxed
+/// sync/interactive exec saves/restores raw mode around child spawn).
 pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
-    Arc::new(Mutex::new(ShellManager::new(workspace)))
+    Arc::new(Mutex::new(ShellManager::with_terminal_control(
+        workspace,
+        crossterm_terminal_control(),
+    )))
 }
 
 /// Bridge the TUI's [`SharedShellManager`] onto the portable
