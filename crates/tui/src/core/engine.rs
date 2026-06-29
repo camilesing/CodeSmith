@@ -1273,7 +1273,7 @@ impl Engine {
                 #[allow(dead_code)]
                 Op::StartDreamTask { memory_path } => {
                     let path = memory_path
-                        .or_else(|| self.host.runtime_services.task_data_dir.clone())
+                        .or_else(|| self.host.task_data_dir())
                         .unwrap_or_else(|| {
                             self.session.workspace.join(".codesmith").join("memory")
                         });
@@ -1983,13 +1983,14 @@ impl Engine {
     }
 
     /// Assemble the optional enhancements handed to [`compact_messages_safe`]:
-    /// a cloned `HookExecutor` (so the caller may mutate session state after
-    /// the call) plus whatever session-memory content is currently on disk.
+    /// a cloned hook handle (`Arc<dyn HookHost>`, so the caller may mutate
+    /// session state after the call) plus whatever session-memory content is
+    /// currently on disk.
     ///
     /// Returns `None` when neither hooks nor session-memory material is
     /// available, so the compaction primitive takes its untouched fast path.
     fn build_compaction_enhancements(&self) -> Option<CompactionEnhancements> {
-        let hooks = self.host.hooks.clone().map(|executor| {
+        let hooks = self.host.hooks().map(|executor| {
             let session_id = executor.session_id().to_string();
             let context = self
                 .build_compaction_hook_context()
@@ -2896,10 +2897,9 @@ impl Engine {
         &self,
     ) -> Vec<crate::compaction::attachment_reinject::AgentSummary> {
         self.host
-            .subagent_manager
-            .read()
-            .await
+            .subagents()
             .live_running_snapshots()
+            .await
             .into_iter()
             .map(|snapshot| {
                 let name = if snapshot.name.trim().is_empty() {

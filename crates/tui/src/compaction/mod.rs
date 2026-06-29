@@ -15,10 +15,10 @@ use regex::Regex;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use crate::hooks::{HookContext, HookExecutor};
+use crate::hooks::{HookContext, HookExecutor, HookHost};
 use crate::llm_client::LlmClient;
 use crate::logging;
 use crate::models::{
@@ -809,15 +809,30 @@ fn is_transient_error(e: &anyhow::Error) -> bool {
 ///   `MEMORY.md` / Knowledge-on-Demand content as the summary. Returns
 ///   early (no LLM call) when it clears the compaction threshold.
 ///
-/// The struct is **owned** — it clones the `HookExecutor` and memory
-/// content — so the caller is free to mutate session state after the
-/// compaction call returns without holding a borrow.
-#[derive(Debug, Clone, Default)]
+/// The struct is **owned** — it clones the hook handle (`Arc<dyn HookHost>`)
+/// and memory content — so the caller is free to mutate session state after
+/// the compaction call returns without holding a borrow.
+#[derive(Clone, Default)]
 pub struct CompactionEnhancements {
-    /// `PreCompact` hook executor + context. `None` skips the hook.
-    pub hooks: Option<(HookExecutor, HookContext)>,
+    /// `PreCompact` hook executor + context. `None` skips the hook. The
+    /// executor is `Arc<dyn HookHost>` so the engine body can assemble this
+    /// from a trait-erased host (`HostServices::hooks`) without naming the
+    /// concrete (TUI-local) `HookExecutor`.
+    pub hooks: Option<(Arc<dyn HookHost>, HookContext)>,
     /// Session-memory sidecar. `None` skips session-memory-first.
     pub session_memory: Option<SessionMemorySidecar>,
+}
+
+impl std::fmt::Debug for CompactionEnhancements {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `Arc<dyn HookHost>` is not `Debug` — the trait surface stays free of
+        // a `Debug` supertrait to match the other host-service contracts — so
+        // report hook presence by boolean instead of the inner executor.
+        f.debug_struct("CompactionEnhancements")
+            .field("hooks", &self.hooks.is_some())
+            .field("session_memory", &self.session_memory)
+            .finish()
+    }
 }
 
 /// Memory content + config for session-memory-first compaction.
@@ -3257,7 +3272,7 @@ mod tests {
         let messages = long_conversation();
 
         let enhancements = CompactionEnhancements {
-            hooks: Some((executor, HookContext::new())),
+            hooks: Some((Arc::new(executor), HookContext::new())),
             session_memory: None,
         };
 
@@ -3298,7 +3313,7 @@ mod tests {
         let messages = long_conversation();
 
         let enhancements = CompactionEnhancements {
-            hooks: Some((executor, HookContext::new())),
+            hooks: Some((Arc::new(executor), HookContext::new())),
             session_memory: Some(SessionMemorySidecar {
                 memory_content: "## Project memory\n- fact A".to_string(),
                 config: SessionMemoryCompactConfig {

@@ -31,6 +31,7 @@ use crate::background_task::{
 };
 use crate::engine_config::EngineConfig;
 use crate::events::Event;
+use crate::hooks::HookHost;
 use crate::llm_client::LlmClientHandle;
 use crate::lsp_config::LspConfig;
 use crate::lsp_diagnostics::DiagnosticBlock;
@@ -180,6 +181,11 @@ pub trait SubAgentApi: Send + Sync {
     async fn list(&self) -> Vec<SubAgentResult>;
     /// Evict completed agents older than `max_age`.
     async fn cleanup(&self, max_age: Duration);
+    /// Snapshot of sub-agents currently live-running (status `Running` with
+    /// an active task handle), excluding completed/evicted agents. Used by
+    /// the compaction reinject path to resume active sub-agents into the
+    /// cycle briefing.
+    async fn live_running_snapshots(&self) -> Vec<SubAgentResult>;
 }
 
 /// Portable shell-execution status. Mirrors the TUI's `ShellStatus`; the
@@ -263,6 +269,16 @@ pub trait HostServices: Send + Sync {
 
     /// Shell-manager surface for background shell execution.
     fn shell(&self) -> Arc<dyn ShellApi>;
+
+    /// Durable on-disk data directory for tasks that persist state between
+    /// turns (e.g. dream/memory-consolidation task output). `None` when no
+    /// task data dir is configured — callers fall back to the workspace.
+    fn task_data_dir(&self) -> Option<PathBuf>;
+
+    /// Hook execution surface, when configured. `None` skips `PreCompact`
+    /// (and future compaction-related) hooks. Returned as a trait-erased
+    /// handle so the engine body stays free of the concrete `HookExecutor`.
+    fn hooks(&self) -> Option<Arc<dyn HookHost>>;
 
     /// Assemble the per-turn tool dispatcher and model-visible tool catalog.
     ///

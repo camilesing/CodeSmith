@@ -211,6 +211,19 @@ impl HostServices for super::EngineHost {
         Arc::new(ShellManagerHost(Arc::clone(&self.shell_manager)))
     }
 
+    fn task_data_dir(&self) -> Option<PathBuf> {
+        self.runtime_services.task_data_dir.clone()
+    }
+
+    fn hooks(&self) -> Option<Arc<dyn HookHost>> {
+        // Clone the owned `HookExecutor` and erase it behind `Arc<dyn HookHost>`
+        // so the engine body (and `CompactionEnhancements`) never name the
+        // concrete TUI type.
+        self.hooks
+            .clone()
+            .map(|h| -> Arc<dyn HookHost> { Arc::new(h) })
+    }
+
     async fn spawn_subagent(
         &self,
         req: SpawnSubAgentRequest<'_>,
@@ -671,6 +684,11 @@ impl SubAgentApi for SubAgentManagerHost {
     async fn cleanup(&self, max_age: Duration) {
         let mut g = self.0.write().await;
         SubAgentManager::cleanup(&mut g, max_age);
+    }
+
+    async fn live_running_snapshots(&self) -> Vec<SubAgentResult> {
+        let g = self.0.read().await;
+        SubAgentManager::live_running_snapshots(&g)
     }
 }
 
