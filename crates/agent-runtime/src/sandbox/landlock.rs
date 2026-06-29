@@ -18,6 +18,12 @@
 //!
 //! Note: Once restricted, the process cannot gain more privileges.
 
+// `unsafe` rationale: Landlock drives Linux kernel syscalls
+// (`landlock_create_ruleset`, `landlock_add_rule`, `landlock_restrict_self`,
+// `prctl`, `open`, `close`) via `libc`. Each `unsafe` block is documented at
+// its site. Mirrors the `child_env` file-local allow pattern.
+#![allow(unsafe_code)]
+
 use super::{CommandSpec, SandboxPolicy};
 use std::ffi::CString;
 use std::path::Path;

@@ -50,6 +50,11 @@
 //! Once the seccomp filter is installed, it is **irreversible** — even
 //! `prctl(PR_SET_SECCOMP, ...)` is denied. This is by design.
 
+// `unsafe` rationale: seccomp loads a BPF filter via
+// `libc::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, ...)`. The `unsafe` block
+// is documented at its site. Mirrors the `child_env` file-local allow pattern.
+#![allow(unsafe_code)]
+
 /// Check if seccomp is available on this system.
 ///
 /// Returns true if `/proc/sys/kernel/seccomp/actions_avail` exists and

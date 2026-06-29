@@ -16,9 +16,15 @@
 //! - Apple's sandbox(7) man page
 //! - <https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf>
 
+// `unsafe` rationale: Seatbelt probes macOS kernel facilities via `libc`
+// (`confstr(_CS_DARWIN_USER_CACHE_DIR)`) and mutates process-global env vars
+// (`HOME`/`CARGO_HOME`/`NPM_CONFIG_CACHE`) in tests. Each `unsafe` block is
+// documented at its site. Mirrors the `child_env` file-local allow pattern.
+#![allow(unsafe_code)]
+
 // Note: cfg(target_os = "macos") is already applied at the module level in mod.rs
 
-use super::policy::SandboxPolicy;
+use super::SandboxPolicy;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;

@@ -69,7 +69,7 @@ pub fn build_bwrap_command(
     cwd: &std::path::Path,
     program: &str,
     args: &[String],
-    policy: &crate::sandbox::SandboxPolicy,
+    policy: &super::SandboxPolicy,
 ) -> Vec<String> {
     let writable_roots = policy.get_writable_roots(cwd);
     let mut cmd: Vec<String> = Vec::with_capacity(16 + args.len() + writable_roots.len() * 3);
@@ -133,7 +133,7 @@ mod tests {
             cwd,
             "sh",
             &["-c".to_string(), "echo hi".to_string()],
-            &crate::sandbox::SandboxPolicy::WorkspaceWrite {
+            &super::SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![],
                 network_access: false,
                 exclude_tmpdir: true,

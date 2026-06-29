@@ -30,6 +30,12 @@
 //! from the `libc` crate). On non-Linux platforms, `apply_process_hardening()`
 //! is a no-op that logs a debug-level message.
 
+// `unsafe` rationale: process hardening calls `libc::prctl` (`PR_SET_DUMPABLE`,
+// `PR_SET_NO_NEW_PRIVS`) and `libc::setrlimit` (`RLIMIT_CORE`). Each `unsafe`
+// block is documented at its site. Mirrors the `child_env` file-local allow
+// pattern.
+#![allow(unsafe_code)]
+
 /// Apply process-level hardening measures.
 ///
 /// On Linux, this:
