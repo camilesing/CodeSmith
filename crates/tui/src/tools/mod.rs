@@ -62,7 +62,7 @@ pub use codesmith_tool_impls::tools::test_runner;
 pub use codesmith_tool_impls::tools::todo;
 pub use codesmith_tool_impls::tools::tool_result_retrieval;
 pub mod truncate;
-pub mod user_input;
+pub use codesmith_tool_impls::tools::user_input;
 pub use codesmith_tool_impls::tools::validate_data;
 pub use codesmith_tool_impls::tools::web_run;
 pub mod web_search;

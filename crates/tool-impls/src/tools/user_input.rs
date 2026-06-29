@@ -4,10 +4,10 @@
 //! [`UserInputRequest`], [`UserInputAnswer`], [`UserInputResponse`]) now live
 //! in `codesmith_agent_runtime::user_input` and are re-exported here so that
 //! existing `crate::tools::user_input` references keep resolving. The
-//! [`RequestUserInputTool`] [`ToolSpec`](super::spec::ToolSpec) implementation
+//! [`RequestUserInputTool`] [`ToolSpec`](codesmith_agent_runtime::tools::spec::ToolSpec) implementation
 //! stays in the TUI because it is bound to the TUI-local tool trait.
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 use async_trait::async_trait;
