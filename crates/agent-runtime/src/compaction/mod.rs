@@ -8,19 +8,28 @@
 //!
 //! The compaction *state* submodules (`circuit_breaker`, `micro_compact`,
 //! `responsive_compact`, `session_memory_compact`), the
-//! [`post_compact_cleanup`] helper, and the pure token-estimation helpers
-//! ([`estimate_tokens`] et al.) also live here. The heavy compaction
-//! *implementation* (summary building, partial/micro compaction
-//! orchestration, `should_compact`, etc.) still lives in the TUI for now and
-//! re-exports these via `crate::compaction`.
+//! [`post_compact_cleanup`] helper, the pure token-estimation helpers
+//! ([`estimate_tokens`] et al.), and the heavy compaction *implementation*
+//! ([`compact`] — summary building, `should_compact`, `compact_messages_safe`,
+//! `plan_compaction`, `merge_system_prompts`, etc.) all live here. The TUI
+//! re-exports these at the historical `crate::compaction` path for backwards
+//! compatibility and keeps the compaction test module, which depends on
+//! TUI-local `MockLlmClient` / `HookExecutor`.
 
 use crate::models::{ContentBlock, Message, SystemPrompt};
 
 pub mod circuit_breaker;
+pub mod compact;
 pub mod micro_compact;
 pub mod post_compact_cleanup;
 pub mod responsive_compact;
 pub mod session_memory_compact;
+
+// Flatten the heavy compaction engine's public surface into the `compaction`
+// namespace so callers (and the TUI re-export shim) can reach
+// `compact_messages_safe` / `should_compact` / `plan_compaction` / etc.
+// unqualified, matching the historical `crate::compaction::<fn>` paths.
+pub use compact::*;
 
 /// Default text model used as a fallback when a caller does not supply one.
 ///
