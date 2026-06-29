@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::tools::search::matches_glob;
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, optional_u64, required_str,
 };

@@ -40,3 +40,6 @@ pub mod search;
 pub mod test_runner;
 pub mod todo;
 pub mod tool_result_retrieval;
+pub mod file_search;
+pub mod plan_mode;
+pub mod rlm;

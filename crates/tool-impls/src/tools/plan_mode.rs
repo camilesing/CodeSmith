@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::tools::plan::SharedPlanState;
 use crate::tools::plan_file;
-use crate::tools::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 pub use codesmith_agent_runtime::tool_state::plan_mode::*;
