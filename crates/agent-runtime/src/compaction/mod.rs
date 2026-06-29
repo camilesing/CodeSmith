@@ -7,9 +7,10 @@
 //! `crate::config` paths for backwards compatibility.
 //!
 //! The compaction *state* submodules (`circuit_breaker`, `micro_compact`,
-//! `responsive_compact`, `session_memory_compact`) and the pure token-
-//! estimation helpers ([`estimate_tokens`] et al.) also live here. The heavy
-//! compaction *implementation* (summary building, partial/micro compaction
+//! `responsive_compact`, `session_memory_compact`), the
+//! [`post_compact_cleanup`] helper, and the pure token-estimation helpers
+//! ([`estimate_tokens`] et al.) also live here. The heavy compaction
+//! *implementation* (summary building, partial/micro compaction
 //! orchestration, `should_compact`, etc.) still lives in the TUI for now and
 //! re-exports these via `crate::compaction`.
 
@@ -17,6 +18,7 @@ use crate::models::{ContentBlock, Message, SystemPrompt};
 
 pub mod circuit_breaker;
 pub mod micro_compact;
+pub mod post_compact_cleanup;
 pub mod responsive_compact;
 pub mod session_memory_compact;
 

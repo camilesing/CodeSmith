@@ -3,9 +3,13 @@
 //! After compaction removes messages, various session caches and state
 //! may reference stale data. This module resets them to ensure the
 //! session continues correctly.
+//!
+//! Migrated from the TUI (`crates/tui/src/compaction/post_compact_cleanup.rs`)
+//! as part of the engine-closure extraction — the engine body references
+//! this via `crate::compaction::post_compact_cleanup`.
 
-use crate::compaction::micro_compact::MicroCompactState;
-use crate::core::session::Session;
+use super::micro_compact::MicroCompactState;
+use crate::session::Session;
 
 /// Execute post-compaction cleanup on the session.
 ///
@@ -34,7 +38,7 @@ pub fn post_compact_cleanup(session: &mut Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::session::Session;
+    use crate::session::Session;
     use crate::working_set::WorkingSet;
     use std::path::PathBuf;
 

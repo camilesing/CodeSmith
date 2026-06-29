@@ -3,11 +3,12 @@
 pub mod attachment_reinject;
 pub mod compact_prompt;
 pub mod partial_compact;
-pub mod post_compact_cleanup;
-// Compaction state submodules moved to `codesmith_agent_runtime::compaction`;
-// re-exported here so `crate::compaction::<sub>::<Type>` paths still resolve.
+// Compaction state submodules + the post-compaction cleanup helper moved to
+// `codesmith_agent_runtime::compaction`; re-exported here so
+// `crate::compaction::<sub>::<Type>` paths still resolve.
 pub use codesmith_agent_runtime::compaction::{
-    circuit_breaker, micro_compact, responsive_compact, session_memory_compact,
+    circuit_breaker, micro_compact, post_compact_cleanup, responsive_compact,
+    session_memory_compact,
 };
 
 use anyhow::Result;
