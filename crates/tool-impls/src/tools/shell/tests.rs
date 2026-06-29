@@ -1,7 +1,12 @@
+#![allow(unsafe_code)]
+// Tests mutate the process environment (`std::env::set_var`) which is
+// `unsafe` in edition 2024. Env-mutating tests are serialized by `env_lock`
+// and run single-threaded; see SAFETY notes at each call site.
 use super::*;
 
-use crate::tools::spec::ToolContext;
+use codesmith_agent_runtime::tools::spec::ToolContext;
 use serde_json::{Value, json};
+use std::process::Command;
 use tempfile::tempdir;
 
 // `env_lock` exists only to serialize Unix-only env-mutating tests.
@@ -16,12 +21,42 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Construct a shared shell manager backed by the runtime's no-op terminal
+/// controller. Tests don't need crossterm raw-mode save/restore; the
+/// crossterm-backed constructor lives in the TUI binary.
+fn make_shared_shell_manager(workspace: std::path::PathBuf) -> SharedShellManager {
+    use codesmith_agent_runtime::shell_manager::default_terminal_control;
+    use std::sync::{Arc, Mutex};
+    Arc::new(Mutex::new(ShellManager::with_terminal_control(
+        workspace,
+        default_terminal_control(),
+    )))
+}
+
+/// Minimal [`SandboxBackend`] stub for approval-path tests that only need
+/// `context.sandbox_backend` to be `Some` — `exec` is never called.
+/// (The real `OpenSandboxBackend` lives in the TUI binary's `sandbox`
+/// submodule and depends on `crate::config`, so it can't cross into the
+/// tool-impls crate.)
+#[derive(Debug)]
+struct StubSandboxBackend;
+
+#[async_trait::async_trait]
+impl codesmith_agent_runtime::sandbox::SandboxBackend for StubSandboxBackend {
+    async fn exec(
+        &self,
+        _request: codesmith_agent_runtime::sandbox::SandboxExecRequest,
+    ) -> anyhow::Result<codesmith_agent_runtime::sandbox::SandboxOutput> {
+        unimplemented!("approval_requirement_for_input does not exec")
+    }
+}
+
 fn echo_command(message: &str) -> String {
     format!("echo {message}")
 }
 
 fn sleep_command(seconds: u64) -> String {
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codesmith_agent_runtime::shell_dispatcher::global_dispatcher();
     if dispatcher.kind().is_powershell() {
         return format!("Start-Sleep -Seconds {seconds}");
     }
@@ -37,7 +72,7 @@ fn sleep_command(seconds: u64) -> String {
 }
 
 fn sleep_then_echo_command(seconds: u64, message: &str) -> String {
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codesmith_agent_runtime::shell_dispatcher::global_dispatcher();
     if dispatcher.kind().is_powershell() {
         return format!("Start-Sleep -Seconds {seconds}; echo {message}");
     }
@@ -53,7 +88,7 @@ fn sleep_then_echo_command(seconds: u64, message: &str) -> String {
 }
 
 fn echo_stdin_command() -> String {
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codesmith_agent_runtime::shell_dispatcher::global_dispatcher();
     if dispatcher.kind().is_powershell() {
         return "[Console]::In.ReadToEnd()".to_string();
     }
@@ -133,14 +168,7 @@ fn exec_shell_auto_allows_only_when_sandbox_would_enforce() {
         .with_elevated_sandbox_policy(ExecutionSandboxPolicy::ExternalSandbox {
             network_access: true,
         })
-        .with_sandbox_backend(std::sync::Arc::new(
-            crate::sandbox::opensandbox::OpenSandboxBackend::new(
-                "http://127.0.0.1".to_string(),
-                None,
-                30,
-            )
-            .expect("backend"),
-        ))
+        .with_sandbox_backend(std::sync::Arc::new(StubSandboxBackend))
         .with_sandbox_runtime(SandboxRuntimeConfig {
             auto_allow_bash_if_sandboxed: true,
             ..SandboxRuntimeConfig::default()
@@ -792,7 +820,7 @@ async fn test_exec_shell_foreground_cancel_kills_process() {
 #[tokio::test]
 async fn test_exec_shell_foreground_can_move_to_background() {
     let tmp = tempdir().expect("tempdir");
-    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let shell_manager = make_shared_shell_manager(tmp.path().to_path_buf());
     let ctx =
         ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let command = sleep_command(30);
@@ -849,7 +877,7 @@ async fn test_exec_shell_foreground_can_move_to_background() {
 async fn test_exec_shell_wait_cancel_leaves_background_process_running() {
     let tmp = tempdir().expect("tempdir");
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let shell_manager = make_shared_shell_manager(tmp.path().to_path_buf());
     let ctx = ToolContext::new(tmp.path())
         .with_cancel_token(cancel_token.clone())
         .with_shell_manager(wrap_shell_manager(shell_manager.clone()));
@@ -903,7 +931,7 @@ async fn test_exec_shell_wait_cancel_leaves_background_process_running() {
 #[tokio::test]
 async fn test_completed_background_shell_releases_process_handles() {
     let tmp = tempdir().expect("tempdir");
-    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let shell_manager = make_shared_shell_manager(tmp.path().to_path_buf());
     let ctx =
         ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let started = shell_manager
@@ -939,7 +967,7 @@ async fn test_completed_background_shell_releases_process_handles() {
 #[tokio::test]
 async fn test_exec_shell_cancel_tool_kills_background_process() {
     let tmp = tempdir().expect("tempdir");
-    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let shell_manager = make_shared_shell_manager(tmp.path().to_path_buf());
     let ctx =
         ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let started = shell_manager
@@ -971,7 +999,7 @@ async fn test_exec_shell_cancel_tool_kills_background_process() {
 #[tokio::test]
 async fn test_exec_shell_cancel_tool_can_kill_all_running_processes() {
     let tmp = tempdir().expect("tempdir");
-    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let shell_manager = make_shared_shell_manager(tmp.path().to_path_buf());
     let ctx =
         ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let first = shell_manager
@@ -1125,7 +1153,7 @@ fn issue_1691_quoted_commit_message_round_trips() {
         Duration::from_secs(5),
     );
 
-    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    let dispatcher = codesmith_agent_runtime::shell_dispatcher::global_dispatcher();
     // The whole command (with quotes) is a single argv entry. The actual
     // shell binary can vary by platform, but the payload itself must stay
     // intact in one shell arg. We never split the command string ourselves.
@@ -1139,7 +1167,7 @@ fn issue_1691_quoted_commit_message_round_trips() {
                 format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {cmd}")
             ]
         );
-    } else if matches!(dispatcher.kind(), crate::shell_dispatcher::ShellKind::Cmd) {
+    } else if matches!(dispatcher.kind(), codesmith_agent_runtime::shell_dispatcher::ShellKind::Cmd) {
         assert_eq!(
             spec.args,
             ["/C".to_string(), format!("chcp 65001 >NUL & {cmd}")]

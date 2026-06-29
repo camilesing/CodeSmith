@@ -46,3 +46,4 @@ pub mod rlm;
 pub mod worktree;
 pub mod user_input;
 pub mod remember;
+pub mod shell;
