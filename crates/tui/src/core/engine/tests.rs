@@ -1341,7 +1341,7 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
         role: Some("researcher".to_string()),
     };
     let agent_id = {
-        let mut manager = engine.host.subagent_manager.write().await;
+        let mut manager = engine.host_concrete.subagent_manager.write().await;
         manager.insert_test_live_agent("agent_live".to_string(), assignment)
     };
 
@@ -1364,7 +1364,7 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
     assert!(combined.contains("researcher"));
     assert!(combined.contains(&agent_id));
     engine
-        .host.subagent_manager
+        .host_concrete.subagent_manager
         .write()
         .await
         .abort_test_agent(&agent_id);
@@ -3136,7 +3136,7 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
         message: "expected i32, found &str".to_string(),
     }]));
     engine
-        .host
+        .host_concrete
         .lsp_manager
         .install_test_transport(Language::Rust, fake)
         .await;
@@ -3220,7 +3220,7 @@ async fn post_edit_hook_skips_unknown_tool_names() {
         message: "should not be reported".to_string(),
     }]));
     engine
-        .host
+        .host_concrete
         .lsp_manager
         .install_test_transport(Language::Rust, fake.clone())
         .await;

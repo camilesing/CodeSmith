@@ -226,7 +226,14 @@ impl Default for EngineHost {
 /// The core engine that processes operations and emits events
 pub struct Engine {
     config: EngineConfig,
-    host: EngineHost,
+    host: Arc<dyn HostServices>,
+    /// Concrete host handle retained only for test accessors that need
+    /// `EngineHost` directly (`build_tool_context_for` and the subagent test
+    /// helpers). Removed when the `Engine` moves to `codesmith-agent-runtime`
+    /// (Phase C): the agent-runtime struct cannot name `EngineHost`, and the
+    /// tests are rewritten host-side.
+    #[cfg(test)]
+    host_concrete: Arc<EngineHost>,
     llm_client: Option<LlmClientHandle>,
     llm_client_error: Option<String>,
     api_key_env_only_recovery: Option<String>,
@@ -770,9 +777,21 @@ impl Engine {
         host.sandbox_backend = sandbox_backend;
 
         let api_provider = api_config.api_provider();
+        // Wrap the wired host: `host_concrete` keeps a concrete handle for
+        // test-only accessors; `host` erases it behind `Arc<dyn HostServices>`
+        // so the engine body — and, in Phase C, the `Engine` struct itself —
+        // stays free of the concrete TUI type. The cfg(test) field is dropped
+        // once the Engine moves to `codesmith-agent-runtime`.
+        let host_concrete: Arc<EngineHost> = Arc::new(host);
+        // `.clone()` returns `Arc<EngineHost>` then coerces to
+        // `Arc<dyn HostServices>` at this let-binding site. (`Arc::clone`
+        // would infer `T = EngineHost` and skip the unsized coercion.)
+        let host: Arc<dyn HostServices> = host_concrete.clone();
         let mut engine = Engine {
             config,
             host,
+            #[cfg(test)]
+            host_concrete,
             llm_client,
             llm_client_error,
             api_key_env_only_recovery,
@@ -2357,7 +2376,7 @@ impl Engine {
     #[cfg(test)]
     fn build_tool_context(&self, mode: AppMode, auto_approve: bool) -> ToolContext {
         build_tool_context_for(
-            &self.host,
+            &self.host_concrete,
             &self.session,
             &self.config,
             mode,
