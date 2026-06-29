@@ -20,9 +20,9 @@ use codesmith_agent_runtime::background_task::{
 };
 use codesmith_agent_runtime::hooks::HookHost;
 use codesmith_agent_runtime::host_services::{
-    BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi, ShellApi, ShellExecResult,
-    ShellExecStatus, SpawnSubAgentRequest, StructuredStateRequest, SubAgentApi,
-    SubAgentSpawnResult, TurnDispatchPlan, TurnDispatchRequest,
+    BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi, ShellApi, SpawnSubAgentRequest,
+    StructuredStateRequest, SubAgentApi, SubAgentSpawnResult, TurnDispatchPlan,
+    TurnDispatchRequest,
 };
 use codesmith_agent_runtime::lsp_config::LspConfig;
 use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
@@ -42,9 +42,7 @@ use crate::features::Feature;
 use crate::lsp::LspManager;
 use crate::seam_manager::SeamManager;
 use crate::tools::ToolRegistry;
-use crate::tools::shell::{
-    SharedShellManager, ShellManager, ShellManagerHost, ShellResult, ShellStatus,
-};
+use crate::tools::shell::ShellManagerHost;
 use crate::tools::subagent::{
     Mailbox, SharedSubAgentManager, SubAgentForkContext, SubAgentManager, SubAgentResult,
     SubAgentRuntime, SubAgentType, resolve_subagent_assignment_route,
@@ -698,40 +696,5 @@ impl SubAgentApi for SubAgentManagerHost {
     async fn live_running_snapshots(&self) -> Vec<SubAgentResult> {
         let g = self.0.read().await;
         SubAgentManager::live_running_snapshots(&g)
-    }
-}
-
-impl ShellApi for ShellManagerHost {
-    fn execute(
-        &self,
-        command: &str,
-        working_dir: Option<&str>,
-        timeout_ms: u64,
-        background: bool,
-    ) -> anyhow::Result<ShellExecResult> {
-        let mut shell = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        ShellManager::execute(&mut shell, command, working_dir, timeout_ms, background)
-            .map(shell_exec_result_from)
-    }
-}
-
-/// Convert the TUI-local [`ShellResult`] into the portable
-/// [`ShellExecResult`]. A free function (not `impl From`) because the orphan
-/// rule forbids `impl From<ShellResult> for ShellExecResult` from the TUI
-/// crate (both the trait and the target type are foreign).
-fn shell_exec_result_from(r: ShellResult) -> ShellExecResult {
-    ShellExecResult {
-        task_id: r.task_id,
-        status: match r.status {
-            ShellStatus::Running => ShellExecStatus::Running,
-            ShellStatus::Completed => ShellExecStatus::Completed,
-            ShellStatus::Failed => ShellExecStatus::Failed,
-            ShellStatus::Killed => ShellExecStatus::Killed,
-            ShellStatus::TimedOut => ShellExecStatus::TimedOut,
-        },
-        exit_code: r.exit_code,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        duration_ms: r.duration_ms,
     }
 }
