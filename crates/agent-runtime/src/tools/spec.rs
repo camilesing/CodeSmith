@@ -69,6 +69,12 @@ pub struct RuntimeToolServices {
     /// Sender identity used by team messaging tools. Defaults to the team lead
     /// when unset; teammate runtimes set this to their agent name.
     pub team_sender: Option<String>,
+    /// Desktop-notification surface for the `notify` tool. `None` outside the
+    /// live engine — the tool fails closed with a clear "not available" error
+    /// when unset. Trait-erased to `Arc<dyn NotifierHost>` so `spec.rs` (and,
+    /// downstream, `tool-impls`) need not depend on the host's
+    /// terminal-coupled notification module.
+    pub notifier: Option<std::sync::Arc<dyn crate::host_services::NotifierHost>>,
 }
 
 impl Default for RuntimeToolServices {
@@ -89,6 +95,7 @@ impl Default for RuntimeToolServices {
             permission_request_registry: None,
             background_task_registry: None,
             team_sender: None,
+            notifier: None,
         }
     }
 }
@@ -117,6 +124,7 @@ impl std::fmt::Debug for RuntimeToolServices {
                 &self.background_task_registry.is_some(),
             )
             .field("team_sender", &self.team_sender)
+            .field("notifier", &self.notifier.is_some())
             .finish()
     }
 }

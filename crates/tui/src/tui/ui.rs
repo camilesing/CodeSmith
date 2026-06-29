@@ -537,6 +537,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         permission_request_registry: None,
         background_task_registry: app.runtime_services.background_task_registry.clone(),
         team_sender: None,
+        notifier: Some(crate::tui::notifications::wrap_notifier()),
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 

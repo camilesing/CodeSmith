@@ -228,6 +228,37 @@ pub fn notify_done(
     notify_done_to(method, in_tmux, msg, threshold, elapsed, &mut io::stdout());
 }
 
+/// TUI-side [`NotifierHost`] — delegates to the terminal-coupled
+/// [`notify_done`] free function above. Zero-state; `Arc`-shared so cloned
+/// tool contexts see one logical notifier. The host resolves the delivery
+/// protocol (`Method::Auto` → OSC 9 / BEL / macOS Notification Center / Kitty
+/// / Ghostty) and handles tmux DCS passthrough internally.
+#[derive(Default)]
+pub struct NotifierHostImpl;
+
+impl codesmith_agent_runtime::host_services::NotifierHost for NotifierHostImpl {
+    fn notify_done(&self, msg: &str) {
+        let in_tmux = std::env::var("TMUX")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        // Threshold = 0 so the notification always fires; the model has
+        // already decided this is the moment. `elapsed = 1s` satisfies the
+        // `>= threshold` gate inside [`notify_done_to`].
+        notify_done(
+            Method::Auto,
+            in_tmux,
+            msg,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+        );
+    }
+}
+
+/// Construct the trait-erased notifier handle for `RuntimeToolServices`.
+pub fn wrap_notifier() -> std::sync::Arc<dyn codesmith_agent_runtime::host_services::NotifierHost> {
+    std::sync::Arc::new(NotifierHostImpl)
+}
+
 /// Set the terminal taskbar progress state via OSC 9 ; 4.
 ///
 /// Windows Terminal supports this to show progress on the taskbar icon:

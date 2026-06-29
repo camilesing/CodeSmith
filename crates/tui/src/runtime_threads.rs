@@ -1988,6 +1988,7 @@ impl RuntimeThreadManager {
             permission_request_registry: None,
             background_task_registry: None,
             team_sender: None,
+            notifier: Some(crate::tui::notifications::wrap_notifier()),
         };
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),

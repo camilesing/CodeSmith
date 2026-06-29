@@ -425,6 +425,23 @@ pub trait AutomationManagerHost: Send + Sync {
     ) -> anyhow::Result<AutomationRunRecord>;
 }
 
+/// Terminal-agnostic desktop-notification surface.
+///
+/// The `notify` tool fires a single desktop notification through this trait
+/// so `spec.rs` (and, downstream, `codesmith-tool-impls`) need not depend on
+/// the host's terminal-coupled notification module (OSC 9 / BEL / macOS
+/// Notification Center / tmux DCS passthrough). The host resolves the
+/// delivery protocol from the terminal environment and handles tmux detection
+/// internally; the tool just hands it a message string. Fire-and-forget and
+/// synchronous: the host writes a short escape sequence to stdout (or spawns
+/// an `osascript` on a background thread on macOS) and returns before any
+/// await. Silent no-op when the host has notifications disabled.
+pub trait NotifierHost: Send + Sync {
+    /// Fire a desktop notification with `msg`. Best-effort and silent on
+    /// failure; the host picks the terminal protocol and wraps for tmux.
+    fn notify_done(&self, msg: &str);
+}
+
 /// Host services injected into the engine.
 ///
 /// Each accessor returns a trait-erased view of a service that the engine
