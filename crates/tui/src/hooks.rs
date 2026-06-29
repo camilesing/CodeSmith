@@ -234,6 +234,10 @@ impl codesmith_agent_runtime::hooks::HookHost for HookExecutor {
     fn session_id(&self) -> &str {
         HookExecutor::session_id(self)
     }
+
+    fn collect_shell_env(&self, context: &HookContext) -> HashMap<String, String> {
+        HookExecutor::collect_shell_env(self, context)
+    }
 }
 
 impl HookExecutor {

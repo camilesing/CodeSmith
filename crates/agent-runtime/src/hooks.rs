@@ -363,4 +363,8 @@ pub trait HookHost: Send + Sync {
     fn is_enabled(&self) -> bool;
     /// Session ID, used when building `HookContext` for tool-call hooks.
     fn session_id(&self) -> &str;
+    /// Collect ephemeral `KEY=VALUE` shell env vars from `ShellEnv` hooks.
+    /// Used by the `exec_shell` tool to inject per-skill credentials, PATH
+    /// adjustments, etc. Failures contribute no vars (logged by the host).
+    fn collect_shell_env(&self, context: &HookContext) -> HashMap<String, String>;
 }

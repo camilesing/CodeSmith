@@ -44,8 +44,10 @@ pub struct RuntimeToolServices {
     pub active_thread_id: Option<String>,
     /// Hook executor for `shell_env` injection (#456) and any future
     /// tool-side hook events. `None` outside the live engine — test
-    /// contexts that don't care about hooks get a no-op.
-    pub hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
+    /// contexts that don't care about hooks get a no-op. Trait-erased to
+    /// `Arc<dyn HookHost>` so `spec.rs` (and, downstream, `tool-impls`)
+    /// need not depend on the concrete `HookExecutor`.
+    pub hook_executor: Option<std::sync::Arc<dyn crate::hooks::HookHost>>,
     /// Task V2 manager for conversation-scoped task tracking.
     pub task_v2_manager: Option<crate::tools::task_v2::SharedTaskV2Manager>,
     /// Per-session backing store for `var_handle` payloads. Cloned tool
