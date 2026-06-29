@@ -27,7 +27,7 @@ use crate::pricing::{CostCurrency, CostEstimate};
 use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
-use crate::tools::shell::new_shared_shell_manager;
+use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
@@ -1246,6 +1246,13 @@ pub struct App {
     pub todos: SharedTodoList,
     /// Durable runtime services exposed to model-visible task/automation tools.
     pub runtime_services: RuntimeToolServices,
+    /// Concrete background-shell process manager shared with the engine. The
+    /// trait-erased `Arc<dyn ShellManagerApi>` view in
+    /// `runtime_services.shell_manager` wraps this same concrete, so tools
+    /// (which create background jobs) and the UI (which polls jobs for the
+    /// task panel) see the same `ShellManager`. `build_engine_host` threads
+    /// this into `EngineHost::shell_manager` so the engine body shares it too.
+    pub shell_manager: SharedShellManager,
     /// Last MCP manager/discovery snapshot shown in the UI.
     pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
     /// Number of MCP servers declared in the user's config at app boot.
@@ -1919,8 +1926,9 @@ impl App {
             plan_prompt_pending: false,
             plan_tool_used_in_turn: false,
             todos: new_shared_todo_list(),
+            shell_manager: shell_manager.clone(),
             runtime_services: RuntimeToolServices {
-                shell_manager: Some(shell_manager),
+                shell_manager: Some(wrap_shell_manager(shell_manager)),
                 ..RuntimeToolServices::default()
             },
             mcp_snapshot: None,

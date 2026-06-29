@@ -512,11 +512,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         automation_cancel.clone(),
         AutomationSchedulerConfig::default(),
     );
-    let shell_manager = app
-        .runtime_services
-        .shell_manager
-        .clone()
-        .unwrap_or_else(|| crate::tools::shell::new_shared_shell_manager(app.workspace.clone()));
+    // Derive the trait-erased shell handle from `App`'s concrete
+    // `shell_manager` so the runtime-services view the UI polls and the
+    // concrete the engine shares stay backed by the same `ShellManager`.
+    let shell_manager = crate::tools::shell::wrap_shell_manager(app.shell_manager.clone());
     app.runtime_services = RuntimeToolServices {
         shell_manager: Some(shell_manager),
         task_manager: Some(task_manager.clone()),
@@ -826,6 +825,12 @@ fn build_engine_host(app: &App) -> crate::core::engine::EngineHost {
     crate::core::engine::EngineHost {
         runtime_services: app.runtime_services.clone(),
         hooks: Some(app.hooks.clone()),
+        // Thread the concrete `SharedShellManager` the UI polls so the engine
+        // body, background-task registry, and `ToolContext` all share the same
+        // shell as the task panel (no desync between jobs tools create and jobs
+        // the UI lists). `runtime_services.shell_manager` already wraps this
+        // same concrete; `new_impl` keeps them in sync.
+        shell_manager: Some(app.shell_manager.clone()),
         ..Default::default()
     }
 }
@@ -896,10 +901,8 @@ async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManag
 
     entries.extend(active_rlm_task_entries(app));
 
-    if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
-        && let Ok(mut mgr) = shell_mgr.lock()
-    {
-        for job in mgr.list_jobs() {
+    if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref() {
+        for job in shell_mgr.list_jobs() {
             if !matches!(job.status, crate::tools::shell::ShellStatus::Running) {
                 continue;
             }
@@ -2798,7 +2801,11 @@ async fn run_event_loop(
                                     let mut refreshed_config = config.clone();
                                     refreshed_config.api_key = Some(key);
                                     let engine_config = build_engine_config(app, &refreshed_config);
-                                    engine_handle = spawn_engine(engine_config, &refreshed_config, build_engine_host(app));
+                                    engine_handle = spawn_engine(
+                                        engine_config,
+                                        &refreshed_config,
+                                        build_engine_host(app),
+                                    );
                                     app.offline_mode = false;
                                     app.api_key_env_only = false;
 
@@ -5485,7 +5492,8 @@ async fn apply_command_result(
                         // Rebuild the engine with the new config so API key/model/base URL take effect.
                         let _ = engine_handle.send(Op::Shutdown).await;
                         let engine_config = build_engine_config(app, config);
-                        *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
+                        *engine_handle =
+                            spawn_engine(engine_config, config, build_engine_host(app));
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
@@ -5571,8 +5579,15 @@ fn apply_workspace_runtime_state(app: &mut App, config: &Config, workspace: Path
     app.workspace_context_refreshed_at = None;
     app.file_tree = None;
 
+    // Rebuild the shell manager for the new workspace and keep both the
+    // concrete (`App::shell_manager`, shared with the engine) and the
+    // trait-erased view (`runtime_services.shell_manager`, polled by the UI)
+    // backed by the same new `ShellManager`.
     let shell_manager = crate::tools::shell::new_shared_shell_manager(workspace);
-    app.runtime_services.shell_manager = Some(shell_manager);
+    app.runtime_services.shell_manager = Some(crate::tools::shell::wrap_shell_manager(
+        shell_manager.clone(),
+    ));
+    app.shell_manager = shell_manager;
     app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
 }
 
@@ -5754,13 +5769,7 @@ fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobActio
         return;
     };
 
-    let mut manager = match shell_manager.lock() {
-        Ok(manager) => manager,
-        Err(_) => {
-            add_shell_job_message(app, "Command center lock is poisoned.".to_string());
-            return;
-        }
-    };
+    let manager = &shell_manager;
 
     match action {
         crate::tui::app::ShellJobAction::List => {
@@ -7748,15 +7757,8 @@ pub(crate) fn request_foreground_shell_background(app: &mut App) {
         return;
     };
 
-    match shell_manager.lock() {
-        Ok(mut manager) => {
-            manager.request_foreground_background();
-            app.status_message = Some("Backgrounding current shell command...".to_string());
-        }
-        Err(_) => {
-            app.status_message = Some("Shell manager lock is poisoned".to_string());
-        }
-    }
+    shell_manager.request_foreground_background();
+    app.status_message = Some("Backgrounding current shell command...".to_string());
 }
 
 pub(crate) fn active_foreground_shell_running(app: &App) -> bool {

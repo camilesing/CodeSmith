@@ -17,6 +17,7 @@
 //! "shed heavy fields + host-inject" decision: the services are host-provided
 //! rather than stored on the portable `EngineConfig`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,11 +40,13 @@ use crate::mcp::McpPool;
 use crate::mode::AppMode;
 use crate::models::{Message, Tool};
 use crate::runtime_ui::RuntimeUi;
+use crate::sandbox::{SandboxPolicy, SandboxRuntimeConfig};
 use crate::session::Session;
 use crate::subagent::{SubAgentCompletion, SubAgentResult};
 use crate::tool_dispatch::ToolDispatcher;
 use crate::tool_state::plan::SharedPlanState;
 use crate::tool_state::todo::SharedTodoList;
+use crate::tools::shell_types::{ShellDeltaResult, ShellJobDetail, ShellJobSnapshot, ShellResult};
 use crate::working_set::WorkingSet;
 
 /// Terminal-agnostic LSP manager surface.
@@ -239,6 +242,95 @@ pub trait ShellApi: Send + Sync {
         timeout_ms: u64,
         background: bool,
     ) -> anyhow::Result<ShellExecResult>;
+}
+
+/// Terminal-agnostic shell-manager surface for tool implementations.
+///
+/// The `exec_shell` family of tools drives background/streaming shell jobs
+/// through this trait so `spec.rs` (and, downstream, `codesmith-tool-impls`)
+/// need not depend on the TUI's concrete `ShellManager` (pty / process /
+/// `SandboxManager` plumbing). Each method is synchronous: the host locks
+/// its `std::sync::Mutex` internally and returns before any await, matching
+/// the pre-trait `.lock().method()` call sites.
+///
+/// This is the tool-facing *rich* surface (returning `ShellResult` /
+/// `ShellDeltaResult`); the engine-core's simpler [`ShellApi`] is a separate,
+/// smaller trait that returns the reduced [`ShellExecResult`].
+pub trait ShellManagerApi: Send + Sync {
+    /// Clear any pending foreground→background detach request before a new
+    /// foreground exec starts.
+    fn clear_foreground_background_request(&self);
+    /// Install the session's resolved sandbox runtime config prior to an exec.
+    fn set_sandbox_runtime(&self, runtime: SandboxRuntimeConfig);
+    /// Execute a shell command (background or foreground) with stdin/TTY
+    /// options, a sandbox-policy override, and an extra env-var map merged
+    /// into the spawned process environment. Mirrors
+    /// `ShellManager::execute_with_options_env`.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_with_options_env(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        background: bool,
+        stdin_data: Option<&str>,
+        tty: bool,
+        policy_override: Option<SandboxPolicy>,
+        extra_env: HashMap<String, String>,
+    ) -> anyhow::Result<ShellResult>;
+    /// Interactive variant that accepts extra env vars (#456 shell_env hook).
+    /// Mirrors `ShellManager::execute_interactive_with_policy_env`.
+    fn execute_interactive_with_policy_env(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        policy_override: Option<SandboxPolicy>,
+        extra_env: HashMap<String, String>,
+    ) -> anyhow::Result<ShellResult>;
+    /// Write data to a background process's stdin.
+    fn write_stdin(&self, task_id: &str, input: &str, close: bool) -> anyhow::Result<()>;
+    /// Kill a running background process.
+    fn kill(&self, task_id: &str) -> anyhow::Result<ShellResult>;
+    /// Kill every currently running background shell process.
+    fn kill_running(&self) -> anyhow::Result<Vec<ShellResult>>;
+    /// Consume and return any pending foreground→background detach request.
+    fn take_foreground_background_request(&self) -> bool;
+    /// Get (optionally blocking) output from a background process.
+    fn get_output(
+        &self,
+        task_id: &str,
+        block: bool,
+        timeout_ms: u64,
+    ) -> anyhow::Result<ShellResult>;
+    /// Get incremental output from a background process, consuming any new
+    /// output. Mirrors `ShellManager::get_output_delta`.
+    fn get_output_delta(
+        &self,
+        task_id: &str,
+        wait: bool,
+        timeout_ms: u64,
+    ) -> anyhow::Result<ShellDeltaResult>;
+    /// Attach durable task context to a live shell job.
+    fn tag_linked_task(&self, task_id: &str, linked_task_id: Option<String>) -> anyhow::Result<()>;
+    /// List all live and known-stale background shell jobs (for the host's
+    /// command center). Mirrors `ShellManager::list_jobs`.
+    fn list_jobs(&self) -> Vec<ShellJobSnapshot>;
+    /// Inspect full output for a live or stale job. Mirrors
+    /// `ShellManager::inspect_job`.
+    fn inspect_job(&self, task_id: &str) -> anyhow::Result<ShellJobDetail>;
+    /// Poll a background process and return incremental output. Mirrors
+    /// `ShellManager::poll_delta` (a thin alias for `get_output_delta`).
+    fn poll_delta(
+        &self,
+        task_id: &str,
+        wait: bool,
+        timeout_ms: u64,
+    ) -> anyhow::Result<ShellDeltaResult>;
+    /// Request that the currently-running foreground shell detach to the
+    /// background at the next poll. Mirrors
+    /// `ShellManager::request_foreground_background`.
+    fn request_foreground_background(&self);
 }
 
 /// Host services injected into the engine.

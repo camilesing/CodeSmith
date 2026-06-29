@@ -33,9 +33,7 @@ use crate::tool_state::plan_mode::{SharedPlanModeState, new_shared_plan_mode_sta
 use crate::tool_state::task_v2::SharedTaskV2Manager;
 use crate::tool_state::team::SharedTeamContext;
 use crate::tool_state::todo::{SharedTodoList, new_shared_todo_list};
-use crate::tool_state::worktree::{
-    SharedWorktreeSessionState, new_shared_worktree_session_state,
-};
+use crate::tool_state::worktree::{SharedWorktreeSessionState, new_shared_worktree_session_state};
 
 /// Configuration for the engine
 #[derive(Debug, Clone)]

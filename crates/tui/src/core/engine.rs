@@ -50,7 +50,7 @@ use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, 
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::goal::SharedGoalState;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
-use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
+use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentCompletion, new_shared_subagent_manager,
@@ -182,10 +182,18 @@ pub struct EngineHost {
     pub seam_manager: Option<crate::seam_manager::SeamManager>,
     /// Background shell process manager. Held on the host so the engine body
     /// reaches it through the host turn-dispatcher factory / shell trait and
-    /// stays free of the concrete `ShellManager`; `new_impl` replaces the
-    /// default with the config-resolved one. The type is terminal-coupled
+    /// stays free of the concrete `ShellManager`. The type is terminal-coupled
     /// (pty / process management) so it cannot live on the runtime crate.
-    pub shell_manager: SharedShellManager,
+    ///
+    /// `Some(concrete)` when the caller shares its shell handle with the engine
+    /// — the TUI app path threads the same `SharedShellManager` the UI's task
+    /// panel polls, so background-shell jobs created by tools are visible to
+    /// the UI. `None` for headless paths (`main.rs`, `runtime_threads.rs`,
+    /// `Engine::new`); `new_impl` then creates a fresh manager bound to the
+    /// configured workspace. `new_impl` always sets this back to `Some` before
+    /// the engine runs, so turn-dispatch / `HostServices::shell` can `expect`
+    /// a concrete handle.
+    pub shell_manager: Option<SharedShellManager>,
     /// Sub-agent process manager. Held on the host for the same reason as
     /// `shell_manager`; `new_impl` replaces the default with the
     /// config-resolved one. Terminal-coupled (sub-agent spawn / lifecycle).
@@ -209,10 +217,12 @@ impl Default for EngineHost {
             hooks: None,
             lsp_manager: std::sync::Arc::new(crate::lsp::LspManager::disabled()),
             seam_manager: None,
-            // Placeholder managers replaced by `new_impl` with the
-            // config-resolved instances; every construction path flows
-            // through `new_impl`, so these dummies are always overwritten.
-            shell_manager: new_shared_shell_manager(std::path::PathBuf::new()),
+            // `shell_manager` stays `None` here: callers that share their
+            // shell (TUI app) set `Some` explicitly; headless paths leave it
+            // `None` so `new_impl` creates a fresh manager bound to the
+            // configured workspace. Every path flows through `new_impl`,
+            // which always sets this to `Some` before the engine runs.
+            shell_manager: None,
             subagent_manager: new_shared_subagent_manager(
                 std::path::PathBuf::new(),
                 crate::config::MAX_SUBAGENTS,
@@ -670,14 +680,30 @@ impl Engine {
 
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
+        // The concrete `SharedShellManager` lives on the host (not
+        // `runtime_services`, whose `shell_manager` is now a trait-erased
+        // `Arc<dyn ShellManagerApi>` for spec.rs portability and cannot be
+        // downcast back to concrete). Callers that share their shell with a
+        // UI (the TUI app path via `App::shell_manager`) set `Some(concrete)`;
+        // headless paths leave it `None` and we create a fresh manager bound
+        // to the configured workspace — mirroring the pre-erasure
+        // `runtime_services.shell_manager` fallback.
         let shell_manager = host
-            .runtime_services
             .shell_manager
             .clone()
             .unwrap_or_else(|| new_shared_shell_manager(config.workspace.clone()));
         if let Ok(mut manager) = shell_manager.lock() {
             manager.set_prefer_bwrap(config.sandbox_runtime.prefer_bwrap || config.prefer_bwrap);
             manager.set_sandbox_runtime(config.sandbox_runtime.clone());
+        }
+        // Keep the runtime-services shell handle (visible to tools via
+        // `ToolContext.runtime` and polled by the UI's task panel) wrapping
+        // the same concrete `SharedShellManager` the engine body uses, so
+        // background-shell jobs created by tools are visible to the UI.
+        // Callers that pre-wrapped their concrete (TUI app path) already
+        // satisfy this; headless paths rely on the fresh concrete above.
+        if host.runtime_services.shell_manager.is_none() {
+            host.runtime_services.shell_manager = Some(wrap_shell_manager(shell_manager.clone()));
         }
         let capacity_controller = CapacityController::new(config.capacity.clone());
 
@@ -771,7 +797,7 @@ impl Engine {
         // host turn-dispatcher factory / service traits rather than concrete
         // `Engine` fields (Phase A: keep TUI-coupled types off the engine body
         // so it can move to `codesmith-agent-runtime`).
-        host.shell_manager = shell_manager;
+        host.shell_manager = Some(shell_manager);
         host.subagent_manager = subagent_manager;
         host.workshop_vars = workshop_vars;
         host.sandbox_backend = sandbox_backend;

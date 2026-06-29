@@ -17,7 +17,6 @@ use crate::tools::spec::{
 };
 pub use codesmith_agent_runtime::tool_state::goal::*;
 
-
 /// Render the bounded continuation prompt injected when a goal is still active
 /// after an assistant message has no tool calls.
 #[must_use]

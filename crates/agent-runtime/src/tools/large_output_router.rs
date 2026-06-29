@@ -19,7 +19,6 @@ use codesmith_tools::ToolResult;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-
 /// Approximate characters-per-token ratio used for the heuristic estimate.
 /// We intentionally choose a conservative value (3 chars/token) so we err
 /// on the side of routing rather than dumping raw data into the parent.
@@ -29,7 +28,6 @@ const CHARS_PER_TOKEN_ESTIMATE: usize = 3;
 pub const WORKSHOP_LAST_TOOL_RESULT_VAR: &str = "last_tool_result";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
-
 
 // ── Token estimation ──────────────────────────────────────────────────────────
 

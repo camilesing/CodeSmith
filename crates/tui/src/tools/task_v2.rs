@@ -21,14 +21,12 @@ pub use codesmith_agent_runtime::tool_state::task_v2::*;
 
 // === Types ===
 
-
 // === Verification Nudge ===
 
 /// Track whether tasks were completed without a verification step.
 /// Threshold = 3: after 3 consecutive completions without verification,
 /// a nudge message is injected.
 const VERIFICATION_NUDGE_THRESHOLD: u32 = 3;
-
 
 // === TaskV2CreateTool ===
 

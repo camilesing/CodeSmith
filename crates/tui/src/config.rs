@@ -21,7 +21,6 @@ use crate::sandbox::{
     SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
 };
 
-
 pub const MAX_SUBAGENTS: usize = 20;
 /// Minimum accepted `[subagents] api_timeout_secs`. Anything lower (including
 /// `0`, which would otherwise produce an immediate timeout footgun) clamps
@@ -612,7 +611,6 @@ impl SnapshotsConfig {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchProviderSource {
     Default,
@@ -650,7 +648,6 @@ pub struct SearchConfig {
     #[serde(default)]
     pub api_key: Option<String>,
 }
-
 
 /// One configurable footer item.
 ///
@@ -1155,7 +1152,6 @@ pub struct Config {
     #[serde(default)]
     pub vision_model: Option<VisionModelConfig>,
 }
-
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -2418,17 +2414,14 @@ impl Config {
 
 // === Defaults ===
 
-
 pub(crate) use codesmith_agent_runtime::utils::effective_home_dir;
 // Workspace trust + config-path helpers moved to
 // `codesmith_agent_runtime::workspace_trust`; re-exported here so the rest of
 // config.rs (and `crate::config::is_workspace_trusted` callers) keep resolving.
 pub(crate) use codesmith_agent_runtime::workspace_trust::{
-    default_config_path, env_config_path, expand_path, expand_pathbuf,
-    home_config_path, is_workspace_trusted, workspace_config_key,
-    workspace_trust_level_from_doc,
+    default_config_path, env_config_path, expand_path, expand_pathbuf, home_config_path,
+    is_workspace_trusted, workspace_config_key, workspace_trust_level_from_doc,
 };
-
 
 pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
     let config_path = default_config_path()
@@ -2466,7 +2459,6 @@ pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     Ok(config_path)
 }
-
 
 fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = path {
@@ -2565,7 +2557,6 @@ fn default_requirements_path() -> Option<PathBuf> {
         })
     }
 }
-
 
 fn default_skills_dir() -> Option<PathBuf> {
     effective_home_dir().map(|home| home.join(".codesmith").join("skills"))

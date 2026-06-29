@@ -42,7 +42,9 @@ use crate::features::Feature;
 use crate::lsp::LspManager;
 use crate::seam_manager::SeamManager;
 use crate::tools::ToolRegistry;
-use crate::tools::shell::{SharedShellManager, ShellManager, ShellResult, ShellStatus};
+use crate::tools::shell::{
+    SharedShellManager, ShellManager, ShellManagerHost, ShellResult, ShellStatus,
+};
 use crate::tools::subagent::{
     Mailbox, SharedSubAgentManager, SubAgentForkContext, SubAgentManager, SubAgentResult,
     SubAgentRuntime, SubAgentType, resolve_subagent_assignment_route,
@@ -208,7 +210,14 @@ impl HostServices for super::EngineHost {
     }
 
     fn shell(&self) -> Arc<dyn ShellApi> {
-        Arc::new(ShellManagerHost(Arc::clone(&self.shell_manager)))
+        Arc::new(ShellManagerHost(Arc::clone(
+            // `new_impl` always sets `shell_manager` to `Some` before the
+            // engine runs, so every `HostServices::shell` call (turn dispatch,
+            // sub-agent spawn, …) reaches a concrete handle here.
+            self.shell_manager
+                .as_ref()
+                .expect("shell_manager is set by new_impl before run()"),
+        )))
     }
 
     fn task_data_dir(&self) -> Option<PathBuf> {
@@ -691,12 +700,6 @@ impl SubAgentApi for SubAgentManagerHost {
         SubAgentManager::live_running_snapshots(&g)
     }
 }
-
-/// Bridge the TUI's [`SharedShellManager`] onto the engine-core trait
-/// [`ShellApi`]. A newtype is required (orphan rule); `execute` locks the
-/// inner `std::sync::Mutex` synchronously and converts the TUI-local
-/// [`ShellResult`] into the portable [`ShellExecResult`].
-pub(crate) struct ShellManagerHost(pub SharedShellManager);
 
 impl ShellApi for ShellManagerHost {
     fn execute(

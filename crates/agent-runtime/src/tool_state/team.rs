@@ -39,4 +39,3 @@ pub type SharedTeamContext = Arc<Mutex<Option<TeamContext>>>;
 pub fn new_shared_team_context() -> SharedTeamContext {
     Arc::new(Mutex::new(None))
 }
-

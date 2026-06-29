@@ -31,4 +31,3 @@ pub type SharedWorktreeSessionState = Arc<std::sync::Mutex<WorktreeSessionState>
 pub fn new_shared_worktree_session_state() -> SharedWorktreeSessionState {
     Arc::new(std::sync::Mutex::new(WorktreeSessionState::default()))
 }
-

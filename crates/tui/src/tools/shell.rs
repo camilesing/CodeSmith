@@ -42,6 +42,10 @@ use crate::sandbox::{
 pub use codesmith_agent_runtime::tools::shell_types::{
     ShellDeltaResult, ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus,
 };
+// Tool-facing shell-manager host trait (lives in the runtime crate so
+// `spec.rs` / `tool-impls` can name `Arc<dyn ShellManagerApi>` without
+// depending on the concrete `ShellManager`).
+pub use codesmith_agent_runtime::host_services::ShellManagerApi;
 
 enum ShellChild {
     Process(Child),
@@ -1865,6 +1869,149 @@ pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
     Arc::new(Mutex::new(ShellManager::new(workspace)))
 }
 
+/// Bridge the TUI's [`SharedShellManager`] onto the portable
+/// [`ShellManagerApi`] trait. A newtype is required (orphan rule); each
+/// method locks the inner `std::sync::Mutex` synchronously and delegates to
+/// the inherent [`ShellManager`] method — the pre-trait call sites did the
+/// same under a single `.lock()` guard; the host mutex serializes concurrent
+/// callers. The engine-core [`ShellApi`] impl (returning the reduced
+/// [`ShellExecResult`]) lives in `runtime_traits`.
+pub(crate) struct ShellManagerHost(pub SharedShellManager);
+
+/// Tool-facing rich shell surface. Delegates to the inherent
+/// `ShellManager` methods (private ones like `get_output_delta` are visible
+/// because this impl shares the module).
+impl ShellManagerApi for ShellManagerHost {
+    fn clear_foreground_background_request(&self) {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.clear_foreground_background_request();
+    }
+
+    fn set_sandbox_runtime(&self, runtime: SandboxRuntimeConfig) {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.set_sandbox_runtime(runtime);
+    }
+
+    fn execute_with_options_env(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        background: bool,
+        stdin_data: Option<&str>,
+        tty: bool,
+        policy_override: Option<ExecutionSandboxPolicy>,
+        extra_env: HashMap<String, String>,
+    ) -> anyhow::Result<ShellResult> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.execute_with_options_env(
+            command,
+            working_dir,
+            timeout_ms,
+            background,
+            stdin_data,
+            tty,
+            policy_override,
+            extra_env,
+        )
+    }
+
+    fn execute_interactive_with_policy_env(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        policy_override: Option<ExecutionSandboxPolicy>,
+        extra_env: HashMap<String, String>,
+    ) -> anyhow::Result<ShellResult> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.execute_interactive_with_policy_env(
+            command,
+            working_dir,
+            timeout_ms,
+            policy_override,
+            extra_env,
+        )
+    }
+
+    fn write_stdin(&self, task_id: &str, input: &str, close: bool) -> anyhow::Result<()> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.write_stdin(task_id, input, close)
+    }
+
+    fn kill(&self, task_id: &str) -> anyhow::Result<ShellResult> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.kill(task_id)
+    }
+
+    fn kill_running(&self) -> anyhow::Result<Vec<ShellResult>> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.kill_running()
+    }
+
+    fn take_foreground_background_request(&self) -> bool {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.take_foreground_background_request()
+    }
+
+    fn get_output(
+        &self,
+        task_id: &str,
+        block: bool,
+        timeout_ms: u64,
+    ) -> anyhow::Result<ShellResult> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.get_output(task_id, block, timeout_ms)
+    }
+
+    fn get_output_delta(
+        &self,
+        task_id: &str,
+        wait: bool,
+        timeout_ms: u64,
+    ) -> anyhow::Result<ShellDeltaResult> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.get_output_delta(task_id, wait, timeout_ms)
+    }
+
+    fn tag_linked_task(&self, task_id: &str, linked_task_id: Option<String>) -> anyhow::Result<()> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.tag_linked_task(task_id, linked_task_id)
+    }
+
+    fn list_jobs(&self) -> Vec<ShellJobSnapshot> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.list_jobs()
+    }
+
+    fn inspect_job(&self, task_id: &str) -> anyhow::Result<ShellJobDetail> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.inspect_job(task_id)
+    }
+
+    fn poll_delta(
+        &self,
+        task_id: &str,
+        wait: bool,
+        timeout_ms: u64,
+    ) -> anyhow::Result<ShellDeltaResult> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.poll_delta(task_id, wait, timeout_ms)
+    }
+
+    fn request_foreground_background(&self) {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.request_foreground_background();
+    }
+}
+
+/// Wrap a concrete [`SharedShellManager`] behind the portable
+/// [`ShellManagerApi`] trait object. Used at the host→runtime boundary
+/// (engine tool setup, `RuntimeToolServices` population, test contexts).
+pub(crate) fn wrap_shell_manager(sm: SharedShellManager) -> Arc<dyn ShellManagerApi> {
+    Arc::new(ShellManagerHost(sm))
+}
+
 // === ToolSpec Implementations ===
 
 use crate::command_safety::{SafetyLevel, analyze_command, extract_primary_command};
@@ -2024,10 +2171,7 @@ async fn execute_foreground_via_background(
 ) -> Result<ShellResult> {
     let timeout_ms = timeout_ms.clamp(1000, 600_000);
     let spawned = {
-        let mut manager = context
-            .shell_manager
-            .lock()
-            .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+        let manager = &context.shell_manager;
         manager.clear_foreground_background_request();
         manager.set_sandbox_runtime(sandbox_runtime);
         manager.execute_with_options_env(
@@ -2046,10 +2190,7 @@ async fn execute_foreground_via_background(
         .ok_or_else(|| anyhow!("foreground shell did not return a process id"))?;
 
     if stdin_data.is_some() {
-        let mut manager = context
-            .shell_manager
-            .lock()
-            .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+        let manager = &context.shell_manager;
         manager.write_stdin(&task_id, "", true)?;
     }
 
@@ -2060,18 +2201,12 @@ async fn execute_foreground_via_background(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             return manager.kill(&task_id);
         }
 
         let snapshot = {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             if manager.take_foreground_background_request() {
                 return manager.get_output(&task_id, false, 0);
             }
@@ -2083,10 +2218,7 @@ async fn execute_foreground_via_background(
         }
 
         if Instant::now() >= deadline {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             let mut result = manager.kill(&task_id)?;
             result.status = ShellStatus::TimedOut;
             return Ok(result);
@@ -2435,10 +2567,7 @@ impl ToolSpec for ExecShellTool {
         }
 
         let result = if interactive {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             manager.set_sandbox_runtime(effective_runtime.clone());
             manager.execute_interactive_with_policy_env(
                 command,
@@ -2448,10 +2577,7 @@ impl ToolSpec for ExecShellTool {
                 extra_env,
             )
         } else if background {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             manager.set_sandbox_runtime(effective_runtime.clone());
             manager.execute_with_options_env(
                 command,
@@ -2486,9 +2612,10 @@ impl ToolSpec for ExecShellTool {
                         result.task_id.as_deref(),
                         context.runtime.active_task_id.clone(),
                     )
-                    && let Ok(mut manager) = context.shell_manager.lock()
                 {
-                    let _ = manager.tag_linked_task(shell_id, Some(task_id));
+                    let _ = context
+                        .shell_manager
+                        .tag_linked_task(shell_id, Some(task_id));
                 }
 
                 let was_cancelled = context
@@ -2757,10 +2884,7 @@ async fn wait_for_shell_delta_cancellable(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             let delta = manager
                 .get_output_delta(task_id, false, 0)
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?;
@@ -2779,10 +2903,7 @@ async fn wait_for_shell_delta_cancellable(
         }
 
         let delta = {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             manager
                 .get_output_delta(task_id, false, 0)
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?
@@ -2900,10 +3021,7 @@ impl ToolSpec for ShellCancelTool {
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let cancel_all = optional_bool(&input, "all", false);
-        let mut manager = context
-            .shell_manager
-            .lock()
-            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+        let manager = &context.shell_manager;
 
         if cancel_all {
             let results = manager
@@ -3013,10 +3131,7 @@ impl ToolSpec for ShellWaitTool {
         let (delta, wait_canceled) = if wait {
             wait_for_shell_delta_cancellable(context, task_id, timeout_ms).await?
         } else {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             let delta = manager
                 .get_output_delta(task_id, false, timeout_ms)
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?;
@@ -3110,10 +3225,7 @@ impl ToolSpec for ShellInteractTool {
             .unwrap_or("");
 
         {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let manager = &context.shell_manager;
             if !interaction_input.is_empty() || close_stdin {
                 manager
                     .write_stdin(task_id, interaction_input, close_stdin)
@@ -3128,10 +3240,7 @@ impl ToolSpec for ShellInteractTool {
                 .as_ref()
                 .is_some_and(|token| token.is_cancelled())
             {
-                let mut manager = context
-                    .shell_manager
-                    .lock()
-                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                let manager = &context.shell_manager;
                 let delta = manager
                     .get_output_delta(task_id, false, 0)
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?;
@@ -3145,10 +3254,7 @@ impl ToolSpec for ShellInteractTool {
             }
 
             let delta = {
-                let mut manager = context
-                    .shell_manager
-                    .lock()
-                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                let manager = &context.shell_manager;
                 manager
                     .get_output_delta(task_id, false, 0)
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?

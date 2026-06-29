@@ -15,9 +15,9 @@ use crate::prompt_runtime::{
 };
 use crate::tui::app::AppMode;
 use crate::tui::approval::ApprovalMode;
+pub use codesmith_agent_runtime::prompt_sources::{InstructionSource, PromptAppendSource};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-pub use codesmith_agent_runtime::prompt_sources::{InstructionSource, PromptAppendSource};
 
 #[derive(Debug, Clone)]
 pub struct PromptSessionContext<'a> {
@@ -88,7 +88,6 @@ impl<'a> Default for PromptRuntimeContext<'a> {
         PromptSessionContext::default().runtime()
     }
 }
-
 
 impl Default for PromptSessionContext<'_> {
     fn default() -> Self {
@@ -211,7 +210,6 @@ fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
          - pwd: {pwd}"
     )
 }
-
 
 /// Render the `instructions = [...]` config array as a single
 /// system-prompt block (#454). Each source is processed in declared order;

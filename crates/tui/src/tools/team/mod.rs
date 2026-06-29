@@ -29,6 +29,7 @@ use tokio::sync::Mutex;
 pub use backend::{
     BackendError, BackendKind, SpawnedTeammate, TeammateBackend, TeammateHandle, TeammateSpawnSpec,
 };
+pub use codesmith_agent_runtime::tool_state::team::*;
 pub use inbox_poller::{
     InboxClassification, InboxDispatch, TeamInboxRx, TeamInboxTx, classify_inbox_messages,
     run_leader_inbox_poller,
@@ -46,7 +47,6 @@ pub use protocol_handlers::{
 pub use send_message::SendMessageTool;
 pub use team_create::TeamCreateTool;
 pub use team_delete::TeamDeleteTool;
-pub use codesmith_agent_runtime::tool_state::team::*;
 pub use team_discovery::{
     add_member, find_member, find_member_by_id, read_team_config, remove_member, set_member_active,
     set_member_inactive, write_team_config,
@@ -71,5 +71,3 @@ pub use teammate_mailbox::{
     is_structured_protocol_message, mark_messages_as_read, parse_structured_protocol, read_mailbox,
     read_unread_messages, write_to_mailbox,
 };
-
-

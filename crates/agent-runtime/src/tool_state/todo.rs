@@ -165,4 +165,3 @@ pub type SharedTodoList = Arc<Mutex<TodoList>>;
 pub fn new_shared_todo_list() -> SharedTodoList {
     Arc::new(Mutex::new(TodoList::new()))
 }
-

@@ -3,8 +3,10 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use super::{SandboxPolicy, SandboxType};
-pub use codesmith_agent_runtime::sandbox::{SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig, current_platform, is_managed_domain, managed_domains};
-
+pub use codesmith_agent_runtime::sandbox::{
+    SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
+    current_platform, is_managed_domain, managed_domains,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxDecision {
@@ -98,5 +100,3 @@ impl SandboxDecision {
         self.sandbox_effective || !self.sandbox_fail_closed
     }
 }
-
-

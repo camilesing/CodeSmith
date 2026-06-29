@@ -332,8 +332,7 @@ fn wrap_with_deprecation_notice(
 /// Re-exported from `codesmith_agent_runtime::subagent` so the engine and
 /// TUI share the same sub-agent taxonomy.
 pub use codesmith_agent_runtime::subagent::{
-    DEFAULT_MAX_SPAWN_DEPTH, SubAgentAssignment, SubAgentCompletion, SubAgentStatus,
-    SubAgentType,
+    DEFAULT_MAX_SPAWN_DEPTH, SubAgentAssignment, SubAgentCompletion, SubAgentStatus, SubAgentType,
 };
 
 /// Snapshot of sub-agent state for tool results.

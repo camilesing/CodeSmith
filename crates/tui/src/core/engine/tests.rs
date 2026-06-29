@@ -1364,7 +1364,8 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
     assert!(combined.contains("researcher"));
     assert!(combined.contains(&agent_id));
     engine
-        .host_concrete.subagent_manager
+        .host_concrete
+        .subagent_manager
         .write()
         .await
         .abort_test_agent(&agent_id);

@@ -792,8 +792,9 @@ async fn test_exec_shell_foreground_cancel_kills_process() {
 #[tokio::test]
 async fn test_exec_shell_foreground_can_move_to_background() {
     let tmp = tempdir().expect("tempdir");
-    let ctx = ToolContext::new(tmp.path());
-    let shell_manager = ctx.shell_manager.clone();
+    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let ctx =
+        ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let command = sleep_command(30);
     let task_ctx = ctx.clone();
 
@@ -848,8 +849,10 @@ async fn test_exec_shell_foreground_can_move_to_background() {
 async fn test_exec_shell_wait_cancel_leaves_background_process_running() {
     let tmp = tempdir().expect("tempdir");
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let ctx = ToolContext::new(tmp.path()).with_cancel_token(cancel_token.clone());
-    let shell_manager = ctx.shell_manager.clone();
+    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let ctx = ToolContext::new(tmp.path())
+        .with_cancel_token(cancel_token.clone())
+        .with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let started = shell_manager
         .lock()
         .expect("shell manager lock")
@@ -900,8 +903,9 @@ async fn test_exec_shell_wait_cancel_leaves_background_process_running() {
 #[tokio::test]
 async fn test_completed_background_shell_releases_process_handles() {
     let tmp = tempdir().expect("tempdir");
-    let ctx = ToolContext::new(tmp.path());
-    let shell_manager = ctx.shell_manager.clone();
+    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let ctx =
+        ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let started = shell_manager
         .lock()
         .expect("shell manager lock")
@@ -935,8 +939,9 @@ async fn test_completed_background_shell_releases_process_handles() {
 #[tokio::test]
 async fn test_exec_shell_cancel_tool_kills_background_process() {
     let tmp = tempdir().expect("tempdir");
-    let ctx = ToolContext::new(tmp.path());
-    let shell_manager = ctx.shell_manager.clone();
+    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let ctx =
+        ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let started = shell_manager
         .lock()
         .expect("shell manager lock")
@@ -966,8 +971,9 @@ async fn test_exec_shell_cancel_tool_kills_background_process() {
 #[tokio::test]
 async fn test_exec_shell_cancel_tool_can_kill_all_running_processes() {
     let tmp = tempdir().expect("tempdir");
-    let ctx = ToolContext::new(tmp.path());
-    let shell_manager = ctx.shell_manager.clone();
+    let shell_manager = new_shared_shell_manager(tmp.path().to_path_buf());
+    let ctx =
+        ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
     let first = shell_manager
         .lock()
         .expect("shell manager lock")

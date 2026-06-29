@@ -14,9 +14,7 @@ pub use codesmith_agent_runtime::tool_state::todo::*;
 
 // === Types ===
 
-
 // === TodoWriteTool - ToolSpec implementation ===
-
 
 /// Tool for writing and updating the todo list
 pub struct TodoWriteTool {

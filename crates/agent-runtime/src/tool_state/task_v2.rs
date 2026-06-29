@@ -479,7 +479,6 @@ pub fn should_emit_verification_nudge(manager: &TaskV2Manager) -> Option<u32> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

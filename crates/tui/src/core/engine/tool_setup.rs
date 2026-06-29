@@ -9,6 +9,7 @@ use codesmith_agent_runtime::runtime_ui::RuntimeUi;
 
 use super::*;
 use crate::sandbox::SandboxPolicy;
+use crate::tools::shell::wrap_shell_manager;
 
 /// Pick the sandbox policy that gates shell commands for a given UI mode.
 ///
@@ -78,7 +79,12 @@ pub(super) fn build_tool_context_for(
     )
     .with_state_namespace(session.id.clone())
     .with_features(config.features.clone())
-    .with_shell_manager(host.shell_manager.clone())
+    .with_shell_manager(wrap_shell_manager(
+        host.shell_manager
+            .as_ref()
+            .expect("shell_manager is set by new_impl before turn dispatch")
+            .clone(),
+    ))
     .with_runtime_services(host.runtime_services.clone())
     .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
         session.id.clone(),

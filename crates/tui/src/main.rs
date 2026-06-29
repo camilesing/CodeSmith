@@ -5602,7 +5602,11 @@ async fn run_exec_agent(
         team_context: None,
     };
 
-    let engine_handle = spawn_engine(engine_config, config, crate::core::engine::EngineHost::default());
+    let engine_handle = spawn_engine(
+        engine_config,
+        config,
+        crate::core::engine::EngineHost::default(),
+    );
     let mode = if auto_approve {
         AppMode::Yolo
     } else {

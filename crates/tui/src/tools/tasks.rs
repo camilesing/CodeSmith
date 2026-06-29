@@ -376,9 +376,7 @@ impl ToolSpec for TaskStopTool {
             }
         }
 
-        if let Ok(mut shell) = context.shell_manager.lock()
-            && let Ok(result) = shell.kill(target)
-        {
+        if let Ok(result) = context.shell_manager.kill(target) {
             return Ok(
                 ToolResult::success(format!("Stopped shell task: {target}")).with_metadata(json!({
                     "target": target,

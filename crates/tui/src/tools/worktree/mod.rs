@@ -12,12 +12,11 @@ use codesmith_tools::ToolError;
 mod enter;
 mod exit;
 
+pub use codesmith_agent_runtime::tool_state::worktree::*;
 pub use enter::EnterWorktreeTool;
 pub use exit::ExitWorktreeTool;
-pub use codesmith_agent_runtime::tool_state::worktree::*;
 
 // ── Shared session state ──────────────────────────────────────────────────
-
 
 // ── Slug validation ───────────────────────────────────────────────────────
 

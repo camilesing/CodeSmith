@@ -56,7 +56,6 @@ plan is finalized. The user must approve before implementation begins.";
 
 // === PlanModeState ===
 
-
 // === EnterPlanModeTool ===
 
 /// Tool for entering plan mode.

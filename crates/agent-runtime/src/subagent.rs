@@ -374,7 +374,6 @@ const COORDINATOR_WORKER_INTRO: &str = concat!(
     "You cannot use team management tools or send messages to other agents — focus solely on your assigned task.\n\n"
 );
 
-
 /// Scope for an agent memory directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

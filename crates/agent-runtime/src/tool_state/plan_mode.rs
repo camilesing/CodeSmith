@@ -27,4 +27,3 @@ pub type SharedPlanModeState = Arc<Mutex<PlanModeState>>;
 pub fn new_shared_plan_mode_state() -> SharedPlanModeState {
     Arc::new(Mutex::new(PlanModeState::default()))
 }
-

@@ -191,4 +191,3 @@ impl GoalSnapshot {
         self.objective.is_some() && self.status == GoalStatus::Active.as_str()
     }
 }
-

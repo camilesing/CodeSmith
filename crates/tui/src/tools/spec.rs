@@ -21,7 +21,7 @@ use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
 use crate::sandbox::SandboxRuntimeConfig;
 use crate::sandbox::backend::SandboxBackend;
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
-use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
+use crate::tools::shell::{ShellManagerApi, new_shared_shell_manager, wrap_shell_manager};
 #[allow(unused_imports)]
 pub use codesmith_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
@@ -36,7 +36,7 @@ pub use codesmith_tools::{
 /// attached.
 #[derive(Clone)]
 pub struct RuntimeToolServices {
-    pub shell_manager: Option<SharedShellManager>,
+    pub shell_manager: Option<Arc<dyn ShellManagerApi>>,
     pub task_manager: Option<crate::task_manager::SharedTaskManager>,
     pub automations: Option<crate::automation_manager::SharedAutomationManager>,
     pub task_data_dir: Option<PathBuf>,
@@ -135,7 +135,7 @@ pub struct ToolContext {
     /// `workspace`, but shifts to a worktree path after `enter_worktree`.
     pub cwd: PathBuf,
     /// Shared shell manager for background tasks and streaming IO.
-    pub shell_manager: SharedShellManager,
+    pub shell_manager: Arc<dyn ShellManagerApi>,
     /// Whether to allow paths outside workspace
     pub trust_mode: bool,
     /// Current sandbox policy
@@ -234,7 +234,7 @@ impl ToolContext {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
-        let shell_manager = new_shared_shell_manager(workspace.clone());
+        let shell_manager = wrap_shell_manager(new_shared_shell_manager(workspace.clone()));
         // Prefer .codesmith, fall back to .deepseek for project-local state
         let notes_path = codesmith_config::resolve_project_state_dir(&workspace, "notes.md").1;
         let mcp_config_path = codesmith_config::resolve_project_state_dir(&workspace, "mcp.json").1;
@@ -281,7 +281,7 @@ impl ToolContext {
         mcp_config_path: impl Into<PathBuf>,
     ) -> Self {
         let workspace = workspace.into();
-        let shell_manager = new_shared_shell_manager(workspace.clone());
+        let shell_manager = wrap_shell_manager(new_shared_shell_manager(workspace.clone()));
         let cwd = workspace.clone();
         Self {
             workspace,
@@ -325,7 +325,7 @@ impl ToolContext {
         auto_approve: bool,
     ) -> Self {
         let workspace = workspace.into();
-        let shell_manager = new_shared_shell_manager(workspace.clone());
+        let shell_manager = wrap_shell_manager(new_shared_shell_manager(workspace.clone()));
         let cwd = workspace.clone();
         Self {
             workspace,
@@ -583,7 +583,7 @@ impl ToolContext {
     }
 
     /// Override the shared shell manager.
-    pub fn with_shell_manager(mut self, shell_manager: SharedShellManager) -> Self {
+    pub fn with_shell_manager(mut self, shell_manager: Arc<dyn ShellManagerApi>) -> Self {
         self.shell_manager = shell_manager;
         self
     }

@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 /// Status of a plan step.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -277,4 +277,3 @@ pub type SharedPlanState = Arc<Mutex<PlanState>>;
 pub fn new_shared_plan_state() -> SharedPlanState {
     Arc::new(Mutex::new(PlanState::default()))
 }
-

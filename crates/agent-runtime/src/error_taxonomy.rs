@@ -1,8 +1,8 @@
 //! Shared error taxonomy across client, tools, runtime, and UI.
 use std::fmt;
 
-use codesmith_tools::ToolError;
 use crate::llm_client::LlmError;
+use codesmith_tools::ToolError;
 
 /// Broad category for typed error handling and policy decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

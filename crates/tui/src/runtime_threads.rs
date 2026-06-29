@@ -1961,21 +1961,21 @@ impl RuntimeThreadManager {
             .map(crate::config::LspConfigToml::into_runtime);
         let settings = crate::settings::Settings::load().unwrap_or_default();
         let runtime_services = crate::tools::spec::RuntimeToolServices {
-                task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),
-                automations: self.automations.lock().ok().and_then(|slot| slot.clone()),
-                task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
-                active_task_id: thread.task_id.clone(),
-                active_thread_id: Some(thread.id.clone()),
-                shell_manager: None,
-                hook_executor: None,
-                handle_store: crate::tools::handle::new_shared_handle_store(),
-                rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
-                task_v2_manager: None,
-                task_mailbox: None,
-                team_context: None,
-                permission_request_registry: None,
-                background_task_registry: None,
-                team_sender: None,
+            task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),
+            automations: self.automations.lock().ok().and_then(|slot| slot.clone()),
+            task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
+            active_task_id: thread.task_id.clone(),
+            active_thread_id: Some(thread.id.clone()),
+            shell_manager: None,
+            hook_executor: None,
+            handle_store: crate::tools::handle::new_shared_handle_store(),
+            rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
+            task_v2_manager: None,
+            task_mailbox: None,
+            team_context: None,
+            permission_request_registry: None,
+            background_task_registry: None,
+            team_sender: None,
         };
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
@@ -2010,9 +2010,7 @@ impl RuntimeThreadManager {
             features: self.config.features(),
             compaction,
             cycle: crate::cycle_manager::CycleConfig::default(),
-            capacity: crate::core::capacity::capacity_controller_config_from_app(
-                &self.config,
-            ),
+            capacity: crate::core::capacity::capacity_controller_config_from_app(&self.config),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
             plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
@@ -2053,11 +2051,15 @@ impl RuntimeThreadManager {
             team_context: None,
         };
 
-        let engine = spawn_engine(engine_cfg, &self.config, crate::core::engine::EngineHost {
+        let engine = spawn_engine(
+            engine_cfg,
+            &self.config,
+            crate::core::engine::EngineHost {
                 runtime_services,
                 hooks: None,
                 ..Default::default()
-            });
+            },
+        );
 
         let turns = self.store.list_turns_for_thread(&thread.id)?;
         let session_messages = self.reconstruct_messages_from_turns(&turns)?;

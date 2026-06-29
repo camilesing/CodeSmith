@@ -15,12 +15,9 @@ pub use codesmith_agent_runtime::tool_state::plan::*;
 
 // === Types ===
 
-
 // === Plan State ===
 
-
 // === UpdatePlanTool - ToolSpec implementation ===
-
 
 /// Tool for updating the implementation plan
 pub struct UpdatePlanTool {
