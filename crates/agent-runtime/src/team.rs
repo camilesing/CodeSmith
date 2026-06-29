@@ -6,7 +6,11 @@
 //! the TUI. The TUI re-exports them at their historical
 //! `crate::tools::team` paths for backwards compatibility.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 
 /// Idle reason variants — why a teammate went idle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,4 +86,56 @@ pub enum InboxDispatch {
         allowed_tools: Vec<String>,
         denied_tools: Vec<String>,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Permission Request Registry
+// ---------------------------------------------------------------------------
+
+/// Decision from leader on a permission request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PermissionDecision {
+    Allow,
+    Deny { reason: Option<String> },
+}
+
+/// Registry for pending permission requests awaiting leader approval.
+/// Each request maps to a oneshot channel that resolves when the leader
+/// approves or denies.
+pub struct PermissionRequestRegistry {
+    pending: HashMap<String, oneshot::Sender<PermissionDecision>>,
+}
+
+impl PermissionRequestRegistry {
+    pub fn new() -> Self {
+        Self {
+            pending: HashMap::new(),
+        }
+    }
+
+    /// Register a pending permission request. Returns the Receiver that
+    /// will resolve when the leader makes a decision.
+    pub fn register(&mut self, request_id: String) -> oneshot::Receiver<PermissionDecision> {
+        let (tx, rx) = oneshot::channel();
+        self.pending.insert(request_id, tx);
+        rx
+    }
+
+    /// Resolve a pending request. Returns false if no matching request found
+    /// (e.g., already resolved or timed out).
+    pub fn resolve(&mut self, request_id: &str, decision: PermissionDecision) -> bool {
+        if let Some(tx) = self.pending.remove(request_id) {
+            tx.send(decision).is_ok()
+        } else {
+            false
+        }
+    }
+}
+
+/// Thread-safe shared reference to the permission request registry.
+pub type SharedPermissionRequestRegistry = Arc<Mutex<PermissionRequestRegistry>>;
+
+/// Create a new empty SharedPermissionRequestRegistry.
+pub fn new_shared_permission_registry() -> SharedPermissionRequestRegistry {
+    Arc::new(Mutex::new(PermissionRequestRegistry::new()))
 }
