@@ -641,6 +641,13 @@ impl Engine {
             translation_enabled: config.translation_enabled,
             model_id: &config.model,
             show_thinking: config.show_thinking,
+            skills_block: crate::skills::render_available_skills_context_for_workspace(
+                &config.workspace,
+            )
+            .or_else(|| {
+                Some(config.skills_dir.as_path())
+                    .and_then(crate::skills::render_available_skills_context)
+            }),
         }
         .runtime();
         let system_prompt =
@@ -2780,6 +2787,13 @@ impl Engine {
             translation_enabled: self.config.translation_enabled,
             model_id: &self.config.model,
             show_thinking: self.config.show_thinking,
+            skills_block: crate::skills::render_available_skills_context_for_workspace(
+                &self.config.workspace,
+            )
+            .or_else(|| {
+                Some(self.config.skills_dir.as_path())
+                    .and_then(crate::skills::render_available_skills_context)
+            }),
         }
         .runtime();
         let base = prompts::effective_prompt_bundle_for_mode_with_runtime_context_and_approval(

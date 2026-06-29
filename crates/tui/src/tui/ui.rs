@@ -4652,6 +4652,9 @@ async fn dispatch_user_message(
                 translation_enabled: app.translation_enabled,
                 model_id: &app.model,
                 show_thinking: app.show_thinking,
+                skills_block: crate::skills::render_available_skills_context_for_workspace(
+                    &app.workspace,
+                ),
             },
         ),
     );

@@ -48,6 +48,11 @@ pub struct PromptSessionContext<'a> {
     /// When false, the prompt should not spend localization pressure on
     /// `reasoning_content` the user will never see.
     pub show_thinking: bool,
+    /// Pre-rendered `## Skills` block. The caller resolves this from the
+    /// workspace/skills directories via `crate::skills::render_available_skills_context*`
+    /// so the prompt builder stays free of skills-discovery dependencies
+    /// (and portable across crates). `None` when no skills are available.
+    pub skills_block: Option<String>,
 }
 
 impl<'a> PromptSessionContext<'a> {
@@ -100,6 +105,7 @@ impl Default for PromptSessionContext<'_> {
             translation_enabled: false,
             model_id: "codesmith",
             show_thinking: true,
+            skills_block: None,
         }
     }
 }
@@ -990,6 +996,8 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             translation_enabled: false,
             model_id: "codesmith",
             show_thinking: true,
+            skills_block: crate::skills::render_available_skills_context_for_workspace(workspace)
+                .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context)),
         },
     )
 }
@@ -1091,7 +1099,7 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
     mode: AppMode,
     workspace: &Path,
     _working_set_summary: Option<&str>,
-    skills_dir: Option<&Path>,
+    _skills_dir: Option<&Path>,
     instructions: Option<&[InstructionSource]>,
     session_context: PromptSessionContext<'_>,
     approval_mode: ApprovalMode,
@@ -1161,8 +1169,10 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
         );
     }
 
-    let skills_block = crate::skills::render_available_skills_context_for_workspace(workspace)
-        .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context));
+    // The skills block is pre-rendered by the caller (see
+    // `PromptSessionContext::skills_block`) so this builder stays free of
+    // skills-discovery dependencies and portable across crates.
+    let skills_block = session_context.skills_block;
     if let Some(block) = skills_block {
         append_section(
             &mut bundle,
@@ -1772,6 +1782,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
             ApprovalMode::Suggest,
         ) {
@@ -1844,6 +1855,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
             ApprovalMode::Suggest,
         ) {
@@ -1889,6 +1901,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: false,
+                skills_block: None,
             },
             ApprovalMode::Suggest,
         ) {
@@ -1944,6 +1957,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
             ApprovalMode::Suggest,
         ) {
@@ -2050,6 +2064,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -2088,6 +2103,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -2118,6 +2134,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -2177,6 +2194,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -2207,6 +2225,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -2404,6 +2423,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -2440,6 +2460,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                skills_block: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
