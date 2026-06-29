@@ -26,3 +26,4 @@ pub mod shell_output;
 pub mod shell_types;
 pub mod spec;
 pub mod task_types;
+pub mod truncate;
