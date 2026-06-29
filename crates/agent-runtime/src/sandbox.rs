@@ -1,12 +1,20 @@
-//! Runtime sandbox configuration types.
+//! Runtime sandbox configuration and portable policy/backend types.
 //!
-//! Extracted from `crates/tui/src/sandbox/runtime.rs`. `SandboxDecision` stays
-//! in tui because it references `SandboxPolicy`/`SandboxType` from the sandbox
-//! backend layer.
+//! The runtime-config types (`SandboxRuntimeConfig`, `SandboxBackendKind`, …)
+//! were extracted from `crates/tui/src/sandbox/runtime.rs`. The portable
+//! policy/backend data types (`SandboxPolicy`, `WritableRoot`,
+//! `SandboxExecRequest`, `SandboxOutput`, `SandboxKind`, `SandboxBackend`
+//! trait) were extracted from `crates/tui/src/sandbox/{policy,backend}.rs` —
+//! they carry no platform-coupled state, so they can live here and cross the
+//! `Arc<dyn HostServices>` boundary. `SandboxDecision`, `CommandSpec`,
+//! `ExecEnv`, `SandboxManager`, and the platform executors (seatbelt /
+//! landlock / windows) stay in the TUI because they drive OS-level sandboxing.
 
+use anyhow::Result;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
 /// Runtime sandbox configuration after merging legacy top-level keys, the
 /// `[sandbox]` table, environment overrides, and per-mode policy.
@@ -147,4 +155,350 @@ pub fn is_managed_domain(host: &str) -> bool {
     managed_domains()
         .iter()
         .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+}
+
+// ---------------------------------------------------------------------------
+// Portable sandbox policy types (extracted from tui sandbox/policy.rs)
+// ---------------------------------------------------------------------------
+
+/// Determines execution restrictions for shell commands.
+///
+/// The sandbox policy controls filesystem access, network access, and other
+/// system resources for executed commands. Choose the most restrictive policy
+/// that still allows your command to function.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum SandboxPolicy {
+    /// No restrictions whatsoever. Use with extreme caution.
+    #[serde(rename = "danger-full-access")]
+    DangerFullAccess,
+    /// Read-only access to the entire filesystem.
+    #[serde(rename = "read-only")]
+    ReadOnly,
+    /// Indicates the process is already running in an external sandbox.
+    #[serde(rename = "external-sandbox")]
+    ExternalSandbox {
+        /// Whether network access is allowed in the external sandbox.
+        #[serde(default)]
+        network_access: bool,
+    },
+    /// Read-only filesystem access plus write access to specified directories.
+    #[serde(rename = "workspace-write")]
+    WorkspaceWrite {
+        /// Additional directories where writes are allowed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        writable_roots: Vec<PathBuf>,
+        /// Whether outbound network connections are permitted.
+        #[serde(default)]
+        network_access: bool,
+        /// Exclude TMPDIR from writable paths.
+        #[serde(default)]
+        exclude_tmpdir: bool,
+        /// Exclude /tmp from writable paths.
+        #[serde(default)]
+        exclude_slash_tmp: bool,
+    },
+}
+
+impl Default for SandboxPolicy {
+    /// Returns the default policy: workspace-write with no extra roots and no network.
+    fn default() -> Self {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            network_access: false,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        }
+    }
+}
+
+impl SandboxPolicy {
+    /// Stable policy name for metadata and backend requests.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            SandboxPolicy::DangerFullAccess => "danger-full-access",
+            SandboxPolicy::ReadOnly => "read-only",
+            SandboxPolicy::ExternalSandbox { .. } => "external-sandbox",
+            SandboxPolicy::WorkspaceWrite { .. } => "workspace-write",
+        }
+    }
+
+    /// Create a workspace-write policy with network access enabled.
+    pub fn workspace_with_network() -> Self {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            network_access: true,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        }
+    }
+
+    /// Create a workspace-write policy with additional writable directories.
+    pub fn workspace_with_roots(roots: Vec<PathBuf>, network: bool) -> Self {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots: roots,
+            network_access: network,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        }
+    }
+
+    /// Returns true if the policy allows reading any file on the filesystem.
+    pub fn has_full_disk_read_access() -> bool {
+        // All current policies allow full disk read access
+        true
+    }
+
+    /// Returns true if the policy allows writing to any file on the filesystem.
+    pub fn has_full_disk_write_access(&self) -> bool {
+        matches!(
+            self,
+            SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
+        )
+    }
+
+    /// Returns true if the policy allows outbound network connections.
+    pub fn has_network_access(&self) -> bool {
+        match self {
+            SandboxPolicy::DangerFullAccess => true,
+            SandboxPolicy::ReadOnly => false,
+            SandboxPolicy::ExternalSandbox { network_access }
+            | SandboxPolicy::WorkspaceWrite { network_access, .. } => *network_access,
+        }
+    }
+
+    /// Returns true if the sandbox should be applied (not bypassed).
+    pub fn should_sandbox(&self) -> bool {
+        !matches!(
+            self,
+            SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
+        )
+    }
+
+    /// Get the list of writable roots for this policy.
+    ///
+    /// This includes:
+    /// - The current working directory
+    /// - Any explicitly specified `writable_roots`
+    /// - /tmp (unless excluded)
+    /// - TMPDIR (unless excluded)
+    ///
+    /// For policies with full write access, returns an empty vec since
+    /// there's no need to enumerate specific paths.
+    pub fn get_writable_roots(&self, cwd: &Path) -> Vec<WritableRoot> {
+        match self {
+            // Full write access or read-only - no enumeration needed
+            SandboxPolicy::DangerFullAccess
+            | SandboxPolicy::ExternalSandbox { .. }
+            | SandboxPolicy::ReadOnly => vec![],
+
+            // Workspace write - enumerate all writable paths
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots,
+                exclude_tmpdir,
+                exclude_slash_tmp,
+                ..
+            } => {
+                let mut roots: Vec<PathBuf> = writable_roots.clone();
+
+                // Add the current working directory
+                if let Ok(canonical_cwd) = cwd.canonicalize() {
+                    roots.push(canonical_cwd);
+                } else {
+                    roots.push(cwd.to_path_buf());
+                }
+
+                // Add /tmp unless excluded
+                if !exclude_slash_tmp && let Ok(tmp) = Path::new("/tmp").canonicalize() {
+                    roots.push(tmp);
+                }
+
+                // Add TMPDIR unless excluded
+                if !exclude_tmpdir
+                    && let Ok(tmpdir) = std::env::var("TMPDIR")
+                    && let Ok(canonical) = Path::new(&tmpdir).canonicalize()
+                {
+                    roots.push(canonical);
+                }
+
+                // Convert to WritableRoot with read-only subpaths
+                roots
+                    .into_iter()
+                    .map(|root| {
+                        let mut read_only_subpaths = protected_control_plane_subpaths(&root);
+
+                        WritableRoot {
+                            root,
+                            read_only_subpaths,
+                        }
+                    })
+                    .collect()
+            }
+        }
+    }
+}
+
+fn protected_control_plane_subpaths(root: &Path) -> Vec<PathBuf> {
+    const PROTECTED_DIRS: &[&str] = &[
+        ".codesmith",
+        ".deepseek",
+        ".codewhale",
+        ".claude",
+        ".opencode",
+        ".cursor",
+        "skills",
+    ];
+    const PROTECTED_NESTED_DIRS: &[&[&str]] = &[&[".agents", "skills"]];
+    const PROTECTED_FILES: &[&[&str]] = &[
+        &[".codesmith", "config.toml"],
+        &[".deepseek", "config.toml"],
+        &[".deepseek", "mcp.json"],
+        &[".codesmith", "mcp.json"],
+        &["CLAUDE.md"],
+        &["AGENTS.md"],
+        &[".cursorrules"],
+    ];
+
+    let mut protected = Vec::new();
+    for name in PROTECTED_DIRS {
+        let path = root.join(name);
+        if path.exists() {
+            protected.push(path);
+        }
+    }
+    for parts in PROTECTED_NESTED_DIRS {
+        let path = parts
+            .iter()
+            .fold(root.to_path_buf(), |acc, part| acc.join(part));
+        if path.exists() {
+            protected.push(path);
+        }
+    }
+    for parts in PROTECTED_FILES {
+        let path = parts
+            .iter()
+            .fold(root.to_path_buf(), |acc, part| acc.join(part));
+        if path.exists() {
+            protected.push(path);
+        }
+    }
+    protected
+}
+
+/// A directory tree where writes are allowed, with optional read-only subpaths.
+///
+/// This allows fine-grained control like "allow writes to /project but not /project/.deepseek".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WritableRoot {
+    /// The root directory where writes are allowed.
+    pub root: PathBuf,
+    /// Subdirectories within root that should remain read-only.
+    pub read_only_subpaths: Vec<PathBuf>,
+}
+
+impl WritableRoot {
+    /// Create a new writable root with no read-only exceptions.
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            read_only_subpaths: vec![],
+        }
+    }
+
+    /// Create a writable root with specific read-only subpaths.
+    pub fn with_exceptions(root: PathBuf, read_only: Vec<PathBuf>) -> Self {
+        Self {
+            root,
+            read_only_subpaths: read_only,
+        }
+    }
+
+    /// Check if a path is writable under this root.
+    ///
+    /// Returns true if the path is under the root and not under any read-only subpath.
+    pub fn is_path_writable(&self, path: &Path) -> bool {
+        // Must be under the root
+        if !path.starts_with(&self.root) {
+            return false;
+        }
+
+        // Must not be under any read-only subpath
+        for subpath in &self.read_only_subpaths {
+            if path.starts_with(subpath) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Portable sandbox backend types (extracted from tui sandbox/backend.rs)
+// ---------------------------------------------------------------------------
+
+/// Request sent to a sandbox backend execution service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxExecRequest {
+    pub cmd: String,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    pub cwd: PathBuf,
+    pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
+    pub policy: SandboxPolicy,
+}
+
+/// Output from a sandbox backend execution.
+#[derive(Debug, Clone)]
+pub struct SandboxOutput {
+    /// Standard output from the command.
+    pub stdout: String,
+    /// Standard error from the command.
+    pub stderr: String,
+    /// Exit code (0 for success).
+    pub exit_code: i32,
+}
+
+/// The kind of external sandbox backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxKind {
+    /// No external sandbox — execute commands locally.
+    None,
+    /// Alibaba OpenSandbox remote execution.
+    OpenSandbox,
+}
+
+impl SandboxKind {
+    /// Parse a sandbox backend name from config (case-insensitive).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" | "" => Some(Self::None),
+            "opensandbox" | "open-sandbox" | "open_sandbox" => Some(Self::OpenSandbox),
+            _ => None,
+        }
+    }
+
+    /// Human-readable label.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::OpenSandbox => "opensandbox",
+        }
+    }
+}
+
+/// Abstract interface for an external sandbox backend.
+///
+/// Implementations send commands to a remote execution environment and return
+/// structured output. The trait is `Send + Sync` so it can be stored in an
+/// `Arc` and shared across async tasks.
+#[async_trait]
+pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
+    /// Execute a shell command and return its output.
+    async fn exec(&self, request: SandboxExecRequest) -> Result<SandboxOutput>;
 }

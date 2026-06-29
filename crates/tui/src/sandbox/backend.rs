@@ -4,80 +4,17 @@
 //! (e.g. Alibaba OpenSandbox) instead of spawning a local process. This is
 //! complementary to the OS-level sandbox module (Seatbelt / Landlock / Windows)
 //! — the external backend *replaces* local execution entirely when configured.
-
-use std::collections::HashMap;
-use std::path::PathBuf;
+//!
+//! The portable request/output/kind types and the `SandboxBackend` trait now
+//! live in `codesmith-agent-runtime`'s `sandbox` module; this file re-exports
+//! them and keeps the config-driven `create_backend` factory, which references
+//! the TUI-local `Config` and `OpenSandboxBackend`.
 
 use anyhow::Result;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 
-use super::SandboxPolicy;
-
-/// Request sent to a sandbox backend execution service.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SandboxExecRequest {
-    pub cmd: String,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    pub cwd: PathBuf,
-    pub timeout_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stdin: Option<String>,
-    pub policy: SandboxPolicy,
-}
-
-/// Output from a sandbox backend execution.
-#[derive(Debug, Clone)]
-pub struct SandboxOutput {
-    /// Standard output from the command.
-    pub stdout: String,
-    /// Standard error from the command.
-    pub stderr: String,
-    /// Exit code (0 for success).
-    pub exit_code: i32,
-}
-
-/// The kind of external sandbox backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SandboxKind {
-    /// No external sandbox — execute commands locally.
-    None,
-    /// Alibaba OpenSandbox remote execution.
-    OpenSandbox,
-}
-
-impl SandboxKind {
-    /// Parse a sandbox backend name from config (case-insensitive).
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "none" | "" => Some(Self::None),
-            "opensandbox" | "open-sandbox" | "open_sandbox" => Some(Self::OpenSandbox),
-            _ => None,
-        }
-    }
-
-    /// Human-readable label.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::OpenSandbox => "opensandbox",
-        }
-    }
-}
-
-/// Abstract interface for an external sandbox backend.
-///
-/// Implementations send commands to a remote execution environment and return
-/// structured output. The trait is `Send + Sync` so it can be stored in an
-/// `Arc` and shared across async tasks.
-#[async_trait]
-pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
-    /// Execute a shell command and return its output.
-    async fn exec(&self, request: SandboxExecRequest) -> Result<SandboxOutput>;
-}
+pub use codesmith_agent_runtime::sandbox::{
+    SandboxBackend, SandboxExecRequest, SandboxKind, SandboxOutput,
+};
 
 use crate::config::Config;
 
