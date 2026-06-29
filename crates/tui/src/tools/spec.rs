@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::automation_manager::AutomationManagerHost;
 use crate::features::Features;
-use crate::lsp::LspManager;
+use crate::lsp::LspManagerApi;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::rlm::session::SessionObjectSnapshot;
 use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
@@ -207,7 +207,7 @@ pub struct ToolContext {
     /// LSP is disabled or the context is constructed in a test that does not
     /// need diagnostics. Edit tools append a `<diagnostics>` block to their
     /// result when this is present and the manager is enabled.
-    pub lsp_manager: Option<Arc<LspManager>>,
+    pub lsp_manager: Option<Arc<dyn LspManagerApi>>,
 
     /// Large-output router (#548). When `Some`, tool results that exceed the
     /// configured token threshold are routed through a V4-Flash synthesis
@@ -418,7 +418,7 @@ impl ToolContext {
     /// into their results after a successful file modification (#428).
     #[must_use]
     #[allow(dead_code)]
-    pub fn with_lsp_manager(mut self, manager: Arc<LspManager>) -> Self {
+    pub fn with_lsp_manager(mut self, manager: Arc<dyn LspManagerApi>) -> Self {
         self.lsp_manager = Some(manager);
         self
     }

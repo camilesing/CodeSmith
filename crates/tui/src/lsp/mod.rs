@@ -51,6 +51,7 @@ pub use registry::Language;
 /// `codesmith_agent_runtime::lsp_config` so `EngineConfig` and the LSP
 /// manager share one definition. `resolve_command` is `pub` cross-crate
 /// because the manager (still in tui) calls it via the re-export.
+pub use codesmith_agent_runtime::host_services::LspManagerApi;
 pub use codesmith_agent_runtime::lsp_config::LspConfig;
 
 /// The LspManager holds a lazily populated map of `Language -> Transport`.
