@@ -6,8 +6,11 @@
 //! `SandboxExecRequest`, `SandboxOutput`, `SandboxKind`, `SandboxBackend`
 //! trait) were extracted from `crates/tui/src/sandbox/{policy,backend}.rs` —
 //! they carry no platform-coupled state, so they can live here and cross the
-//! `Arc<dyn HostServices>` boundary. `SandboxDecision`, `CommandSpec`,
-//! `ExecEnv`, `SandboxManager`, and the platform executors (seatbelt /
+//! `Arc<dyn HostServices>` boundary. The command-spec and sandbox-decision
+//! types (`CommandSpec`, `ExecEnv`, `SandboxType`, `SandboxDecision`) were
+//! extracted from `crates/tui/src/sandbox/{mod,runtime}.rs`; they carry no
+//! platform-coupled state and are referenced by the runtime's shell
+//! dispatcher. `SandboxManager` and the platform executors (seatbelt /
 //! landlock / windows) stay in the TUI because they drive OS-level sandboxing.
 
 use anyhow::Result;
@@ -15,6 +18,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Runtime sandbox configuration after merging legacy top-level keys, the
 /// `[sandbox]` table, environment overrides, and per-mode policy.
@@ -501,4 +505,355 @@ impl SandboxKind {
 pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
     /// Execute a shell command and return its output.
     async fn exec(&self, request: SandboxExecRequest) -> Result<SandboxOutput>;
+}
+
+// ---------------------------------------------------------------------------
+// Command spec, execution env, and sandbox decision
+// (extracted from tui sandbox/{mod,runtime}.rs)
+// ---------------------------------------------------------------------------
+
+/// Specification for a command to be executed, potentially within a sandbox.
+///
+/// This struct captures all the information needed to execute a command:
+/// the program and arguments, working directory, environment variables,
+/// timeout, and sandbox policy.
+#[derive(Debug, Clone)]
+pub struct CommandSpec {
+    /// The program to execute (e.g., "sh", "python", "cargo").
+    pub program: String,
+
+    /// Arguments to pass to the program.
+    pub args: Vec<String>,
+
+    /// Working directory for the command.
+    pub cwd: PathBuf,
+
+    /// Additional environment variables to set.
+    pub env: HashMap<String, String>,
+
+    /// Maximum execution time before the command is killed.
+    pub timeout: Duration,
+
+    /// Sandbox policy controlling resource access.
+    pub sandbox_policy: SandboxPolicy,
+
+    /// Optional justification for why this command needs to run.
+    /// Used for logging and audit purposes.
+    pub justification: Option<String>,
+}
+
+impl CommandSpec {
+    /// Create a `CommandSpec` for running a shell command via the platform shell.
+    pub fn shell(command: &str, cwd: PathBuf, timeout: Duration) -> Self {
+        let dispatcher = crate::shell_dispatcher::global_dispatcher();
+
+        #[cfg(windows)]
+        let (program, args) = {
+            // Force UTF-8 output. cmd.exe uses chcp; PowerShell sets the
+            // console output encoding directly. See issue #982.
+            let kind = dispatcher.kind();
+            let cmd = if matches!(
+                kind,
+                crate::shell_dispatcher::ShellKind::Pwsh
+                    | crate::shell_dispatcher::ShellKind::WindowsPowerShell
+            ) {
+                format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {command}")
+            } else if matches!(kind, crate::shell_dispatcher::ShellKind::Cmd) {
+                format!("chcp 65001 >NUL & {command}")
+            } else {
+                command.to_string()
+            };
+            dispatcher.build_command_parts(&cmd)
+        };
+        #[cfg(not(windows))]
+        let (program, args) = dispatcher.build_command_parts(command);
+
+        Self {
+            program,
+            args,
+            cwd,
+            env: HashMap::new(),
+            timeout,
+            sandbox_policy: SandboxPolicy::default(),
+            justification: None,
+        }
+    }
+
+    /// Create a `CommandSpec` for running a program directly.
+    pub fn program(program: &str, args: Vec<String>, cwd: PathBuf, timeout: Duration) -> Self {
+        Self {
+            program: program.to_string(),
+            args,
+            cwd,
+            env: HashMap::new(),
+            timeout,
+            sandbox_policy: SandboxPolicy::default(),
+            justification: None,
+        }
+    }
+
+    /// Set the sandbox policy for this command.
+    pub fn with_policy(mut self, policy: SandboxPolicy) -> Self {
+        self.sandbox_policy = policy;
+        self
+    }
+
+    /// Add environment variables for this command.
+    pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// Add a single environment variable.
+    pub fn with_env_var(mut self, key: &str, value: &str) -> Self {
+        self.env.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Set a justification for this command (for logging/audit).
+    pub fn with_justification(mut self, justification: &str) -> Self {
+        self.justification = Some(justification.to_string());
+        self
+    }
+
+    /// Get the original command as a single string (for display).
+    pub fn display_command(&self) -> String {
+        if self.args.len() == 2
+            && self.args[0] == "-c"
+            && matches!(
+                self.program.as_str(),
+                "sh" | "bash" | "/bin/sh" | "/bin/bash" | "/usr/bin/sh" | "/usr/bin/bash"
+            )
+        {
+            // For shell commands, show the actual command
+            self.args[1].clone()
+        } else if self.args.len() == 2
+            && self.args[0] == "-c"
+            && !self.program.eq_ignore_ascii_case("cmd")
+            && !self.program.eq_ignore_ascii_case("pwsh")
+            && !self.program.eq_ignore_ascii_case("pwsh.exe")
+            && !self.program.eq_ignore_ascii_case("powershell")
+            && !self.program.eq_ignore_ascii_case("powershell.exe")
+        {
+            self.args[1].clone()
+        } else if self.program.eq_ignore_ascii_case("cmd")
+            && self.args.len() == 2
+            && self.args[0].eq_ignore_ascii_case("/C")
+        {
+            // Strip the `chcp 65001 >NUL & ` prefix we add on Windows for
+            // UTF-8 output (issue #982).
+            let raw = &self.args[1];
+            raw.strip_prefix("chcp 65001 >NUL & ")
+                .unwrap_or(raw)
+                .to_string()
+        } else if {
+            let program = self.program.to_ascii_lowercase();
+            program == "pwsh"
+                || program == "pwsh.exe"
+                || program == "powershell"
+                || program == "powershell.exe"
+        } && self.args.len() >= 3
+            && self.args[0].eq_ignore_ascii_case("-NoProfile")
+            && self.args[1].eq_ignore_ascii_case("-Command")
+        {
+            // Strip the PowerShell encoding prefix.
+            let raw = &self.args[2];
+            raw.strip_prefix("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ")
+                .unwrap_or(raw)
+                .to_string()
+        } else {
+            // For other commands, join program and args
+            let mut parts = vec![self.program.clone()];
+            parts.extend(self.args.clone());
+            parts.join(" ")
+        }
+    }
+}
+
+/// The type of sandbox being used for execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SandboxType {
+    /// No sandboxing - command runs with full permissions.
+    #[default]
+    None,
+
+    /// macOS Seatbelt (sandbox-exec) sandboxing.
+    #[cfg(target_os = "macos")]
+    MacosSeatbelt,
+
+    /// Linux Landlock sandboxing (kernel 5.13+).
+    #[cfg(target_os = "linux")]
+    LinuxLandlock,
+
+    /// Linux Bubblewrap mount namespace sandboxing.
+    #[cfg(target_os = "linux")]
+    LinuxBwrap,
+
+    /// Windows process-containment helper.
+    ///
+    /// Not advertised until a helper enforces Job Object cleanup. This does
+    /// not imply filesystem, network, registry, or AppContainer isolation.
+    #[cfg(target_os = "windows")]
+    Windows,
+}
+
+impl std::fmt::Display for SandboxType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SandboxType::None => write!(f, "none"),
+            #[cfg(target_os = "macos")]
+            SandboxType::MacosSeatbelt => write!(f, "macos-seatbelt"),
+            #[cfg(target_os = "linux")]
+            SandboxType::LinuxLandlock => write!(f, "linux-landlock"),
+            #[cfg(target_os = "linux")]
+            SandboxType::LinuxBwrap => write!(f, "linux-bwrap"),
+            #[cfg(target_os = "windows")]
+            SandboxType::Windows => write!(f, "windows-sandbox"),
+        }
+    }
+}
+
+/// The execution environment after sandbox transformation.
+///
+/// This contains the actual command to run (which may include sandbox wrapper
+/// commands) and all necessary environment configuration.
+#[derive(Debug)]
+pub struct ExecEnv {
+    /// The full command to execute (may include sandbox wrapper).
+    pub command: Vec<String>,
+
+    /// Working directory for execution.
+    pub cwd: PathBuf,
+
+    /// Environment variables to set.
+    pub env: HashMap<String, String>,
+
+    /// Timeout for the command.
+    pub timeout: Duration,
+
+    /// The type of sandbox being used.
+    pub sandbox_type: SandboxType,
+
+    /// The original policy (for reference).
+    pub policy: SandboxPolicy,
+}
+
+impl ExecEnv {
+    /// Get the program to execute (first element of command).
+    pub fn program(&self) -> &str {
+        self.command
+            .first()
+            .map_or("sh", std::string::String::as_str)
+    }
+
+    /// Get the arguments (all elements after the first).
+    pub fn args(&self) -> &[String] {
+        if self.command.len() > 1 {
+            &self.command[1..]
+        } else {
+            &[]
+        }
+    }
+
+    /// Check if this execution is sandboxed.
+    pub fn is_sandboxed(&self) -> bool {
+        !matches!(self.sandbox_type, SandboxType::None)
+    }
+}
+
+/// The outcome of a sandbox decision for a command.
+///
+/// Captures whether sandboxing was requested/effective, the backend selected,
+/// and whether execution may proceed (fail-closed vs. fallback).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxDecision {
+    pub sandbox_requested: bool,
+    pub sandbox_effective: bool,
+    pub sandbox_policy: String,
+    pub sandbox_backend: Option<String>,
+    pub sandbox_unavailable_reason: Option<String>,
+    pub sandbox_fallback_allowed: bool,
+    pub sandbox_excluded_command: Option<String>,
+    pub sandbox_fail_closed: bool,
+}
+
+impl SandboxDecision {
+    #[must_use]
+    pub fn unsandboxed(policy: &SandboxPolicy) -> Self {
+        Self {
+            sandbox_requested: false,
+            sandbox_effective: false,
+            sandbox_policy: policy.name().to_string(),
+            sandbox_backend: None,
+            sandbox_unavailable_reason: None,
+            sandbox_fallback_allowed: false,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: false,
+        }
+    }
+
+    #[must_use]
+    pub fn enforcing(policy: &SandboxPolicy, backend: SandboxType) -> Self {
+        Self {
+            sandbox_requested: true,
+            sandbox_effective: true,
+            sandbox_policy: policy.name().to_string(),
+            sandbox_backend: Some(backend.to_string()),
+            sandbox_unavailable_reason: None,
+            sandbox_fallback_allowed: false,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: false,
+        }
+    }
+
+    #[must_use]
+    pub fn unavailable(
+        policy: &SandboxPolicy,
+        reason: impl Into<String>,
+        fail_closed: bool,
+    ) -> Self {
+        Self {
+            sandbox_requested: true,
+            sandbox_effective: false,
+            sandbox_policy: policy.name().to_string(),
+            sandbox_backend: None,
+            sandbox_unavailable_reason: Some(reason.into()),
+            sandbox_fallback_allowed: !fail_closed,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: fail_closed,
+        }
+    }
+
+    #[must_use]
+    pub fn disabled(policy: &SandboxPolicy, reason: impl Into<String>) -> Self {
+        Self {
+            sandbox_requested: true,
+            sandbox_effective: false,
+            sandbox_policy: policy.name().to_string(),
+            sandbox_backend: None,
+            sandbox_unavailable_reason: Some(reason.into()),
+            sandbox_fallback_allowed: true,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: false,
+        }
+    }
+
+    #[must_use]
+    pub fn excluded(policy: &SandboxPolicy, command: impl Into<String>) -> Self {
+        Self {
+            sandbox_requested: true,
+            sandbox_effective: false,
+            sandbox_policy: policy.name().to_string(),
+            sandbox_backend: None,
+            sandbox_unavailable_reason: None,
+            sandbox_fallback_allowed: true,
+            sandbox_excluded_command: Some(command.into()),
+            sandbox_fail_closed: false,
+        }
+    }
+
+    #[must_use]
+    pub fn allows_execution(&self) -> bool {
+        self.sandbox_effective || !self.sandbox_fail_closed
+    }
 }

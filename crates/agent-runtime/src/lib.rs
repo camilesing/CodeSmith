@@ -63,6 +63,7 @@ pub mod rlm;
 pub mod runtime_ui;
 pub mod sandbox;
 pub mod session;
+pub mod shell_dispatcher;
 pub mod skills;
 pub mod snapshot;
 pub mod subagent;

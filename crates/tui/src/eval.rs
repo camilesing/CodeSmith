@@ -737,7 +737,11 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
 }
 
 fn exec_shell(root: &Path, command: &str) -> Result<String> {
-    crate::shell_dispatcher::global_dispatcher().run_foreground(command, root)
+    crate::shell_dispatcher::run_foreground(
+        crate::shell_dispatcher::global_dispatcher(),
+        command,
+        root,
+    )
 }
 
 fn truncate_output(value: &str, max_chars: usize) -> String {
