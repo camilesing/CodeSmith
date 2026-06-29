@@ -60,6 +60,7 @@ pub mod project_context;
 pub mod prompt_runtime;
 pub mod prompt_sources;
 pub mod prompt_zones;
+pub mod prompts;
 pub mod purge;
 pub mod repl;
 pub mod retry_status;
