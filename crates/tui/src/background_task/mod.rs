@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::task_manager::SharedTaskManager;
-use crate::tools::shell::{SharedShellManager, ShellJobSnapshot, ShellStatus};
+use crate::tools::shell::{SharedShellManager, ShellJobSnapshot};
 use crate::tools::subagent::{SharedSubAgentManager, SubAgentType};
 
 pub use agent_bridge::{map_subagent_status, subagent_error};
@@ -32,19 +32,6 @@ pub use codesmith_agent_runtime::background_task::*;
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/// Map ShellStatus → BackgroundTaskStatus.
-impl From<ShellStatus> for BackgroundTaskStatus {
-    fn from(s: ShellStatus) -> Self {
-        match s {
-            ShellStatus::Running => Self::Running,
-            ShellStatus::Completed => Self::Completed,
-            ShellStatus::Failed => Self::Failed,
-            ShellStatus::Killed => Self::Killed,
-            ShellStatus::TimedOut => Self::Failed,
-        }
-    }
-}
 
 /// Task-specific extension data — mirrors Claude Code's per-type state fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]

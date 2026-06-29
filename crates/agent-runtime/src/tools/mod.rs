@@ -17,3 +17,4 @@ pub mod handle;
 pub mod js_execution;
 pub mod large_output_router;
 pub mod schema_sanitize;
+pub mod shell_types;

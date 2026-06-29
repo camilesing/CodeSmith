@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::subagent::SubAgentStatus;
+use crate::tools::shell_types::ShellStatus;
 
 /// Background task type — mirrors Claude Code's `TaskType`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +75,19 @@ impl From<SubAgentStatus> for BackgroundTaskStatus {
             SubAgentStatus::Interrupted(_) => Self::Failed,
             SubAgentStatus::Failed(_) => Self::Failed,
             SubAgentStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+/// Map ShellStatus → BackgroundTaskStatus.
+impl From<ShellStatus> for BackgroundTaskStatus {
+    fn from(s: ShellStatus) -> Self {
+        match s {
+            ShellStatus::Running => Self::Running,
+            ShellStatus::Completed => Self::Completed,
+            ShellStatus::Failed => Self::Failed,
+            ShellStatus::Killed => Self::Killed,
+            ShellStatus::TimedOut => Self::Failed,
         }
     }
 }
