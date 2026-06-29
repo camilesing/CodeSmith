@@ -3,8 +3,12 @@
 //! When the user sets `reasoning_effort = "auto"`, the engine calls
 //! [`select`] before each turn-level request to pick the actual tier
 //! based on the current message.
+//!
+//! Migrated from the TUI (`crates/tui/src/auto_reasoning.rs`) as part of
+//! the engine-closure extraction — the engine body references this via
+//! `crate::auto_reasoning::select`.
 
-use crate::tui::app::ReasoningEffort;
+use crate::mode::ReasoningEffort;
 
 /// Choose a concrete `ReasoningEffort` tier for the next API request.
 ///

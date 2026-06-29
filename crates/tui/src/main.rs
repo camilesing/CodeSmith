@@ -18,7 +18,7 @@ mod agent_memory;
 mod artifacts;
 mod audit;
 mod auto_mode;
-mod auto_reasoning;
+pub use codesmith_agent_runtime::auto_reasoning;
 mod automation_manager;
 mod background_task;
 mod child_env;

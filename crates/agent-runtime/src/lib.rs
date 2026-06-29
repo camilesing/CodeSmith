@@ -23,6 +23,7 @@
 // without hard-coding `codesmith_agent::` paths.
 pub use codesmith_agent::{llm_client, models, retry};
 
+pub mod auto_reasoning;
 pub mod background_task;
 pub mod capacity;
 pub mod capacity_memory;
