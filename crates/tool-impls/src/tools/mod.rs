@@ -14,3 +14,5 @@
 //! - `use super::spec::{...}` → `use codesmith_agent_runtime::tools::spec::{...}`.
 //! - External crates (`codesmith_config`, `reqwest`, `serde_json`, …) keep
 //!   their paths unchanged.
+
+pub mod notify;

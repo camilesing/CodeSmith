@@ -31,7 +31,7 @@ pub mod image_ocr;
 pub mod js_execution;
 pub mod knowledge_recall;
 pub mod large_output_router;
-pub mod notify;
+pub use codesmith_tool_impls::tools::notify;
 pub mod pandoc;
 pub mod parallel;
 pub mod plan;

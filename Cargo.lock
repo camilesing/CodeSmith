@@ -1074,6 +1074,7 @@ dependencies = [
  "codesmith-protocol",
  "codesmith-release",
  "codesmith-secrets",
+ "codesmith-tool-impls",
  "codesmith-tools",
  "colored",
  "crossterm 0.28.1",

@@ -1,23 +1,24 @@
 //! `notify` tool — model-callable desktop notification (#1322).
 //!
-//! Routes through the existing `tui::notifications` infrastructure (OSC 9
-//! for known capable terminals, BEL fallback on macOS / Linux, `MessageBeep`
-//! on Windows when explicitly opted in). The model decides when to fire —
-//! the tool is intended for "long task done, come back" beats and
-//! sub-agent-completion pings, not chatter.
+//! Routes through the host-injected [`NotifierHost`] (see
+//! `codesmith_agent_runtime::host_services`), which picks the terminal
+//! protocol — OSC 9 for known capable terminals, BEL fallback on macOS /
+//! Linux, `MessageBeep` on Windows when explicitly opted in — and wraps for
+//! tmux. The tool itself is host-agnostic: the model decides when to fire
+//! and the host decides how it lands.
 //!
-//! Auto-suppresses when `[notifications].method = "off"`. Output messages
-//! are length-capped so a runaway model can't paint a paragraph into the
-//! terminal title bar.
+//! Intended for "long task done, come back" beats and sub-agent-completion
+//! pings, not chatter. The host auto-suppresses when
+//! `[notifications].method = "off"`. Output messages are length-capped so a
+//! runaway model can't paint a paragraph into the terminal title bar.
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, required_str,
 };
-use crate::tui::notifications::{Method, notify_done};
 
 /// Maximum chars passed through for the title — keeps the OSC 9 escape
 /// reasonable on terminals that wrap long titles awkwardly.
@@ -77,7 +78,7 @@ impl ToolSpec for NotifyTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
         let title_raw = required_str(&input, "title")?;
         let body_raw = optional_str(&input, "body").unwrap_or("");
 
@@ -99,19 +100,19 @@ impl ToolSpec for NotifyTool {
             format!("{title}: {body}")
         };
 
-        let in_tmux = std::env::var("TMUX")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-
-        // Threshold = 0 so the notification always fires; the model has
-        // already decided this is the moment.
-        notify_done(
-            Method::Auto,
-            in_tmux,
-            &msg,
-            std::time::Duration::ZERO,
-            std::time::Duration::from_secs(1),
-        );
+        // Route through the host-injected `NotifierHost` rather than the
+        // TUI's `tui::notifications::notify_done` directly — this keeps the
+        // tool portable across hosts (TUI today, app-server tomorrow). The
+        // host resolves the terminal protocol (OSC 9 / BEL / MessageBeep)
+        // and wraps for tmux; the "threshold = 0 so it always fires" and
+        // the 1s elapsed gate that the TUI impl applied are host-side
+        // concerns now.
+        let notifier = ctx.runtime.notifier.as_ref().ok_or_else(|| {
+            ToolError::execution_failed(
+                "notify tool is not available: no notifier attached",
+            )
+        })?;
+        notifier.notify_done(&msg);
 
         Ok(ToolResult::success(format!("notified: {title}")))
     }
@@ -120,50 +121,110 @@ impl ToolSpec for NotifyTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codesmith_agent_runtime::host_services::NotifierHost;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
+    /// Test notifier that records the last message it received, so the
+    /// success-path tests can assert the host actually got pinged (not just
+    /// that the tool returned `Ok`).
+    #[derive(Default)]
+    struct TestNotifier {
+        last: Mutex<Option<String>>,
+    }
+
+    impl NotifierHost for TestNotifier {
+        fn notify_done(&self, msg: &str) {
+            *self.last.lock().unwrap() = Some(msg.to_string());
+        }
+    }
+
+    /// Context with no notifier attached — mirrors the "host forgot to wire
+    /// the notifier" case and is used by tests that fail before reaching it.
     fn ctx() -> ToolContext {
         ToolContext::new(Path::new("."))
     }
 
+    /// Context with a test notifier attached. The caller keeps its own
+    /// `Arc<TestNotifier>` so it can inspect what landed after `execute`.
+    fn ctx_with_notifier(notifier: &Arc<TestNotifier>) -> ToolContext {
+        let mut c = ToolContext::new(Path::new("."));
+        let dyn_n: Arc<dyn NotifierHost> = notifier.clone();
+        c.runtime.notifier = Some(dyn_n);
+        c
+    }
+
     #[tokio::test]
     async fn rejects_missing_title() {
-        let err = NotifyTool.execute(json!({}), &ctx()).await.unwrap_err();
+        let notifier = Arc::new(TestNotifier::default());
+        let err = NotifyTool
+            .execute(json!({}), &ctx_with_notifier(&notifier))
+            .await
+            .unwrap_err();
         assert!(err.to_string().to_lowercase().contains("title"), "{err}");
+        // Never reached the notifier.
+        assert!(notifier.last.lock().unwrap().is_none());
     }
 
     #[tokio::test]
     async fn rejects_empty_title_after_trim() {
+        let notifier = Arc::new(TestNotifier::default());
         let err = NotifyTool
-            .execute(json!({"title": "   "}), &ctx())
+            .execute(json!({"title": "   "}), &ctx_with_notifier(&notifier))
             .await
             .unwrap_err();
         assert!(
             err.to_string().to_lowercase().contains("must not be empty"),
             "{err}"
         );
+        assert!(notifier.last.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn errors_when_no_notifier_attached() {
+        // Reaching the notify call without a host-injected notifier is a
+        // host wiring bug, not a model error — surface it loudly.
+        let err = NotifyTool
+            .execute(json!({"title": "done"}), &ctx())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("notifier"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
     async fn truncates_title_to_cap() {
+        let notifier = Arc::new(TestNotifier::default());
         let long = "x".repeat(500);
         let result = NotifyTool
-            .execute(json!({"title": long}), &ctx())
+            .execute(json!({"title": long}), &ctx_with_notifier(&notifier))
             .await
             .expect("ok");
         // Confirmation message echoes the *truncated* title.
         let echo_x_count = result.content.matches('x').count();
         assert_eq!(echo_x_count, NOTIFY_TITLE_CAP);
+        // Notifier was invoked with the truncated title (no body).
+        let landed = notifier.last.lock().unwrap().clone();
+        assert_eq!(landed, Some("x".repeat(NOTIFY_TITLE_CAP)));
     }
 
     #[tokio::test]
     async fn accepts_body_optional() {
+        let notifier = Arc::new(TestNotifier::default());
         let result = NotifyTool
-            .execute(json!({"title": "done", "body": "tests pass"}), &ctx())
+            .execute(
+                json!({"title": "done", "body": "tests pass"}),
+                &ctx_with_notifier(&notifier),
+            )
             .await
             .expect("ok");
         assert!(result.success);
         assert!(result.content.contains("done"));
+        // Body is appended to the title for the notifier message.
+        let landed = notifier.last.lock().unwrap().clone();
+        assert_eq!(landed.as_deref(), Some("done: tests pass"));
     }
 
     #[tokio::test]
@@ -171,12 +232,18 @@ mod tests {
         // Construct a title whose char-count is below the cap but whose
         // byte-count would be above a naive byte cap; assert no panic
         // and the success-content roundtrips the title intact.
+        let notifier = Arc::new(TestNotifier::default());
         let title: String = "我".repeat(30); // 30 chars × 3 bytes = 90 bytes, < 80 chars cap (well, == 30 chars)
         let result = NotifyTool
-            .execute(json!({"title": title.clone()}), &ctx())
+            .execute(
+                json!({"title": title.clone()}),
+                &ctx_with_notifier(&notifier),
+            )
             .await
             .expect("ok");
         assert!(result.content.contains(&title));
+        let landed = notifier.last.lock().unwrap().clone();
+        assert_eq!(landed, Some(title));
     }
 
     #[test]
