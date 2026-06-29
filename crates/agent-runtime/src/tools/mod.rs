@@ -18,6 +18,7 @@ pub mod git_env;
 pub mod handle;
 pub mod js_execution;
 pub mod large_output_router;
+pub mod registry;
 pub mod schema_sanitize;
 pub mod shell_output;
 pub mod shell_types;

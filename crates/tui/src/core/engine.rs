@@ -57,7 +57,7 @@ use crate::tools::subagent::{
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
-use crate::tools::{ToolContext, ToolRegistryBuilder};
+use crate::tools::{ToolContext, ToolRegistryBuilder, ToolRegistryPluginExt};
 use crate::tui::app::AppMode;
 use crate::utils::spawn_supervised;
 
