@@ -35,6 +35,7 @@ use crate::sandbox::{
     SandboxRuntimeConfig,
     SandboxType,
 };
+use codesmith_agent_runtime::tools::git_env::merge_git_scrub_env;
 
 // Shell result/view data types live in the runtime crate so they can cross the
 // `Arc<dyn HostServices>` boundary once `ShellManager` is trait-erased. The
@@ -698,25 +699,6 @@ fn command_would_be_sandboxed(context: &ToolContext, command: &str) -> bool {
     let mut manager = SandboxManager::new();
     manager.set_prefer_bwrap(runtime.prefer_bwrap);
     decide_sandbox(&manager, &runtime, &policy, command, &spec.program).sandbox_effective
-}
-
-fn git_scrub_env() -> HashMap<String, String> {
-    HashMap::from([
-        ("GIT_CONFIG_COUNT".to_string(), "2".to_string()),
-        ("GIT_CONFIG_KEY_0".to_string(), "core.fsmonitor".to_string()),
-        ("GIT_CONFIG_VALUE_0".to_string(), "".to_string()),
-        ("GIT_CONFIG_KEY_1".to_string(), "core.hooksPath".to_string()),
-        ("GIT_CONFIG_VALUE_1".to_string(), "".to_string()),
-    ])
-}
-
-fn merge_git_scrub_env(env: &mut HashMap<String, String>) {
-    if env.contains_key("GIT_CONFIG_COUNT") {
-        // Respect explicit caller configuration rather than constructing a
-        // potentially conflicting indexed git-config environment.
-        return;
-    }
-    env.extend(git_scrub_env());
 }
 
 /// Manages background shell processes with optional sandboxing.
