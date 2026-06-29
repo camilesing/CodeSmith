@@ -291,12 +291,12 @@ impl ToolSpec for TaskStopTool {
         let reason = optional_str(&input, "reason").map(str::to_string);
 
         if let Some(registry) = context.runtime.background_task_registry.as_ref() {
-            let mut registry = registry.lock().await;
-            let background_id = if registry.get_task(target).is_some() {
+            let background_id = if registry.get_task(target).await.is_some() {
                 Some(target.to_string())
             } else {
                 registry
                     .list_tasks()
+                    .await
                     .into_iter()
                     .find(|task| task.source_id == target)
                     .map(|task| task.id)

@@ -64,7 +64,9 @@ pub struct RuntimeToolServices {
     /// Permission request registry for team permission delegation.
     pub permission_request_registry: Option<crate::tools::team::SharedPermissionRequestRegistry>,
     /// Unified background task registry for model-visible background lifecycle tools.
-    pub background_task_registry: Option<crate::background_task::SharedBackgroundTaskRegistry>,
+    /// Trait-erased to `Arc<dyn BgRegistryApi>` so `spec.rs` (and, downstream,
+    /// `tool-impls`) need not depend on the concrete `BackgroundTaskRegistry`.
+    pub background_task_registry: Option<Arc<dyn crate::background_task::BgRegistryApi>>,
     /// Sender identity used by team messaging tools. Defaults to the team lead
     /// when unset; teammate runtimes set this to their agent name.
     pub team_sender: Option<String>,

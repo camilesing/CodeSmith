@@ -2368,13 +2368,14 @@ impl ToolSpec for AgentSpawnTool {
             } else {
                 result.assignment.objective.clone()
             };
-            let mut registry = bg_registry.lock().await;
-            registry.register_agent_task(
-                result.agent_id.clone(),
-                result.agent_type.clone(),
-                result.model.clone(),
-                description,
-            );
+            bg_registry
+                .register_agent_task(
+                    result.agent_id.clone(),
+                    result.agent_type.clone(),
+                    result.model.clone(),
+                    description,
+                )
+                .await;
         }
 
         // Replace the "pending" lease placeholder with the real agent id now that

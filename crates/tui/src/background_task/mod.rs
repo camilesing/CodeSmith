@@ -25,6 +25,7 @@ use crate::tools::subagent::{SharedSubAgentManager, SubAgentType};
 
 pub use agent_bridge::{map_subagent_status, subagent_error};
 pub use codesmith_agent_runtime::background_task::*;
+pub use codesmith_agent_runtime::host_services::BgRegistryApi;
 pub use dream_task::{DreamResult, DreamStatus, DreamTaskRunner};
 pub use output::BackgroundTaskOutputManager;
 pub use shell_bridge::default_stall_patterns;

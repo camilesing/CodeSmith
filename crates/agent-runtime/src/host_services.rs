@@ -42,7 +42,7 @@ use crate::models::{Message, Tool};
 use crate::runtime_ui::RuntimeUi;
 use crate::sandbox::{SandboxPolicy, SandboxRuntimeConfig};
 use crate::session::Session;
-use crate::subagent::{SubAgentCompletion, SubAgentResult};
+use crate::subagent::{SubAgentCompletion, SubAgentResult, SubAgentType};
 use crate::tool_dispatch::ToolDispatcher;
 use crate::tool_state::plan::SharedPlanState;
 use crate::tool_state::todo::SharedTodoList;
@@ -88,10 +88,22 @@ pub trait BgRegistryApi: Send + Sync {
         command: String,
         cwd: PathBuf,
     ) -> BackgroundTaskSummary;
+    /// Register a background sub-agent task; returns the summary used to emit
+    /// `BackgroundTaskStarted`. Mirrors `BackgroundTaskRegistry::register_agent_task`.
+    async fn register_agent_task(
+        &self,
+        agent_id: String,
+        agent_type: SubAgentType,
+        model: String,
+        prompt: String,
+    ) -> BackgroundTaskSummary;
     /// Cancel a background task by id.
     async fn cancel_task(&self, id: &str) -> anyhow::Result<()>;
     /// Snapshot of all tracked tasks (for `/jobs` / `BackgroundTaskList`).
     async fn list_tasks(&self) -> Vec<BackgroundTaskSummary>;
+    /// Look up a tracked task by exact id; `None` when no task matches. Mirrors
+    /// `BackgroundTaskRegistry::get_task` (returns the portable summary).
+    async fn get_task(&self, id: &str) -> Option<BackgroundTaskSummary>;
     /// Bytes of output produced since the last read for `id`, if any.
     async fn read_output_delta(&self, id: &str) -> Option<String>;
     /// Request backgrounding for every live shell task; returns the tasks

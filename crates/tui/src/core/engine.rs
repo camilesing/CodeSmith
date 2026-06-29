@@ -790,7 +790,12 @@ impl Engine {
                 bg_data_dir,
             ),
         ));
-        host.runtime_services.background_task_registry = Some(bg_registry);
+        // Wrap the concrete registry in `BgRegistryHost` once at construction so
+        // the tool-facing `RuntimeToolServices.background_task_registry` field
+        // stays the portable `Arc<dyn BgRegistryApi>` (no per-call re-wrap).
+        host.runtime_services.background_task_registry = Some(std::sync::Arc::new(
+            runtime_traits::BgRegistryHost(bg_registry),
+        ));
 
         // The host owns the shell/subagent managers, workshop variable store,
         // and sandbox backend so the engine body reaches them through the

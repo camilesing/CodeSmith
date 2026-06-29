@@ -184,16 +184,15 @@ impl HostServices for super::EngineHost {
     }
 
     fn bg_registry(&self) -> Arc<dyn BgRegistryApi> {
-        // `new_impl` always seeds `runtime_services.background_task_registry`
-        // before the engine runs, so this is `Some` for any engine that reaches
-        // `run()`. The clone is a cheap `Arc` bump.
-        let registry = self
-            .runtime_services
+        // `new_impl` wraps the concrete registry in `BgRegistryHost` and seeds
+        // `runtime_services.background_task_registry` before the engine runs,
+        // so this is `Some` for any engine that reaches `run()`. The clone is a
+        // cheap `Arc` bump — no per-call re-wrap.
+        self.runtime_services
             .background_task_registry
             .as_ref()
             .expect("background_task_registry is set by new_impl before run()")
-            .clone();
-        Arc::new(BgRegistryHost(registry))
+            .clone()
     }
 
     fn seam(&self) -> Option<&dyn SeamManagerApi> {
@@ -615,6 +614,17 @@ impl BgRegistryApi for BgRegistryHost {
         BackgroundTaskSummary::from(&g.register_shell_task(shell_id, command, cwd))
     }
 
+    async fn register_agent_task(
+        &self,
+        agent_id: String,
+        agent_type: SubAgentType,
+        model: String,
+        prompt: String,
+    ) -> BackgroundTaskSummary {
+        let mut g = self.0.lock().await;
+        BackgroundTaskSummary::from(&g.register_agent_task(agent_id, agent_type, model, prompt))
+    }
+
     async fn cancel_task(&self, id: &str) -> anyhow::Result<()> {
         let mut g = self.0.lock().await;
         g.cancel_task(id).await
@@ -623,6 +633,11 @@ impl BgRegistryApi for BgRegistryHost {
     async fn list_tasks(&self) -> Vec<BackgroundTaskSummary> {
         let g = self.0.lock().await;
         g.list_tasks()
+    }
+
+    async fn get_task(&self, id: &str) -> Option<BackgroundTaskSummary> {
+        let g = self.0.lock().await;
+        g.get_task(id).map(|s| BackgroundTaskSummary::from(&s))
     }
 
     async fn read_output_delta(&self, id: &str) -> Option<String> {
