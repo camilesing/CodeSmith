@@ -191,3 +191,21 @@ impl GoalSnapshot {
         self.objective.is_some() && self.status == GoalStatus::Active.as_str()
     }
 }
+
+/// Render the bounded continuation prompt injected when a goal is still active
+/// after an assistant message has no tool calls.
+#[must_use]
+pub fn render_continuation_prompt(
+    snapshot: &GoalSnapshot,
+    continuation_index: u32,
+    max_continuations: u32,
+) -> String {
+    let goal_json = serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass: {}/{}.\nIf the goal is complete, call `update_goal` with `status: \"complete\"` and concrete evidence. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. Otherwise continue making progress toward the objective.",
+        crate::prompts::GOAL_CONTINUATION_PROMPT.trim(),
+        goal_json,
+        continuation_index,
+        max_continuations,
+    )
+}
