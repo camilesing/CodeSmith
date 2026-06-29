@@ -215,7 +215,9 @@ fn early_tool_start_safe(preflight: EarlyToolStart<'_>) -> bool {
 
     metadata.is_read_only
         && metadata.supports_parallel
-        && !preflight.registry.is_interactive(&tool_name, preflight.tool_input)
+        && !preflight
+            .registry
+            .is_interactive(&tool_name, preflight.tool_input)
         && preflight
             .registry
             .validate_input(&tool_name, preflight.tool_input)
@@ -343,9 +345,9 @@ impl Engine {
                 );
                 if bytes_cleared > 0 {
                     self.session.messages = messages;
-                    crate::logging::info(format!(
+                    tracing::info!(
                         "Micro-compaction cleared {bytes_cleared} bytes from tool results"
-                    ));
+                    );
                 }
             }
 
@@ -699,7 +701,7 @@ impl Engine {
                                     timeout_secs: chunk_timeout_secs,
                                 }
                                 .into_envelope();
-                                crate::logging::warn(&envelope.message);
+                                tracing::warn!("{}", envelope.message);
                                 let _ = self.tx_event.send(Event::error(envelope)).await;
                                 None
                             }
@@ -734,7 +736,7 @@ impl Engine {
                         limit_secs: STREAM_MAX_DURATION_SECS,
                     }
                     .into_envelope();
-                    crate::logging::warn(&envelope.message);
+                    tracing::warn!("{}", envelope.message);
                     turn_error.get_or_insert(envelope.message.clone());
                     let _ = self.tx_event.send(Event::error(envelope)).await;
                     break;
@@ -746,7 +748,7 @@ impl Engine {
                         limit_bytes: STREAM_MAX_CONTENT_BYTES,
                     }
                     .into_envelope();
-                    crate::logging::warn(&envelope.message);
+                    tracing::warn!("{}", envelope.message);
                     turn_error.get_or_insert(envelope.message.clone());
                     let _ = self.tx_event.send(Event::error(envelope)).await;
                     break;
@@ -778,9 +780,9 @@ impl Engine {
                         ) {
                             transparent_stream_retries =
                                 transparent_stream_retries.saturating_add(1);
-                            crate::logging::info(format!(
+                            tracing::info!(
                                 "Transparent stream retry {transparent_stream_retries}/{MAX_TRANSPARENT_STREAM_RETRIES} (no content received yet): {message}",
-                            ));
+                            );
                             // Drop the failed stream before issuing the new
                             // request to release the underlying connection.
                             drop(stream);
@@ -873,9 +875,7 @@ impl Engine {
                             input,
                             caller,
                         } => {
-                            crate::logging::info(format!(
-                                "Tool '{name}' block start. Initial input: {input:?}"
-                            ));
+                            tracing::info!("Tool '{name}' block start. Initial input: {input:?}");
                             current_block_kind = Some(ContentBlockKind::ToolUse);
                             current_tool_indices.insert(index, tool_uses.len());
                             // ToolCallStarted is deferred to ContentBlockStop —
@@ -891,9 +891,9 @@ impl Engine {
                             });
                         }
                         ContentBlockStart::ServerToolUse { id, name, input } => {
-                            crate::logging::info(format!(
+                            tracing::info!(
                                 "Server tool '{name}' block start. Initial input: {input:?}"
-                            ));
+                            );
                             current_block_kind = Some(ContentBlockKind::ToolUse);
                             current_tool_indices.insert(index, tool_uses.len());
                             tool_uses.push(ToolUseState {
@@ -948,16 +948,19 @@ impl Engine {
                                 && let Some(tool_state) = tool_uses.get_mut(tool_idx)
                             {
                                 tool_state.input_buffer.push_str(&partial_json);
-                                crate::logging::info(format!(
+                                tracing::info!(
                                     "Tool '{}' input delta: {} (buffer now: {})",
-                                    tool_state.name, partial_json, tool_state.input_buffer
-                                ));
+                                    tool_state.name,
+                                    partial_json,
+                                    tool_state.input_buffer
+                                );
                                 if let Some(value) = parse_tool_input(&tool_state.input_buffer) {
                                     tool_state.input = value.clone();
-                                    crate::logging::info(format!(
+                                    tracing::info!(
                                         "Tool '{}' input parsed: {:?}",
-                                        tool_state.name, value
-                                    ));
+                                        tool_state.name,
+                                        value
+                                    );
                                 }
                             }
                         }
@@ -989,22 +992,26 @@ impl Engine {
                         if let Some(tool_idx) = current_tool_indices.remove(&index)
                             && let Some(tool_state) = tool_uses.get_mut(tool_idx)
                         {
-                            crate::logging::info(format!(
+                            tracing::info!(
                                 "Tool '{}' block stop. Buffer: '{}', Current input: {:?}",
-                                tool_state.name, tool_state.input_buffer, tool_state.input
-                            ));
+                                tool_state.name,
+                                tool_state.input_buffer,
+                                tool_state.input
+                            );
                             if !tool_state.input_buffer.trim().is_empty() {
                                 if let Some(value) = parse_tool_input(&tool_state.input_buffer) {
                                     tool_state.input = value;
-                                    crate::logging::info(format!(
+                                    tracing::info!(
                                         "Tool '{}' final input: {:?}",
-                                        tool_state.name, tool_state.input
-                                    ));
+                                        tool_state.name,
+                                        tool_state.input
+                                    );
                                 } else {
-                                    crate::logging::warn(format!(
+                                    tracing::warn!(
                                         "Tool '{}' failed to parse final input buffer: '{}'",
-                                        tool_state.name, tool_state.input_buffer
-                                    ));
+                                        tool_state.name,
+                                        tool_state.input_buffer
+                                    );
                                     let _ = self
                                         .tx_event
                                         .send(Event::status(format!(
@@ -1014,10 +1021,11 @@ impl Engine {
                                         .await;
                                 }
                             } else {
-                                crate::logging::warn(format!(
+                                tracing::warn!(
                                     "Tool '{}' input buffer is empty, using initial input: {:?}",
-                                    tool_state.name, tool_state.input
-                                ));
+                                    tool_state.name,
+                                    tool_state.input
+                                );
                             }
 
                             // Now that the input is finalized, announce the
@@ -1150,9 +1158,9 @@ impl Engine {
             if stream_died_with_nothing {
                 if stream_retry_attempts < MAX_STREAM_RETRIES {
                     stream_retry_attempts = stream_retry_attempts.saturating_add(1);
-                    crate::logging::warn(format!(
+                    tracing::warn!(
                         "Stream died with no content (attempt {stream_retry_attempts}/{MAX_STREAM_RETRIES}); retrying request"
-                    ));
+                    );
                     let _ = self
                         .tx_event
                         .send(Event::status(format!(
@@ -1165,9 +1173,9 @@ impl Engine {
                     turn_error = None;
                     continue;
                 }
-                crate::logging::warn(format!(
+                tracing::warn!(
                     "Stream retry budget exhausted ({stream_retry_attempts} attempts); failing turn"
-                ));
+                );
             } else if stream_errors == 0 {
                 // Healthy round → reset retry budget so we don't carry over
                 // state from a previous bad round.
@@ -1526,7 +1534,7 @@ impl Engine {
                         let message = "Model returned reasoning but no answer or tool call; \
                                        turn ended without output. Send a follow-up to retry."
                             .to_string();
-                        crate::logging::warn(&message);
+                        tracing::warn!("{}", message);
                         let _ = self.tx_event.send(Event::status(message)).await;
                     }
                 }
@@ -1567,9 +1575,7 @@ impl Engine {
                 let mut tool_name = tool.name.clone();
                 let tool_input = tool.input.clone();
                 let tool_caller = tool.caller.clone();
-                crate::logging::info(format!(
-                    "Planning tool '{tool_name}' with input: {tool_input:?}"
-                ));
+                tracing::info!("Planning tool '{tool_name}' with input: {tool_input:?}");
 
                 let requested_tool_name = tool_name.clone();
                 let tool_def =
@@ -1725,7 +1731,7 @@ impl Engine {
                     && let AttemptDecision::Block(message) =
                         loop_guard.record_attempt(&tool_name, &tool_input)
                 {
-                    crate::logging::warn(message.clone());
+                    tracing::warn!("{}", message);
                     guard_result = Some(loop_guard_block_tool_result(message));
                 }
 
@@ -2432,7 +2438,7 @@ impl Engine {
                         match loop_guard.record_outcome(&outcome.name, output.success) {
                             OutcomeDecision::Continue => {}
                             OutcomeDecision::Warn(message) => {
-                                crate::logging::warn(message.clone());
+                                tracing::warn!("{}", message);
                                 let _ = self.tx_event.send(Event::status(message)).await;
                             }
                             OutcomeDecision::Halt(message) => {
@@ -2495,7 +2501,7 @@ impl Engine {
                         match loop_guard.record_outcome(&outcome.name, false) {
                             OutcomeDecision::Continue => {}
                             OutcomeDecision::Warn(message) => {
-                                crate::logging::warn(message.clone());
+                                tracing::warn!("{}", message);
                                 let _ = self.tx_event.send(Event::status(message)).await;
                             }
                             OutcomeDecision::Halt(message) => {
@@ -2544,7 +2550,7 @@ impl Engine {
             }
 
             if let Some(message) = loop_guard_halt {
-                crate::logging::warn(message.clone());
+                tracing::warn!("{}", message);
                 let _ = self.tx_event.send(Event::status(message.clone())).await;
                 // 设置 turn_error 以确保最终返回 TurnOutcomeStatus::Failed 而非 Completed
                 turn_error = Some(message);
@@ -2719,9 +2725,7 @@ fn resolve_tool_definition<'a>(
         && let Some(registry) = tool_registry
         && let Some(canonical) = ToolDispatcher::resolve(registry, tool_name.as_str())
     {
-        crate::logging::info(format!(
-            "Resolved hallucinated tool name '{tool_name}' -> '{canonical}'"
-        ));
+        tracing::info!("Resolved hallucinated tool name '{tool_name}' -> '{canonical}'");
         tool_def = tool_catalog.iter().find(|d| d.name == canonical);
         if tool_def.is_some() {
             *tool_name = canonical;

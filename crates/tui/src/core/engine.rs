@@ -2481,7 +2481,7 @@ impl Engine {
             {
                 Ok(text) => text,
                 Err(err) => {
-                    crate::logging::warn(format!("L{level} soft seam failed: {err}"));
+                    tracing::warn!("L{level} soft seam failed: {err}");
                     return;
                 }
             }
@@ -2495,7 +2495,7 @@ impl Engine {
             {
                 Ok(text) => text,
                 Err(err) => {
-                    crate::logging::warn(format!("L{level} recompact failed: {err}"));
+                    tracing::warn!("L{level} recompact failed: {err}");
                     return;
                 }
             }
@@ -2549,9 +2549,7 @@ impl Engine {
         }
 
         let Some(client) = self.llm_client.clone() else {
-            crate::logging::warn(
-                "Cycle boundary skipped: API client not configured for briefing turn",
-            );
+            tracing::warn!("Cycle boundary skipped: API client not configured for briefing turn");
             return;
         };
 
@@ -2590,9 +2588,7 @@ impl Engine {
             {
                 Ok(text) => text,
                 Err(err) => {
-                    crate::logging::warn(format!(
-                        "Flash briefing failed, falling back to main model: {err}"
-                    ));
+                    tracing::warn!("Flash briefing failed, falling back to main model: {err}");
                     match produce_briefing(
                         client.as_ref(),
                         &self.session.model,
@@ -2603,9 +2599,9 @@ impl Engine {
                     {
                         Ok(text) => text,
                         Err(err2) => {
-                            crate::logging::warn(format!(
+                            tracing::warn!(
                                 "Cycle briefing turn failed; skipping cycle advance: {err2}"
-                            ));
+                            );
                             let _ = self
                                 .tx_event
                                 .send(Event::status(format!(
@@ -2628,9 +2624,7 @@ impl Engine {
             {
                 Ok(text) => text,
                 Err(err) => {
-                    crate::logging::warn(format!(
-                        "Cycle briefing turn failed; skipping cycle advance: {err}"
-                    ));
+                    tracing::warn!("Cycle briefing turn failed; skipping cycle advance: {err}");
                     let _ = self
                         .tx_event
                         .send(Event::status(format!(
@@ -2663,12 +2657,10 @@ impl Engine {
             archive_started,
         ) {
             Ok(path) => {
-                crate::logging::info(format!("Cycle {to} archived to {}", path.display()));
+                tracing::info!("Cycle {to} archived to {}", path.display());
             }
             Err(err) => {
-                crate::logging::warn(format!(
-                    "Failed to archive cycle {to}; continuing with swap: {err}"
-                ));
+                tracing::warn!("Failed to archive cycle {to}; continuing with swap: {err}");
             }
         }
 
