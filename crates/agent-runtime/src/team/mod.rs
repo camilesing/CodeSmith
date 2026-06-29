@@ -6,11 +6,16 @@
 //! the TUI. The TUI re-exports them at their historical
 //! `crate::tools::team` paths for backwards compatibility.
 
+pub mod team_file;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+
+use self::team_file::{read_team_file, remove_member_by_name, write_team_file};
 
 /// Idle reason variants — why a teammate went idle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -138,4 +143,29 @@ pub type SharedPermissionRequestRegistry = Arc<Mutex<PermissionRequestRegistry>>
 /// Create a new empty SharedPermissionRequestRegistry.
 pub fn new_shared_permission_registry() -> SharedPermissionRequestRegistry {
     Arc::new(Mutex::new(PermissionRequestRegistry::new()))
+}
+
+// ---------------------------------------------------------------------------
+// Shutdown Protocol Handler
+// ---------------------------------------------------------------------------
+
+/// Handle shutdown approval from a teammate. Cancel the teammate's token,
+/// remove from team file, and unassign their tasks.
+pub fn handle_shutdown_approval(
+    _request_id: &str,
+    teammate_name: &str,
+    team_name: &str,
+    cancel_tokens: &HashMap<String, CancellationToken>,
+) -> anyhow::Result<()> {
+    // Cancel the teammate's runtime token.
+    if let Some(token) = cancel_tokens.get(teammate_name) {
+        token.cancel();
+    }
+
+    // Remove the teammate from the team file.
+    let mut team_file = read_team_file(team_name)?;
+    remove_member_by_name(&mut team_file, teammate_name);
+    write_team_file(&team_file)?;
+
+    Ok(())
 }

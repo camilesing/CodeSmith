@@ -4,13 +4,8 @@
 //! poller. Each handler writes protocol responses to the appropriate mailbox
 //! and performs side effects (cancel tokens, remove members, etc.).
 
-use std::collections::HashMap;
-
-use tokio_util::sync::CancellationToken;
-
 use crate::tools::team::{
-    IdleReason, StructuredProtocolMessage, TeammateMessage, read_team_file, remove_member_by_name,
-    team_lead_name, write_team_file, write_to_mailbox,
+    IdleReason, StructuredProtocolMessage, TeammateMessage, team_lead_name, write_to_mailbox,
 };
 
 // ---------------------------------------------------------------------------
@@ -58,26 +53,10 @@ pub fn handle_shutdown_request(
     Ok(request_id)
 }
 
-/// Handle shutdown approval from a teammate. Cancel the teammate's token,
-/// remove from team file, and unassign their tasks.
-pub fn handle_shutdown_approval(
-    request_id: &str,
-    teammate_name: &str,
-    team_name: &str,
-    cancel_tokens: &HashMap<String, CancellationToken>,
-) -> anyhow::Result<()> {
-    // Cancel the teammate's runtime token.
-    if let Some(token) = cancel_tokens.get(teammate_name) {
-        token.cancel();
-    }
-
-    // Remove the teammate from the team file.
-    let mut team_file = read_team_file(team_name)?;
-    remove_member_by_name(&mut team_file, teammate_name);
-    write_team_file(&team_file)?;
-
-    Ok(())
-}
+// `handle_shutdown_approval` now lives in `codesmith_agent_runtime::team`;
+// re-exported here so historical `crate::tools::team::protocol_handlers`
+// call sites and the `proto_shutdown_approval` alias keep resolving.
+pub use codesmith_agent_runtime::team::handle_shutdown_approval;
 
 /// Handle shutdown rejection from a teammate. The teammate continues working.
 pub fn handle_shutdown_rejection(
