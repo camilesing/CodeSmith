@@ -45,3 +45,4 @@ pub mod plan_mode;
 pub mod rlm;
 pub mod worktree;
 pub mod user_input;
+pub mod remember;

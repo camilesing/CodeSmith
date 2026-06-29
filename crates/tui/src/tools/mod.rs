@@ -41,7 +41,7 @@ pub mod plugin;
 pub use codesmith_tool_impls::tools::project;
 pub use codesmith_tool_impls::tools::recall_archive;
 pub mod registry;
-pub mod remember;
+pub use codesmith_tool_impls::tools::remember;
 pub use codesmith_tool_impls::tools::revert_turn;
 pub use codesmith_tool_impls::tools::review;
 pub use codesmith_tool_impls::tools::rlm;

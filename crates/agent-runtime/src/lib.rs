@@ -50,6 +50,7 @@ pub mod lsp_diagnostics;
 pub mod lsp_registry;
 pub mod mailbox;
 pub mod mcp;
+pub mod memory;
 pub mod mode;
 pub mod network_policy;
 pub mod ops;

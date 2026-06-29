@@ -11,10 +11,10 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::knowledge::paths::resolve_memory_entrypoint;
-use crate::knowledge::types::MemoryType;
+use codesmith_agent_runtime::knowledge::paths::resolve_memory_entrypoint;
+use codesmith_agent_runtime::knowledge::types::MemoryType;
 
-use super::spec::{
+use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
 
@@ -100,7 +100,7 @@ impl ToolSpec for RememberTool {
             )
         })?;
 
-        crate::memory::append_entry(path, note).map_err(|err| {
+        codesmith_agent_runtime::memory::append_entry(path, note).map_err(|err| {
             ToolError::execution_failed(format!("failed to append to {}: {err}", path.display()))
         })?;
 
