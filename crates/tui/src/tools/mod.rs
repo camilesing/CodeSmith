@@ -50,7 +50,10 @@ pub mod search;
 pub mod shell;
 mod shell_output;
 pub mod skill;
-pub mod spec;
+// `spec` (ToolSpec, ToolContext, RuntimeToolServices, …) physically lives in
+// `codesmith_agent_runtime::tools::spec`. Historical `crate::tools::spec::X`
+// paths keep resolving through this module re-export.
+pub use codesmith_agent_runtime::tools::spec;
 pub mod subagent;
 pub mod task_v2;
 pub mod tasks;

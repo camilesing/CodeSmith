@@ -2057,6 +2057,17 @@ pub fn wrap_shell_manager(sm: SharedShellManager) -> Arc<dyn ShellManagerApi> {
     Arc::new(ShellManagerHost(sm))
 }
 
+/// Construct a new shared shell manager with default (no sandbox) policy and
+/// the no-op terminal controller (raw mode is never enabled outside the TUI).
+///
+/// This is the portable default used by `ToolContext::new` in `spec.rs`. The
+/// TUI overrides it with a crossterm-backed controller via
+/// [`ShellManager::with_terminal_control`] wherever interactive raw-mode
+/// save/restore around child spawn is required.
+pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
+    Arc::new(Mutex::new(ShellManager::new(workspace)))
+}
+
 impl ShellApi for ShellManagerHost {
     fn execute(
         &self,

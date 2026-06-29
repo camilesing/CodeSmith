@@ -13,17 +13,16 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::automation_manager::AutomationManagerHost;
 use crate::features::Features;
-use crate::lsp::LspManagerApi;
+use crate::host_services::ShellManagerApi;
+use crate::host_services::{AutomationManagerHost, LspManagerApi, TaskManagerHost};
 use crate::network_policy::NetworkPolicyDecider;
 use crate::rlm::session::SessionObjectSnapshot;
 use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
+use crate::sandbox::SandboxBackend;
 use crate::sandbox::SandboxRuntimeConfig;
-use crate::sandbox::backend::SandboxBackend;
-use crate::task_manager::TaskManagerHost;
+use crate::shell_manager::{new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
-use crate::tools::shell::{ShellManagerApi, new_shared_shell_manager, wrap_shell_manager};
 #[allow(unused_imports)]
 pub use codesmith_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
@@ -51,22 +50,22 @@ pub struct RuntimeToolServices {
     /// need not depend on the concrete `HookExecutor`.
     pub hook_executor: Option<std::sync::Arc<dyn crate::hooks::HookHost>>,
     /// Task V2 manager for conversation-scoped task tracking.
-    pub task_v2_manager: Option<crate::tools::task_v2::SharedTaskV2Manager>,
+    pub task_v2_manager: Option<crate::tool_state::task_v2::SharedTaskV2Manager>,
     /// Per-session backing store for `var_handle` payloads. Cloned tool
     /// contexts share this Arc so handles survive across turns.
     pub handle_store: SharedHandleStore,
     /// Per-session persistent RLM kernels, keyed by caller-chosen context name.
     pub rlm_sessions: SharedRlmSessionStore,
     /// Sub-agent mailbox for task assignment notifications.
-    pub task_mailbox: Option<Arc<crate::tools::subagent::mailbox::Mailbox>>,
+    pub task_mailbox: Option<Arc<crate::mailbox::Mailbox>>,
     /// Team context for multi-agent coordination.
-    pub team_context: Option<crate::tools::team::SharedTeamContext>,
+    pub team_context: Option<crate::tool_state::team::SharedTeamContext>,
     /// Permission request registry for team permission delegation.
-    pub permission_request_registry: Option<crate::tools::team::SharedPermissionRequestRegistry>,
+    pub permission_request_registry: Option<crate::team::SharedPermissionRequestRegistry>,
     /// Unified background task registry for model-visible background lifecycle tools.
     /// Trait-erased to `Arc<dyn BgRegistryApi>` so `spec.rs` (and, downstream,
     /// `tool-impls`) need not depend on the concrete `BackgroundTaskRegistry`.
-    pub background_task_registry: Option<Arc<dyn crate::background_task::BgRegistryApi>>,
+    pub background_task_registry: Option<Arc<dyn crate::host_services::BgRegistryApi>>,
     /// Sender identity used by team messaging tools. Defaults to the team lead
     /// when unset; teammate runtimes set this to their agent name.
     pub team_sender: Option<String>,
@@ -219,7 +218,7 @@ pub struct ToolContext {
 
     /// Which search backend `web_search` should use. Default: DuckDuckGo. Set via
     /// `[search] provider` in config.toml.
-    pub search_provider: crate::config::SearchProvider,
+    pub search_provider: crate::config_types::SearchProvider,
     /// API key for Tavily, Bocha, Metaso, or Baidu. `None` for Bing or DuckDuckGo.
     /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
     /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
@@ -270,7 +269,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
-            search_provider: crate::config::SearchProvider::default(),
+            search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
         }
@@ -314,7 +313,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
-            search_provider: crate::config::SearchProvider::default(),
+            search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
         }
@@ -358,7 +357,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
-            search_provider: crate::config::SearchProvider::default(),
+            search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
         }
@@ -642,7 +641,7 @@ impl ToolContext {
 /// binary, timeout, unknown language) degrades to an empty string rather than
 /// propagating an error to the caller.
 pub async fn lsp_diagnostics_for_paths(context: &ToolContext, paths: &[PathBuf]) -> String {
-    use crate::lsp::render_blocks;
+    use crate::lsp_diagnostics::render_blocks;
 
     let manager = match context.lsp_manager.as_ref() {
         Some(m) if m.config().enabled => m,

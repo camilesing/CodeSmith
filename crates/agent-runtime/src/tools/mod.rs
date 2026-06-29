@@ -21,4 +21,5 @@ pub mod large_output_router;
 pub mod schema_sanitize;
 pub mod shell_output;
 pub mod shell_types;
+pub mod spec;
 pub mod task_types;
