@@ -14,6 +14,8 @@
 pub mod approval_cache;
 pub mod arg_repair;
 pub mod automation_types;
+pub mod cargo_failure_summary;
+pub mod diff_format;
 pub mod git_env;
 pub mod handle;
 pub mod js_execution;
