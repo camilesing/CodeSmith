@@ -27,11 +27,52 @@ use codesmith_agent_runtime::host_services::{
     TurnDispatchRequest,
 };
 
-// Re-export the full engine module (struct, impl, free fns, re-exported
-// submodule items) so `use super::*` in the TUI submodules below — and
-// `use crate::core::engine::*` elsewhere in the TUI — sees the same surface
-// the old monolithic `engine.rs` exposed.
-pub use codesmith_agent_runtime::engine::*;
+// Explicit re-export of the engine items the TUI actually depends on. This
+// replaces an earlier `pub use ...::engine::*` glob: the lists below are the
+// auditable contract of what crosses the AR→TUI boundary. `use super::*` in
+// the TUI submodules below — and `use crate::core::engine::*` elsewhere in
+// the TUI — see exactly this surface (plus the local items defined further
+// down in this file). Grouped by the AR engine submodule each item is
+// re-exported from; keep it in sync with `crates/agent-runtime/src/engine/mod.rs`.
+
+// Production surface — referenced by non-test TUI code (this bridge, `handle`,
+// `runtime_traits`, `ui`, …). These items MUST stay `pub` in AR's engine
+// module (see C7-2).
+pub use codesmith_agent_runtime::engine::{
+    CancelReason, Engine, EngineConfig, ApprovalDecision, UserInputDecision,
+    build_model_tool_catalog, compact_tool_result_for_context, goal_objective_for_prompt,
+    system_prompt_hash,
+};
+
+// Test-only surface — referenced exclusively from `#[cfg(test)]` modules
+// (`engine/tests.rs`, `prompts.rs` tests, …). Gated so the production build
+// does not flag them as unused imports.
+#[cfg(test)]
+pub use codesmith_agent_runtime::engine::{
+    // top-level engine fn
+    default_active_native_tool_names,
+    // context
+    COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS, context_input_budget,
+    context_input_budget_for_provider, effective_max_output_tokens,
+    effective_max_output_tokens_for_provider, extract_compaction_summary_prompt,
+    is_context_length_error_message,
+    // dispatch
+    ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool,
+    final_tool_input, format_tool_error, plan_tool_execution_batches,
+    should_force_update_plan_first, should_parallelize_tool_batch, should_stop_after_plan_tool,
+    // lsp_hooks
+    edited_paths_for_tool,
+    // streaming
+    FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL, MAX_TRANSPARENT_STREAM_RETRIES,
+    TOOL_CALL_START_MARKERS, ToolUseState, contains_fake_tool_wrapper,
+    filter_tool_call_delta, should_transparently_retry_stream,
+    // tool_catalog
+    CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME,
+    active_tools_for_step, ensure_advanced_tooling, execute_code_execution_tool,
+    execute_tool_search, initial_active_tools, maybe_activate_requested_deferred_tool,
+    maybe_hydrate_requested_deferred_tool, missing_tool_error_message,
+    preflight_requested_deferred_tool, should_default_defer_tool,
+};
 
 use crate::client::DeepSeekClient;
 use crate::config::{ApiProvider, Config};
