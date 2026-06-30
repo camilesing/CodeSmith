@@ -1,8 +1,8 @@
 //! Team inbox dispatch handler — processes InboxDispatch from the inbox poller.
 
-use crate::core::engine::Engine;
-use crate::core::events::Event;
-use crate::tools::team::{InboxDispatch, proto_shutdown_approval};
+use crate::engine::Engine;
+use crate::events::Event;
+use crate::team::{InboxDispatch, handle_shutdown_approval};
 
 impl Engine {
     /// Handle a team inbox dispatch from the inbox poller background task.
@@ -48,7 +48,7 @@ impl Engine {
                 if let Some(shared_tc) = self.config.team_context.as_ref() {
                     let mut team_ctx = shared_tc.lock().await;
                     if let Some(ctx) = team_ctx.as_mut() {
-                        let _ = proto_shutdown_approval(
+                        let _ = handle_shutdown_approval(
                             &request_id,
                             &from,
                             &ctx.team_name,

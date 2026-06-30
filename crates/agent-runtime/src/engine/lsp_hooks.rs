@@ -7,15 +7,21 @@
 
 use std::path::PathBuf;
 
-use crate::tools::apply_patch::preflight_apply_patch;
-
 use super::*;
 
 /// #136: derive the file path(s) edited by a tool call. Returns the empty
 /// vec for tools that don't modify files. We intentionally only handle the
 /// three known edit tools — adding more (e.g. specialized refactor tools)
 /// is a one-line change here.
-pub(super) fn edited_paths_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<PathBuf> {
+///
+/// `apply_patch` is routed through `host.preflight_apply_patch_paths` so the
+/// engine core stays decoupled from the concrete `apply_patch` tool
+/// implementation (which lives in `codesmith-tool-impls`).
+pub fn edited_paths_for_tool(
+    tool_name: &str,
+    input: &serde_json::Value,
+    host: &dyn crate::host_services::HostServices,
+) -> Vec<PathBuf> {
     match tool_name {
         "edit_file" | "write_file" => {
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
@@ -24,15 +30,7 @@ pub(super) fn edited_paths_for_tool(tool_name: &str, input: &serde_json::Value) 
                 Vec::new()
             }
         }
-        "apply_patch" => preflight_apply_patch(input)
-            .map(|preflight| {
-                preflight
-                    .touched_files
-                    .into_iter()
-                    .map(PathBuf::from)
-                    .collect()
-            })
-            .unwrap_or_default(),
+        "apply_patch" => host.preflight_apply_patch_paths(input),
         _ => Vec::new(),
     }
 }
@@ -44,7 +42,7 @@ impl Engine {
     /// session message stream just before the next API request. Failure is
     /// silent by design — a missing/crashing LSP server must never block
     /// the agent.
-    pub(super) async fn run_post_edit_lsp_hook(
+    pub async fn run_post_edit_lsp_hook(
         &mut self,
         tool_name: &str,
         tool_input: &serde_json::Value,
@@ -52,7 +50,7 @@ impl Engine {
         if !self.host.lsp().config().enabled {
             return;
         }
-        let paths = edited_paths_for_tool(tool_name, tool_input);
+        let paths = edited_paths_for_tool(tool_name, tool_input, self.host.as_ref());
         for path in paths {
             let absolute = if path.is_absolute() {
                 path.clone()
@@ -74,12 +72,12 @@ impl Engine {
     /// pending. The message uses the standard `text` content block shape
     /// (the same shape as the post-tool steer messages) so we don't need to
     /// invent a new envelope.
-    pub(super) async fn flush_pending_lsp_diagnostics(&mut self) {
+    pub async fn flush_pending_lsp_diagnostics(&mut self) {
         if self.pending_lsp_blocks.is_empty() {
             return;
         }
         let blocks = std::mem::take(&mut self.pending_lsp_blocks);
-        let rendered = crate::lsp::render_blocks(&blocks);
+        let rendered = crate::lsp_diagnostics::render_blocks(&blocks);
         if rendered.is_empty() {
             return;
         }

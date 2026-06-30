@@ -8,7 +8,7 @@ use std::{fs::OpenOptions, io::Write, sync::Arc, time::Duration};
 
 use super::*;
 
-use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+use crate::tool_dispatch::ToolDispatcher;
 
 /// RAII guard that pauses the TUI's terminal-state ownership for the duration
 /// of an interactive tool, then restores it on drop.
@@ -34,14 +34,14 @@ use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
 /// channel is full we enqueue the resume on the active Tokio runtime instead of
 /// dropping it; otherwise a burst of engine events can strand the UI in the
 /// paused terminal state.
-pub(super) struct InteractiveTerminalGuard {
+pub struct InteractiveTerminalGuard {
     tx: Option<mpsc::Sender<Event>>,
 }
 
 impl InteractiveTerminalGuard {
     /// Send `PauseEvents` and arm the guard. If `interactive` is false the
     /// guard is a no-op — `Drop` will skip the resume.
-    pub(super) async fn engage(tx: mpsc::Sender<Event>, interactive: bool) -> Self {
+    pub async fn engage(tx: mpsc::Sender<Event>, interactive: bool) -> Self {
         if !interactive {
             return Self { tx: None };
         }
@@ -121,7 +121,7 @@ impl Drop for InteractiveTerminalGuard {
     }
 }
 
-pub(super) fn emit_tool_audit(event: serde_json::Value) {
+pub fn emit_tool_audit(event: serde_json::Value) {
     let Some(path) = std::env::var_os("DEEPSEEK_TOOL_AUDIT_LOG") else {
         return;
     };
@@ -139,7 +139,7 @@ pub(super) fn emit_tool_audit(event: serde_json::Value) {
 }
 
 impl Engine {
-    pub(super) async fn execute_mcp_tool_with_pool(
+    pub async fn execute_mcp_tool_with_pool(
         pool: Arc<AsyncMutex<McpPool>>,
         name: &str,
         input: serde_json::Value,
@@ -153,7 +153,7 @@ impl Engine {
         Ok(ToolResult::success(content))
     }
 
-    pub(super) async fn execute_parallel_tool(
+    pub async fn execute_parallel_tool(
         &mut self,
         input: serde_json::Value,
         tool_registry: Option<&dyn ToolDispatcher>,
@@ -262,7 +262,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn execute_tool_with_lock(
+    pub async fn execute_tool_with_lock(
         lock: Arc<RwLock<()>>,
         supports_parallel: bool,
         interactive: bool,
@@ -363,6 +363,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    #![allow(unsafe_code)]
     use super::*;
     use serde_json::json;
     use std::{sync::Mutex, time::Duration};

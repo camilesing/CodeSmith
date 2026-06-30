@@ -1,5 +1,6 @@
-use crate::core::capacity::GuardrailAction;
-use crate::core::turn::TurnContext;
+use crate::core::capacity::{CapacityControllerConfig, GuardrailAction};
+use crate::core::capacity_memory::load_last_k_capacity_records;
+use crate::core::turn::{TurnContext, TurnToolCall};
 use crate::llm_client::LlmClientHandle;
 use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::tools::spec::ToolContext;
@@ -8,16 +9,16 @@ use crate::tui::approval::ApprovalMode;
 
 use super::*;
 
-use super::context::{
+use super::{
     TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
     effective_max_output_tokens,
 };
-use crate::config::ApiProvider;
-use crate::models::{ContentBlock, SystemBlock};
+use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL};
+use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, ToolCaller};
 use crate::test_support::lock_test_env;
-use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
-use crate::tools::spec::ToolCapability;
-use crate::tools::todo::TodoStatus;
+use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs, new_shared_plan_state};
+use crate::tools::spec::{ToolCapability, ToolError, ToolResult};
+use crate::tools::todo::{TodoStatus, new_shared_todo_list};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -1341,7 +1342,7 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
         role: Some("researcher".to_string()),
     };
     let agent_id = {
-        let mut manager = engine.host_concrete.subagent_manager.write().await;
+        let mut manager = engine.host_concrete().subagent_manager.write().await;
         manager.insert_test_live_agent("agent_live".to_string(), assignment)
     };
 
@@ -1364,7 +1365,7 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
     assert!(combined.contains("researcher"));
     assert!(combined.contains(&agent_id));
     engine
-        .host_concrete
+        .host_concrete()
         .subagent_manager
         .write()
         .await
@@ -3053,14 +3054,14 @@ fn capacity_escalation_skips_pure_transient_categories() {
 #[test]
 fn edited_paths_for_edit_file_returns_path() {
     let input = json!({ "path": "src/foo.rs", "search": "x", "replace": "y" });
-    let paths = edited_paths_for_tool("edit_file", &input);
+    let paths = edited_paths_for_tool("edit_file", &input, &EngineHost::default());
     assert_eq!(paths, vec![PathBuf::from("src/foo.rs")]);
 }
 
 #[test]
 fn edited_paths_for_write_file_returns_path() {
     let input = json!({ "path": "src/bar.rs", "content": "fn main() {}" });
-    let paths = edited_paths_for_tool("write_file", &input);
+    let paths = edited_paths_for_tool("write_file", &input, &EngineHost::default());
     assert_eq!(paths, vec![PathBuf::from("src/bar.rs")]);
 }
 
@@ -3072,7 +3073,7 @@ fn edited_paths_for_apply_patch_with_changes_returns_each_path() {
             { "path": "b.rs", "content": "" }
         ]
     });
-    let paths = edited_paths_for_tool("apply_patch", &input);
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
     assert_eq!(paths, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
 }
 
@@ -3081,7 +3082,7 @@ fn edited_paths_for_apply_patch_with_diff_text_extracts_paths() {
     let input = json!({
         "patch": "--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-let x: i32 = 0;\n+let x: i32 = \"oops\";\n"
     });
-    let paths = edited_paths_for_tool("apply_patch", &input);
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
     assert_eq!(paths, vec![PathBuf::from("foo.rs")]);
 }
 
@@ -3090,23 +3091,27 @@ fn edited_paths_for_apply_patch_with_invalid_diff_returns_empty() {
     let input = json!({
         "patch": "@@ -1 +1 @@\n-old\n+new\n"
     });
-    let paths = edited_paths_for_tool("apply_patch", &input);
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
     assert!(paths.is_empty());
 }
 
 #[test]
 fn edited_paths_for_unknown_tool_returns_empty() {
     let input = json!({ "path": "irrelevant.rs" });
-    let paths = edited_paths_for_tool("read_file", &input);
+    let paths = edited_paths_for_tool("read_file", &input, &EngineHost::default());
     assert!(paths.is_empty());
-    let paths = edited_paths_for_tool("grep_files", &input);
+    let paths = edited_paths_for_tool("grep_files", &input, &EngineHost::default());
     assert!(paths.is_empty());
 }
 
 #[test]
 fn parse_patch_paths_skips_dev_null() {
     let patch = "--- a/keep.rs\n+++ b/keep.rs\n@@ -1 +1 @@\n-old\n+new\n--- a/deleted.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-delete me\n";
-    let paths = edited_paths_for_tool("apply_patch", &json!({ "patch": patch }));
+    let paths = edited_paths_for_tool(
+        "apply_patch",
+        &json!({ "patch": patch }),
+        &EngineHost::default(),
+    );
     assert_eq!(paths, vec![PathBuf::from("keep.rs")]);
 }
 
@@ -3137,7 +3142,7 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
         message: "expected i32, found &str".to_string(),
     }]));
     engine
-        .host_concrete
+        .host_concrete()
         .lsp_manager
         .install_test_transport(Language::Rust, fake)
         .await;
@@ -3221,7 +3226,7 @@ async fn post_edit_hook_skips_unknown_tool_names() {
         message: "should not be reported".to_string(),
     }]));
     engine
-        .host_concrete
+        .host_concrete()
         .lsp_manager
         .install_test_transport(Language::Rust, fake.clone())
         .await;

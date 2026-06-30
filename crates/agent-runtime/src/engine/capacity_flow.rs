@@ -7,12 +7,12 @@
 
 use super::*;
 
-use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+use crate::tool_dispatch::ToolDispatcher;
 
 use crate::models::context_window_for_model;
 
 impl Engine {
-    pub(super) async fn run_capacity_pre_request_checkpoint(
+    pub async fn run_capacity_pre_request_checkpoint(
         &mut self,
         turn: &TurnContext,
         client: Option<&dyn crate::llm_client::LlmClient>,
@@ -36,7 +36,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn run_capacity_post_tool_checkpoint(
+    pub async fn run_capacity_post_tool_checkpoint(
         &mut self,
         turn: &TurnContext,
         mode: AppMode,
@@ -77,7 +77,7 @@ impl Engine {
         }
     }
 
-    pub(super) async fn run_capacity_error_escalation_checkpoint(
+    pub async fn run_capacity_error_escalation_checkpoint(
         &mut self,
         turn: &TurnContext,
         mode: AppMode,
@@ -152,7 +152,7 @@ impl Engine {
         .await
     }
 
-    pub(super) fn capacity_observation(&self, turn: &TurnContext) -> CapacityObservationInput {
+    pub fn capacity_observation(&self, turn: &TurnContext) -> CapacityObservationInput {
         let message_window = self.config.capacity.profile_window.max(8) * 3;
         let action_count_this_turn = usize::try_from(turn.step)
             .unwrap_or(usize::MAX)
@@ -179,7 +179,7 @@ impl Engine {
         }
     }
 
-    pub(super) fn recent_tool_call_count(&self, message_window: usize) -> usize {
+    pub fn recent_tool_call_count(&self, message_window: usize) -> usize {
         self.session
             .messages
             .iter()
@@ -199,7 +199,7 @@ impl Engine {
             .sum()
     }
 
-    pub(super) fn recent_unique_reference_count(
+    pub fn recent_unique_reference_count(
         &self,
         message_window: usize,
         turn: &TurnContext,
@@ -242,7 +242,7 @@ impl Engine {
         refs.len()
     }
 
-    pub(super) async fn emit_coherence_signal(
+    pub async fn emit_coherence_signal(
         &mut self,
         signal: CoherenceSignal,
         reason: impl Into<String>,
@@ -260,12 +260,7 @@ impl Engine {
             .await;
     }
 
-    pub(super) async fn emit_compaction_started(
-        &mut self,
-        id: String,
-        auto: bool,
-        message: String,
-    ) {
+    pub async fn emit_compaction_started(&mut self, id: String, auto: bool, message: String) {
         let _ = self
             .tx_event
             .send(Event::CompactionStarted {
@@ -278,7 +273,7 @@ impl Engine {
             .await;
     }
 
-    pub(super) async fn emit_compaction_completed(
+    pub async fn emit_compaction_completed(
         &mut self,
         id: String,
         auto: bool,
@@ -300,7 +295,7 @@ impl Engine {
             .await;
     }
 
-    pub(super) async fn emit_compaction_failed(&mut self, id: String, auto: bool, message: String) {
+    pub async fn emit_compaction_failed(&mut self, id: String, auto: bool, message: String) {
         let _ = self
             .tx_event
             .send(Event::CompactionFailed {
@@ -313,7 +308,7 @@ impl Engine {
             .await;
     }
 
-    pub(super) async fn emit_capacity_decision(
+    pub async fn emit_capacity_decision(
         &mut self,
         turn: &TurnContext,
         snapshot: Option<&CapacitySnapshot>,
@@ -355,7 +350,7 @@ impl Engine {
         .await;
     }
 
-    pub(super) async fn emit_capacity_intervention(
+    pub async fn emit_capacity_intervention(
         &mut self,
         turn: &TurnContext,
         action: GuardrailAction,
@@ -384,7 +379,7 @@ impl Engine {
         .await;
     }
 
-    pub(super) async fn apply_targeted_context_refresh(
+    pub async fn apply_targeted_context_refresh(
         &mut self,
         turn: &TurnContext,
         client: Option<&dyn crate::llm_client::LlmClient>,
@@ -499,7 +494,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn apply_verify_with_tool_replay(
+    pub async fn apply_verify_with_tool_replay(
         &mut self,
         turn: &TurnContext,
         mode: AppMode,
@@ -649,7 +644,7 @@ impl Engine {
         true
     }
 
-    pub(super) async fn apply_verify_and_replan(
+    pub async fn apply_verify_and_replan(
         &mut self,
         turn: &TurnContext,
         mode: AppMode,
@@ -740,7 +735,7 @@ impl Engine {
         true
     }
 
-    pub(super) fn select_replay_candidate(
+    pub fn select_replay_candidate(
         &self,
         turn: &TurnContext,
         tool_registry: Option<&dyn ToolDispatcher>,
@@ -756,7 +751,7 @@ impl Engine {
             .cloned()
     }
 
-    pub(super) fn tool_is_replayable_read_only(
+    pub fn tool_is_replayable_read_only(
         &self,
         tool_name: &str,
         tool_registry: Option<&dyn ToolDispatcher>,
@@ -772,11 +767,7 @@ impl Engine {
             .is_some_and(|metadata| metadata.is_read_only)
     }
 
-    pub(super) fn build_canonical_state(
-        &self,
-        turn: &TurnContext,
-        note: Option<&str>,
-    ) -> CanonicalState {
+    pub fn build_canonical_state(&self, turn: &TurnContext, note: Option<&str>) -> CanonicalState {
         let goal = self
             .session
             .messages
@@ -856,7 +847,7 @@ impl Engine {
         }
     }
 
-    pub(super) fn canonical_prompt(
+    pub fn canonical_prompt(
         &self,
         canonical: &CanonicalState,
         pointer: &str,
@@ -904,7 +895,7 @@ impl Engine {
         }])
     }
 
-    pub(super) fn capacity_source_message_ids(&self, turn: &TurnContext) -> Vec<String> {
+    pub fn capacity_source_message_ids(&self, turn: &TurnContext) -> Vec<String> {
         let mut ids: Vec<String> = turn
             .tool_calls
             .iter()
@@ -916,7 +907,7 @@ impl Engine {
         ids
     }
 
-    pub(super) fn build_capacity_record(
+    pub fn build_capacity_record(
         &self,
         turn: &TurnContext,
         action: GuardrailAction,
@@ -948,7 +939,7 @@ impl Engine {
         }
     }
 
-    pub(super) async fn persist_capacity_record(
+    pub async fn persist_capacity_record(
         &mut self,
         turn: &TurnContext,
         action: GuardrailAction,
@@ -970,7 +961,7 @@ impl Engine {
         pointer
     }
 
-    pub(super) fn rehydrate_latest_canonical_state(&mut self) {
+    pub fn rehydrate_latest_canonical_state(&mut self) {
         let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) else {
             return;
         };

@@ -5,8 +5,8 @@
 //! This module re-injects those states as user messages with
 //! system-reminder blocks so the model can continue working.
 
-use crate::core::session::RecentReadFile;
 use crate::models::{ContentBlock, Message};
+use crate::session::RecentReadFile;
 
 /// Types of attachments that can be re-injected after compaction.
 #[derive(Debug, Clone)]

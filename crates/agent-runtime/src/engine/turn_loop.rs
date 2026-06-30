@@ -7,7 +7,8 @@
 
 use super::*;
 
-use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+use crate::tool_dispatch::ToolDispatcher;
+use crate::user_input::UserInputRequest;
 
 fn loop_guard_block_tool_result(message: String) -> ToolResult {
     ToolResult::error(message).with_metadata(json!({"loop_guard": "identical_tool_call"}))
@@ -125,7 +126,7 @@ struct EarlyToolResult {
 }
 
 #[derive(Debug)]
-pub(super) struct EarlyToolTask {
+pub struct EarlyToolTask {
     name: String,
     input: serde_json::Value,
     handle: tokio::task::JoinHandle<EarlyToolResult>,
@@ -229,7 +230,7 @@ fn early_tool_start_safe(preflight: EarlyToolStart<'_>) -> bool {
 }
 
 impl Engine {
-    pub(super) async fn handle_deepseek_turn(
+    pub async fn handle_deepseek_turn(
         &mut self,
         turn: &mut TurnContext,
         tool_registry: Option<std::sync::Arc<dyn ToolDispatcher>>,
@@ -1307,7 +1308,7 @@ impl Engine {
                 // resume instead of ending the turn. This fulfils the contract
                 // already documented in `prompts/base.md`: the parent is
                 // promised it'll see the sentinel when a child finishes.
-                let mut completions: Vec<crate::tools::subagent::SubAgentCompletion> = Vec::new();
+                let mut completions: Vec<crate::subagent::SubAgentCompletion> = Vec::new();
                 while let Ok(c) = self.rx_subagent_completion.try_recv() {
                     completions.push(c);
                 }
@@ -1483,8 +1484,7 @@ impl Engine {
                 // arrived between the last hold check and now. If a child finished
                 // while we were running the thinking-only check, surface its
                 // sentinel rather than delaying it to the next turn.
-                let mut late_completions: Vec<crate::tools::subagent::SubAgentCompletion> =
-                    Vec::new();
+                let mut late_completions: Vec<crate::subagent::SubAgentCompletion> = Vec::new();
                 while let Ok(c) = self.rx_subagent_completion.try_recv() {
                     late_completions.push(c);
                 }
@@ -2330,7 +2330,7 @@ impl Engine {
                             let tid = tool_id.clone();
                             let cap = self.config.snapshots_max_workspace_bytes;
                             let _ = tokio::task::spawn_blocking(move || {
-                                crate::core::turn::pre_tool_snapshot(&ws, &tid, cap)
+                                crate::turn::pre_tool_snapshot(&ws, &tid, cap)
                             })
                             .await;
                         }
@@ -2637,7 +2637,7 @@ impl Engine {
             return None;
         }
 
-        let max = crate::tools::goal::MAX_GOAL_CONTINUATIONS_PER_TURN;
+        let max = crate::tool_state::goal::MAX_GOAL_CONTINUATIONS_PER_TURN;
         if *continuations_this_turn >= max {
             let _ = self
                 .tx_event
@@ -2657,14 +2657,14 @@ impl Engine {
             )))
             .await;
 
-        Some(crate::tools::goal::render_continuation_prompt(
+        Some(crate::tool_state::goal::render_continuation_prompt(
             &snapshot,
             *continuations_this_turn,
             max,
         ))
     }
 
-    pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
+    pub fn messages_with_turn_metadata(&self) -> Vec<Message> {
         // `<turn_meta>` is stored on user-text messages when the message is
         // appended. Do not rewrite historical messages at request time: doing
         // so makes the API prefix differ from the bytes sent in earlier turns
@@ -3064,24 +3064,6 @@ mod tests {
     fn review_regression_allowed_tools_gate_blocks_all_tools_when_empty() {
         let allowed = Vec::new();
         assert!(!command_allows_tool(Some(&allowed), "bash"));
-    }
-
-    #[test]
-    fn review_regression_allowed_tools_gate_checks_canonical_tool_name() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let context = crate::tools::spec::ToolContext::new(tmp.path().to_path_buf());
-        let registry = crate::tools::ToolRegistryBuilder::new()
-            .with_file_tools()
-            .build(context);
-        let catalog = registry.to_api_tools();
-        let mut tool_name = "ReadFile".to_string();
-
-        let tool_def = resolve_tool_definition(&mut tool_name, &catalog, Some(&registry));
-
-        assert!(tool_def.is_some());
-        assert_eq!(tool_name, "read_file");
-        let allowed = vec!["read_file".to_string()];
-        assert!(command_allows_tool(Some(&allowed), &tool_name));
     }
 
     #[test]

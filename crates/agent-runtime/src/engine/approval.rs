@@ -7,16 +7,16 @@
 
 use std::time::Duration;
 
-use crate::core::events::Event;
+use crate::events::Event;
 use crate::tools::spec::ToolError;
-use crate::tools::user_input::{UserInputRequest, UserInputResponse};
+use crate::user_input::{UserInputRequest, UserInputResponse};
 
 const USER_INPUT_TIMEOUT: Duration = Duration::from_secs(300);
 
 use super::Engine;
 
 #[derive(Debug, Clone)]
-pub(super) enum ApprovalDecision {
+pub enum ApprovalDecision {
     Approved {
         id: String,
     },
@@ -31,7 +31,7 @@ pub(super) enum ApprovalDecision {
 }
 
 #[derive(Debug, Clone)]
-pub(super) enum UserInputDecision {
+pub enum UserInputDecision {
     Submitted {
         id: String,
         response: UserInputResponse,
@@ -43,7 +43,7 @@ pub(super) enum UserInputDecision {
 
 /// Result of awaiting tool approval from the user.
 #[derive(Debug)]
-pub(super) enum ApprovalResult {
+pub enum ApprovalResult {
     /// User approved the tool execution.
     Approved,
     /// User denied the tool execution.
@@ -68,7 +68,7 @@ impl Engine {
         }
     }
 
-    pub(super) async fn await_tool_approval(
+    pub async fn await_tool_approval(
         &mut self,
         tool_id: &str,
     ) -> Result<ApprovalResult, ToolError> {
@@ -106,7 +106,7 @@ impl Engine {
         }
     }
 
-    pub(super) async fn await_user_input(
+    pub async fn await_user_input(
         &mut self,
         tool_id: &str,
         request: UserInputRequest,

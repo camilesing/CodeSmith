@@ -11,37 +11,37 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::mode::AppMode;
 use crate::models::Tool;
 use crate::tools::spec::{ToolError, ToolResult, optional_u64, required_str};
-use crate::tui::app::AppMode;
 
 use crate::dependencies::ExternalTool;
 
 // The default active native tool set now lives in
 // `codesmith_agent_runtime::tools::tool_catalog` so the prompt builder
 // (in agent-runtime) can reference it without a circular dependency.
-use codesmith_agent_runtime::tools::tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS;
+use crate::tools::tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS;
 
-pub(super) const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
-pub(super) const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
-pub(super) const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
+pub const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
+pub const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
+pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 const CODE_EXECUTION_TOOL_TYPE: &str = "code_execution_20250825";
-pub(super) use crate::tools::js_execution::JS_EXECUTION_TOOL_NAME;
-pub(super) const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
+pub use crate::tools::js_execution::JS_EXECUTION_TOOL_NAME;
+pub const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
 const TOOL_SEARCH_REGEX_TYPE: &str = "tool_search_tool_regex_20251119";
-pub(super) const TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
+pub const TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
 const TOOL_SEARCH_BM25_TYPE: &str = "tool_search_tool_bm25_20251119";
 const TOOL_SEARCH_DEFAULT_MAX_RESULTS: usize = 20;
 const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 100;
 
-pub(super) fn is_tool_search_tool(name: &str) -> bool {
+pub fn is_tool_search_tool(name: &str) -> bool {
     matches!(name, TOOL_SEARCH_REGEX_NAME | TOOL_SEARCH_BM25_NAME)
 }
 
 // `DEFAULT_ACTIVE_NATIVE_TOOLS` relocated to
 // `codesmith_agent_runtime::tools::tool_catalog` (re-exported above).
 
-pub(super) fn should_default_defer_tool(
+pub fn should_default_defer_tool(
     name: &str,
     _mode: AppMode,
     always_load: &HashSet<String>,
@@ -59,7 +59,7 @@ pub(super) fn should_default_defer_tool(
         .any(|core_tool| core_tool == &name)
 }
 
-pub(super) fn apply_native_tool_deferral(
+pub fn apply_native_tool_deferral(
     catalog: &mut [Tool],
     mode: AppMode,
     always_load: &HashSet<String>,
@@ -80,14 +80,14 @@ fn should_keep_mcp_tool_loaded(name: &str) -> bool {
     )
 }
 
-pub(super) fn apply_mcp_tool_deferral(catalog: &mut [Tool], mode: AppMode) {
+pub fn apply_mcp_tool_deferral(catalog: &mut [Tool], mode: AppMode) {
     for tool in catalog {
         tool.defer_loading =
             Some(mode != AppMode::Yolo && !should_keep_mcp_tool_loaded(&tool.name));
     }
 }
 
-pub(super) fn build_model_tool_catalog(
+pub fn build_model_tool_catalog(
     mut native_tools: Vec<Tool>,
     mut mcp_tools: Vec<Tool>,
     mode: AppMode,
@@ -112,7 +112,7 @@ pub(super) fn build_model_tool_catalog(
     native_tools
 }
 
-pub(super) fn ensure_advanced_tooling(
+pub fn ensure_advanced_tooling(
     catalog: &mut Vec<Tool>,
     mode: AppMode,
     always_load: &HashSet<String>,
@@ -225,7 +225,7 @@ pub(super) fn ensure_advanced_tooling(
     }
 }
 
-pub(super) fn initial_active_tools(catalog: &[Tool]) -> HashSet<String> {
+pub fn initial_active_tools(catalog: &[Tool]) -> HashSet<String> {
     let mut active = HashSet::new();
     for tool in catalog {
         if !tool.defer_loading.unwrap_or(false) || is_tool_search_tool(&tool.name) {
@@ -263,7 +263,7 @@ fn active_tool_list_from_catalog(catalog: &[Tool], active: &HashSet<String>) -> 
     head
 }
 
-pub(super) fn active_tools_for_step(
+pub fn active_tools_for_step(
     catalog: &[Tool],
     active: &HashSet<String>,
     force_update_plan: bool,
@@ -426,7 +426,7 @@ fn suggest_tool_names(catalog: &[Tool], requested: &str, limit: usize) -> Vec<St
         .collect()
 }
 
-pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> String {
+pub fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> String {
     let suggestions = suggest_tool_names(catalog, tool_name, 3);
     let shell_hint = if is_shell_tool_name(tool_name) {
         Some(shell_tool_allow_shell_hint())
@@ -477,8 +477,7 @@ fn is_shell_tool_name(tool_name: &str) -> bool {
     )
 }
 
-#[cfg(test)]
-pub(super) fn maybe_activate_requested_deferred_tool(
+pub fn maybe_activate_requested_deferred_tool(
     tool_name: &str,
     catalog: &[Tool],
     active_tools: &mut HashSet<String>,
@@ -494,7 +493,7 @@ pub(super) fn maybe_activate_requested_deferred_tool(
     active_tools.insert(tool_name.to_string())
 }
 
-pub(super) fn maybe_hydrate_requested_deferred_tool(
+pub fn maybe_hydrate_requested_deferred_tool(
     tool_name: &str,
     tool_input: &Value,
     catalog: &[Tool],
@@ -511,8 +510,7 @@ pub(super) fn maybe_hydrate_requested_deferred_tool(
     Some(deferred_tool_schema_hydration_result(def, tool_input))
 }
 
-#[cfg(test)]
-pub(super) fn preflight_requested_deferred_tool(
+pub fn preflight_requested_deferred_tool(
     tool_name: &str,
     tool_input: &Value,
     catalog: &[Tool],
@@ -695,7 +693,7 @@ fn likely_field_corrections(
     corrections
 }
 
-pub(super) fn execute_tool_search(
+pub fn execute_tool_search(
     tool_name: &str,
     input: &serde_json::Value,
     catalog: &[Tool],
@@ -738,7 +736,7 @@ pub(super) fn execute_tool_search(
     })
 }
 
-pub(super) async fn execute_code_execution_tool(
+pub async fn execute_code_execution_tool(
     input: &serde_json::Value,
     workspace: &Path,
 ) -> Result<ToolResult, ToolError> {

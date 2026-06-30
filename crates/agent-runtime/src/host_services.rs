@@ -39,6 +39,7 @@ use crate::lsp_diagnostics::DiagnosticBlock;
 use crate::mcp::McpPool;
 use crate::mode::AppMode;
 use crate::models::{Message, Tool};
+use crate::ops::Op;
 use crate::runtime_ui::RuntimeUi;
 use crate::sandbox::{SandboxPolicy, SandboxRuntimeConfig};
 use crate::session::Session;
@@ -512,6 +513,38 @@ pub trait HostServices: Send + Sync {
     /// the host's own `SubAgentManager`); the engine body only needs the
     /// rendered `Option<String>` to feed the cycle briefing / seed messages.
     async fn capture_structured_state(&self, req: StructuredStateRequest<'_>) -> Option<String>;
+
+    /// Extract the file paths an `apply_patch` tool input intends to touch.
+    ///
+    /// Routed through the host so the engine core stays decoupled from the
+    /// concrete `apply_patch` tool implementation (which lives in
+    /// `codesmith-tool-impls`). Used by the post-edit LSP diagnostics hook to
+    /// know which files to pull diagnostics for. Best-effort: returns an empty
+    /// vec when the input cannot be parsed — a missing LSP server must never
+    /// block the agent.
+    fn preflight_apply_patch_paths(&self, input: &serde_json::Value) -> Vec<PathBuf>;
+
+    /// Spawn the AgentTeams leader inbox poller for `team_name`.
+    ///
+    /// The poller watches the leader's team inbox and fans dispatches back
+    /// into the engine op channel (`tx_op`). It is terminal-coupled (depends
+    /// on the host's team protocol handlers / teammate mailbox infrastructure
+    /// which live in `codesmith-tui`), so the engine body spawns it through
+    /// the host rather than naming the concrete `run_leader_inbox_poller`.
+    /// The host owns the supervised spawn; `cancel_token` is a child of the
+    /// engine's turn token so engine shutdown cancels the poller.
+    fn spawn_leader_inbox_poller(
+        &self,
+        team_name: String,
+        tx_op: mpsc::Sender<Op>,
+        cancel_token: CancellationToken,
+    );
+
+    /// Downcast the host to its concrete type. Lets TUI tests recover the
+    /// concrete `EngineHost` (and its `subagent_manager` / `lsp_manager` …)
+    /// from the `Arc<dyn HostServices>` the engine holds, now that the
+    /// `host_concrete` test field is gone. Production code never calls this.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Inputs the engine body supplies to [`HostServices::build_turn_dispatcher`].

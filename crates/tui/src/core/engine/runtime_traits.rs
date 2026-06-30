@@ -28,11 +28,11 @@ use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
 use codesmith_agent_runtime::models::Message;
 use codesmith_agent_runtime::runtime_ui::RuntimeUi;
 use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
-use super::{
-    Event, build_model_tool_catalog, build_tool_context_for, build_turn_tool_registry_builder_for,
-    configure_plugin_tools,
-};
+use super::tool_setup::{build_tool_context_for, build_turn_tool_registry_builder_for};
+use super::{Event, Op, build_model_tool_catalog, configure_plugin_tools};
 use crate::background_task::SharedBackgroundTaskRegistry;
 use crate::cycle_manager::StructuredState;
 use crate::features::Feature;
@@ -43,6 +43,7 @@ use crate::tools::subagent::{
     Mailbox, SharedSubAgentManager, SubAgentForkContext, SubAgentManager, SubAgentResult,
     SubAgentRuntime, SubAgentType, resolve_subagent_assignment_route,
 };
+use crate::tools::team::run_leader_inbox_poller;
 use crate::tui::app::AppMode;
 use crate::utils::spawn_supervised;
 
@@ -418,6 +419,36 @@ impl HostServices for super::EngineHost {
             tool_registry: tool_registry.map(|r| Arc::new(r) as Arc<dyn ToolDispatcher>),
             tools,
         }
+    }
+
+    fn preflight_apply_patch_paths(&self, input: &serde_json::Value) -> Vec<PathBuf> {
+        // Best-effort: a parse failure must never block the agent — return an
+        // empty vec so the post-edit LSP hook simply skips diagnostics.
+        match crate::tools::apply_patch::preflight_apply_patch(input) {
+            Ok(preflight) => preflight
+                .touched_files
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn spawn_leader_inbox_poller(
+        &self,
+        team_name: String,
+        tx_op: mpsc::Sender<Op>,
+        cancel_token: CancellationToken,
+    ) {
+        spawn_supervised(
+            "leader-inbox-poller",
+            std::panic::Location::caller(),
+            run_leader_inbox_poller(team_name, tx_op, cancel_token),
+        );
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

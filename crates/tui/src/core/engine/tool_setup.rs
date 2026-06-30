@@ -7,7 +7,10 @@ use std::sync::Arc;
 use codesmith_agent_runtime::runtime_ui::RuntimeUi;
 
 use super::*;
+use crate::tools::ToolRegistryBuilder;
+use crate::tools::plan::SharedPlanState;
 use crate::tools::shell::wrap_shell_manager;
+use crate::tools::todo::SharedTodoList;
 
 // sandbox_policy_for_mode now lives in codesmith_agent_runtime::sandbox
 // (moved with its tests in Phase C6-2). Re-exported here so the TUI
@@ -255,28 +258,4 @@ pub(super) fn build_turn_tool_registry_builder_for(
     builder = builder.with_notify_tool();
 
     builder
-}
-
-impl Engine {
-    /// Thin delegator retained so engine tests can keep calling
-    /// `engine.build_turn_tool_registry_builder(...)` while the assembly
-    /// itself lives in the host-side free function above (shared with the
-    /// [`HostServices::build_turn_dispatcher`] factory). Non-test callers
-    /// reach the assembly through the factory instead.
-    #[cfg(test)]
-    pub(super) fn build_turn_tool_registry_builder(
-        &self,
-        mode: AppMode,
-        todo_list: SharedTodoList,
-        plan_state: SharedPlanState,
-    ) -> ToolRegistryBuilder {
-        build_turn_tool_registry_builder_for(
-            &self.session,
-            &self.config,
-            &self.llm_client,
-            mode,
-            todo_list,
-            plan_state,
-        )
-    }
 }

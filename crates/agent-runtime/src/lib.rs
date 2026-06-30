@@ -37,6 +37,7 @@ pub mod config_types;
 pub mod cost_status;
 pub mod cycle_manager;
 pub mod dependencies;
+pub mod engine;
 pub mod engine_config;
 pub mod error_taxonomy;
 pub mod events;

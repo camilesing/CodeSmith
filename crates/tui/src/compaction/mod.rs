@@ -7,13 +7,13 @@
 //! depends on TUI-local `MockLlmClient` / `HookExecutor`) and the three
 //! prompt-/reinject-style submodules.
 
-pub mod attachment_reinject;
 pub mod compact_prompt;
-pub mod partial_compact;
 
 // Re-export the full compaction surface — config + token helpers + state
 // submodules + the heavy `compact` engine — so `crate::compaction::<item>`
-// resolves for the engine, the submodules below, and the tests.
+// resolves for the engine, the submodules below, and the tests. The two
+// reinject/partial-compaction submodules now live in agent-runtime and are
+// pulled in by this glob as public submodules.
 pub use codesmith_agent_runtime::compaction::*;
 
 use anyhow::Result;

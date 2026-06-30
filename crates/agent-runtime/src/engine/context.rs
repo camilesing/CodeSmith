@@ -5,7 +5,7 @@
 //! engine module from accumulating unrelated context-policy details.
 
 use crate::compaction::estimate_tokens;
-use crate::config::{ApiProvider, provider_capability};
+use crate::config_types::{ApiProvider, provider_capability};
 use crate::error_taxonomy::ErrorCategory;
 use crate::models::{Message, SystemPrompt, context_window_for_model, max_output_tokens_for_model};
 use crate::tools::spec::ToolResult;
@@ -16,7 +16,7 @@ use crate::tools::spec::ToolResult;
 /// context window. v0.7.5 keeps this cap fixed instead of silently lowering
 /// `max_tokens` near pressure; hard-cycle/preflight checks reserve this budget
 /// plus safety headroom before sending the next request.
-pub(super) const TURN_MAX_OUTPUT_TOKENS: u32 = 262_144;
+pub const TURN_MAX_OUTPUT_TOKENS: u32 = 262_144;
 
 /// Safe max output tokens sent in the API request. This must be low enough to
 /// work with providers that have smaller context limits than the model's native
@@ -53,7 +53,7 @@ fn heuristic_max_output_tokens(model: &str) -> u32 {
 /// Compute the effective `max_tokens` to send in the API request for a given
 /// model when the provider is not known. Kept for tests and legacy callers;
 /// turn construction should use [`effective_max_output_tokens_for_provider`].
-pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
+pub fn effective_max_output_tokens(model: &str) -> u32 {
     env_max_output_tokens().unwrap_or_else(|| heuristic_max_output_tokens(model))
 }
 
@@ -63,7 +63,7 @@ pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
 /// 1. `CODESMITH_MAX_OUTPUT_TOKENS` (or legacy `DEEPSEEK_MAX_OUTPUT_TOKENS`),
 /// 2. provider capability matrix,
 /// 3. model table / context-window heuristic.
-pub(super) fn effective_max_output_tokens_for_provider(provider: ApiProvider, model: &str) -> u32 {
+pub fn effective_max_output_tokens_for_provider(provider: ApiProvider, model: &str) -> u32 {
     if let Some(override_tokens) = env_max_output_tokens() {
         return override_tokens;
     }
@@ -74,9 +74,9 @@ pub(super) fn effective_max_output_tokens_for_provider(provider: ApiProvider, mo
     heuristic_max_output_tokens(model)
 }
 /// Keep this many most recent messages when emergency trimming is required.
-pub(super) const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
+pub const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
 /// Allow a few emergency recovery attempts before failing the turn.
-pub(super) const MAX_CONTEXT_RECOVERY_ATTEMPTS: u8 = 2;
+pub const MAX_CONTEXT_RECOVERY_ATTEMPTS: u8 = 2;
 /// Reserve additional headroom to avoid hitting provider hard limits.
 const CONTEXT_HEADROOM_TOKENS: usize = 1024;
 /// Hard cap for any tool output inserted into model context.
@@ -96,7 +96,7 @@ const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
 /// Max chars to keep from metadata-provided output summaries.
 const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
 
-pub(super) const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
+pub const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
 
 #[derive(Debug, Clone, Copy)]
 struct ToolResultContextLimits {
@@ -105,7 +105,7 @@ struct ToolResultContextLimits {
     snippet_chars: usize,
 }
 
-pub(super) fn summarize_text(text: &str, limit: usize) -> String {
+pub fn summarize_text(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_string();
     }
@@ -297,7 +297,7 @@ fn tool_result_context_limits_for_model(model: &str) -> ToolResultContextLimits 
     }
 }
 
-pub(crate) fn compact_tool_result_for_context(
+pub fn compact_tool_result_for_context(
     model: &str,
     tool_name: &str,
     output: &ToolResult,
@@ -334,9 +334,7 @@ pub(crate) fn compact_tool_result_for_context(
     }
 }
 
-pub(super) fn extract_compaction_summary_prompt(
-    prompt: Option<SystemPrompt>,
-) -> Option<SystemPrompt> {
+pub fn extract_compaction_summary_prompt(prompt: Option<SystemPrompt>) -> Option<SystemPrompt> {
     match prompt {
         Some(SystemPrompt::Blocks(blocks)) => {
             let summary_blocks: Vec<_> = blocks
@@ -375,7 +373,7 @@ fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
     }
 }
 
-pub(super) fn estimate_input_tokens_conservative(
+pub fn estimate_input_tokens_conservative(
     messages: &[Message],
     system: Option<&SystemPrompt>,
 ) -> usize {
@@ -423,17 +421,14 @@ fn reserved_output_for_input_budget(window_tokens: u32, fallback_output: u32) ->
     }
 }
 
-pub(super) fn context_input_budget(model: &str) -> Option<usize> {
+pub fn context_input_budget(model: &str) -> Option<usize> {
     let window_tokens = context_window_for_model(model)?;
     let reserved_output =
         reserved_output_for_input_budget(window_tokens, effective_max_output_tokens(model));
     input_budget_from_window_and_output(window_tokens, reserved_output)
 }
 
-pub(super) fn context_input_budget_for_provider(
-    provider: ApiProvider,
-    model: &str,
-) -> Option<usize> {
+pub fn context_input_budget_for_provider(provider: ApiProvider, model: &str) -> Option<usize> {
     let capability = provider_capability(provider, model);
     let reserved_output = reserved_output_for_input_budget(
         capability.context_window,
@@ -442,11 +437,11 @@ pub(super) fn context_input_budget_for_provider(
     input_budget_from_window_and_output(capability.context_window, reserved_output)
 }
 
-pub(super) fn turn_response_headroom_tokens() -> u64 {
+pub fn turn_response_headroom_tokens() -> u64 {
     u64::from(TURN_MAX_OUTPUT_TOKENS).saturating_add(CONTEXT_HEADROOM_TOKENS as u64)
 }
 
-pub(super) fn is_context_length_error_message(message: &str) -> bool {
+pub fn is_context_length_error_message(message: &str) -> bool {
     crate::error_taxonomy::classify_error_message(message) == ErrorCategory::InvalidInput
 }
 

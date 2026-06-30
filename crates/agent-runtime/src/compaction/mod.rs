@@ -18,9 +18,11 @@
 
 use crate::models::{ContentBlock, Message, SystemPrompt};
 
+pub mod attachment_reinject;
 pub mod circuit_breaker;
 pub mod compact;
 pub mod micro_compact;
+pub mod partial_compact;
 pub mod post_compact_cleanup;
 pub mod responsive_compact;
 pub mod session_memory_compact;

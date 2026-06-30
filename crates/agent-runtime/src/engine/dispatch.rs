@@ -12,83 +12,80 @@
 //!   MCP tools that are safe to run in parallel.
 //! * The tool execution plan/outcome types the batch driver passes around.
 //!
-//! All items are `pub(super)`-only: the public engine surface (Op/Event,
+//! All items are `pub`-only: the public engine surface (Op/Event,
 //! `EngineHandle`, `spawn_engine`) stays in `core/engine.rs`.
 
 use serde_json::json;
 
+use crate::mode::AppMode;
 use crate::models::{Tool, ToolCaller};
 use crate::tools::spec::{ToolError, ToolResult};
-use crate::tui::app::AppMode;
 
 use super::ToolUseState;
 
 // === Types ============================================================
 
 #[allow(dead_code)] // `index` mirrors batch order for diagnostic ergonomics.
-pub(super) struct ToolExecOutcome {
-    pub(super) index: usize,
-    pub(super) id: String,
-    pub(super) name: String,
-    pub(super) input: serde_json::Value,
-    pub(super) started_at: std::time::Instant,
-    pub(super) result: Result<ToolResult, ToolError>,
+pub struct ToolExecOutcome {
+    pub index: usize,
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+    pub started_at: std::time::Instant,
+    pub result: Result<ToolResult, ToolError>,
 }
 
 #[derive(Debug)]
-pub(super) struct ToolExecutionPlan {
-    pub(super) index: usize,
-    pub(super) id: String,
-    pub(super) name: String,
-    pub(super) input: serde_json::Value,
-    pub(super) caller: Option<ToolCaller>,
-    pub(super) interactive: bool,
-    pub(super) approval_required: bool,
-    pub(super) approval_description: String,
-    pub(super) supports_parallel: bool,
-    pub(super) read_only: bool,
-    pub(super) stream_early_start_safe: bool,
-    pub(super) early_result: Option<super::turn_loop::EarlyToolTask>,
-    pub(super) blocked_error: Option<ToolError>,
-    pub(super) guard_result: Option<ToolResult>,
+pub struct ToolExecutionPlan {
+    pub index: usize,
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+    pub caller: Option<ToolCaller>,
+    pub interactive: bool,
+    pub approval_required: bool,
+    pub approval_description: String,
+    pub supports_parallel: bool,
+    pub read_only: bool,
+    pub stream_early_start_safe: bool,
+    pub early_result: Option<super::turn_loop::EarlyToolTask>,
+    pub blocked_error: Option<ToolError>,
+    pub guard_result: Option<ToolResult>,
 }
 
-pub(super) enum ToolExecutionBatch {
+pub enum ToolExecutionBatch {
     Parallel(Vec<ToolExecutionPlan>),
     Serial(Box<ToolExecutionPlan>),
 }
 
 #[derive(Debug, serde::Serialize)]
-pub(super) struct ParallelToolResultEntry {
-    pub(super) tool_name: String,
-    pub(super) success: bool,
-    pub(super) content: String,
+pub struct ParallelToolResultEntry {
+    pub tool_name: String,
+    pub success: bool,
+    pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) error: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
-pub(super) struct ParallelToolResult {
-    pub(super) results: Vec<ParallelToolResultEntry>,
+pub struct ParallelToolResult {
+    pub results: Vec<ParallelToolResultEntry>,
 }
 
 // Hold the lock guard for the duration of a tool execution.
 // The inner guards are held for RAII purposes (dropped when the guard is dropped).
-pub(super) enum ToolExecGuard<'a> {
+pub enum ToolExecGuard<'a> {
     Read(#[allow(dead_code)] tokio::sync::RwLockReadGuard<'a, ()>),
     Write(#[allow(dead_code)] tokio::sync::RwLockWriteGuard<'a, ()>),
 }
 
 // === Caller policy and errors ========================================
 
-pub(super) fn caller_type_for_tool_use(caller: Option<&ToolCaller>) -> &str {
+pub fn caller_type_for_tool_use(caller: Option<&ToolCaller>) -> &str {
     caller.map_or("direct", |c| c.caller_type.as_str())
 }
 
-pub(super) fn caller_allowed_for_tool(
-    caller: Option<&ToolCaller>,
-    tool_def: Option<&Tool>,
-) -> bool {
+pub fn caller_allowed_for_tool(caller: Option<&ToolCaller>, tool_def: Option<&Tool>) -> bool {
     let requested = caller_type_for_tool_use(caller);
     if let Some(def) = tool_def
         && let Some(allowed) = &def.allowed_callers
@@ -101,7 +98,7 @@ pub(super) fn caller_allowed_for_tool(
     requested == "direct"
 }
 
-pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
+pub fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
     match err {
         ToolError::InvalidInput { message } => {
             format!("Invalid input for tool '{tool_name}': {message}")
@@ -147,7 +144,7 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
 ///   3. `input_buffer` non-empty but unparseable → fall back to `input`
 ///      (the per-delta parser has already mirrored the most recent valid
 ///      partial parse into `tool_state.input`).
-pub(super) fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
+pub fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
     if !state.input_buffer.trim().is_empty()
         && let Some(parsed) = parse_tool_input(&state.input_buffer)
     {
@@ -156,7 +153,7 @@ pub(super) fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
     state.input.clone()
 }
 
-pub(super) fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {
+pub fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {
     let trimmed = buffer.trim();
     if trimmed.is_empty() {
         return None;
@@ -235,7 +232,7 @@ fn normalize_parallel_tool_name(raw: &str) -> String {
     name.to_string()
 }
 
-pub(super) fn parse_parallel_tool_calls(
+pub fn parse_parallel_tool_calls(
     input: &serde_json::Value,
 ) -> Result<Vec<(String, serde_json::Value)>, ToolError> {
     let tool_uses = input
@@ -272,18 +269,15 @@ pub(super) fn parse_parallel_tool_calls(
 
 // === Dispatch policy ==================================================
 
-#[cfg(test)]
-pub(super) fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
+pub fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
     !plans.is_empty() && plans.iter().all(tool_plan_is_parallel_safe)
 }
 
-pub(super) fn tool_plan_is_parallel_safe(plan: &ToolExecutionPlan) -> bool {
+pub fn tool_plan_is_parallel_safe(plan: &ToolExecutionPlan) -> bool {
     plan.read_only && plan.supports_parallel && !plan.approval_required && !plan.interactive
 }
 
-pub(super) fn plan_tool_execution_batches(
-    plans: Vec<ToolExecutionPlan>,
-) -> Vec<ToolExecutionBatch> {
+pub fn plan_tool_execution_batches(plans: Vec<ToolExecutionPlan>) -> Vec<ToolExecutionBatch> {
     let mut batches = Vec::new();
     let mut parallel_chunk = Vec::new();
 
@@ -308,7 +302,7 @@ pub(super) fn plan_tool_execution_batches(
     batches
 }
 
-pub(super) fn should_stop_after_plan_tool(
+pub fn should_stop_after_plan_tool(
     mode: AppMode,
     tool_name: &str,
     result: &Result<ToolResult, ToolError>,
@@ -316,7 +310,7 @@ pub(super) fn should_stop_after_plan_tool(
     mode == AppMode::Plan && tool_name == "update_plan" && result.is_ok()
 }
 
-pub(super) fn should_force_update_plan_first(mode: AppMode, content: &str) -> bool {
+pub fn should_force_update_plan_first(mode: AppMode, content: &str) -> bool {
     if mode != AppMode::Plan {
         return false;
     }
@@ -364,7 +358,7 @@ pub(super) fn should_force_update_plan_first(mode: AppMode, content: &str) -> bo
     !asks_for_repo_exploration
 }
 
-pub(super) fn mcp_tool_is_parallel_safe(name: &str) -> bool {
+pub fn mcp_tool_is_parallel_safe(name: &str) -> bool {
     matches!(
         name,
         "list_mcp_resources"
@@ -375,7 +369,7 @@ pub(super) fn mcp_tool_is_parallel_safe(name: &str) -> bool {
     )
 }
 
-pub(super) fn mcp_tool_is_read_only(name: &str) -> bool {
+pub fn mcp_tool_is_read_only(name: &str) -> bool {
     matches!(
         name,
         "list_mcp_resources"
@@ -386,7 +380,7 @@ pub(super) fn mcp_tool_is_read_only(name: &str) -> bool {
     )
 }
 
-pub(super) fn mcp_tool_approval_description(name: &str) -> String {
+pub fn mcp_tool_approval_description(name: &str) -> String {
     if mcp_tool_is_read_only(name) {
         format!("Read-only MCP tool '{name}'")
     } else {

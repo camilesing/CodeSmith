@@ -12,26 +12,26 @@ const FAILURE_WARN_THRESHOLD: u32 = 3;
 const FAILURE_HALT_THRESHOLD: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum AttemptDecision {
+pub enum AttemptDecision {
     Proceed,
     Block(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum OutcomeDecision {
+pub enum OutcomeDecision {
     Continue,
     Warn(String),
     Halt(String),
 }
 
 #[derive(Debug, Default, Clone)]
-pub(super) struct LoopGuard {
+pub struct LoopGuard {
     call_counts: HashMap<(String, u64), u32>,
     failure_counts: HashMap<String, u32>,
 }
 
 impl LoopGuard {
-    pub(super) fn record_attempt(&mut self, tool: &str, args: &Value) -> AttemptDecision {
+    pub fn record_attempt(&mut self, tool: &str, args: &Value) -> AttemptDecision {
         let key = (tool.to_string(), hash_args(args));
         let count = self.call_counts.entry(key).or_insert(0);
         *count = count.saturating_add(1);
@@ -43,7 +43,7 @@ impl LoopGuard {
         AttemptDecision::Proceed
     }
 
-    pub(super) fn record_outcome(&mut self, tool: &str, ok: bool) -> OutcomeDecision {
+    pub fn record_outcome(&mut self, tool: &str, ok: bool) -> OutcomeDecision {
         let failures = self.failure_counts.entry(tool.to_string()).or_insert(0);
         if ok {
             *failures = 0;
