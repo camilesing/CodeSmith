@@ -4,7 +4,7 @@
 //! (XML/Replit/markdown pseudo-calls in assistant text). Their job is to make
 //! sure that:
 //!
-//! 1. The known wrapper markers are still present in `core/engine.rs` so the
+//! 1. The known wrapper markers are still present in the engine source so the
 //!    streaming filter has something to scrub.
 //! 2. The legacy text-based `tool_parser` does NOT treat the newer
 //!    `<function_calls>` wrapper as a real tool call — only the legacy
@@ -16,30 +16,32 @@
 //! The point is that protocol drift in the model output should be visible (we
 //! still strip it and emit a status notice), not silently turned into tool
 //! execution.
+//!
+//! These tests live in `codesmith-agent-runtime` because the engine body (and
+//! the scrubbing markers/constants it asserts on) moved here from `codesmith-tui`.
+//! Keeping them next to the engine source means a contributor moving a marker
+//! into a sibling submodule does not silently break these regression checks.
 
+use codesmith_agent_runtime::tool_parser;
 use std::fs;
 
-#[path = "../src/core/tool_parser.rs"]
-#[allow(dead_code)]
-mod tool_parser;
-
-// `engine.rs` was decomposed into submodules under `core/engine/`. The
-// protocol-scrubbing strings the tests below assert on are now spread
-// across `engine.rs` and several `engine/*.rs` files. We compile-time
+// The protocol-scrubbing strings the tests below assert on are spread across
+// `engine/mod.rs` and several `engine/*.rs` submodules. We compile-time
 // include each so a contributor moving a marker into a sibling submodule
 // does not silently break these regression checks.
 const ENGINE_SOURCES: &[&str] = &[
-    include_str!("../src/core/engine.rs"),
-    include_str!("../src/core/engine/streaming.rs"),
-    include_str!("../src/core/engine/turn_loop.rs"),
-    include_str!("../src/core/engine/dispatch.rs"),
-    include_str!("../src/core/engine/tool_setup.rs"),
-    include_str!("../src/core/engine/tool_execution.rs"),
-    include_str!("../src/core/engine/tool_catalog.rs"),
-    include_str!("../src/core/engine/context.rs"),
-    include_str!("../src/core/engine/approval.rs"),
-    include_str!("../src/core/engine/capacity_flow.rs"),
-    include_str!("../src/core/engine/lsp_hooks.rs"),
+    include_str!("../src/engine/mod.rs"),
+    include_str!("../src/engine/streaming.rs"),
+    include_str!("../src/engine/turn_loop.rs"),
+    include_str!("../src/engine/dispatch.rs"),
+    include_str!("../src/engine/loop_guard.rs"),
+    include_str!("../src/engine/lsp_hooks.rs"),
+    include_str!("../src/engine/team_inbox.rs"),
+    include_str!("../src/engine/tool_catalog.rs"),
+    include_str!("../src/engine/tool_execution.rs"),
+    include_str!("../src/engine/context.rs"),
+    include_str!("../src/engine/approval.rs"),
+    include_str!("../src/engine/capacity_flow.rs"),
 ];
 
 fn any_engine_source_contains(needle: &str) -> bool {
@@ -57,7 +59,7 @@ const EXPECTED_START_MARKERS: &[&str] = &[
 const EXPECTED_END_MARKERS: &[&str] = &[
     "[/TOOL_CALL]",
     "</codesmith:tool_call>",
-    "</tool_call>",
+    "```",
     "</invoke>",
     "</function_calls>",
 ];
@@ -70,7 +72,7 @@ fn engine_keeps_known_fake_wrapper_start_markers() {
             any_engine_source_contains(&needle),
             "no engine source file still mentions start marker `{marker}` — \
              protocol scrubbing may have regressed. Searched for {needle:?} \
-             across engine.rs and engine/* submodules."
+             across engine/mod.rs and engine/* submodules."
         );
     }
 }
@@ -83,7 +85,7 @@ fn engine_keeps_known_fake_wrapper_end_markers() {
             any_engine_source_contains(&needle),
             "no engine source file still mentions end marker `{marker}` — \
              protocol scrubbing may have regressed. Searched for {needle:?} \
-             across engine.rs and engine/* submodules."
+             across engine/mod.rs and engine/* submodules."
         );
     }
 }
@@ -166,10 +168,11 @@ fn legacy_parser_has_marker_helper_for_legacy_shapes_only() {
 fn engine_source_file_still_exists_and_is_non_trivial() {
     // Sanity check so the `include_str!` above is meaningful — if the engine
     // module ever moves, this test must be updated alongside it.
-    let metadata = fs::metadata("src/core/engine.rs").expect("engine.rs must exist next to tests");
+    let metadata =
+        fs::metadata("src/engine/mod.rs").expect("engine/mod.rs must exist next to tests");
     assert!(
         metadata.len() > 10_000,
-        "engine.rs is unexpectedly small ({} bytes); did the file move?",
+        "engine/mod.rs is unexpectedly small ({} bytes); did the file move?",
         metadata.len()
     );
 }

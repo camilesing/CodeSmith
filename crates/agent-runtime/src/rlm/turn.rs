@@ -9,7 +9,6 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::events::Event;
-use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::repl::PythonRuntime;
 

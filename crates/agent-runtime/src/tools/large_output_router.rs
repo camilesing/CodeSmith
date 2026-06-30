@@ -10,6 +10,7 @@
 //! Per-tool thresholds can override the global default. Individual tool calls
 //! may pass `raw=true` to bypass routing entirely.
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

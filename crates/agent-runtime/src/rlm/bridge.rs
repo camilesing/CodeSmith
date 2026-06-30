@@ -14,14 +14,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
 use futures_util::future::join_all;
 use tokio::sync::Mutex;
 
 use crate::llm_client::LlmClient;
-use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt, Usage};
+use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::repl::runtime::{BatchResp, RpcDispatcher, RpcRequest, RpcResponse, SingleResp};
 use crate::utils::spawn_supervised;
+
+#[cfg(test)]
+use crate::models::MessageResponse;
+#[cfg(test)]
+use anyhow::Result;
 
 /// Per-child completion timeout — same as the previous sidecar default.
 const CHILD_TIMEOUT_SECS: u64 = 120;

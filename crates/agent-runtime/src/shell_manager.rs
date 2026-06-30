@@ -44,11 +44,11 @@ use std::os::unix::process::CommandExt;
 use crate::child_env;
 use crate::host_services::{ShellApi, ShellExecResult, ShellExecStatus, ShellManagerApi};
 use crate::sandbox::{
-    CommandSpec, ExecEnv, SandboxDecision, SandboxExecRequest, SandboxManager,
-    SandboxPolicy as ExecutionSandboxPolicy, SandboxRuntimeConfig, SandboxType,
+    CommandSpec, ExecEnv, SandboxDecision, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy,
+    SandboxRuntimeConfig, SandboxType,
 };
 use crate::tools::git_env::merge_git_scrub_env;
-use crate::tools::shell_output::{summarize_output, truncate_with_meta};
+use crate::tools::shell_output::truncate_with_meta;
 use crate::tools::shell_types::{
     ShellDeltaResult, ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus,
 };
@@ -307,28 +307,6 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
             }
         }
     })
-}
-
-fn result_sandbox_fields(
-    sandbox_type: SandboxType,
-) -> (bool, Option<String>, bool, bool, Option<String>) {
-    let sandboxed = !matches!(sandbox_type, SandboxType::None);
-    let backend = if sandboxed {
-        Some(sandbox_type.to_string())
-    } else {
-        None
-    };
-    (sandboxed, backend.clone(), sandboxed, sandboxed, backend)
-}
-
-fn apply_shell_result_sandbox_metadata(result: &mut ShellResult, sandbox_type: SandboxType) {
-    let (sandboxed, sandbox_type_str, requested, effective, backend) =
-        result_sandbox_fields(sandbox_type);
-    result.sandboxed = sandboxed;
-    result.sandbox_type = sandbox_type_str;
-    result.sandbox_requested = requested;
-    result.sandbox_effective = effective;
-    result.sandbox_backend = backend;
 }
 
 fn apply_shell_result_decision_metadata(result: &mut ShellResult, decision: &SandboxDecision) {

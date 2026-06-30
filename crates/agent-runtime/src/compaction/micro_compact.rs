@@ -161,7 +161,7 @@ fn collect_tool_use_names(messages: &[Message]) -> std::collections::HashMap<Str
 /// Returns the number of bytes cleared.
 pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompactState) -> usize {
     let tool_use_names = collect_tool_use_names(messages);
-    let total_bytes_cleared: usize = 0;
+    let _total_bytes_cleared: usize = 0;
     let mut bytes_cleared = 0usize;
 
     for msg in messages.iter_mut() {

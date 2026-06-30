@@ -53,8 +53,8 @@ use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::utils::spawn_supervised;
 
 use super::capacity::{
-    CapacityController, CapacityControllerConfig, CapacityDecision, CapacityObservationInput,
-    CapacitySnapshot, GuardrailAction, RiskBand,
+    CapacityController, CapacityDecision, CapacityObservationInput, CapacitySnapshot,
+    GuardrailAction, RiskBand,
 };
 use super::capacity_memory::{
     CanonicalState, CapacityMemoryRecord, ReplayInfo, append_capacity_record,
@@ -2457,7 +2457,7 @@ impl Engine {
     /// way lets the runtime body live in `codesmith-agent-runtime` free of
     /// TUI-concrete types (`Config`, `EngineHost`, `DeepSeekClient`, …).
     pub fn new_runtime(
-        mut config: EngineConfig,
+        config: EngineConfig,
         host: Arc<dyn HostServices>,
         llm_client: Option<LlmClientHandle>,
         llm_client_error: Option<String>,

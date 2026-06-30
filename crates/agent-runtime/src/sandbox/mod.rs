@@ -382,7 +382,7 @@ impl SandboxPolicy {
                 roots
                     .into_iter()
                     .map(|root| {
-                        let mut read_only_subpaths = protected_control_plane_subpaths(&root);
+                        let read_only_subpaths = protected_control_plane_subpaths(&root);
 
                         WritableRoot {
                             root,

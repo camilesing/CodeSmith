@@ -1542,6 +1542,7 @@ fn transport_kind(config: &McpServerConfig) -> Result<McpTransportKind> {
     McpTransportKind::parse(config.transport.as_deref())
 }
 
+#[cfg(test)]
 fn is_legacy_sse_transport(config: &McpServerConfig) -> bool {
     transport_kind(config).is_ok_and(McpTransportKind::is_sse)
 }

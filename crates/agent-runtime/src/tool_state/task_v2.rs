@@ -1,7 +1,6 @@
 //! State types extracted from `crates/tui/src/tools/task_v2.rs`.
 //! Tool implementations stay in tui.
 
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use fd_lock::RwLock;
 use serde::{Deserialize, Serialize};
@@ -9,7 +8,6 @@ use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Task V2 status.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

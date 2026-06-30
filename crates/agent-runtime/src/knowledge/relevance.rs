@@ -5,9 +5,8 @@
 //! mirroring the TypeScript `findRelevantMemories` / `selectRelevantMemories`
 //! pattern.
 
+#[cfg(test)]
 use std::path::PathBuf;
-
-use std::future::Future;
 use std::pin::Pin;
 
 use tokio_util::sync::CancellationToken;

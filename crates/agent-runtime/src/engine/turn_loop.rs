@@ -155,7 +155,7 @@ fn abort_early_tool_tasks(early_tool_tasks: &mut std::collections::HashMap<Strin
 
 fn early_tool_start_safe(preflight: EarlyToolStart<'_>) -> bool {
     let mut tool_name = preflight.tool_state.name.clone();
-    let requested_tool_name = tool_name.clone();
+    let _requested_tool_name = tool_name.clone();
     let tool_def = resolve_tool_definition(
         &mut tool_name,
         preflight.tool_catalog,
@@ -2813,6 +2813,7 @@ fn is_turn_metadata_text(text: &str) -> bool {
 /// Decide whether auto-compaction should be triggered this iteration.
 /// Compaction runs only when enabled, the circuit breaker allows it, and
 /// the message history exceeds the compaction threshold.
+#[cfg(test)]
 fn should_trigger_auto_compact(
     compaction_enabled: bool,
     circuit_breaker_allows: bool,
@@ -2824,6 +2825,7 @@ fn should_trigger_auto_compact(
 /// Decide whether context recovery is needed before the next API call.
 /// Returns true when estimated input exceeds the budget and we haven't
 /// exhausted our recovery attempt limit.
+#[cfg(test)]
 fn context_recovery_needed(
     estimated_input: usize,
     input_budget: usize,

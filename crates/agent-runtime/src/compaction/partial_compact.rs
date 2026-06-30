@@ -8,7 +8,6 @@
 //!   (sacrifices cache for immediate budget relief). The summary goes into
 //!   the system prompt.
 
-use crate::compaction::estimate_tokens;
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt};
 

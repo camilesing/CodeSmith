@@ -2,32 +2,20 @@
 //!
 //! These tests exercise the full validation pipeline against a tiny in-process
 //! HTTP server, so the network gate, download cap, tarball validation, atomic
-//! rename, and `.installed-from` marker all run end-to-end. The module is
-//! pulled in via `#[path]` includes (matching `integration_mock_llm.rs`) so we
-//! get access to private helpers without a separate library crate.
+//! rename, and `.installed-from` marker all run end-to-end. The installer and
+//! network-policy modules live in `codesmith-agent-runtime`, so this test
+//! crate imports them directly rather than `#[path]`-including source files.
 
 use std::io::Write;
 use std::path::Path;
 
+use codesmith_agent_runtime::network_policy::{DecisionToml, NetworkPolicy};
+use codesmith_agent_runtime::skills::install;
+use codesmith_agent_runtime::skills::install::{InstallOutcome, InstallSource, UpdateResult};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use tempfile::TempDir;
 use tiny_http::{Method, Response, Server};
-
-// Pull the production source files into this test binary so the test can
-// reach `install`'s public surface without a dedicated library crate.
-//
-// `install.rs` only references `crate::network_policy` so we just need that
-// one helper module alongside `install` itself.
-#[path = "../src/network_policy.rs"]
-mod network_policy;
-
-#[path = "../src/skills/install.rs"]
-#[allow(dead_code)]
-mod install;
-
-use crate::install::{InstallOutcome, InstallSource, UpdateResult};
-use crate::network_policy::{DecisionToml, NetworkPolicy};
 
 /// Construct a gzipped tarball from `(path, body)` pairs. Permissions are set
 /// to 0o644 so umask differences across platforms don't perturb the bytes.

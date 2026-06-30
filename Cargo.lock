@@ -847,6 +847,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "tiny_http",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",

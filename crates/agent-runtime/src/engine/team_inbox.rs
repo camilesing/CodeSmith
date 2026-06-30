@@ -73,7 +73,6 @@ impl Engine {
                 let _ = self.tx_event.send(Event::status(msg)).await;
             }
             InboxDispatch::PermissionRequestPending {
-                request_id,
                 agent_id,
                 tool_name,
                 ..

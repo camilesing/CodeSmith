@@ -16,9 +16,7 @@ use super::age::{memory_age_label, memory_freshness_text};
 use super::budget::{
     MAX_BYTES_PER_MEMORY, MAX_LINES_PER_MEMORY, MAX_MEMORIES_PER_TURN, SessionByteBudget,
 };
-use super::dedup::filter_duplicate_attachments;
-use super::entrypoint::load_entrypoint;
-use super::paths::{ensure_memory_dir_exists, resolve_memory_dir, resolve_memory_entrypoint};
+use super::paths::ensure_memory_dir_exists;
 use super::relevance::{RelevanceError, select_relevant_memories};
 use super::scan::{MemoryHeader, scan_memory_files};
 use super::types::SurfacedMemory;
@@ -119,7 +117,7 @@ pub async fn run_prefetch(
     let started = std::time::Instant::now();
 
     // Ensure directory exists (may have been created by RememberTool).
-    if let Err(e) = ensure_memory_dir_exists(memory_dir) {
+    if let Err(_) = ensure_memory_dir_exists(memory_dir) {
         // Directory creation failure is non-critical for prefetch.
         // Just return empty result.
         return Ok(PrefetchResult {
@@ -211,7 +209,7 @@ pub async fn run_prefetch(
 /// Read a memory file and format it for surfacing.
 ///
 /// Applies line/byte truncation and staleness headers.
-fn read_memory_for_surfacing(header: &MemoryHeader, memory_dir: &Path) -> Option<SurfacedMemory> {
+fn read_memory_for_surfacing(header: &MemoryHeader, _memory_dir: &Path) -> Option<SurfacedMemory> {
     let content = std::fs::read_to_string(&header.file_path).ok()?;
     let (fm, body) = super::scan::parse_frontmatter(&content);
 
