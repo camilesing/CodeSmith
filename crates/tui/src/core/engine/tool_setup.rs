@@ -2,41 +2,18 @@
 //!
 //! This keeps mode/feature-specific registry construction out of the send path.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use codesmith_agent_runtime::runtime_ui::RuntimeUi;
 
 use super::*;
-use crate::sandbox::SandboxPolicy;
 use crate::tools::shell::wrap_shell_manager;
 
-/// Pick the sandbox policy that gates shell commands for a given UI mode.
-///
-/// - **Plan** (#1077): `ReadOnly` — no writes, no network. The previous
-///   `WorkspaceWrite` policy let `python -c "open('f','w').write('x')"` mutate
-///   files inside the workspace because it whitelisted the workspace as
-///   writable. Plan mode is investigation only; if the user wants to change
-///   files they should switch to Agent.
-/// - **Coordinator**: `ReadOnly` — same rationale as Plan; the coordinator
-///   cannot directly execute or write, so no sandbox writes needed.
-/// - **Agent**: `WorkspaceWrite` with workspace as writable root and network
-///   on. Approval flow gates risky individual commands; the sandbox handles
-///   the rest. Network is allowed because cargo / npm / curl-style commands
-///   are normal during agent work and DNS-deny breaks them silently.
-/// - **YOLO**: `DangerFullAccess` — explicit no-guardrails contract.
-pub(crate) fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> SandboxPolicy {
-    match mode {
-        AppMode::Plan | AppMode::Coordinator => SandboxPolicy::ReadOnly,
-        AppMode::Agent => SandboxPolicy::WorkspaceWrite {
-            writable_roots: vec![workspace.to_path_buf()],
-            network_access: true,
-            exclude_tmpdir: false,
-            exclude_slash_tmp: false,
-        },
-        AppMode::Yolo => SandboxPolicy::DangerFullAccess,
-    }
-}
+// sandbox_policy_for_mode now lives in codesmith_agent_runtime::sandbox
+// (moved with its tests in Phase C6-2). Re-exported here so the TUI
+// construction fns below and historical call sites (engine.rs, ui.rs, and
+// the engine test module) keep resolving verbatim.
+pub(crate) use codesmith_agent_runtime::sandbox::sandbox_policy_for_mode;
 
 /// Build a [`ToolContext`] from explicit inputs rather than an `&Engine`
 /// borrow.
@@ -301,44 +278,5 @@ impl Engine {
             todo_list,
             plan_state,
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn sandbox_policy_for_mode_plan_is_readonly() {
-        let policy = sandbox_policy_for_mode(AppMode::Plan, Path::new("/repo"));
-        assert!(matches!(policy, SandboxPolicy::ReadOnly));
-    }
-
-    #[test]
-    fn sandbox_policy_for_mode_coordinator_is_readonly() {
-        let policy = sandbox_policy_for_mode(AppMode::Coordinator, Path::new("/repo"));
-        assert!(matches!(policy, SandboxPolicy::ReadOnly));
-    }
-
-    #[test]
-    fn sandbox_policy_for_mode_agent_is_workspace_write() {
-        let policy = sandbox_policy_for_mode(AppMode::Agent, Path::new("/repo"));
-        assert!(matches!(policy, SandboxPolicy::WorkspaceWrite { .. }));
-        if let SandboxPolicy::WorkspaceWrite {
-            writable_roots,
-            network_access,
-            ..
-        } = policy
-        {
-            assert_eq!(writable_roots, vec![PathBuf::from("/repo")]);
-            assert!(network_access);
-        }
-    }
-
-    #[test]
-    fn sandbox_policy_for_mode_yolo_is_danger_full_access() {
-        let policy = sandbox_policy_for_mode(AppMode::Yolo, Path::new("/repo"));
-        assert!(matches!(policy, SandboxPolicy::DangerFullAccess));
     }
 }

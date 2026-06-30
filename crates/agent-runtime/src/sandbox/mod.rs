@@ -26,6 +26,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::mode::AppMode;
+
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
 
@@ -236,6 +238,33 @@ impl Default for SandboxPolicy {
             exclude_tmpdir: false,
             exclude_slash_tmp: false,
         }
+    }
+}
+
+/// Pick the sandbox policy that gates shell commands for a given UI mode.
+///
+/// - **Plan** (#1077): `ReadOnly` — no writes, no network. The previous
+///   `WorkspaceWrite` policy let `python -c "open('f','w').write('x')"` mutate
+///   files inside the workspace because it whitelisted the workspace as
+///   writable. Plan mode is investigation only; if the user wants to change
+///   files they should switch to Agent.
+/// - **Coordinator**: `ReadOnly` — same rationale as Plan; the coordinator
+///   cannot directly execute or write, so no sandbox writes needed.
+/// - **Agent**: `WorkspaceWrite` with workspace as writable root and network
+///   on. Approval flow gates risky individual commands; the sandbox handles
+///   the rest. Network is allowed because cargo / npm / curl-style commands
+///   are normal during agent work and DNS-deny breaks them silently.
+/// - **YOLO**: `DangerFullAccess` — explicit no-guardrails contract.
+pub fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> SandboxPolicy {
+    match mode {
+        AppMode::Plan | AppMode::Coordinator => SandboxPolicy::ReadOnly,
+        AppMode::Agent => SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![workspace.to_path_buf()],
+            network_access: true,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        },
+        AppMode::Yolo => SandboxPolicy::DangerFullAccess,
     }
 }
 
@@ -1230,6 +1259,39 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    #[test]
+    fn sandbox_policy_for_mode_plan_is_readonly() {
+        let policy = sandbox_policy_for_mode(AppMode::Plan, Path::new("/repo"));
+        assert!(matches!(policy, SandboxPolicy::ReadOnly));
+    }
+
+    #[test]
+    fn sandbox_policy_for_mode_coordinator_is_readonly() {
+        let policy = sandbox_policy_for_mode(AppMode::Coordinator, Path::new("/repo"));
+        assert!(matches!(policy, SandboxPolicy::ReadOnly));
+    }
+
+    #[test]
+    fn sandbox_policy_for_mode_agent_is_workspace_write() {
+        let policy = sandbox_policy_for_mode(AppMode::Agent, Path::new("/repo"));
+        assert!(matches!(policy, SandboxPolicy::WorkspaceWrite { .. }));
+        if let SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access,
+            ..
+        } = policy
+        {
+            assert_eq!(writable_roots, vec![PathBuf::from("/repo")]);
+            assert!(network_access);
+        }
+    }
+
+    #[test]
+    fn sandbox_policy_for_mode_yolo_is_danger_full_access() {
+        let policy = sandbox_policy_for_mode(AppMode::Yolo, Path::new("/repo"));
+        assert!(matches!(policy, SandboxPolicy::DangerFullAccess));
+    }
 
     #[test]
     fn test_command_spec_shell() {
