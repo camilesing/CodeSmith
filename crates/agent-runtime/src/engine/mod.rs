@@ -124,34 +124,34 @@ pub struct Engine {
     pub config: EngineConfig,
     pub host: Arc<dyn HostServices>,
     pub llm_client: Option<LlmClientHandle>,
-    pub llm_client_error: Option<String>,
-    pub api_key_env_only_recovery: Option<String>,
+    pub(crate) llm_client_error: Option<String>,
+    pub(crate) api_key_env_only_recovery: Option<String>,
     pub session: Session,
-    pub api_provider: ApiProvider,
-    pub mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
-    pub rx_op: mpsc::Receiver<Op>,
-    pub rx_approval: mpsc::Receiver<ApprovalDecision>,
-    pub rx_user_input: mpsc::Receiver<UserInputDecision>,
-    pub rx_steer: mpsc::Receiver<String>,
-    pub tx_event: mpsc::Sender<Event>,
+    pub(crate) api_provider: ApiProvider,
+    pub(crate) mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    pub(crate) rx_op: mpsc::Receiver<Op>,
+    pub(crate) rx_approval: mpsc::Receiver<ApprovalDecision>,
+    pub(crate) rx_user_input: mpsc::Receiver<UserInputDecision>,
+    pub(crate) rx_steer: mpsc::Receiver<String>,
+    pub(crate) tx_event: mpsc::Sender<Event>,
     /// Wakeup channel for the parent turn loop when a direct child sub-agent
     /// terminates (issue #756). Cloned into `SubAgentRuntime` so the runtime
     /// can fan completion events back into the engine.
-    pub tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+    pub(crate) tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
     /// Receiver paired with `tx_subagent_completion`. Drained at the
     /// turn-loop's empty-tool_uses branch to surface `<codesmith:subagent.done>`
     /// sentinels into the parent's transcript before deciding to end the turn.
-    pub rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
+    pub(crate) rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
     pub cancel_token: CancellationToken,
-    pub shared_cancel_token: Arc<StdMutex<CancellationToken>>,
+    pub(crate) shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     /// Latched reason for the current cancellation, mirrored to
     /// `EngineHandle::cancel_reason`. Read by `approval.rs` when
     /// surfacing the "Request cancelled while awaiting …" error so the
     /// user-facing message names a cause.
-    pub cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
-    pub tool_exec_lock: Arc<RwLock<()>>,
+    pub(crate) cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
+    pub(crate) tool_exec_lock: Arc<RwLock<()>>,
     pub capacity_controller: CapacityController,
-    pub coherence_state: CoherenceState,
+    pub(crate) coherence_state: CoherenceState,
     pub turn_counter: u64,
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
@@ -159,13 +159,13 @@ pub struct Engine {
     /// Cached SlopLedger gate block keyed by the ledger file's modified time.
     /// This keeps prompt refreshes cheap while still noticing append/update
     /// writes from slop ledger tools during the same session.
-    pub slop_ledger_gate_cache: Option<(Option<SystemTime>, Option<String>)>,
+    pub(crate) slop_ledger_gate_cache: Option<(Option<SystemTime>, Option<String>)>,
     /// Knowledge On Demand prefetch orchestrator. Tracks already-surfaced
     /// memory paths and session byte budget across turns.
-    pub knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch,
+    pub(crate) knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch,
     /// Sender half of the engine op channel. Cloned into long-lived background
     /// lifecycle tasks such as the team inbox poller watcher.
-    pub tx_op: mpsc::Sender<Op>,
+    pub(crate) tx_op: mpsc::Sender<Op>,
     /// Terminal-agnostic UI bridge (notifications + clipboard). Backed by
     /// [`runtime_traits::TuiRuntimeUi`] here; the trait object keeps the
     /// engine core decoupled from concrete terminal services so it can later
