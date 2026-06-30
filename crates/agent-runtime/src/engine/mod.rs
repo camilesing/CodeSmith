@@ -2638,11 +2638,20 @@ mod capacity_flow;
 mod context;
 pub use context::compact_tool_result_for_context;
 pub use context::{
-    COMPACTION_SUMMARY_MARKER, MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
-    TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
-    effective_max_output_tokens, effective_max_output_tokens_for_provider,
-    estimate_input_tokens_conservative, extract_compaction_summary_prompt,
-    is_context_length_error_message, summarize_text, turn_response_headroom_tokens,
+    COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS, context_input_budget,
+    context_input_budget_for_provider, effective_max_output_tokens,
+    effective_max_output_tokens_for_provider, extract_compaction_summary_prompt,
+    is_context_length_error_message,
+};
+// Items below use a private `use` (not `pub use`): they are referenced only
+// within the engine crate (intra-`engine` access via `super::`) and are not
+// part of the public `engine::` surface consumed by `codesmith-tui`. The TUI
+// bridge lists every item it depends on explicitly; anything not on that list
+// is kept private here. Private `use` bindings remain visible to this
+// module's descendants, so sibling submodules still resolve them via `super::`.
+use context::{
+    MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
+    estimate_input_tokens_conservative, summarize_text, turn_response_headroom_tokens,
 };
 mod dispatch;
 mod loop_guard;
@@ -2660,34 +2669,41 @@ pub fn default_active_native_tool_names() -> &'static [&'static str] {
     crate::tools::default_active_native_tool_names()
 }
 
-pub use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};
+pub use self::approval::{ApprovalDecision, UserInputDecision};
+use self::approval::ApprovalResult;
 pub use self::dispatch::should_parallelize_tool_batch;
 pub use self::dispatch::{
-    ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, ToolExecOutcome,
-    ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool, caller_type_for_tool_use,
-    final_tool_input, format_tool_error, mcp_tool_approval_description, mcp_tool_is_parallel_safe,
-    mcp_tool_is_read_only, parse_parallel_tool_calls, parse_tool_input,
-    plan_tool_execution_batches, should_force_update_plan_first, should_stop_after_plan_tool,
+    ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool,
+    final_tool_input, format_tool_error, plan_tool_execution_batches,
+    should_force_update_plan_first, should_stop_after_plan_tool,
 };
-pub use self::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
+use self::dispatch::{
+    ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, caller_type_for_tool_use,
+    mcp_tool_approval_description, mcp_tool_is_parallel_safe, mcp_tool_is_read_only,
+    parse_parallel_tool_calls, parse_tool_input,
+};
+use self::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 pub use self::lsp_hooks::edited_paths_for_tool;
 pub use self::streaming::TOOL_CALL_START_MARKERS;
 pub use self::streaming::{
-    ContentBlockKind, FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL,
-    MAX_TRANSPARENT_STREAM_RETRIES, STREAM_MAX_CONTENT_BYTES, STREAM_MAX_DURATION_SECS,
+    FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL, MAX_TRANSPARENT_STREAM_RETRIES,
     ToolUseState, contains_fake_tool_wrapper, filter_tool_call_delta,
-    should_transparently_retry_stream, stream_chunk_timeout_secs,
+    should_transparently_retry_stream,
+};
+use self::streaming::{
+    ContentBlockKind, STREAM_MAX_CONTENT_BYTES, STREAM_MAX_DURATION_SECS,
+    stream_chunk_timeout_secs,
 };
 pub use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME,
-    REQUEST_USER_INPUT_NAME, active_tools_for_step, build_model_tool_catalog,
-    ensure_advanced_tooling, execute_code_execution_tool, execute_tool_search,
-    initial_active_tools, is_tool_search_tool, maybe_hydrate_requested_deferred_tool,
-    missing_tool_error_message,
+    CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME,
+    active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling,
+    execute_code_execution_tool, execute_tool_search, initial_active_tools,
+    maybe_activate_requested_deferred_tool, maybe_hydrate_requested_deferred_tool,
+    missing_tool_error_message, preflight_requested_deferred_tool, should_default_defer_tool,
 };
-pub use self::tool_catalog::{
-    TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME, maybe_activate_requested_deferred_tool,
-    preflight_requested_deferred_tool, should_default_defer_tool,
+use self::tool_catalog::{
+    JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
+    is_tool_search_tool,
 };
-pub use self::tool_execution::emit_tool_audit;
-pub use crate::tools::js_execution::execute_js_execution_tool;
+use self::tool_execution::emit_tool_audit;
+use crate::tools::js_execution::execute_js_execution_tool;
