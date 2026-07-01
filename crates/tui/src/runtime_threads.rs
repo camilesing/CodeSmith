@@ -2043,12 +2043,14 @@ impl RuntimeThreadManager {
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),
             ),
+            subagent_inherit_full_registry: self.config.subagent_inherit_full_registry(),
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             sandbox_runtime: self.config.sandbox_runtime_config(),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             kod_enabled: self.config.kod_enabled(),
             memory_dir: self.config.memory_dir(),
+            memory_excludes: self.config.memory_excludes(),
             vision_config: self.config.vision_model_config(),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
@@ -2062,6 +2064,10 @@ impl RuntimeThreadManager {
             tools_always_load: self.config.tools_always_load(),
             tools: self.config.tools.clone(),
             team_context: None,
+            // Runtime-thread (API) engines don't carry a telemetry sink yet
+            // (Plan 06 / 6.1 wires the interactive path only); capacity
+            // events from these engines are dropped — the safe opt-in default.
+            telemetry_sink: None,
         };
 
         let engine = spawn_engine(

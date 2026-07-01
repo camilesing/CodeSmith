@@ -3006,6 +3006,11 @@ impl McpPool {
         prefixed_name: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        // Sanitize tool arguments against Unicode hidden-character attacks
+        // (HackerOne #3086545 — invisible Tag/zero-width chars that the model
+        // still processes). Applied once here at the chokepoint so it covers
+        // both `conn.call_tool` forwards below and the pseudo-tool readers.
+        let arguments = crate::sanitization::recursively_sanitize_unicode(arguments);
         if prefixed_name == "list_mcp_resources" {
             let server = arguments
                 .get("server")

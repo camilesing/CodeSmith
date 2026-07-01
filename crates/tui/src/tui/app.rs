@@ -1253,6 +1253,14 @@ pub struct App {
     /// task panel) see the same `ShellManager`. `build_engine_host` threads
     /// this into `EngineHost::shell_manager` so the engine body shares it too.
     pub shell_manager: SharedShellManager,
+    /// Local-only telemetry sink handle threaded into every spawned engine
+    /// (Plan 06 / 6.1). `None` until `run_tui` sets it from the sink the host
+    /// constructed in `run_interactive`. Cheap to clone (`Arc`-shared) so
+    /// `build_engine_config` hands a clone to each `EngineConfig`; the engine
+    /// emits capacity events into it while the host retains the original for
+    /// `attach`/`set_enabled` control — the shared `AtomicBool` keeps both
+    /// views in sync.
+    pub telemetry_sink: Option<codesmith_agent_runtime::telemetry::TelemetrySink>,
     /// Last MCP manager/discovery snapshot shown in the UI.
     pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
     /// Number of MCP servers declared in the user's config at app boot.
@@ -1932,6 +1940,7 @@ impl App {
                 ..RuntimeToolServices::default()
             },
             mcp_snapshot: None,
+            telemetry_sink: None,
             // Read the MCP config once at boot to know how many servers
             // the user has declared. The footer chip uses this even when
             // no live snapshot is available (#502). Cheap (just reads

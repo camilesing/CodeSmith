@@ -33,6 +33,16 @@ pub struct ToolExecOutcome {
     pub input: serde_json::Value,
     pub started_at: std::time::Instant,
     pub result: Result<ToolResult, ToolError>,
+    /// Optional by-value context patch a parallel tool outcome may carry back
+    /// to the turn loop (finding F4 / plan 04 §4.4). The turn loop collects a
+    /// batch's patches and applies them **tighten-only** once after the
+    /// `FuturesUnordered` drains, mirroring Claude Code's
+    /// `queuedContextModifiers`. Redundant for `Arc`-shared state (which
+    /// already回流s atomically) and usually `None` — CodeSmith's concurrent
+    /// tools are read-only by design, so they produce no context patches.
+    /// The field exists so a future write-capable parallel tool can回流 a
+    /// tighten without touching the drain shape.
+    pub context_patch: Option<crate::subagent::ContextPatch>,
 }
 
 #[derive(Debug)]

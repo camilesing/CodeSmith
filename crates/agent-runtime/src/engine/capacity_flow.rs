@@ -10,6 +10,7 @@ use super::*;
 use crate::tool_dispatch::ToolDispatcher;
 
 use crate::models::context_window_for_model;
+use crate::telemetry::{RedactedAnalyticsMetadata, VerifiedAnalyticsMetadata};
 
 impl Engine {
     pub async fn run_capacity_pre_request_checkpoint(
@@ -308,6 +309,86 @@ impl Engine {
             .await;
     }
 
+    /// Mirror a capacity [`Event`] into the local telemetry sink (Plan 06/6.1).
+    ///
+    /// Builds a `serde_json::Value` from the three capacity event variants and
+    /// hands it to [`TelemetrySink::emit`] when `config.telemetry_sink` is
+    /// `Some`. Non-capacity events are ignored. Potentially-leaky string
+    /// fields (`replay_outcome`, `error`) arrive as `RedactedAnalyticsMetadata`
+    /// (Plan 06 / 6.3) and are emitted via `.as_str()`, so only the sanitized
+    /// values reach the sink. IO failures are swallowed by the sink —
+    /// telemetry never breaks the engine. The same `Event` is still sent on
+    /// `tx_event` for the UI, so this routing is purely additive.
+    fn emit_telemetry(&self, event: &Event) {
+        let Some(sink) = self.config.telemetry_sink.as_ref() else {
+            return;
+        };
+        let value = match event {
+            Event::CapacityDecision {
+                session_id,
+                turn_id,
+                h_hat,
+                c_hat,
+                slack,
+                min_slack,
+                violation_ratio,
+                p_fail,
+                risk_band,
+                action,
+                cooldown_blocked,
+                reason,
+            } => serde_json::json!({
+                "type": "capacity_decision",
+                "session_id": session_id.as_str(),
+                "turn_id": turn_id.as_str(),
+                "h_hat": h_hat,
+                "c_hat": c_hat,
+                "slack": slack,
+                "min_slack": min_slack,
+                "violation_ratio": violation_ratio,
+                "p_fail": p_fail,
+                "risk_band": risk_band.as_str(),
+                "action": action.as_str(),
+                "cooldown_blocked": cooldown_blocked,
+                "reason": reason.as_str(),
+            }),
+            Event::CapacityIntervention {
+                session_id,
+                turn_id,
+                action,
+                before_prompt_tokens,
+                after_prompt_tokens,
+                compaction_size_reduction,
+                replay_outcome,
+                replan_performed,
+            } => serde_json::json!({
+                "type": "capacity_intervention",
+                "session_id": session_id.as_str(),
+                "turn_id": turn_id.as_str(),
+                "action": action.as_str(),
+                "before_prompt_tokens": before_prompt_tokens,
+                "after_prompt_tokens": after_prompt_tokens,
+                "compaction_size_reduction": compaction_size_reduction,
+                "replay_outcome": replay_outcome.as_ref().map(|r| r.as_str()),
+                "replan_performed": replan_performed,
+            }),
+            Event::CapacityMemoryPersistFailed {
+                session_id,
+                turn_id,
+                action,
+                error,
+            } => serde_json::json!({
+                "type": "capacity_memory_persist_failed",
+                "session_id": session_id.as_str(),
+                "turn_id": turn_id.as_str(),
+                "action": action.as_str(),
+                "error": error.as_str(),
+            }),
+            _ => return,
+        };
+        sink.emit(value);
+    }
+
     pub async fn emit_capacity_decision(
         &mut self,
         turn: &TurnContext,
@@ -317,23 +398,22 @@ impl Engine {
         let Some(snapshot) = snapshot else {
             return;
         };
-        let _ = self
-            .tx_event
-            .send(Event::CapacityDecision {
-                session_id: self.session.id.clone(),
-                turn_id: turn.id.clone(),
-                h_hat: snapshot.h_hat,
-                c_hat: snapshot.c_hat,
-                slack: snapshot.slack,
-                min_slack: snapshot.profile.min_slack,
-                violation_ratio: snapshot.profile.violation_ratio,
-                p_fail: snapshot.p_fail,
-                risk_band: snapshot.risk_band.as_str().to_string(),
-                action: decision.action.as_str().to_string(),
-                cooldown_blocked: decision.cooldown_blocked,
-                reason: decision.reason.clone(),
-            })
-            .await;
+        let event = Event::CapacityDecision {
+            session_id: VerifiedAnalyticsMetadata::verified(&self.session.telemetry_session_id),
+            turn_id: VerifiedAnalyticsMetadata::verified(&turn.id),
+            h_hat: snapshot.h_hat,
+            c_hat: snapshot.c_hat,
+            slack: snapshot.slack,
+            min_slack: snapshot.profile.min_slack,
+            violation_ratio: snapshot.profile.violation_ratio,
+            p_fail: snapshot.p_fail,
+            risk_band: VerifiedAnalyticsMetadata::verified(snapshot.risk_band.as_str()),
+            action: VerifiedAnalyticsMetadata::verified(decision.action.as_str()),
+            cooldown_blocked: decision.cooldown_blocked,
+            reason: VerifiedAnalyticsMetadata::verified(&decision.reason),
+        };
+        self.emit_telemetry(&event);
+        let _ = self.tx_event.send(event).await;
         self.emit_coherence_signal(
             CoherenceSignal::CapacityDecision {
                 risk_band: snapshot.risk_band,
@@ -359,19 +439,18 @@ impl Engine {
         replay_outcome: Option<String>,
         replan_performed: bool,
     ) {
-        let _ = self
-            .tx_event
-            .send(Event::CapacityIntervention {
-                session_id: self.session.id.clone(),
-                turn_id: turn.id.clone(),
-                action: action.as_str().to_string(),
-                before_prompt_tokens,
-                after_prompt_tokens,
-                compaction_size_reduction: before_prompt_tokens.saturating_sub(after_prompt_tokens),
-                replay_outcome,
-                replan_performed,
-            })
-            .await;
+        let event = Event::CapacityIntervention {
+            session_id: VerifiedAnalyticsMetadata::verified(&self.session.telemetry_session_id),
+            turn_id: VerifiedAnalyticsMetadata::verified(&turn.id),
+            action: VerifiedAnalyticsMetadata::verified(action.as_str()),
+            before_prompt_tokens,
+            after_prompt_tokens,
+            compaction_size_reduction: before_prompt_tokens.saturating_sub(after_prompt_tokens),
+            replay_outcome: replay_outcome.map(|s| RedactedAnalyticsMetadata::redact(&s)),
+            replan_performed,
+        };
+        self.emit_telemetry(&event);
+        let _ = self.tx_event.send(event).await;
         self.emit_coherence_signal(
             CoherenceSignal::CapacityIntervention { action },
             format!("capacity_intervention: action={}", action.as_str()),
@@ -947,15 +1026,16 @@ impl Engine {
     ) -> String {
         let pointer = format!("memory://{}/{}", self.session.id, record.id);
         if let Err(err) = append_capacity_record(&self.session.id, record) {
-            let _ = self
-                .tx_event
-                .send(Event::CapacityMemoryPersistFailed {
-                    session_id: self.session.id.clone(),
-                    turn_id: turn.id.clone(),
-                    action: action.as_str().to_string(),
-                    error: summarize_text(&err.to_string(), 280),
-                })
-                .await;
+            let event = Event::CapacityMemoryPersistFailed {
+                session_id: VerifiedAnalyticsMetadata::verified(
+                    &self.session.telemetry_session_id,
+                ),
+                turn_id: VerifiedAnalyticsMetadata::verified(&turn.id),
+                action: VerifiedAnalyticsMetadata::verified(action.as_str()),
+                error: RedactedAnalyticsMetadata::redact(&summarize_text(&err.to_string(), 280)),
+            };
+            self.emit_telemetry(&event);
+            let _ = self.tx_event.send(event).await;
             return format!("{pointer}?persist=failed");
         }
         pointer

@@ -302,12 +302,14 @@ pub fn compact_tool_result_for_context(
     tool_name: &str,
     output: &ToolResult,
 ) -> String {
-    let raw = output.content.trim();
+    // Sanitize the tool output against Unicode hidden-character attacks
+    // (HackerOne #3086545) before it enters the model context / transcript.
+    let raw = crate::sanitization::partially_sanitize_unicode(output.content.trim());
     if raw.is_empty() {
         return String::new();
     }
 
-    if let Some(summary) = compact_subagent_tool_result_for_context(tool_name, raw) {
+    if let Some(summary) = compact_subagent_tool_result_for_context(tool_name, &raw) {
         return summary;
     }
 
@@ -316,10 +318,10 @@ pub fn compact_tool_result_for_context(
     let should_compact = raw_chars > limits.hard_limit_chars
         || (tool_result_is_noisy(tool_name) && raw_chars > limits.noisy_soft_limit_chars);
     if !should_compact {
-        return raw.to_string();
+        return raw;
     }
 
-    let snippet = summarize_text_head_tail(raw, limits.snippet_chars);
+    let snippet = summarize_text_head_tail(&raw, limits.snippet_chars);
     let omitted = raw_chars.saturating_sub(snippet.chars().count());
     let summary = tool_result_metadata_summary(output.metadata.as_ref());
 
@@ -535,5 +537,37 @@ mod tests {
     #[test]
     fn extract_compaction_summary_prompt_returns_none_for_none_prompt() {
         assert!(extract_compaction_summary_prompt(None).is_none());
+    }
+
+    #[test]
+    fn compact_tool_result_strips_unicode_hidden_chars() {
+        // U+200B zero-width space + U+E0001 Tag char (#3086545 vector) must be
+        // stripped before the result enters the transcript.
+        let output = ToolResult::success("hello\u{200B}world\u{E0001}!");
+        let result = compact_tool_result_for_context("deepseek-chat", "read_file", &output);
+        assert_eq!(result, "helloworld!");
+    }
+
+    #[test]
+    fn compact_tool_result_preserves_clean_output() {
+        let output = ToolResult::success("plain output\nline two");
+        let result = compact_tool_result_for_context("deepseek-chat", "read_file", &output);
+        assert_eq!(result, "plain output\nline two");
+    }
+
+    #[test]
+    fn compact_tool_result_still_compacts_large_output_after_sanitization() {
+        // Sanitization runs first (strips the leading zero-width char), then the
+        // head/tail compaction path still applies for large outputs.
+        let body = "x".repeat(1_000_000);
+        let output = ToolResult::success(format!("\u{200B}{body}"));
+        let result = compact_tool_result_for_context("deepseek-chat", "read_file", &output);
+        assert!(
+            result.contains("output compacted to protect context"),
+            "expected compaction marker, got leading: {}",
+            result.chars().take(80).collect::<String>()
+        );
+        assert!(result.chars().count() < body.chars().count());
+        assert!(!result.contains('\u{200B}'));
     }
 }

@@ -1,4 +1,8 @@
-use crate::core::capacity::{CapacityControllerConfig, GuardrailAction};
+use codesmith_agent_runtime::telemetry::TelemetrySink;
+use crate::core::capacity::{
+    CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
+    GuardrailAction, RiskBand,
+};
 use crate::core::capacity_memory::load_last_k_capacity_records;
 use crate::core::turn::{TurnContext, TurnToolCall};
 use crate::llm_client::LlmClientHandle;
@@ -97,6 +101,70 @@ fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     };
     let (engine, _handle) = Engine::new(engine_config, &Config::default());
     engine
+}
+
+/// Plan 06 / 6.1: an `Engine` whose `EngineConfig.telemetry_sink` is set must
+/// route `CapacityDecision` events to the local jsonl sink (the core emission
+/// routing deliverable). The sink is `Arc`-shared, so the clone handed to the
+/// engine writes through the same `attached`/`enabled` state the host holds.
+#[tokio::test]
+async fn capacity_decision_routes_to_telemetry_sink() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let sink_path = tmp.path().join("events.jsonl");
+    let sink = TelemetrySink::new_skeleton(true, Some(sink_path.clone()));
+    // Post-trust: writes go straight to disk (no queueing).
+    sink.attach();
+
+    let engine_config = EngineConfig {
+        capacity: CapacityControllerConfig::default(),
+        telemetry_sink: Some(sink),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+
+    let turn = TurnContext::new(100);
+    let snapshot = CapacitySnapshot {
+        turn_index: 1,
+        h_hat: 100.0,
+        c_hat: 50.0,
+        slack: 50.0,
+        profile: DynamicSlackProfile {
+            min_slack: 40.0,
+            violation_ratio: 0.1,
+            ..Default::default()
+        },
+        p_fail: 0.05,
+        risk_band: RiskBand::Low,
+        severe: false,
+    };
+    let decision = CapacityDecision {
+        action: GuardrailAction::NoIntervention,
+        reason: "test-reason".to_string(),
+        cooldown_blocked: false,
+    };
+    engine
+        .emit_capacity_decision(&turn, Some(&snapshot), &decision)
+        .await;
+
+    let contents = fs::read_to_string(&sink_path).expect("jsonl should be written");
+    assert!(
+        contents.contains("\"type\":\"capacity_decision\""),
+        "expected capacity_decision line, got: {contents}"
+    );
+    assert!(
+        contents.contains("\"risk_band\":\"low\""),
+        "got: {contents}"
+    );
+    assert!(
+        contents.contains("\"action\":\"no_intervention\""),
+        "got: {contents}"
+    );
+    assert!(
+        contents.contains("\"reason\":\"test-reason\""),
+        "got: {contents}"
+    );
+    assert!(contents.contains("\"h_hat\":100.0"), "got: {contents}");
 }
 
 #[test]
@@ -475,6 +543,7 @@ fn tool_exec_outcome_tracks_duration() {
         id: "tool-1".to_string(),
         name: "grep_files".to_string(),
         input: json!({"pattern": "test"}),
+        context_patch: None,
         started_at: Instant::now(),
         result: Ok(ToolResult::success("ok")),
     };

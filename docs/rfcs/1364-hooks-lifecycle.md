@@ -245,11 +245,25 @@ Event-specific payloads should add only fields that are stable and useful for
 extension authors. Avoid leaking secrets, full tool outputs, or unbounded
 transcript content in the first version.
 
+> **Session vs thread identity (post-RFC update).** `session_id` in payloads
+> and the `DEEPSEEK_SESSION_ID` env var now carry an **ephemeral**
+> per-construction telemetry id (regenerated on every session start; not
+> persisted, never written to disk). The persistent thread id — the one that
+> survives resume and keys on-disk session / capacity-memory files — is exposed
+> separately as `DEEPSEEK_THREAD_ID` and as a `thread_id` field in structured
+> payloads (`message_submit`, `pre_compact`). Hook authors who need
+> cross-restart correlation must use `DEEPSEEK_THREAD_ID`, not
+> `DEEPSEEK_SESSION_ID`.
+
 ## 5. Compatibility
 
 - Existing hook config remains valid.
 - Existing observer-only hooks keep working.
 - Existing env vars remain available.
+- `DEEPSEEK_SESSION_ID` now carries an ephemeral telemetry id (behavior
+  change: it no longer correlates across restarts). `DEEPSEEK_THREAD_ID` is the
+  new persistent id for cross-restart correlation (resume, capacity-memory
+  continuity).
 - `shell_env` keeps its existing stdout `KEY=VALUE` contract.
 - Structured stdout is interpreted only by `message_submit` in PR 1.
 

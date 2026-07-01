@@ -270,11 +270,17 @@ fn fire_session_start_hook_if_ready(app: &mut App) {
 /// ```ignore
 /// # use crate::config::Config;
 /// # use crate::tui::TuiOptions;
+/// # use codesmith_agent_runtime::telemetry::TelemetrySink;
 /// # async fn example(config: &Config, options: TuiOptions) -> anyhow::Result<()> {
-/// crate::tui::run_tui(config, options).await
+/// # let sink = TelemetrySink::new_skeleton(false, None);
+/// crate::tui::run_tui(config, options, sink).await
 /// # }
 /// ```
-pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
+pub async fn run_tui(
+    config: &Config,
+    options: TuiOptions,
+    telemetry_sink: codesmith_agent_runtime::telemetry::TelemetrySink,
+) -> Result<()> {
     let use_alt_screen = options.use_alt_screen;
     let use_mouse_capture = options.use_mouse_capture;
     let use_bracketed_paste = options.use_bracketed_paste;
@@ -417,6 +423,11 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let mut config = config.clone();
     let config = &mut config;
     let mut app = App::new(options.clone(), config);
+    // Thread the telemetry sink (constructed pre-trust in `run_interactive`)
+    // into the App so `build_engine_config` can clone it into every spawned
+    // engine's `EngineConfig`. The host keeps its own clone for
+    // `attach`/`set_enabled`; the `Arc`-shared state stays in sync.
+    app.telemetry_sink = Some(telemetry_sink);
     sync_config_provider_from_app(config, &app);
 
     // Load existing session if resuming.
@@ -801,12 +812,14 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .map(crate::config::LspConfigToml::into_runtime),
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
+        subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         kod_enabled: config.kod_enabled(),
         memory_dir: config.memory_dir(),
+        memory_excludes: config.memory_excludes(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.hunt.quarry.clone(),
@@ -817,6 +830,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
+        telemetry_sink: app.telemetry_sink.clone(),
     }
 }
 

@@ -440,6 +440,7 @@ impl HookExecutor {
             let payload = serde_json::json!({
                 "hook_event_name": "pre_compact",
                 "session_id": context.session_id,
+                "thread_id": context.thread_id,
                 "workspace": context.workspace.as_ref().map(|p| p.display().to_string()),
                 "model": context.model,
                 "total_tokens": context.total_tokens,
@@ -819,6 +820,7 @@ fn message_submit_payload(context: &HookContext, text: &str) -> serde_json::Valu
         "event": HookEvent::MessageSubmit.as_str(),
         "text": text,
         "session_id": context.session_id.as_deref(),
+        "thread_id": context.thread_id.as_deref(),
         "workspace": context.workspace.as_ref().map(|path| path.display().to_string()),
         "mode": context.mode.as_deref(),
         "model": context.model.as_deref(),

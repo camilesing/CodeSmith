@@ -1535,10 +1535,10 @@ impl Engine {
     /// available, so the compaction primitive takes its untouched fast path.
     fn build_compaction_enhancements(&self) -> Option<CompactionEnhancements> {
         let hooks = self.host.hooks().map(|executor| {
-            let session_id = executor.session_id().to_string();
             let context = self
                 .build_compaction_hook_context()
-                .with_session_id(&session_id);
+                .with_session_id(&self.session.telemetry_session_id)
+                .with_thread_id(&self.session.id);
             (executor, context)
         });
 
@@ -2479,6 +2479,14 @@ impl Engine {
         tx_op: mpsc::Sender<Op>,
         runtime_ui: Arc<dyn crate::runtime_ui::RuntimeUi>,
     ) -> Self {
+        // Publish memory excludes so every project-context load site —
+        // including the per-turn prompt reloader in `prompts.rs` that has no
+        // `EngineConfig` in scope — honours them (Plan 03 / finding F1).
+        // `claudemd::memory_excludes()` reads this plus the
+        // `CODESMITH_MEMORY_EXCLUDES` env var.
+        if !config.memory_excludes.is_empty() {
+            crate::claudemd::set_memory_excludes(config.memory_excludes.clone());
+        }
         if let Some(objective) = normalized_goal_objective(config.goal_objective.as_deref()) {
             sync_goal_state_from_host(&config.goal_state, Some(&objective), None, false);
         }

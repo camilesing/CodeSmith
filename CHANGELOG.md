@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Sub-agent permission narrowing (`restrictToSubset`).** A sub-agent's tool
+  surface is now a subset of its parent's effective tools by default — children
+  can never call a tool the parent does not expose, and a narrowed (`custom`)
+  parent's grandchildren inherit the narrow set rather than re-expanding to the
+  full surface. Top-level `general` children still inherit the full surface
+  (their parent is unrestricted), so recursive spawning via `agent_spawn` is
+  preserved. Set `[subagents] inherit_full_registry = true` to restore the
+  legacy v0.6.6 full-inheritance default. This is the CodeSmith analog of
+  Claude Code's `restrictToSubset(parentContext.toolPermissionContext)`.
+- **`SubAgentType::allowed_tools` deprecation note** updated to reflect the
+  subset posture (full when the parent is unrestricted, a subset under
+  `restrictToSubset` when narrowed).
+- **`DEEPSEEK_SESSION_ID` is now ephemeral (Plan 05 / 5c).** The hook env var
+  now carries a per-construction telemetry id regenerated on every session
+  start — it no longer correlates across restarts. The persistent thread id
+  (the one that survives resume and keys on-disk session / capacity-memory
+  files) is exposed separately as `DEEPSEEK_THREAD_ID` and as a `thread_id`
+  field in structured hook payloads (`message_submit`, `pre_compact`). Hook
+  authors who need cross-restart correlation must switch to
+  `DEEPSEEK_THREAD_ID`.
+
+### Added
+
+- **Swarm state bridge (Plan 04 / finding F4).** Documented the Arc-shared
+  state回流 path (`SharedTodoList`, `SharedPlanState`, `SharedGoalState`,
+  `SharedTeamContext`, `SharedTaskV2Manager`, `SharedWorktreeSessionState`):
+  child mutations are atomically visible to the parent with no explicit回流
+  call. Added by-value `ContextPatch`回流 on `SubAgentCompletion` for the
+  non-Arc `auto_approve` / `trust_mode` fields, applied **tighten-only** (a
+  child may tighten `true → false` but cannot loosen `false → true`; loosen
+  attempts are warn-logged and rejected). Concurrent batches drain-then-apply
+  patches once after the batch (the `contextModifier` queue pattern).
+- **Unicode sanitization module (Plan 01 / F3).**
+  `partially_sanitize_unicode` / `recursively_sanitize_unicode`
+  (`crates/agent-runtime/src/sanitization.rs`) NFKC-normalize and strip
+  dangerous Unicode (zero-width, bidi formatting, BOM, private-use, and the
+  Tag block 0xE0000–0xE007F — the HackerOne #3086545 vector) from MCP
+  tool-call arguments before they reach a server. Mirrors Claude Code's
+  `recursivelySanitizeUnicode`.
+- **Tool-result / transcript scrubbing (Plan 02 / F5b).**
+  `compact_tool_result_for_context` now runs the unicode sanitizer over tool
+  output before it enters model context, so hidden-character attacks can't
+  ride tool results back into the transcript.
+- **Tiered `CLAUDE.md` memory + `@include` (Plan 03 / F1).** `claudemd.rs`
+  loads memory across four trust tiers (Managed → User → Project → Local) and
+  expands `@include <path>` directives recursively (with a depth cap), so a
+  single `CLAUDE.md` can compose instruction files without copy-paste.
+- **Telemetry scaffolding + local jsonl sink (Plan 05 / F2 + 5a + 5c).** A
+  local-only `TelemetrySink` writes capacity-decision analytics to
+  `~/.codesmith/telemetry/events.jsonl` when the opt-in `telemetry = true`
+  flag is set. The sink is constructed pre-trust (events queue in-memory) and
+  attaches (writes) only after the workspace trust boundary passes; it is
+  never networked. A `VerifiedAnalyticsMetadata` type barrier (no
+  `From<String>`) forces conscious construction of event fields verified safe,
+  and the ephemeral `telemetry_session_id` (not the durable thread id) is what
+  telemetry events carry. Emission routing into the engine is deferred to a
+  follow-up; this slice lands the gating, barrier, and trust-timed attach.
+
 ## [0.8.48] - 2026-05-31
 
 ### Added

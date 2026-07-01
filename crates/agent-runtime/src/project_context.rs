@@ -24,7 +24,7 @@ use thiserror::Error;
 /// WHALE.md is the CodeSmith-native convention; AGENTS.md and CLAUDE.md
 /// provide compatibility with other coding agents. `.codesmith/` is the
 /// new config directory; `.deepseek/` is the legacy fallback.
-const PROJECT_CONTEXT_FILES: &[&str] = &[
+pub(crate) const PROJECT_CONTEXT_FILES: &[&str] = &[
     "WHALE.md",
     "AGENTS.md",
     ".claude/instructions.md",
@@ -37,15 +37,15 @@ const PROJECT_CONTEXT_FILES: &[&str] = &[
 /// its parents do not define project context. `.codesmith/` takes priority
 /// over vendor-neutral `.agents/`, which takes priority over legacy
 /// `.deepseek/`, for both WHALE.md and AGENTS.md.
-const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".codesmith", "AGENTS.md"];
-const GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "AGENTS.md"];
-const GLOBAL_AGENTS_LEGACY_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
-const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".codesmith", "WHALE.md"];
-const GLOBAL_WHALE_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "WHALE.md"];
-const GLOBAL_WHALE_LEGACY_PATH: &[&str] = &[".deepseek", "WHALE.md"];
+pub(crate) const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".codesmith", "AGENTS.md"];
+pub(crate) const GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "AGENTS.md"];
+pub(crate) const GLOBAL_AGENTS_LEGACY_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
+pub(crate) const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".codesmith", "WHALE.md"];
+pub(crate) const GLOBAL_WHALE_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "WHALE.md"];
+pub(crate) const GLOBAL_WHALE_LEGACY_PATH: &[&str] = &[".deepseek", "WHALE.md"];
 
 /// Maximum size for project context files (to prevent loading huge files)
-const MAX_CONTEXT_SIZE: usize = 100 * 1024; // 100KB
+pub(crate) const MAX_CONTEXT_SIZE: usize = 100 * 1024; // 100KB
 const PACK_README_MAX_CHARS: usize = 4_000;
 const PACK_MAX_ENTRIES: usize = 220;
 const PACK_MAX_SOURCE_FILES: usize = 60;
@@ -77,7 +77,7 @@ const PACK_IGNORED_FILE_EXTENSIONS: &[&str] = &[
 // === Errors ===
 
 #[derive(Debug, Error)]
-enum ProjectContextError {
+pub(crate) enum ProjectContextError {
     #[error("Failed to read context metadata for {path}: {source}")]
     Metadata {
         path: PathBuf,
@@ -481,73 +481,63 @@ fn load_project_context_with_parents_and_home(
     }
 
     // Always check global instruction files so user-wide preferences
-    // travel into every session (#1157). When both global and project
-    // instructions exist, the global block prepends the project's so
-    // workspace overrides win the last word; when only global exists,
-    // it continues to serve as the fallback. `source_path` keeps
-    // pointing at the more-specific source (project > global) for
-    // display purposes.
-    if let Some(global_ctx) = load_global_agents_context(workspace, home_dir) {
-        ctx.warnings.extend(global_ctx.warnings.iter().cloned());
-        if let Some(global_text) = global_ctx.instructions {
-            match ctx.instructions.take() {
-                Some(project_text) => {
-                    ctx.instructions = Some(merge_global_and_project_instructions(
-                        &global_text,
-                        global_ctx.source_path.as_deref(),
-                        &project_text,
-                    ));
-                    // Leave `ctx.source_path` pointing at the project /
-                    // parent file — that's the location the user might
-                    // want to edit when something looks wrong.
-                }
-                None => {
-                    ctx.instructions = Some(global_text);
-                    ctx.source_path = global_ctx.source_path;
-                }
-            }
-        }
+    // travel into every session (#1157). We consult `load_global_agents_context`
+    // here only for its `source_path` (display: "loaded from …") and per-file
+    // `warnings` (e.g. too-large); the four-tier merge below re-derives the
+    // merged instructions text with `@include` expansion.
+    let global_ctx = load_global_agents_context(workspace, home_dir);
+    if let Some(g) = &global_ctx {
+        ctx.warnings.extend(g.warnings.iter().cloned());
     }
 
-    // Auto-generate .deepseek/instructions.md when no context file exists anywhere.
-    // This avoids the per-turn filesystem scan fallback in prompts.rs that
-    // breaks KV prefix cache stability.
-    if !ctx.has_instructions()
+    // Four-tier memory merge (Plan 03 / finding F1): Managed → User →
+    // Project (with parent walk) → Local rules, with `@include` expansion
+    // and a depth cap. Generalizes the former two-tier global+project merge
+    // to N tiers, each labelled `<!-- tier: … -->` so the model can tell
+    // which level a rule comes from; the more-specific tier wins the last
+    // word. Excludes come from [`claudemd::memory_excludes`] (config +
+    // `CODESMITH_MEMORY_EXCLUDES` env) so every load site — including the
+    // per-turn prompt reloader in `prompts.rs` that has no `EngineConfig`
+    // in scope — honours them once the engine publishes the value at startup.
+    let excludes = crate::claudemd::memory_excludes();
+    let mut merged = crate::claudemd::load_all_memory_tiers(workspace, home_dir, &excludes);
+
+    // Auto-generate `.codesmith/instructions.md` when NO tier resolved — no
+    // managed/user/project/local file anywhere. This avoids the per-turn
+    // filesystem scan fallback in `prompts.rs` that breaks KV prefix cache
+    // stability. The condition keys off `merged` (not `ctx.has_instructions()`)
+    // so a workspace with only a global file does not trigger auto-gen. After
+    // writing, re-run the merge so the generated project file is labelled
+    // `<!-- tier: project -->` exactly like a pre-existing one — this keeps
+    // repeated builds byte-identical (build 1 sees the file after auto-gen
+    // writes it; build 2 finds it on disk directly).
+    if merged.is_empty()
         && let Some(generated) = auto_generate_context(workspace)
     {
         let mut warnings = std::mem::take(&mut ctx.warnings);
         ctx = load_project_context(workspace);
         warnings.extend(ctx.warnings.iter().cloned());
         ctx.warnings = warnings;
-        if !ctx.has_instructions() {
-            // Loaded from the file we just wrote — use the generated content
-            // directly as a last resort (shouldn't normally happen).
+        merged = crate::claudemd::load_all_memory_tiers(workspace, home_dir, &excludes);
+        if merged.is_empty() && !ctx.has_instructions() {
+            // File write reported success but the reload didn't find it
+            // (shouldn't normally happen) — fall back to the generated text.
             ctx.instructions = Some(generated);
             ctx.source_path = None;
         }
     }
 
-    ctx
-}
+    if !merged.is_empty() {
+        ctx.instructions = Some(merged);
+        // `source_path` prefers the most-specific project file (set above by
+        // `load_project_context`/parent walk); fall back to the global source
+        // for display when only the user/managed tier resolved.
+        if ctx.source_path.is_none() {
+            ctx.source_path = global_ctx.as_ref().and_then(|g| g.source_path.clone());
+        }
+    }
 
-/// Combine global user-wide preferences with a project-local
-/// AGENTS.md/CLAUDE.md/instructions.md. Global comes first so
-/// workspace-specific rules can override it — the model reads in declared
-/// order. Each block is wrapped in a labelled fence so the model can tell
-/// which level any rule comes from when the two sets disagree (#1157).
-fn merge_global_and_project_instructions(
-    global: &str,
-    global_source: Option<&Path>,
-    project: &str,
-) -> String {
-    let global_label = global_source
-        .map(|p| format!("<!-- global: {} -->", p.display()))
-        .unwrap_or_else(|| "<!-- global -->".to_string());
-    format!(
-        "{global_label}\n{}\n\n<!-- project (overrides global where they conflict) -->\n{}",
-        global.trim_end(),
-        project.trim_start(),
-    )
+    ctx
 }
 
 fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Option<ProjectContext> {
@@ -643,7 +633,7 @@ fn auto_generate_context(workspace: &Path) -> Option<String> {
 }
 
 /// Load a context file with size checking
-fn load_context_file(path: &Path) -> Result<String, ProjectContextError> {
+pub(crate) fn load_context_file(path: &Path) -> Result<String, ProjectContextError> {
     // Check file size first
     let metadata = fs::metadata(path).map_err(|source| ProjectContextError::Metadata {
         path: path.to_path_buf(),
@@ -1226,11 +1216,16 @@ mod tests {
             global_at < local_at,
             "global block must come before project block, got global={global_at} local={local_at}"
         );
-        // The merged block is labelled so the model can tell the layers
-        // apart when it needs to explain which rule it followed.
+        // The merged block is labelled per tier (`<!-- tier: … -->`) so the
+        // model can tell the layers apart when it needs to explain which
+        // rule it followed.
         assert!(
-            instructions.contains("project (overrides global where they conflict)"),
-            "expected labelled separator between global and project blocks"
+            instructions.contains("<!-- tier: user -->"),
+            "expected user-tier label, got:\n{instructions}"
+        );
+        assert!(
+            instructions.contains("<!-- tier: project -->"),
+            "expected project-tier label, got:\n{instructions}"
         );
         // `source_path` keeps pointing at the more-specific file so the
         // user knows where to edit the workspace-level override.
@@ -1253,9 +1248,16 @@ mod tests {
         assert!(ctx.has_instructions());
         let instructions = ctx.instructions.as_ref().unwrap();
         assert!(instructions.contains("Just the global instructions"));
+        // A single tier still carries its `<!-- tier: user -->` label so the
+        // model knows the source level; there's no project-tier block to
+        // merge against.
         assert!(
-            !instructions.contains("project (overrides global"),
-            "merge-framing label should not appear when there's nothing to merge"
+            instructions.contains("<!-- tier: user -->"),
+            "expected user-tier label, got:\n{instructions}"
+        );
+        assert!(
+            !instructions.contains("<!-- tier: project -->"),
+            "no project-tier block should appear when only the global file exists"
         );
         assert_eq!(ctx.source_path, Some(global_agents));
     }

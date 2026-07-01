@@ -466,6 +466,13 @@ the message. Existing environment variables remain available.
 `shell_env` hooks keep their existing `KEY=VALUE` stdout contract;
 the JSON stdout contract applies only to `message_submit`.
 
+The `session_id` field (and the `DEEPSEEK_SESSION_ID` env var) carries an
+**ephemeral** per-construction telemetry id — it changes on every session
+start and does not correlate across restarts. For cross-restart correlation
+(resume, capacity-memory continuity), use `DEEPSEEK_THREAD_ID`, which carries
+the persistent thread id and is also provided as a `thread_id` field in
+structured hook payloads.
+
 ### Composer stash (`/stash`, Ctrl+S)
 
 Press **Ctrl+S** in the composer to park the current draft to
@@ -593,6 +600,7 @@ If you are upgrading from older releases:
 - `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash` until July 24, 2026, except SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, and Ollama model IDs are passed through unchanged. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codesmith models` to discover live IDs from your configured endpoint. `CODESMITH_MODEL` overrides this for a single process; `DEEPSEEK_MODEL` is the legacy alias.
 - `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
+- `telemetry` (bool, optional, default `false`): opt-in **local-only** telemetry. When `true`, capacity-decision analytics events are written to `~/.codesmith/telemetry/events.jsonl` after the workspace trust boundary passes. Never networked; the sink queues in-memory pre-trust and attaches (writes) only post-trust, so no workspace-controlled data reaches disk before consent. Events carry an ephemeral per-session id, not the durable thread id.
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
   Platform support is not identical. macOS uses Seatbelt for policy
@@ -614,11 +622,21 @@ If you are upgrading from older releases:
   related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are
   `default_model`, `worker_model`, `explorer_model`, `awaiter_model`,
-  `review_model`, `custom_model`, `max_concurrent`, and `api_timeout_secs`. The
+  `review_model`, `custom_model`, `max_concurrent`, `api_timeout_secs`, and
+  `inherit_full_registry`. The
   `[subagents] max_concurrent` value overrides top-level `max_subagents` and is
   also clamped to `1..=20`; `[subagents] api_timeout_secs` controls the
   per-step API timeout for sub-agent model calls and is clamped to `1..=1800`,
   with `0` or unset preserving the legacy 120 second default.
+  `[subagents] inherit_full_registry` (bool, optional, default `false`)
+  controls child-permission narrowing (`restrictToSubset`): when `false`, a
+  sub-agent's tool surface is a subset of its parent's effective tools —
+  children can never call a tool the parent lacks, and a narrowed parent's
+  grandchildren inherit the narrow set rather than re-expanding to the full
+  surface. Top-level General children still get the full surface (their parent
+  is unrestricted), so recursive spawning is preserved. Set `true` to restore
+  the legacy v0.6.6 behavior where every child inherits the full agent surface
+  regardless of the parent's effective set.
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
   `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
   to a supported DeepSeek model id before an agent is spawned.

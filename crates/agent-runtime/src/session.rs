@@ -94,6 +94,14 @@ pub struct Session {
     /// Session ID (for tracking)
     pub id: String,
 
+    /// Ephemeral per-construction telemetry id (finding 5c). Minted once in
+    /// [`Session::new`] via `Uuid::new_v4` and **never persisted**. Telemetry
+    /// events (capacity decisions, hook env var `DEEPSEEK_SESSION_ID`) carry
+    /// this id rather than the resume [`id`](Self::id), so telemetry cannot be
+    /// trivially joined back to a persisted conversation thread. The durable
+    /// [`id`](Self::id) is still used for capacity-memory filenames and resume.
+    pub telemetry_session_id: String,
+
     /// Project context loaded from AGENTS.md, etc.
     pub project_context: Option<ProjectContext>,
 
@@ -192,6 +200,7 @@ impl Session {
             notes_path,
             mcp_config_path,
             id: uuid::Uuid::new_v4().to_string(),
+            telemetry_session_id: uuid::Uuid::new_v4().to_string(),
             project_context: if has_context {
                 Some(project_context)
             } else {
@@ -410,5 +419,47 @@ mod tests {
                 .output_preview
                 .ends_with("...")
         );
+    }
+
+    fn new_test_session() -> Session {
+        Session::new(
+            "test-model".to_string(),
+            std::path::PathBuf::from("/tmp/workspace"),
+            false,
+            false,
+            std::path::PathBuf::from("/tmp/notes.md"),
+            std::path::PathBuf::from("/tmp/mcp.json"),
+        )
+    }
+
+    #[test]
+    fn telemetry_session_id_minted_and_differs_from_thread_id() {
+        let session = new_test_session();
+        // Both ids are non-empty UUIDs.
+        assert!(!session.id.is_empty());
+        assert!(!session.telemetry_session_id.is_empty());
+        // The ephemeral telemetry id MUST differ from the durable thread id,
+        // so telemetry cannot be trivially joined to a persisted thread.
+        assert_ne!(session.id, session.telemetry_session_id);
+    }
+
+    #[test]
+    fn telemetry_session_id_regenerated_per_construction() {
+        let a = new_test_session();
+        let b = new_test_session();
+        // Each construction mints a fresh ephemeral id (not persisted, not
+        // reused across engine constructions).
+        assert_ne!(a.telemetry_session_id, b.telemetry_session_id);
+    }
+
+    #[test]
+    fn telemetry_session_id_not_reassigned_on_sync_resume() {
+        // SyncSession resume restores the durable thread `id` but must leave
+        // the ephemeral telemetry id untouched (it is construction-scoped).
+        let mut session = new_test_session();
+        let minted = session.telemetry_session_id.clone();
+        session.id = "restored-thread-id".to_string();
+        assert_eq!(session.telemetry_session_id, minted);
+        assert_ne!(session.id, session.telemetry_session_id);
     }
 }

@@ -27,6 +27,7 @@ use crate::sandbox::SandboxRuntimeConfig;
 use crate::skills;
 use crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT;
 use crate::subagent::DEFAULT_MAX_SPAWN_DEPTH;
+use crate::telemetry::TelemetrySink;
 use crate::tool_state::goal::{SharedGoalState, new_shared_goal_state};
 use crate::tool_state::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tool_state::plan_mode::{SharedPlanModeState, new_shared_plan_mode_state};
@@ -143,6 +144,12 @@ pub struct EngineConfig {
     /// Path to the memory directory for KoD. Only consulted when
     /// `kod_enabled` is `true`.
     pub memory_dir: PathBuf,
+    /// Paths excluded from the four-tier CLAUDE.md memory merge (Plan 03 /
+    /// finding F1). The engine publishes this into the
+    /// `CODESMITH_MEMORY_EXCLUDES` env var at construction so all
+    /// project-context load sites — including the per-turn prompt reloader
+    /// in `prompts.rs` that has no `EngineConfig` in scope — honour it.
+    pub memory_excludes: Vec<String>,
     pub vision_config: Option<VisionModelConfig>,
     pub goal_objective: Option<String>,
     /// Tool restriction from custom slash command frontmatter.
@@ -169,6 +176,14 @@ pub struct EngineConfig {
     /// once at engine construction, then threaded onto every
     /// `SubAgentRuntime` the engine builds (#1806, #1808).
     pub subagent_api_timeout: Duration,
+    /// Whether sub-agents inherit the full parent tool registry (legacy
+    /// v0.6.6 behavior). Default `false` (Plan 04 / finding F4
+    /// `restrictToSubset`): a child's tool surface is a subset of its parent's
+    /// effective tools, so children can never escalate beyond what the parent
+    /// exposes. Resolved once at engine construction from
+    /// `[subagents] inherit_full_registry` and threaded onto every
+    /// `SubAgentRuntime` the engine builds.
+    pub subagent_inherit_full_registry: bool,
     /// Native tools that should stay in the model-visible catalog even when
     /// they are outside the small default core surface (#2076).
     pub tools_always_load: HashSet<String>,
@@ -186,6 +201,14 @@ pub struct EngineConfig {
     /// `None` disables AgentTeams runtime services. `Some(Mutex(None))` means
     /// AgentTeams is available but no team is active yet.
     pub team_context: Option<SharedTeamContext>,
+    /// Local-only telemetry sink handle (Plan 06 / 6.1). Carried on
+    /// `EngineConfig` because [`TelemetrySink`] lives in this same crate
+    /// (it is *not* a host-injected OS-bridging manager like
+    /// `RuntimeToolServices`/`HookExecutor`), is `Arc`-shared so `Clone` is
+    /// cheap, and writes only to a local jsonl file. The engine reads it at
+    /// capacity-event emission sites (`capacity_flow::emit_telemetry`).
+    /// `None` (the default) disables emission; the sink is opt-in.
+    pub telemetry_sink: Option<TelemetrySink>,
     // Note: `runtime_services` (RuntimeToolServices) and `hooks`
     // (HookExecutor) are intentionally *not* stored on `EngineConfig` so it
     // stays portable to `codesmith-agent-runtime`. They are host-injected by
@@ -235,6 +258,7 @@ impl Default for EngineConfig {
             memory_path: PathBuf::from("./memory.md"),
             kod_enabled: false,
             memory_dir: PathBuf::from("./memory"),
+            memory_excludes: Vec::new(),
             vision_config: None,
             strict_tool_mode: false,
             goal_objective: None,
@@ -244,11 +268,13 @@ impl Default for EngineConfig {
             search_provider: SearchProvider::default(),
             search_api_key: None,
             subagent_api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
+            subagent_inherit_full_registry: false,
             tools_always_load: HashSet::new(),
             prefer_bwrap: false,
             sandbox_runtime: SandboxRuntimeConfig::default(),
             tools: None,
             team_context: None,
+            telemetry_sink: None,
         }
     }
 }

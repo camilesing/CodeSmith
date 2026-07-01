@@ -89,6 +89,23 @@ Actions:
 2. Temporarily disable failing MCP server and isolate issue
 3. Re-enable after verification with `/mcp` diagnostics
 
+## Telemetry (local jsonl sink)
+
+CodeSmith ships no networked telemetry. The opt-in `telemetry = true` config
+flag writes capacity-decision analytics events to a **local-only** jsonl file
+at `~/.codesmith/telemetry/events.jsonl`.
+
+- Off by default; the file is never created when the flag is unset or `false`.
+- The sink is constructed pre-trust (events queue in-memory) and attaches
+  (begins writing) only after the workspace trust boundary passes — so no
+  workspace-controlled data reaches disk before consent.
+- Events carry an ephemeral `telemetry_session_id` (regenerated per session,
+  not persisted); the durable thread id is intentionally not emitted.
+
+To inspect: `cat ~/.codesmith/telemetry/events.jsonl | jq .`
+To disable: unset `telemetry` (or set `telemetry = false`) in
+`~/.codesmith/config.toml`. The file can be deleted safely at any time.
+
 ## Post-Incident Checklist
 
 1. Preserve logs and relevant state files

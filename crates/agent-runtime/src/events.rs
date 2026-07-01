@@ -14,6 +14,7 @@ use crate::coherence::CoherenceState;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Tool, Usage};
 use crate::subagent::SubAgentResult;
+use crate::telemetry::{RedactedAnalyticsMetadata, VerifiedAnalyticsMetadata};
 use crate::user_input::UserInputRequest;
 use codesmith_tools::{ToolError, ToolResult};
 
@@ -165,40 +166,51 @@ pub enum Event {
     /// Capacity decision telemetry.
     #[allow(dead_code)]
     CapacityDecision {
-        session_id: String,
-        turn_id: String,
+        session_id: VerifiedAnalyticsMetadata,
+        turn_id: VerifiedAnalyticsMetadata,
         h_hat: f64,
         c_hat: f64,
         slack: f64,
         min_slack: f64,
         violation_ratio: f64,
         p_fail: f64,
-        risk_band: String,
-        action: String,
+        risk_band: VerifiedAnalyticsMetadata,
+        action: VerifiedAnalyticsMetadata,
         cooldown_blocked: bool,
-        reason: String,
+        reason: VerifiedAnalyticsMetadata,
     },
 
     /// Capacity intervention telemetry.
     #[allow(dead_code)]
     CapacityIntervention {
-        session_id: String,
-        turn_id: String,
-        action: String,
+        session_id: VerifiedAnalyticsMetadata,
+        turn_id: VerifiedAnalyticsMetadata,
+        action: VerifiedAnalyticsMetadata,
         before_prompt_tokens: usize,
         after_prompt_tokens: usize,
         compaction_size_reduction: usize,
-        replay_outcome: Option<String>,
+        // `replay_outcome` embeds summarized tool outputs (e.g.
+        // "output_mismatch: original='...' replay='...'") which may carry
+        // code or file content, so it CANNOT be honestly marked
+        // `VerifiedAnalyticsMetadata`. It is run through
+        // `RedactedAnalyticsMetadata::redact` at the construction site
+        // (Plan 06 / 6.3) so only the sanitized value reaches the sink.
+        replay_outcome: Option<RedactedAnalyticsMetadata>,
         replan_performed: bool,
     },
 
     /// Capacity memory persistence failure telemetry.
     #[allow(dead_code)]
     CapacityMemoryPersistFailed {
-        session_id: String,
-        turn_id: String,
-        action: String,
-        error: String,
+        session_id: VerifiedAnalyticsMetadata,
+        turn_id: VerifiedAnalyticsMetadata,
+        action: VerifiedAnalyticsMetadata,
+        // `error` is a summarized IO-error string which may include path
+        // fragments, so it CANNOT be honestly marked
+        // `VerifiedAnalyticsMetadata`. It is run through
+        // `RedactedAnalyticsMetadata::redact` at the construction site
+        // (Plan 06 / 6.3) so only the sanitized value reaches the sink.
+        error: RedactedAnalyticsMetadata,
     },
 
     /// Plain-language session coherence state.
@@ -388,6 +400,78 @@ impl Event {
     pub fn status(message: impl Into<String>) -> Self {
         Event::Status {
             message: message.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Finding 5a: the safe analytics fields of capacity events are
+    /// `VerifiedAnalyticsMetadata` (ids + enum-derived labels + controlled
+    /// `reason`), which forces conscious construction and still renders via
+    /// `Display` for the TUI's `format!("{action}")` call sites.
+    #[test]
+    fn capacity_decision_safe_fields_render_via_display() {
+        let ev = Event::CapacityDecision {
+            session_id: VerifiedAnalyticsMetadata::verified("sess-ephemeral"),
+            turn_id: VerifiedAnalyticsMetadata::verified("turn-1"),
+            h_hat: 1.0,
+            c_hat: 0.5,
+            slack: 0.5,
+            min_slack: 0.2,
+            violation_ratio: 0.0,
+            p_fail: 0.1,
+            risk_band: VerifiedAnalyticsMetadata::verified("low"),
+            action: VerifiedAnalyticsMetadata::verified("none"),
+            cooldown_blocked: false,
+            reason: VerifiedAnalyticsMetadata::verified("low_risk_no_intervention"),
+        };
+        match ev {
+            Event::CapacityDecision {
+                session_id,
+                risk_band,
+                action,
+                reason,
+                ..
+            } => {
+                assert_eq!(format!("{session_id}"), "sess-ephemeral");
+                assert_eq!(format!("{risk_band}"), "low");
+                assert_eq!(format!("{action}"), "none");
+                assert_eq!(format!("{reason}"), "low_risk_no_intervention");
+            }
+            _ => unreachable!("constructed as CapacityDecision"),
+        }
+    }
+
+    /// The path/code-bearing fields (`replay_outcome`, `error`) are typed as
+    /// `RedactedAnalyticsMetadata`: they embed summarized tool output / IO
+    /// errors that cannot be honestly marked `VerifiedAnalyticsMetadata`, so
+    /// they are sanitized via `redact` at the construction site (Plan 06/6.3).
+    #[test]
+    fn capacity_intervention_replay_outcome_is_redacted() {
+        let ev = Event::CapacityIntervention {
+            session_id: VerifiedAnalyticsMetadata::verified("sess-ephemeral"),
+            turn_id: VerifiedAnalyticsMetadata::verified("turn-1"),
+            action: VerifiedAnalyticsMetadata::verified("replay"),
+            before_prompt_tokens: 1000,
+            after_prompt_tokens: 800,
+            compaction_size_reduction: 200,
+            replay_outcome: Some(RedactedAnalyticsMetadata::redact(
+                "output_mismatch: original='fn main(){}'",
+            )),
+            replan_performed: false,
+        };
+        match ev {
+            Event::CapacityIntervention { replay_outcome, .. } => {
+                let outcome = replay_outcome.expect("replay_outcome present");
+                let s = outcome.as_str();
+                assert!(s.contains("output_mismatch"), "got: {s}");
+                // the quoted code span must be scrubbed by `redact`.
+                assert!(!s.contains("fn main()"), "code leaked through redact: {s}");
+            }
+            _ => unreachable!("constructed as CapacityIntervention"),
         }
     }
 }

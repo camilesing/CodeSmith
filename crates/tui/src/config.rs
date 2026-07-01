@@ -607,6 +607,14 @@ pub struct MemoryConfig {
     /// the parent of `Config::memory_path()` with `/memory/` appended.
     #[serde(default)]
     pub directory: Option<String>,
+    /// Paths to exclude from the four-tier CLAUDE.md memory merge (Plan 03 /
+    /// finding F1). Each entry is `~`/env-expanded and canonicalized before
+    /// matching, so a symlinked or realpath-variant of an excluded file is
+    /// dropped too. Resolved into the `CODESMITH_MEMORY_EXCLUDES` env var at
+    /// engine startup so every load site (per-turn prompt reloader, session
+    /// init, …) honours it without threading `EngineConfig`.
+    #[serde(default)]
+    pub excludes: Option<Vec<String>>,
 }
 
 impl SnapshotsConfig {
@@ -956,6 +964,14 @@ pub struct SubagentsConfig {
     /// (1..=1800). Zero or unset uses the legacy 120s default (#1806, #1808).
     #[serde(default)]
     pub api_timeout_secs: Option<u64>,
+    /// Whether sub-agents inherit the FULL parent tool registry regardless of
+    /// the parent's effective tool set (legacy v0.6.6 behavior). Default
+    /// `false` (Plan 04 / finding F4 `restrictToSubset`): a child's tool
+    /// surface is a subset of its parent's effective tools — children can
+    /// never escalate beyond what the parent exposes. Set `true` to restore
+    /// unrestricted full inheritance for flows that relied on the old default.
+    #[serde(default)]
+    pub inherit_full_registry: Option<bool>,
 }
 
 /// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
@@ -1050,6 +1066,12 @@ pub struct Config {
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub yolo: Option<bool>,
+    /// Enable local-only telemetry: capacity-decision analytics events are
+    /// written to `~/.codesmith/telemetry/events.jsonl`. Off by default; the
+    /// sink is constructed pre-trust (events queue in-memory) and only
+    /// attaches (writes to disk) once the workspace trust boundary passes.
+    #[serde(default)]
+    pub telemetry: Option<bool>,
     /// External sandbox backend: `"none"` or `"opensandbox"`.
     /// When set, exec_shell routes commands through the backend's HTTP API
     /// instead of spawning a local process.
@@ -2144,6 +2166,25 @@ impl Config {
             .filter(|s| !s.is_empty())
     }
 
+    /// Paths excluded from the four-tier CLAUDE.md memory merge (Plan 03 /
+    /// finding F1), resolved from `[memory] excludes` in config.toml. Empty
+    /// by default. The engine publishes this into the
+    /// `CODESMITH_MEMORY_EXCLUDES` env var at startup so all project-context
+    /// load sites honour it.
+    #[must_use]
+    pub fn memory_excludes(&self) -> Vec<String> {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.excludes.as_deref())
+            .map(|ex| {
+                ex.iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Resolve the memory directory path. When KoD is enabled, this is the
     /// directory containing frontmatter-parsed `.md` memory files.
     #[must_use]
@@ -2171,6 +2212,14 @@ impl Config {
     #[must_use]
     pub fn allow_shell(&self) -> bool {
         self.allow_shell.unwrap_or(false)
+    }
+
+    /// Return whether local telemetry collection is enabled. Defaults to
+    /// `false`: telemetry is opt-in. When enabled, the TelemetrySink writes
+    /// capacity analytics events to a local jsonl file post-trust.
+    #[must_use]
+    pub fn telemetry_enabled(&self) -> bool {
+        self.telemetry.unwrap_or(false)
     }
 
     /// Build the effective runtime sandbox controls.
@@ -2304,6 +2353,21 @@ impl Config {
             return DEFAULT_SUBAGENT_API_TIMEOUT_SECS;
         }
         raw.clamp(MIN_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_API_TIMEOUT_SECS)
+    }
+
+    /// Whether sub-agents inherit the full parent tool registry (legacy
+    /// v0.6.6 behavior) or are restricted to a subset of their parent's
+    /// effective tools (Plan 04 / finding F4 `restrictToSubset`).
+    ///
+    /// Reads `[subagents] inherit_full_registry`. Default `false` = subset
+    /// posture (a child can never call a tool its parent lacks); `true`
+    /// restores the old unrestricted full-inheritance default.
+    #[must_use]
+    pub fn subagent_inherit_full_registry(&self) -> bool {
+        self.subagents
+            .as_ref()
+            .and_then(|cfg| cfg.inherit_full_registry)
+            .unwrap_or(false)
     }
 
     /// Raw sub-agent model override map. Values are validated at spawn time
@@ -3606,6 +3670,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.append_system_prompt),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         yolo: override_cfg.yolo.or(base.yolo),
+        telemetry: override_cfg.telemetry.or(base.telemetry),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
         sandbox_backend: override_cfg.sandbox_backend.or(base.sandbox_backend),
@@ -5378,6 +5443,42 @@ mod tests {
         assert_eq!(
             high.subagent_api_timeout_secs(),
             MAX_SUBAGENT_API_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn subagent_inherit_full_registry_default_and_explicit() {
+        // Plan 04 / finding F4: default is `false` (subset posture — children
+        // cannot escalate beyond the parent's effective tools).
+        assert!(!Config::default().subagent_inherit_full_registry());
+
+        let unset = Config {
+            subagents: Some(SubagentsConfig {
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(!unset.subagent_inherit_full_registry());
+
+        let explicit_off = Config {
+            subagents: Some(SubagentsConfig {
+                inherit_full_registry: Some(false),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(!explicit_off.subagent_inherit_full_registry());
+
+        let explicit_on = Config {
+            subagents: Some(SubagentsConfig {
+                inherit_full_registry: Some(true),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(
+            explicit_on.subagent_inherit_full_registry(),
+            "explicit true restores legacy full-inheritance"
         );
     }
 

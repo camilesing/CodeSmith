@@ -81,8 +81,15 @@ pub struct HookContext {
     pub mode: Option<String>,
     /// Previous mode (for `ModeChange`).
     pub previous_mode: Option<String>,
-    /// Session ID.
+    /// Ephemeral per-construction telemetry session id (finding 5c). Emitted
+    /// to hooks as `DEEPSEEK_SESSION_ID`. Regenerated on each engine
+    /// construction and **not** correlatable across restarts — use
+    /// [`thread_id`](Self::thread_id) for that.
     pub session_id: Option<String>,
+    /// Persistent conversation thread id (the durable resume id). Emitted to
+    /// hooks as `DEEPSEEK_THREAD_ID` so hook authors can correlate events
+    /// across restarts, unlike the ephemeral [`session_id`](Self::session_id).
+    pub thread_id: Option<String>,
     /// User message content.
     pub message: Option<String>,
     /// Error message (for `OnError`).
@@ -152,6 +159,11 @@ impl HookContext {
 
     pub fn with_session_id(mut self, session_id: &str) -> Self {
         self.session_id = Some(session_id.to_string());
+        self
+    }
+
+    pub fn with_thread_id(mut self, thread_id: &str) -> Self {
+        self.thread_id = Some(thread_id.to_string());
         self
     }
 
@@ -235,6 +247,9 @@ impl HookContext {
         }
         if let Some(ref session_id) = self.session_id {
             env.insert("DEEPSEEK_SESSION_ID".to_string(), session_id.clone());
+        }
+        if let Some(ref thread_id) = self.thread_id {
+            env.insert("DEEPSEEK_THREAD_ID".to_string(), thread_id.clone());
         }
         if let Some(ref message) = self.message {
             let truncated = if message.len() > 5000 {
@@ -367,4 +382,29 @@ pub trait HookHost: Send + Sync {
     /// Used by the `exec_shell` tool to inject per-skill credentials, PATH
     /// adjustments, etc. Failures contribute no vars (logged by the host).
     fn collect_shell_env(&self, context: &HookContext) -> HashMap<String, String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_vars_split_session_and_thread_id() {
+        let ctx = HookContext::new()
+            .with_session_id("ephemeral-123")
+            .with_thread_id("thread-abc");
+        let env = ctx.to_env_vars();
+        // DEEPSEEK_SESSION_ID carries the ephemeral telemetry id.
+        assert_eq!(env.get("DEEPSEEK_SESSION_ID"), Some(&"ephemeral-123".to_string()));
+        // DEEPSEEK_THREAD_ID carries the persistent resume thread id.
+        assert_eq!(env.get("DEEPSEEK_THREAD_ID"), Some(&"thread-abc".to_string()));
+    }
+
+    #[test]
+    fn thread_id_env_var_omitted_when_unset() {
+        let ctx = HookContext::new().with_session_id("ephemeral-only");
+        let env = ctx.to_env_vars();
+        assert_eq!(env.get("DEEPSEEK_SESSION_ID"), Some(&"ephemeral-only".to_string()));
+        assert!(!env.contains_key("DEEPSEEK_THREAD_ID"));
+    }
 }

@@ -127,13 +127,15 @@ impl SubAgentType {
 
     /// Get the default allowed tools for this agent type.
     ///
-    /// **Deprecated since v0.6.6.** Default sub-agents now inherit the full
-    /// parent registry; the per-type allowlist is advisory only. Pass an explicit
+    /// **Deprecated since v0.6.6.** Default sub-agents inherit the parent's
+    /// effective tool surface (full when the parent is unrestricted, or a
+    /// subset under Plan 04 / finding F4 `restrictToSubset` when the parent is
+    /// narrowed); the per-type allowlist is advisory only. Pass an explicit
     /// `allowed_tools` array for narrow Custom roles instead.
     #[must_use]
     #[deprecated(
         since = "0.6.6",
-        note = "Default sub-agents inherit the full parent registry; pass an explicit allowed_tools list only for narrow Custom roles."
+        note = "Default sub-agents inherit the parent's effective tool surface (full, or a subset under restrictToSubset); pass an explicit allowed_tools list only for narrow Custom roles."
     )]
     pub fn allowed_tools(&self) -> Vec<&'static str> {
         match self {
@@ -474,6 +476,46 @@ pub struct SubAgentCompletion {
     /// Human summary on line 1, sentinel on line 2. Same payload shape as
     /// `Event::AgentComplete::result`.
     pub payload: String,
+    /// Optional by-value `ToolContext`回流 from the child (finding F4 /
+    /// plan 04 §4.2). `None` for the vast majority of completions today —
+    /// shared `Arc<Mutex<…>>` state (`SharedTodoList`, `SharedPlanState`,
+    /// …) already回流s atomically and never rides this field. When a child
+    /// wants to tighten a *by-value* field it cloned at spawn (`auto_approve`,
+    /// `trust_mode`), it sets the corresponding `Some(...)` here; the parent
+    /// turn loop drains a batch of these and applies them **tighten-only**
+    /// after the batch, mirroring Claude Code's `queuedContextModifiers`.
+    pub context_patch: Option<ContextPatch>,
+}
+
+/// A by-value `ToolContext` patch a child sub-agent sends back to its parent
+/// on completion (finding F4 / plan 04 §4.2). Each field is `Some` only when
+/// the child wants to change it; `None` means "leave untouched". The parent
+/// applies these **tighten-only**: a child may make the parent more
+/// restrictive (`auto_approve → false`, `trust_mode → false`) but may never
+/// loosen it — an attempt to escalate is rejected and warn-logged.
+///
+/// This is redundant for `Arc`-shared state (which already回流s atomically);
+/// it only matters for the by-value fields cloned per-child at spawn, which
+/// the child cannot otherwise mutate on the parent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContextPatch {
+    /// `Some(false)` tightens (disables auto-approve); `Some(true)` is a
+    /// loosen attempt and is rejected. `None` leaves `auto_approve` as-is.
+    pub auto_approve: Option<bool>,
+    /// `Some(false)` tightens (restricts to workspace, disabling
+    /// `trust_mode`); `Some(true)` is a loosen attempt and is rejected.
+    /// `None` leaves `trust_mode` as-is.
+    pub trust_mode: Option<bool>,
+}
+
+impl ContextPatch {
+    /// `true` when the patch carries no field changes. Such patches are
+    /// skipped by the parent's drain-apply loop without touching session
+    /// state.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.auto_approve.is_none() && self.trust_mode.is_none()
+    }
 }
 
 /// Default cap on sub-agent recursion depth. Override via

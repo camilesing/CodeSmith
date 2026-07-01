@@ -7,6 +7,27 @@
 //! v0.8.33's new model-facing surface is `agent_open` / `agent_eval` /
 //! `agent_close`. Some older structs and manager helpers remain in this
 //! module while the durable runtime is being reused by the new surface.
+//!
+//! ## Child→parent state回流 (finding F4 / `contextModifier` parity)
+//!
+//! Claude Code propagates child→parent state via a `contextModifier` closure
+//! queued during a concurrent tool batch and applied atomically after the
+//! batch. CodeSmith's shared-state handles are **already** `Arc<Mutex<…>>` —
+//! `SharedTodoList`, `SharedPlanState`, `SharedGoalState`, `SharedTeamContext`,
+//! `SharedTaskV2Manager`, `SharedWorktreeSessionState`
+//! (`crates/agent-runtime/src/engine_config.rs`) — bridged to tools via
+//! `HostServices` and `RuntimeToolServices`. A child mutates the very same
+//! `Arc` the parent holds, so the mutation is **atomically visible to the
+//! parent with no explicit回流 call**. This IS the回流 equivalent of Claude
+//! Code's `contextModifier` for shared state; no queue is needed for it.
+//!
+//! The by-value, non-`Arc` `ToolContext` fields (`auto_approve`, `trust_mode`,
+//! …) do NOT回流 this way — they are cloned per-child and a child cannot
+//! tighten the parent's copy. For those, [`SubAgentCompletion::context_patch`]
+//! carries an optional [`crate::subagent::ContextPatch`] that the parent turn
+//! loop drains and applies **tighten-only** after each completion batch
+//! (`engine::turn_loop`). A child may tighten (`auto_approve = Some(false)`);
+//! an attempt to loosen (`Some(true)`) is rejected and warn-logged.
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
@@ -568,6 +589,22 @@ pub struct SubAgentRuntime {
     /// false-timeout the child mid-thinking. `child_runtime()` and
     /// `background_runtime()` preserve the parent's value (#1806, #1808).
     pub step_api_timeout: Duration,
+    /// Whether this runtime's children must be a subset of this agent's
+    /// effective tool set (`false`, Plan 04 / finding F4 `restrictToSubset`)
+    /// or may inherit the full agent surface regardless (`true`, legacy
+    /// v0.6.6). Resolved from `[subagents] inherit_full_registry` at engine
+    /// construction and propagated to children via `child_runtime()` /
+    /// `background_runtime()`.
+    pub inherit_full_registry: bool,
+    /// The tool-name set that THIS agent's children must be a subset of.
+    /// `None` → unrestricted (this agent exposes the full agent surface, so
+    /// its children may too); `Some(set)` → a child's requested/effective
+    /// tools are intersected with `set` so the child can never call a tool
+    /// this agent lacks. Set in `SubAgentToolRegistry::new` from the agent's
+    /// own effective `allowed_tools` and propagated to grandchildren through
+    /// the spawn-tool runtime clone. This is the CodeSmith analog of Claude
+    /// Code's `restrictToSubset(parentContext.toolPermissionContext)`.
+    pub child_subset_basis: Option<Vec<String>>,
 }
 
 impl SubAgentRuntime {
@@ -603,6 +640,8 @@ impl SubAgentRuntime {
             fork_context: None,
             mcp_pool: None,
             step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
+            inherit_full_registry: false,
+            child_subset_basis: None,
         }
     }
 
@@ -623,6 +662,16 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_step_api_timeout(mut self, timeout: Duration) -> Self {
         self.step_api_timeout = timeout;
+        self
+    }
+
+    /// Override whether children inherit the full registry (`true`, legacy
+    /// v0.6.6) or are restricted to a subset of this agent's effective tools
+    /// (`false`, Plan 04 / finding F4). Called by the engine after reading
+    /// `[subagents] inherit_full_registry`.
+    #[must_use]
+    pub fn with_inherit_full_registry(mut self, inherit: bool) -> Self {
+        self.inherit_full_registry = inherit;
         self
     }
 
@@ -748,6 +797,15 @@ impl SubAgentRuntime {
             fork_context: self.fork_context.clone(),
             mcp_pool: self.mcp_pool.clone(),
             step_api_timeout: self.step_api_timeout,
+            inherit_full_registry: self.inherit_full_registry,
+            // Propagate the parent's subset basis so the child's
+            // `build_allowed_tools` (run at spawn entry) can intersect the
+            // child's requested tools with the parent's effective set. Each
+            // agent then RESETS this field in `SubAgentToolRegistry::new` to
+            // its own effective `allowed_tools`, bounding the NEXT generation
+            // (grandchildren) — which is already ⊆ the parent's basis because
+            // `build_allowed_tools` intersected it.
+            child_subset_basis: self.child_subset_basis.clone(),
         }
     }
 
@@ -1182,7 +1240,13 @@ impl SubAgentManager {
         let nickname = options
             .nickname
             .or_else(|| Some(assign_unique_whale_name(&agent_id, &active_names)));
-        let tools = build_allowed_tools(&agent_type, allowed_tools, runtime.allow_shell)?;
+        let tools = build_allowed_tools(
+            &agent_type,
+            allowed_tools,
+            runtime.allow_shell,
+            runtime.child_subset_basis.as_deref(),
+            runtime.inherit_full_registry,
+        )?;
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let mut agent = SubAgent::new(
             agent_id.clone(),
@@ -4471,6 +4535,11 @@ pub(crate) fn emit_parent_completion(
     let _ = tx.send(SubAgentCompletion {
         agent_id: agent_id.to_string(),
         payload: payload.to_string(),
+        // No by-value context回流 today — shared `Arc<Mutex<…>>` state
+        // already回流s atomically. A future child that wants to tighten a
+        // by-value `ToolContext` field populates this (finding F4 / plan 04
+        // §4.2); the parent applies it tighten-only.
+        context_patch: None,
     });
     true
 }
@@ -6025,7 +6094,7 @@ struct SubAgentToolRegistry {
 
 impl SubAgentToolRegistry {
     fn new(
-        runtime: SubAgentRuntime,
+        mut runtime: SubAgentRuntime,
         agent_type: SubAgentType,
         explicit_allowed_tools: Option<Vec<String>>,
         todo_list: SharedTodoList,
@@ -6057,6 +6126,22 @@ impl SubAgentToolRegistry {
                 list.push("send_message".to_string());
             }
         }
+        // restrictToSubset (Plan 04 / finding F4): propagate THIS agent's
+        // effective tool set as the subset basis for its grandchildren. The
+        // `runtime` clone handed to the builder below (and thus to the
+        // spawn-tool family) carries this value, so a grandchild's
+        // `build_allowed_tools` intersects its request with THIS set. `None`
+        // (full inheritance / unrestricted parent) → `None` basis, so
+        // grandchildren may inherit full; `Some(set)` → grandchildren are
+        // bounded to `set`. The escape hatch disables subset enforcement
+        // entirely (legacy v0.6.6 full inheritance). The parent's basis that
+        // constrained THIS child was already consumed by `build_allowed_tools`
+        // at spawn entry, so overwriting it here is safe.
+        runtime.child_subset_basis = if runtime.inherit_full_registry {
+            None
+        } else {
+            explicit_allowed_tools.clone()
+        };
         let mut registry = ToolRegistryBuilder::new().with_full_agent_surface(
             Some(runtime.client.clone()),
             runtime.model.clone(),
@@ -6226,12 +6311,23 @@ fn reject_subagent_terminal_takeover(name: &str, input: &Value) -> Result<()> {
 
 /// Resolve the effective allowed-tools list for a child.
 ///
-/// **v0.6.6 default: full inheritance.** Returning `Ok(None)` means the
-/// child sees the same tool surface as the parent's Agent mode — every
-/// family including `with_subagent_tools` so it can recurse. The narrowing
-/// path (`Ok(Some(list))`) is only used by:
+/// **Plan 04 / finding F4 (`restrictToSubset`).** A child's tool surface is a
+/// *subset* of its parent's effective tools — children can never escalate
+/// beyond what the parent exposes. Two inputs drive this:
+/// - `parent_basis: Option<&[String]>` — the parent's effective tool-name set
+///   (`None` = the parent exposes the full agent surface, so no constraint).
+///   Threaded via `SubAgentRuntime::child_subset_basis`.
+/// - `inherit_full_registry: bool` — the `[subagents] inherit_full_registry`
+///   escape hatch. `true` restores the legacy v0.6.6 full-inheritance default
+///   (no subset enforcement).
+///
+/// Returning `Ok(None)` means the child sees the same tool surface as the
+/// parent's Agent mode — every family including `with_subagent_tools` so it
+/// can recurse. The narrowing path (`Ok(Some(list))`) is used by:
 /// - `Custom` agent types (which require an explicit list).
 /// - Callers that pass `explicit_tools` (advanced / legacy use).
+/// - A narrowed parent: when `parent_basis = Some(set)` and the child has no
+///   explicit list, the child inherits `set` (it cannot re-expand to full).
 ///
 /// `allow_shell = false` no longer narrows the tool LIST — the child's
 /// registry simply doesn't register shell tools, which has the same
@@ -6240,6 +6336,8 @@ fn build_allowed_tools(
     agent_type: &SubAgentType,
     explicit_tools: Option<Vec<String>>,
     _allow_shell: bool,
+    parent_basis: Option<&[String]>,
+    inherit_full_registry: bool,
 ) -> Result<Option<Vec<String>>> {
     if let Some(tools) = explicit_tools {
         let mut deduped = Vec::new();
@@ -6254,7 +6352,15 @@ fn build_allowed_tools(
                 "Custom sub-agent requires a non-empty allowed_tools list"
             ));
         }
-        return Ok(Some(deduped));
+        // restrictToSubset: intersect the child's explicit request with the
+        // parent's effective set so the child cannot call a tool the parent
+        // lacks. Skipped under the legacy full-inheritance escape hatch.
+        let effective = if inherit_full_registry {
+            deduped
+        } else {
+            intersect_tool_names(deduped, parent_basis)
+        };
+        return Ok(Some(effective));
     }
 
     if matches!(agent_type, SubAgentType::Custom) {
@@ -6263,11 +6369,32 @@ fn build_allowed_tools(
         ));
     }
 
-    // Default: full registry inheritance from the parent. The child sees every
-    // tool the parent has, including the sub-agent management family. The
-    // registry execution guard still blocks approval-gated tools unless the
-    // parent runtime is auto-approved.
+    // Default: full registry inheritance from the parent — UNLESS the parent
+    // exposes a narrowed effective set (`child_subset_basis`), in which case
+    // the child inherits THAT subset (restrictToSubset). The child still sees
+    // the sub-agent management family whenever the parent's basis includes it,
+    // so recursion is preserved wherever the parent can recurse. The escape
+    // hatch restores unrestricted full inheritance.
+    if !inherit_full_registry
+        && let Some(basis) = parent_basis
+    {
+        return Ok(Some(basis.to_vec()));
+    }
     Ok(None)
+}
+
+/// Intersect a child's requested tool names with the parent's effective set
+/// (`child_subset_basis`). `None` basis = unrestricted parent → keep all
+/// requested tools. `Some(set)` → keep only tools present in `set`, dropping
+/// any the parent does not expose (no escalation).
+fn intersect_tool_names(tools: Vec<String>, basis: Option<&[String]>) -> Vec<String> {
+    match basis {
+        None => tools,
+        Some(set) => tools
+            .into_iter()
+            .filter(|name| set.iter().any(|b| b == name))
+            .collect(),
+    }
 }
 
 fn summarize_subagent_result(result: &SubAgentResult) -> String {

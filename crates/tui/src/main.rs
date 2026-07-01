@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
+use codesmith_agent_runtime::telemetry::TelemetrySink;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
@@ -1750,6 +1751,15 @@ fn default_plugins_dir() -> PathBuf {
 /// Default location for crash/offline-queue checkpoints managed by the TUI.
 fn default_checkpoints_dir() -> PathBuf {
     deepseek_home_dir().join("sessions").join("checkpoints")
+}
+
+/// Resolve the local telemetry jsonl sink path. Returns `None` when the home
+/// directory cannot be resolved — the sink then runs queue-only (no disk
+/// writes), so telemetry never breaks startup on a pathless environment.
+fn telemetry_sink_path() -> Option<PathBuf> {
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("telemetry").join("events.jsonl"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3809,6 +3819,17 @@ fn load_workspace_dotenv_if_allowed(workspace: &Path, boundary: &WorkspaceInitBo
     }
 }
 
+/// Flip the TelemetrySink from queue-only to disk-writing once the workspace
+/// trust boundary passes. Pre-trust events queued in-memory are drained to the
+/// jsonl file here (a no-op on an empty queue — no file is created). When the
+/// workspace is untrusted the sink stays detached and keeps queuing, so no
+/// workspace-controlled data reaches disk before the user has consented.
+fn attach_telemetry_if_trusted(sink: &TelemetrySink, boundary: &WorkspaceInitBoundary) {
+    if boundary.allow_workspace_initialization {
+        sink.attach();
+    }
+}
+
 fn load_config_from_cli(cli: &Cli) -> Result<Config> {
     let profile = cli
         .profile
@@ -5093,7 +5114,21 @@ async fn run_interactive(
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let startup_yolo = cli.yolo || config.yolo.unwrap_or(false);
+
+    // TelemetrySink: constructed pre-trust so any events raised before the
+    // trust decision queue in-memory (nothing touches disk yet). `enabled`
+    // starts from the user config's `telemetry` flag; the project-config
+    // overlay is merged post-trust below and re-applied via `set_enabled` so
+    // the durable flag honours the merged value. The sink is held for the
+    // function's lifetime; a clone is threaded into the engine in `run_tui`
+    // (Plan 06 / 6.1) so capacity events route here, and the `Arc`-shared
+    // `AtomicBool` keeps this handle's `set_enabled` in sync with the
+    // engine's view.
+    let telemetry_sink =
+        TelemetrySink::new_skeleton(config.telemetry_enabled(), telemetry_sink_path());
+
     let boundary = resolve_workspace_init_boundary(&workspace, cli.skip_onboarding, startup_yolo);
+    attach_telemetry_if_trusted(&telemetry_sink, &boundary);
     let dotenv_loaded = load_workspace_dotenv_if_allowed(&workspace, &boundary);
     let base_config;
     let config = if dotenv_loaded {
@@ -5111,6 +5146,11 @@ async fn run_interactive(
         merge_project_config(&mut merged_config, &workspace);
     }
     let config = &merged_config;
+    // Re-apply the `telemetry` flag from the merged (user + project) config so
+    // the durable `enabled` state honours the project overlay (Plan 06 / 6.2).
+    // The sink is Arc-shared with the engine clone handed to `run_tui` below,
+    // so this flip propagates to capacity-event emission routing.
+    telemetry_sink.set_enabled(config.telemetry_enabled());
 
     if !cli.skip_onboarding {
         match crate::config::ensure_config_file_exists(cli.config.clone()) {
@@ -5206,6 +5246,11 @@ async fn run_interactive(
             initial_input,
             max_subagents,
         },
+        // Hand the engine a clone of the host-owned sink. `TelemetrySink` is
+        // `Arc`-shared, so the engine's clone and this handle see the same
+        // `enabled`/`attached`/queue state — `set_enabled` flips below still
+        // propagate to the engine (Plan 06 / 6.2).
+        telemetry_sink.clone(),
     )
     .await
 }
@@ -5581,12 +5626,14 @@ async fn run_exec_agent(
         lsp_config,
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         kod_enabled: config.kod_enabled(),
         memory_dir: config.memory_dir(),
+        memory_excludes: config.memory_excludes(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
@@ -5600,6 +5647,7 @@ async fn run_exec_agent(
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
+        telemetry_sink: None,
     };
 
     let engine_handle = spawn_engine(
@@ -6145,12 +6193,14 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         lsp_config,
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         kod_enabled: config.kod_enabled(),
         memory_dir: config.memory_dir(),
+        memory_excludes: config.memory_excludes(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
@@ -6164,6 +6214,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: Some(team_context),
+        telemetry_sink: None,
     };
 
     let engine_host = crate::core::engine::EngineHost {
@@ -8221,5 +8272,51 @@ mod pr_prompt_tests {
             !is_command_available("this-command-cannot-exist-codesmith-tui-test-ENOENT-marker"),
             "missing command should return false, not panic"
         );
+    }
+}
+
+#[cfg(test)]
+mod telemetry_startup_tests {
+    use super::*;
+
+    fn boundary(allow: bool) -> WorkspaceInitBoundary {
+        WorkspaceInitBoundary {
+            workspace_trusted_at_start: allow,
+            bypassed_by_explicit_user_choice: false,
+            allow_workspace_initialization: allow,
+        }
+    }
+
+    #[test]
+    fn attach_telemetry_if_trusted_attaches_when_boundary_allows() {
+        // Enabled + pathless so attach() touches no disk; it only flips the
+        // attached flag and drains the (empty) queue.
+        let sink = TelemetrySink::new_skeleton(true, None);
+        assert!(!sink.is_attached(), "sink starts detached");
+        attach_telemetry_if_trusted(&sink, &boundary(true));
+        assert!(sink.is_attached(), "trusted boundary must attach the sink");
+    }
+
+    #[test]
+    fn attach_telemetry_if_trusted_skips_when_boundary_blocks() {
+        let sink = TelemetrySink::new_skeleton(true, None);
+        attach_telemetry_if_trusted(&sink, &boundary(false));
+        assert!(
+            !sink.is_attached(),
+            "untrusted boundary must keep the sink queued / detached"
+        );
+    }
+
+    #[test]
+    fn telemetry_enabled_defaults_off_and_respects_explicit_flag() {
+        // Default (no `telemetry` field set) → off: telemetry is opt-in.
+        let mut cfg = Config::default();
+        assert!(!cfg.telemetry_enabled());
+        // Explicit opt-in.
+        cfg.telemetry = Some(true);
+        assert!(cfg.telemetry_enabled());
+        // Explicit opt-out is honored even when set false.
+        cfg.telemetry = Some(false);
+        assert!(!cfg.telemetry_enabled());
     }
 }

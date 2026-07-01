@@ -46,6 +46,10 @@ struct ToolHookEnv {
     workspace: PathBuf,
     model: String,
     total_tokens: u32,
+    /// Ephemeral telemetry session id (→ `DEEPSEEK_SESSION_ID`).
+    telemetry_session_id: String,
+    /// Persistent resume thread id (→ `DEEPSEEK_THREAD_ID`).
+    thread_id: String,
 }
 
 fn tool_hook_env(session: &Session, mode: AppMode) -> ToolHookEnv {
@@ -59,6 +63,8 @@ fn tool_hook_env(session: &Session, mode: AppMode) -> ToolHookEnv {
         workspace: session.workspace.clone(),
         model: session.model.clone(),
         total_tokens,
+        telemetry_session_id: session.telemetry_session_id.clone(),
+        thread_id: session.id.clone(),
     }
 }
 
@@ -69,7 +75,6 @@ fn tool_hook_executor(
 }
 
 fn build_tool_hook_context(
-    hook_executor: &dyn crate::hooks::HookHost,
     env: &ToolHookEnv,
     tool_name: &str,
     tool_input: &serde_json::Value,
@@ -78,7 +83,8 @@ fn build_tool_hook_context(
         .with_mode(env.mode.label())
         .with_workspace(env.workspace.clone())
         .with_model(&env.model)
-        .with_session_id(hook_executor.session_id())
+        .with_session_id(&env.telemetry_session_id)
+        .with_thread_id(&env.thread_id)
         .with_tokens(env.total_tokens)
         .with_tool_name(tool_name)
         .with_tool_args(tool_input)
@@ -96,7 +102,7 @@ fn execute_pre_tool_hook(
     if !hook_executor.has_hooks_for_event(crate::hooks::HookEvent::ToolCallBefore) {
         return;
     }
-    let hook_ctx = build_tool_hook_context(hook_executor, env, tool_name, tool_input);
+    let hook_ctx = build_tool_hook_context(env, tool_name, tool_input);
     let _ = hook_executor.execute(crate::hooks::HookEvent::ToolCallBefore, &hook_ctx);
 }
 
@@ -114,7 +120,7 @@ fn execute_post_tool_hook(
         return;
     }
     let (hook_result_text, hook_success) = tool_hook_result(result);
-    let hook_ctx = build_tool_hook_context(hook_executor, env, tool_name, tool_input)
+    let hook_ctx = build_tool_hook_context(env, tool_name, tool_input)
         .with_tool_result(&hook_result_text, hook_success, None);
     let _ = hook_executor.execute(crate::hooks::HookEvent::ToolCallAfter, &hook_ctx);
 }
@@ -1364,9 +1370,21 @@ impl Engine {
                 }
                 if !completions.is_empty() {
                     let count = completions.len();
+                    let mut patches: Vec<crate::subagent::ContextPatch> = Vec::new();
                     for c in completions {
                         self.add_session_message(subagent_completion_runtime_message(&c.payload))
                             .await;
+                        if let Some(patch) = c.context_patch
+                            && !patch.is_empty()
+                        {
+                            patches.push(patch);
+                        }
+                    }
+                    // Finding F4 / plan 04 §4.2: apply the batch's by-value
+                    // context patches once after the drain (mirrors Claude
+                    // Code's `queuedContextModifiers`). Tighten-only.
+                    if !patches.is_empty() {
+                        self.apply_context_patches(&patches);
                     }
                     let _ = self
                         .tx_event
@@ -1490,9 +1508,18 @@ impl Engine {
                 }
                 if !late_completions.is_empty() {
                     let count = late_completions.len();
+                    let mut patches: Vec<crate::subagent::ContextPatch> = Vec::new();
                     for c in late_completions {
                         self.add_session_message(subagent_completion_runtime_message(&c.payload))
                             .await;
+                        if let Some(patch) = c.context_patch
+                            && !patch.is_empty()
+                        {
+                            patches.push(patch);
+                        }
+                    }
+                    if !patches.is_empty() {
+                        self.apply_context_patches(&patches);
                     }
                     let _ = self
                         .tx_event
@@ -1849,6 +1876,7 @@ impl Engine {
                                 id: plan.id,
                                 name: plan.name,
                                 input: plan.input,
+                                context_patch: None,
                                 started_at: Instant::now(),
                                 result,
                             });
@@ -1860,6 +1888,7 @@ impl Engine {
                                 id: plan.id,
                                 name: plan.name,
                                 input: plan.input,
+                                context_patch: None,
                                 started_at: Instant::now(),
                                 result: Err(err),
                             });
@@ -1954,15 +1983,32 @@ impl Engine {
                                 id: plan.id,
                                 name: plan.name,
                                 input: plan.input,
+                                context_patch: None,
                                 started_at,
                                 result,
                             }
                         });
                     }
 
-                    while let Some(outcome) = tool_tasks.next().await {
+                    // Finding F4 / plan 04 §4.4: collect each parallel
+                    // outcome's optional context patch, then apply the
+                    // batch's patches **tighten-only** once after the
+                    // `FuturesUnordered` drains (mirrors Claude Code's
+                    // `queuedContextModifiers`). Redundant for `Arc`-shared
+                    // state (already atomic) and usually empty — concurrent
+                    // tools are read-only by design, so they carry `None`.
+                    let mut batch_patches: Vec<crate::subagent::ContextPatch> = Vec::new();
+                    while let Some(mut outcome) = tool_tasks.next().await {
                         let index = outcome.index;
+                        if let Some(patch) = outcome.context_patch.take()
+                            && !patch.is_empty()
+                        {
+                            batch_patches.push(patch);
+                        }
                         outcomes[index] = Some(outcome);
+                    }
+                    if !batch_patches.is_empty() {
+                        self.apply_context_patches(&batch_patches);
                     }
                 } else {
                     for plan in plans {
@@ -1986,6 +2032,7 @@ impl Engine {
                                 id: tool_id,
                                 name: tool_name,
                                 input: tool_input,
+                                context_patch: None,
                                 started_at: Instant::now(),
                                 result,
                             });
@@ -2007,6 +2054,7 @@ impl Engine {
                                 id: tool_id,
                                 name: tool_name,
                                 input: tool_input,
+                                context_patch: None,
                                 started_at: Instant::now(),
                                 result,
                             });
@@ -2051,6 +2099,7 @@ impl Engine {
                                 id: tool_id,
                                 name: tool_name,
                                 input: tool_input,
+                                context_patch: None,
                                 started_at,
                                 result,
                             });
@@ -2091,6 +2140,7 @@ impl Engine {
                                 id: tool_id,
                                 name: tool_name,
                                 input: tool_input,
+                                context_patch: None,
                                 started_at,
                                 result,
                             });
@@ -2131,6 +2181,7 @@ impl Engine {
                                 id: tool_id,
                                 name: tool_name,
                                 input: tool_input,
+                                context_patch: None,
                                 started_at,
                                 result,
                             });
@@ -2174,6 +2225,7 @@ impl Engine {
                                 id: tool_id,
                                 name: tool_name,
                                 input: tool_input,
+                                context_patch: None,
                                 started_at,
                                 result,
                             });
@@ -2221,6 +2273,7 @@ impl Engine {
                                 id: tool_id,
                                 name: tool_name,
                                 input: tool_input,
+                                context_patch: None,
                                 started_at,
                                 result,
                             });
@@ -2408,6 +2461,7 @@ impl Engine {
                             id: tool_id,
                             name: tool_name,
                             input: tool_input,
+                            context_patch: None,
                             started_at,
                             result,
                         });
@@ -2520,7 +2574,9 @@ impl Engine {
                         }));
                         step_error_count += 1;
                         step_error_categories.push(envelope.category);
-                        let error = format_tool_error(&e, &outcome.name);
+                        let error = crate::sanitization::partially_sanitize_unicode(
+                            &format_tool_error(&e, &outcome.name),
+                        );
                         tool_call.set_error(error.clone(), duration);
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
@@ -2671,6 +2727,94 @@ impl Engine {
         // and destroys DeepSeek's KV prefix cache reuse.
         self.session.messages.clone()
     }
+
+    /// Apply a batch of [`ContextPatch`]es drained from child sub-agent
+    /// completions, **tighten-only** (finding F4 / plan 04 §4.2). A child may
+    /// make the parent *more* restrictive (`auto_approve → false`,
+    /// `trust_mode → false`); any attempt to loosen — make a field more
+    /// permissive than it currently is — is rejected and warn-logged,
+    /// preserving the "child cannot escalate" invariant. Mirrors Claude
+    /// Code's `contextModifier` apply step for the by-value `ToolContext`
+    /// fields cloned per-child at spawn. Shared `Arc<Mutex<…>>` state already
+    ///回流s atomically and never reaches this path.
+    ///
+    /// The write mirrors [`Engine::configure_turn`]'s state writes
+    /// (`session.auto_approve`/`trust_mode`, `config.trust_mode`,
+    /// `approval_mode`) so the next turn's `ToolContext` picks up the
+    /// tightened value. Mid-turn effects are intentionally limited: the
+    /// current turn's `ToolContext` is already built, so the patch lands on
+    /// subsequent turns — the safe direction for a "tighten" that must not
+    /// surprise in-flight tool execution.
+    fn apply_context_patches(&mut self, patches: &[crate::subagent::ContextPatch]) {
+        for patch in patches {
+            let (auto_approve, trust_mode, rejected_auto, rejected_trust) = resolve_context_patch(
+                self.session.auto_approve,
+                self.session.trust_mode,
+                patch,
+            );
+            if rejected_auto {
+                tracing::warn!(
+                    target: "codesmith::subagent::context_patch",
+                    "rejecting context_patch auto_approve=true (loosen); current=false"
+                );
+            }
+            if rejected_trust {
+                tracing::warn!(
+                    target: "codesmith::subagent::context_patch",
+                    "rejecting context_patch trust_mode=true (loosen); current=false"
+                );
+            }
+            if auto_approve != self.session.auto_approve {
+                // Tighten true → false; switch the approval mode off Auto so
+                // the next turn's ToolContext reflects the tighter posture.
+                self.session.auto_approve = false;
+                self.session.approval_mode = crate::mode::ApprovalMode::Suggest;
+            }
+            if trust_mode != self.session.trust_mode {
+                self.session.trust_mode = false;
+                self.config.trust_mode = false;
+            }
+        }
+    }
+}
+
+/// Pure tighten-only resolution of one [`ContextPatch`] against the current
+/// by-value state (`auto_approve` / `trust_mode`). Returns the resulting
+/// `(auto_approve, trust_mode)` plus two flags marking whether the patch
+/// tried to **loosen** each field (so the caller can warn-log the rejected
+/// escalation). A child may make the parent more restrictive (`true →
+/// false`); a loosen attempt (`false → true`) is rejected — the value is
+/// left unchanged and the corresponding flag is set.
+///
+/// Extracted from [`Engine::apply_context_patches`] so the tighten-only
+/// invariant can be unit-tested without constructing a full engine (the file
+/// convention — see the #1727 regression-test note).
+fn resolve_context_patch(
+    mut auto_approve: bool,
+    mut trust_mode: bool,
+    patch: &crate::subagent::ContextPatch,
+) -> (bool, bool, bool, bool) {
+    let mut rejected_auto = false;
+    let mut rejected_trust = false;
+    // `auto_approve = true` is the permissive (YOLO) state.
+    if let Some(want_auto) = patch.auto_approve {
+        if want_auto && !auto_approve {
+            // Loosen attempt (false → true): reject.
+            rejected_auto = true;
+        } else if !want_auto && auto_approve {
+            // Tighten (true → false).
+            auto_approve = false;
+        }
+    }
+    // `trust_mode = true` is the permissive (allow paths outside workspace) state.
+    if let Some(want_trust) = patch.trust_mode {
+        if want_trust && !trust_mode {
+            rejected_trust = true;
+        } else if !want_trust && trust_mode {
+            trust_mode = false;
+        }
+    }
+    (auto_approve, trust_mode, rejected_auto, rejected_trust)
 }
 
 fn subagent_completion_runtime_message(payload: &str) -> Message {
@@ -2865,6 +3009,100 @@ mod tests {
         assert!(should_hold_turn_for_subagents(1, 0));
         assert!(should_hold_turn_for_subagents(0, 1));
         assert!(!should_hold_turn_for_subagents(0, 0));
+    }
+
+    // === Finding F4 / plan 04 §4.2 — tighten-only context patch ===
+
+    #[test]
+    fn context_patch_tightens_auto_approve_true_to_false() {
+        // auto_approve=true (YOLO) → child sends Some(false): tighten, applied.
+        let (auto, trust, rej_auto, rej_trust) = resolve_context_patch(
+            true,
+            false,
+            &crate::subagent::ContextPatch {
+                auto_approve: Some(false),
+                trust_mode: None,
+            },
+        );
+        assert!(!auto);
+        assert!(!trust);
+        assert!(!rej_auto);
+        assert!(!rej_trust);
+    }
+
+    #[test]
+    fn context_patch_rejects_auto_approve_loosen() {
+        // auto_approve=false → child sends Some(true): loosen, rejected.
+        let (auto, _trust, rej_auto, _rej_trust) = resolve_context_patch(
+            false,
+            false,
+            &crate::subagent::ContextPatch {
+                auto_approve: Some(true),
+                trust_mode: None,
+            },
+        );
+        assert!(!auto, "loosen must not change auto_approve");
+        assert!(rej_auto, "loosen must be flagged for warn-log");
+    }
+
+    #[test]
+    fn context_patch_tightens_trust_mode_true_to_false() {
+        // trust_mode=true (permissive) → child sends Some(false): tighten.
+        let (_auto, trust, _rej_auto, rej_trust) = resolve_context_patch(
+            false,
+            true,
+            &crate::subagent::ContextPatch {
+                auto_approve: None,
+                trust_mode: Some(false),
+            },
+        );
+        assert!(!trust);
+        assert!(!rej_trust);
+    }
+
+    #[test]
+    fn context_patch_rejects_trust_mode_loosen() {
+        // trust_mode=false → child sends Some(true): loosen, rejected.
+        let (_auto, trust, _rej_auto, rej_trust) = resolve_context_patch(
+            false,
+            false,
+            &crate::subagent::ContextPatch {
+                auto_approve: None,
+                trust_mode: Some(true),
+            },
+        );
+        assert!(!trust, "loosen must not change trust_mode");
+        assert!(rej_trust);
+    }
+
+    #[test]
+    fn context_patch_no_op_when_already_at_tightened_value() {
+        // auto_approve=false, patch Some(false): no change, no rejection.
+        let (auto, _trust, rej_auto, _rej_trust) = resolve_context_patch(
+            false,
+            false,
+            &crate::subagent::ContextPatch {
+                auto_approve: Some(false),
+                trust_mode: None,
+            },
+        );
+        assert!(!auto);
+        assert!(!rej_auto, "same-value patch is not a loosen");
+    }
+
+    #[test]
+    fn context_patch_empty_patch_changes_nothing() {
+        // Empty patch (all None) is a no-op and is skipped by the drain loop.
+        assert!(crate::subagent::ContextPatch::default().is_empty());
+        let (auto, trust, rej_auto, rej_trust) = resolve_context_patch(
+            true,
+            true,
+            &crate::subagent::ContextPatch::default(),
+        );
+        assert!(auto);
+        assert!(trust);
+        assert!(!rej_auto);
+        assert!(!rej_trust);
     }
 
     #[test]
