@@ -246,7 +246,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "memory",
         aliases: &[],
-        usage: "/memory [show|path|clear|edit|help]",
+        usage: "/memory [show|path|clear|edit|extract --dry-run|help]",
         description_id: MessageId::CmdMemoryDescription,
     },
     CommandInfo {
@@ -270,7 +270,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "mcp",
         aliases: &[],
-        usage: "/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
+        usage: "/mcp [init|add stdio <name> <command> [args...]|add <http|sse|sse-ide|ws|ws-ide> <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
         description_id: MessageId::CmdMcpDescription,
     },
     CommandInfo {
@@ -690,8 +690,8 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         _ => {
             // Third source: skills (lowest precedence after native and user-config).
             // Try to run a skill whose name matches the command.
-            if skills::run_skill_by_name(app, command, arg).is_some() {
-                return skills::run_skill_by_name(app, command, arg).unwrap();
+            if let Some(result) = skills::run_skill_by_name(app, command, arg) {
+                return result;
             }
             let suggestions = suggest_command_names(command, 3);
             if suggestions.is_empty() {

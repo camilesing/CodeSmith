@@ -8,6 +8,7 @@
 //! - `/memory` — show path + content
 //! - `/memory show` — alias for the no-arg form
 //! - `/memory clear` — replace the file contents with an empty marker
+//! - `/memory extract --dry-run` — build a memory-extraction worker prompt without writing
 //! - `/memory path` — show only the resolved path
 //! - `/memory help` — show command-specific help and the resolved path
 //!
@@ -25,9 +26,12 @@ use crate::agent_memory::{
     AgentMemoryScope, agent_memory_candidates, load_snapshot_status, resolve_agent_memory_dir,
     resolve_agent_memory_entrypoint,
 };
-use crate::tui::app::App;
+use crate::models::ContentBlock;
+use crate::prompts::{MemoryExtractionMessage, build_memory_extraction_prompt};
+use crate::tui::app::{App, AppAction};
 
-const MEMORY_USAGE: &str = "/memory [show|path|clear|edit|help|agent <type> [scope]]";
+const MEMORY_USAGE: &str =
+    "/memory [show|path|clear|edit|extract --dry-run|help|agent <type> [scope]]";
 const AGENT_MEMORY_SCOPES: &[AgentMemoryScope] = &[
     AgentMemoryScope::User,
     AgentMemoryScope::Project,
@@ -55,9 +59,11 @@ fn memory_help(path: &Path) -> String {
 \
            /memory clear              Replace the user-memory file contents with an empty marker
 \
-           /memory edit               Print the editor command for the user-memory file
+          /memory edit               Print the editor command for the user-memory file
 \
-           /memory agent <type>       Show agent memory directories for a sub-agent type
+          /memory extract --dry-run  Build a memory-extraction prompt from recent messages without writing
+\
+          /memory agent <type>       Show agent memory directories for a sub-agent type
 \
            /memory agent <type> <scope> Show MEMORY.md and snapshot status for user/project/local scope
 \
@@ -82,6 +88,155 @@ fn show_user_memory(path: &Path) -> String {
             "{}\n(file does not exist yet — add via `# foo` from the composer to create it)",
             path.display()
         ),
+    }
+}
+
+const MEMORY_EXTRACT_DEFAULT_MESSAGES: usize = 24;
+const MEMORY_EXTRACT_MAX_MESSAGES: usize = 80;
+const MEMORY_EXTRACT_PREVIEW_MAX_CHARS: usize = 16_000;
+
+fn parse_extract_args(args: &str) -> Result<usize, String> {
+    let mut max_messages = MEMORY_EXTRACT_DEFAULT_MESSAGES;
+    let mut saw_dry_run = false;
+    let mut parts = args.split_whitespace().peekable();
+
+    while let Some(part) = parts.next() {
+        match part {
+            "--dry-run" => saw_dry_run = true,
+            "--messages" | "--max-messages" => {
+                let Some(value) = parts.next() else {
+                    return Err(format!("missing value for `{part}`"));
+                };
+                max_messages = value.parse::<usize>().map_err(|_| {
+                    format!("invalid value `{value}` for `{part}`; expected a positive integer")
+                })?;
+            }
+            value if value.starts_with("--messages=") => {
+                let raw = value.trim_start_matches("--messages=");
+                max_messages = raw.parse::<usize>().map_err(|_| {
+                    format!("invalid value `{raw}` for `--messages`; expected a positive integer")
+                })?;
+            }
+            value if value.starts_with("--max-messages=") => {
+                let raw = value.trim_start_matches("--max-messages=");
+                max_messages = raw.parse::<usize>().map_err(|_| {
+                    format!(
+                        "invalid value `{raw}` for `--max-messages`; expected a positive integer"
+                    )
+                })?;
+            }
+            other => return Err(format!("unexpected argument `{other}`")),
+        }
+    }
+
+    if !saw_dry_run {
+        return Err("`/memory extract` currently supports only `--dry-run`".to_string());
+    }
+    if max_messages == 0 {
+        return Err("message count must be greater than zero".to_string());
+    }
+
+    Ok(max_messages.min(MEMORY_EXTRACT_MAX_MESSAGES))
+}
+
+fn content_block_for_memory_extract(block: &ContentBlock) -> Option<String> {
+    match block {
+        ContentBlock::Text { text, .. } => Some(text.clone()),
+        ContentBlock::Thinking { thinking } => Some(format!(
+            "[thinking omitted: {} chars]",
+            thinking.chars().count()
+        )),
+        ContentBlock::ToolUse { name, input, .. } => Some(format!("[tool_use: {name} {input}]")),
+        ContentBlock::ToolResult {
+            content, is_error, ..
+        } => {
+            let prefix = if is_error.unwrap_or(false) {
+                "[tool_result error]"
+            } else {
+                "[tool_result]"
+            };
+            Some(format!("{prefix}\n{content}"))
+        }
+        ContentBlock::ServerToolUse { name, input, .. } => {
+            Some(format!("[server_tool_use: {name} {input}]"))
+        }
+        ContentBlock::ToolSearchToolResult { content, .. } => {
+            Some(format!("[tool_search_tool_result: {content}]"))
+        }
+        ContentBlock::CodeExecutionToolResult { content, .. } => {
+            Some(format!("[code_execution_tool_result: {content}]"))
+        }
+    }
+}
+
+fn recent_messages_for_memory_extract(app: &App) -> Vec<MemoryExtractionMessage> {
+    app.api_messages
+        .iter()
+        .filter_map(|message| {
+            let content = message
+                .content
+                .iter()
+                .filter_map(content_block_for_memory_extract)
+                .filter(|text| !text.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            (!content.trim().is_empty()).then(|| MemoryExtractionMessage {
+                role: message.role.clone(),
+                content,
+            })
+        })
+        .collect()
+}
+
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    let mut iter = text.chars();
+    let truncated: String = iter.by_ref().take(max_chars).collect();
+    if iter.next().is_some() {
+        format!("{truncated}\n\n[…truncated for display]")
+    } else {
+        truncated
+    }
+}
+
+fn memory_extract(app: &App, args: &str) -> CommandResult {
+    let max_messages = match parse_extract_args(args) {
+        Ok(max_messages) => max_messages,
+        Err(err) => {
+            return CommandResult::error(format!(
+                "{err}. Usage: /memory extract --dry-run [--messages N]"
+            ));
+        }
+    };
+
+    let messages = recent_messages_for_memory_extract(app);
+    if messages.is_empty() {
+        return CommandResult::message(
+            "No conversation messages are available for memory extraction.".to_string(),
+        );
+    }
+
+    let existing_memory = fs::read_to_string(&app.memory_path).ok();
+    let prompt = build_memory_extraction_prompt(
+        &messages,
+        existing_memory.as_deref(),
+        max_messages.min(messages.len()),
+    );
+    let preview = truncate_preview(&prompt.user_prompt, MEMORY_EXTRACT_PREVIEW_MAX_CHARS);
+    let worker_request = format!(
+        "{}\n\n{}",
+        prompt.system_prompt.trim_end(),
+        prompt.user_prompt.trim_start()
+    );
+
+    CommandResult {
+        message: Some(format!(
+            "Memory extraction dry-run prepared from {} recent message(s). No files were written.\n\nSystem prompt:\n```text\n{}\n```\n\nUser prompt preview:\n```text\n{}\n```\n\nTo run this extraction in-chat, send the prepared worker prompt below.",
+            max_messages.min(messages.len()),
+            prompt.system_prompt.trim_end(),
+            preview.trim_end()
+        )),
+        action: Some(AppAction::SendMessage(worker_request)),
+        is_error: false,
     }
 }
 
@@ -201,6 +356,10 @@ pub fn memory(app: &mut App, arg: Option<&str>) -> CommandResult {
         return show_agent_memory(app, rest.trim());
     }
 
+    if let Some(rest) = sub.strip_prefix("extract") {
+        return memory_extract(app, rest.trim());
+    }
+
     if !app.use_memory {
         return CommandResult::error(
             "user memory is disabled. Enable with `[memory] enabled = true` in `~/.codesmith/config.toml` or `DEEPSEEK_MEMORY=on` in your environment, then restart the TUI. Agent memory can still be inspected with `/memory agent <type> [scope]`.",
@@ -264,8 +423,11 @@ mod tests {
         let mut app = create_test_app_with_memory(&tmpdir, true);
         let result = memory(&mut app, Some("help"));
         let msg = result.message.expect("help should return text");
-        assert!(msg.contains("Usage: /memory [show|path|clear|edit|help|agent <type> [scope]]"));
+        assert!(msg.contains(
+            "Usage: /memory [show|path|clear|edit|extract --dry-run|help|agent <type> [scope]]"
+        ));
         assert!(msg.contains("/memory edit"));
+        assert!(msg.contains("/memory extract --dry-run"));
         assert!(msg.contains("/memory agent <type>"));
         assert!(msg.contains(app.memory_path.to_string_lossy().as_ref()));
     }
@@ -321,5 +483,56 @@ mod tests {
         assert!(msg.contains("Agent memory `review` scope `project`"));
         assert!(msg.contains("# Review notes"));
         assert!(msg.contains("Snapshot:"));
+    }
+
+    #[test]
+    fn memory_extract_dry_run_builds_worker_prompt_without_writing() {
+        let tmpdir = TempDir::new().expect("tempdir");
+        let mut app = create_test_app_with_memory(&tmpdir, true);
+        app.api_messages.push(crate::models::Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Please remember that I prefer terse status updates.".to_string(),
+                cache_control: None,
+            }],
+        });
+        app.api_messages.push(crate::models::Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Understood.".to_string(),
+                cache_control: None,
+            }],
+        });
+
+        let result = memory(&mut app, Some("extract --dry-run --messages 1"));
+        assert!(!result.is_error);
+        let msg = result.message.expect("dry-run should explain prompt");
+        assert!(msg.contains("Memory extraction dry-run prepared"));
+        assert!(msg.contains("No files were written"));
+        assert!(msg.contains("Memory Extraction Protocol"));
+        assert!(!app.memory_path.exists());
+        match result.action {
+            Some(AppAction::SendMessage(prompt)) => {
+                assert!(prompt.contains("Memory Extraction Protocol"));
+                assert!(prompt.contains("Understood."));
+                assert!(!prompt.contains("terse status updates"));
+            }
+            other => panic!("expected SendMessage action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn memory_extract_requires_dry_run() {
+        let tmpdir = TempDir::new().expect("tempdir");
+        let mut app = create_test_app_with_memory(&tmpdir, true);
+        let result = memory(&mut app, Some("extract"));
+        assert!(result.is_error);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("supports only `--dry-run`")
+        );
     }
 }

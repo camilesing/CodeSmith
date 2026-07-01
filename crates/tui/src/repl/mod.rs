@@ -1,10 +1,10 @@
 //! Long-lived Python REPL runtime used by the RLM loop and by inline
 //! `` ```repl `` block execution in the agent loop.
+//!
+//! Migrated to `codesmith_agent_runtime::repl`; re-exported here so the
+//! historical `crate::repl::{runtime, sandbox}` paths — and the
+//! `crate::repl::PythonRuntime` / `crate::repl::sandbox::has_repl_block`
+//! item paths — keep resolving for TUI-side callers (the `rlm` tool, the
+//! engine body until it moves, etc.).
 
-pub mod runtime;
-pub mod sandbox;
-
-pub use runtime::{
-    BatchResp, PythonRuntime, ReplRound, RpcDispatcher, RpcRequest, RpcResponse, SingleResp,
-};
-pub use sandbox::{ReplBlock, extract_repl_blocks, has_repl_block};
+pub use codesmith_agent_runtime::repl::*;

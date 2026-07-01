@@ -32,7 +32,7 @@ pub(super) fn format_mcp_manager(snapshot: &McpManagerSnapshot) -> String {
 
     lines.push(String::new());
     lines.push(
-        "Actions: /mcp init, /mcp add stdio <name> <command> [args...], /mcp add http <name> <url>, /mcp enable <name>, /mcp disable <name>, /mcp remove <name>, /mcp validate, /mcp reload."
+        "Actions: /mcp init, /mcp add stdio <name> <command> [args...], /mcp add <http|sse|sse-ide|ws|ws-ide> <name> <url>, /mcp enable <name>, /mcp disable <name>, /mcp remove <name>, /mcp validate, /mcp reload."
             .to_string(),
     );
     lines.join("\n")

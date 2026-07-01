@@ -118,6 +118,18 @@ impl ToolSpec for LoadSkillTool {
         Ok(ToolResult::success(body).with_metadata(json!({
             "skill_name": skill.name,
             "skill_path": skill.path.display().to_string(),
+            "description": skill.description,
+            "when_to_use": skill.when_to_use,
+            "allowed_tools": skill.allowed_tools,
+            "model": skill.model,
+            "effort": skill.effort,
+            "user_invocable": skill.user_invocable,
+            "paths": skill.paths,
+            "version": skill.version,
+            "context": skill.context,
+            "agent": skill.agent,
+            "shell": skill.shell,
+            "loaded_from": format!("{:?}", skill.loaded_from),
             "companion_files": collect_companion_files(skill)
                 .into_iter()
                 .map(|p| p.display().to_string())
@@ -136,6 +148,21 @@ fn format_skill_body(skill: &Skill) -> String {
     out.push_str(&format!("# Skill: {}\n\n", skill.name));
     if !skill.description.trim().is_empty() {
         out.push_str(&format!("> {}\n\n", skill.description.trim()));
+    }
+    if let Some(when_to_use) = skill
+        .when_to_use
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push_str(&format!("When to use: {}\n\n", when_to_use.trim()));
+    }
+    if !skill.paths.is_empty() {
+        out.push_str(&format!("Path triggers: {}\n\n", skill.paths.join(", ")));
+    }
+    if let Some(allowed_tools) = &skill.allowed_tools
+        && !allowed_tools.is_empty()
+    {
+        out.push_str(&format!("Allowed tools: {}\n\n", allowed_tools.join(", ")));
     }
     out.push_str(&format!("Source: `{}`\n\n", skill.path.display()));
     out.push_str("## SKILL.md\n\n");

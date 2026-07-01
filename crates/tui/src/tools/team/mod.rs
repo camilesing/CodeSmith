@@ -8,6 +8,7 @@
 //! - Team lifecycle tools (create, delete, send_message)
 //! - In-process teammate lifecycle (idle/shutdown protocol)
 
+pub mod backend;
 mod inbox_poller;
 mod protocol_handlers;
 mod send_message;
@@ -25,6 +26,10 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+pub use backend::{
+    BackendError, BackendKind, SpawnedTeammate, TeammateBackend, TeammateHandle, TeammateSpawnSpec,
+};
+pub use codesmith_agent_runtime::tool_state::team::*;
 pub use inbox_poller::{
     InboxClassification, InboxDispatch, TeamInboxRx, TeamInboxTx, classify_inbox_messages,
     run_leader_inbox_poller,
@@ -37,7 +42,7 @@ pub use protocol_handlers::{
     handle_plan_approval_rejection as proto_plan_reject,
     handle_shutdown_approval as proto_shutdown_approval,
     handle_shutdown_rejection as proto_shutdown_rejection,
-    handle_shutdown_request as proto_shutdown_request,
+    handle_shutdown_request as proto_shutdown_request, new_shared_permission_registry,
 };
 pub use send_message::SendMessageTool;
 pub use team_create::TeamCreateTool;
@@ -66,34 +71,3 @@ pub use teammate_mailbox::{
     is_structured_protocol_message, mark_messages_as_read, parse_structured_protocol, read_mailbox,
     read_unread_messages, write_to_mailbox,
 };
-
-/// Runtime info about a teammate tracked in the session-level TeamContext.
-#[derive(Debug, Clone)]
-pub struct TeammateInfo {
-    pub name: String,
-    pub agent_type: String,
-    pub color: Option<String>,
-    pub cwd: PathBuf,
-    pub spawned_at: i64,
-}
-
-/// Shared, mutable team context for the current session.
-///
-/// Stored in Engine and propagated via RuntimeToolServices. When
-/// TeamCreateTool executes, it writes the TeamContext into this slot.
-#[derive(Debug)]
-pub struct TeamContext {
-    pub team_name: String,
-    pub team_file_path: PathBuf,
-    pub lead_agent_id: String,
-    /// Active teammates keyed by agent ID.
-    pub teammates: HashMap<String, TeammateInfo>,
-}
-
-/// Thread-safe shared reference to optional TeamContext.
-pub type SharedTeamContext = Arc<Mutex<Option<TeamContext>>>;
-
-/// Create a new empty SharedTeamContext.
-pub fn new_shared_team_context() -> SharedTeamContext {
-    Arc::new(Mutex::new(None))
-}

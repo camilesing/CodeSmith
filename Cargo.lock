@@ -805,8 +805,58 @@ checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 name = "codesmith-agent"
 version = "0.8.48"
 dependencies = [
+ "anyhow",
  "codesmith-config",
+ "futures-util",
+ "reqwest",
  "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "codesmith-agent-runtime"
+version = "0.8.48"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "codesmith-agent",
+ "codesmith-config",
+ "codesmith-tools",
+ "dirs",
+ "fd-lock",
+ "flate2",
+ "futures-util",
+ "ignore",
+ "libc",
+ "multimap",
+ "portable-pty",
+ "pretty_assertions",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shellexpand",
+ "shlex",
+ "similar",
+ "starlark",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tiny_http",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "toml 0.9.11+spec-1.1.0",
+ "tracing",
+ "unicode-normalization",
+ "unicode-properties",
+ "uuid",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -969,6 +1019,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "codesmith-tool-impls"
+version = "0.8.48"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "codesmith-agent",
+ "codesmith-agent-runtime",
+ "codesmith-config",
+ "codesmith-tools",
+ "dirs",
+ "ignore",
+ "libc",
+ "objc2",
+ "objc2-foundation",
+ "pdf-extract",
+ "pretty_assertions",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shlex",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml 0.9.11+spec-1.1.0",
+ "tracing",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "codesmith-tools"
 version = "0.8.48"
 dependencies = [
@@ -995,10 +1081,13 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "codesmith-agent",
+ "codesmith-agent-runtime",
  "codesmith-config",
  "codesmith-protocol",
  "codesmith-release",
  "codesmith-secrets",
+ "codesmith-tool-impls",
  "codesmith-tools",
  "colored",
  "crossterm 0.28.1",
@@ -1035,6 +1124,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tiny_http",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml 0.9.11+spec-1.1.0",
  "tower-http",
@@ -5286,6 +5376,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
+dependencies = [
+ "futures-util",
+ "log",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tungstenite",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5505,6 +5611,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.3",
+ "rustls",
+ "rustls-pki-types",
+ "sha1",
+ "thiserror 2.0.18",
+ "utf-8",
+]
+
+[[package]]
 name = "type1-encoding-parser"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5564,6 +5689,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unicode-properties"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
+
+[[package]]
 name = "unicode-segmentation"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5616,6 +5747,12 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
+
+[[package]]
+name = "utf-8"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf8_iter"
@@ -5856,6 +5993,24 @@ name = "webpki-root-certs"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.8",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
 ]

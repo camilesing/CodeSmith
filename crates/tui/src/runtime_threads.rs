@@ -25,6 +25,7 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::automation_manager::wrap_automation_manager;
 use crate::compaction::CompactionConfig;
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::core::coherence::CoherenceState;
@@ -32,6 +33,7 @@ use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::Op;
 use crate::models::{ContentBlock, Message, SystemPrompt, Usage, compaction_threshold_for_model};
+use crate::task_manager::wrap_task_manager;
 use crate::tools::plan::new_shared_plan_state;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tools::todo::new_shared_todo_list;
@@ -1943,11 +1945,10 @@ impl RuntimeThreadManager {
             }
         }
 
-        // Compaction defaults to disabled in v0.6.6 — the cycle architecture
-        // (issue #124) handles long-context resets. Threads keep the
-        // legacy summarizer wired off unless an operator opts in via config.
+        // Provider-neutral automatic compaction is enabled by default so
+        // smaller-context thread engines compact before provider hard limits.
         let compaction = CompactionConfig {
-            enabled: false,
+            enabled: true,
             model: thread.model.clone(),
             token_threshold: compaction_threshold_for_model(&thread.model),
             ..Default::default()
@@ -1961,6 +1962,34 @@ impl RuntimeThreadManager {
             .clone()
             .map(crate::config::LspConfigToml::into_runtime);
         let settings = crate::settings::Settings::load().unwrap_or_default();
+        let runtime_services = crate::tools::spec::RuntimeToolServices {
+            task_manager: self
+                .task_manager
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .map(wrap_task_manager),
+            automations: self
+                .automations
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .map(wrap_automation_manager),
+            task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
+            active_task_id: thread.task_id.clone(),
+            active_thread_id: Some(thread.id.clone()),
+            shell_manager: None,
+            hook_executor: None,
+            handle_store: crate::tools::handle::new_shared_handle_store(),
+            rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
+            task_v2_manager: None,
+            task_mailbox: None,
+            team_context: None,
+            permission_request_registry: None,
+            background_task_registry: None,
+            team_sender: None,
+            notifier: Some(crate::tui::notifications::wrap_notifier()),
+        };
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
@@ -1975,6 +2004,17 @@ impl RuntimeThreadManager {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            override_system_prompt: self.config.system_prompt_override_text(),
+            custom_system_prompt: None,
+            coordinator_system_prompt: None,
+            agent_system_prompt: None,
+            append_system_prompts: self
+                .config
+                .append_system_prompt_paths()
+                .into_iter()
+                .map(crate::prompts::PromptAppendSource::file)
+                .collect(),
+            cache_breaker: None,
             project_context_pack_enabled: self.config.project_context_pack_enabled(),
             translation_enabled: false,
             show_thinking: settings.show_thinking,
@@ -1983,9 +2023,7 @@ impl RuntimeThreadManager {
             features: self.config.features(),
             compaction,
             cycle: crate::cycle_manager::CycleConfig::default(),
-            capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(
-                &self.config,
-            ),
+            capacity: crate::core::capacity::capacity_controller_config_from_app(&self.config),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
             plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
@@ -2001,30 +2039,18 @@ impl RuntimeThreadManager {
                 .max_workspace_gb
                 .saturating_mul(1024 * 1024 * 1024),
             lsp_config,
-            runtime_services: crate::tools::spec::RuntimeToolServices {
-                task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),
-                automations: self.automations.lock().ok().and_then(|slot| slot.clone()),
-                task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
-                active_task_id: thread.task_id.clone(),
-                active_thread_id: Some(thread.id.clone()),
-                shell_manager: None,
-                hook_executor: None,
-                handle_store: crate::tools::handle::new_shared_handle_store(),
-                rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
-                task_v2_manager: None,
-                task_mailbox: None,
-                team_context: None,
-                permission_request_registry: None,
-            },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),
             ),
+            subagent_inherit_full_registry: self.config.subagent_inherit_full_registry(),
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
+            sandbox_runtime: self.config.sandbox_runtime_config(),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             kod_enabled: self.config.kod_enabled(),
             memory_dir: self.config.memory_dir(),
+            memory_excludes: self.config.memory_excludes(),
             vision_config: self.config.vision_model_config(),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
@@ -2038,9 +2064,21 @@ impl RuntimeThreadManager {
             tools_always_load: self.config.tools_always_load(),
             tools: self.config.tools.clone(),
             team_context: None,
+            // Runtime-thread (API) engines don't carry a telemetry sink yet
+            // (Plan 06 / 6.1 wires the interactive path only); capacity
+            // events from these engines are dropped — the safe opt-in default.
+            telemetry_sink: None,
         };
 
-        let engine = spawn_engine(engine_cfg, &self.config);
+        let engine = spawn_engine(
+            engine_cfg,
+            &self.config,
+            crate::core::engine::EngineHost {
+                runtime_services,
+                hooks: None,
+                ..Default::default()
+            },
+        );
 
         let turns = self.store.list_turns_for_thread(&thread.id)?;
         let session_messages = self.reconstruct_messages_from_turns(&turns)?;
@@ -2794,6 +2832,7 @@ impl RuntimeThreadManager {
                 EngineEvent::ElevationRequired {
                     tool_id,
                     tool_name,
+                    command,
                     denial_reason,
                     ..
                 } => {
@@ -2815,12 +2854,35 @@ impl RuntimeThreadManager {
                         .unwrap_or((false, false));
                     match Self::approval_decision(auto_approve, trust_mode, true) {
                         RuntimeApprovalDecision::RetryWithFullAccess => {
-                            let _ = engine
-                                .retry_tool_with_policy(
-                                    tool_id,
-                                    crate::sandbox::SandboxPolicy::DangerFullAccess,
-                                )
-                                .await;
+                            // `approval_decision` only reaches this branch
+                            // when `auto_approve && trust_mode` (YOLO opt-in).
+                            // Still strip catastrophic commands — they must
+                            // never be auto-elevated, even in trust mode.
+                            let decision = crate::auto_mode::decide_auto_elevation(
+                                command.as_deref(),
+                                true,
+                                crate::sandbox::SandboxPolicy::DangerFullAccess,
+                            );
+                            match decision {
+                                crate::auto_mode::AutoElevationDecision::Deny { reason } => {
+                                    self.emit_event(
+                                        &thread_id,
+                                        Some(&turn_id),
+                                        None,
+                                        "sandbox.denied.stripped",
+                                        json!({
+                                            "tool_id": tool_id,
+                                            "tool_name": tool_name,
+                                            "reason": reason,
+                                        }),
+                                    )
+                                    .await?;
+                                    let _ = engine.deny_tool_call(tool_id).await;
+                                }
+                                crate::auto_mode::AutoElevationDecision::ElevateTo(policy) => {
+                                    let _ = engine.retry_tool_with_policy(tool_id, policy).await;
+                                }
+                            }
                         }
                         RuntimeApprovalDecision::ApproveTool
                         | RuntimeApprovalDecision::DenyTool => {

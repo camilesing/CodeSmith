@@ -45,6 +45,7 @@ use crate::session_manager::{SavedSession, SessionManager, SessionMetadata, defa
 use crate::skill_state::SkillStateStore;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
+    wrap_task_manager,
 };
 
 #[derive(Clone)]
@@ -271,6 +272,12 @@ struct SkillEntry {
     path: PathBuf,
     enabled: bool,
     is_bundled: bool,
+    when_to_use: Option<String>,
+    allowed_tools: Option<Vec<String>>,
+    user_invocable: bool,
+    paths: Vec<String>,
+    version: Option<String>,
+    source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -341,6 +348,7 @@ struct McpServerEntry {
     required: bool,
     command: Option<String>,
     url: Option<String>,
+    transport: String,
     connected: bool,
     enabled_tools: Vec<String>,
     disabled_tools: Vec<String>,
@@ -1113,6 +1121,12 @@ async fn list_skills(
             path: skill.path.clone(),
             enabled: skill_state.is_enabled(&skill.name),
             is_bundled: skill_entry_is_bundled(skill, &skills_dir),
+            when_to_use: skill.when_to_use.clone(),
+            allowed_tools: skill.allowed_tools.clone(),
+            user_invocable: skill.user_invocable,
+            paths: skill.paths.clone(),
+            version: skill.version.clone(),
+            source: format!("{:?}", skill.loaded_from),
         })
         .collect();
     Ok(Json(SkillsResponse {
@@ -1239,6 +1253,12 @@ async fn list_mcp_servers(
             required: server_cfg.required,
             command: server_cfg.command.clone(),
             url: server_cfg.url.clone(),
+            transport: crate::mcp::mcp_transport_label(
+                server_cfg.transport.as_deref(),
+                server_cfg.url.is_some(),
+            )
+            .unwrap_or("invalid")
+            .to_string(),
             connected: connected.contains(&name),
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
@@ -1259,10 +1279,7 @@ async fn list_mcp_tools(
 
     let mut tools = Vec::new();
     for (prefixed_name, tool) in pool.all_tools() {
-        let Some(rest) = prefixed_name.strip_prefix("mcp_") else {
-            continue;
-        };
-        let Some((server, name)) = rest.split_once('_') else {
+        let Ok((server, name)) = crate::mcp::parse_mcp_tool_model_name(&prefixed_name) else {
             continue;
         };
 
@@ -1342,8 +1359,9 @@ async fn run_automation(
     Path(id): Path<String>,
 ) -> Result<Json<AutomationRunRecord>, ApiError> {
     let manager = state.automations.lock().await;
+    let task_manager = wrap_task_manager(state.task_manager.clone());
     let run = manager
-        .run_now(&id, &state.task_manager)
+        .run_now(&id, &task_manager)
         .await
         .map_err(map_automation_err)?;
     Ok(Json(run))
@@ -4312,18 +4330,18 @@ mod tests {
         )
         .expect("write override skill");
 
-        let bundled_skill = crate::skills::Skill {
-            name: "delegate".to_string(),
-            description: String::new(),
-            body: String::new(),
-            path: bundled_skill_path,
-        };
-        let override_skill = crate::skills::Skill {
-            name: "delegate".to_string(),
-            description: String::new(),
-            body: String::new(),
-            path: override_skill_path,
-        };
+        let mut bundled_skill = crate::skills::Skill::with_defaults(
+            "delegate".to_string(),
+            String::new(),
+            String::new(),
+        );
+        bundled_skill.path = bundled_skill_path;
+        let mut override_skill = crate::skills::Skill::with_defaults(
+            "delegate".to_string(),
+            String::new(),
+            String::new(),
+        );
+        override_skill.path = override_skill_path;
 
         assert!(skill_entry_is_bundled(&bundled_skill, &bundled_skills_dir));
         assert!(!skill_entry_is_bundled(

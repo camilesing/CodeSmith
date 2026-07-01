@@ -1,5 +1,10 @@
-use crate::core::capacity::GuardrailAction;
-use crate::core::turn::TurnContext;
+use codesmith_agent_runtime::telemetry::TelemetrySink;
+use crate::core::capacity::{
+    CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
+    GuardrailAction, RiskBand,
+};
+use crate::core::capacity_memory::load_last_k_capacity_records;
+use crate::core::turn::{TurnContext, TurnToolCall};
 use crate::llm_client::LlmClientHandle;
 use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::tools::spec::ToolContext;
@@ -8,10 +13,16 @@ use crate::tui::approval::ApprovalMode;
 
 use super::*;
 
-use super::context::TURN_MAX_OUTPUT_TOKENS;
-use crate::models::SystemBlock;
+use super::{
+    TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
+    effective_max_output_tokens,
+};
+use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL};
+use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, ToolCaller};
 use crate::test_support::lock_test_env;
-use crate::tools::spec::ToolCapability;
+use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs, new_shared_plan_state};
+use crate::tools::spec::{ToolCapability, ToolError, ToolResult};
+use crate::tools::todo::{TodoStatus, new_shared_todo_list};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -90,6 +101,70 @@ fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     };
     let (engine, _handle) = Engine::new(engine_config, &Config::default());
     engine
+}
+
+/// Plan 06 / 6.1: an `Engine` whose `EngineConfig.telemetry_sink` is set must
+/// route `CapacityDecision` events to the local jsonl sink (the core emission
+/// routing deliverable). The sink is `Arc`-shared, so the clone handed to the
+/// engine writes through the same `attached`/`enabled` state the host holds.
+#[tokio::test]
+async fn capacity_decision_routes_to_telemetry_sink() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let sink_path = tmp.path().join("events.jsonl");
+    let sink = TelemetrySink::new_skeleton(true, Some(sink_path.clone()));
+    // Post-trust: writes go straight to disk (no queueing).
+    sink.attach();
+
+    let engine_config = EngineConfig {
+        capacity: CapacityControllerConfig::default(),
+        telemetry_sink: Some(sink),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+
+    let turn = TurnContext::new(100);
+    let snapshot = CapacitySnapshot {
+        turn_index: 1,
+        h_hat: 100.0,
+        c_hat: 50.0,
+        slack: 50.0,
+        profile: DynamicSlackProfile {
+            min_slack: 40.0,
+            violation_ratio: 0.1,
+            ..Default::default()
+        },
+        p_fail: 0.05,
+        risk_band: RiskBand::Low,
+        severe: false,
+    };
+    let decision = CapacityDecision {
+        action: GuardrailAction::NoIntervention,
+        reason: "test-reason".to_string(),
+        cooldown_blocked: false,
+    };
+    engine
+        .emit_capacity_decision(&turn, Some(&snapshot), &decision)
+        .await;
+
+    let contents = fs::read_to_string(&sink_path).expect("jsonl should be written");
+    assert!(
+        contents.contains("\"type\":\"capacity_decision\""),
+        "expected capacity_decision line, got: {contents}"
+    );
+    assert!(
+        contents.contains("\"risk_band\":\"low\""),
+        "got: {contents}"
+    );
+    assert!(
+        contents.contains("\"action\":\"no_intervention\""),
+        "got: {contents}"
+    );
+    assert!(
+        contents.contains("\"reason\":\"test-reason\""),
+        "got: {contents}"
+    );
+    assert!(contents.contains("\"h_hat\":100.0"), "got: {contents}");
 }
 
 #[test]
@@ -468,6 +543,7 @@ fn tool_exec_outcome_tracks_duration() {
         id: "tool-1".to_string(),
         name: "grep_files".to_string(),
         input: json!({"pattern": "test"}),
+        context_patch: None,
         started_at: Instant::now(),
         result: Ok(ToolResult::success("ok")),
     };
@@ -576,7 +652,10 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
             api_tool("edit_file"),
             api_tool("project_map"),
         ],
-        vec![api_tool("list_mcp_resources"), api_tool("mcp_server_write")],
+        vec![
+            api_tool("list_mcp_resources"),
+            api_tool("mcp__server__write"),
+        ],
         AppMode::Agent,
         &always_load,
     );
@@ -594,7 +673,7 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
     assert_eq!(defer_loading("edit_file"), Some(false));
     assert_eq!(defer_loading("project_map"), Some(true));
     assert_eq!(defer_loading("list_mcp_resources"), Some(false));
-    assert_eq!(defer_loading("mcp_server_write"), Some(true));
+    assert_eq!(defer_loading("mcp__server__write"), Some(true));
 }
 
 #[test]
@@ -816,7 +895,7 @@ fn model_tool_catalog_defers_non_core_native_tools_in_yolo_mode() {
     let always_load = HashSet::new();
     let catalog = build_model_tool_catalog(
         vec![api_tool("read_file"), api_tool("project_map")],
-        vec![api_tool("mcp_server_write")],
+        vec![api_tool("mcp__server__write")],
         AppMode::Yolo,
         &always_load,
     );
@@ -830,7 +909,7 @@ fn model_tool_catalog_defers_non_core_native_tools_in_yolo_mode() {
 
     assert_eq!(defer_loading("read_file"), Some(false));
     assert_eq!(defer_loading("project_map"), Some(true));
-    assert_eq!(defer_loading("mcp_server_write"), Some(false));
+    assert_eq!(defer_loading("mcp__server__write"), Some(false));
 }
 
 #[test]
@@ -845,7 +924,7 @@ fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
             api_tool("apply_patch"),
             api_tool("exec_shell"),
         ],
-        vec![api_tool("mcp_zoo_b"), api_tool("mcp_aardvark_a")],
+        vec![api_tool("mcp__zoo__b"), api_tool("mcp__aardvark__a")],
         AppMode::Yolo,
         &always_load,
     );
@@ -857,8 +936,8 @@ fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
             "apply_patch",
             "exec_shell",
             "read_file",
-            "mcp_aardvark_a",
-            "mcp_zoo_b",
+            "mcp__aardvark__a",
+            "mcp__zoo__b",
         ],
         "built-ins must be alphabetical and contiguous; MCP tools follow, alphabetical",
     );
@@ -889,6 +968,26 @@ fn active_tool_list_pushes_deferred_activations_to_the_tail() {
         names,
         vec!["a_load_now", "b_load_now", "search_via_toolsearch"],
         "deferred-but-active tools must come after always-loaded tools",
+    );
+}
+
+#[test]
+fn model_tool_catalog_deduplicates_with_native_priority() {
+    let always_load = HashSet::new();
+    let catalog = build_model_tool_catalog(
+        vec![api_tool("read_file"), api_tool("mcp__server__search")],
+        vec![
+            api_tool("mcp__server__search"),
+            api_tool("mcp__server__write"),
+        ],
+        AppMode::Agent,
+        &always_load,
+    );
+
+    let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["mcp__server__search", "read_file", "mcp__server__write"]
     );
 }
 
@@ -1254,6 +1353,117 @@ async fn session_update_preserves_reasoning_tool_only_turn() {
     assert_eq!(messages, vec![assistant]);
 }
 
+#[tokio::test]
+async fn reinject_compaction_attachments_appends_plan_todo_and_read_file_reminders() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Implement context parity".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Add provider-neutral compaction".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.add("Run targeted tests".to_string(), TodoStatus::Pending);
+    }
+    engine.session.record_read_file_result(
+        &json!({"path": "src/lib.rs", "limit": 20}),
+        "pub fn library() {}",
+    );
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+
+    assert_eq!(injected, 3);
+    assert_eq!(engine.session.messages.len(), 3);
+    let duplicate_injected = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(duplicate_injected, 0);
+    assert_eq!(engine.session.messages.len(), 3);
+    let combined = engine
+        .session
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(combined.contains("Active plan resumed"));
+    assert!(combined.contains("Implement context parity"));
+    assert!(combined.contains("Add provider-neutral compaction"));
+    assert!(combined.contains("Active todos resumed"));
+    assert!(combined.contains("Run targeted tests"));
+    assert!(combined.contains("Recent read_file outputs retained"));
+    assert!(combined.contains("src/lib.rs"));
+    assert!(combined.contains("pub fn library() {}"));
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_includes_live_subagents() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let assignment = crate::tools::subagent::SubAgentAssignment {
+        objective: "Inspect context management".to_string(),
+        role: Some("researcher".to_string()),
+    };
+    let agent_id = {
+        let mut manager = engine.host_concrete().subagent_manager.write().await;
+        manager.insert_test_live_agent("agent_live".to_string(), assignment)
+    };
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+
+    assert_eq!(injected, 1);
+    let combined = engine
+        .session
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(combined.contains("Running subagents resumed"));
+    assert!(combined.contains("Inspect context management"));
+    assert!(combined.contains("researcher"));
+    assert!(combined.contains(&agent_id));
+    engine
+        .host_concrete()
+        .subagent_manager
+        .write()
+        .await
+        .abort_test_agent(&agent_id);
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_skips_messages_that_exceed_budget() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Keep this plan".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Stay under budget".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+
+    let before = engine.estimated_input_tokens();
+    let injected = engine
+        .reinject_compaction_attachments(Some(before.saturating_sub(1)))
+        .await;
+
+    assert_eq!(injected, 0);
+    assert!(engine.session.messages.is_empty());
+}
+
 #[test]
 fn detects_context_length_errors_from_provider_payloads() {
     let msg = r#"SSE stream request failed: HTTP 400 Bad Request: {"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 153056 tokens (148960 in the messages, 4096 in the completion).","type":"invalid_request_error"}}"#;
@@ -1265,7 +1475,7 @@ fn detects_context_length_errors_from_provider_payloads() {
 
 #[test]
 fn context_budget_reserves_output_and_headroom() {
-    // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
+    // Serialize with other tests that mutate output-token env vars so
     // the internal effective_max_output_tokens() call sees a stable env.
     let _lock = lock_test_env();
     // V4 has a 1M context window — the only family that comfortably hosts
@@ -1279,7 +1489,7 @@ fn context_budget_reserves_output_and_headroom() {
 
 #[test]
 fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
-    // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
+    // Serialize with other tests that mutate output-token env vars so
     // v4_cap and flash_cap below see the same env state.
     let _lock = lock_test_env();
     // V4 models have a 1M context window but the API request cap must stay
@@ -1299,40 +1509,59 @@ fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
     assert_eq!(v4_cap, flash_cap);
 }
 
-struct ScopedDeepSeekMaxOutputTokens {
+struct ScopedMaxOutputTokens {
+    var: &'static str,
     previous: Option<OsString>,
 }
 
-impl ScopedDeepSeekMaxOutputTokens {
-    fn set(value: &str) -> Self {
-        let previous = std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS");
+impl ScopedMaxOutputTokens {
+    fn set(var: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(var);
         // Safety: tests using this helper serialize with lock_test_env() and
         // restore the original value in Drop.
         unsafe {
-            std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", value);
+            std::env::set_var(var, value);
         }
-        Self { previous }
+        Self { var, previous }
     }
 
-    fn unset() -> Self {
-        let previous = std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS");
+    fn unset(var: &'static str) -> Self {
+        let previous = std::env::var_os(var);
         // Safety: see set().
         unsafe {
-            std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+            std::env::remove_var(var);
         }
-        Self { previous }
+        Self { var, previous }
     }
 }
 
-impl Drop for ScopedDeepSeekMaxOutputTokens {
+impl Drop for ScopedMaxOutputTokens {
     fn drop(&mut self) {
         // Safety: tests using this helper serialize with lock_test_env().
         unsafe {
             if let Some(previous) = self.previous.take() {
-                std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", previous);
+                std::env::set_var(self.var, previous);
             } else {
-                std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+                std::env::remove_var(self.var);
             }
+        }
+    }
+}
+
+struct ScopedDeepSeekMaxOutputTokens {
+    _inner: ScopedMaxOutputTokens,
+}
+
+impl ScopedDeepSeekMaxOutputTokens {
+    fn set(value: &str) -> Self {
+        Self {
+            _inner: ScopedMaxOutputTokens::set("DEEPSEEK_MAX_OUTPUT_TOKENS", value),
+        }
+    }
+
+    fn unset() -> Self {
+        Self {
+            _inner: ScopedMaxOutputTokens::unset("DEEPSEEK_MAX_OUTPUT_TOKENS"),
         }
     }
 }
@@ -1340,18 +1569,66 @@ impl Drop for ScopedDeepSeekMaxOutputTokens {
 #[test]
 fn effective_max_output_tokens_env_override_returns_positive_value() {
     let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
     let _guard = ScopedDeepSeekMaxOutputTokens::set("16384");
 
-    // Override applies regardless of model — V4 hosted, V4 flash, sub-500K
-    // self-hosted all return the env value verbatim.
+    // Legacy override applies regardless of model — V4 hosted, V4 flash,
+    // sub-500K self-hosted all return the env value verbatim.
     assert_eq!(effective_max_output_tokens("deepseek-v4-pro"), 16_384);
     assert_eq!(effective_max_output_tokens("deepseek-v4-flash"), 16_384);
     assert_eq!(effective_max_output_tokens("qwen3-32b-256k"), 16_384);
 }
 
 #[test]
+fn codesmith_max_output_tokens_takes_priority_over_legacy_override() {
+    let _lock = lock_test_env();
+    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::set("16384");
+    let _codesmith_guard = ScopedMaxOutputTokens::set("CODESMITH_MAX_OUTPUT_TOKENS", "32768");
+
+    assert_eq!(effective_max_output_tokens("deepseek-v4-pro"), 32_768);
+    assert_eq!(
+        effective_max_output_tokens_for_provider(
+            ApiProvider::Anthropic,
+            "claude-sonnet-4-20250514"
+        ),
+        32_768
+    );
+}
+
+#[test]
+fn effective_max_output_tokens_for_provider_uses_anthropic_cap() {
+    let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
+    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::unset();
+
+    assert_eq!(
+        effective_max_output_tokens_for_provider(
+            ApiProvider::Anthropic,
+            "claude-sonnet-4-20250514"
+        ),
+        8_192
+    );
+}
+
+#[test]
+fn effective_max_output_tokens_legacy_env_override_still_works_for_provider_helper() {
+    let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
+    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::set("12288");
+
+    assert_eq!(
+        effective_max_output_tokens_for_provider(
+            ApiProvider::Anthropic,
+            "claude-sonnet-4-20250514"
+        ),
+        12_288
+    );
+}
+
+#[test]
 fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
     let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
     // Establish the heuristic baseline with the env unset.
     let baseline = {
         let _guard = ScopedDeepSeekMaxOutputTokens::unset();
@@ -1373,8 +1650,21 @@ fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
 }
 
 #[test]
+fn provider_aware_context_budget_uses_provider_capability_window_and_output() {
+    let _lock = lock_test_env();
+    let anthropic_budget =
+        context_input_budget_for_provider(ApiProvider::Anthropic, "claude-sonnet-4-20250514")
+            .expect("Anthropic capability should provide a window");
+    assert_eq!(anthropic_budget, 200_000 - 8_192 - 1_024);
+
+    let ollama_budget = context_input_budget_for_provider(ApiProvider::Ollama, "llama3")
+        .expect("Ollama capability should provide a window");
+    assert_eq!(ollama_budget, 8_192 - 4_096 - 1_024);
+}
+
+#[test]
 fn internal_context_budget_tiers_reserved_output_by_window() {
-    // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
+    // Serialize with other tests that mutate output-token env vars so
     // both branches below see a stable env.
     let _lock = lock_test_env();
     // Large-context (>=500K) models reserve the full TURN_MAX_OUTPUT_TOKENS
@@ -2833,14 +3123,14 @@ fn capacity_escalation_skips_pure_transient_categories() {
 #[test]
 fn edited_paths_for_edit_file_returns_path() {
     let input = json!({ "path": "src/foo.rs", "search": "x", "replace": "y" });
-    let paths = edited_paths_for_tool("edit_file", &input);
+    let paths = edited_paths_for_tool("edit_file", &input, &EngineHost::default());
     assert_eq!(paths, vec![PathBuf::from("src/foo.rs")]);
 }
 
 #[test]
 fn edited_paths_for_write_file_returns_path() {
     let input = json!({ "path": "src/bar.rs", "content": "fn main() {}" });
-    let paths = edited_paths_for_tool("write_file", &input);
+    let paths = edited_paths_for_tool("write_file", &input, &EngineHost::default());
     assert_eq!(paths, vec![PathBuf::from("src/bar.rs")]);
 }
 
@@ -2852,7 +3142,7 @@ fn edited_paths_for_apply_patch_with_changes_returns_each_path() {
             { "path": "b.rs", "content": "" }
         ]
     });
-    let paths = edited_paths_for_tool("apply_patch", &input);
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
     assert_eq!(paths, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
 }
 
@@ -2861,7 +3151,7 @@ fn edited_paths_for_apply_patch_with_diff_text_extracts_paths() {
     let input = json!({
         "patch": "--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-let x: i32 = 0;\n+let x: i32 = \"oops\";\n"
     });
-    let paths = edited_paths_for_tool("apply_patch", &input);
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
     assert_eq!(paths, vec![PathBuf::from("foo.rs")]);
 }
 
@@ -2870,23 +3160,27 @@ fn edited_paths_for_apply_patch_with_invalid_diff_returns_empty() {
     let input = json!({
         "patch": "@@ -1 +1 @@\n-old\n+new\n"
     });
-    let paths = edited_paths_for_tool("apply_patch", &input);
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
     assert!(paths.is_empty());
 }
 
 #[test]
 fn edited_paths_for_unknown_tool_returns_empty() {
     let input = json!({ "path": "irrelevant.rs" });
-    let paths = edited_paths_for_tool("read_file", &input);
+    let paths = edited_paths_for_tool("read_file", &input, &EngineHost::default());
     assert!(paths.is_empty());
-    let paths = edited_paths_for_tool("grep_files", &input);
+    let paths = edited_paths_for_tool("grep_files", &input, &EngineHost::default());
     assert!(paths.is_empty());
 }
 
 #[test]
 fn parse_patch_paths_skips_dev_null() {
     let patch = "--- a/keep.rs\n+++ b/keep.rs\n@@ -1 +1 @@\n-old\n+new\n--- a/deleted.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-delete me\n";
-    let paths = edited_paths_for_tool("apply_patch", &json!({ "patch": patch }));
+    let paths = edited_paths_for_tool(
+        "apply_patch",
+        &json!({ "patch": patch }),
+        &EngineHost::default(),
+    );
     assert_eq!(paths, vec![PathBuf::from("keep.rs")]);
 }
 
@@ -2917,6 +3211,7 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
         message: "expected i32, found &str".to_string(),
     }]));
     engine
+        .host_concrete()
         .lsp_manager
         .install_test_transport(Language::Rust, fake)
         .await;
@@ -3000,6 +3295,7 @@ async fn post_edit_hook_skips_unknown_tool_names() {
         message: "should not be reported".to_string(),
     }]));
     engine
+        .host_concrete()
         .lsp_manager
         .install_test_transport(Language::Rust, fake.clone())
         .await;

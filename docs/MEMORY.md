@@ -165,20 +165,80 @@ note was added when grooming the file.
 
 ## Hierarchy and imports
 
-Memory is intentionally **user-scoped** rather than repo-scoped. It
-sits alongside — not inside — project instruction sources such as
-`AGENTS.md`, `.codesmith/instructions.md`, legacy `.deepseek/instructions.md`,
-and `instructions = [...]`.
+Two distinct things feed the system-prompt instruction block, and
+**user memory** is only one of them:
 
-- Use **memory** for durable personal preferences that should follow
-  you across repos and sessions.
-- Use **project instructions** for repo-specific conventions that
-  should travel with the codebase.
+- **User memory** (`~/.codesmith/memory.md`, this feature) — the single
+  durable note file you grow with `#`-prefixed lines, `/memory`, or the
+  `remember` tool.
+- **Instruction tiers** — `CLAUDE.md` / `AGENTS.md` / `WHALE.md` files
+  collected from four trust tiers and merged into the same block.
 
-The memory loader currently reads one resolved file path verbatim.
-`@path` imports / includes are **not** supported today; if you need a
-larger reusable instruction bundle, put it in a project instruction
-file or a skill instead.
+- Use **user memory** for durable personal preferences that should
+  follow you across repos and sessions.
+- Use **instruction tiers** for org- or repo-scoped conventions that
+  should travel with the machine or the codebase.
+
+### Instruction trust tiers
+
+Instruction files are collected from four tiers in ascending
+specificity. Later tiers override earlier ones when they conflict, so a
+project rule gets the last word over a managed or user rule. Each
+tier's content is preceded by a `<!-- tier: … -->` label so the model
+can tell which level a rule came from when two disagree.
+
+| Tier    | Source                                                                                              | Label     |
+|---------|-----------------------------------------------------------------------------------------------------|-----------|
+| Managed | `/etc/deepseek/CLAUDE.md`, then `/etc/codesmith/CLAUDE.md` (org policy)                             | `managed` |
+| User    | `~/.codesmith/{WHALE,AGENTS}.md`, then `.agents/`, then legacy `.deepseek/`                         | `user`    |
+| Project | First of `WHALE.md`, `AGENTS.md`, `.claude/instructions.md`, `CLAUDE.md`, `.codesmith/instructions.md`, `.deepseek/instructions.md` in `{cwd}`, then a parent-directory walk | `project` |
+| Local   | `*.md` snippets in `.claude/rules/` and `.codesmith/rules/` (sorted)                                | `local`   |
+
+CodeSmith previously loaded only the Project and User tiers; the
+Managed and Local tiers and the parent-directory walk are new.
+
+### `@include <path>` directives
+
+Any instruction file — in any tier — may pull another file in inline:
+
+```markdown
+@include ../shared/coding-style.md
+  @include ~/notes/security.md
+```
+
+The directive must be on its own line (leading whitespace is allowed)
+followed by whitespace before the path, so prose like "see @include"
+isn't mistaken for a directive. Targets are `~`-expanded and resolved
+relative to the file that contains the directive. Expansion is bounded
+and deduplicated:
+
+- **Depth cap** — `MAX_INCLUDE_DEPTH = 5`. The root file plus up to
+  five include levels load; the sixth level is silently dropped. This
+  bounds recursion and keeps prompt assembly cache-friendly.
+- **Symlink-stable dedup** — a file already loaded (by canonical path)
+  is not loaded twice, even through a symlink loop.
+- **Inherited label** — included content carries the tier label of the
+  file that pulled it in.
+
+### Excludes
+
+A path in the exclude list is skipped wherever it would be loaded — as
+a tier source or as an `@include` target. Set it in `config.toml`:
+
+```toml
+[memory]
+excludes = ["~/work/secret/CLAUDE.md", "/etc/sandbox-override.md"]
+```
+
+…or override at the shell without editing config:
+
+```bash
+export CODESMITH_MEMORY_EXCLUDES=~/work/secret/CLAUDE.md:/etc/sandbox-override.md
+```
+
+The env var is merged with (not replaced by) the config value; `~` is
+expanded and paths are matched by canonical form, so a symlink to an
+excluded file is skipped too.
 
 ## What stays out of memory
 
@@ -203,6 +263,15 @@ receives, and only when memory is enabled. If you switch providers
 (DeepSeek / NVIDIA NIM / Fireworks / etc.) the same memory file is
 used; the file is provider-agnostic.
 
+A separate, opt-in **telemetry** sink (`telemetry = true`) writes
+capacity-decision analytics to a local-only jsonl file
+(`~/.codesmith/telemetry/events.jsonl`) — also never networked. It is
+unrelated to this user-memory file: telemetry events carry an ephemeral
+per-session id, not the contents of your memory file. On-disk
+session/capacity-memory files are keyed by a durable thread id, so telemetry
+cannot be correlated back to your memory across restarts. See
+`docs/OPERATIONS_RUNBOOK.md` and `docs/CONFIGURATION.md`.
+
 The file is per-user, not per-project. If you want project-specific
 memory, use the project-level `AGENTS.md` or
 `.codesmith/instructions.md` files instead. Legacy
@@ -215,6 +284,7 @@ loaded by `project_context` and live in the repo (or wherever you commit them).
 # ~/.codesmith/config.toml
 [memory]
 enabled = true                    # default false; or set DEEPSEEK_MEMORY=on
+excludes = ["~/work/secret/CLAUDE.md"]  # skip these paths in the tier merge
 # Path is configured at the top-level (next to skills_dir, notes_path):
 memory_path = "~/.codesmith/memory.md"
 ```
@@ -223,6 +293,7 @@ memory_path = "~/.codesmith/memory.md"
 |-----------------------|-------------------------------|---------------------------------------|
 | Memory enabled        | `false`                       | `[memory] enabled = true` or `DEEPSEEK_MEMORY=on` |
 | Memory file path      | `~/.codesmith/memory.md`       | `memory_path = "..."` or `DEEPSEEK_MEMORY_PATH=`  |
+| Memory excludes       | (none)                        | `[memory] excludes = ["..."]` or `CODESMITH_MEMORY_EXCLUDES=` (colon-separated) |
 | Max file size         | 100 KiB                       | (none today; truncation marker shows the cut)     |
 
 ## Related

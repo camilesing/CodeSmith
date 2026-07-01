@@ -34,7 +34,9 @@ use tracing;
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
 use crate::audit::log_sensitive_event;
-use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
+use crate::automation_manager::{
+    AutomationManager, AutomationSchedulerConfig, spawn_scheduler, wrap_automation_manager,
+};
 use crate::client::{
     CacheWarmupKey, DeepSeekClient, PromptInspection, build_cache_warmup_request,
     inspect_prompt_for_request,
@@ -62,6 +64,7 @@ use crate::session_manager::{
 };
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
+    wrap_task_manager,
 };
 use crate::tools::spec::{RuntimeToolServices, ToolResult};
 use crate::tools::subagent::SubAgentStatus;
@@ -267,11 +270,17 @@ fn fire_session_start_hook_if_ready(app: &mut App) {
 /// ```ignore
 /// # use crate::config::Config;
 /// # use crate::tui::TuiOptions;
+/// # use codesmith_agent_runtime::telemetry::TelemetrySink;
 /// # async fn example(config: &Config, options: TuiOptions) -> anyhow::Result<()> {
-/// crate::tui::run_tui(config, options).await
+/// # let sink = TelemetrySink::new_skeleton(false, None);
+/// crate::tui::run_tui(config, options, sink).await
 /// # }
 /// ```
-pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
+pub async fn run_tui(
+    config: &Config,
+    options: TuiOptions,
+    telemetry_sink: codesmith_agent_runtime::telemetry::TelemetrySink,
+) -> Result<()> {
     let use_alt_screen = options.use_alt_screen;
     let use_mouse_capture = options.use_mouse_capture;
     let use_bracketed_paste = options.use_bracketed_paste;
@@ -414,6 +423,11 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let mut config = config.clone();
     let config = &mut config;
     let mut app = App::new(options.clone(), config);
+    // Thread the telemetry sink (constructed pre-trust in `run_interactive`)
+    // into the App so `build_engine_config` can clone it into every spawned
+    // engine's `EngineConfig`. The host keeps its own clone for
+    // `attach`/`set_enabled`; the `Arc`-shared state stays in sync.
+    app.telemetry_sink = Some(telemetry_sink);
     sync_config_provider_from_app(config, &app);
 
     // Load existing session if resuming.
@@ -512,15 +526,14 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         automation_cancel.clone(),
         AutomationSchedulerConfig::default(),
     );
-    let shell_manager = app
-        .runtime_services
-        .shell_manager
-        .clone()
-        .unwrap_or_else(|| crate::tools::shell::new_shared_shell_manager(app.workspace.clone()));
+    // Derive the trait-erased shell handle from `App`'s concrete
+    // `shell_manager` so the runtime-services view the UI polls and the
+    // concrete the engine shares stay backed by the same `ShellManager`.
+    let shell_manager = crate::tools::shell::wrap_shell_manager(app.shell_manager.clone());
     app.runtime_services = RuntimeToolServices {
         shell_manager: Some(shell_manager),
-        task_manager: Some(task_manager.clone()),
-        automations: Some(automations),
+        task_manager: Some(wrap_task_manager(task_manager.clone())),
+        automations: Some(wrap_automation_manager(automations)),
         task_data_dir: Some(task_manager.data_dir()),
         active_task_id: None,
         active_thread_id: None,
@@ -533,13 +546,16 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         task_mailbox: None,
         team_context: None,
         permission_request_registry: None,
+        background_task_registry: app.runtime_services.background_task_registry.clone(),
+        team_sender: None,
+        notifier: Some(crate::tui::notifications::wrap_notifier()),
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
     let engine_config = build_engine_config(&app, config);
 
     // Spawn the Engine - it will handle all API communication
-    let engine_handle = spawn_engine(engine_config, config);
+    let engine_handle = spawn_engine(engine_config, config, build_engine_host(&app));
     // The translation client is optional: it never crashes the TUI on
     // startup, even when the API key is missing, the base URL is malformed,
     // or the network is unavailable.
@@ -743,6 +759,16 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .into_iter()
             .map(Into::into)
             .collect(),
+        override_system_prompt: config.system_prompt_override_text(),
+        custom_system_prompt: None,
+        coordinator_system_prompt: None,
+        agent_system_prompt: None,
+        append_system_prompts: config
+            .append_system_prompt_paths()
+            .into_iter()
+            .map(crate::prompts::PromptAppendSource::file)
+            .collect(),
+        cache_breaker: None,
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: app.translation_enabled,
         show_thinking: app.show_thinking,
@@ -759,7 +785,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         features: config.features(),
         compaction: app.compaction_config(),
         cycle: app.cycle_config(),
-        capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
+        capacity: crate::core::capacity::capacity_controller_config_from_app(config),
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
         plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
@@ -784,14 +810,16 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .lsp
             .clone()
             .map(crate::config::LspConfigToml::into_runtime),
-        runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
+        subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
+        sandbox_runtime: config.sandbox_runtime_config(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         kod_enabled: config.kod_enabled(),
         memory_dir: config.memory_dir(),
+        memory_excludes: config.memory_excludes(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.hunt.quarry.clone(),
@@ -802,6 +830,26 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
+        telemetry_sink: app.telemetry_sink.clone(),
+    }
+}
+
+/// Build the host-injected runtime services + hooks for an engine spawn.
+///
+/// `RuntimeToolServices` and `HookExecutor` are terminal-side types that
+/// `EngineConfig` no longer carries; the TUI wires them here from `App`
+/// state so `spawn_engine` can thread them via [`EngineHost`].
+fn build_engine_host(app: &App) -> crate::core::engine::EngineHost {
+    crate::core::engine::EngineHost {
+        runtime_services: app.runtime_services.clone(),
+        hooks: Some(app.hooks.clone()),
+        // Thread the concrete `SharedShellManager` the UI polls so the engine
+        // body, background-task registry, and `ToolContext` all share the same
+        // shell as the task panel (no desync between jobs tools create and jobs
+        // the UI lists). `runtime_services.shell_manager` already wraps this
+        // same concrete; `new_impl` keeps them in sync.
+        shell_manager: Some(app.shell_manager.clone()),
+        ..Default::default()
     }
 }
 
@@ -871,10 +919,8 @@ async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManag
 
     entries.extend(active_rlm_task_entries(app));
 
-    if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
-        && let Ok(mut mgr) = shell_mgr.lock()
-    {
-        for job in mgr.list_jobs() {
+    if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref() {
+        for job in shell_mgr.list_jobs() {
             if !matches!(job.status, crate::tools::shell::ShellStatus::Running) {
                 continue;
             }
@@ -2179,7 +2225,10 @@ async fn run_event_loop(
                         blocked_network,
                         blocked_write,
                     } => {
-                        // In YOLO mode, auto-elevate to full access
+                        // In Auto mode, strip catastrophic commands and elevate
+                        // the rest only with the trust/YOLO opt-in. Never
+                        // silently auto-elevate to DangerFullAccess — that
+                        // conflates approval-bypass with sandbox-bypass.
                         if app.approval_mode == ApprovalMode::Auto {
                             log_sensitive_event(
                                 "tool.sandbox.auto_elevate",
@@ -2190,14 +2239,34 @@ async fn run_event_loop(
                                     "session_id": app.current_session_id,
                                 }),
                             );
-                            app.add_message(HistoryCell::System {
-                                content: format!(
-                                    "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to full access"
-                                ),
-                            });
-                            // Auto-elevate to full access (no sandbox)
-                            let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
-                            let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
+                            let elevation_target =
+                                crate::core::engine::tool_setup::sandbox_policy_for_mode(
+                                    app.mode,
+                                    &app.workspace,
+                                );
+                            let allow_elevation = app.trust_mode || app.mode == AppMode::Yolo;
+                            match crate::auto_mode::decide_auto_elevation(
+                                command.as_deref(),
+                                allow_elevation,
+                                elevation_target,
+                            ) {
+                                crate::auto_mode::AutoElevationDecision::Deny { reason } => {
+                                    app.add_message(HistoryCell::System {
+                                        content: format!("Sandbox denied {tool_name}: {reason}"),
+                                    });
+                                    let _ = engine_handle.deny_tool_call(tool_id.clone()).await;
+                                }
+                                crate::auto_mode::AutoElevationDecision::ElevateTo(policy) => {
+                                    app.add_message(HistoryCell::System {
+                                        content: format!(
+                                            "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to mode sandbox"
+                                        ),
+                                    });
+                                    let _ = engine_handle
+                                        .retry_tool_with_policy(tool_id.clone(), policy)
+                                        .await;
+                                }
+                            }
                         } else {
                             log_sensitive_event(
                                 "tool.sandbox.prompt_elevation",
@@ -2750,7 +2819,11 @@ async fn run_event_loop(
                                     let mut refreshed_config = config.clone();
                                     refreshed_config.api_key = Some(key);
                                     let engine_config = build_engine_config(app, &refreshed_config);
-                                    engine_handle = spawn_engine(engine_config, &refreshed_config);
+                                    engine_handle = spawn_engine(
+                                        engine_config,
+                                        &refreshed_config,
+                                        build_engine_host(app),
+                                    );
                                     app.offline_mode = false;
                                     app.api_key_env_only = false;
 
@@ -4593,6 +4666,9 @@ async fn dispatch_user_message(
                 translation_enabled: app.translation_enabled,
                 model_id: &app.model,
                 show_thinking: app.show_thinking,
+                skills_block: crate::skills::render_available_skills_context_for_workspace(
+                    &app.workspace,
+                ),
             },
         ),
     );
@@ -4950,7 +5026,7 @@ async fn switch_provider(
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);
-    *engine_handle = spawn_engine(engine_config, config);
+    *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -5437,7 +5513,8 @@ async fn apply_command_result(
                         // Rebuild the engine with the new config so API key/model/base URL take effect.
                         let _ = engine_handle.send(Op::Shutdown).await;
                         let engine_config = build_engine_config(app, config);
-                        *engine_handle = spawn_engine(engine_config, config);
+                        *engine_handle =
+                            spawn_engine(engine_config, config, build_engine_host(app));
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
@@ -5523,8 +5600,15 @@ fn apply_workspace_runtime_state(app: &mut App, config: &Config, workspace: Path
     app.workspace_context_refreshed_at = None;
     app.file_tree = None;
 
+    // Rebuild the shell manager for the new workspace and keep both the
+    // concrete (`App::shell_manager`, shared with the engine) and the
+    // trait-erased view (`runtime_services.shell_manager`, polled by the UI)
+    // backed by the same new `ShellManager`.
     let shell_manager = crate::tools::shell::new_shared_shell_manager(workspace);
-    app.runtime_services.shell_manager = Some(shell_manager);
+    app.runtime_services.shell_manager = Some(crate::tools::shell::wrap_shell_manager(
+        shell_manager.clone(),
+    ));
+    app.shell_manager = shell_manager;
     app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
 }
 
@@ -5558,7 +5642,7 @@ async fn switch_workspace(
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);
-    *engine_handle = spawn_engine(engine_config, config);
+    *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
@@ -5629,8 +5713,9 @@ async fn handle_mcp_ui_action(
             transport,
         } => {
             changed = true;
+            let label = mcp::mcp_transport_label(transport.as_deref(), true).unwrap_or("url");
             mcp::add_server_config(&path, name.clone(), None, Some(url), Vec::new(), transport)
-                .map(|()| message = Some(format!("Added MCP HTTP/SSE server '{name}'")))
+                .map(|()| message = Some(format!("Added MCP {label} server '{name}'")))
         }
         crate::tui::app::McpUiAction::Enable { name } => {
             changed = true;
@@ -5705,13 +5790,7 @@ fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobActio
         return;
     };
 
-    let mut manager = match shell_manager.lock() {
-        Ok(manager) => manager,
-        Err(_) => {
-            add_shell_job_message(app, "Command center lock is poisoned.".to_string());
-            return;
-        }
-    };
+    let manager = &shell_manager;
 
     match action {
         crate::tui::app::ShellJobAction::List => {
@@ -7699,15 +7778,8 @@ pub(crate) fn request_foreground_shell_background(app: &mut App) {
         return;
     };
 
-    match shell_manager.lock() {
-        Ok(mut manager) => {
-            manager.request_foreground_background();
-            app.status_message = Some("Backgrounding current shell command...".to_string());
-        }
-        Err(_) => {
-            app.status_message = Some("Shell manager lock is poisoned".to_string());
-        }
-    }
+    shell_manager.request_foreground_background();
+    app.status_message = Some("Backgrounding current shell command...".to_string());
 }
 
 pub(crate) fn active_foreground_shell_running(app: &App) -> bool {

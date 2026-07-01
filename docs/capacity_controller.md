@@ -115,6 +115,14 @@ Path:
 - otherwise `~/.codesmith/memory/<session_id>.jsonl`
 - fallback: existing `~/.deepseek/memory/<session_id>.jsonl` or workspace-local `.codesmith` / legacy `.deepseek` memory paths when needed
 
+The `<session_id>` in these paths is the **durable thread id** (`Session.id`,
+also exposed to hooks as `DEEPSEEK_THREAD_ID`) — it survives resume and is what
+gives capacity memory cross-session continuity. It is deliberately distinct
+from the ephemeral `telemetry_session_id` (exposed to hooks as
+`DEEPSEEK_SESSION_ID`), which is regenerated on every session construction and
+is never written to disk. Capacity telemetry events carry the ephemeral id; the
+on-disk capacity-memory file is keyed by the durable id.
+
 Record fields:
 
 - `id`, `ts`, `turn_index`, `action_trigger`

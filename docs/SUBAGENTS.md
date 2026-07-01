@@ -3,7 +3,7 @@
 Sub-agents are persistent background instances of the agent loop. The parent
 opens one with a focused task, gets back an `agent_id` and session name
 immediately, and continues working while the sub-agent runs to completion.
-Sub-agents inherit the parent's tool registry by default. `agent_open`
+Sub-agents inherit the parent's tool surface by default. `agent_open`
 launches them as detached background work: cancelling the parent turn stops the
 parent wait/eval path, but it does not kill already-opened child sessions. Use
 `agent_close` to cancel a running child explicitly.
@@ -95,6 +95,37 @@ The model can spell each role multiple ways:
 All matching is case-insensitive. Unknown values produce a typed
 error listing the accepted set, so the model can self-correct on
 the next turn.
+
+## Tool inheritance and permission narrowing
+
+A sub-agent's tool surface is a **subset of its parent's effective tools** —
+children can never call a tool the parent does not expose (the CodeSmith analog
+of Claude Code's `restrictToSubset(parentContext.toolPermissionContext)`). This
+holds at every spawn depth:
+
+- A top-level parent (the engine) exposes the full agent surface, so its
+  direct children inherit the full surface too — including `agent_spawn`, so
+  recursive spawning is preserved.
+- A **narrowed** sub-agent (a `custom` role with an explicit `allowed_tools`
+  list) exposes only that list. Its grandchildren inherit the narrow set
+  rather than re-expanding to the full surface, so a locked-down dispatch
+  cannot escalate by spawning a child with broader tools.
+- A child's explicit `allowed_tools` request is intersected with the parent's
+  effective set before it takes effect — requesting a tool the parent lacks is
+  silently dropped, not granted.
+
+The registry execution guard still blocks approval-gated tools (`write_file`,
+`exec_shell`, …) unless the parent runtime is auto-approved or the role is
+explicitly write-capable (`implementer`, `custom`), so narrowing is layered on
+top of — not a replacement for — the approval gate.
+
+### `[subagents].inherit_full_registry` escape hatch
+
+Set `[subagents] inherit_full_registry = true` in `~/.codesmith/config.toml`
+(default `false`) to restore the legacy v0.6.6 behavior where every child
+inherits the full agent surface regardless of the parent's effective set. Use
+this only for flows that relied on the old unrestricted default and cannot be
+migrated to the subset posture.
 
 ## Concurrency cap
 

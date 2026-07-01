@@ -13,6 +13,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::tools::spec::{ToolContext, ToolSpec};
+use crate::tools::subagent::{
+    SharedSubAgentManager, SubAgentRuntime, SubAgentType, SubagentRunTool,
+};
 use crate::tools::task_v2::{SharedTaskV2Manager, TaskV2Manager, TaskV2Record, TaskV2Status};
 use crate::tools::team::protocol_handlers::{
     PermissionDecision, SharedPermissionRequestRegistry, new_shared_permission_registry,
@@ -69,6 +73,14 @@ pub struct TeammateRuntime {
     pub permission_mode: String,
     /// Registry for pending permission requests awaiting leader approval.
     pub permission_registry: SharedPermissionRequestRegistry,
+    /// Shared sub-agent manager used to run each teammate prompt through the
+    /// normal sub-agent runtime path.
+    pub subagent_manager: SharedSubAgentManager,
+    pub subagent_runtime: SubAgentRuntime,
+    pub tool_context: ToolContext,
+    pub agent_type: SubAgentType,
+    pub model: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +587,67 @@ fn format_prompt_from_inbox(inbox: &PriorityInboxResult) -> String {
     parts.join("\n\n")
 }
 
+/// Execute one teammate prompt through the existing synchronous sub-agent tool.
+async fn execute_teammate_prompt(
+    rt: &TeammateRuntime,
+    prompt: String,
+) -> Result<Option<String>, String> {
+    let tool = SubagentRunTool::new(rt.subagent_manager.clone(), rt.subagent_runtime.clone());
+    let mut input = serde_json::json!({
+        "prompt": prompt,
+        "agent_type": rt.agent_type.as_str(),
+        "name": rt.agent_name,
+    });
+    if let Some(model) = rt.model.as_ref() {
+        input["model"] = serde_json::json!(model);
+    }
+    if let Some(allowed_tools) = rt.allowed_tools.as_ref() {
+        input["allowed_tools"] = serde_json::json!(allowed_tools);
+    }
+
+    let result = tool
+        .execute(input, &rt.tool_context)
+        .await
+        .map_err(|err| err.to_string())?;
+    if !result.success {
+        return Err(result.content);
+    }
+    Ok(Some(result.content))
+}
+
+/// Complete a claimed task after successful execution.
+async fn mark_task_completed(rt: &TeammateRuntime, task_id: &str, summary: Option<&str>) {
+    let metadata = summary.map(|summary| serde_json::json!({ "teammate_summary": summary }));
+    let mut manager = rt.task_v2_manager.lock().await;
+    let _ = manager.update_task(
+        task_id,
+        Some(TaskV2Status::Completed),
+        None,
+        None,
+        None,
+        None,
+        metadata,
+        None,
+        None,
+    );
+}
+
+/// Record a task execution failure without inventing a failed task status.
+async fn record_task_error(rt: &TeammateRuntime, task_id: &str, error: &str) {
+    let mut manager = rt.task_v2_manager.lock().await;
+    let _ = manager.update_task(
+        task_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(serde_json::json!({ "last_teammate_error": error })),
+        None,
+        None,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Teammate Loop
 // ---------------------------------------------------------------------------
@@ -582,13 +655,35 @@ fn format_prompt_from_inbox(inbox: &PriorityInboxResult) -> String {
 /// Run the teammate's continuous prompt loop.
 ///
 /// State machine:
-/// 1. Check cancel_token → Terminated if cancelled
-/// 2. Wait for next prompt/shutdown/task via priority inbox
-/// 3. Handle shutdown request → approve/reject
-/// 4. Execute one LLM step via SubAgentRuntime (TODO: per-step API)
-/// 5. Send idle notification → loop back
+/// 1. Execute the initial spawn prompt once.
+/// 2. Wait for next prompt/shutdown/task via priority inbox.
+/// 3. Handle shutdown request → approve/reject.
+/// 4. Execute one LLM/tool run through SubagentRunTool.
+/// 5. Send idle notification → loop back.
 pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
     let mut state = TeammateState::Initializing;
+    let mut summary: Option<String> = None;
+
+    if !rt.initial_prompt.trim().is_empty() && !rt.cancel_token.is_cancelled() {
+        state = TeammateState::Active;
+        match execute_teammate_prompt(&rt, rt.initial_prompt.clone()).await {
+            Ok(result_summary) => {
+                summary = result_summary.clone();
+                let _ = send_idle_notification(
+                    &rt.agent_name,
+                    &rt.team_name,
+                    result_summary.or_else(|| Some("initial prompt complete".to_string())),
+                    None,
+                );
+            }
+            Err(error) => {
+                summary = Some(format!("initial prompt failed: {error}"));
+                let _ =
+                    send_idle_notification(&rt.agent_name, &rt.team_name, summary.clone(), None);
+            }
+        }
+        state = TeammateState::Idle;
+    }
 
     loop {
         if rt.cancel_token.is_cancelled() {
@@ -622,40 +717,70 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
             WaitResult::NewMessage(inbox) => {
                 let prompt = format_prompt_from_inbox(&inbox);
                 if prompt.is_empty() {
-                    // No actionable content — stay idle.
                     state = TeammateState::Idle;
                     continue;
                 }
                 state = TeammateState::Active;
-                // TODO: Execute one LLM step here using SubAgentRuntime.
+                match execute_teammate_prompt(&rt, prompt).await {
+                    Ok(result_summary) => {
+                        summary = result_summary.clone();
+                        let _ = send_idle_notification(
+                            &rt.agent_name,
+                            &rt.team_name,
+                            result_summary.or_else(|| Some("message handled".to_string())),
+                            None,
+                        );
+                    }
+                    Err(error) => {
+                        summary = Some(format!("message handling failed: {error}"));
+                        let _ = send_idle_notification(
+                            &rt.agent_name,
+                            &rt.team_name,
+                            summary.clone(),
+                            None,
+                        );
+                    }
+                }
             }
             WaitResult::TaskClaimed(task) => {
                 state = TeammateState::Active;
-                // TODO: Execute one LLM step with task as prompt.
-                let _ = format!(
-                    "Complete all open tasks. Start with task #{}: \n\n{}\n\n{}",
+                let prompt = format!(
+                    "Complete all open tasks. Start with task #{}:\n\n{}\n\n{}",
                     task.id, task.subject, task.description
                 );
+                match execute_teammate_prompt(&rt, prompt).await {
+                    Ok(result_summary) => {
+                        summary = result_summary.clone();
+                        mark_task_completed(&rt, &task.id, summary.as_deref()).await;
+                        let _ = send_idle_notification(
+                            &rt.agent_name,
+                            &rt.team_name,
+                            result_summary.or_else(|| Some("task complete".to_string())),
+                            Some(task.id),
+                        );
+                    }
+                    Err(error) => {
+                        summary = Some(format!("task failed: {error}"));
+                        record_task_error(&rt, &task.id, &error).await;
+                        let _ = send_idle_notification(
+                            &rt.agent_name,
+                            &rt.team_name,
+                            summary.clone(),
+                            Some(task.id),
+                        );
+                    }
+                }
             }
         }
 
-        // TODO: Execute one LLM step here using SubAgentRuntime.
-        // For now, mark the step as complete and go idle.
         state = TeammateState::Idle;
-
-        let _ = send_idle_notification(
-            &rt.agent_name,
-            &rt.team_name,
-            Some("step placeholder".to_string()),
-            None,
-        );
     }
 
     TeammateResult {
         agent_id: rt.agent_id.clone(),
         agent_name: rt.agent_name.clone(),
         final_state: state,
-        summary: None,
+        summary,
     }
 }
 

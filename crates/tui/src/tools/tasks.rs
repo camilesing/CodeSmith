@@ -47,6 +47,7 @@ pub struct TaskListTool;
 pub struct TaskReadTool;
 pub struct TaskCancelTool;
 pub struct TaskGateRunTool;
+pub struct TaskStopTool;
 pub struct TaskShellStartTool;
 pub struct TaskShellWaitTool;
 pub struct PrAttemptRecordTool;
@@ -242,6 +243,159 @@ impl ToolSpec for TaskCancelTool {
             .await
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         task_result("task_cancel", &task)
+    }
+}
+
+#[async_trait]
+impl ToolSpec for TaskStopTool {
+    fn name(&self) -> &'static str {
+        "task_stop"
+    }
+
+    fn description(&self) -> &'static str {
+        "Stop a running background task, worker, teammate, shell job, or durable task. Accepts unified background task ids, agent ids/session names, teammate names, shell task ids, and durable task ids."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "Task, worker, agent, teammate, shell, or durable id/name to stop." },
+                "task_id": { "type": "string", "description": "Alias for id." },
+                "agent_id": { "type": "string", "description": "Alias for id." },
+                "name": { "type": "string", "description": "Alias for id." },
+                "reason": { "type": "string", "description": "Optional reason recorded in task metadata when applicable." }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![ToolCapability::RequiresApproval]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Required
+    }
+
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let target = input
+            .get("id")
+            .or_else(|| input.get("task_id"))
+            .or_else(|| input.get("agent_id"))
+            .or_else(|| input.get("name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ToolError::missing_field("id"))?;
+        let reason = optional_str(&input, "reason").map(str::to_string);
+
+        if let Some(registry) = context.runtime.background_task_registry.as_ref() {
+            let background_id = if registry.get_task(target).await.is_some() {
+                Some(target.to_string())
+            } else {
+                registry
+                    .list_tasks()
+                    .await
+                    .into_iter()
+                    .find(|task| task.source_id == target)
+                    .map(|task| task.id)
+            };
+            if let Some(background_id) = background_id {
+                registry
+                    .cancel_task(&background_id)
+                    .await
+                    .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+                return Ok(ToolResult::success(format!(
+                    "Stopped background task: {background_id}"
+                ))
+                .with_metadata(json!({
+                    "target": target,
+                    "background_task_id": background_id,
+                    "kind": "background_task",
+                    "stopped": true
+                })));
+            }
+        }
+
+        if let Some(team_context) = context.runtime.team_context.as_ref() {
+            let mut slot = team_context.lock().await;
+            if let Some(ctx) = slot.as_mut()
+                && (ctx.teammate_cancel_tokens.contains_key(target)
+                    || ctx.teammates.values().any(|info| info.name == target))
+            {
+                if let Some(token) = ctx.teammate_cancel_tokens.remove(target) {
+                    token.cancel();
+                }
+                let teammate_ids = ctx
+                    .teammates
+                    .iter()
+                    .filter_map(|(id, info)| (info.name == target).then_some(id.clone()))
+                    .collect::<Vec<_>>();
+                for id in teammate_ids {
+                    ctx.teammates.remove(&id);
+                }
+                let mut metadata = json!({
+                    "stopped_by": "task_stop",
+                    "stopped_at": Utc::now().to_rfc3339(),
+                });
+                if let Some(reason) = reason.clone() {
+                    metadata["reason"] = json!(reason);
+                }
+                {
+                    let mut task_mgr = ctx.task_v2_manager.lock().await;
+                    if let Ok(tasks) = task_mgr.list_tasks() {
+                        for task in tasks {
+                            if task.owner.as_deref() == Some(target) {
+                                let _ = task_mgr.update_task(
+                                    &task.id,
+                                    Some(crate::tools::task_v2::TaskV2Status::Pending),
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    Some(metadata.clone()),
+                                    None,
+                                    None,
+                                );
+                            }
+                        }
+                    }
+                    let _ = task_mgr.unassign_teammate_tasks(target);
+                }
+                if let Ok(mut team_file) = crate::tools::team::read_team_config(&ctx.team_name) {
+                    let _ = crate::tools::team::set_member_inactive(&mut team_file, target);
+                    let _ = crate::tools::team::write_team_config(&team_file);
+                }
+                return Ok(ToolResult::success(format!("Stopped teammate: {target}"))
+                    .with_metadata(json!({
+                        "target": target,
+                        "kind": "teammate",
+                        "stopped": true
+                    })));
+            }
+        }
+
+        if let Ok(result) = context.shell_manager.kill(target) {
+            return Ok(
+                ToolResult::success(format!("Stopped shell task: {target}")).with_metadata(json!({
+                    "target": target,
+                    "kind": "shell",
+                    "stopped": true,
+                    "result": result
+                })),
+            );
+        }
+
+        if let Some(manager) = context.runtime.task_manager.as_ref()
+            && let Ok(task) = manager.cancel_task(target).await
+        {
+            return task_result("task_stop", &task);
+        }
+
+        Err(ToolError::execution_failed(format!(
+            "No running task, worker, teammate, shell job, or durable task found for '{target}'"
+        )))
     }
 }
 

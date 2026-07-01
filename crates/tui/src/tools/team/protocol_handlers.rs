@@ -4,68 +4,18 @@
 //! poller. Each handler writes protocol responses to the appropriate mailbox
 //! and performs side effects (cancel tokens, remove members, etc.).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex};
-
-use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
-
 use crate::tools::team::{
-    IdleReason, StructuredProtocolMessage, TeammateMessage, read_team_file, remove_member_by_name,
-    team_lead_name, write_team_file, write_to_mailbox,
+    IdleReason, StructuredProtocolMessage, TeammateMessage, team_lead_name, write_to_mailbox,
 };
 
 // ---------------------------------------------------------------------------
-// Permission Request Registry
+// Permission Request Registry (moved to `codesmith_agent_runtime::team`)
 // ---------------------------------------------------------------------------
 
-/// Decision from leader on a permission request.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PermissionDecision {
-    Allow,
-    Deny { reason: Option<String> },
-}
-
-/// Registry for pending permission requests awaiting leader approval.
-/// Each request maps to a oneshot channel that resolves when the leader
-/// approves or denies.
-pub struct PermissionRequestRegistry {
-    pending: HashMap<String, oneshot::Sender<PermissionDecision>>,
-}
-
-impl PermissionRequestRegistry {
-    pub fn new() -> Self {
-        Self {
-            pending: HashMap::new(),
-        }
-    }
-
-    /// Register a pending permission request. Returns the Receiver that
-    /// will resolve when the leader makes a decision.
-    pub fn register(&mut self, request_id: String) -> oneshot::Receiver<PermissionDecision> {
-        let (tx, rx) = oneshot::channel();
-        self.pending.insert(request_id, tx);
-        rx
-    }
-
-    /// Resolve a pending request. Returns false if no matching request found
-    /// (e.g., already resolved or timed out).
-    pub fn resolve(&mut self, request_id: &str, decision: PermissionDecision) -> bool {
-        if let Some(tx) = self.pending.remove(request_id) {
-            tx.send(decision).is_ok()
-        } else {
-            false
-        }
-    }
-}
-
-/// Thread-safe shared reference to the permission request registry.
-pub type SharedPermissionRequestRegistry = Arc<StdMutex<PermissionRequestRegistry>>;
-
-/// Create a new empty SharedPermissionRequestRegistry.
-pub fn new_shared_permission_registry() -> SharedPermissionRequestRegistry {
-    Arc::new(StdMutex::new(PermissionRequestRegistry::new()))
-}
+pub use codesmith_agent_runtime::team::{
+    PermissionDecision, PermissionRequestRegistry, SharedPermissionRequestRegistry,
+    new_shared_permission_registry,
+};
 
 // ---------------------------------------------------------------------------
 // Shutdown Protocol Handlers
@@ -103,26 +53,10 @@ pub fn handle_shutdown_request(
     Ok(request_id)
 }
 
-/// Handle shutdown approval from a teammate. Cancel the teammate's token,
-/// remove from team file, and unassign their tasks.
-pub fn handle_shutdown_approval(
-    request_id: &str,
-    teammate_name: &str,
-    team_name: &str,
-    cancel_tokens: &HashMap<String, CancellationToken>,
-) -> anyhow::Result<()> {
-    // Cancel the teammate's runtime token.
-    if let Some(token) = cancel_tokens.get(teammate_name) {
-        token.cancel();
-    }
-
-    // Remove the teammate from the team file.
-    let mut team_file = read_team_file(team_name)?;
-    remove_member_by_name(&mut team_file, teammate_name);
-    write_team_file(&team_file)?;
-
-    Ok(())
-}
+// `handle_shutdown_approval` now lives in `codesmith_agent_runtime::team`;
+// re-exported here so historical `crate::tools::team::protocol_handlers`
+// call sites and the `proto_shutdown_approval` alias keep resolving.
+pub use codesmith_agent_runtime::team::handle_shutdown_approval;
 
 /// Handle shutdown rejection from a teammate. The teammate continues working.
 pub fn handle_shutdown_rejection(

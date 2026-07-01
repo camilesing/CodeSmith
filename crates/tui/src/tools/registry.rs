@@ -1,421 +1,41 @@
 //! Tool registry for managing and executing tools.
 //!
-//! The registry provides:
-//! - Dynamic tool registration
-//! - Tool lookup by name
-//! - Conversion to API Tool format
-//! - Filtering by capability
+//! This module is a thin shim over
+//! [`codesmith_agent_runtime::tools::registry`]: the portable `ToolRegistry`
+//! core, its portable methods, and the fail-closed construction helpers were
+//! physically migrated there (orphan rule: `ToolRegistry`'s inherent impls
+//! must live in the defining crate). What remains here is the TUI-coupled
+//! surface that the agent-runtime crate must not depend on:
+//!
+//! - `ToolRegistryBuilder` — wires concrete tool impls and an `LlmClientHandle`.
+//! - `McpToolAdapter` — adapts `crate::mcp` tools to `ToolSpec`.
+//! - `ToolRegistryPluginExt` — `apply_overrides` / `load_plugins`, which reach
+//!   into `crate::config::ToolOverride` and `crate::tools::plugin`.
+//! - The unit tests.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use std::path::Path;
 
 use serde_json::Value;
 
 use crate::llm_client::LlmClientHandle;
-use crate::models::Tool;
 
-use super::schema_sanitize;
-use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+use super::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
+
+pub use codesmith_agent_runtime::tools::registry::{
+    MAX_TOOL_NAME_LEN, ToolRegistry, is_valid_tool_name, sanitize_tool_name,
 };
 
-// === Types ===
-
-/// Registry that holds all available tools.
-pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn ToolSpec>>,
-    context: ToolContext,
-    /// Memoised serialised tool catalog. Rebuilt lazily on first
-    /// `to_api_tools` call after a mutation; pinned across reads so the
-    /// description and schema bytes stay byte-stable for DeepSeek's KV
-    /// prefix cache. Invalidated on `register` / `remove` / `clear`.
-    api_cache: OnceLock<Vec<Tool>>,
-}
-
-impl Clone for ToolRegistry {
-    fn clone(&self) -> Self {
-        let api_cache = OnceLock::new();
-        if let Some(cached) = self.api_cache.get() {
-            let _ = api_cache.set(cached.clone());
-        }
-        Self {
-            tools: self.tools.clone(),
-            context: self.context.clone(),
-            api_cache,
-        }
-    }
-}
-
-impl ToolRegistry {
-    /// Create a new empty registry with the given context.
-    #[must_use]
-    pub fn new(context: ToolContext) -> Self {
-        Self {
-            tools: HashMap::new(),
-            context,
-            api_cache: OnceLock::new(),
-        }
-    }
-
-    /// Register a tool in the registry.
-    pub fn register(&mut self, tool: Arc<dyn ToolSpec>) {
-        let name = tool.name().to_string();
-        if self.tools.insert(name.clone(), tool).is_some() {
-            tracing::warn!("Overwriting existing tool: {}", name);
-        }
-        self.invalidate_api_cache();
-    }
-
-    /// Register multiple tools at once.
-    pub fn register_all(&mut self, tools: Vec<Arc<dyn ToolSpec>>) {
-        for tool in tools {
-            self.register(tool);
-        }
-    }
-
-    /// Get a tool by name.
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<Arc<dyn ToolSpec>> {
-        self.tools.get(name).cloned()
-    }
-
-    /// Check if a tool exists.
-    #[must_use]
-    pub fn contains(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
-    }
-
-    /// Get all registered tool names.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn names(&self) -> Vec<&str> {
-        self.tools.keys().map(std::string::String::as_str).collect()
-    }
-
-    /// Get the number of registered tools.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.tools.len()
-    }
-
-    /// Check if the registry is empty.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
-    }
-
-    /// Get all registered tools.
-    #[must_use]
-    pub fn all(&self) -> Vec<Arc<dyn ToolSpec>> {
-        self.tools.values().cloned().collect()
-    }
-
-    /// Execute a tool by name with the given input.
-    pub async fn execute(&self, name: &str, input: Value) -> Result<String, ToolError> {
-        let tool = self
-            .get(name)
-            .ok_or_else(|| ToolError::not_available(format!("tool '{name}' is not registered")))?;
-
-        let result = tool.execute(input, &self.context).await?;
-        Ok(result.content)
-    }
-
-    /// Execute a tool by name, returning the full `ToolResult`.
-    pub async fn execute_full(&self, name: &str, input: Value) -> Result<ToolResult, ToolError> {
-        let tool = self
-            .get(name)
-            .ok_or_else(|| ToolError::not_available(format!("tool '{name}' is not registered")))?;
-
-        tool.execute(input, &self.context).await
-    }
-
-    /// Execute a tool with an optional context override.
-    ///
-    /// This is used for retrying tools with elevated sandbox policies.
-    /// After execution, large results are routed through the workshop (#548).
-    pub async fn execute_full_with_context(
-        &self,
-        name: &str,
-        input: Value,
-        context_override: Option<&ToolContext>,
-    ) -> Result<ToolResult, ToolError> {
-        let tool = self
-            .get(name)
-            .ok_or_else(|| ToolError::not_available(format!("tool '{name}' is not registered")))?;
-
-        let ctx = context_override.unwrap_or(&self.context);
-        let result = tool.execute(input.clone(), ctx).await?;
-
-        // Large-output routing (#548): if the result exceeds the threshold and
-        // the caller did not request `raw=true`, synthesise via the workshop.
-        let raw_bypass = input.get("raw").and_then(|v| v.as_bool()).unwrap_or(false);
-
-        if let Some(router) = ctx.large_output_router.as_ref() {
-            use crate::tools::large_output_router::{LargeOutputRouter, RouteDecision};
-            match router.route(name, &result, raw_bypass) {
-                RouteDecision::PassThrough => {}
-                RouteDecision::Synthesise {
-                    estimated_tokens,
-                    threshold,
-                } => {
-                    // Store the raw output in the workshop variable store.
-                    if let Some(vars_arc) = ctx.workshop_vars.as_ref() {
-                        let mut vars = vars_arc.lock().await;
-                        vars.store_raw(name, &result.content);
-                    }
-
-                    // Build a terse synthesis using the same model the registry
-                    // was constructed for (workshop Flash model). For now we
-                    // produce a structured header + truncated preview without
-                    // a live API call so the engine stays dependency-free at
-                    // the registry layer. A follow-up can wire in the Flash
-                    // client when the async LLM call is safe here.
-                    let preview_chars = 1_200usize;
-                    let preview: String = result.content.chars().take(preview_chars).collect();
-                    let ellipsis = if result.content.chars().count() > preview_chars {
-                        "\n… [output truncated — full text in workshop variable `last_tool_result`]"
-                    } else {
-                        ""
-                    };
-                    let synthesis = format!("{preview}{ellipsis}");
-                    let wrapped = LargeOutputRouter::wrap_synthesis(
-                        name,
-                        &synthesis,
-                        estimated_tokens,
-                        threshold,
-                    );
-                    tracing::debug!(
-                        tool = name,
-                        estimated_tokens,
-                        threshold,
-                        "large-output routed through workshop"
-                    );
-                    return Ok(ToolResult::success(wrapped));
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Get the current tool context.
-    #[must_use]
-    pub fn context(&self) -> &ToolContext {
-        &self.context
-    }
-
-    /// Convert all tools to API Tool format for sending to the model.
-    ///
-    /// Output is sorted by tool name for **prefix-cache stability** (#263).
-    /// Rust's `HashMap` uses a randomly-seeded hasher per process, so a raw
-    /// `self.tools.values()` iteration emits tools in a different order on
-    /// every `deepseek` launch, invalidating DeepSeek's KV prefix cache for
-    /// every cross-session resume. Sorting here matches the way Claude Code
-    /// stabilises its tool array (`assembleToolPool` in their reference).
-    ///
-    /// The serialised catalog is memoised on first call and pinned across
-    /// reads so each tool's `description()` and `input_schema()` are sampled
-    /// exactly once per registration. MCP adapters whose upstream description
-    /// drifts on reconnect would otherwise rewrite the catalog mid-session
-    /// and bust the prefix cache. The cache is invalidated on `register`,
-    /// `remove`, and `clear`.
-    #[must_use]
-    pub fn to_api_tools(&self) -> Vec<Tool> {
-        self.api_cache
-            .get_or_init(|| self.build_api_tools())
-            .clone()
-    }
-
-    fn build_api_tools(&self) -> Vec<Tool> {
-        let mut tools: Vec<&Arc<dyn ToolSpec>> = self.tools.values().collect();
-        tools.sort_by(|a, b| a.name().cmp(b.name()));
-        tools
-            .into_iter()
-            .map(|tool| {
-                let mut schema = tool.input_schema();
-                schema_sanitize::sanitize(&mut schema);
-                Tool {
-                    tool_type: None,
-                    name: tool.name().to_string(),
-                    description: tool.description().to_string(),
-                    input_schema: schema,
-                    output_schema: Some(tool.output_schema()),
-                    allowed_callers: Some(vec!["direct".to_string()]),
-                    defer_loading: Some(tool.defer_loading()),
-                    input_examples: None,
-                    strict: None,
-                    cache_control: None,
-                }
-            })
-            .collect()
-    }
-
-    fn invalidate_api_cache(&mut self) {
-        self.api_cache = OnceLock::new();
-    }
-
-    /// Convert tools to API Tool format with optional cache control on the last tool.
-    #[must_use]
-    pub fn to_api_tools_with_cache(&self, enable_cache: bool) -> Vec<Tool> {
-        let mut tools = self.to_api_tools();
-        if enable_cache && let Some(last) = tools.last_mut() {
-            last.cache_control = Some(crate::models::CacheControl {
-                cache_type: "ephemeral".to_string(),
-            });
-        }
-        tools
-    }
-
-    /// Filter tools by capability.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn filter_by_capability(&self, capability: ToolCapability) -> Vec<Arc<dyn ToolSpec>> {
-        self.tools
-            .values()
-            .filter(|t| t.capabilities().contains(&capability))
-            .cloned()
-            .collect()
-    }
-
-    /// Get read-only tools.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn read_only_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
-        self.tools
-            .values()
-            .filter(|t| t.is_read_only())
-            .cloned()
-            .collect()
-    }
-
-    /// Get tools that require approval.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn approval_required_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
-        self.tools
-            .values()
-            .filter(|t| t.approval_requirement() == ApprovalRequirement::Required)
-            .cloned()
-            .collect()
-    }
-
-    /// Get tools that suggest approval.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn approval_suggested_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
-        self.tools
-            .values()
-            .filter(|t| {
-                matches!(
-                    t.approval_requirement(),
-                    ApprovalRequirement::Suggest | ApprovalRequirement::Required
-                )
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Update the context (e.g., when workspace changes).
-    #[allow(dead_code)]
-    pub fn set_context(&mut self, context: ToolContext) {
-        self.context = context;
-    }
-
-    /// Get a mutable reference to the current context.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn context_mut(&mut self) -> &mut ToolContext {
-        &mut self.context
-    }
-
-    /// Remove a tool by name.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn remove(&mut self, name: &str) -> Option<Arc<dyn ToolSpec>> {
-        let removed = self.tools.remove(name);
-        if removed.is_some() {
-            self.invalidate_api_cache();
-        }
-        removed
-    }
-
-    /// Resolve a non-canonical tool name to a registered canonical name.
-    ///
-    /// Runs a deterministic ladder against the registered tool names:
-    /// 1. Lowercase exact match.
-    /// 2. Hyphens/spaces → underscores (read-file → read_file).
-    /// 3. CamelCase → snake_case (ReadFile → read_file).
-    /// 4. Strip trailing `_tool` / `-tool` suffix (twice).
-    /// 5. Fuzzy match via simple prefix/suffix similarity.
-    ///
-    /// Returns `None` when no resolution is found (let the caller surface
-    /// "Unknown tool").
-    #[must_use]
-    pub fn resolve(&self, requested: &str) -> Option<&str> {
-        let names: Vec<&str> = self.tools.keys().map(String::as_str).collect();
-        let lower = requested.to_lowercase();
-
-        // 1. lowercase exact
-        if let Some(n) = names.iter().find(|n| n.to_lowercase() == lower) {
-            return Some(n);
-        }
-        // 2. hyphen/space → underscore
-        let snaked = lower.replace(['-', ' '], "_");
-        if let Some(n) = names.iter().find(|n| **n == snaked) {
-            return Some(n);
-        }
-        // 3. CamelCase → snake_case
-        let cc = to_snake_case(requested);
-        if let Some(n) = names.iter().find(|n| **n == cc) {
-            return Some(n);
-        }
-        // 4. strip _tool/-tool/tool suffix, twice
-        let mut stripped = cc.clone();
-        for _ in 0..2 {
-            for suf in ["_tool", "-tool", "tool"] {
-                if let Some(s) = stripped.strip_suffix(suf) {
-                    stripped = s.to_string();
-                    break;
-                }
-            }
-        }
-        if !stripped.is_empty()
-            && let Some(n) = names.iter().find(|n| **n == stripped)
-        {
-            return Some(n);
-        }
-        // 5. fuzzy: simple prefix match (at least 3 chars)
-        if lower.len() >= 3 {
-            for n in &names {
-                if n.len() >= 3 && (n.starts_with(&lower) || lower.starts_with(n)) {
-                    return Some(n);
-                }
-            }
-        }
-        None
-    }
-
-    /// Clear all tools from the registry.
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.tools.clear();
-        self.invalidate_api_cache();
-    }
-
-    /// Remove a tool from the registry by name. Returns `true` if the tool
-    /// was present and removed, `false` if no tool with that name existed.
-    pub fn remove_tool(&mut self, name: &str) -> bool {
-        let existed = self.tools.remove(name).is_some();
-        if existed {
-            self.invalidate_api_cache();
-        }
-        existed
-    }
-
+/// TUI-coupled plugin/override operations on a [`ToolRegistry`].
+///
+/// `apply_overrides` and `load_plugins` reach into `crate::config::ToolOverride`
+/// and `crate::tools::plugin`, which are TUI-only concerns, so they live behind
+/// an extension trait rather than on the agent-runtime core type (whose crate
+/// must not depend on TUI config/plugin loading). Bring the trait into scope to
+/// call the methods: `use crate::tools::ToolRegistryPluginExt;`.
+pub trait ToolRegistryPluginExt {
     /// Apply config.toml tool overrides to this registry.
     ///
     /// For each entry in `overrides`:
@@ -423,7 +43,22 @@ impl ToolRegistry {
     /// - `Script` / `Command` replaces the tool with the user's implementation.
     ///
     /// `plugin_dir` is used as the base for relative script paths.
-    pub fn apply_overrides(
+    fn apply_overrides(
+        &mut self,
+        overrides: &HashMap<String, crate::config::ToolOverride>,
+        plugin_dir: &Path,
+    );
+
+    /// Load and register plugin tools from a directory.
+    ///
+    /// Each script with valid frontmatter (`# name:`, `# description:`, etc.)
+    /// becomes a registered `ScriptPluginTool`. Tools whose name matches an
+    /// already-registered tool will overwrite it.
+    fn load_plugins(&mut self, plugin_dir: &Path);
+}
+
+impl ToolRegistryPluginExt for ToolRegistry {
+    fn apply_overrides(
         &mut self,
         overrides: &std::collections::HashMap<String, crate::config::ToolOverride>,
         plugin_dir: &Path,
@@ -464,12 +99,7 @@ impl ToolRegistry {
         }
     }
 
-    /// Load and register plugin tools from a directory.
-    ///
-    /// Each script with valid frontmatter (`# name:`, `# description:`, etc.)
-    /// becomes a registered `ScriptPluginTool`. Tools whose name matches an
-    /// already-registered tool will overwrite it.
-    pub fn load_plugins(&mut self, plugin_dir: &Path) {
+    fn load_plugins(&mut self, plugin_dir: &Path) {
         if !plugin_dir.exists() {
             tracing::debug!(
                 "Plugin directory {} does not exist, skipping",
@@ -670,12 +300,14 @@ impl ToolRegistryBuilder {
         use super::tasks::{
             PrAttemptListTool, PrAttemptPreflightTool, PrAttemptReadTool, PrAttemptRecordTool,
             TaskCancelTool, TaskCreateTool, TaskGateRunTool, TaskListTool, TaskReadTool,
+            TaskStopTool,
         };
 
         self.with_tool(Arc::new(TaskCreateTool))
             .with_tool(Arc::new(TaskListTool))
             .with_tool(Arc::new(TaskReadTool))
             .with_tool(Arc::new(TaskCancelTool))
+            .with_tool(Arc::new(TaskStopTool))
             .with_tool(Arc::new(TaskGateRunTool))
             .with_tool(Arc::new(GithubIssueContextTool))
             .with_tool(Arc::new(GithubPrContextTool))
@@ -694,6 +326,14 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(GithubCommentTool))
             .with_tool(Arc::new(GithubCloseIssueTool))
             .with_tool(Arc::new(GithubClosePrTool))
+    }
+
+    /// Include the unified stop tool for background tasks, workers, teammates,
+    /// shell jobs, and durable tasks.
+    #[must_use]
+    pub fn with_task_stop_tool(self) -> Self {
+        use super::tasks::TaskStopTool;
+        self.with_tool(Arc::new(TaskStopTool))
     }
 
     /// Include shell-related task tools (`task_shell_start`, `task_shell_wait`).
@@ -906,6 +546,9 @@ impl ToolRegistryBuilder {
             for (name, tool) in pool.all_tools() {
                 let adapter = Arc::new(McpToolAdapter {
                     name: name.clone(),
+                    description: crate::mcp::truncate_mcp_description(
+                        tool.description.as_deref().unwrap_or(&name),
+                    ),
                     tool: tool.clone(),
                     pool: mcp_pool.clone(),
                 });
@@ -1088,10 +731,15 @@ impl ToolRegistryBuilder {
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
         use super::subagent::{
-            AgentCloseTool, AgentEvalTool, AgentOpenTool, SubagentRunTool, ToolAgentTool,
+            AgentCloseTool, AgentEvalTool, AgentOpenTool, AgentSpawnTool, SubagentRunTool,
+            ToolAgentTool,
         };
 
         self.with_tool(Arc::new(AgentOpenTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
+        .with_tool(Arc::new(AgentSpawnTool::new(
             manager.clone(),
             runtime.clone(),
         )))
@@ -1181,27 +829,10 @@ impl Default for ToolRegistryBuilder {
     }
 }
 
-/// Convert CamelCase to snake_case.
-fn to_snake_case(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-/// Adapter that wraps an MCP tool definition so it can live in the
-/// unified `ToolRegistry` alongside native tools (§5.B).
 #[allow(dead_code)]
 struct McpToolAdapter {
     name: String,
+    description: String,
     tool: crate::mcp::McpTool,
     pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
 }
@@ -1213,9 +844,7 @@ impl ToolSpec for McpToolAdapter {
     }
 
     fn description(&self) -> &str {
-        // McpTool.description is Option<String>; fall back to the
-        // prefixed name when absent.
-        self.tool.description.as_deref().unwrap_or(&self.name)
+        &self.description
     }
 
     fn input_schema(&self) -> Value {
@@ -1277,7 +906,10 @@ mod tests {
         ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
     };
 
-    use super::ToolRegistry;
+    use super::{
+        MAX_TOOL_NAME_LEN, ToolRegistry, ToolRegistryPluginExt, is_valid_tool_name,
+        sanitize_tool_name,
+    };
 
     /// A simple test tool for unit testing
     struct TestTool {
@@ -1743,5 +1375,162 @@ mod tests {
             registry.contains("task_shell_wait"),
             "task_shell_wait should be included when allow_shell is true"
         );
+    }
+
+    // === Fail-closed buildTool tests ===
+
+    /// A configurable tool whose name/schema can be malformed, used to
+    /// exercise the `build_tool` chokepoint.
+    struct MalformedTool {
+        name: String,
+        schema: Value,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for MalformedTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "A malformed test tool"
+        }
+        fn input_schema(&self) -> Value {
+            self.schema.clone()
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("real tool ran"))
+        }
+    }
+
+    #[test]
+    fn build_tool_passes_valid_tool_through_unchanged() {
+        // A well-formed tool must reach the registry untouched: it stays
+        // executable and keeps its real schema.
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        registry.register(Arc::new(MalformedTool {
+            name: "valid_name".to_string(),
+            schema: json!({"type": "object", "properties": {}}),
+        }));
+
+        let tool = registry.get("valid_name").expect("valid tool registered");
+        assert_eq!(
+            tool.input_schema(),
+            json!({"type": "object", "properties": {}}),
+            "valid tool schema must not be replaced by the stub schema"
+        );
+    }
+
+    #[test]
+    fn build_tool_substitutes_stub_for_invalid_name() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        // A space in the name breaks the API tool-name contract; the stub
+        // is keyed under the sanitised name instead.
+        registry.register(Arc::new(MalformedTool {
+            name: "bad name".to_string(),
+            schema: json!({"type": "object", "properties": {}}),
+        }));
+
+        assert!(
+            !registry.contains("bad name"),
+            "original invalid name must not be reachable"
+        );
+        assert!(
+            registry.contains("bad_name"),
+            "sanitised name should key the fail-closed stub"
+        );
+
+        // The catalog stays API-legal: stub name has no whitespace.
+        let api_tools = registry.to_api_tools();
+        assert_eq!(api_tools.len(), 1);
+        assert_eq!(api_tools[0].name, "bad_name");
+        assert!(
+            api_tools[0]
+                .input_schema
+                .get("type")
+                .and_then(Value::as_str)
+                == Some("object"),
+            "stub must advertise an object schema"
+        );
+    }
+
+    #[test]
+    fn build_tool_substitutes_stub_for_non_object_schema() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        registry.register(Arc::new(MalformedTool {
+            name: "broken_schema".to_string(),
+            schema: json!("not an object"),
+        }));
+
+        let api_tools = registry.to_api_tools();
+        assert_eq!(api_tools.len(), 1);
+        // The stub overrides the broken schema with a permissive object.
+        assert!(
+            api_tools[0].input_schema.is_object(),
+            "stub schema must be an object even when the original was malformed"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_closed_tool_execute_returns_not_available() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        registry.register(Arc::new(MalformedTool {
+            name: "bad name".to_string(),
+            schema: json!({"type": "object", "properties": {}}),
+        }));
+
+        let err = registry
+            .execute_full("bad_name", json!({}))
+            .await
+            .expect_err("stub must refuse execution");
+        assert!(
+            matches!(err, ToolError::NotAvailable { .. }),
+            "fail-closed stub should return NotAvailable, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("invalid tool name"),
+            "error should carry the original failure reason"
+        );
+    }
+
+    #[test]
+    fn build_tool_validates_name_helper() {
+        // Direct unit checks for the name contract.
+        assert!(is_valid_tool_name("read_file"));
+        assert!(is_valid_tool_name("read-file"));
+        assert!(is_valid_tool_name("ReadFile123"));
+        assert!(is_valid_tool_name(&"a".repeat(MAX_TOOL_NAME_LEN)));
+        assert!(!is_valid_tool_name(""));
+        assert!(!is_valid_tool_name("bad name"));
+        assert!(!is_valid_tool_name("bad/name"));
+        assert!(!is_valid_tool_name(&"a".repeat(MAX_TOOL_NAME_LEN + 1)));
+    }
+
+    #[test]
+    fn sanitize_tool_name_collapses_invalid_chars() {
+        assert_eq!(sanitize_tool_name("bad name"), "bad_name");
+        assert_eq!(sanitize_tool_name("a/b@c"), "a_b_c");
+        assert_eq!(sanitize_tool_name("  "), "__");
+        assert_eq!(sanitize_tool_name(""), "fail_closed_tool");
+        let long = sanitize_tool_name(&"x".repeat(MAX_TOOL_NAME_LEN + 100));
+        assert_eq!(long.len(), MAX_TOOL_NAME_LEN);
     }
 }

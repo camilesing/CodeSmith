@@ -616,8 +616,8 @@ fn test_build_allowed_tools_independent_of_allow_shell() {
     // level — the registry builder controls shell-tool registration.
     // Both calls return None (full inheritance) for a default General
     // agent.
-    let with_shell = build_allowed_tools(&SubAgentType::General, None, true).unwrap();
-    let without_shell = build_allowed_tools(&SubAgentType::General, None, false).unwrap();
+    let with_shell = build_allowed_tools(&SubAgentType::General, None, true, None, false).unwrap();
+    let without_shell = build_allowed_tools(&SubAgentType::General, None, false, None, false).unwrap();
     assert!(with_shell.is_none());
     assert!(without_shell.is_none());
 }
@@ -633,6 +633,8 @@ fn test_allowed_tools_are_deduplicated() {
             "grep_files".to_string(),
         ]),
         true,
+        None,
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -643,7 +645,7 @@ fn test_allowed_tools_are_deduplicated() {
 
 #[test]
 fn test_custom_agent_requires_allowed_tools() {
-    let err = build_allowed_tools(&SubAgentType::Custom, None, true).unwrap_err();
+    let err = build_allowed_tools(&SubAgentType::Custom, None, true, None, false).unwrap_err();
     assert!(err.to_string().contains("requires"));
 }
 
@@ -962,6 +964,56 @@ async fn test_running_count_counts_only_agents_with_live_task_handles() {
         .abort();
 }
 
+#[tokio::test]
+async fn test_live_running_snapshots_return_only_agents_with_live_task_handles() {
+    let mut manager = SubAgentManager::new(PathBuf::from("."), 2);
+    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let mut live_agent = SubAgent::new(
+        "test_agent_live".to_string(),
+        SubAgentType::Explore,
+        "prompt".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
+        Some(vec!["read_file".to_string()]),
+        input_tx,
+        "boot_test".to_string(),
+    );
+    live_agent.status = SubAgentStatus::Running;
+    let handle = tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    });
+    live_agent.task_handle = Some(handle);
+    let live_agent_id = live_agent.id.clone();
+    manager.agents.insert(live_agent_id.clone(), live_agent);
+
+    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let mut stale_agent = SubAgent::new(
+        "test_agent_stale".to_string(),
+        SubAgentType::Explore,
+        "prompt".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Green".to_string()),
+        Some(vec!["read_file".to_string()]),
+        input_tx,
+        "boot_test".to_string(),
+    );
+    stale_agent.status = SubAgentStatus::Running;
+    manager.agents.insert(stale_agent.id.clone(), stale_agent);
+
+    let snapshots = manager.live_running_snapshots();
+
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].agent_id, live_agent_id);
+    manager
+        .agents
+        .get_mut(&live_agent_id)
+        .and_then(|agent| agent.task_handle.take())
+        .expect("live task handle")
+        .abort();
+}
+
 #[test]
 fn test_running_count_ignores_running_status_without_task_handle() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
@@ -1152,13 +1204,47 @@ fn test_interrupted_status_name_and_summary() {
     assert!(summarize_subagent_result(&snapshot).contains(SUBAGENT_RESTART_REASON));
 }
 
+// === Finding F4 / plan 04 §4.1 — shared-state回流 via Arc ===
+
+/// A child's mutation to a shared `Arc<Mutex<…>>` handle is atomically
+/// visible to the parent with no explicit回流 call. This is the回流
+/// equivalent of Claude Code's `contextModifier` for shared state — the
+/// `Shared*` handles (`SharedTodoList`, `SharedPlanState`, …) are cloned by
+/// `Arc::clone` at spawn, so parent and child mutate the same allocation.
+#[test]
+fn child_todo_mutation_is_visible_to_parent_via_shared_arc() {
+    use crate::tools::todo::{SharedTodoList, TodoList, TodoStatus};
+
+    // The parent holds the shared handle; the child clones the Arc.
+    let parent_todo: SharedTodoList = Arc::new(Mutex::new(TodoList::new()));
+    let child_todo = Arc::clone(&parent_todo);
+
+    // The child mutates the shared list — no return channel, no queue.
+    {
+        let mut child_list = child_todo.blocking_lock();
+        child_list.add(
+            "land the parser refactor".to_string(),
+            TodoStatus::InProgress,
+        );
+    }
+
+    // The parent observes the mutation immediately, through its own clone.
+    let snapshot = {
+        let parent_list = parent_todo.blocking_lock();
+        parent_list.snapshot()
+    };
+    assert_eq!(snapshot.items.len(), 1);
+    assert_eq!(snapshot.items[0].content, "land the parser refactor");
+    assert_eq!(snapshot.items[0].status, TodoStatus::InProgress);
+}
+
 // === v0.6.6 — sub-agent authority unification ===
 
 #[test]
 fn build_allowed_tools_general_returns_none_for_full_inheritance() {
     // Default behavior: General agent with no explicit list inherits the
     // parent's full registry (None signals no narrowing).
-    let result = build_allowed_tools(&SubAgentType::General, None, true).unwrap();
+    let result = build_allowed_tools(&SubAgentType::General, None, true, None, false).unwrap();
     assert!(
         result.is_none(),
         "General with no explicit_tools should default to full inheritance (None), got {result:?}"
@@ -1169,7 +1255,7 @@ fn build_allowed_tools_general_returns_none_for_full_inheritance() {
 fn build_allowed_tools_explore_returns_none_for_full_inheritance() {
     // Per-type allowlists are now advisory — Explore also gets the full
     // surface unless an explicit list is passed.
-    let result = build_allowed_tools(&SubAgentType::Explore, None, true).unwrap();
+    let result = build_allowed_tools(&SubAgentType::Explore, None, true, None, false).unwrap();
     assert!(
         result.is_none(),
         "Explore with no explicit_tools should default to full inheritance"
@@ -1179,7 +1265,7 @@ fn build_allowed_tools_explore_returns_none_for_full_inheritance() {
 #[test]
 fn build_allowed_tools_custom_requires_explicit_list() {
     // Custom is the one type that REQUIRES explicit allowed_tools.
-    let err = build_allowed_tools(&SubAgentType::Custom, None, true).unwrap_err();
+    let err = build_allowed_tools(&SubAgentType::Custom, None, true, None, false).unwrap_err();
     assert!(
         err.to_string().contains("Custom sub-agent requires"),
         "got: {err}"
@@ -1189,7 +1275,7 @@ fn build_allowed_tools_custom_requires_explicit_list() {
 #[test]
 fn build_allowed_tools_explicit_list_returned_as_some() {
     let explicit = vec!["read_file".to_string(), "list_dir".to_string()];
-    let result = build_allowed_tools(&SubAgentType::Custom, Some(explicit.clone()), true).unwrap();
+    let result = build_allowed_tools(&SubAgentType::Custom, Some(explicit.clone()), true, None, false).unwrap();
     assert_eq!(result, Some(explicit));
 }
 
@@ -1201,11 +1287,211 @@ fn build_allowed_tools_explicit_list_dedupes_and_trims() {
         "list_dir".to_string(),
         "".to_string(), // skip empty
     ];
-    let result = build_allowed_tools(&SubAgentType::Custom, Some(explicit), true).unwrap();
+    let result = build_allowed_tools(&SubAgentType::Custom, Some(explicit), true, None, false).unwrap();
     assert_eq!(
         result,
         Some(vec!["read_file".to_string(), "list_dir".to_string()])
     );
+}
+
+// === Plan 04 / finding F4 — restrictToSubset (child ⊆ parent effective) ===
+
+#[test]
+fn build_allowed_tools_default_inherits_parent_basis_when_narrowed() {
+    // A default General child of a NARROWED parent inherits the parent's
+    // effective set — it cannot re-expand to the full surface.
+    let basis = vec!["read_file".to_string(), "grep_files".to_string()];
+    let result = build_allowed_tools(
+        &SubAgentType::General,
+        None,
+        true,
+        Some(basis.as_slice()),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        Some(vec!["read_file".to_string(), "grep_files".to_string()])
+    );
+}
+
+#[test]
+fn build_allowed_tools_default_unrestricted_when_parent_basis_none() {
+    // An unrestricted parent (full surface, basis = None) → General child
+    // gets full inheritance (Ok(None)). This is the common top-level case,
+    // so recursion via `agent_spawn` is preserved.
+    let result =
+        build_allowed_tools(&SubAgentType::General, None, true, None, false).unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn build_allowed_tools_explicit_intersected_with_parent_basis() {
+    // A Custom child requesting [a, b, c] from a parent that only exposes
+    // [a, b] is narrowed to [a, b] — no escalation.
+    let basis = vec!["read_file".to_string(), "grep_files".to_string()];
+    let result = build_allowed_tools(
+        &SubAgentType::Custom,
+        Some(vec![
+            "read_file".to_string(),
+            "grep_files".to_string(),
+            "exec_shell".to_string(),
+        ]),
+        true,
+        Some(basis.as_slice()),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        Some(vec!["read_file".to_string(), "grep_files".to_string()])
+    );
+}
+
+#[test]
+fn build_allowed_tools_explicit_kept_when_parent_unrestricted() {
+    // Unrestricted parent (basis None) → a Custom child's explicit list is
+    // kept in full.
+    let result = build_allowed_tools(
+        &SubAgentType::Custom,
+        Some(vec!["read_file".to_string(), "list_dir".to_string()]),
+        true,
+        None,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        Some(vec!["read_file".to_string(), "list_dir".to_string()])
+    );
+}
+
+#[test]
+fn build_allowed_tools_escape_hatch_skips_default_subset() {
+    // inherit_full_registry = true restores the legacy v0.6.6 default: even
+    // with a narrowed parent basis, a default General child gets full
+    // inheritance (Ok(None)).
+    let basis = vec!["read_file".to_string()];
+    let result = build_allowed_tools(
+        &SubAgentType::General,
+        None,
+        true,
+        Some(basis.as_slice()),
+        true,
+    )
+    .unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn build_allowed_tools_escape_hatch_skips_explicit_intersection() {
+    // Under the escape hatch, a Custom child's explicit list is NOT
+    // intersected with the parent basis.
+    let basis = vec!["read_file".to_string()];
+    let result = build_allowed_tools(
+        &SubAgentType::Custom,
+        Some(vec![
+            "read_file".to_string(),
+            "grep_files".to_string(),
+            "exec_shell".to_string(),
+        ]),
+        true,
+        Some(basis.as_slice()),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        Some(vec![
+            "read_file".to_string(),
+            "grep_files".to_string(),
+            "exec_shell".to_string()
+        ])
+    );
+}
+
+#[test]
+fn build_allowed_tools_custom_empty_with_basis_still_errors() {
+    // The Custom-requires-non-empty check fires before intersection, so an
+    // empty explicit list still errors regardless of the parent basis.
+    let basis = vec!["read_file".to_string()];
+    let err = build_allowed_tools(
+        &SubAgentType::Custom,
+        Some(vec![]),
+        true,
+        Some(basis.as_slice()),
+        false,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("requires"));
+}
+
+#[test]
+fn intersect_tool_names_none_basis_keeps_all() {
+    let kept = intersect_tool_names(
+        vec!["read_file".to_string(), "grep_files".to_string()],
+        None,
+    );
+    assert_eq!(
+        kept,
+        vec!["read_file".to_string(), "grep_files".to_string()]
+    );
+}
+
+#[test]
+fn intersect_tool_names_some_basis_filters_out_missing() {
+    let basis = vec!["read_file".to_string(), "list_dir".to_string()];
+    let kept = intersect_tool_names(
+        vec![
+            "read_file".to_string(),
+            "exec_shell".to_string(),
+            "list_dir".to_string(),
+        ],
+        Some(basis.as_slice()),
+    );
+    assert_eq!(
+        kept,
+        vec!["read_file".to_string(), "list_dir".to_string()]
+    );
+}
+
+#[test]
+fn intersect_tool_names_preserves_request_order() {
+    // The child's requested order is preserved; only membership is filtered.
+    let basis = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    let kept = intersect_tool_names(
+        vec!["c".to_string(), "a".to_string(), "b".to_string(), "z".to_string()],
+        Some(basis.as_slice()),
+    );
+    assert_eq!(kept, vec!["c".to_string(), "a".to_string(), "b".to_string()]);
+}
+
+#[test]
+fn child_runtime_propagates_inherit_full_registry_and_basis() {
+    // The escape-hatch flag propagates to children; the subset basis also
+    // propagates so a grandchild's build_allowed_tools sees its parent's
+    // effective set at spawn entry.
+    let parent = stub_runtime()
+        .with_inherit_full_registry(true);
+    // Simulate SubAgentToolRegistry::new setting the parent's own basis.
+    let mut parent = parent;
+    parent.child_subset_basis = Some(vec!["read_file".to_string()]);
+
+    let child = parent.child_runtime();
+    assert!(
+        child.inherit_full_registry,
+        "inherit_full_registry must propagate to children"
+    );
+    assert_eq!(
+        child.child_subset_basis,
+        Some(vec!["read_file".to_string()]),
+        "child_subset_basis must propagate so the child's build_allowed_tools can intersect"
+    );
+
+    // background_runtime delegates to child_runtime, so it must propagate too.
+    let bg = parent.background_runtime();
+    assert!(bg.inherit_full_registry);
+    assert_eq!(bg.child_subset_basis, Some(vec!["read_file".to_string()]));
 }
 
 #[test]
@@ -1784,6 +2070,8 @@ fn stub_runtime() -> SubAgentRuntime {
         fork_context: None,
         mcp_pool: None,
         step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
+        inherit_full_registry: false,
+        child_subset_basis: None,
     }
 }
 

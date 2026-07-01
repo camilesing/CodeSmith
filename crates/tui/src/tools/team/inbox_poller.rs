@@ -20,72 +20,14 @@ use crate::tools::team::{
 // ---------------------------------------------------------------------------
 
 /// A single dispatch item from the inbox poller to the engine.
-#[derive(Debug, Clone)]
-pub enum InboxDispatch {
-    /// Regular teammate message to inject into leader conversation.
-    TeammateMessage {
-        from: String,
-        text: String,
-        summary: Option<String>,
-    },
-    /// Permission request that needs leader's approval dialog.
-    PermissionRequestPending {
-        request_id: String,
-        agent_id: String,
-        tool_name: String,
-        tool_use_id: String,
-        description: String,
-    },
-    /// Permission response received from leader for a worker's request.
-    PermissionResponseReceived {
-        request_id: String,
-        subtype: String,
-        error: Option<String>,
-    },
-    /// Shutdown request — passed through as message for model decision.
-    ShutdownRequestMessage {
-        from: String,
-        request_id: String,
-        reason: Option<String>,
-    },
-    /// Shutdown approval — leader must kill teammate, remove from team.
-    ShutdownApprovalAction {
-        from: String,
-        request_id: String,
-        backend_type: Option<String>,
-    },
-    /// Shutdown rejection — informational.
-    ShutdownRejectionInfo {
-        from: String,
-        request_id: String,
-        reason: String,
-    },
-    /// Plan approval request — auto-approved by poller; dispatch info.
-    PlanApprovalAutoApprove { from: String, request_id: String },
-    /// Idle notification — informational for leader.
-    IdleNotificationInfo {
-        from: String,
-        idle_reason: Option<IdleReason>,
-        summary: Option<String>,
-        completed_task_id: Option<String>,
-        completed_status: Option<String>,
-    },
-    /// Mode set request — worker should change permission mode.
-    ModeSetRequestAction {
-        from: String,
-        permission_mode: String,
-    },
-    /// Team permission update — informational ack.
-    TeamPermissionUpdateInfo {
-        from: String,
-        allowed_tools: Vec<String>,
-        denied_tools: Vec<String>,
-    },
-}
+///
+/// Re-exported from `codesmith_agent_runtime::team::InboxDispatch` so the
+/// engine and inbox poller share the same dispatch type.
+pub use codesmith_agent_runtime::team::InboxDispatch;
 
 /// Channel type for sending ops to the engine.
-pub type TeamInboxTx = mpsc::UnboundedSender<Op>;
-pub type TeamInboxRx = mpsc::UnboundedReceiver<Op>;
+pub type TeamInboxTx = mpsc::Sender<Op>;
+pub type TeamInboxRx = mpsc::Receiver<Op>;
 
 // ---------------------------------------------------------------------------
 // Classification
@@ -427,114 +369,134 @@ pub async fn run_leader_inbox_poller(
                 &team_name,
                 "auto",
             );
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::PlanApprovalAutoApprove {
-                    from: entry.from.clone(),
-                    request_id: entry.request_id.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::PlanApprovalAutoApprove {
+                        from: entry.from.clone(),
+                        request_id: entry.request_id.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch shutdown approvals.
         for entry in &cls.shutdown_approvals {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::ShutdownApprovalAction {
-                    from: entry.from.clone(),
-                    request_id: entry.request_id.clone(),
-                    backend_type: entry.backend_type.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::ShutdownApprovalAction {
+                        from: entry.from.clone(),
+                        request_id: entry.request_id.clone(),
+                        backend_type: entry.backend_type.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch shutdown rejections (informational).
         for entry in &cls.shutdown_rejections {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::ShutdownRejectionInfo {
-                    from: entry.from.clone(),
-                    request_id: entry.request_id.clone(),
-                    reason: entry.reason.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::ShutdownRejectionInfo {
+                        from: entry.from.clone(),
+                        request_id: entry.request_id.clone(),
+                        reason: entry.reason.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch permission requests.
         for entry in &cls.permission_requests {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::PermissionRequestPending {
-                    request_id: entry.request_id.clone(),
-                    agent_id: entry.agent_id.clone(),
-                    tool_name: entry.tool_name.clone(),
-                    tool_use_id: entry.tool_use_id.clone(),
-                    description: entry.description.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::PermissionRequestPending {
+                        request_id: entry.request_id.clone(),
+                        agent_id: entry.agent_id.clone(),
+                        tool_name: entry.tool_name.clone(),
+                        tool_use_id: entry.tool_use_id.clone(),
+                        description: entry.description.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch idle notifications.
         for entry in &cls.idle_notifications {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::IdleNotificationInfo {
-                    from: entry.from.clone(),
-                    idle_reason: entry.idle_reason.clone(),
-                    summary: entry.summary.clone(),
-                    completed_task_id: entry.completed_task_id.clone(),
-                    completed_status: entry.completed_status.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::IdleNotificationInfo {
+                        from: entry.from.clone(),
+                        idle_reason: entry.idle_reason.clone(),
+                        summary: entry.summary.clone(),
+                        completed_task_id: entry.completed_task_id.clone(),
+                        completed_status: entry.completed_status.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch mode set requests.
         for entry in &cls.mode_set_requests {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::ModeSetRequestAction {
-                    from: entry.from.clone(),
-                    permission_mode: entry.permission_mode.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::ModeSetRequestAction {
+                        from: entry.from.clone(),
+                        permission_mode: entry.permission_mode.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch team permission updates.
         for entry in &cls.team_permission_updates {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::TeamPermissionUpdateInfo {
-                    from: entry.from.clone(),
-                    allowed_tools: entry.allowed_tools.clone(),
-                    denied_tools: entry.denied_tools.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::TeamPermissionUpdateInfo {
+                        from: entry.from.clone(),
+                        allowed_tools: entry.allowed_tools.clone(),
+                        denied_tools: entry.denied_tools.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch task assignments (informational).
         for entry in &cls.task_assignments {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::TeammateMessage {
-                    from: entry.assigned_by.clone(),
-                    text: format!("Task assigned: {} - {}", entry.subject, entry.description),
-                    summary: Some(format!("task: {}", entry.subject)),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::TeammateMessage {
+                        from: entry.assigned_by.clone(),
+                        text: format!("Task assigned: {} - {}", entry.subject, entry.description),
+                        summary: Some(format!("task: {}", entry.subject)),
+                    },
+                })
+                .await;
         }
 
         // Dispatch permission responses.
         for entry in &cls.permission_responses {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::PermissionResponseReceived {
-                    request_id: entry.request_id.clone(),
-                    subtype: entry.subtype.clone(),
-                    error: entry.error.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::PermissionResponseReceived {
+                        request_id: entry.request_id.clone(),
+                        subtype: entry.subtype.clone(),
+                        error: entry.error.clone(),
+                    },
+                })
+                .await;
         }
 
         // Dispatch regular text messages.
         for msg in &cls.regular_messages {
-            let _ = tx_op.send(Op::TeamInboxDispatch {
-                dispatch: InboxDispatch::TeammateMessage {
-                    from: msg.from.clone(),
-                    text: msg.text.clone(),
-                    summary: msg.summary.clone(),
-                },
-            });
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::TeammateMessage {
+                        from: msg.from.clone(),
+                        text: msg.text.clone(),
+                        summary: msg.summary.clone(),
+                    },
+                })
+                .await;
         }
     }
 }

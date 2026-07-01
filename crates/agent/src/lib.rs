@@ -1,3 +1,7 @@
+pub mod llm_client;
+pub mod models;
+pub mod retry;
+
 use std::collections::HashMap;
 
 use codesmith_config::ProviderKind;

@@ -141,6 +141,7 @@ fn event_label(event: HookEvent) -> &'static str {
         HookEvent::ShellEnv => "shell_env",
         HookEvent::TaskCreated => "task_created",
         HookEvent::TaskCompleted => "task_completed",
+        HookEvent::PreCompact => "pre_compact",
     }
 }
 

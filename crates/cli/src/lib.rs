@@ -112,6 +112,10 @@ struct Cli {
     /// YOLO mode: auto-approve all tools
     #[arg(long)]
     yolo: bool,
+    /// Bare/simple mode: disable ambient features like auto-memory (mirrors
+    /// Claude Code's `--bare` / `CLAUDE_CODE_SIMPLE`).
+    #[arg(long)]
+    bare: bool,
     /// Continue the most recent interactive session for this workspace.
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
@@ -208,6 +212,8 @@ working-tree diff. `export` only writes the current diff.
     Sandbox(SandboxArgs),
     /// Run the app-server transport.
     AppServer(AppServerArgs),
+    /// Run a teammate turn in this process (used by pane backends).
+    TeamTeammate(TuiPassthroughArgs),
     /// Generate shell completions.
     #[command(after_help = r#"Examples:
   Bash (current shell only):
@@ -577,6 +583,10 @@ fn run() -> Result<()> {
         Some(Commands::Thread(args)) => run_thread_command(args.command),
         Some(Commands::Sandbox(args)) => run_sandbox_command(args.command),
         Some(Commands::AppServer(args)) => run_app_server_command(args),
+        Some(Commands::TeamTeammate(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("team-teammate", args))
+        }
         Some(Commands::Completion { shell }) => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, "codesmith", &mut io::stdout());
@@ -1565,6 +1575,9 @@ fn build_tui_command(
     }
     if cli.yolo {
         cmd.env("DEEPSEEK_YOLO", "true");
+    }
+    if cli.bare {
+        cmd.env("DEEPSEEK_SIMPLE", "true");
     }
     if let Some(api_key) = cli.api_key.as_ref() {
         cmd.env("DEEPSEEK_API_KEY", api_key);
@@ -3342,5 +3355,49 @@ mod tests {
 
         let resolved = locate_sibling_tui_binary().expect("override must resolve");
         assert_eq!(resolved, custom);
+    }
+
+    /// `team-teammate` is a passthrough subcommand used by the tmux/iTerm pane
+    /// backends to run a teammate turn in-process. The dispatcher must parse it
+    /// and forward every trailing flag verbatim to the TUI binary.
+    #[test]
+    fn team_teammate_passthrough_collects_trailing_flags() {
+        let cli = parse_ok(&[
+            "deepseek",
+            "team-teammate",
+            "--team",
+            "demo",
+            "--name",
+            "worker-1",
+            "--prompt",
+            "hi",
+        ]);
+        let Some(Commands::TeamTeammate(args)) = cli.command else {
+            panic!("expected team-teammate command");
+        };
+
+        assert_eq!(
+            args.args,
+            vec![
+                "--team".to_string(),
+                "demo".to_string(),
+                "--name".to_string(),
+                "worker-1".to_string(),
+                "--prompt".to_string(),
+                "hi".to_string(),
+            ]
+        );
+        assert_eq!(
+            tui_args("team-teammate", args),
+            vec![
+                "team-teammate".to_string(),
+                "--team".to_string(),
+                "demo".to_string(),
+                "--name".to_string(),
+                "worker-1".to_string(),
+                "--prompt".to_string(),
+                "hi".to_string(),
+            ]
+        );
     }
 }

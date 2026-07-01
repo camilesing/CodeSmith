@@ -141,7 +141,7 @@ impl ToolSpec for TeamCreateTool {
         })?;
 
         // Create team-scoped TaskV2Manager.
-        let _task_v2_manager = new_shared_task_v2_manager(&sanitized).map_err(|e| {
+        let task_v2_manager = new_shared_task_v2_manager(&sanitized).map_err(|e| {
             ToolError::execution_failed(format!("Failed to create task manager: {}", e))
         })?;
 
@@ -149,7 +149,9 @@ impl ToolSpec for TeamCreateTool {
             team_name: team_name.clone(),
             team_file_path: team_file_path.clone(),
             lead_agent_id: lead_agent_id.clone(),
+            task_v2_manager,
             teammates: std::collections::HashMap::new(),
+            teammate_cancel_tokens: std::collections::HashMap::new(),
         };
 
         {

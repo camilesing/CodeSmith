@@ -27,7 +27,7 @@ use crate::pricing::{CostCurrency, CostEstimate};
 use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
-use crate::tools::shell::new_shared_shell_manager;
+use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
@@ -127,15 +127,11 @@ fn onboarding_is_workspace_trust_gate(
 }
 
 /// Supported application modes for the TUI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppMode {
-    Agent,
-    Yolo,
-    Plan,
-    /// Coordinator mode — LLM acts as orchestrator only, delegates work to
-    /// worker sub-agents. Cannot directly read/write files or run commands.
-    Coordinator,
-}
+///
+/// Re-exported from `codesmith-agent-runtime` so the runtime can mode-switch
+/// toolsets without depending on the terminal binary; see
+/// [`codesmith_agent_runtime::mode::AppMode`].
+pub use codesmith_agent_runtime::mode::AppMode;
 
 /// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
 #[derive(Debug, Clone)]
@@ -163,85 +159,11 @@ pub struct TurnCacheRecord {
     pub recorded_at: Instant,
 }
 
-/// DeepSeek reasoning-effort tier, mirrored on ChatGPT/Claude effort pickers.
-///
-/// The config file accepts all five string values for forward-compat with
-/// providers that expose the full spectrum; DeepSeek currently collapses
-/// `Low`/`Medium` → `high` and `Max` → `max` at the API boundary. The
-/// keyboard cycler (Shift+Tab) walks only the three behaviorally distinct
-/// tiers: `Off` → `High` → `Max` → `Off`.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum ReasoningEffort {
-    Off,
-    Low,
-    Medium,
-    High,
-    Auto,
-    #[default]
-    Max,
-}
-
-impl ReasoningEffort {
-    /// Parse a config-file string into an effort tier. Unknown values fall
-    /// back to the default (`Max`) rather than erroring out.
-    #[must_use]
-    pub fn from_setting(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "off" | "disabled" | "none" | "false" => Self::Off,
-            "low" | "minimal" => Self::Low,
-            "medium" | "mid" => Self::Medium,
-            "high" => Self::High,
-            "auto" | "automatic" => Self::Auto,
-            "max" | "maximum" | "xhigh" => Self::Max,
-            _ => Self::default(),
-        }
-    }
-
-    /// Canonical lowercase label used for config storage and UI hints.
-    #[must_use]
-    pub fn as_setting(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Auto => "auto",
-            Self::Max => "max",
-        }
-    }
-
-    /// Short label for the header chip.
-    #[must_use]
-    pub fn short_label(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Low => "low",
-            Self::Medium => "med",
-            Self::High => "high",
-            Self::Auto => "auto",
-            Self::Max => "max",
-        }
-    }
-
-    /// Value forwarded to the engine/client. `None` means "provider default"
-    /// (for `Off` we still emit `"off"` so the client can inject
-    /// `thinking = {"type": "disabled"}`).
-    #[must_use]
-    pub fn api_value(self) -> Option<&'static str> {
-        Some(self.as_setting())
-    }
-
-    /// Cycle through the three behaviorally distinct tiers.
-    #[must_use]
-    pub fn cycle_next(self) -> Self {
-        match self {
-            Self::Off => Self::High,
-            Self::Auto => Self::Off,
-            Self::Low | Self::Medium | Self::High => Self::Max,
-            Self::Max => Self::Off,
-        }
-    }
-}
+// `ReasoningEffort` was relocated to `codesmith_agent_runtime::mode` (along
+// with `AppMode`) so the runtime can pick reasoning tiers without depending
+// on the terminal binary. Re-exported here so the historical
+// `crate::tui::app::ReasoningEffort` path keeps resolving.
+pub use codesmith_agent_runtime::mode::ReasoningEffort;
 
 /// Sidebar content focus mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -739,50 +661,8 @@ fn match_kitty_csi_fragment(chars: &[char], start: usize) -> Option<usize> {
 const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
 const MAX_DRAFT_HISTORY: usize = 50;
 
-impl AppMode {
-    #[must_use]
-    pub fn from_setting(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "plan" => Self::Plan,
-            "yolo" => Self::Yolo,
-            "coordinator" | "coordinator_mode" => Self::Coordinator,
-            _ => Self::Agent,
-        }
-    }
-
-    #[must_use]
-    pub fn as_setting(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Yolo => "yolo",
-            Self::Plan => "plan",
-            Self::Coordinator => "coordinator",
-        }
-    }
-
-    /// Short label used in the UI footer.
-    pub fn label(self) -> &'static str {
-        match self {
-            AppMode::Agent => "AGENT",
-            AppMode::Yolo => "YOLO",
-            AppMode::Plan => "PLAN",
-            AppMode::Coordinator => "COORDINATOR",
-        }
-    }
-
-    #[allow(dead_code)]
-    /// Description shown in help or onboarding text.
-    pub fn description(self) -> &'static str {
-        match self {
-            AppMode::Agent => "Agent mode - autonomous task execution with tools",
-            AppMode::Yolo => "YOLO mode - full tool access without approvals",
-            AppMode::Plan => "Plan mode - design before implementing",
-            AppMode::Coordinator => {
-                "Coordinator mode - orchestrator only, delegates work to workers"
-            }
-        }
-    }
-}
+// `AppMode` impl (`from_setting`/`as_setting`/`label`/`description`) lives in
+// `codesmith-agent-runtime::mode`; the enum is re-exported above.
 
 /// Configuration required to bootstrap the TUI.
 #[derive(Clone)]
@@ -1366,6 +1246,21 @@ pub struct App {
     pub todos: SharedTodoList,
     /// Durable runtime services exposed to model-visible task/automation tools.
     pub runtime_services: RuntimeToolServices,
+    /// Concrete background-shell process manager shared with the engine. The
+    /// trait-erased `Arc<dyn ShellManagerApi>` view in
+    /// `runtime_services.shell_manager` wraps this same concrete, so tools
+    /// (which create background jobs) and the UI (which polls jobs for the
+    /// task panel) see the same `ShellManager`. `build_engine_host` threads
+    /// this into `EngineHost::shell_manager` so the engine body shares it too.
+    pub shell_manager: SharedShellManager,
+    /// Local-only telemetry sink handle threaded into every spawned engine
+    /// (Plan 06 / 6.1). `None` until `run_tui` sets it from the sink the host
+    /// constructed in `run_interactive`. Cheap to clone (`Arc`-shared) so
+    /// `build_engine_config` hands a clone to each `EngineConfig`; the engine
+    /// emits capacity events into it while the host retains the original for
+    /// `attach`/`set_enabled` control — the shared `AtomicBool` keeps both
+    /// views in sync.
+    pub telemetry_sink: Option<codesmith_agent_runtime::telemetry::TelemetrySink>,
     /// Last MCP manager/discovery snapshot shown in the UI.
     pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
     /// Number of MCP servers declared in the user's config at app boot.
@@ -2039,11 +1934,13 @@ impl App {
             plan_prompt_pending: false,
             plan_tool_used_in_turn: false,
             todos: new_shared_todo_list(),
+            shell_manager: shell_manager.clone(),
             runtime_services: RuntimeToolServices {
-                shell_manager: Some(shell_manager),
+                shell_manager: Some(wrap_shell_manager(shell_manager)),
                 ..RuntimeToolServices::default()
             },
             mcp_snapshot: None,
+            telemetry_sink: None,
             // Read the MCP config once at boot to know how many servers
             // the user has declared. The footer chip uses this even when
             // no live snapshot is available (#502). Cheap (just reads
@@ -2139,6 +2036,7 @@ impl App {
         crate::skills::discover_for_workspace_and_dir(workspace, skills_dir)
             .list()
             .iter()
+            .filter(|s| s.user_invocable)
             .map(|s| (s.name.clone(), s.description.clone()))
             .collect()
     }
@@ -2224,6 +2122,16 @@ impl App {
         }
 
         if entering_yolo {
+            // Entering YOLO implies auto-approve + trust mode. Catastrophic
+            // commands are still stripped at the elevation chokepoint
+            // (`auto_mode::decide_auto_elevation`); this stash records the
+            // pre-YOLO approval/trust state so leaving YOLO restores it —
+            // mirroring Claude's `stripDangerousPermissionsForAutoMode` /
+            // `restoreDangerousPermissions` lifecycle.
+            tracing::info!(
+                previous_mode = previous_mode.label(),
+                "auto-mode dangerous-command strip active (YOLO)"
+            );
             self.yolo_restore = Some(YoloRestoreState {
                 allow_shell: self.allow_shell,
                 trust_mode: self.trust_mode,
@@ -2233,6 +2141,7 @@ impl App {
             self.trust_mode = true;
             self.approval_mode = ApprovalMode::Auto;
         } else if leaving_yolo && let Some(restore) = self.yolo_restore.take() {
+            tracing::info!("auto-mode dangerous-command strip restored (leaving YOLO)");
             self.allow_shell = restore.allow_shell;
             self.trust_mode = restore.trust_mode;
             self.approval_mode = restore.approval_mode;

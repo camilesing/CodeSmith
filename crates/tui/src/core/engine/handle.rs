@@ -10,8 +10,8 @@
 
 use anyhow::Result;
 
-use super::approval::{ApprovalDecision, UserInputDecision};
-use super::{CancelReason, EngineHandle, Op, UserInputResponse};
+use super::{ApprovalDecision, CancelReason, EngineHandle, Op, UserInputDecision};
+use codesmith_agent_runtime::user_input::UserInputResponse;
 
 impl EngineHandle {
     /// Send an operation to the engine

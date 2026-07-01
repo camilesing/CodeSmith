@@ -1713,12 +1713,9 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
 async fn apply_loaded_session_resets_workspace_runtime_state() {
     let mut app = create_test_app();
     let config = Config::default();
-    let old_shell_manager = app
-        .runtime_services
-        .shell_manager
-        .as_ref()
-        .expect("shell manager")
-        .clone();
+    // Compare the concrete `SharedShellManager` the engine and UI share
+    // (`App::shell_manager`), not the trait-erased runtime-services view.
+    let old_shell_manager = app.shell_manager.clone();
     let old_context_cell = app.workspace_context_cell.clone();
     app.workspace_context = Some("old workspace context".to_string());
     if let Ok(mut cell) = old_context_cell.lock() {
@@ -1740,12 +1737,7 @@ async fn apply_loaded_session_resets_workspace_runtime_state() {
     assert!(app.workspace_context_refreshed_at.is_none());
     assert!(app.file_tree.is_none());
     assert!(old_context_cell.lock().expect("context cell").is_none());
-    let new_shell_manager = app
-        .runtime_services
-        .shell_manager
-        .as_ref()
-        .expect("shell manager")
-        .clone();
+    let new_shell_manager = app.shell_manager.clone();
     assert!(!std::sync::Arc::ptr_eq(
         &old_shell_manager,
         &new_shell_manager

@@ -1,0 +1,279 @@
+//! Plan shared state.
+//!
+//! State types extracted from `crates/tui/src/tools/plan.rs`;
+//! the tool implementations stay in tui.
+
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
+/// Status of a plan step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl StepStatus {
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "pending" => Some(StepStatus::Pending),
+            "in_progress" | "inprogress" => Some(StepStatus::InProgress),
+            "completed" | "done" => Some(StepStatus::Completed),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            StepStatus::Pending => "○",
+            StepStatus::InProgress => "◎",
+            StepStatus::Completed => "●",
+        }
+    }
+}
+
+/// Input representation for a plan item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanItemArg {
+    pub step: String,
+    pub status: StepStatus,
+}
+
+/// Update payload used by the plan tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatePlanArgs {
+    #[serde(default)]
+    pub explanation: Option<String>,
+    pub plan: Vec<PlanItemArg>,
+}
+
+/// A plan step with timing information
+#[derive(Debug, Clone)]
+pub struct PlanStep {
+    pub text: String,
+    pub status: StepStatus,
+    /// When the step was started (transitioned to `InProgress`)
+    pub started_at: Option<Instant>,
+    /// When the step was completed
+    pub completed_at: Option<Instant>,
+}
+
+impl PlanStep {
+    /// Create a new plan step.
+    pub fn new(text: String, status: StepStatus) -> Self {
+        Self {
+            text,
+            status,
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    /// Get the elapsed time if the step has timing info
+    #[must_use]
+    pub fn elapsed(&self) -> Option<Duration> {
+        match (self.started_at, self.completed_at) {
+            (Some(start), Some(end)) => Some(end.duration_since(start)),
+            (Some(start), None) if self.status == StepStatus::InProgress => Some(start.elapsed()),
+            _ => None,
+        }
+    }
+
+    /// Format elapsed time for display
+    #[must_use]
+    pub fn elapsed_str(&self) -> String {
+        match self.elapsed() {
+            Some(d) => {
+                let secs = d.as_secs();
+                if secs < 60 {
+                    format!("{secs}s")
+                } else if secs < 3600 {
+                    format!("{}m {}s", secs / 60, secs % 60)
+                } else {
+                    format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+                }
+            }
+            None => String::new(),
+        }
+    }
+}
+
+/// Serializable snapshot for display
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanSnapshot {
+    pub explanation: Option<String>,
+    pub items: Vec<PlanItemArg>,
+}
+
+/// State tracking for the current plan
+#[derive(Debug, Clone, Default)]
+pub struct PlanState {
+    explanation: Option<String>,
+    steps: Vec<PlanStep>,
+}
+
+impl PlanState {
+    /// Check whether the plan is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty() && self.explanation.as_deref().unwrap_or("").is_empty()
+    }
+
+    pub fn update(&mut self, args: UpdatePlanArgs) {
+        self.explanation = args.explanation.filter(|s| !s.trim().is_empty());
+
+        let now = Instant::now();
+        let mut new_steps = Vec::new();
+        let mut in_progress_seen = false;
+
+        for item in args.plan {
+            // Try to find existing step to preserve timing
+            let existing = self.steps.iter().find(|s| s.text == item.step);
+
+            let mut status = item.status;
+            // Enforce single in_progress
+            if status == StepStatus::InProgress {
+                if in_progress_seen {
+                    status = StepStatus::Pending;
+                } else {
+                    in_progress_seen = true;
+                }
+            }
+
+            let step = if let Some(old) = existing {
+                let mut s = old.clone();
+                let old_status = s.status.clone();
+                s.status = status.clone();
+
+                // Track timing transitions
+                if old_status == StepStatus::Pending && status == StepStatus::InProgress {
+                    s.started_at = Some(now);
+                }
+                if old_status == StepStatus::InProgress && status == StepStatus::Completed {
+                    s.completed_at = Some(now);
+                }
+
+                s
+            } else {
+                let mut s = PlanStep::new(item.step, status.clone());
+                if status == StepStatus::InProgress {
+                    s.started_at = Some(now);
+                }
+                s
+            };
+
+            new_steps.push(step);
+        }
+
+        self.steps = new_steps;
+    }
+
+    pub fn snapshot(&self) -> PlanSnapshot {
+        PlanSnapshot {
+            explanation: self.explanation.clone(),
+            items: self
+                .steps
+                .iter()
+                .map(|s| PlanItemArg {
+                    step: s.text.clone(),
+                    status: s.status.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn explanation(&self) -> Option<&str> {
+        self.explanation.as_deref()
+    }
+
+    pub fn steps(&self) -> &[PlanStep] {
+        &self.steps
+    }
+
+    /// Get counts of steps by status
+    pub fn counts(&self) -> (usize, usize, usize) {
+        let mut pending = 0;
+        let mut in_progress = 0;
+        let mut completed = 0;
+        for s in &self.steps {
+            match s.status {
+                StepStatus::Pending => pending += 1,
+                StepStatus::InProgress => in_progress += 1,
+                StepStatus::Completed => completed += 1,
+            }
+        }
+        (pending, in_progress, completed)
+    }
+
+    /// Get progress as a percentage
+    pub fn progress_percent(&self) -> u8 {
+        if self.steps.is_empty() {
+            return 0;
+        }
+        let completed = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Completed)
+            .count();
+        let percent = completed.saturating_mul(100) / self.steps.len();
+        u8::try_from(percent).unwrap_or(u8::MAX)
+    }
+}
+
+/// Validation result for plan transitions
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum PlanValidation {
+    Ok,
+    Warning(String),
+    Error(String),
+}
+
+/// Validate a plan update
+#[allow(dead_code)]
+pub fn validate_plan_update(current: &PlanState, update: &UpdatePlanArgs) -> PlanValidation {
+    let current_steps: std::collections::HashMap<_, _> = current
+        .steps()
+        .iter()
+        .map(|s| (s.text.clone(), &s.status))
+        .collect();
+
+    for item in &update.plan {
+        if let Some(old_status) = current_steps.get(&item.step) {
+            // Check for invalid transitions
+            match (old_status, &item.status) {
+                (StepStatus::Completed, StepStatus::Pending) => {
+                    return PlanValidation::Warning(format!(
+                        "Step '{}' was completed but is now pending",
+                        item.step
+                    ));
+                }
+                (StepStatus::Completed, StepStatus::InProgress) => {
+                    return PlanValidation::Warning(format!(
+                        "Step '{}' was completed but is now in progress",
+                        item.step
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    PlanValidation::Ok
+}
+
+/// Shared reference to `PlanState` for use across tools
+pub type SharedPlanState = Arc<Mutex<PlanState>>;
+
+/// Create a new shared `PlanState`
+pub fn new_shared_plan_state() -> SharedPlanState {
+    Arc::new(Mutex::new(PlanState::default()))
+}

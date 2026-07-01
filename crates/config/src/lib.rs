@@ -273,6 +273,9 @@ pub struct ConfigToml {
     pub telemetry: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    /// Structured sandbox controls shared with the TUI runtime.
+    #[serde(default)]
+    pub sandbox: Option<SandboxToml>,
     /// Native tool catalog controls shared with `codesmith-tui`.
     #[serde(default)]
     pub tools: Option<ToolsToml>,
@@ -301,6 +304,60 @@ pub struct ConfigToml {
     pub hook_sinks: Option<HookSinksToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
+}
+
+/// On-disk schema for the `[sandbox]` table. This shared crate preserves the
+/// table during config reads/writes; the TUI crate turns it into runtime policy.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxToml {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub fail_if_unavailable: Option<bool>,
+    #[serde(default)]
+    pub enabled_platforms: Option<Vec<String>>,
+    #[serde(default)]
+    pub excluded_commands: Option<Vec<String>>,
+    #[serde(default)]
+    pub auto_allow_bash_if_sandboxed: Option<bool>,
+    #[serde(default)]
+    pub prefer_bwrap: Option<bool>,
+    #[serde(default)]
+    pub filesystem: Option<SandboxFilesystemToml>,
+    #[serde(default)]
+    pub network: Option<SandboxNetworkToml>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxFilesystemToml {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub writable_roots: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_read: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny_read: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_write: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny_write: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude_tmpdir: Option<bool>,
+    #[serde(default)]
+    pub exclude_slash_tmp: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxNetworkToml {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub allow_managed_domains_only: Option<bool>,
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny: Option<Vec<String>>,
 }
 
 /// On-disk schema for the `[hook_sinks]` table.

@@ -17,13 +17,16 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use crate::audit::log_sensitive_event;
 use crate::features::{Features, FeaturesToml, is_known_feature_key};
 use crate::hooks::HooksConfig;
+use crate::sandbox::{
+    SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
+};
 
-pub const DEFAULT_MAX_SUBAGENTS: usize = 10;
-pub const MAX_SUBAGENTS: usize = 20;
-/// Default per-step DeepSeek API timeout for sub-agent requests, in seconds.
-/// Matches the legacy hardcoded value so existing configs keep their old
-/// behavior when `[subagents] api_timeout_secs` is unset (#1806, #1808).
-pub const DEFAULT_SUBAGENT_API_TIMEOUT_SECS: u64 = 120;
+/// Hard cap on concurrent sub-agents. Re-exported from
+/// `codesmith_agent_runtime::config_types::MAX_SUBAGENTS` so the runtime,
+/// `codesmith-tool-impls`, and the TUI share one value. Distinct from
+/// `DEFAULT_MAX_SUBAGENTS` (= 10), which is the value used when the user
+/// leaves `[subagents] max_concurrent` unset.
+pub use codesmith_agent_runtime::config_types::MAX_SUBAGENTS;
 /// Minimum accepted `[subagents] api_timeout_secs`. Anything lower (including
 /// `0`, which would otherwise produce an immediate timeout footgun) clamps
 /// up to this value before the runtime sees it.
@@ -32,7 +35,11 @@ pub const MIN_SUBAGENT_API_TIMEOUT_SECS: u64 = 1;
 /// keeps a misconfigured per-step timeout from masking real model/network
 /// hangs forever.
 pub const MAX_SUBAGENT_API_TIMEOUT_SECS: u64 = 1800;
-pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
+/// Default text model used as a fallback when a caller does not supply one.
+///
+/// Re-exported from `codesmith_agent_runtime::compaction::DEFAULT_TEXT_MODEL`
+/// so the runtime and TUI share the same value.
+pub use codesmith_agent_runtime::compaction::DEFAULT_TEXT_MODEL;
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
 pub const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
@@ -118,335 +125,16 @@ pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
 ];
 pub const OFFICIAL_DEEPSEEK_MODELS: &[&str] = &["deepseek-v4-pro", "deepseek-v4-flash"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApiProvider {
-    Deepseek,
-    DeepseekCN,
-    NvidiaNim,
-    Openai,
-    Atlascloud,
-    WanjieArk,
-    Volcengine,
-    Openrouter,
-    XiaomiMimo,
-    Novita,
-    Fireworks,
-    Siliconflow,
-    Moonshot,
-    Sglang,
-    Vllm,
-    Ollama,
-    Anthropic,
-}
-
-impl ApiProvider {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "deepseek" | "deep-seek" => Some(Self::Deepseek),
-            "deepseek-cn" | "deepseek_china" | "deepseekcn" | "deepseek-china" => {
-                Some(Self::DeepseekCN)
-            }
-            "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
-            "openai" | "open-ai" => Some(Self::Openai),
-            "atlascloud" | "atlas-cloud" | "atlas_cloud" | "atlas" => Some(Self::Atlascloud),
-            "wanjie" | "wanjie-ark" | "wanjie_ark" | "ark-wanjie" | "ark_wanjie" | "wanjieark"
-            | "wanjie-maas" | "wanjie_maas" | "wanjiemaas" => Some(Self::WanjieArk),
-            "volcengine" | "volcengine-ark" | "volcengine_ark" | "ark" | "volc-ark"
-            | "volcengineark" => Some(Self::Volcengine),
-            "openrouter" | "open_router" => Some(Self::Openrouter),
-            "xiaomi-mimo" | "xiaomi_mimo" | "xiaomimimo" | "mimo" | "xiaomi" => {
-                Some(Self::XiaomiMimo)
-            }
-            "novita" => Some(Self::Novita),
-            "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
-            "siliconflow" | "silicon-flow" | "silicon_flow" => Some(Self::Siliconflow),
-            "moonshot" | "moonshot-ai" | "kimi" | "kimi-k2" => Some(Self::Moonshot),
-            "sglang" | "sg-lang" => Some(Self::Sglang),
-            "vllm" | "v-llm" => Some(Self::Vllm),
-            "ollama" | "ollama-local" => Some(Self::Ollama),
-            "anthropic" | "claude" | "anthropic-claude" | "claude-ai" => Some(Self::Anthropic),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Deepseek => "deepseek",
-            Self::DeepseekCN => "deepseek-cn",
-            Self::NvidiaNim => "nvidia-nim",
-            Self::Openai => "openai",
-            Self::Atlascloud => "atlascloud",
-            Self::WanjieArk => "wanjie-ark",
-            Self::Volcengine => "volcengine",
-            Self::Openrouter => "openrouter",
-            Self::XiaomiMimo => "xiaomi-mimo",
-            Self::Novita => "novita",
-            Self::Fireworks => "fireworks",
-            Self::Siliconflow => "siliconflow",
-            Self::Moonshot => "moonshot",
-            Self::Sglang => "sglang",
-            Self::Vllm => "vllm",
-            Self::Ollama => "ollama",
-            Self::Anthropic => "anthropic",
-        }
-    }
-
-    /// Human-friendly label for picker UIs / status chips.
-    #[must_use]
-    pub fn display_name(self) -> &'static str {
-        match self {
-            Self::Deepseek => "DeepSeek",
-            Self::DeepseekCN => "DeepSeek (legacy alias)",
-            Self::NvidiaNim => "NVIDIA NIM",
-            Self::Openai => "OpenAI-compatible",
-            Self::Atlascloud => "AtlasCloud",
-            Self::WanjieArk => "Wanjie Ark",
-            Self::Volcengine => "Volcengine Ark",
-            Self::Openrouter => "OpenRouter",
-            Self::XiaomiMimo => "Xiaomi MiMo",
-            Self::Novita => "Novita AI",
-            Self::Fireworks => "Fireworks AI",
-            Self::Siliconflow => "SiliconFlow",
-            Self::Moonshot => "Moonshot/Kimi",
-            Self::Sglang => "SGLang",
-            Self::Vllm => "vLLM",
-            Self::Ollama => "Ollama",
-            Self::Anthropic => "Anthropic Claude",
-        }
-    }
-
-    /// All providers, in the order shown in the picker.
-    #[must_use]
-    pub fn all() -> &'static [Self] {
-        &[
-            Self::Deepseek,
-            Self::NvidiaNim,
-            Self::Openai,
-            Self::Atlascloud,
-            Self::WanjieArk,
-            Self::Volcengine,
-            Self::Openrouter,
-            Self::XiaomiMimo,
-            Self::Novita,
-            Self::Fireworks,
-            Self::Siliconflow,
-            Self::Moonshot,
-            Self::Sglang,
-            Self::Vllm,
-            Self::Ollama,
-            Self::Anthropic,
-        ]
-    }
-}
-
-// ============================================================================
-// Provider Capability Matrix
-// ============================================================================
-
-/// Known capabilities for a provider + resolved-model combination.
-///
-/// Returned by [`provider_capability`] to describe what a given provider
-/// supports for the resolved model string.  All fields are derived from
-/// static knowledge (release docs, API guides) rather than live API probes.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct ProviderCapability {
-    /// Canonical provider identifier.
-    pub provider: ApiProvider,
-    /// Resolved model identifier that will be sent in the API payload.
-    pub resolved_model: String,
-    /// Context window in tokens (the maximum input the model can accept).
-    pub context_window: u32,
-    /// Official maximum output tokens for this combo.
-    ///
-    /// This is model metadata for diagnostics and CI policy. Normal turns use
-    /// a separate, more conservative request cap in the engine.
-    pub max_output: u32,
-    /// Whether the provider+model supports thinking/reasoning mode.
-    pub thinking_supported: bool,
-    /// Whether the provider returns prompt-cache telemetry fields.
-    pub cache_telemetry_supported: bool,
-    /// Which request-payload dialect the provider uses.
-    pub request_payload_mode: RequestPayloadMode,
-    /// Deprecation metadata for compatibility aliases that are still accepted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alias_deprecation: Option<ModelAliasDeprecation>,
-}
-
-pub const DEEPSEEK_ALIAS_RETIREMENT_DATE: &str = "2026-07-24";
-pub const DEEPSEEK_ALIAS_RETIREMENT_UTC: &str = "2026-07-24T15:59:00Z";
-pub const DEEPSEEK_ALIAS_REPLACEMENT: &str = "deepseek-v4-flash";
-
-/// Upstream retirement metadata for a model alias that remains compatible.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct ModelAliasDeprecation {
-    pub alias: String,
-    pub replacement: String,
-    pub retirement_date: String,
-    pub retirement_utc: String,
-    pub notice: String,
-}
-
-/// Which request-payload dialect the provider speaks.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub enum RequestPayloadMode {
-    /// Standard OpenAI-compatible `/v1/chat/completions` payload.
-    ChatCompletions,
-    /// Anthropic-native `/v1/messages` payload.
-    Messages,
-}
-
-/// Resolve the provider capability for a given [`ApiProvider`] and resolved
-/// model string.
-///
-/// The `resolved_model` should be the final model identifier that will appear
-/// in the API payload (after normalization / provider-specific mapping).
-#[must_use]
-pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> ProviderCapability {
-    if matches!(
-        provider,
-        ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Moonshot
-    ) {
-        return ProviderCapability {
-            provider,
-            resolved_model: resolved_model.to_string(),
-            context_window: crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS,
-            max_output: 4096,
-            thinking_supported: false,
-            cache_telemetry_supported: false,
-            request_payload_mode: RequestPayloadMode::ChatCompletions,
-            alias_deprecation: None,
-        };
-    }
-
-    if matches!(provider, ApiProvider::XiaomiMimo) {
-        return ProviderCapability {
-            provider,
-            resolved_model: resolved_model.to_string(),
-            context_window: 1_000_000,
-            max_output: 128_000,
-            thinking_supported: true,
-            cache_telemetry_supported: false,
-            request_payload_mode: RequestPayloadMode::ChatCompletions,
-            alias_deprecation: None,
-        };
-    }
-
-    if matches!(provider, ApiProvider::Ollama) {
-        return ProviderCapability {
-            provider,
-            resolved_model: resolved_model.to_string(),
-            context_window: 8192,
-            max_output: 4096,
-            thinking_supported: false,
-            cache_telemetry_supported: false,
-            request_payload_mode: RequestPayloadMode::ChatCompletions,
-            alias_deprecation: None,
-        };
-    }
-
-    if matches!(provider, ApiProvider::Anthropic) {
-        // Capabilities are inferred from the model name; we don't bundle a
-        // catalog. Recent Claude families (3.5+, 4+) all support thinking
-        // and prompt-caching telemetry, but we conservatively gate thinking
-        // behind a name match so older snapshots don't lie.
-        let model_lower = resolved_model.to_ascii_lowercase();
-        let thinking_supported = model_lower.contains("claude-")
-            && (model_lower.contains("opus-4")
-                || model_lower.contains("sonnet-4")
-                || model_lower.contains("3-7")
-                || model_lower.contains("3.7")
-                || model_lower.contains("haiku-4"));
-        return ProviderCapability {
-            provider,
-            resolved_model: resolved_model.to_string(),
-            context_window: 200_000,
-            max_output: 8_192,
-            thinking_supported,
-            cache_telemetry_supported: true,
-            request_payload_mode: RequestPayloadMode::Messages,
-            alias_deprecation: None,
-        };
-    }
-
-    let model_lower = resolved_model.to_ascii_lowercase();
-    let alias_deprecation = if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
-        deepseek_alias_deprecation(&model_lower)
-    } else {
-        None
-    };
-    let is_v4_pro = model_lower.contains("v4-pro") || model_lower == "deepseek-v4pro";
-    let is_v4_flash = model_lower.contains("v4-flash")
-        || model_lower == "deepseek-v4flash"
-        || model_lower == "deepseek-v4"
-        || alias_deprecation.is_some();
-    let is_reasoner = matches!(provider, ApiProvider::WanjieArk)
-        && (model_lower.contains("reasoner") || model_lower.contains("r1"));
-
-    // Context window: V4-class models get 1M, everything else falls through
-    // to the model's own lookup or a default.
-    let context_window = if is_v4_pro || is_v4_flash {
-        crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
-    } else {
-        crate::models::context_window_for_model(resolved_model)
-            .unwrap_or(crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS)
-    };
-
-    // Max output tokens: official DeepSeek V4 API metadata lists 384K;
-    // runtime request caps remain separate and more conservative.
-    let max_output = if is_v4_pro || is_v4_flash {
-        384_000
-    } else {
-        crate::models::max_output_tokens_for_model(resolved_model).unwrap_or(4096)
-    };
-
-    // Thinking support: V4 models support thinking on all providers, but
-    // only when the model name matches the V4 family.
-    let thinking_supported = is_v4_pro
-        || is_v4_flash
-        || is_reasoner
-        || crate::models::model_supports_reasoning(resolved_model);
-
-    // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
-    let cache_telemetry_supported = matches!(
-        provider,
-        ApiProvider::Deepseek
-            | ApiProvider::DeepseekCN
-            | ApiProvider::NvidiaNim
-            | ApiProvider::Volcengine
-    );
-
-    // Request payload mode: all current providers use chat completions.
-    let request_payload_mode = RequestPayloadMode::ChatCompletions;
-
-    ProviderCapability {
-        provider,
-        resolved_model: resolved_model.to_string(),
-        context_window,
-        max_output,
-        thinking_supported,
-        cache_telemetry_supported,
-        request_payload_mode,
-        alias_deprecation,
-    }
-}
-
-fn deepseek_alias_deprecation(model_lower: &str) -> Option<ModelAliasDeprecation> {
-    match model_lower {
-        "deepseek-chat" | "deepseek-reasoner" => Some(ModelAliasDeprecation {
-            alias: model_lower.to_string(),
-            replacement: DEEPSEEK_ALIAS_REPLACEMENT.to_string(),
-            retirement_date: DEEPSEEK_ALIAS_RETIREMENT_DATE.to_string(),
-            retirement_utc: DEEPSEEK_ALIAS_RETIREMENT_UTC.to_string(),
-            notice: format!(
-                "{model_lower} is a compatibility alias for {DEEPSEEK_ALIAS_REPLACEMENT} and is scheduled to retire on {DEEPSEEK_ALIAS_RETIREMENT_DATE}."
-            ),
-        }),
-        _ => None,
-    }
-}
+// Provider-capability cluster (`ApiProvider`, `ProviderCapability`,
+// `ModelAliasDeprecation`, `RequestPayloadMode`, `provider_capability`,
+// and the `DEEPSEEK_ALIAS_*` constants) moved to
+// `codesmith_agent_runtime::config_types`; re-exported here so the
+// historical `crate::config::{...}` paths keep resolving.
+pub use codesmith_agent_runtime::config_types::{
+    ApiProvider, DEEPSEEK_ALIAS_REPLACEMENT, DEEPSEEK_ALIAS_RETIREMENT_DATE,
+    DEEPSEEK_ALIAS_RETIREMENT_UTC, ModelAliasDeprecation, ProviderCapability, RequestPayloadMode,
+    provider_capability,
+};
 
 /// Canonicalize compact DeepSeek model aliases to stable IDs.
 ///
@@ -650,6 +338,60 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
 
 // === Types ===
 
+/// Structured `[sandbox]` table. Every field is optional so legacy flat keys
+/// and per-mode defaults can fill the gaps.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SandboxConfigToml {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub fail_if_unavailable: Option<bool>,
+    #[serde(default)]
+    pub enabled_platforms: Option<Vec<String>>,
+    #[serde(default)]
+    pub excluded_commands: Option<Vec<String>>,
+    #[serde(default)]
+    pub auto_allow_bash_if_sandboxed: Option<bool>,
+    #[serde(default)]
+    pub prefer_bwrap: Option<bool>,
+    #[serde(default)]
+    pub filesystem: Option<SandboxFilesystemConfigToml>,
+    #[serde(default)]
+    pub network: Option<SandboxNetworkConfigToml>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SandboxFilesystemConfigToml {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub writable_roots: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_read: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny_read: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_write: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny_write: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude_tmpdir: Option<bool>,
+    #[serde(default)]
+    pub exclude_slash_tmp: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SandboxNetworkConfigToml {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub allow_managed_domains_only: Option<bool>,
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny: Option<Vec<String>>,
+}
+
 /// Raw retry configuration loaded from config files.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RetryConfig {
@@ -840,14 +582,19 @@ impl Default for SnapshotsConfig {
 
 /// User-level memory configuration (#489).
 ///
-/// Default is opt-in: when this table is absent or `enabled = false`, the
-/// memory file is neither read nor written, and `# foo` quick-adds in the
-/// composer fall through to the normal turn-submission path.
+/// Default is **on** (mirrors Claude Code's `isAutoMemoryEnabled`): when this
+/// table is absent, the memory file is read/written and `# foo` quick-adds in
+/// the composer append to it. The effective enablement is resolved by
+/// [`Config::memory_enabled`], which applies a five-level priority cascade
+/// (disable env > bare/simple > remote-without-storage > explicit setting >
+/// default on). Set `enabled = false` (or `DEEPSEEK_DISABLE_AUTO_MEMORY=1`) to
+/// opt out.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MemoryConfig {
     /// When `true`, load the user memory file at `Config::memory_path()`
     /// into the system prompt as a `<user_memory>` block, and intercept
-    /// `# foo` typed in the composer to append to that file. Default `false`.
+    /// `# foo` typed in the composer to append to that file. When `None`,
+    /// the cascade default (`true`) applies.
     #[serde(default)]
     pub enabled: Option<bool>,
     /// When `true`, evolve memory from a single file to a directory-based
@@ -860,84 +607,20 @@ pub struct MemoryConfig {
     /// the parent of `Config::memory_path()` with `/memory/` appended.
     #[serde(default)]
     pub directory: Option<String>,
+    /// Paths to exclude from the four-tier CLAUDE.md memory merge (Plan 03 /
+    /// finding F1). Each entry is `~`/env-expanded and canonicalized before
+    /// matching, so a symlinked or realpath-variant of an excluded file is
+    /// dropped too. Resolved into the `CODESMITH_MEMORY_EXCLUDES` env var at
+    /// engine startup so every load site (per-turn prompt reloader, session
+    /// init, …) honours it without threading `EngineConfig`.
+    #[serde(default)]
+    pub excludes: Option<Vec<String>>,
 }
 
 impl SnapshotsConfig {
     #[must_use]
     pub fn max_age(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.max_age_days.saturating_mul(24 * 60 * 60))
-    }
-}
-
-/// Search provider enumeration — selects which backend `web_search` uses.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SearchProvider {
-    /// Bing HTML scraping. No API key needed.
-    Bing,
-    /// DuckDuckGo HTML scraping with Bing fallback. No API key needed.
-    #[default]
-    #[serde(alias = "duckduckgo")]
-    DuckDuckGo,
-    /// Tavily AI Search API (<https://tavily.com>). Requires api_key.
-    Tavily,
-    /// Bocha AI Search API (<https://bochaai.com>). Requires api_key.
-    Bocha,
-    /// Metaso AI Search API (<https://metaso.cn>). Uses built-in default key
-    /// or `METASO_API_KEY` env var; configurable via `[search] api_key`.
-    #[serde(alias = "metaso")]
-    Metaso,
-    /// Baidu AI Search API (<https://qianfan.baidubce.com>). Requires api_key.
-    #[serde(
-        alias = "baidu-search",
-        alias = "baidu_ai_search",
-        alias = "baidu_search",
-        alias = "baidu-ai-search"
-    )]
-    Baidu,
-    /// Volcengine Ark web_search via Responses API. Requires api_key.
-    /// Free tier: 20K queries/month per API key. Falls back to
-    /// `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`
-    /// env vars when `[search] api_key` is not set.
-    #[serde(
-        alias = "volcengine",
-        alias = "ark",
-        alias = "volc",
-        alias = "volcengine-ark",
-        alias = "volcengine_ark",
-        alias = "volc-ark"
-    )]
-    Volcengine,
-}
-
-impl SearchProvider {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "bing" => Some(Self::Bing),
-            "duckduckgo" | "duck-duck-go" | "duck_duck_go" | "ddg" => Some(Self::DuckDuckGo),
-            "tavily" => Some(Self::Tavily),
-            "bocha" => Some(Self::Bocha),
-            "metaso" => Some(Self::Metaso),
-            "baidu" | "baidu-search" | "baidu_search" | "baidu-ai-search" | "baidu_ai_search" => {
-                Some(Self::Baidu)
-            }
-            "volcengine" | "ark" | "volc" | "volcengine-ark" => Some(Self::Volcengine),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Bing => "bing",
-            Self::DuckDuckGo => "duckduckgo",
-            Self::Tavily => "tavily",
-            Self::Bocha => "bocha",
-            Self::Metaso => "metaso",
-            Self::Baidu => "baidu",
-            Self::Volcengine => "volcengine",
-        }
     }
 }
 
@@ -977,28 +660,6 @@ pub struct SearchConfig {
     /// Volcengine also falls back to `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` env vars.
     #[serde(default)]
     pub api_key: Option<String>,
-}
-
-/// Model-visible tool catalog controls (`[tools]` table in config.toml).
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ToolsConfig {
-    /// Native tool names to keep loaded even when they are outside the small
-    /// default core catalog. Unknown names are harmless and simply never match.
-    #[serde(default)]
-    pub always_load: Vec<String>,
-
-    /// Optional directory to scan for plugin tool scripts. Scripts with a
-    /// frontmatter header (`# name:`, `# description:`, `# schema:`) are
-    /// auto-discovered and registered as tools.
-    ///
-    /// Defaults to `~/.codesmith/tools/` when `None`.
-    #[serde(default)]
-    pub plugin_dir: Option<String>,
-
-    /// Per-tool overrides keyed by built-in tool name.
-    /// Each override replaces or disables the named tool.
-    #[serde(default)]
-    pub overrides: Option<HashMap<String, ToolOverride>>,
 }
 
 /// One configurable footer item.
@@ -1214,15 +875,12 @@ impl StatusItem {
     }
 }
 
-/// Resolved retry policy with defaults applied.
-#[derive(Debug, Clone)]
-pub struct RetryPolicy {
-    pub enabled: bool,
-    pub max_retries: u32,
-    pub initial_delay: f64,
-    pub max_delay: f64,
-    pub exponential_base: f64,
-}
+/// Re-export of the resolved retry policy (canonical home: `codesmith_agent::retry`).
+pub use codesmith_agent::retry::RetryPolicy;
+pub use codesmith_agent_runtime::config_types::{
+    DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, SearchProvider, ToolOverride,
+    ToolsConfig, VisionModelConfig,
+};
 
 /// Capacity-controller config loaded from config files/environment.
 #[derive(Debug, Clone, Deserialize)]
@@ -1244,19 +902,7 @@ pub struct CapacityConfig {
     pub fallback_default_prior: Option<f64>,
 }
 
-impl RetryPolicy {
-    /// Compute the backoff delay for a retry attempt.
-    #[must_use]
-    #[allow(dead_code)] // used by runtime_api; will be wired into client retry loop
-    pub fn delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
-        let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
-        let delay = self.initial_delay * self.exponential_base.powi(exponent);
-        let delay = delay.min(self.max_delay);
-        // Clamp to a sane range to guard against NaN/negative from misconfigured values
-        let delay = delay.clamp(0.0, 300.0);
-        std::time::Duration::from_secs_f64(delay)
-    }
-}
+// `RetryPolicy` and its `delay_for_attempt` impl now live in `codesmith_agent::retry`.
 
 /// Context management configuration (append-only layered context with Flash seams).
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1318,6 +964,14 @@ pub struct SubagentsConfig {
     /// (1..=1800). Zero or unset uses the legacy 120s default (#1806, #1808).
     #[serde(default)]
     pub api_timeout_secs: Option<u64>,
+    /// Whether sub-agents inherit the FULL parent tool registry regardless of
+    /// the parent's effective tool set (legacy v0.6.6 behavior). Default
+    /// `false` (Plan 04 / finding F4 `restrictToSubset`): a child's tool
+    /// surface is a subset of its parent's effective tools — children can
+    /// never escalate beyond what the parent exposes. Set `true` to restore
+    /// unrestricted full inheritance for flows that relied on the old default.
+    #[serde(default)]
+    pub inherit_full_registry: Option<bool>,
 }
 
 /// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
@@ -1401,10 +1055,23 @@ pub struct Config {
     /// at 100 KiB, and skipped (with a warning) on read errors so a
     /// missing optional file doesn't fail the launch.
     pub instructions: Option<Vec<String>>,
+    /// Full system prompt override. Replaces the built-in assembled prompt but
+    /// still preserves explicit append sections after it.
+    pub system_prompt: Option<String>,
+    /// Path to a file containing the full system prompt override.
+    pub system_prompt_file: Option<String>,
+    /// Additional system-prompt append sources rendered after the selected base.
+    pub append_system_prompt: Option<Vec<String>>,
     pub allow_shell: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub yolo: Option<bool>,
+    /// Enable local-only telemetry: capacity-decision analytics events are
+    /// written to `~/.codesmith/telemetry/events.jsonl`. Off by default; the
+    /// sink is constructed pre-trust (events queue in-memory) and only
+    /// attaches (writes to disk) once the workspace trust boundary passes.
+    #[serde(default)]
+    pub telemetry: Option<bool>,
     /// External sandbox backend: `"none"` or `"opensandbox"`.
     /// When set, exec_shell routes commands through the backend's HTTP API
     /// instead of spawning a local process.
@@ -1413,6 +1080,10 @@ pub struct Config {
     pub sandbox_url: Option<String>,
     /// Optional API key for the external sandbox backend (sent as Bearer token).
     pub sandbox_api_key: Option<String>,
+    /// Optional structured sandbox controls. Legacy top-level sandbox fields are
+    /// still accepted and are merged into the runtime view for compatibility.
+    #[serde(default)]
+    pub sandbox: Option<SandboxConfigToml>,
     /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
     /// through bubblewrap instead of relying solely on Landlock (#2184).
     /// Defaults to false. Requires the `bubblewrap` package to be installed
@@ -1507,47 +1178,6 @@ pub struct Config {
     /// Vision model configuration for the `image_analyze` tool.
     #[serde(default)]
     pub vision_model: Option<VisionModelConfig>,
-}
-
-/// How a user wants to replace or disable a built-in tool.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ToolOverride {
-    /// Run a local script file. The script receives the tool's JSON input
-    /// on stdin and must return a JSON `ToolResult` on stdout.
-    Script {
-        /// Path to the script (absolute, or relative to `~/.codesmith/tools/`).
-        path: String,
-        /// Optional static arguments prepended before the tool's JSON input.
-        #[serde(default)]
-        args: Option<Vec<String>>,
-    },
-    /// Run an external command. The command receives the tool's JSON input
-    /// on stdin and must return a JSON `ToolResult` on stdout.
-    Command {
-        /// The command to run (binary name or absolute path).
-        command: String,
-        /// Optional static arguments prepended before the tool's JSON input.
-        #[serde(default)]
-        args: Option<Vec<String>>,
-    },
-    /// Completely disable a built-in tool. The tool will not appear in the
-    /// model-visible catalog and cannot be called.
-    Disabled,
-}
-
-/// Vision model configuration for the `image_analyze` tool.
-/// Uses an OpenAI-compatible vision model API.
-#[derive(Debug, Clone, Deserialize)]
-pub struct VisionModelConfig {
-    /// Model identifier (e.g., "gemini-3.1-flash-lite-preview").
-    pub model: String,
-    /// API key for the vision model. Inherits from main config if not specified.
-    #[serde(default)]
-    pub api_key: Option<String>,
-    /// Base URL for the vision model API. Defaults to OpenAI.
-    #[serde(default)]
-    pub base_url: Option<String>,
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -2422,16 +2052,95 @@ impl Config {
             .collect()
     }
 
-    /// Whether the user-memory feature is enabled. The default is **off**
-    /// to preserve zero-overhead behavior for users who haven't opted in.
-    /// Flips to `true` when `[memory] enabled = true` in `config.toml` or
-    /// `DEEPSEEK_MEMORY=on` is set in the environment.
+    /// Resolve append-system-prompt paths from config. Inline append content is
+    /// represented by `system_prompt` / CLI sources, so config append entries are
+    /// path-only for predictable TOML semantics.
+    #[must_use]
+    pub fn append_system_prompt_paths(&self) -> Vec<PathBuf> {
+        self.append_system_prompt
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(expand_path)
+            .collect()
+    }
+
+    /// Resolve the configured full system-prompt override from inline config or
+    /// `system_prompt_file`. Inline config wins over the file path.
+    #[must_use]
+    pub fn system_prompt_override_text(&self) -> Option<String> {
+        if let Some(inline) = self
+            .system_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(inline.to_string());
+        }
+        let path = self
+            .system_prompt_file
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(expand_path)?;
+        match std::fs::read_to_string(&path) {
+            Ok(content) if !content.trim().is_empty() => Some(content),
+            Ok(_) => None,
+            Err(err) => {
+                tracing::warn!(
+                    target: "prompt_runtime",
+                    ?err,
+                    ?path,
+                    "skipping unreadable system_prompt_file"
+                );
+                None
+            }
+        }
+    }
+
+    /// Whether the user-memory feature is enabled, using a Claude Code-style
+    /// priority cascade (highest precedence first):
+    ///
+    /// 1. `DEEPSEEK_DISABLE_AUTO_MEMORY` env — truthy closes memory, a
+    ///    defined-but-falsy value (e.g. `0`/`false`) explicitly opens it.
+    /// 2. bare/simple mode (`--bare` / `DEEPSEEK_SIMPLE` / `CODESMITH_SIMPLE`
+    ///    / `CODEWHALE_SIMPLE` truthy) — closes memory.
+    /// 3. remote mode (`DEEPSEEK_REMOTE` / `CODESMITH_REMOTE` truthy) without
+    ///    a `DEEPSEEK_REMOTE_MEMORY_DIR` — closes memory (no persistent store).
+    /// 4. `[memory] enabled` in `config.toml` or `DEEPSEEK_MEMORY` env — the
+    ///    explicit user setting.
+    /// 5. default **on**.
+    ///
+    /// Env vars are read at call time so runtime overrides (e.g. `--bare`)
+    /// take effect without reloading config.
     #[must_use]
     pub fn memory_enabled(&self) -> bool {
-        self.memory
-            .as_ref()
-            .and_then(|m| m.enabled)
-            .unwrap_or(false)
+        // 1. Explicit disable env (truthy -> off; defined-falsy -> on).
+        if let Ok(value) = std::env::var("DEEPSEEK_DISABLE_AUTO_MEMORY") {
+            return !parse_env_bool(&value);
+        }
+        // 2. bare/simple mode -> off.
+        if env_flag_truthy_any(&["DEEPSEEK_SIMPLE", "CODESMITH_SIMPLE", "CODEWHALE_SIMPLE"]) {
+            return false;
+        }
+        // 3. remote mode without a persistent memory dir -> off.
+        if env_flag_truthy_any(&["DEEPSEEK_REMOTE", "CODESMITH_REMOTE"])
+            && std::env::var("DEEPSEEK_REMOTE_MEMORY_DIR")
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true)
+        {
+            return false;
+        }
+        // 4. Explicit user setting (config.toml or DEEPSEEK_MEMORY, the latter
+        //    folded into `memory.enabled` by `apply_env_overrides`).
+        if let Some(enabled) = self.memory.as_ref().and_then(|m| m.enabled) {
+            return enabled;
+        }
+        // 5. default on.
+        true
     }
 
     /// Whether Knowledge On Demand is enabled. Requires both `memory.enabled = true`
@@ -2455,6 +2164,25 @@ impl Config {
             .and_then(|m| m.directory.as_deref())
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
+    }
+
+    /// Paths excluded from the four-tier CLAUDE.md memory merge (Plan 03 /
+    /// finding F1), resolved from `[memory] excludes` in config.toml. Empty
+    /// by default. The engine publishes this into the
+    /// `CODESMITH_MEMORY_EXCLUDES` env var at startup so all project-context
+    /// load sites honour it.
+    #[must_use]
+    pub fn memory_excludes(&self) -> Vec<String> {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.excludes.as_deref())
+            .map(|ex| {
+                ex.iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Resolve the memory directory path. When KoD is enabled, this is the
@@ -2484,6 +2212,109 @@ impl Config {
     #[must_use]
     pub fn allow_shell(&self) -> bool {
         self.allow_shell.unwrap_or(false)
+    }
+
+    /// Return whether local telemetry collection is enabled. Defaults to
+    /// `false`: telemetry is opt-in. When enabled, the TelemetrySink writes
+    /// capacity analytics events to a local jsonl file post-trust.
+    #[must_use]
+    pub fn telemetry_enabled(&self) -> bool {
+        self.telemetry.unwrap_or(false)
+    }
+
+    /// Build the effective runtime sandbox controls.
+    #[must_use]
+    pub fn sandbox_runtime_config(&self) -> SandboxRuntimeConfig {
+        let mut runtime = SandboxRuntimeConfig::default();
+        if let Some(backend) = self.sandbox_backend.as_deref() {
+            runtime.backend = if backend.trim().eq_ignore_ascii_case("opensandbox") {
+                SandboxBackendKind::OpenSandbox
+            } else {
+                SandboxBackendKind::Local
+            };
+        }
+        runtime.prefer_bwrap = self.prefer_bwrap.unwrap_or(false);
+
+        if let Some(sandbox) = self.sandbox.as_ref() {
+            if let Some(enabled) = sandbox.enabled {
+                runtime.enabled = enabled;
+            }
+            if let Some(fail_if_unavailable) = sandbox.fail_if_unavailable {
+                runtime.fail_if_unavailable = fail_if_unavailable;
+            }
+            if let Some(platforms) = sandbox.enabled_platforms.clone() {
+                runtime.enabled_platforms = platforms;
+            }
+            if let Some(excluded) = sandbox.excluded_commands.clone() {
+                runtime.excluded_commands = excluded;
+            }
+            if let Some(auto_allow) = sandbox.auto_allow_bash_if_sandboxed {
+                runtime.auto_allow_bash_if_sandboxed = auto_allow;
+            }
+            if let Some(prefer_bwrap) = sandbox.prefer_bwrap {
+                runtime.prefer_bwrap = prefer_bwrap;
+            }
+            if let Some(fs) = sandbox.filesystem.as_ref() {
+                runtime.filesystem = SandboxFilesystemConfig {
+                    mode: fs.mode.clone(),
+                    writable_roots: fs
+                        .writable_roots
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    allow_read: fs
+                        .allow_read
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    deny_read: fs
+                        .deny_read
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    allow_write: fs
+                        .allow_write
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    deny_write: fs
+                        .deny_write
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| expand_path(&value))
+                        .collect(),
+                    exclude_tmpdir: fs.exclude_tmpdir,
+                    exclude_slash_tmp: fs.exclude_slash_tmp,
+                };
+            }
+            if let Some(network) = sandbox.network.as_ref() {
+                let mut allow = network.allow.clone().unwrap_or_default();
+                if network.allow_managed_domains_only.unwrap_or(false) {
+                    for domain in crate::sandbox::runtime::managed_domains() {
+                        if !allow.iter().any(|existing| existing == &domain) {
+                            allow.push(domain);
+                        }
+                    }
+                }
+                runtime.network = SandboxNetworkConfig {
+                    enabled: network.enabled,
+                    allow_managed_domains_only: network.allow_managed_domains_only.unwrap_or(false),
+                    allow,
+                    deny: network.deny.clone().unwrap_or_default(),
+                };
+            }
+        }
+
+        runtime
     }
 
     /// Return the maximum number of concurrent sub-agents.
@@ -2522,6 +2353,21 @@ impl Config {
             return DEFAULT_SUBAGENT_API_TIMEOUT_SECS;
         }
         raw.clamp(MIN_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_API_TIMEOUT_SECS)
+    }
+
+    /// Whether sub-agents inherit the full parent tool registry (legacy
+    /// v0.6.6 behavior) or are restricted to a subset of their parent's
+    /// effective tools (Plan 04 / finding F4 `restrictToSubset`).
+    ///
+    /// Reads `[subagents] inherit_full_registry`. Default `false` = subset
+    /// posture (a child can never call a tool its parent lacks); `true`
+    /// restores the old unrestricted full-inheritance default.
+    #[must_use]
+    pub fn subagent_inherit_full_registry(&self) -> bool {
+        self.subagents
+            .as_ref()
+            .and_then(|cfg| cfg.inherit_full_registry)
+            .unwrap_or(false)
     }
 
     /// Raw sub-agent model override map. Values are validated at spawn time
@@ -2637,68 +2483,14 @@ impl Config {
 
 // === Defaults ===
 
-fn default_config_path() -> Option<PathBuf> {
-    env_config_path().or_else(home_config_path)
-}
-
-pub(crate) fn effective_home_dir() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("HOME") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            return Some(path);
-        }
-    }
-
-    if let Some(path) = std::env::var_os("USERPROFILE") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            return Some(path);
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        if let (Some(drive), Some(homepath)) =
-            (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH"))
-        {
-            let mut path = PathBuf::from(drive);
-            path.push(homepath);
-            if !path.as_os_str().is_empty() {
-                return Some(path);
-            }
-        }
-    }
-
-    dirs::home_dir()
-}
-
-fn home_config_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codesmith").join("config.toml");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("config.toml");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
-}
-
-#[must_use]
-pub(crate) fn is_workspace_trusted(workspace: &Path) -> bool {
-    let Some(config_path) = default_config_path() else {
-        return false;
-    };
-    let Ok(raw) = fs::read_to_string(config_path) else {
-        return false;
-    };
-    let Ok(doc) = toml::from_str::<toml::Value>(&raw) else {
-        return false;
-    };
-    workspace_trust_level_from_doc(&doc, workspace).is_some_and(is_trusted_level)
-}
+pub(crate) use codesmith_agent_runtime::utils::effective_home_dir;
+// Workspace trust + config-path helpers moved to
+// `codesmith_agent_runtime::workspace_trust`; re-exported here so the rest of
+// config.rs (and `crate::config::is_workspace_trusted` callers) keep resolving.
+pub(crate) use codesmith_agent_runtime::workspace_trust::{
+    default_config_path, env_config_path, expand_path, expand_pathbuf, home_config_path,
+    is_workspace_trusted, workspace_config_key, workspace_trust_level_from_doc,
+};
 
 pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
     let config_path = default_config_path()
@@ -2735,55 +2527,6 @@ pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
     write_config_file_secure(&config_path, &serialized)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     Ok(config_path)
-}
-
-fn workspace_trust_level_from_doc<'a>(doc: &'a toml::Value, workspace: &Path) -> Option<&'a str> {
-    let workspace = canonicalize_or_keep(workspace);
-    let projects = doc.get("projects")?.as_table()?;
-    for (raw_path, project) in projects {
-        let project_path = canonicalize_or_keep(&expand_path(raw_path));
-        if project_path == workspace {
-            return project.get("trust_level").and_then(toml::Value::as_str);
-        }
-    }
-    None
-}
-
-fn is_trusted_level(level: &str) -> bool {
-    level.trim().eq_ignore_ascii_case("trusted")
-}
-
-fn workspace_config_key(workspace: &Path) -> String {
-    canonicalize_or_keep(workspace)
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn canonicalize_or_keep(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn env_config_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("CODESMITH_CONFIG_PATH") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Some(expand_path(trimmed));
-        }
-    }
-    if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Some(expand_path(trimmed));
-        }
-    }
-    None
-}
-
-fn expand_pathbuf(path: PathBuf) -> PathBuf {
-    if let Some(raw) = path.to_str() {
-        return expand_path(raw);
-    }
-    path
 }
 
 fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
@@ -2884,22 +2627,6 @@ fn default_requirements_path() -> Option<PathBuf> {
     }
 }
 
-pub(crate) fn expand_path(path: &str) -> PathBuf {
-    if let Some(stripped) = path.strip_prefix('~')
-        && (stripped.is_empty() || stripped.starts_with('/') || stripped.starts_with('\\'))
-        && let Some(mut home) = effective_home_dir()
-    {
-        let suffix = stripped.trim_start_matches(['/', '\\']);
-        if !suffix.is_empty() {
-            home.push(suffix);
-        }
-        return home;
-    }
-
-    let expanded = shellexpand::tilde(path);
-    PathBuf::from(expanded.as_ref())
-}
-
 fn default_skills_dir() -> Option<PathBuf> {
     effective_home_dir().map(|home| home.join(".codesmith").join("skills"))
 }
@@ -2970,6 +2697,31 @@ fn codesmith_env_var(
                 .filter(|value| !value.trim().is_empty())
         })
         .ok_or(std::env::VarError::NotPresent)
+}
+
+fn parse_env_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "yes" | "y" | "enabled"
+    )
+}
+
+/// Returns `true` if any of the named env vars is set to a truthy value.
+fn env_flag_truthy_any(names: &[&str]) -> bool {
+    names.iter().any(|name| {
+        std::env::var(name)
+            .map(|v| parse_env_bool(&v))
+            .unwrap_or(false)
+    })
+}
+
+fn parse_env_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn apply_env_overrides(config: &mut Config) {
@@ -3406,17 +3158,14 @@ fn apply_env_overrides(config: &mut Config) {
         config.memory_path = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_MEMORY") {
-        let on = matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "on" | "true" | "yes" | "y" | "enabled"
-        );
+        let on = parse_env_bool(&value);
         config
             .memory
             .get_or_insert_with(MemoryConfig::default)
             .enabled = Some(on);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_ALLOW_SHELL") {
-        config.allow_shell = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+        config.allow_shell = Some(parse_env_bool(&value));
     }
     if let Ok(value) = std::env::var("DEEPSEEK_APPROVAL_POLICY") {
         config.approval_policy = Some(value);
@@ -3425,7 +3174,7 @@ fn apply_env_overrides(config: &mut Config) {
         config.sandbox_mode = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_YOLO") {
-        config.yolo = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+        config.yolo = Some(parse_env_bool(&value));
     }
     if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_BACKEND") {
         config.sandbox_backend = Some(value);
@@ -3435,6 +3184,44 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_API_KEY") {
         config.sandbox_api_key = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_PREFER_BWRAP") {
+        let on = parse_env_bool(&value);
+        config.prefer_bwrap = Some(on);
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .prefer_bwrap = Some(on);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_ENABLED") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .enabled = Some(parse_env_bool(&value));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .fail_if_unavailable = Some(parse_env_bool(&value));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_ENABLED_PLATFORMS") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .enabled_platforms = Some(parse_env_list(&value));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_EXCLUDED_COMMANDS") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .excluded_commands = Some(parse_env_list(&value));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_AUTO_ALLOW_BASH_IF_SANDBOXED") {
+        config
+            .sandbox
+            .get_or_insert_with(SandboxConfigToml::default)
+            .auto_allow_bash_if_sandboxed = Some(parse_env_bool(&value));
     }
     if let Ok(value) = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH") {
         config.managed_config_path = Some(value);
@@ -3876,13 +3663,20 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         // wholesale. The typical "merge" pattern is for users who want
         // both — they list `~/global.md` inside the project array.
         instructions: override_cfg.instructions.or(base.instructions),
+        system_prompt: override_cfg.system_prompt.or(base.system_prompt),
+        system_prompt_file: override_cfg.system_prompt_file.or(base.system_prompt_file),
+        append_system_prompt: override_cfg
+            .append_system_prompt
+            .or(base.append_system_prompt),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         yolo: override_cfg.yolo.or(base.yolo),
+        telemetry: override_cfg.telemetry.or(base.telemetry),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
         sandbox_backend: override_cfg.sandbox_backend.or(base.sandbox_backend),
         sandbox_url: override_cfg.sandbox_url.or(base.sandbox_url),
         sandbox_api_key: override_cfg.sandbox_api_key.or(base.sandbox_api_key),
+        sandbox: override_cfg.sandbox.or(base.sandbox),
         prefer_bwrap: override_cfg.prefer_bwrap.or(base.prefer_bwrap),
         managed_config_path: override_cfg
             .managed_config_path
@@ -4893,7 +4687,7 @@ pub fn clear_api_key() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::lock_test_env;
+    use crate::test_support::{EnvVarGuard, lock_test_env};
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
@@ -5649,6 +5443,42 @@ mod tests {
         assert_eq!(
             high.subagent_api_timeout_secs(),
             MAX_SUBAGENT_API_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn subagent_inherit_full_registry_default_and_explicit() {
+        // Plan 04 / finding F4: default is `false` (subset posture — children
+        // cannot escalate beyond the parent's effective tools).
+        assert!(!Config::default().subagent_inherit_full_registry());
+
+        let unset = Config {
+            subagents: Some(SubagentsConfig {
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(!unset.subagent_inherit_full_registry());
+
+        let explicit_off = Config {
+            subagents: Some(SubagentsConfig {
+                inherit_full_registry: Some(false),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(!explicit_off.subagent_inherit_full_registry());
+
+        let explicit_on = Config {
+            subagents: Some(SubagentsConfig {
+                inherit_full_registry: Some(true),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(
+            explicit_on.subagent_inherit_full_registry(),
+            "explicit true restores legacy full-inheritance"
         );
     }
 
@@ -8934,5 +8764,146 @@ model = "deepseek-ai/deepseek-v4-pro"
         assert_eq!(items[1], StatusItem::Model);
         assert_eq!(items[2], StatusItem::Cost);
         assert_eq!(items[3], StatusItem::Status);
+    }
+
+    // === memory_enabled cascade (Claude-style isAutoMemoryEnabled) ===
+
+    /// Remove every env var the cascade consults, returning guards that restore
+    /// them on drop. Callers must hold `lock_test_env()` for the guard lifetime.
+    fn clear_memory_env() -> [EnvVarGuard; 5] {
+        [
+            EnvVarGuard::remove("DEEPSEEK_DISABLE_AUTO_MEMORY"),
+            EnvVarGuard::remove("DEEPSEEK_SIMPLE"),
+            EnvVarGuard::remove("CODESMITH_SIMPLE"),
+            EnvVarGuard::remove("DEEPSEEK_REMOTE"),
+            EnvVarGuard::remove("DEEPSEEK_REMOTE_MEMORY_DIR"),
+        ]
+    }
+
+    #[test]
+    fn memory_enabled_defaults_on_when_unset() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        assert!(Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_disable_env_closes() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "1");
+        assert!(!Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_disable_env_falsy_opens() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "false");
+        assert!(Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_bare_mode_closes() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _s = EnvVarGuard::set("DEEPSEEK_SIMPLE", "true");
+        assert!(!Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_codesmith_simple_alias_closes() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _s = EnvVarGuard::set("CODESMITH_SIMPLE", "on");
+        assert!(!Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_remote_without_dir_closes() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _r = EnvVarGuard::set("DEEPSEEK_REMOTE", "true");
+        let _dir = EnvVarGuard::remove("DEEPSEEK_REMOTE_MEMORY_DIR");
+        assert!(!Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_remote_with_dir_stays_open() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _r = EnvVarGuard::set("DEEPSEEK_REMOTE", "true");
+        let _dir = EnvVarGuard::set("DEEPSEEK_REMOTE_MEMORY_DIR", "/tmp/mem");
+        assert!(Config::default().memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_explicit_setting_overrides_default() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let off = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(false),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(!off.memory_enabled());
+
+        let on = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(true),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(on.memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_disable_env_beats_explicit_enable() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "1");
+        let on = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(true),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        // Priority 1 (disable env) wins over priority 4 (explicit setting).
+        assert!(!on.memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_bare_beats_explicit_enable() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let _s = EnvVarGuard::set("DEEPSEEK_SIMPLE", "true");
+        let on = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(true),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        // Priority 2 (bare) wins over priority 4 (explicit setting).
+        assert!(!on.memory_enabled());
+    }
+
+    #[test]
+    fn memory_enabled_kod_requires_memory_enabled() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let off = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(false),
+                kod_enabled: Some(true),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(!off.kod_enabled());
     }
 }

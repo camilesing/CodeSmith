@@ -7,6 +7,27 @@
 //! v0.8.33's new model-facing surface is `agent_open` / `agent_eval` /
 //! `agent_close`. Some older structs and manager helpers remain in this
 //! module while the durable runtime is being reused by the new surface.
+//!
+//! ## Child→parent state回流 (finding F4 / `contextModifier` parity)
+//!
+//! Claude Code propagates child→parent state via a `contextModifier` closure
+//! queued during a concurrent tool batch and applied atomically after the
+//! batch. CodeSmith's shared-state handles are **already** `Arc<Mutex<…>>` —
+//! `SharedTodoList`, `SharedPlanState`, `SharedGoalState`, `SharedTeamContext`,
+//! `SharedTaskV2Manager`, `SharedWorktreeSessionState`
+//! (`crates/agent-runtime/src/engine_config.rs`) — bridged to tools via
+//! `HostServices` and `RuntimeToolServices`. A child mutates the very same
+//! `Arc` the parent holds, so the mutation is **atomically visible to the
+//! parent with no explicit回流 call**. This IS the回流 equivalent of Claude
+//! Code's `contextModifier` for shared state; no queue is needed for it.
+//!
+//! The by-value, non-`Arc` `ToolContext` fields (`auto_approve`, `trust_mode`,
+//! …) do NOT回流 this way — they are cloned per-child and a child cannot
+//! tighten the parent's copy. For those, [`SubAgentCompletion::context_patch`]
+//! carries an optional [`crate::subagent::ContextPatch`] that the parent turn
+//! loop drains and applies **tighten-only** after each completion batch
+//! (`engine::turn_loop`). A child may tighten (`auto_approve = Some(false)`);
+//! an attempt to loosen (`Some(true)`) is rejected and warn-logged.
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
@@ -38,6 +59,10 @@ use crate::tools::registry::{ToolRegistry, ToolRegistryBuilder};
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_u64, required_str,
+};
+use crate::tools::team::{
+    TeamMember, TeammateInfo, TeammateRuntime, add_member, read_team_config, run_teammate_loop,
+    write_team_config,
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
 use crate::utils::spawn_supervised;
@@ -323,326 +348,18 @@ fn wrap_with_deprecation_notice(
 // === Types ===
 
 /// Assignment metadata for sub-agent orchestration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SubAgentAssignment {
-    pub objective: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-}
-
-impl SubAgentAssignment {
-    fn new(objective: String, role: Option<String>) -> Self {
-        Self { objective, role }
-    }
-}
-
-/// Sub-agent execution types with specialized behavior and tool access.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SubAgentType {
-    /// General purpose - full tool access for multi-step tasks.
-    #[default]
-    General,
-    /// Fast exploration - read-only tools for codebase search.
-    Explore,
-    /// Planning - analysis tools only for architectural planning.
-    Plan,
-    /// Code review - read + analysis tools.
-    Review,
-    /// Implementation — focused on writing / patching code to satisfy
-    /// a specific change. Distinct from `General` in that the prompt
-    /// posture pushes hard on landing the change cleanly with the
-    /// minimum surrounding edit (#404).
-    Implementer,
-    /// Verification — focused on running the test suite or other
-    /// validation gates and reporting pass/fail with evidence.
-    /// Distinct from `Review` in that Review reads code and grades it;
-    /// Verifier *runs* tests and reports the outcome (#404).
-    Verifier,
-    /// Tool execution — a fast, non-thinking Flash V4 executor for simple
-    /// machine-bound tasks. Intended as the experimental "Fin" lane: the
-    /// parent does planning/synthesis while this child runs tools and reports
-    /// compact facts.
-    ToolAgent,
-    /// Custom tool access defined at spawn time.
-    Custom,
-    /// Team member — an in-process teammate running in swarm mode.
-    /// Shares a task list with other team members and communicates
-    /// via file-based mailbox.
-    Team,
-    /// Worker spawned by a coordinator agent. Gets full tool access
-    /// minus team management tools. Uses a worker-specific system prompt
-    /// that emphasizes executing the assigned task independently.
-    CoordinatorWorker,
-}
-
-impl SubAgentType {
-    /// Parse a sub-agent type from user input.
-    #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "general" | "general-purpose" | "general_purpose" | "worker" | "default" => {
-                Some(Self::General)
-            }
-            "explore" | "exploration" | "explorer" => Some(Self::Explore),
-            "plan" | "planning" | "awaiter" => Some(Self::Plan),
-            "review" | "code-review" | "code_review" | "reviewer" => Some(Self::Review),
-            "implementer" | "implement" | "implementation" | "builder" => Some(Self::Implementer),
-            "verifier" | "verify" | "verification" | "validator" | "tester" => Some(Self::Verifier),
-            "tool-agent" | "tool_agent" | "toolagent" | "executor" | "execution" | "fin" => {
-                Some(Self::ToolAgent)
-            }
-            "custom" => Some(Self::Custom),
-            "team" | "teammate" | "swarm" => Some(Self::Team),
-            "coordinator-worker" | "coordinator_worker" | "coord_worker" => {
-                Some(Self::CoordinatorWorker)
-            }
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::General => "general",
-            Self::Explore => "explore",
-            Self::Plan => "plan",
-            Self::Review => "review",
-            Self::Implementer => "implementer",
-            Self::Verifier => "verifier",
-            Self::ToolAgent => "tool_agent",
-            Self::Custom => "custom",
-            Self::Team => "team",
-            Self::CoordinatorWorker => "coordinator_worker",
-        }
-    }
-
-    /// Get the system prompt for this agent type.
-    #[must_use]
-    pub fn system_prompt(&self) -> String {
-        let role_intro = match self {
-            Self::General => GENERAL_AGENT_INTRO,
-            Self::Explore => EXPLORE_AGENT_INTRO,
-            Self::Plan => PLAN_AGENT_INTRO,
-            Self::Review => REVIEW_AGENT_INTRO,
-            Self::Implementer => IMPLEMENTER_AGENT_INTRO,
-            Self::Verifier => VERIFIER_AGENT_INTRO,
-            Self::ToolAgent => TOOL_AGENT_INTRO,
-            Self::Custom => CUSTOM_AGENT_INTRO,
-            Self::Team => GENERAL_AGENT_INTRO, // Team agents reuse general prompt with team context
-            Self::CoordinatorWorker => COORDINATOR_WORKER_INTRO,
-        };
-        format!("{role_intro}{SUBAGENT_OUTPUT_FORMAT}")
-    }
-
-    /// Get the default allowed tools for this agent type.
-    ///
-    /// **Deprecated since v0.6.6.** Default sub-agents now inherit the full
-    /// parent registry; the per-type allowlist is advisory only. Pass an explicit
-    /// `allowed_tools` array for narrow Custom roles instead.
-    #[must_use]
-    #[deprecated(
-        since = "0.6.6",
-        note = "Default sub-agents inherit the full parent registry; pass an explicit allowed_tools list only for narrow Custom roles."
-    )]
-    pub fn allowed_tools(&self) -> Vec<&'static str> {
-        match self {
-            Self::General => vec![
-                "list_dir",
-                "read_file",
-                "write_file",
-                "edit_file",
-                "apply_patch",
-                "grep_files",
-                "file_search",
-                "web.run",
-                "web_search",
-                "exec_shell",
-                "exec_shell_wait",
-                "exec_shell_interact",
-                "exec_wait",
-                "exec_interact",
-                "note",
-                "checklist_write",
-                "checklist_add",
-                "checklist_update",
-                "checklist_list",
-                "todo_write",
-                "todo_add",
-                "todo_update",
-                "todo_list",
-                "update_plan",
-            ],
-            Self::Explore => vec![
-                "list_dir",
-                "read_file",
-                "grep_files",
-                "file_search",
-                "web.run",
-                "web_search",
-                "exec_shell",
-                "exec_shell_wait",
-                "exec_shell_interact",
-                "exec_wait",
-                "exec_interact",
-            ],
-            Self::Plan => vec![
-                "list_dir",
-                "read_file",
-                "grep_files",
-                "file_search",
-                "web.run",
-                "note",
-                "update_plan",
-                "checklist_write",
-                "checklist_add",
-                "checklist_update",
-                "checklist_list",
-                "todo_write",
-                "todo_add",
-                "todo_update",
-                "todo_list",
-            ],
-            Self::Review => vec!["list_dir", "read_file", "grep_files", "file_search", "note"],
-            Self::Implementer => vec![
-                "list_dir",
-                "read_file",
-                "write_file",
-                "edit_file",
-                "apply_patch",
-                "grep_files",
-                "file_search",
-                "exec_shell",
-                "exec_shell_wait",
-                "exec_shell_interact",
-                "exec_wait",
-                "exec_interact",
-                "note",
-                "checklist_write",
-                "checklist_add",
-                "checklist_update",
-                "checklist_list",
-                "todo_write",
-                "todo_add",
-                "todo_update",
-                "todo_list",
-                "update_plan",
-            ],
-            Self::Verifier => vec![
-                "list_dir",
-                "read_file",
-                "grep_files",
-                "file_search",
-                "exec_shell",
-                "exec_shell_wait",
-                "exec_shell_interact",
-                "exec_wait",
-                "exec_interact",
-                "run_tests",
-                "diagnostics",
-                "note",
-            ],
-            Self::ToolAgent => vec![
-                "list_dir",
-                "read_file",
-                "grep_files",
-                "file_search",
-                "image_ocr",
-                "fetch_url",
-                "web_search",
-                "web.run",
-                "exec_shell",
-                "exec_shell_wait",
-                "exec_shell_interact",
-                "exec_wait",
-                "exec_interact",
-                "handle_read",
-            ],
-            Self::Custom => vec![], // Must be provided by caller.
-            Self::Team => vec![
-                "list_dir",
-                "read_file",
-                "write_file",
-                "edit_file",
-                "grep_files",
-                "file_search",
-                "task_create_v2",
-                "task_update_v2",
-                "task_get_v2",
-                "task_list_v2",
-                "send_message",
-                "exec_shell",
-                "exec_shell_wait",
-                "exec_shell_interact",
-            ],
-            Self::CoordinatorWorker => vec![
-                "list_dir",
-                "read_file",
-                "write_file",
-                "edit_file",
-                "apply_patch",
-                "grep_files",
-                "file_search",
-                "web.run",
-                "web_search",
-                "fetch_url",
-                "exec_shell",
-                "exec_shell_wait",
-                "exec_shell_interact",
-                "exec_wait",
-                "exec_interact",
-                "note",
-                "checklist_write",
-                "checklist_add",
-                "checklist_update",
-                "checklist_list",
-                "todo_write",
-                "todo_add",
-                "todo_update",
-                "todo_list",
-                "update_plan",
-                "diagnostics",
-            ],
-        }
-    }
-}
-
-/// Status of a sub-agent execution.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum SubAgentStatus {
-    Running,
-    Completed,
-    Interrupted(String),
-    Failed(String),
-    Cancelled,
-}
+/// Sub-agent type identity, status, and assignment data types.
+///
+/// Re-exported from `codesmith_agent_runtime::subagent` so the engine and
+/// TUI share the same sub-agent taxonomy.
+pub use codesmith_agent_runtime::subagent::{
+    DEFAULT_MAX_SPAWN_DEPTH, SubAgentAssignment, SubAgentCompletion, SubAgentStatus, SubAgentType,
+};
 
 /// Snapshot of sub-agent state for tool results.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubAgentResult {
-    pub name: String,
-    pub agent_id: String,
-    pub context_mode: String,
-    pub fork_context: bool,
-    pub agent_type: SubAgentType,
-    pub assignment: SubAgentAssignment,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nickname: Option<String>,
-    pub status: SubAgentStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_memory: Option<AgentMemoryMetadata>,
-    pub result: Option<String>,
-    pub steps_taken: u32,
-    pub duration_ms: u64,
-    /// `true` when this agent was loaded from a prior-session persisted
-    /// state file rather than spawned in the current session (#405).
-    /// Lets `agent_list` filter out historical noise by default while
-    /// keeping the records reachable via `include_archived=true`.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub from_prior_session: bool,
-}
+///
+/// Re-exported from `codesmith_agent_runtime::subagent::SubAgentResult`.
+pub use codesmith_agent_runtime::subagent::SubAgentResult;
 
 fn is_false(b: &bool) -> bool {
     !*b
@@ -734,6 +451,8 @@ struct SpawnRequest {
     max_depth: Option<u32>,
     /// Optional scoped persistent memory for this agent type.
     memory: Option<AgentMemoryRequest>,
+    /// Optional team name for in-process teammate lifecycle spawns.
+    team_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -790,26 +509,6 @@ impl Default for PersistedSubAgentState {
             agents: Vec::new(),
         }
     }
-}
-
-/// Default cap on sub-agent recursion depth. Override via
-/// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
-pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
-
-/// Terminal-state notification emitted to the engine's parent turn loop
-/// when one of its direct children finishes (issue #756). Carries the
-/// already-rendered `<codesmith:subagent.done>` sentinel that the model
-/// expects in the transcript per `prompts/base.md`.
-#[derive(Debug, Clone)]
-pub struct SubAgentCompletion {
-    /// The completing child's agent id. Held for routing/logging — the
-    /// engine's turn loop does not currently key on it (it just injects
-    /// the payload), but downstream tooling and tests need the field.
-    #[allow(dead_code)]
-    pub agent_id: String,
-    /// Human summary on line 1, sentinel on line 2. Same payload shape as
-    /// `Event::AgentComplete::result`.
-    pub payload: String,
 }
 
 /// Parent transcript snapshot available to sub-agents that opt into context
@@ -890,6 +589,22 @@ pub struct SubAgentRuntime {
     /// false-timeout the child mid-thinking. `child_runtime()` and
     /// `background_runtime()` preserve the parent's value (#1806, #1808).
     pub step_api_timeout: Duration,
+    /// Whether this runtime's children must be a subset of this agent's
+    /// effective tool set (`false`, Plan 04 / finding F4 `restrictToSubset`)
+    /// or may inherit the full agent surface regardless (`true`, legacy
+    /// v0.6.6). Resolved from `[subagents] inherit_full_registry` at engine
+    /// construction and propagated to children via `child_runtime()` /
+    /// `background_runtime()`.
+    pub inherit_full_registry: bool,
+    /// The tool-name set that THIS agent's children must be a subset of.
+    /// `None` → unrestricted (this agent exposes the full agent surface, so
+    /// its children may too); `Some(set)` → a child's requested/effective
+    /// tools are intersected with `set` so the child can never call a tool
+    /// this agent lacks. Set in `SubAgentToolRegistry::new` from the agent's
+    /// own effective `allowed_tools` and propagated to grandchildren through
+    /// the spawn-tool runtime clone. This is the CodeSmith analog of Claude
+    /// Code's `restrictToSubset(parentContext.toolPermissionContext)`.
+    pub child_subset_basis: Option<Vec<String>>,
 }
 
 impl SubAgentRuntime {
@@ -925,6 +640,8 @@ impl SubAgentRuntime {
             fork_context: None,
             mcp_pool: None,
             step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
+            inherit_full_registry: false,
+            child_subset_basis: None,
         }
     }
 
@@ -945,6 +662,16 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_step_api_timeout(mut self, timeout: Duration) -> Self {
         self.step_api_timeout = timeout;
+        self
+    }
+
+    /// Override whether children inherit the full registry (`true`, legacy
+    /// v0.6.6) or are restricted to a subset of this agent's effective tools
+    /// (`false`, Plan 04 / finding F4). Called by the engine after reading
+    /// `[subagents] inherit_full_registry`.
+    #[must_use]
+    pub fn with_inherit_full_registry(mut self, inherit: bool) -> Self {
+        self.inherit_full_registry = inherit;
         self
     }
 
@@ -1070,6 +797,15 @@ impl SubAgentRuntime {
             fork_context: self.fork_context.clone(),
             mcp_pool: self.mcp_pool.clone(),
             step_api_timeout: self.step_api_timeout,
+            inherit_full_registry: self.inherit_full_registry,
+            // Propagate the parent's subset basis so the child's
+            // `build_allowed_tools` (run at spawn entry) can intersect the
+            // child's requested tools with the parent's effective set. Each
+            // agent then RESETS this field in `SubAgentToolRegistry::new` to
+            // its own effective `allowed_tools`, bounding the NEXT generation
+            // (grandchildren) — which is already ⊆ the parent's basis because
+            // `build_allowed_tools` intersected it.
+            child_subset_basis: self.child_subset_basis.clone(),
         }
     }
 
@@ -1192,6 +928,19 @@ pub struct SubAgentManager {
     current_session_boot_id: String,
 }
 
+// `EngineHost` (which holds a `SharedSubAgentManager`) derives `Debug`; the
+// manager owns runtime handles that are not `Debug`, so format a summary
+// instead of draining the full agent map. Mirrors `ShellManager`'s impl.
+impl std::fmt::Debug for SubAgentManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubAgentManager")
+            .field("agent_count", &self.agents.len())
+            .field("workspace", &self.workspace)
+            .field("max_agents", &self.max_agents)
+            .finish()
+    }
+}
+
 impl SubAgentManager {
     /// Create a new manager for sub-agents.
     #[must_use]
@@ -1213,6 +962,44 @@ impl SubAgentManager {
     #[cfg(test)]
     pub fn session_boot_id(&self) -> &str {
         &self.current_session_boot_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_live_agent(
+        &mut self,
+        id: String,
+        assignment: SubAgentAssignment,
+    ) -> String {
+        let (input_tx, _input_rx) = mpsc::unbounded_channel();
+        let mut agent = SubAgent::new(
+            id,
+            SubAgentType::Explore,
+            assignment.objective.clone(),
+            assignment,
+            "deepseek-v4-flash".to_string(),
+            Some("Blue".to_string()),
+            Some(vec!["read_file".to_string()]),
+            input_tx,
+            self.current_session_boot_id.clone(),
+        );
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        agent.task_handle = Some(handle);
+        let agent_id = agent.id.clone();
+        self.agents.insert(agent_id.clone(), agent);
+        agent_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn abort_test_agent(&mut self, agent_id: &str) {
+        if let Some(handle) = self
+            .agents
+            .get_mut(agent_id)
+            .and_then(|agent| agent.task_handle.take())
+        {
+            handle.abort();
+        }
     }
 
     /// Classify an agent by its `session_boot_id`: `true` when the
@@ -1345,23 +1132,31 @@ impl SubAgentManager {
         Ok(())
     }
 
+    fn is_live_running(agent: &SubAgent) -> bool {
+        if agent.status != SubAgentStatus::Running {
+            return false;
+        }
+        let Some(handle) = agent.task_handle.as_ref() else {
+            return false;
+        };
+        !handle.is_finished()
+    }
+
     /// Count running agents.
     pub fn running_count(&self) -> usize {
         self.agents
             .values()
-            .filter(|agent| {
-                // Exclude non-running statuses
-                if agent.status != SubAgentStatus::Running {
-                    return false;
-                }
-                // Exclude persisted agents with no task_handle (they're not actually running)
-                let Some(handle) = agent.task_handle.as_ref() else {
-                    return false;
-                };
-                // Exclude agents whose task has finished (status will be updated to Completed shortly)
-                !handle.is_finished()
-            })
+            .filter(|agent| Self::is_live_running(agent))
             .count()
+    }
+
+    /// Snapshot sub-agents that are actually running in this process.
+    pub fn live_running_snapshots(&self) -> Vec<SubAgentResult> {
+        self.agents
+            .values()
+            .filter(|agent| Self::is_live_running(agent))
+            .map(|agent| self.snapshot_for_listing(agent))
+            .collect()
     }
 
     /// Spawn a new background sub-agent.
@@ -1445,7 +1240,13 @@ impl SubAgentManager {
         let nickname = options
             .nickname
             .or_else(|| Some(assign_unique_whale_name(&agent_id, &active_names)));
-        let tools = build_allowed_tools(&agent_type, allowed_tools, runtime.allow_shell)?;
+        let tools = build_allowed_tools(
+            &agent_type,
+            allowed_tools,
+            runtime.allow_shell,
+            runtime.child_subset_basis.as_deref(),
+            runtime.inherit_full_registry,
+        )?;
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let mut agent = SubAgent::new(
             agent_id.clone(),
@@ -1873,6 +1674,9 @@ impl SubAgentManager {
         let mut changed = false;
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.status = result.status;
+            if agent.status != SubAgentStatus::Running {
+                release_resident_leases_for(agent_id);
+            }
             agent.assignment = result.assignment;
             agent.result = result.result;
             agent.steps_taken = result.steps_taken;
@@ -2503,8 +2307,8 @@ impl ToolSpec for AgentSpawnTool {
         if let Some(max_depth) = spawn_request.max_depth {
             child_runtime.max_spawn_depth = child_runtime.spawn_depth.saturating_add(max_depth);
         }
-        if let Some(cwd) = validated_cwd {
-            child_runtime.context.workspace = cwd;
+        if let Some(cwd) = validated_cwd.as_ref() {
+            child_runtime.context.workspace = cwd.clone();
             child_runtime.context.cwd = child_runtime.context.workspace.clone();
         }
         let resolved_agent_memory = if let Some(memory_request) = spawn_request.memory.clone() {
@@ -2561,7 +2365,7 @@ impl ToolSpec for AgentSpawnTool {
                 };
                 (prefixed, conflict)
             } else {
-                (spawn_request.prompt, None)
+                (spawn_request.prompt.clone(), None)
             };
 
         let route = resolve_subagent_assignment_route(
@@ -2575,6 +2379,22 @@ impl ToolSpec for AgentSpawnTool {
         child_runtime.reasoning_effort = route.reasoning_effort.clone();
         child_runtime.reasoning_effort_auto = false;
         let effective_model = route.model;
+
+        if matches!(spawn_request.agent_type, SubAgentType::Team)
+            || spawn_request.team_name.is_some()
+        {
+            let result = spawn_team_teammate(
+                Arc::clone(&self.manager),
+                child_runtime,
+                spawn_request,
+                Some(effective_model.clone()),
+                effective_prompt,
+                validated_cwd,
+            )
+            .await?;
+            return ToolResult::json(&result)
+                .map_err(|e| ToolError::execution_failed(e.to_string()));
+        }
 
         let mut manager = self.manager.write().await;
 
@@ -2595,6 +2415,32 @@ impl ToolSpec for AgentSpawnTool {
                 },
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
+        drop(manager);
+
+        if let Some(bg_registry) = self
+            .runtime
+            .context
+            .runtime
+            .background_task_registry
+            .as_ref()
+        {
+            let description = if result.assignment.objective.trim().is_empty() {
+                result
+                    .result
+                    .clone()
+                    .unwrap_or_else(|| "background agent".to_string())
+            } else {
+                result.assignment.objective.clone()
+            };
+            bg_registry
+                .register_agent_task(
+                    result.agent_id.clone(),
+                    result.agent_type.clone(),
+                    result.model.clone(),
+                    description,
+                )
+                .await;
+        }
 
         // Replace the "pending" lease placeholder with the real agent id now that
         // the manager has assigned one. Without this, `release_resident_leases_for`
@@ -2653,6 +2499,377 @@ impl ToolSpec for AgentSpawnTool {
         }
         Ok(tool_result)
     }
+}
+
+/// Create and start an in-process teammate runtime for AgentTeams.
+async fn spawn_team_teammate(
+    manager: SharedSubAgentManager,
+    runtime: SubAgentRuntime,
+    spawn_request: SpawnRequest,
+    effective_model: Option<String>,
+    effective_prompt: String,
+    validated_cwd: Option<PathBuf>,
+) -> Result<SubAgentResult, ToolError> {
+    let kind = crate::tools::team::backend::detect::detect_backend_kind();
+    match kind {
+        crate::tools::team::backend::BackendKind::InProcess => {
+            spawn_team_teammate_in_process(
+                manager,
+                runtime,
+                spawn_request,
+                effective_model,
+                effective_prompt,
+                validated_cwd,
+            )
+            .await
+        }
+        crate::tools::team::backend::BackendKind::Tmux
+        | crate::tools::team::backend::BackendKind::Iter => {
+            spawn_team_teammate_in_pane(
+                kind,
+                runtime,
+                spawn_request,
+                effective_model,
+                effective_prompt,
+                validated_cwd,
+            )
+            .await
+        }
+    }
+}
+
+/// In-process teammate spawn — the original path: register the teammate in
+/// the leader's `TeamContext` + on-disk team file, construct a
+/// `TeammateRuntime`, and drive `run_teammate_loop` in a supervised task.
+async fn spawn_team_teammate_in_process(
+    manager: SharedSubAgentManager,
+    runtime: SubAgentRuntime,
+    spawn_request: SpawnRequest,
+    effective_model: Option<String>,
+    effective_prompt: String,
+    validated_cwd: Option<PathBuf>,
+) -> Result<SubAgentResult, ToolError> {
+    let shared_team_context = runtime
+        .context
+        .runtime
+        .team_context
+        .clone()
+        .ok_or_else(|| ToolError::not_available("AgentTeams runtime is not attached"))?;
+
+    let cancel_token = CancellationToken::new();
+    let agent_id = format!("team_agent_{}", &Uuid::new_v4().to_string()[..8]);
+    let agent_name = spawn_request
+        .session_name
+        .clone()
+        .unwrap_or_else(|| agent_id.clone());
+    let agent_type = spawn_request.agent_type.clone();
+    let cwd = validated_cwd.unwrap_or_else(|| runtime.context.cwd.clone());
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let (team_name, task_v2_manager, permission_registry) = {
+        let mut slot = shared_team_context.lock().await;
+        let ctx = slot.as_mut().ok_or_else(|| {
+            ToolError::invalid_input("No active team. Call team_create before spawning teammates.")
+        })?;
+        if let Some(requested) = spawn_request.team_name.as_ref()
+            && requested != &ctx.team_name
+        {
+            return Err(ToolError::invalid_input(format!(
+                "Active team is '{}', not '{}'",
+                ctx.team_name, requested
+            )));
+        }
+        if ctx
+            .teammates
+            .values()
+            .any(|existing| existing.name == agent_name)
+            || ctx.teammate_cancel_tokens.contains_key(&agent_name)
+        {
+            return Err(ToolError::invalid_input(format!(
+                "Teammate '{agent_name}' already exists"
+            )));
+        }
+
+        let mut team_file = read_team_config(&ctx.team_name)
+            .map_err(|e| ToolError::execution_failed(format!("Failed to read team config: {e}")))?;
+        add_member(
+            &mut team_file,
+            TeamMember {
+                agent_id: agent_id.clone(),
+                name: agent_name.clone(),
+                agent_type: Some(agent_type.as_str().to_string()),
+                model: effective_model.clone(),
+                prompt: Some(effective_prompt.clone()),
+                color: None,
+                joined_at: now,
+                cwd: cwd.to_string_lossy().to_string(),
+                worktree_path: None,
+                session_id: None,
+                is_active: true,
+            },
+        );
+        write_team_config(&team_file).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to write team config: {e}"))
+        })?;
+
+        ctx.teammates.insert(
+            agent_id.clone(),
+            TeammateInfo {
+                name: agent_name.clone(),
+                agent_type: agent_type.as_str().to_string(),
+                color: None,
+                cwd: cwd.clone(),
+                spawned_at: now,
+            },
+        );
+        ctx.teammate_cancel_tokens
+            .insert(agent_name.clone(), cancel_token.clone());
+
+        let permission_registry = runtime
+            .context
+            .runtime
+            .permission_request_registry
+            .clone()
+            .unwrap_or_else(crate::tools::team::new_shared_permission_registry);
+
+        (
+            ctx.team_name.clone(),
+            ctx.task_v2_manager.clone(),
+            permission_registry,
+        )
+    };
+
+    let mut teammate_context = runtime.context.clone();
+    teammate_context.cwd = cwd.clone();
+    teammate_context.runtime.team_sender = Some(agent_name.clone());
+    let mut teammate_runtime = runtime
+        .child_runtime()
+        .with_cancel_token(cancel_token.clone());
+    teammate_runtime.context = teammate_context.clone();
+    if let Some(model) = effective_model.as_ref() {
+        teammate_runtime.model = model.clone();
+    }
+
+    let rt = TeammateRuntime {
+        agent_id: agent_id.clone(),
+        agent_name: agent_name.clone(),
+        team_name: team_name.clone(),
+        color: None,
+        cancel_token: cancel_token.clone(),
+        task_v2_manager,
+        initial_prompt: effective_prompt.clone(),
+        permission_mode: if runtime.context.auto_approve {
+            "auto".to_string()
+        } else {
+            "ask".to_string()
+        },
+        permission_registry,
+        subagent_manager: manager.clone(),
+        subagent_runtime: teammate_runtime,
+        tool_context: teammate_context,
+        agent_type: agent_type.clone(),
+        model: effective_model.clone(),
+        allowed_tools: spawn_request.allowed_tools.clone(),
+    };
+
+    let cleanup_team_context = shared_team_context.clone();
+    let cleanup_agent_id = agent_id.clone();
+    let cleanup_agent_name = agent_name.clone();
+    let cleanup_team_name = team_name.clone();
+    spawn_supervised(
+        "team-teammate-loop",
+        std::panic::Location::caller(),
+        async move {
+            let _result = run_teammate_loop(rt).await;
+            let mut slot = cleanup_team_context.lock().await;
+            if let Some(ctx) = slot.as_mut() {
+                ctx.teammates.remove(&cleanup_agent_id);
+                ctx.teammate_cancel_tokens.remove(&cleanup_agent_name);
+            }
+            if let Ok(mut team_file) = read_team_config(&cleanup_team_name) {
+                let _ =
+                    crate::tools::team::set_member_inactive(&mut team_file, &cleanup_agent_name);
+                let _ = write_team_config(&team_file);
+            }
+        },
+    );
+
+    Ok(SubAgentResult {
+        name: agent_name,
+        agent_id,
+        context_mode: "team".to_string(),
+        fork_context: false,
+        agent_type,
+        assignment: spawn_request.assignment,
+        model: effective_model.unwrap_or_else(|| runtime.model.clone()),
+        nickname: None,
+        status: SubAgentStatus::Running,
+        agent_memory: None,
+        result: Some(format!("Teammate spawned in team '{team_name}'")),
+        steps_taken: 0,
+        duration_ms: 0,
+        from_prior_session: false,
+    })
+}
+
+/// Pane-backed teammate spawn (tmux / iTerm2). Registers the teammate
+/// leader-side (on-disk team file + in-memory `TeamContext` entry) so the
+/// leader can list / message it, then launches `codesmith team-teammate …`
+/// in a new pane/tab via the detected [`TeammateBackend`].
+///
+/// Unlike the in-process path, there is no leader-side cancellation token or
+/// cleanup task: the pane process owns its own lifecycle and marks itself
+/// inactive in the team file when it exits. The leader's in-memory entry is
+/// best-effort and reconciled on next team-file read.
+async fn spawn_team_teammate_in_pane(
+    kind: crate::tools::team::backend::BackendKind,
+    runtime: SubAgentRuntime,
+    spawn_request: SpawnRequest,
+    effective_model: Option<String>,
+    effective_prompt: String,
+    validated_cwd: Option<PathBuf>,
+) -> Result<SubAgentResult, ToolError> {
+    use crate::tools::team::backend::{
+        TeammateBackend, TeammateSpawnSpec, iterm::ITermBackend, tmux::TmuxBackend,
+    };
+
+    let shared_team_context = runtime
+        .context
+        .runtime
+        .team_context
+        .clone()
+        .ok_or_else(|| ToolError::not_available("AgentTeams runtime is not attached"))?;
+
+    let agent_id = format!("team_agent_{}", &Uuid::new_v4().to_string()[..8]);
+    let agent_name = spawn_request
+        .session_name
+        .clone()
+        .unwrap_or_else(|| agent_id.clone());
+    let agent_type = spawn_request.agent_type.clone();
+    let cwd = validated_cwd.unwrap_or_else(|| runtime.context.cwd.clone());
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // Leader-side registration: validate the active team, write the member to
+    // the on-disk team file, and insert an in-memory entry so `team_list` /
+    // `send_message` see the teammate before the pane comes up.
+    let team_name = {
+        let mut slot = shared_team_context.lock().await;
+        let ctx = slot.as_mut().ok_or_else(|| {
+            ToolError::invalid_input("No active team. Call team_create before spawning teammates.")
+        })?;
+        if let Some(requested) = spawn_request.team_name.as_ref()
+            && requested != &ctx.team_name
+        {
+            return Err(ToolError::invalid_input(format!(
+                "Active team is '{}', not '{}'",
+                ctx.team_name, requested
+            )));
+        }
+        if ctx
+            .teammates
+            .values()
+            .any(|existing| existing.name == agent_name)
+        {
+            return Err(ToolError::invalid_input(format!(
+                "Teammate '{agent_name}' already exists"
+            )));
+        }
+
+        let mut team_file = read_team_config(&ctx.team_name)
+            .map_err(|e| ToolError::execution_failed(format!("Failed to read team config: {e}")))?;
+        add_member(
+            &mut team_file,
+            TeamMember {
+                agent_id: agent_id.clone(),
+                name: agent_name.clone(),
+                agent_type: Some(agent_type.as_str().to_string()),
+                model: effective_model.clone(),
+                prompt: Some(effective_prompt.clone()),
+                color: None,
+                joined_at: now,
+                cwd: cwd.to_string_lossy().to_string(),
+                worktree_path: None,
+                session_id: None,
+                is_active: true,
+            },
+        );
+        write_team_config(&team_file).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to write team config: {e}"))
+        })?;
+
+        ctx.teammates.insert(
+            agent_id.clone(),
+            TeammateInfo {
+                name: agent_name.clone(),
+                agent_type: agent_type.as_str().to_string(),
+                color: None,
+                cwd: cwd.clone(),
+                spawned_at: now,
+            },
+        );
+        ctx.team_name.clone()
+    };
+
+    let permission_mode = if runtime.context.auto_approve {
+        "auto".to_string()
+    } else {
+        "ask".to_string()
+    };
+    let mut spec = TeammateSpawnSpec::new(agent_id.clone(), agent_name.clone(), team_name.clone());
+    spec.agent_type = agent_type.as_str().to_string();
+    spec.prompt = effective_prompt.clone();
+    spec.model = effective_model.clone();
+    spec.cwd = cwd.clone();
+    spec.allowed_tools = spawn_request.allowed_tools.clone();
+    spec.permission_mode = permission_mode;
+
+    let backend: Box<dyn TeammateBackend> = match kind {
+        crate::tools::team::backend::BackendKind::Tmux => Box::new(TmuxBackend::new()),
+        crate::tools::team::backend::BackendKind::Iter => Box::new(ITermBackend::new()),
+        crate::tools::team::backend::BackendKind::InProcess => {
+            // Unreachable: caller only routes pane backends here.
+            return Err(ToolError::execution_failed(
+                "in-process backend routed to pane spawn path",
+            ));
+        }
+    };
+
+    let spawned = match backend.spawn(&spec).await {
+        Ok(s) => s,
+        Err(e) => {
+            // Roll back the leader-side registration so a failed spawn does
+            // not leave a phantom teammate in the team file / context.
+            if let Ok(mut team_file) = read_team_config(&team_name) {
+                let _ = crate::tools::team::remove_member_by_name(&mut team_file, &agent_name);
+                let _ = write_team_config(&team_file);
+            }
+            let mut slot = shared_team_context.lock().await;
+            if let Some(ctx) = slot.as_mut() {
+                ctx.teammates.remove(&agent_id);
+            }
+            return Err(e.into_tool_error());
+        }
+    };
+
+    Ok(SubAgentResult {
+        name: agent_name,
+        agent_id,
+        context_mode: format!("team:{}", spawned.backend.as_str()),
+        fork_context: false,
+        agent_type,
+        assignment: spawn_request.assignment,
+        model: effective_model.unwrap_or_else(|| runtime.model.clone()),
+        nickname: None,
+        status: SubAgentStatus::Running,
+        agent_memory: None,
+        result: Some(format!(
+            "Teammate spawned in team '{team_name}' via {} backend",
+            spawned.backend.as_str()
+        )),
+        steps_taken: 0,
+        duration_ms: 0,
+        from_prior_session: false,
+    })
 }
 
 // === Sync foreground sub-agent (agent_run) ===
@@ -4318,6 +4535,11 @@ pub(crate) fn emit_parent_completion(
     let _ = tx.send(SubAgentCompletion {
         agent_id: agent_id.to_string(),
         payload: payload.to_string(),
+        // No by-value context回流 today — shared `Arc<Mutex<…>>` state
+        // already回流s atomically. A future child that wants to tighten a
+        // by-value `ToolContext` field populates this (finding F4 / plan 04
+        // §4.2); the parent applies it tighten-only.
+        context_patch: None,
     });
     true
 }
@@ -5338,6 +5560,10 @@ fn parse_spawn_request_with_workspace(
             .unwrap_or(false);
     let max_depth = parse_optional_max_depth(input)?;
     let memory = parse_memory_with_definition(input, definition.as_ref())?;
+    let team_name = optional_input_str(input, &["team_name", "team"])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     Ok(SpawnRequest {
         session_name,
@@ -5351,6 +5577,7 @@ fn parse_spawn_request_with_workspace(
         fork_context,
         max_depth,
         memory,
+        team_name,
     })
 }
 
@@ -5867,7 +6094,7 @@ struct SubAgentToolRegistry {
 
 impl SubAgentToolRegistry {
     fn new(
-        runtime: SubAgentRuntime,
+        mut runtime: SubAgentRuntime,
         agent_type: SubAgentType,
         explicit_allowed_tools: Option<Vec<String>>,
         todo_list: SharedTodoList,
@@ -5892,6 +6119,29 @@ impl SubAgentToolRegistry {
                 }
             }
         }
+        if context.runtime.team_sender.is_some() {
+            if let Some(list) = explicit_allowed_tools.as_mut()
+                && !list.iter().any(|name| name == "send_message")
+            {
+                list.push("send_message".to_string());
+            }
+        }
+        // restrictToSubset (Plan 04 / finding F4): propagate THIS agent's
+        // effective tool set as the subset basis for its grandchildren. The
+        // `runtime` clone handed to the builder below (and thus to the
+        // spawn-tool family) carries this value, so a grandchild's
+        // `build_allowed_tools` intersects its request with THIS set. `None`
+        // (full inheritance / unrestricted parent) → `None` basis, so
+        // grandchildren may inherit full; `Some(set)` → grandchildren are
+        // bounded to `set`. The escape hatch disables subset enforcement
+        // entirely (legacy v0.6.6 full inheritance). The parent's basis that
+        // constrained THIS child was already consumed by `build_allowed_tools`
+        // at spawn entry, so overwriting it here is safe.
+        runtime.child_subset_basis = if runtime.inherit_full_registry {
+            None
+        } else {
+            explicit_allowed_tools.clone()
+        };
         let mut registry = ToolRegistryBuilder::new().with_full_agent_surface(
             Some(runtime.client.clone()),
             runtime.model.clone(),
@@ -5901,6 +6151,11 @@ impl SubAgentToolRegistry {
             todo_list,
             plan_state,
         );
+        if matches!(agent_type, SubAgentType::Team)
+            && let Some(team_context) = context.runtime.team_context.clone()
+        {
+            registry = registry.with_send_message_tool(team_context);
+        }
 
         if let Some(pool) = runtime.mcp_pool.as_ref() {
             registry = registry.with_mcp_tools(std::sync::Arc::clone(pool));
@@ -5930,6 +6185,11 @@ impl SubAgentToolRegistry {
     /// Whether a given tool name is permitted under this child's filter.
     /// `None` filter = everything permitted.
     fn is_tool_allowed(&self, name: &str) -> bool {
+        if matches!(self.agent_type, SubAgentType::CoordinatorWorker)
+            && WORKER_EXCLUDED_TOOLS.contains(&name)
+        {
+            return false;
+        }
         match &self.allowed_tools {
             None => true,
             Some(list) => list.iter().any(|t| t == name),
@@ -5959,6 +6219,7 @@ impl SubAgentToolRegistry {
                 "rlm_configure",
                 "rlm_close",
             ][..],
+            SubAgentType::CoordinatorWorker => WORKER_EXCLUDED_TOOLS,
             _ => &[][..],
         };
         let api_tools = self.registry.to_api_tools();
@@ -6050,12 +6311,23 @@ fn reject_subagent_terminal_takeover(name: &str, input: &Value) -> Result<()> {
 
 /// Resolve the effective allowed-tools list for a child.
 ///
-/// **v0.6.6 default: full inheritance.** Returning `Ok(None)` means the
-/// child sees the same tool surface as the parent's Agent mode — every
-/// family including `with_subagent_tools` so it can recurse. The narrowing
-/// path (`Ok(Some(list))`) is only used by:
+/// **Plan 04 / finding F4 (`restrictToSubset`).** A child's tool surface is a
+/// *subset* of its parent's effective tools — children can never escalate
+/// beyond what the parent exposes. Two inputs drive this:
+/// - `parent_basis: Option<&[String]>` — the parent's effective tool-name set
+///   (`None` = the parent exposes the full agent surface, so no constraint).
+///   Threaded via `SubAgentRuntime::child_subset_basis`.
+/// - `inherit_full_registry: bool` — the `[subagents] inherit_full_registry`
+///   escape hatch. `true` restores the legacy v0.6.6 full-inheritance default
+///   (no subset enforcement).
+///
+/// Returning `Ok(None)` means the child sees the same tool surface as the
+/// parent's Agent mode — every family including `with_subagent_tools` so it
+/// can recurse. The narrowing path (`Ok(Some(list))`) is used by:
 /// - `Custom` agent types (which require an explicit list).
 /// - Callers that pass `explicit_tools` (advanced / legacy use).
+/// - A narrowed parent: when `parent_basis = Some(set)` and the child has no
+///   explicit list, the child inherits `set` (it cannot re-expand to full).
 ///
 /// `allow_shell = false` no longer narrows the tool LIST — the child's
 /// registry simply doesn't register shell tools, which has the same
@@ -6064,6 +6336,8 @@ fn build_allowed_tools(
     agent_type: &SubAgentType,
     explicit_tools: Option<Vec<String>>,
     _allow_shell: bool,
+    parent_basis: Option<&[String]>,
+    inherit_full_registry: bool,
 ) -> Result<Option<Vec<String>>> {
     if let Some(tools) = explicit_tools {
         let mut deduped = Vec::new();
@@ -6078,7 +6352,15 @@ fn build_allowed_tools(
                 "Custom sub-agent requires a non-empty allowed_tools list"
             ));
         }
-        return Ok(Some(deduped));
+        // restrictToSubset: intersect the child's explicit request with the
+        // parent's effective set so the child cannot call a tool the parent
+        // lacks. Skipped under the legacy full-inheritance escape hatch.
+        let effective = if inherit_full_registry {
+            deduped
+        } else {
+            intersect_tool_names(deduped, parent_basis)
+        };
+        return Ok(Some(effective));
     }
 
     if matches!(agent_type, SubAgentType::Custom) {
@@ -6087,11 +6369,32 @@ fn build_allowed_tools(
         ));
     }
 
-    // Default: full registry inheritance from the parent. The child sees every
-    // tool the parent has, including the sub-agent management family. The
-    // registry execution guard still blocks approval-gated tools unless the
-    // parent runtime is auto-approved.
+    // Default: full registry inheritance from the parent — UNLESS the parent
+    // exposes a narrowed effective set (`child_subset_basis`), in which case
+    // the child inherits THAT subset (restrictToSubset). The child still sees
+    // the sub-agent management family whenever the parent's basis includes it,
+    // so recursion is preserved wherever the parent can recurse. The escape
+    // hatch restores unrestricted full inheritance.
+    if !inherit_full_registry
+        && let Some(basis) = parent_basis
+    {
+        return Ok(Some(basis.to_vec()));
+    }
     Ok(None)
+}
+
+/// Intersect a child's requested tool names with the parent's effective set
+/// (`child_subset_basis`). `None` basis = unrestricted parent → keep all
+/// requested tools. `Some(set)` → keep only tools present in `set`, dropping
+/// any the parent does not expose (no escalation).
+fn intersect_tool_names(tools: Vec<String>, basis: Option<&[String]>) -> Vec<String> {
+    match basis {
+        None => tools,
+        Some(set) => tools
+            .into_iter()
+            .filter(|name| set.iter().any(|b| b == name))
+            .collect(),
+    }
 }
 
 fn summarize_subagent_result(result: &SubAgentResult) -> String {
@@ -6123,73 +6426,6 @@ fn truncate_preview(text: &str) -> String {
         format!("{}...", text.chars().take(MAX_LEN).collect::<String>())
     }
 }
-
-const SUBAGENT_OUTPUT_FORMAT: &str = include_str!("../../prompts/subagent_output_format.md");
-
-const GENERAL_AGENT_INTRO: &str = concat!(
-    "You are a general-purpose sub-agent spawned to handle a specific task autonomously.\n",
-    "Stay inside the assigned scope; put adjacent work under RISKS/BLOCKERS.\n",
-    "Plan multi-step work with `checklist_write`; add `update_plan` for complex strategy.\n",
-    "**Stop quickly on failure**: if the same tool call fails 2 times in a row, stop retrying and return what you have so far with a one-line note explaining what's missing. Do not loop on impossible queries (e.g. external API unreachable, rate-limited, or returning empty).\n",
-    "**Bounded effort**: prefer one focused attempt over many speculative retries. If you cannot complete the task with available data within 3-5 tool calls, return your current partial findings — the parent agent can compensate with its own knowledge.\n\n"
-);
-
-const EXPLORE_AGENT_INTRO: &str = concat!(
-    "You are an exploration sub-agent (role: `explore`). Map the relevant code quickly and stay read-only.\n",
-    "Orient first: confirm the workspace/project root, read relevant AGENTS.md/README guidance when the tree is unfamiliar, then search only the likely scope.\n",
-    "Use list_dir/file_search, grep_files, and read_file; use RLM only for long inputs or many semantic slices, not basic path discovery.\n",
-    "DeepSeek V4 can hold broad evidence, but your value is compressed reconnaissance: cite `path:line-range` for each finding and stop once evidence is sufficient.\n",
-    "CHANGES will almost always be \"None.\" for an explorer.\n\n"
-);
-
-const PLAN_AGENT_INTRO: &str = concat!(
-    "You are a planning sub-agent. Produce a grounded, prioritized plan, not patches.\n",
-    "Read enough code to avoid guessing; each step names its artifact and verification.\n",
-    "Use update_plan/checklist_write for plan artifacts and explain key trade-offs.\n",
-    "CHANGES should list plan artifacts only, not future speculative edits.\n\n"
-);
-
-const REVIEW_AGENT_INTRO: &str = concat!(
-    "You are a code review sub-agent. Stay read-only and report severity-scored findings.\n",
-    "Read the diff/files, grep sibling patterns/tests, then order EVIDENCE by severity.\n",
-    "Use BLOCKER/MAJOR/MINOR/NIT and include path:line-range plus suggested fix.\n",
-    "If no MAJOR+ issues exist, say so plainly in SUMMARY.\n",
-    "CHANGES will almost always be \"None.\" for a reviewer.\n\n"
-);
-
-const CUSTOM_AGENT_INTRO: &str = concat!(
-    "You are a custom sub-agent with a narrowed tool registry.\n",
-    "Use only tools available at runtime; put missing capabilities under BLOCKERS and stop.\n",
-    "Stay tightly scoped to the assigned objective.\n\n"
-);
-
-const IMPLEMENTER_AGENT_INTRO: &str = concat!(
-    "You are an implementation sub-agent. Land the assigned change with minimal surrounding edits.\n",
-    "Read target files before editing; prefer edit_file for narrow changes and apply_patch for hunks.\n",
-    "Run relevant verification after edit batches; write needed tests with the implementation.\n",
-    "CHANGES is load-bearing: list every modified file with a one-line why.\n\n"
-);
-
-const VERIFIER_AGENT_INTRO: &str = concat!(
-    "You are a verification sub-agent. Run requested gates and stay read-only.\n",
-    "Report PASS/FAIL/FLAKY at the top of SUMMARY with exact command evidence.\n",
-    "Capture failing assertion and file:line; put obvious fixes under RISKS.\n",
-    "CHANGES will almost always be \"None.\" for a verifier.\n\n"
-);
-
-const TOOL_AGENT_INTRO: &str = concat!(
-    "You are a tool execution sub-agent (experimental Fin fast lane). You run simple tools quickly and report compact facts.\n",
-    "The parent model owns planning, trade-offs, and synthesis; do not expand the task or narrate strategy.\n",
-    "Prefer direct tool calls, concise evidence, and one-pass results. Stop after the requested machine-bound action is done.\n",
-    "CHANGES should be \"None.\" unless an explicitly allowed tool made a real edit.\n\n"
-);
-
-const COORDINATOR_WORKER_INTRO: &str = concat!(
-    "You are a worker agent spawned by a coordinator. Execute the assigned task independently and report results.\n",
-    "You have full tool access to read/write files, run commands, search code, and use web tools.\n",
-    "Focus on completing the task thoroughly and report your findings clearly.\n",
-    "You cannot use team management tools or send messages to other agents — focus solely on your assigned task.\n\n"
-);
 
 /// Tools available to the coordinator agent (orchestrator-only role).
 /// The coordinator cannot read/write files or run shell commands —
