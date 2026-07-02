@@ -472,10 +472,28 @@ impl DeepSeekClient {
         let api_key = config.deepseek_api_key()?;
         let base_url = config.deepseek_base_url();
         let api_provider = config.api_provider();
-        validate_base_url_security(&base_url)?;
         let retry = config.retry_policy();
         let default_model = config.default_model();
         let http_headers = config.http_headers();
+        Self::from_parts(api_key, base_url, api_provider, retry, default_model, http_headers)
+    }
+
+    /// Construct a client from its six resolved construction fields.
+    ///
+    /// This is the provider-implementation entry point used by the
+    /// `ProviderFactory` in `core::engine` (and, after the extraction, by
+    /// `codesmith-providers`): it takes the neutral fields directly instead of
+    /// a TUI `Config`, so the construction layer no longer needs to name
+    /// `DeepSeekClient` directly to build one.
+    pub fn from_parts(
+        api_key: String,
+        base_url: String,
+        api_provider: ApiProvider,
+        retry: RetryPolicy,
+        default_model: String,
+        http_headers: HashMap<String, String>,
+    ) -> Result<Self> {
+        validate_base_url_security(&base_url)?;
 
         logging::info(format!("API provider: {}", api_provider.as_str()));
         logging::info(format!("API base URL: {base_url}"));

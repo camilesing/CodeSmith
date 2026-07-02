@@ -1,0 +1,25 @@
+[package]
+name = "codesmith-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Provider implementations for the CodeSmith framework — pluggable LLM clients assembled via Cargo features"
+
+[dependencies]
+codesmith-agent = { path = "../agent", version = "0.8.48" }
+anyhow.workspace = true
+futures-util = "0.3.31"
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[features]
+# Default Lego assembly pulls in the no-network mock provider. Disable it with
+# `--no-default-features` to ship a provider-less build, then add only the
+# providers you want with `--features ...`.
+default = ["mock"]
+# Echo / no-network provider — useful for tests, offline demos, and as the
+# reference `ProviderFactory` sample. The LangChain `FakeListLLM` analog.
+mock = []

@@ -10,6 +10,7 @@ members = [
     "crates/hooks",
     "crates/mcp",
     "crates/protocol",
+    "crates/providers",
     "crates/release",
     "crates/secrets",
     "crates/state",

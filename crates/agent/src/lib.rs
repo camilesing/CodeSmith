@@ -1,5 +1,52 @@
+//! # codesmith-agent — the framework AI core
+//!
+//! The pluggability foundation for the CodeSmith agent stack: the traits and
+//! wire types every LLM provider agrees on, with **no concrete provider
+//! implementation**. This is the LangChain-style "framework" layer —
+//! [`LlmClient`] is the `BaseLLM` analog, and [`provider::ProviderRegistry`]
+//! is the instance registry a host seeds with provider factories.
+//!
+//! ## What lives here
+//!
+//! - [`llm_client`] — the [`LlmClient`] trait (dyn-safe, the provider
+//!   contract), [`LlmClientHandle`] (`Arc<dyn LlmClient>`), [`RetryConfig`],
+//!   [`LlmError`], and the `with_retry` driver.
+//! - [`provider`] — the pluggability seam: [`provider::ProviderId`] (open
+//!   union of known + custom providers), [`provider::ProviderConfig`]
+//!   (neutral construction input, no TUI `Config` dependency),
+//!   [`provider::ProviderFactory`] (build a client), and
+//!   [`provider::ProviderRegistry`] (resolve + build by id).
+//! - [`models`] — request/response wire types shared across providers.
+//! - [`retry`] — [`retry::RetryPolicy`], the host-facing retry policy that
+//!   round-trips to [`RetryConfig`].
+//! - [`ModelRegistry`] — the model catalog (id/alias resolution), separate
+//!   from the provider registry.
+//!
+//! ## What does *not* live here
+//!
+//! Concrete provider clients. They live in `codesmith-providers` (the "Lego
+//! box", each behind a Cargo feature) or in a host's own crate. A host never
+//! names a concrete client type — it builds a [`provider::ProviderConfig`]
+//! and calls `registry.build(&cfg)`. See `ARCHITECTURE.md` for the full
+//! layering and `ROADMAP.md` for what is wired today vs. deferred.
+//!
+//! ## The pi-mono parallel
+//!
+//! | pi-ai (TypeScript)            | codesmith-agent                          |
+//! |-------------------------------|------------------------------------------|
+//! | `MutableModels` registry      | [`provider::ProviderRegistry`]           |
+//! | `KnownProvider \| string`     | [`provider::ProviderId`] (Builtin\|Custom)|
+//! | `createProvider()` factory    | [`provider::ProviderFactory`]            |
+//! | host `createAgentSession`     | host `build_engine` + `registry.build`   |
+//!
+//! [`LlmClient`]: llm_client::LlmClient
+//! [`LlmClientHandle`]: llm_client::LlmClientHandle
+//! [`RetryConfig`]: llm_client::RetryConfig
+//! [`LlmError`]: llm_client::LlmError
+
 pub mod llm_client;
 pub mod models;
+pub mod provider;
 pub mod retry;
 
 use std::collections::HashMap;

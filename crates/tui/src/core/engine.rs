@@ -78,6 +78,9 @@ use crate::client::DeepSeekClient;
 use crate::config::{ApiProvider, Config};
 use crate::features::Feature;
 use crate::llm_client::LlmClientHandle;
+use codesmith_agent::provider::{
+    ProviderConfig, ProviderFactory, ProviderId, ProviderRegistry,
+};
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::plan::SharedPlanState;
@@ -277,6 +280,66 @@ fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
     ))
 }
 
+// === Provider registry wiring ===
+
+/// TUI-local [`ProviderFactory`] for the OpenAI-compatible `DeepSeekClient`.
+///
+/// Transitional (framework refactor Step 2): the client still lives in
+/// `codesmith-tui`, so this factory wraps its construction. Only `api_provider`
+/// is captured — it does not round-trip through the neutral [`ProviderId`]
+/// (`ApiProvider::DeepseekCN` has no `ProviderKind` peer); every other field is
+/// read from the neutral [`ProviderConfig`]. Step 3 moves the client into
+/// `codesmith-providers` and drops the capture.
+struct DeepSeekProviderFactory {
+    api_provider: ApiProvider,
+    id: ProviderId,
+}
+
+impl ProviderFactory for DeepSeekProviderFactory {
+    fn id(&self) -> ProviderId {
+        self.id.clone()
+    }
+
+    fn build(&self, cfg: &ProviderConfig) -> anyhow::Result<LlmClientHandle> {
+        let client = DeepSeekClient::from_parts(
+            cfg.api_key.clone(),
+            cfg.base_url.clone(),
+            self.api_provider,
+            codesmith_agent::retry::RetryPolicy::from(cfg.retry.clone()),
+            cfg.default_model.clone(),
+            cfg.http_headers.clone(),
+        )?;
+        Ok(Arc::new(client) as LlmClientHandle)
+    }
+}
+
+/// Resolve the LLM client for `api_config` through a fresh [`ProviderRegistry`].
+///
+/// Builds the neutral [`ProviderConfig`] from the TUI `Config`'s six
+/// construction fields, registers the OpenAI-compatible factory under the
+/// active provider id, and delegates to `registry.build`. The engine never
+/// names a concrete client type — that is the pluggability seam this slice
+/// opens up.
+fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClientHandle> {
+    let api_provider = api_config.api_provider();
+    let provider_id = ProviderId::from(api_provider.as_str());
+    let cfg = ProviderConfig {
+        provider: provider_id.clone(),
+        api_key: api_config.deepseek_api_key()?,
+        base_url: api_config.deepseek_base_url(),
+        default_model: api_config.default_model(),
+        retry: codesmith_agent::llm_client::RetryConfig::from(api_config.retry_policy()),
+        http_headers: api_config.http_headers(),
+        on_retry: None,
+    };
+    let mut registry = ProviderRegistry::new();
+    registry.register(Arc::new(DeepSeekProviderFactory {
+        api_provider,
+        id: provider_id,
+    }));
+    registry.build(&cfg)
+}
+
 /// Assemble an [`Engine`] from TUI-coupled construction state.
 ///
 /// Creates the op / event / approval / user-input / steer / subagent
@@ -316,11 +379,13 @@ pub fn build_engine(
         }
     }
 
-    // Create the LLM client.
+    // Create the LLM client via the provider registry (abstraction/impl seam).
+    // `injected_client` (tests) short-circuits; otherwise resolve through a
+    // `ProviderRegistry` so the engine no longer names a concrete client type.
     let (llm_client, llm_client_error) = match injected_client {
         Some(client) => (Some(client), None),
-        None => match DeepSeekClient::new(api_config) {
-            Ok(client) => (Some(Arc::new(client) as LlmClientHandle), None),
+        None => match resolve_llm_client(api_config) {
+            Ok(client) => (Some(client), None),
             Err(err) => (None, Some(err.to_string())),
         },
     };

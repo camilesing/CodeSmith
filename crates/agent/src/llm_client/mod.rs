@@ -52,7 +52,7 @@ pub type LlmClientHandle = Arc<dyn LlmClient>;
 /// - `create_message` returns a boxed future; `create_message_stream` returns a boxed stream.
 /// - `fim_completion` and `translate` have default error implementations;
 ///   `DeepSeekClient` overrides them with its provider-specific endpoints.
-#[allow(dead_code)] // Trait methods are part of the LLM provider interface
+#[allow(dead_code, unused_variables)] // Trait methods + default-impl params are part of the LLM provider interface
 pub trait LlmClient: Send + Sync {
     /// Returns the provider name (e.g., "openai", "deepseek")
     fn provider_name(&self) -> &'static str;

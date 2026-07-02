@@ -198,6 +198,23 @@ fn config_auth_error_does_not_blame_env() {
     assert_eq!(message, "Authentication failed: invalid API key");
 }
 
+/// Step 2: `resolve_llm_client` routes construction through the
+/// `ProviderRegistry` — the engine no longer names `DeepSeekClient` directly.
+/// With a config-supplied API key (client construction makes no network call),
+/// the registry must dispatch to the registered factory and return a built
+/// handle, proving the pluggability seam is wired into `build_engine`.
+#[test]
+fn resolve_llm_client_builds_via_registry() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        ..Config::default()
+    };
+    let client = super::resolve_llm_client(&cfg)
+        .expect("registry should build a client when an API key is configured");
+    assert!(!client.provider_name().is_empty());
+}
+
 #[test]
 fn plugin_tools_dir_honors_missing_custom_directory_without_fallback() {
     let missing = PathBuf::from("definitely-missing-codesmith-plugin-dir");
