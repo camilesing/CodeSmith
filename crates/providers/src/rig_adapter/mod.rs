@@ -320,4 +320,20 @@ where
             fim_translate::translate(&http, &base_url, &api_key, text, model, target_language).await
         })
     }
+
+    fn list_models(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + '_>> {
+        // Only the `deepseek` factory wires an HTTP shim into `RigLlmClient`
+        // (for FIM/translate); other providers pass `None` and inherit the
+        // "empty list" behaviour. Reusing the FIM http client for `/models` is
+        // sound because the two surfaces coincide on DeepSeek (same base_url +
+        // bearer auth). OpenAI-compat `/models` for the other providers is a
+        // separate future improvement — today those return empty, matching the
+        // trait default.
+        let Some(http) = self.http.clone() else {
+            return Box::pin(async move { Ok(Vec::new()) });
+        };
+        let base_url = self.base_url.clone();
+        let api_key = self.api_key.clone().unwrap_or_default();
+        Box::pin(async move { fim_translate::list_models(&http, &base_url, &api_key).await })
+    }
 }

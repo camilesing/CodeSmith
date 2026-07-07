@@ -8,9 +8,14 @@
 //! `ApiProvider::as_str()` yields — rather than the TUI's `ApiProvider` enum,
 //! so this crate stays off the `codesmith-agent-runtime` dep edge (ROADMAP §C6).
 //!
-//! Transient duplication: the TUI `chat.rs` copies stay until DeepSeek itself
-//! switches to the rig adapter (the `reasoning_content` replay bridge is a
-//! §A/§B follow-up). Dedupe then.
+//! When DeepSeek switched to the rig adapter (ROADMAP §A1 / §D1), the TUI's
+//! `is_reasoning_model_for_stream` (streaming-only) duplicate was deleted.
+//! `requires_reasoning_content` / `should_replay_reasoning_content` /
+//! `has_deepseek_r_series_marker` are **still duplicated** in
+//! `crates/tui/src/client/chat.rs` — they remain deps of the TUI-local
+//! inspect/warmup logic (`build_chat_messages_with_reasoning`, called by
+//! `inspect_prompt_for_request`). Follow-up: extract the shared predicates
+//! into `codesmith-agent` so this module is the single source of truth.
 
 use serde_json::{Map, Value, json};
 
@@ -113,17 +118,15 @@ pub(crate) fn should_replay_reasoning_content_for_provider(
     should_replay_reasoning_content(model, effort)
 }
 
-/// Should the SSE parser treat incoming `reasoning_content` deltas as thinking
-/// (vs. inlining them as answer text)? Streaming-path twin of the replay gate.
-///
-/// Not yet wired into `stream::map_rig_stream` — the streaming content-fallback
-/// (Gap E) is a documented follow-up. Ported now so the bridge is local when
-/// that lands.
-#[allow(dead_code)]
-pub(crate) fn is_reasoning_model_for_stream(provider: &str, model: &str) -> bool {
-    requires_reasoning_content(model)
-        && (provider_accepts_reasoning_content(provider) || requires_reasoning_content(model))
-}
+// Streaming-path reasoning detection (the former "Gap E") is no longer needed:
+// rig's OpenAI / DeepSeek compat layer parses `delta.reasoning_content` into
+// `StreamedAssistantContent::ReasoningDelta` natively (see
+// `rig-core-0.39.0/src/providers/internal/openai_chat_completions_compatible.rs`
+// + `src/streaming.rs`), and `stream::map_rig_stream` maps those onto
+// `ContentBlockStart::Thinking` / `ThinkingDelta`. There is no model-level
+// gating to do — rig separates reasoning from content for every model, so the
+// hand-written client's `is_reasoning_model_for_stream` predicate has no rig
+// analogue.
 
 /// Translate CodeSmith's neutral `reasoning_effort` string into the per-provider
 /// wire fields (`thinking`, `reasoning_effort`, `chat_template_kwargs`) rig has

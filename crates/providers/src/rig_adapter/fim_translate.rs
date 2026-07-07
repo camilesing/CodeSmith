@@ -116,3 +116,86 @@ pub(crate) fn resolve_base_url(configured: &str) -> &str {
         configured
     }
 }
+
+/// List models from the provider's `/models` endpoint (OpenAI-shaped
+/// `{data: [{id, ...}]}`).
+///
+/// rig's `CompletionModel` has no list-models primitive, so this is a direct
+/// `GET {base_url}/models` mirroring the hand-written client's
+/// `api_url(base, "models")` + `parse_models_response`. Only the `deepseek`
+/// factory wires an HTTP client into [`RigLlmClient`](super::RigLlmClient), so
+/// the shim is effectively DeepSeek-only; other providers pass `None` and
+/// inherit the `LlmClient::list_models` default (empty). The trait contract is
+/// `Vec<String>`, so only the `id` field is kept (the `(owner)` display the old
+/// client surfaced is dropped — a noted regression).
+///
+/// `{base}/models` (no `/v1` injection) matches the FIM/translate shim's URL
+/// convention and resolves correctly for both `https://api.deepseek.com` and
+/// `…/v1` base URLs (DeepSeek accepts either).
+pub(crate) async fn list_models(
+    http: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>> {
+    let base = base_url.trim_end_matches('/');
+    let url = format!("{base}/models");
+    let resp = http.get(url).bearer_auth(api_key).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("list models error {status}: {text}"));
+    }
+    let parsed: serde_json::Value = resp.json().await?;
+    Ok(parse_models_ids(&parsed))
+}
+
+/// Pure parser for the OpenAI-shaped `/models` payload `{data: [{id, ...}]}`,
+/// returning sorted + de-duplicated model ids. Extracted from
+/// [`list_models`] for testability (the HTTP round-trip is trivial; the JSON
+/// shape is the part that can drift).
+fn parse_models_ids(payload: &serde_json::Value) -> Vec<String> {
+    let mut ids: Vec<String> = payload
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    item.get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_models_ids_extracts_sorts_and_dedups() {
+        let payload = serde_json::json!({
+            "data": [
+                { "id": "deepseek-chat", "owned_by": "deepseek" },
+                { "id": "deepseek-reasoner", "owned_by": "deepseek" },
+                { "id": "deepseek-chat", "owned_by": "deepseek" },
+            ]
+        });
+        assert_eq!(
+            parse_models_ids(&payload),
+            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_models_ids_handles_missing_or_empty_data() {
+        assert!(parse_models_ids(&serde_json::json!({})).is_empty());
+        assert!(parse_models_ids(&serde_json::json!({ "data": [] })).is_empty());
+        // A non-array `data` is treated as no models rather than panicking.
+        assert!(parse_models_ids(&serde_json::json!({ "data": "oops" })).is_empty());
+    }
+}
