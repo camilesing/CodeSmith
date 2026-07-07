@@ -1177,10 +1177,8 @@ impl DeepSeekClient {
     }
 }
 
-pub(crate) mod anthropic;
 mod chat;
 
-pub(crate) use anthropic::AnthropicClient;
 pub(crate) use chat::{CacheWarmupKey, PromptInspection};
 
 pub(crate) fn inspect_prompt_for_request(request: &MessageRequest) -> PromptInspection {

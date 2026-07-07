@@ -1104,6 +1104,7 @@ dependencies = [
  "codesmith-agent-runtime",
  "codesmith-config",
  "codesmith-protocol",
+ "codesmith-providers",
  "codesmith-release",
  "codesmith-secrets",
  "codesmith-tool-impls",

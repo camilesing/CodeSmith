@@ -38,6 +38,46 @@ facade、B2 `retry_status`、B4 `prompt_runtime`）对 rig adapter 不再适用 
 消息构建器里（`build_chat_messages_with_reasoning` / `should_replay_reasoning_content`）。
 原 §A 的耦合图仍可用于定位搬迁点。
 
+**进度（2026-07-07 §D1 + 行为对齐落地，`feat/pluggable-framework-core`）：**
+
+用户决策"激进：所有非 DeepSeek 切 rig"——OpenAI + 13 家 openai-compat + Anthropic 全部走
+`codesmith_providers::default_registry()` 的 rig 工厂；DeepSeek 家族暂留 tui-local
+`DeepSeekProviderFactory`（`DeepSeekClient`），待回放协议桥接后退役。
+
+- **§D1 落地（部分）**：`resolve_llm_client` 改为先 `default_registry()` 再按需覆盖
+  DeepSeek 工厂。路由测试 `resolve_llm_client_routes_anthropic_to_rig_factory` 通过
+  `health_check`（rig 默认 `Ok(true)` 不探活 vs `DeepSeekClient` 探 `/models`）证明
+  anthropic 走的是 rig 工厂。
+- **§A2 落地**：`crates/tui/src/client/anthropic.rs` 删除（~940 行死代码——latent bug：
+  anthropic 用户原本命中错误端点）；Anthropic 改由 rig `AnthropicFactory` 承载，
+  `cache_control` 透传已对照 rig 源码验证。
+- **§C1/C2/C3 落地**：`openai` / `anthropic` / `deepseek` / `openai-compat`（×13 家）
+  特性全在 `crates/providers/Cargo.toml`；tui 启用 `openai`+`anthropic`+`openai-compat`。
+  全 Lego 矩阵零警告（8 组合：no-default / mock / 单家 / 组合 / 全开）；providers crate
+  37 个单测通过。
+- **行为对齐桥接**（替换原 §A 的"搬运"路径）：
+  - `crates/providers/src/rig_adapter/reasoning.rs`：移植 DeepSeek thinking-mode 启发式
+    + effort 表（`requires_reasoning_content` / `should_replay_reasoning_content` /
+    `apply_reasoning_effort`），按 `&str` provider 名键控——刻意不引 `ApiProvider`，
+    维持 §C6（providers 仅依赖 `codesmith-agent`）。10 个单测。
+  - `RequestShaper::shape_messages`：strip `reasoning_content`（#1542）+ tool-call 回合
+    缺 reasoning 时注入 `(reasoning omitted)` 占位（#1739/#1694）。7 个单测。
+  - `RequestShaper::shape_max_tokens`：xiaomi-mimo 的 `max_completion_tokens` 改名
+    （非 clamp）。`req.thinking` 在 live 代码恒为 None（仅已删的 AnthropicClient 设置），
+    故 `apply_reasoning_effort` 是 effort 字段的唯一权威，丢弃 verbatim 透传是安全修复。
+- **§C6 维持**：providers crate 仍只依赖 `codesmith-agent`；reasoning 模块用 `&str` 键
+  规避了 `ApiProvider` 依赖边（§B3 降级为低优先）。
+
+**下一聚焦工作：**
+- **DeepSeek `reasoning_content` 回放桥接**：把 `DeepSeekClient` 的
+  `build_chat_messages_with_reasoning` 回放协议（effort→thinking 字段、reasoning_content
+  序列化）完整迁入 rig DeepSeek 工厂，使其能双向 round-trip，然后删
+  `crates/tui/src/client.{rs,chat.rs}` + tui-local `DeepSeekProviderFactory`——完成 §A1 +
+  全量 §D1。`shape_messages` 已铺好 strip/占位的地基，缺的是 rig DeepSeek 工厂的完整接线。
+- **Gap E 流式回放**：`reasoning::is_reasoning_model_for_stream` 当前 `#[allow(dead_code)]`，
+  rig 流式路径的 reasoning 检测未接线（rig 流式 reasoning 形态不同）；接线补齐。
+- **§D2**（config 选自定义 provider）、**§E**（agent executor / tool 抽象）维持原计划。
+
 ---
 
 ## §A — Provider extraction (bulk migration)

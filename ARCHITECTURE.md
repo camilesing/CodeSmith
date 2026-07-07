@@ -74,7 +74,7 @@ A client is built without the host naming a concrete type:
                ProviderRegistry::build(&cfg)
                  │ resolves factory by cfg.provider
                  ▼
-               ProviderFactory::build(&cfg) ───────▶ MockClient / DeepSeekClient / ...
+               ProviderFactory::build(&cfg) ───────▶ MockClient / RigLlmClient / DeepSeekClient / ...
                  │
                  ▼
                LlmClientHandle (Arc<dyn LlmClient>)
@@ -91,19 +91,23 @@ A client is built without the host naming a concrete type:
   `register` upserts (last wins, like pi-ai's `setProvider`); `build` resolves
   and delegates, erroring with the registered ids if none match.
 
-## What is wired today (foundation slice)
+## What is wired today (foundation slice + §D1 parity bridge)
 
 | Concern | Status | Where |
 |---|---|---|
 | Core abstractions (`LlmClient`, `ProviderFactory`, `ProviderRegistry`) | ✅ done | `crates/agent/src/{llm_client,provider}/` |
 | Registry in the real engine loop | ✅ done | `crates/tui/src/core/engine.rs` `resolve_llm_client` |
-| TUI-local `DeepSeekProviderFactory` (wraps `DeepSeekClient`) | ✅ done | `crates/tui/src/core/engine.rs` |
+| TUI-local `DeepSeekProviderFactory` (wraps `DeepSeekClient`) | ✅ done — DeepSeek family only | `crates/tui/src/core/engine.rs` |
 | `DeepSeekClient::from_parts` (neutral 6-field constructor) | ✅ done | `crates/tui/src/client.rs` |
 | `codesmith-providers` crate + `mock` provider + Cargo features | ✅ done | `crates/providers/` |
-| Extract `DeepSeekClient` + `AnthropicClient` into `codesmith-providers` | ⏳ deferred | ROADMAP §A |
-| Decoupling substitutions (logging, retry_status, ApiProvider→ProviderKind) | ⏳ deferred | ROADMAP §B |
-| `openai-compat` / `anthropic` Cargo features | ⏳ deferred | ROADMAP §C |
-| Host selects providers via config (e.g. `provider = "mock"`) | ⏳ deferred | ROADMAP §D |
+| rig adapter `RigLlmClient<C,S>` impls `LlmClient` | ✅ done | `crates/providers/src/rig_adapter/` |
+| Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs` |
+| `resolve_llm_client` seeds from `default_registry()` for all non-DeepSeek | ✅ done (§D1 partial) | `crates/tui/src/core/engine.rs` |
+| `AnthropicClient` retired — rig `AnthropicFactory` replaces it (§A2) | ✅ done | `crates/tui/src/client/anthropic.rs` deleted |
+| Parity bridge: reasoning heuristics + `shape_messages` / `shape_max_tokens` | ✅ done | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |
+| Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
+| Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
+| Host selects providers via config (e.g. `provider = "mock"` / custom id) | ⏳ deferred | ROADMAP §D2 |
 | Agent executor loop, tool/memory abstractions (LangChain parity) | ⏳ deferred | ROADMAP §E |
 
 ## Registering a provider (developer guide)

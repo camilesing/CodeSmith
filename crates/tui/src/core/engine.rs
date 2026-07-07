@@ -78,9 +78,7 @@ use crate::client::DeepSeekClient;
 use crate::config::{ApiProvider, Config};
 use crate::features::Feature;
 use crate::llm_client::LlmClientHandle;
-use codesmith_agent::provider::{
-    ProviderConfig, ProviderFactory, ProviderId, ProviderRegistry,
-};
+use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId};
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::plan::SharedPlanState;
@@ -282,14 +280,20 @@ fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
 
 // === Provider registry wiring ===
 
-/// TUI-local [`ProviderFactory`] for the OpenAI-compatible `DeepSeekClient`.
+/// TUI-local [`ProviderFactory`] for the hand-written `DeepSeekClient`.
 ///
-/// Transitional (framework refactor Step 2): the client still lives in
-/// `codesmith-tui`, so this factory wraps its construction. Only `api_provider`
-/// is captured — it does not round-trip through the neutral [`ProviderId`]
-/// (`ApiProvider::DeepseekCN` has no `ProviderKind` peer); every other field is
-/// read from the neutral [`ProviderConfig`]. Step 3 moves the client into
-/// `codesmith-providers` and drops the capture.
+/// Registered only for the DeepSeek family (`Deepseek` / `DeepseekCN`) — every
+/// other provider resolves to a rig-backed factory from
+/// [`codesmith_providers::default_registry`]. The DeepSeek family stays here
+/// because the hand-written client carries the `reasoning_content` replay that
+/// prevents DeepSeek thinking-mode 400s (#1739 / #1694), which the rig adapter
+/// does not yet replicate.
+///
+/// Only `api_provider` is captured — it does not round-trip through the neutral
+/// [`ProviderId`] (`ApiProvider::DeepseekCN` has no `ProviderKind` peer); every
+/// other field is read from the neutral [`ProviderConfig`]. Once the replay is
+/// bridged into the rig adapter, this factory is deleted and DeepSeek joins the
+/// rig-backed registry (ROADMAP §A/§B).
 struct DeepSeekProviderFactory {
     api_provider: ApiProvider,
     id: ProviderId,
@@ -313,13 +317,30 @@ impl ProviderFactory for DeepSeekProviderFactory {
     }
 }
 
-/// Resolve the LLM client for `api_config` through a fresh [`ProviderRegistry`].
+/// Resolve the LLM client for `api_config` through a [`ProviderRegistry`]
+/// seeded with the compiled-in rig-backed providers.
 ///
 /// Builds the neutral [`ProviderConfig`] from the TUI `Config`'s six
-/// construction fields, registers the OpenAI-compatible factory under the
-/// active provider id, and delegates to `registry.build`. The engine never
+/// construction fields, then delegates to `registry.build`. The engine never
 /// names a concrete client type — that is the pluggability seam this slice
 /// opens up.
+///
+/// Non-DeepSeek providers (Anthropic, OpenAI, the 13 OpenAI-compat kinds)
+/// resolve to the rig-backed factories from
+/// [`codesmith_providers::default_registry`]. Notably this activates the
+/// **native Anthropic `/v1/messages` path**: previously every provider —
+/// including `provider = "anthropic"` — routed through the OpenAI-shaped
+/// `DeepSeekClient`, which sent Anthropic config to `/chat/completions` with
+/// bearer auth (the wrong endpoint). The rig `AnthropicFactory` +
+/// `AnthropicShaper` now carries the native messages API with per-block
+/// `cache_control` (verified against rig-core's serialization).
+///
+/// DeepSeek / DeepSeekCN stay on the tui-local [`DeepSeekProviderFactory`]:
+/// the hand-written client carries the `reasoning_content` replay that
+/// prevents DeepSeek thinking-mode 400s (#1739 / #1694), which the rig adapter
+/// does not yet replicate. Bridging that replay is a ROADMAP §A/§B follow-up;
+/// until then the DeepSeek family is the only provider routed through the
+/// legacy client.
 fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClientHandle> {
     let api_provider = api_config.api_provider();
     let provider_id = ProviderId::from(api_provider.as_str());
@@ -332,11 +353,18 @@ fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClientHandle> {
         http_headers: api_config.http_headers(),
         on_retry: None,
     };
-    let mut registry = ProviderRegistry::new();
-    registry.register(Arc::new(DeepSeekProviderFactory {
-        api_provider,
-        id: provider_id,
-    }));
+    let mut registry = codesmith_providers::default_registry();
+    // DeepSeek thinking-mode `reasoning_content` replay lives in the
+    // hand-written `DeepSeekClient` (`chat.rs`); the rig adapter doesn't
+    // replicate it yet. Keep the tui-local factory for the DeepSeek family
+    // until the replay is bridged (ROADMAP §A/§B). For every other provider
+    // the rig-backed factory from `default_registry()` handles it.
+    if matches!(api_provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+        registry.register(Arc::new(DeepSeekProviderFactory {
+            api_provider,
+            id: provider_id,
+        }));
+    }
     registry.build(&cfg)
 }
 

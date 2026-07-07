@@ -215,6 +215,43 @@ fn resolve_llm_client_builds_via_registry() {
     assert!(!client.provider_name().is_empty());
 }
 
+/// `resolve_llm_client` must route a non-DeepSeek provider (here: anthropic)
+/// to the rig-backed factory from `codesmith_providers::default_registry()`,
+/// NOT to the tui-local `DeepSeekClient`. The rig `RigLlmClient` does not
+/// override `health_check`, so it uses the trait default (`Ok(true)`, no
+/// network probe). A `DeepSeekClient` would probe `{base_url}/models` —
+/// hitting the real Anthropic endpoint and returning `Ok(false)`/error. Thus
+/// `health_check() == Ok(true)` is a network-free proof that the rig factory
+/// won the dispatch for the anthropic family.
+#[tokio::test]
+async fn resolve_llm_client_routes_anthropic_to_rig_factory() {
+    // Build under the sync test-env lock, then drop the guard BEFORE awaiting
+    // — clippy::await_holding_lock forbids holding a std MutexGuard across
+    // `.await`. The rig client's `health_check` (default impl) reads no env
+    // and makes no network call, so restoring env before the await is safe.
+    let client = {
+        let _guard = lock_test_env();
+        let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+        let cfg = Config {
+            provider: Some("anthropic".to_string()),
+            ..Config::default()
+        };
+        super::resolve_llm_client(&cfg)
+            .expect("registry should build an anthropic client via the rig factory")
+        // `_key` and `_guard` drop here — env restored, lock released.
+    };
+    assert_eq!(client.provider_name(), "anthropic");
+    let healthy = client
+        .health_check()
+        .await
+        .expect("health_check on the rig-backed client must not error");
+    assert!(
+        healthy,
+        "rig-backed anthropic client must report healthy without a network probe; \
+         Ok(false)/error would mean the tui-local DeepSeekClient won the route"
+    );
+}
+
 #[test]
 fn plugin_tools_dir_honors_missing_custom_directory_without_fallback() {
     let missing = PathBuf::from("definitely-missing-codesmith-plugin-dir");
