@@ -11,6 +11,14 @@ description = "Provider implementations for the CodeSmith framework — pluggabl
 codesmith-agent = { path = "../agent", version = "0.8.48" }
 anyhow.workspace = true
 futures-util = "0.3.31"
+serde_json.workspace = true
+# rig powers the OpenAI/Anthropic/DeepSeek/OpenAI-compat providers. Optional so a
+# `--no-default-features` build stays provider-less (the Lego `mock`-only build).
+rig-core = { workspace = true, optional = true }
+# reqwest is the HTTP stack for the FIM/translate shim. It is the same workspace
+# `reqwest 0.13.x` rig and `codesmith-agent` already pull in, so enabling it
+# under `rig` adds no extra compile — Cargo unifies the features into one build.
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -23,3 +31,13 @@ default = ["mock"]
 # Echo / no-network provider — useful for tests, offline demos, and as the
 # reference `ProviderFactory` sample. The LangChain `FakeListLLM` analog.
 mock = []
+# Internal aggregate: enables the `rig_adapter` module + the `rig-core`/reqwest
+# deps. The four provider features below each pull this in, so the adapter is
+# compiled exactly when at least one rig-backed provider is selected. rig
+# compiles all its provider modules unconditionally, so these features select
+# only which CodeSmith factory glue is linked — not which rig providers exist.
+rig = ["dep:rig-core", "dep:reqwest"]
+openai = ["rig"]
+anthropic = ["rig"]
+deepseek = ["rig"]
+openai-compat = ["rig"]

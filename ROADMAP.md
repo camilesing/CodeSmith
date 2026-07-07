@@ -11,6 +11,35 @@ up directly. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the layering.
 
 ---
 
+## 进度（2026-07 检查点）
+
+**方向调整：** 框架层改为接入 [rig-core](https://crates.io/crates/rig-core) 作为
+`LlmClient` 的可替换实现（用户决策："减少框架层代码维护量"），而非 §A 原计划的
+"搬运手写客户端"。rig 自带 HTTP/SSE/重试，所以 §B 的多数解耦替换（B1 logging
+facade、B2 `retry_status`、B4 `prompt_runtime`）对 rig adapter 不再适用 ——
+`codesmith-providers` 只依赖 `codesmith-agent`，零 TUI 耦合（§C6 依赖审计已通过）。
+仅 B3（`ApiProvider` → `ProviderKind`）仍相关。
+
+**已完成（本检查点，`feat/pluggable-framework-core`）：**
+- providers crate 的 rig adapter：`RigLlmClient<C, S>` 实现 `LlmClient`，委托 rig
+  `CompletionClient`；含 `convert`/`stream`/`shaper`/`fim_translate`。
+- 四家工厂 + 特性门控：`openai` / `anthropic` / `deepseek` / `openai-compat`（×13
+  家）。对应原 §C1/C2/C3/C5。
+- Anthropic `cache_control` 透传已对照 rig 源码验证（`system_message` 返回 `None`
+  → rig 命名 `system` 字段空-drop → shaper 经 `additional_params` 注入的 `system`
+  是唯一字段，per-block `cache_control` 完整保留）。
+- 全 Lego 特性矩阵零警告编译（每家单独 / 组合 / `--no-default-features` / 默认
+  `mock`）；10 个测试通过；工具链钉 1.90.0 stable。
+
+**下一聚焦工作：** §D1（TUI `resolve_llm_client` 切到 `default_registry`）+ 退役
+`crates/tui/src/client.{rs,chat.rs,anthropic.rs}`。**需重新规划**：rig adapter 与
+手写客户端有行为对齐缺口 —— `list_models` 默认返空、cache-warmup / prompt-inspection
+是 TUI 专属逻辑（非 `LlmClient` 方法）、DeepSeek `reasoning_effort` 回放策略住在客户端
+消息构建器里（`build_chat_messages_with_reasoning` / `should_replay_reasoning_content`）。
+原 §A 的耦合图仍可用于定位搬迁点。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
