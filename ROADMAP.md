@@ -125,12 +125,73 @@ Reasoning），故回放桥接在 adapter 层即已完成——无需把 `build_
   `has_deepseek_r_series_marker` 仍同时存在于 `providers/src/rig_adapter/reasoning.rs` 与
   `tui/src/client/chat.rs`（后者是 inspect/warmup 的传递依赖）；后续抽到 `codesmith-agent`
   共享，使 reasoning.rs 成为唯一源。
-- `crates/agent` / `crates/agent-runtime` 的 `LlmClient` trait 文档仍以 `DeepSeekClient`
-  为具体实现示例（已退役，属陈旧文档，不影响编译）。
+- ~~`crates/agent` / `crates/agent-runtime` 的 `LlmClient` trait 文档仍以 `DeepSeekClient`
+  为具体实现示例（已退役，属陈旧文档，不影响编译）~~ → §D2 已清理（trait 文档改为中性
+  措辞，不再以任何具体客户端为示例）。
 
 **下一聚焦工作：** §D2（config 选自定义 provider）、§E（agent executor / tool 抽象）维持
 原计划。B3（`ApiProvider` → `ProviderKind`）降级为低优先（rig adapter 按 `&str` provider
 名键控已规避该边）。
+
+---
+
+**进度（2026-07-07 §D2 落地，自定义 provider 逃生舱，`feat/pluggable-framework-core`）：**
+
+§D2 把"自由替换实现"的 UX 补齐为 pi-mono 平行——用户可在 config 注册一个非内置
+OpenAI-compat provider 并按 id 选中，无需改源码、无需新 Cargo feature。本轮范围仅 §D2 +
+陈旧文档清理（§E 多切片跨 crate，延后）。
+
+- **schema（双层）**：
+  - `codesmith-config`：`ConfigToml.custom_provider: Option<String>` 选中字段 +
+    `ProvidersToml.custom: Vec<CustomProviderToml>`（`id`/`api_key`/`base_url`/`model`/
+    `auth_mode`/`http_headers`）。`get_value("providers.custom")` 把数组包进
+    `{custom = [...]}` 再序列化（根级裸数组是非法 TOML）；`set_value` 对
+    `providers.custom*` 一律 bail 并指向手改文件；`is_sensitive_config_key` 把
+    `providers.custom` 标为敏感（`config list` 脱敏）。4 个单测。
+  - tui 运行期 `Config`：`CustomProviderConfig` 镜像 on-disk 结构；`custom_provider()`
+    取选中 id（trim + 过滤空），`custom_provider_entry()` 按 id 取条目（first wins）。
+- **字段选择**：用专用 `custom_provider: Option<String>` 选中字段，而非裸
+  `provider = "acme"`。后者会把 `ConfigToml.provider: ProviderKind` 闭合枚举 +
+  `ResolvedRuntimeOverrides`/`CliRuntimeOverrides`/`EnvRuntimeOverrides`（全 `ProviderKind`）
+  + 所有 `match ProviderKind` 臂的级联改动强加给 config 层，破坏闭合枚举校验和分层
+  （config 不能返回 `ProviderId`——agent 依赖 config，反之不行）。raw 字符串选中 +
+  TUI host 在 `resolve_llm_client` 映射到 `ProviderId::Custom(id)` 是最小切口。
+- **接线**：`resolve_llm_client` 顶部加 custom 分支——`custom_provider()` 为 `Some` 时
+  `ProviderId::Custom(id)`，否则 `ProviderId::from(api_provider().as_str())`。中性
+  `ProviderConfig` 字段（api_key/base_url/default_model/http_headers）复用既有 accessor，
+  后者已为 custom 路径读 `[[providers.custom]]` 条目；仅 `provider` id 不同。
+- **accessor custom 分支**：`default_model`（entry.model → root default_text_model →
+  `"deepseek-v4-pro"` 通用兜底，verbatim 透传，不做 DeepSeek 命名规整）；`deepseek_base_url`
+  （entry.base_url → root base_url，无 DeepSeek 默认 URL）；`deepseek_api_key`
+  （entry.api_key → root api_key → localhost 空 → bail 带 custom 专属错误，无 per-id env
+  槽）；`http_headers`（entry 头 merge 于 root 之上）。`validate`：custom 优先，拒内置名
+  碰撞、要求匹配条目，并用 `custom_provider().is_none()` 守卫内置 provider +
+  default_text_model 校验。`normalize_model_config` 对 custom 跳过 root 规整。
+  `merge_config` / `merge_providers_config` 合并 custom 字段。
+- **陈旧文档清理**：`crates/agent/src/llm_client/mod.rs` 的 `LlmClient` trait 文档移除全部
+  6 处 `DeepSeekClient` 引用，改为中性措辞（"a provider that overrides this" /
+  "rig-backed today"）。`crates/agent-runtime` 无引用（核验通过）。
+- **安全**：`merge_project_overrides` 刻意不合并 `custom_provider` 与 `providers.custom`
+  （不可信 repo overlay——凭据/端点/provider 选择），与既有 policy 一致。
+- **CLI 平价**：`config set/get/unset/list custom_provider` 经 `ConfigToml` 既有方法自动可用；
+  `providers.custom` 为只读（手改文件）。
+
+**已知 v1 限制：**
+- **能力矩阵 Deepseek 兜底**：custom provider 经 `api_provider()` 落到 Deepseek，故 context
+  window / max_output / thinking 预算用 DeepSeek 默认。仅诊断用（`config_types.rs:340-343`
+  注明 "model metadata for diagnostics and CI policy…Normal turns use a separate, more
+  conservative request cap"）。请求塑形不受影响（rig adapter 按 `&str` provider 名键控）。
+- **`auth_mode` 未接线**：`CustomProviderConfig.auth_mode` 存储但无 custom accessor 消费
+  （仅 Moonshot `kimi_oauth` / 顶层 DeepSeek 用）；v1 不暴露该旋钮。
+- **`MockProviderFactory`**：`ProviderId::from("mock")` = `Custom("mock")`，故
+  `custom_provider = "mock"` 在 mock 编译进时可解析；tui 默认不编 mock（正确行为）。
+
+**后续 deferred（非本轮）：**
+- `--custom-provider` CLI flag、`config set providers.custom.*` per-entry 写入、裸
+  `provider = "acme"` 形式、`ApiProvider::Custom` 臂、per-id env 槽。
+
+**下一聚焦工作：** §E（agent executor / tool 抽象）维持原计划。§D2 deferred 项（CLI flag /
+per-entry 写入 / 裸形式）低优先。B3（`ApiProvider` → `ProviderKind`）仍低优先。
 
 ---
 

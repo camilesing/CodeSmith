@@ -263,6 +263,42 @@ async fn resolve_llm_client_routes_anthropic_to_rig_factory() {
     );
 }
 
+/// §D2 — `resolve_llm_client` routes a `custom_provider` selection to
+/// `ProviderId::Custom(id)`, which reaches `default_registry().build()`. Since
+/// "acme" is not a registered factory, the build fails with the registry's
+/// "no provider factory registered for 'acme'" error — a network-free proof that
+/// the custom id flows all the way to the registry (not silently mapped to a
+/// builtin). The entry supplies a remote base_url + api_key so accessor
+/// resolution succeeds and the failure is squarely at registry dispatch.
+#[test]
+fn resolve_llm_client_custom_provider_routes_by_id_to_registry() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        custom_provider: Some("acme".to_string()),
+        providers: Some(crate::config::ProvidersConfig {
+            custom: vec![crate::config::CustomProviderConfig {
+                id: "acme".to_string(),
+                api_key: Some("acme-key".to_string()),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                model: Some("acme-flagship".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+    // `.err()` (not `expect_err`) — `LlmClientHandle` is `Arc<dyn LlmClient>`
+    // and the trait has no `Debug` supertrait, so the `Ok` variant isn't Debug.
+    let err = super::resolve_llm_client(&cfg)
+        .err()
+        .expect("an unregistered custom provider should not build");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("no provider factory registered for 'acme'"),
+        "expected the custom id to reach the registry; got: {msg}"
+    );
+}
+
 #[test]
 fn plugin_tools_dir_honors_missing_custom_directory_without_fallback() {
     let missing = PathBuf::from("definitely-missing-codesmith-plugin-dir");

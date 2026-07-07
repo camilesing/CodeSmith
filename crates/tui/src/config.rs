@@ -1024,6 +1024,10 @@ impl UpdateConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
     pub provider: Option<String>,
+    /// Active custom provider id (ROADMAP §D2). When set, this overrides
+    /// `provider` and selects the matching `[[providers.custom]]` entry by id.
+    /// The host maps this to `ProviderId::Custom(id)` for `resolve_llm_client`.
+    pub custom_provider: Option<String>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     /// Optional extra HTTP headers sent to model API requests.
@@ -1338,6 +1342,24 @@ pub struct ProviderConfig {
     pub http_headers: Option<HashMap<String, String>>,
 }
 
+/// Runtime view of a single `[[providers.custom]]` entry (ROADMAP §D2).
+///
+/// Mirrors [`codesmith_config::CustomProviderToml`] but lives in the TUI's own
+/// runtime `Config` schema. Each entry is self-contained (own base_url/model/
+/// credentials); the top-level `Config.custom_provider` selector picks one by
+/// `id`. Selection + resolution is handled by [`Config::custom_provider_entry`]
+/// and `resolve_llm_client`; the builtin accessor path (`api_provider` /
+/// `provider_config_for`) is bypassed for custom providers.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CustomProviderConfig {
+    pub id: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub auth_mode: Option<String>,
+    pub http_headers: Option<HashMap<String, String>>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ProvidersConfig {
     #[serde(default)]
@@ -1374,6 +1396,10 @@ pub struct ProvidersConfig {
     pub ollama: ProviderConfig,
     #[serde(default)]
     pub anthropic: ProviderConfig,
+    /// Open set of `[[providers.custom]]` entries (ROADMAP §D2). The active
+    /// entry is selected by the top-level `Config.custom_provider` id.
+    #[serde(default)]
+    pub custom: Vec<CustomProviderConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1498,6 +1524,11 @@ impl Config {
         if root_base.is_empty() {
             return;
         }
+        // A custom provider (§D2) legitimately reuses the root base_url field
+        // as its endpoint fallback — never warn for that path.
+        if self.custom_provider().is_some() {
+            return;
+        }
         let provider = self.api_provider();
         if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
             return;
@@ -1544,7 +1575,24 @@ impl Config {
 
     /// Validate that critical config fields are present.
     pub fn validate(&self) -> Result<()> {
-        if let Some(provider) = self.provider.as_deref()
+        // §D2 — custom provider escape hatch. When `custom_provider` is set,
+        // it overrides the builtin `provider` field: validate the id and its
+        // matching `[[providers.custom]]` entry, then skip the builtin-specific
+        // checks below (provider enum + DeepSeek-namespace default_text_model).
+        if let Some(id) = self.custom_provider() {
+            if ApiProvider::parse(id).is_some() {
+                anyhow::bail!(
+                    "custom_provider '{id}' collides with a builtin provider name; \
+                     use `provider = \"{id}\"` instead"
+                );
+            }
+            if self.custom_provider_entry().is_none() {
+                anyhow::bail!(
+                    "custom_provider '{id}' has no matching [[providers.custom]] entry \
+                     with id = \"{id}\"; declare one in config.toml"
+                );
+            }
+        } else if let Some(provider) = self.provider.as_deref()
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
@@ -1563,7 +1611,12 @@ impl Config {
                 }
             }
         }
-        if let Some(model) = self.default_text_model.as_deref()
+        // The default_text_model check is DeepSeek-namespace-specific (it
+        // consults `api_provider()`, which falls back to Deepseek for a custom
+        // provider). Skip it when a custom provider is active — the custom
+        // entry's `model` is validated only at build time.
+        if self.custom_provider().is_none()
+            && let Some(model) = self.default_text_model.as_deref()
             && !model.trim().eq_ignore_ascii_case("auto")
             && !provider_passes_model_through(self.api_provider())
             && !self.active_provider_preserves_custom_base_url_model()
@@ -1658,6 +1711,26 @@ impl Config {
             })
     }
 
+    /// The active custom provider id (ROADMAP §D2), if `custom_provider` is set.
+    /// When `Some`, the host resolves the LLM client via `ProviderId::Custom(id)`
+    /// instead of the builtin `provider`/`api_provider` path.
+    #[must_use]
+    pub fn custom_provider(&self) -> Option<&str> {
+        self.custom_provider.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// The `[[providers.custom]]` entry matching [`custom_provider`](Self::custom_provider),
+    /// if any. Resolution is by exact `id` match; a duplicate id resolves to the
+    /// first declared entry (matches the registry's last-wins behavior only at
+    /// build time — here we pick deterministically).
+    #[must_use]
+    pub fn custom_provider_entry(&self) -> Option<&CustomProviderConfig> {
+        let id = self.custom_provider()?;
+        self.providers
+            .as_ref()
+            .and_then(|providers| providers.custom.iter().find(|entry| entry.id == id))
+    }
+
     pub(crate) fn provider_config_for(&self, provider: ApiProvider) -> Option<&ProviderConfig> {
         let providers = self.providers.as_ref()?;
         Some(match provider {
@@ -1688,7 +1761,13 @@ impl Config {
     #[must_use]
     pub fn http_headers(&self) -> HashMap<String, String> {
         let mut headers = self.http_headers.clone().unwrap_or_default();
-        if let Some(provider_headers) = self
+        // §D2 — custom provider: merge the entry's headers on top of root.
+        if self.custom_provider().is_some()
+            && let Some(entry) = self.custom_provider_entry()
+            && let Some(provider_headers) = entry.http_headers.as_ref()
+        {
+            headers.extend(provider_headers.clone());
+        } else if let Some(provider_headers) = self
             .provider_config()
             .and_then(|provider| provider.http_headers.as_ref())
         {
@@ -1700,6 +1779,24 @@ impl Config {
 
     #[must_use]
     pub fn default_model(&self) -> String {
+        // §D2 — custom provider: the entry's `model` passes through verbatim
+        // (no DeepSeek-namespace normalization); fall back to the root model
+        // fields, then a generic default. Custom endpoints are OpenAI-compat
+        // and accept arbitrary model ids.
+        if let Some(entry) = self.custom_provider_entry() {
+            if let Some(model) = entry.model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                return model.to_string();
+            }
+            if let Some(model) = self
+                .default_text_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return model.to_string();
+            }
+            return "deepseek-v4-pro".to_string();
+        }
         let provider = self.api_provider();
         if let Some(model) = self
             .provider_config()
@@ -1779,6 +1876,25 @@ impl Config {
     /// Return the configured API base URL (normalized).
     #[must_use]
     pub fn deepseek_base_url(&self) -> String {
+        // §D2 — custom provider: the entry's base_url wins; fall back to the
+        // root `base_url` (custom endpoints legitimately reuse it). Unlike
+        // builtins there is no provider-specific default URL — a custom
+        // endpoint with no base_url configured returns empty and the registry
+        // build reports the failure.
+        if let Some(entry) = self.custom_provider_entry() {
+            if let Some(base) = entry
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return base.to_string();
+            }
+            if let Some(base) = self.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                return base.to_string();
+            }
+            return String::new();
+        }
         let provider = self.api_provider();
         let provider_base = self
             .provider_config_for(provider)
@@ -1863,6 +1979,34 @@ impl Config {
     /// explicitly set the field (not the legacy `API_KEYRING_SENTINEL`
     /// placeholder, not empty whitespace).
     pub fn deepseek_api_key(&self) -> Result<String> {
+        // §D2 — custom provider: resolve from the entry's api_key, then the
+        // root `api_key` (custom endpoints legitimately reuse it). There is no
+        // per-id env slot for an arbitrary custom id, so env lookup is skipped
+        // (a localhost endpoint still returns an empty key, matching builtins).
+        if let Some(id) = self.custom_provider() {
+            if let Some(entry) = self.custom_provider_entry() {
+                if let Some(configured) = entry.api_key.as_ref()
+                    && !configured.trim().is_empty()
+                    && configured != API_KEYRING_SENTINEL
+                {
+                    return Ok(configured.clone());
+                }
+            }
+            if let Some(configured) = self.api_key.as_ref()
+                && !configured.trim().is_empty()
+                && configured != API_KEYRING_SENTINEL
+            {
+                return Ok(configured.clone());
+            }
+            if base_url_uses_local_host(&self.deepseek_base_url()) {
+                return Ok(String::new());
+            }
+            anyhow::bail!(
+                "custom provider '{id}' API key not found. Set api_key in its \
+                 [[providers.custom]] block (id = \"{id}\") or the root api_key in \
+                 ~/.codesmith/config.toml."
+            );
+        }
         let provider = self.api_provider();
         let slot = match provider {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => "deepseek",
@@ -3358,7 +3502,13 @@ fn apply_env_overrides(config: &mut Config) {
 }
 
 fn normalize_model_config(config: &mut Config) {
-    if let Some(model) = config.default_text_model.as_deref()
+    // §D2 — a custom provider's model id is arbitrary (OpenAI-compat); never
+    // run it through the DeepSeek-namespace normalizer, which would rewrite a
+    // custom id into a DeepSeek alias. The custom entry's `model` is already
+    // passed through verbatim (no per-builtin normalization arm touches it).
+    let custom_active = config.custom_provider().is_some();
+    if !custom_active
+        && let Some(model) = config.default_text_model.as_deref()
         && !provider_passes_model_through(config.api_provider())
         && !config.active_provider_preserves_custom_base_url_model()
         && let Some(normalized) = normalize_model_for_provider(config.api_provider(), model)
@@ -3646,6 +3796,7 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
         provider: override_cfg.provider.or(base.provider),
+        custom_provider: override_cfg.custom_provider.or(base.custom_provider),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
         http_headers: override_cfg.http_headers.or(base.http_headers),
@@ -3769,6 +3920,14 @@ fn merge_providers(
             ollama: merge_provider_config(base.ollama, override_cfg.ollama),
             volcengine: merge_provider_config(base.volcengine, override_cfg.volcengine),
             anthropic: merge_provider_config(base.anthropic, override_cfg.anthropic),
+            // §D2 — a non-empty override `custom` array replaces the base's
+            // (profile-scoped custom providers); an empty override inherits the
+            // base's. Duplicates across profiles are the user's responsibility.
+            custom: if override_cfg.custom.is_empty() {
+                base.custom
+            } else {
+                override_cfg.custom
+            },
         }),
     }
 }
@@ -8905,5 +9064,215 @@ model = "deepseek-ai/deepseek-v4-pro"
             ..Config::default()
         };
         assert!(!off.kod_enabled());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // §D2 — custom provider escape hatch (`[[providers.custom]]`)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Helper: wrap `[[providers.custom]]` entries in a `ProvidersConfig`.
+    fn custom_providers(entries: Vec<CustomProviderConfig>) -> Option<ProvidersConfig> {
+        Some(ProvidersConfig {
+            custom: entries,
+            ..ProvidersConfig::default()
+        })
+    }
+
+    #[test]
+    fn validate_accepts_custom_provider_with_matching_entry() -> Result<()> {
+        let _guard = lock_test_env();
+        let config = Config {
+            custom_provider: Some("acme".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                api_key: Some("acme-key".to_string()),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                model: Some("acme-flagship".to_string()),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn validate_rejects_custom_provider_without_matching_entry() -> Result<()> {
+        let _guard = lock_test_env();
+        let config = Config {
+            custom_provider: Some("acme".to_string()),
+            // A declared entry, but with a different id — must not match.
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "other".to_string(),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        let err = config
+            .validate()
+            .err()
+            .context("expected a validation error for an unmatched custom_provider")?;
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("custom_provider 'acme' has no matching [[providers.custom]] entry"),
+            "unexpected error: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn validate_rejects_custom_provider_colliding_with_builtin() -> Result<()> {
+        let _guard = lock_test_env();
+        let config = Config {
+            custom_provider: Some("deepseek".to_string()),
+            ..Config::default()
+        };
+        let err = config
+            .validate()
+            .err()
+            .context("expected a validation error for a builtin-name collision")?;
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("custom_provider 'deepseek' collides with a builtin provider name"),
+            "unexpected error: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn custom_provider_accessors_read_entry_fields() -> Result<()> {
+        let _guard = lock_test_env();
+        // Root fields are set to DeepSeek values the custom branch must NOT fall
+        // through to — the entry-supplied fields must win.
+        let config = Config {
+            api_key: Some("root-key".to_string()),
+            base_url: Some("https://api.deepseek.com/beta".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            http_headers: Some(HashMap::from([(
+                "X-Root".to_string(),
+                "r".to_string(),
+            )])),
+            custom_provider: Some("acme".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                api_key: Some("acme-key".to_string()),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                model: Some("acme-flagship".to_string()),
+                // Entry header overrides the root X-Root and adds X-Org,
+                // proving the entry is merged on top (not replaced).
+                http_headers: Some(HashMap::from([
+                    ("X-Root".to_string(), "overridden".to_string()),
+                    ("X-Org".to_string(), "acme".to_string()),
+                ])),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+
+        // default_model: entry.model verbatim — no DeepSeek-namespace normalization.
+        assert_eq!(config.default_model(), "acme-flagship");
+        // deepseek_base_url: entry.base_url — no DeepSeek default URL leaks in.
+        assert_eq!(
+            config.deepseek_base_url(),
+            "https://gateway.acme.example/v1"
+        );
+        // deepseek_api_key: entry.api_key wins over the root api_key.
+        assert_eq!(config.deepseek_api_key()?, "acme-key");
+        // http_headers: entry headers merged on top of root.
+        let headers = config.http_headers();
+        assert_eq!(headers.get("X-Root").map(String::as_str), Some("overridden"));
+        assert_eq!(headers.get("X-Org").map(String::as_str), Some("acme"));
+        Ok(())
+    }
+
+    #[test]
+    fn custom_provider_api_key_falls_back_to_root_then_bails_for_remote() -> Result<()> {
+        let _guard = lock_test_env();
+        // Entry has no api_key — the root api_key is the fallback.
+        let with_root_key = Config {
+            api_key: Some("root-key".to_string()),
+            custom_provider: Some("acme".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                model: Some("acme-flagship".to_string()),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        assert_eq!(with_root_key.deepseek_api_key()?, "root-key");
+
+        // No entry api_key, no root api_key, remote base_url → bail with a
+        // custom-specific error pointing at the [[providers.custom]] block.
+        let without_key = Config {
+            custom_provider: Some("acme".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                model: Some("acme-flagship".to_string()),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        let err = without_key
+            .deepseek_api_key()
+            .err()
+            .context("expected an api_key resolution error for a remote custom provider")?;
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("custom provider 'acme' API key not found"),
+            "unexpected error: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn custom_provider_localhost_runs_without_api_key() -> Result<()> {
+        let _guard = lock_test_env();
+        let config = Config {
+            custom_provider: Some("internal".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "internal".to_string(),
+                base_url: Some("http://localhost:8080/v1".to_string()),
+                model: Some("internal-dev".to_string()),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        // localhost endpoint: an empty key is allowed, matching builtins.
+        assert_eq!(config.deepseek_api_key()?, "");
+        assert_eq!(config.deepseek_base_url(), "http://localhost:8080/v1");
+        assert_eq!(config.default_model(), "internal-dev");
+        Ok(())
+    }
+
+    #[test]
+    fn custom_provider_default_model_falls_back_to_root_then_generic() -> Result<()> {
+        let _guard = lock_test_env();
+        // Entry has no model — fall back to the root default_text_model.
+        let with_root_model = Config {
+            default_text_model: Some("custom-from-root".to_string()),
+            custom_provider: Some("acme".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        assert_eq!(with_root_model.default_model(), "custom-from-root");
+
+        // No entry model and no root default_text_model → generic fallback.
+        let bare = Config {
+            custom_provider: Some("acme".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        assert_eq!(bare.default_model(), "deepseek-v4-pro");
+        Ok(())
     }
 }

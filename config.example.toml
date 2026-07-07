@@ -28,6 +28,12 @@ base_url = "https://api.deepseek.com/beta"
 # Authorization and Content-Type are managed by the client and cannot be overridden here.
 # http_headers = { "X-Model-Provider-Id" = "your-model-provider" }
 
+# Escape hatch (ROADMAP §D2): for an OpenAI-compatible gateway that doesn't fit a
+# built-in `[providers.*]` table, register a `[[providers.custom]]` entry (see the
+# bottom of the providers section) and select it by id here. When `custom_provider`
+# is set it takes precedence over `provider` above.
+# custom_provider = "acme"   # must match a [[providers.custom]] id below
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -323,6 +329,40 @@ max_subagents = 10 # optional (1-20)
 # api_key = "OPTIONAL_OLLAMA_TOKEN"
 # base_url = "http://localhost:11434/v1"
 # model = "deepseek-coder:1.3b"             # or any local Ollama tag
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Custom providers (escape hatch — `[[providers.custom]]`, ROADMAP §D2)
+# ─────────────────────────────────────────────────────────────────────────────────
+# For OpenAI-compatible gateways that don't fit a built-in provider table, register
+# one or more custom providers here and select one with the top-level
+# `custom_provider = "<id>"` field (see the top of this file). Each entry needs a
+# unique `id`; the remaining fields mirror the built-in `[providers.*]` tables.
+# When `custom_provider` is set it takes precedence over `provider`.
+#
+# `[[providers.custom]]` is an array of tables, so multiple entries are allowed.
+# It is read-only via `config set` (edit this file by hand) and is treated as
+# sensitive: `api_key` values are masked in `config list`. Project overlays cannot
+# set `custom_provider` or `[[providers.custom]]` — credentials, endpoints, and
+# provider selection must live in user config or environment variables.
+#
+# Note (v1): a custom provider reuses the DeepSeek capability matrix (context
+# window / max_output / thinking budget) for diagnostics; request shaping is
+# unaffected (the rig adapter keys by provider name, not capability metadata).
+#
+# [[providers.custom]]
+# id = "acme"
+# api_key = "YOUR_ACME_API_KEY"
+# base_url = "https://gateway.acme.example/v1"
+# model = "acme-flagship"
+# # http_headers = { "X-Org" = "acme" }   # optional custom request headers
+#
+# [[providers.custom]]
+# id = "internal"
+# base_url = "http://localhost:8080/v1"   # localhost: no api_key needed
+# model = "internal-dev"
+#
+# Then activate one (uncomment the top-level selector):
+# custom_provider = "acme"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Web Search Provider

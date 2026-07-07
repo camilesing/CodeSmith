@@ -38,7 +38,8 @@ pub type StreamEventBox =
     Pin<Box<dyn futures_util::Stream<Item = Result<StreamEvent>> + Send + 'static>>;
 
 /// Shared handle to a dyn-dispatched LLM client. Use this everywhere instead
-/// of concrete `DeepSeekClient` so tests can inject `MockLlmClient`.
+/// of a concrete client type so tests can inject a mock and hosts stay
+/// decoupled from the provider implementation (rig-backed today).
 pub type LlmClientHandle = Arc<dyn LlmClient>;
 
 /// Unified interface for LLM providers.
@@ -51,7 +52,8 @@ pub type LlmClientHandle = Arc<dyn LlmClient>;
 /// - All methods are dyn-safe so `Arc<dyn LlmClient>` can be used for test injection.
 /// - `create_message` returns a boxed future; `create_message_stream` returns a boxed stream.
 /// - `fim_completion` and `translate` have default error implementations;
-///   `DeepSeekClient` overrides them with its provider-specific endpoints.
+///   a provider that supports them overrides them with its provider-specific
+///   endpoints.
 #[allow(dead_code, unused_variables)] // Trait methods + default-impl params are part of the LLM provider interface
 pub trait LlmClient: Send + Sync {
     /// Returns the provider name (e.g., "openai", "deepseek")
@@ -77,8 +79,8 @@ pub trait LlmClient: Send + Sync {
         Box::pin(async { Ok(true) })
     }
 
-    /// Fill-in-the-middle (FIM) completion. Only `DeepSeekClient` overrides this;
-    /// the default returns an error for providers that don't support FIM.
+    /// Fill-in-the-middle (FIM) completion. A provider that supports FIM
+    /// overrides this; the default returns an error for providers that don't.
     fn fim_completion(
         &self,
         model: String,
@@ -94,8 +96,8 @@ pub trait LlmClient: Send + Sync {
         })
     }
 
-    /// Lightweight text translation. Only `DeepSeekClient` overrides this;
-    /// the default returns an error for providers that don't support it.
+    /// Lightweight text translation. A provider that supports it overrides
+    /// this; the default returns an error for providers that don't.
     fn translate(
         &self,
         text: String,
@@ -110,7 +112,7 @@ pub trait LlmClient: Send + Sync {
         })
     }
 
-    /// Provider-specific base URL. Only `DeepSeekClient` overrides this;
+    /// Provider-specific base URL. A provider that exposes one overrides this;
     /// the default returns an empty string (for mocks and providers that
     /// don't expose a base URL).
     fn base_url(&self) -> &str {
@@ -118,7 +120,8 @@ pub trait LlmClient: Send + Sync {
     }
 
     /// List available models (provider-specific).
-    /// Only DeepSeekClient overrides this; default returns empty.
+    /// A provider that exposes a model catalog overrides this; the default
+    /// returns empty.
     fn list_models(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + '_>> {
         Box::pin(async { Ok(Vec::new()) })
     }

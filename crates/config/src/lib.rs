@@ -171,6 +171,29 @@ pub struct ProviderConfigToml {
     pub http_headers: BTreeMap<String, String>,
 }
 
+/// On-disk schema for a single `[[providers.custom]]` entry (ROADMAP §D2).
+///
+/// A custom provider is any provider id not in the closed `ProviderKind` enum
+/// — e.g. a host-registered factory (`mock`, or a user crate's factory) or an
+/// OpenAI-compatible endpoint the user wants to address by a private id. Each
+/// entry is self-contained (own base_url/model/credentials); the top-level
+/// `custom_provider = "<id>"` field selects which entry is active. Because the
+/// active provider id is open-ended, it lives in [`ConfigToml::custom_provider`]
+/// as a raw string rather than the closed `ProviderKind`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CustomProviderToml {
+    /// The custom provider id. Must match the `custom_provider` selector. Must
+    /// not collide with a builtin `ProviderKind::as_str` (e.g. `"deepseek"`):
+    /// the host rejects that so the builtin selector stays authoritative.
+    pub id: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub auth_mode: Option<String>,
+    #[serde(default)]
+    pub http_headers: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProvidersToml {
     #[serde(default)]
@@ -205,6 +228,12 @@ pub struct ProvidersToml {
     pub ollama: ProviderConfigToml,
     #[serde(default)]
     pub anthropic: ProviderConfigToml,
+    /// Open set of `[[providers.custom]]` entries (ROADMAP §D2). Unlike the
+    /// fixed per-builtin fields above, this is an array table so a user can
+    /// declare multiple custom endpoints and select among them with the
+    /// top-level `custom_provider` selector. Builtin ids are rejected here.
+    #[serde(default)]
+    pub custom: Vec<CustomProviderToml>,
 }
 
 impl ProvidersToml {
@@ -266,6 +295,11 @@ pub struct ConfigToml {
     pub default_text_model: Option<String>,
     #[serde(default)]
     pub provider: ProviderKind,
+    /// Active custom provider id (ROADMAP §D2). When set, this overrides
+    /// `provider` and selects the matching `[[providers.custom]]` entry by id.
+    /// Kept as a raw string (not `ProviderKind`) because the id space is open:
+    /// any host-registered factory (e.g. `mock`) or user-declared endpoint.
+    pub custom_provider: Option<String>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,
@@ -490,6 +524,11 @@ impl ConfigToml {
     /// network policy, skill registry, LSP command tables, and unknown extras.
     /// Approval and sandbox values may only tighten the existing user/global
     /// posture.
+    ///
+    /// Notably the `custom_provider` selector and the `[[providers.custom]]`
+    /// table are **not** merged (ROADMAP §D2): both can carry endpoints and
+    /// credentials, and the selector is provider selection — all in the
+    /// ignored category above.
     pub fn merge_project_overrides(&mut self, project: ConfigToml) {
         if project.default_text_model.is_some() {
             self.default_text_model = project.default_text_model;
@@ -554,6 +593,7 @@ impl ConfigToml {
     pub fn get_value(&self, key: &str) -> Option<String> {
         match key {
             "provider" => Some(self.provider.as_str().to_string()),
+            "custom_provider" => self.custom_provider.clone(),
             "api_key" => self.api_key.clone(),
             "base_url" => self.base_url.clone(),
             "http_headers" => serialize_http_headers(&self.http_headers),
@@ -665,6 +705,21 @@ impl ConfigToml {
             "providers.anthropic.http_headers" => {
                 serialize_http_headers(&self.providers.anthropic.http_headers)
             }
+            // The `[[providers.custom]]` array table is read as a whole: there
+            // is no stable per-entry key (ids are user-chosen), so `get` returns
+            // the serialized array and per-entry edits are hand-edits. The array
+            // is wrapped under a `custom` key because a root-level bare array
+            // of tables is not valid TOML (`[[...]]` requires a key).
+            "providers.custom" => {
+                if self.providers.custom.is_empty() {
+                    None
+                } else {
+                    let mut wrapper = toml::Table::new();
+                    let arr = toml::Value::try_from(&self.providers.custom).ok()?;
+                    wrapper.insert(String::from("custom"), arr);
+                    toml::to_string(&wrapper).ok()
+                }
+            }
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
     }
@@ -685,6 +740,23 @@ impl ConfigToml {
             "provider" => {
                 self.provider = ProviderKind::parse(value)
                     .with_context(|| format!("unknown provider '{value}'"))?;
+            }
+            // The custom_provider selector is a raw id. An empty value clears
+            // it (matches `unset_value`); a builtin name is rejected so the
+            // builtin `provider` field stays the authoritative selector for
+            // known providers — custom ids must not shadow them.
+            "custom_provider" => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.custom_provider = None;
+                } else if ProviderKind::parse(trimmed).is_some() {
+                    anyhow::bail!(
+                        "custom_provider '{trimmed}' collides with a builtin provider; \
+                         use `provider = \"{trimmed}\"` instead"
+                    );
+                } else {
+                    self.custom_provider = Some(trimmed.to_string());
+                }
             }
             "api_key" => self.api_key = Some(value.to_string()),
             "base_url" => self.base_url = Some(value.to_string()),
@@ -898,6 +970,16 @@ impl ConfigToml {
             "providers.anthropic.http_headers" => {
                 self.providers.anthropic.http_headers = parse_http_headers(value)?;
             }
+            // The `[[providers.custom]]` array table is not writable via
+            // `config set`: ids are user-chosen so there is no stable per-entry
+            // key. Point users at hand-editing the file.
+            key if key == "providers.custom" || key.starts_with("providers.custom.") => {
+                anyhow::bail!(
+                    "'{key}' is a [[providers.custom]] array table and can't be set via \
+                     `config set`; edit config.toml directly to add a [[providers.custom]] \
+                     block (id, base_url, model) and select it with `custom_provider`"
+                );
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -909,6 +991,7 @@ impl ConfigToml {
     pub fn unset_value(&mut self, key: &str) -> Result<()> {
         match key {
             "provider" => self.provider = ProviderKind::Deepseek,
+            "custom_provider" => self.custom_provider = None,
             "api_key" => self.api_key = None,
             "base_url" => self.base_url = None,
             "http_headers" => self.http_headers.clear(),
@@ -1007,6 +1090,7 @@ impl ConfigToml {
             "providers.anthropic.base_url" => self.providers.anthropic.base_url = None,
             "providers.anthropic.model" => self.providers.anthropic.model = None,
             "providers.anthropic.http_headers" => self.providers.anthropic.http_headers.clear(),
+            "providers.custom" => self.providers.custom.clear(),
             _ => {
                 self.extras.remove(key);
             }
@@ -1019,6 +1103,9 @@ impl ConfigToml {
         let mut out = BTreeMap::new();
         out.insert("provider".to_string(), self.provider.as_str().to_string());
 
+        if let Some(v) = self.custom_provider.as_ref() {
+            out.insert("custom_provider".to_string(), v.clone());
+        }
         if let Some(v) = self.api_key.as_ref() {
             out.insert("api_key".to_string(), redact_secret(v));
         }
@@ -2207,7 +2294,12 @@ fn redact_secret(secret: &str) -> String {
 
 #[must_use]
 pub fn is_sensitive_config_key(key: &str) -> bool {
-    key == "api_key" || key.ends_with(".api_key")
+    key == "api_key"
+        || key.ends_with(".api_key")
+        // The `[[providers.custom]]` array serializes whole, including any
+        // per-entry `api_key` fields, so the entire blob is treated as secret
+        // for display (ROADMAP §D2).
+        || key == "providers.custom"
 }
 
 fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
@@ -4293,5 +4385,146 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         let resolved = ConfigToml::default().resolve_runtime_options_with_secrets(&cli, &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("cli-key"));
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Cli));
+    }
+
+    // === §D2 — custom provider escape hatch ===
+
+    #[test]
+    fn custom_provider_table_round_trips() {
+        let toml_src = r#"
+custom_provider = "acme"
+
+[[providers.custom]]
+id = "acme"
+base_url = "https://api.acme.dev/v1"
+model = "acme-pro"
+api_key = "sk-acme"
+
+[[providers.custom]]
+id = "backup"
+base_url = "https://api.backup.dev/v1"
+model = "b-1"
+"#;
+        let parsed: ConfigToml = toml::from_str(toml_src).expect("parses");
+        assert_eq!(parsed.custom_provider.as_deref(), Some("acme"));
+        assert_eq!(parsed.providers.custom.len(), 2);
+        assert_eq!(parsed.providers.custom[0].id, "acme");
+        assert_eq!(
+            parsed.providers.custom[0].base_url.as_deref(),
+            Some("https://api.acme.dev/v1")
+        );
+        assert!(parsed.providers.custom[1].api_key.is_none());
+
+        // Round-trip back to a string and re-parse to confirm symmetry.
+        let reserialized = toml::to_string(&parsed).expect("serializes");
+        let reparsed: ConfigToml = toml::from_str(&reserialized).expect("reparses");
+        assert_eq!(reparsed.custom_provider, parsed.custom_provider);
+        assert_eq!(reparsed.providers.custom.len(), 2);
+    }
+
+    #[test]
+    fn custom_provider_get_set_unset_list() {
+        let mut config = ConfigToml::default();
+
+        // set / get
+        config.set_value("custom_provider", "acme").expect("set");
+        assert_eq!(config.get_value("custom_provider").as_deref(), Some("acme"));
+        assert!(config.list_values().contains_key("custom_provider"));
+
+        // builtin collision is rejected
+        let err = config
+            .set_value("custom_provider", "deepseek")
+            .expect_err("builtin collision rejected");
+        assert!(err.to_string().contains("collides with a builtin provider"));
+        // the rejected write did not clobber the prior value
+        assert_eq!(config.get_value("custom_provider").as_deref(), Some("acme"));
+
+        // empty string clears (matches unset)
+        config.set_value("custom_provider", "").expect("empty clears");
+        assert!(config.get_value("custom_provider").is_none());
+
+        // explicit unset
+        config.set_value("custom_provider", "acme2").expect("set2");
+        config.unset_value("custom_provider").expect("unset");
+        assert!(config.get_value("custom_provider").is_none());
+        assert!(!config.list_values().contains_key("custom_provider"));
+    }
+
+    #[test]
+    fn custom_provider_array_table_is_readonly_and_secret() {
+        let mut config = ConfigToml {
+            custom_provider: Some("acme".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.custom.push(CustomProviderToml {
+            id: "acme".to_string(),
+            api_key: Some("sk-acme".to_string()),
+            base_url: Some("https://api.acme.dev/v1".to_string()),
+            model: Some("acme-pro".to_string()),
+            auth_mode: None,
+            http_headers: BTreeMap::new(),
+        });
+
+        // get returns the serialized array (non-empty)
+        let blob = config
+            .get_value("providers.custom")
+            .expect("array is readable");
+        assert!(blob.contains("acme"));
+        assert!(blob.contains("sk-acme"));
+
+        // display redacts the whole blob (it carries api_keys)
+        assert!(is_sensitive_config_key("providers.custom"));
+        let display = config
+            .get_display_value("providers.custom")
+            .expect("display value");
+        assert!(!display.contains("sk-acme"), "api_key leaked in display: {display}");
+
+        // per-key set is rejected with a helpful pointer to hand-editing
+        let err = config
+            .set_value("providers.custom.acme.base_url", "https://x")
+            .expect_err("per-entry set rejected");
+        assert!(err.to_string().contains("array table"));
+        assert!(err.to_string().contains("edit config.toml directly"));
+
+        // unset clears the array
+        config.unset_value("providers.custom").expect("unset array");
+        assert!(config.providers.custom.is_empty());
+        assert!(config.get_value("providers.custom").is_none());
+    }
+
+    #[test]
+    fn merge_project_overrides_ignores_custom_provider() {
+        // Untrusted repo config tries to inject a custom provider + entry.
+        let mut project = ConfigToml {
+            custom_provider: Some("evil".to_string()),
+            ..ConfigToml::default()
+        };
+        project.providers.custom.push(CustomProviderToml {
+            id: "evil".to_string(),
+            base_url: Some("https://exfil.example/v1".to_string()),
+            api_key: Some("sk-exfil".to_string()),
+            model: None,
+            auth_mode: None,
+            http_headers: BTreeMap::new(),
+        });
+
+        let mut user = ConfigToml {
+            custom_provider: Some("acme".to_string()),
+            ..ConfigToml::default()
+        };
+        user.providers.custom.push(CustomProviderToml {
+            id: "acme".to_string(),
+            base_url: Some("https://api.acme.dev/v1".to_string()),
+            api_key: None,
+            model: Some("acme-pro".to_string()),
+            auth_mode: None,
+            http_headers: BTreeMap::new(),
+        });
+        user.merge_project_overrides(project);
+
+        // Neither the selector nor the array entry were merged.
+        assert_eq!(user.custom_provider.as_deref(), Some("acme"));
+        assert_eq!(user.providers.custom.len(), 1);
+        assert_eq!(user.providers.custom[0].id, "acme");
     }
 }

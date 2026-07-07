@@ -82,6 +82,11 @@ impl From<&str> for ProviderId {
 /// Neutral construction input for any provider. Carries exactly what a
 /// provider needs to build an [`LlmClientHandle`], with no dependency on the
 /// TUI `Config`. Built by the host (TUI/app-server) from its own config.
+/// Host-injected retry-notification closure. Kept as a named alias so the
+/// `ProviderConfig.on_retry` field stays readable; providers compiled into
+/// `codesmith-providers` receive this without any terminal/UI coupling.
+pub type RetryHook = Arc<dyn Fn(&LlmError, u32, Duration) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct ProviderConfig {
     /// Which provider this config is for.
@@ -99,7 +104,7 @@ pub struct ProviderConfig {
     /// Optional retry-notification hook. Replaces the TUI's global
     /// `retry_status` UI: the host injects a closure, so a provider compiled
     /// into `codesmith-providers` stays free of terminal/UI coupling.
-    pub on_retry: Option<Arc<dyn Fn(&LlmError, u32, Duration) + Send + Sync>>,
+    pub on_retry: Option<RetryHook>,
 }
 
 // === ProviderFactory ===

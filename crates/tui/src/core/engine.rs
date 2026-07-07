@@ -302,8 +302,18 @@ fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
 /// #1694) plus rig's faithful `reasoning_content` serialization for the OpenAI
 /// / DeepSeek providers. See ROADMAP §A1 / §D1.
 pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClientHandle> {
+    // §D2 — when `custom_provider` is set, route to `ProviderId::Custom(id)`
+    // so a host-registered factory (e.g. `mock`, or a user crate's factory)
+    // is selected by id. The neutral `ProviderConfig` fields (api_key /
+    // base_url / default_model / http_headers) are resolved by the `Config`
+    // accessors, which already read from the matching `[[providers.custom]]`
+    // entry for the custom path; only the `provider` id differs here.
+    let provider = match api_config.custom_provider() {
+        Some(id) => ProviderId::Custom(id.to_string()),
+        None => ProviderId::from(api_config.api_provider().as_str()),
+    };
     let cfg = ProviderConfig {
-        provider: ProviderId::from(api_config.api_provider().as_str()),
+        provider,
         api_key: api_config.deepseek_api_key()?,
         base_url: api_config.deepseek_base_url(),
         default_model: api_config.default_model(),
