@@ -21,6 +21,12 @@
 //! request's `'&self` lifetime.
 
 mod convert;
+// `reasoning` is consumed only by `GenericShaper` (the OpenAI / openai-compat /
+// DeepSeek family); Anthropic has its own thinking config and never calls it.
+// Gate it with the same cfg so the `anthropic`-only Lego build stays
+// warning-free.
+#[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
+mod reasoning;
 mod shaper;
 mod stream;
 mod fim_translate;
@@ -142,6 +148,12 @@ where
         .map(convert::message_to_rig)
         .collect::<Result<_>>()?;
 
+    // Provider-specific message rewriting (strip/inject `reasoning_content`)
+    // runs on the full history before the last message is popped as the prompt,
+    // so tool-call assistant turns in the history get the DeepSeek placeholder
+    // (#1739/#1694) or the #1542 strip.
+    shaper.shape_messages(&mut rig_messages, req);
+
     // The shaper may decline to produce a preamble (e.g. Anthropic forwards
     // structured system through additional_params instead).
     let preamble = req.system.as_ref().and_then(|s| shaper.system_message(s));
@@ -164,7 +176,16 @@ where
         builder = builder.tools(tools);
     }
 
-    builder = builder.max_tokens(u64::from(req.max_tokens));
+    match shaper.shape_max_tokens(req) {
+        shaper::MaxTokensSpec::MaxTokens(n) => builder = builder.max_tokens(n),
+        shaper::MaxTokensSpec::MaxCompletionTokens(n) => {
+            // xiaomi-mimo rejects `max_tokens`; emit the "responses"-style
+            // rename via additional_params (rig merges repeated calls).
+            builder = builder.additional_params(serde_json::json!({
+                "max_completion_tokens": n,
+            }));
+        }
+    }
     if let Some(temp) = req.temperature {
         builder = builder.temperature(f64::from(temp));
     }
