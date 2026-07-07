@@ -38,8 +38,7 @@ use crate::automation_manager::{
     AutomationManager, AutomationSchedulerConfig, spawn_scheduler, wrap_automation_manager,
 };
 use crate::client::{
-    CacheWarmupKey, DeepSeekClient, PromptInspection, build_cache_warmup_request,
-    inspect_prompt_for_request,
+    CacheWarmupKey, PromptInspection, build_cache_warmup_request, inspect_prompt_for_request,
 };
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
@@ -52,7 +51,6 @@ use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
 use crate::hooks::{HookEvent, HookExecutor};
-use crate::llm_client::LlmClient;
 use crate::models::{
     ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
 };
@@ -561,8 +559,8 @@ pub async fn run_tui(
     // or the network is unavailable.
     // Translations are skipped with a logged warning until a key is saved.
     let translation_client: Option<Arc<dyn crate::llm_client::LlmClient>> =
-        match DeepSeekClient::new(config) {
-            Ok(client) => Some(Arc::new(client) as Arc<dyn crate::llm_client::LlmClient>),
+        match crate::core::engine::resolve_llm_client(config) {
+            Ok(client) => Some(client),
             Err(err) => {
                 if app.onboarding == OnboardingState::None {
                     tracing::warn!("Translation client initialization failed: {err}");
@@ -4068,18 +4066,15 @@ fn apply_alt_0_shortcut(app: &mut App, modifiers: KeyModifiers) {
 }
 
 async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
-    use crate::client::DeepSeekClient;
-
-    let client = DeepSeekClient::new(config)?;
-    let models = tokio::time::timeout(Duration::from_secs(20), client.list_models()).await??;
-    let mut ids = models.into_iter().map(|m| m.id).collect::<Vec<_>>();
+    let client = crate::core::engine::resolve_llm_client(config)?;
+    let mut ids = tokio::time::timeout(Duration::from_secs(20), client.list_models()).await??;
     ids.sort();
     ids.dedup();
     Ok(ids)
 }
 
 async fn run_cache_warmup(app: &App, config: &Config) -> Result<(Usage, String, PromptInspection)> {
-    let client = DeepSeekClient::new(config)?;
+    let client = crate::core::engine::resolve_llm_client(config)?;
     let base_url = client.base_url().to_string();
     let reasoning_effort = if app.reasoning_effort == ReasoningEffort::Auto {
         app.last_effective_reasoning_effort
@@ -4997,7 +4992,7 @@ async fn switch_provider(
         config.default_text_model = Some(model.clone());
     }
 
-    if let Err(err) = DeepSeekClient::new(config) {
+    if let Err(err) = crate::core::engine::resolve_llm_client(config) {
         config.provider = previous_provider_str;
         config.base_url = previous_base_url;
         config.default_text_model = previous_default_text_model;

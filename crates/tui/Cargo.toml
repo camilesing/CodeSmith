@@ -37,11 +37,12 @@ codesmith-agent-runtime = { path = "../agent-runtime", version = "0.8.48" }
 codesmith-config = { path = "../config", version = "0.8.48" }
 codesmith-protocol = { path = "../protocol", version = "0.8.48" }
 # Provider implementations (rig-backed). `default-features = false` keeps the
-# no-network `mock` provider out of the binary; the three rig features select
-# the providers the engine routes non-DeepSeek config to via
-# `default_registry()`. DeepSeek stays on the tui-local hand-written client
-# (reasoning_content replay bridge is a §A/§B follow-up), so `deepseek` is off.
-codesmith-providers = { path = "../providers", version = "0.8.48", default-features = false, features = ["openai", "anthropic", "openai-compat"] }
+# no-network `mock` provider out of the binary; the four rig features select
+# every provider the engine routes config to via `default_registry()`. DeepSeek
+# now also goes through the rig `DeepSeekFactory` (its `reasoning_content`
+# replay is handled by the adapter's `shape_messages` + rig's faithful
+# `reasoning_content` serialization — ROADMAP §A1 / §D1), so `deepseek` is on.
+codesmith-providers = { path = "../providers", version = "0.8.48", default-features = false, features = ["openai", "anthropic", "deepseek", "openai-compat"] }
 codesmith-release = { path = "../release", version = "0.8.48" }
 codesmith-secrets = { path = "../secrets", version = "0.8.48" }
 codesmith-tools = { path = "../tools", version = "0.8.48" }

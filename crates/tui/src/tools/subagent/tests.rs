@@ -2076,17 +2076,15 @@ fn stub_runtime() -> SubAgentRuntime {
 }
 
 /// A minimal stub client. Test helpers below only ever check struct fields
-/// (depth, cancel_token, context); they don't call the network. We need a
-/// *some* `DeepSeekClient` because `SubAgentRuntime.client` isn't
-/// `Option<...>`. `Config::default()` is enough — `DeepSeekClient::new`
-/// only validates that an API key field exists, not that the key works.
+/// (depth, cancel_token, context); they don't call the network. `Config::default()`
+/// is enough — `resolve_llm_client` only validates that an API key field exists,
+/// not that the key works.
 fn stub_client() -> crate::llm_client::LlmClientHandle {
     let config = crate::config::Config {
         api_key: Some("test-key".to_string()),
         ..crate::config::Config::default()
     };
-    let client = crate::client::DeepSeekClient::new(&config).expect("stub client should construct");
-    std::sync::Arc::new(client) as crate::llm_client::LlmClientHandle
+    crate::core::engine::resolve_llm_client(&config).expect("stub client should construct")
 }
 
 // ---- #405 session-boundary classification ----

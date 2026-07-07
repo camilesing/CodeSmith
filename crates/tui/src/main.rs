@@ -95,7 +95,6 @@ mod workspace_trust;
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::features::{Feature, render_feature_table};
-use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
@@ -3570,11 +3569,9 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
 }
 
 async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
-    use crate::client::DeepSeekClient;
-
-    let client = DeepSeekClient::new(config)?;
+    let client = crate::core::engine::resolve_llm_client(config)?;
     let mut models = client.list_models().await?;
-    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.sort();
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&models)?);
@@ -3590,12 +3587,8 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
 
     println!("Available models (default: {default_model})");
     for model in models {
-        let marker = if model.id == default_model { "*" } else { " " };
-        if let Some(owner) = model.owned_by {
-            println!("{marker} {} ({owner})", model.id);
-        } else {
-            println!("{marker} {}", model.id);
-        }
+        let marker = if model == default_model { "*" } else { " " };
+        println!("{marker} {model}");
     }
 
     Ok(())
@@ -3603,10 +3596,9 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
 
 /// Test API connectivity by making a minimal request
 async fn test_api_connectivity(config: &Config) -> Result<()> {
-    use crate::client::DeepSeekClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
 
-    let client = DeepSeekClient::new(config)?;
+    let client = crate::core::engine::resolve_llm_client(config)?;
     let model = client.model().to_string();
 
     // Minimal request: single word prompt, 1 max token
@@ -3967,8 +3959,6 @@ fn pick_session_id() -> Result<String> {
 }
 
 async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
-    use crate::client::DeepSeekClient;
-
     let diff = collect_diff(&args)?;
     if diff.trim().is_empty() {
         bail!("No diff to review.");
@@ -3992,7 +3982,7 @@ Provide findings ordered by severity with file references, then open questions, 
     let user_prompt =
         format!("Review the following diff and provide feedback:\n\n{diff}\n\nEnd of diff.");
 
-    let client = DeepSeekClient::new(config)?;
+    let client = crate::core::engine::resolve_llm_client(config)?;
     let request = MessageRequest {
         model: model.clone(),
         messages: vec![Message {
@@ -5343,10 +5333,9 @@ async fn run_one_shot(
     prompt: &str,
     system_prompt_override: Option<String>,
 ) -> Result<()> {
-    use crate::client::DeepSeekClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
 
-    let client = DeepSeekClient::new(config)?;
+    let client = crate::core::engine::resolve_llm_client(config)?;
     let route = resolve_cli_auto_route(config, model, prompt).await;
     let reasoning_effort = route
         .reasoning_effort
@@ -5390,10 +5379,9 @@ async fn run_one_shot_json(
     prompt: &str,
     system_prompt_override: Option<String>,
 ) -> Result<()> {
-    use crate::client::DeepSeekClient;
     use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
-    let client = DeepSeekClient::new(config)?;
+    let client = crate::core::engine::resolve_llm_client(config)?;
     let route = resolve_cli_auto_route(config, model, prompt).await;
     let model = route.model;
     let reasoning_effort = route

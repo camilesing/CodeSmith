@@ -12,9 +12,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-use crate::client::DeepSeekClient;
 use crate::config::Config;
-use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
 const ACP_PROTOCOL_VERSION: u64 = 1;
@@ -180,7 +178,7 @@ impl AcpServer {
 
     async fn run_prompt(&self, prompt: &str, cwd: &PathBuf) -> Result<String> {
         let _cwd_guard = ScopedCurrentDir::new(cwd)?;
-        let client = DeepSeekClient::new(&self.config)?;
+        let client = crate::core::engine::resolve_llm_client(&self.config)?;
         let route = crate::resolve_cli_auto_route(&self.config, &self.model, prompt).await;
         let reasoning_effort = route
             .reasoning_effort

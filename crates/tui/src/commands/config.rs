@@ -4,13 +4,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::CommandResult;
-use crate::client::DeepSeekClient;
 use crate::config::{
     COMMON_DEEPSEEK_MODELS, Config, clear_api_key, effective_home_dir, expand_path,
     normalize_model_name_for_provider,
 };
 use crate::config_ui::{ConfigUiMode, parse_mode};
-use crate::llm_client::LlmClient;
 use crate::localization::resolve_locale;
 use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 use crate::settings::Settings;
@@ -1215,7 +1213,7 @@ async fn auto_route_flash_recommendation(
         return Ok(None);
     }
 
-    let client = DeepSeekClient::new(config)?;
+    let client = crate::core::engine::resolve_llm_client(config)?;
     let mut router_system = AUTO_MODEL_ROUTER_SYSTEM_PROMPT.to_string();
     if config.auto_cost_saving() {
         router_system.push_str(AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM);

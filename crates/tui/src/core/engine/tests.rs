@@ -199,30 +199,42 @@ fn config_auth_error_does_not_blame_env() {
 }
 
 /// Step 2: `resolve_llm_client` routes construction through the
-/// `ProviderRegistry` — the engine no longer names `DeepSeekClient` directly.
+/// `ProviderRegistry` — the engine never names a concrete client type.
 /// With a config-supplied API key (client construction makes no network call),
 /// the registry must dispatch to the registered factory and return a built
 /// handle, proving the pluggability seam is wired into `build_engine`.
-#[test]
-fn resolve_llm_client_builds_via_registry() {
-    let _guard = lock_test_env();
-    let cfg = Config {
-        api_key: Some("test-registry-key".to_string()),
-        ..Config::default()
+/// The default `Config` selects the DeepSeek provider, so this also proves
+/// DeepSeek now resolves through the rig `DeepSeekFactory` (ROADMAP §A1 / §D1).
+#[tokio::test]
+async fn resolve_llm_client_builds_via_registry() {
+    let client = {
+        let _guard = lock_test_env();
+        let cfg = Config {
+            api_key: Some("test-registry-key".to_string()),
+            ..Config::default()
+        };
+        super::resolve_llm_client(&cfg)
+            .expect("registry should build a client when an API key is configured")
+        // `_guard` drops here — env restored, lock released before the await.
     };
-    let client = super::resolve_llm_client(&cfg)
-        .expect("registry should build a client when an API key is configured");
-    assert!(!client.provider_name().is_empty());
+    assert_eq!(client.provider_name(), "deepseek");
+    // The rig `RigLlmClient` does not override `health_check`, so it uses the
+    // trait default (`Ok(true)`, no network probe) — a network-free proof that
+    // the rig factory won the dispatch (the deleted tui-local client would
+    // have probed `{base_url}/models`).
+    let healthy = client
+        .health_check()
+        .await
+        .expect("health_check on the rig-backed client must not error");
+    assert!(healthy, "rig-backed deepseek client must report healthy without a network probe");
 }
 
 /// `resolve_llm_client` must route a non-DeepSeek provider (here: anthropic)
-/// to the rig-backed factory from `codesmith_providers::default_registry()`,
-/// NOT to the tui-local `DeepSeekClient`. The rig `RigLlmClient` does not
-/// override `health_check`, so it uses the trait default (`Ok(true)`, no
-/// network probe). A `DeepSeekClient` would probe `{base_url}/models` —
-/// hitting the real Anthropic endpoint and returning `Ok(false)`/error. Thus
-/// `health_check() == Ok(true)` is a network-free proof that the rig factory
-/// won the dispatch for the anthropic family.
+/// to the rig-backed factory from `codesmith_providers::default_registry()`.
+/// The rig `RigLlmClient` does not override `health_check`, so it uses the
+/// trait default (`Ok(true)`, no network probe). Thus `health_check() == Ok(true)`
+/// is a network-free proof that the rig factory won the dispatch for the
+/// anthropic family (native `/v1/messages` path, not the OpenAI-shaped shim).
 #[tokio::test]
 async fn resolve_llm_client_routes_anthropic_to_rig_factory() {
     // Build under the sync test-env lock, then drop the guard BEFORE awaiting
@@ -247,8 +259,7 @@ async fn resolve_llm_client_routes_anthropic_to_rig_factory() {
         .expect("health_check on the rig-backed client must not error");
     assert!(
         healthy,
-        "rig-backed anthropic client must report healthy without a network probe; \
-         Ok(false)/error would mean the tui-local DeepSeekClient won the route"
+        "rig-backed anthropic client must report healthy without a network probe"
     );
 }
 
@@ -810,12 +821,12 @@ fn tools_always_load_overrides_default_native_deferral() {
 fn print_agent_tool_catalog_metrics() {
     let tmp = tempdir().expect("tempdir");
     let context = crate::tools::ToolContext::new(tmp.path().to_path_buf());
-    let client = DeepSeekClient::new(&Config {
+    let client = super::resolve_llm_client(&Config {
         api_key: Some("test-key".to_string()),
         ..Config::default()
     })
     .expect("stub client");
-    let client: crate::llm_client::LlmClientHandle = std::sync::Arc::new(client);
+    let client: crate::llm_client::LlmClientHandle = client;
     let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 8);
     let runtime = crate::tools::subagent::SubAgentRuntime::new(
         client,

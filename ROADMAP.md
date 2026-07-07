@@ -78,6 +78,60 @@ facade、B2 `retry_status`、B4 `prompt_runtime`）对 rig adapter 不再适用 
   rig 流式路径的 reasoning 检测未接线（rig 流式 reasoning 形态不同）；接线补齐。
 - **§D2**（config 选自定义 provider）、**§E**（agent executor / tool 抽象）维持原计划。
 
+**进度（2026-07-07 §A1 + 全量 §D1 落地，DeepSeek 切 rig，`DeepSeekClient` 退役，`feat/pluggable-framework-core`）：**
+
+上一检查点的"下一聚焦工作"已完成。经对照 rig-core 0.39.0 源码核实：rig 的
+OpenAI/DeepSeek compat 层**原生**把 `AssistantContent::Reasoning` 序列化为
+`reasoning_content` 线字段（`TryFrom<OneOrMany<AssistantContent>> for Vec<Message>` 提取
+Reasoning），故回放桥接在 adapter 层即已完成——无需把 `build_chat_messages_with_reasoning`
+的回放协议搬进 rig 工厂，只需把 DeepSeek 切到 rig。
+
+- **§A1 落地（退役而非搬运）**：tui 启用 codesmith-providers 的 `deepseek` 特性；
+  `crates/tui/src/core/engine.rs` 删除 tui-local `DeepSeekProviderFactory`，
+  `resolve_llm_client` 改为 `pub(crate)`，构造中性 `ProviderConfig` 后委托
+  `default_registry().build()`，DeepSeek 与其他家族一致走 rig 工厂。`DeepSeekClient` 线
+  客户端**整体退役**：`client.rs` 3183→329 行、`client/chat.rs` 3490→1427 行（-4979 行）。
+  仅保留 inspect/warmup 根（`inspect_prompt_for_request` / `build_cache_warmup_request` /
+  `CacheWarmupKey` / `PromptInspection`）及其传递依赖（`PromptBuilder` /
+  `inspect_wire_request` / `build_chat_messages_with_reasoning` / `stable_system_prompt` /
+  `sha256_hex` 等），供 `ui.rs` 缓存预热与 `commands/debug.rs` inspect 子命令使用。
+- **全量 §D1 落地**：所有 LLM 流量（OpenAI + 13 家 openai-compat + Anthropic + DeepSeek）
+  统一经 `default_registry()` 的 rig 工厂；tui 不再持有任何 provider 工厂。12 处
+  `DeepSeekClient::new` 调用点全部迁至 `resolve_llm_client`（acp/mcp/config/ui/main/
+  tests/subagent/seam_manager）。
+- **Gap E 关闭**：`crates/providers/src/rig_adapter/reasoning.rs` 移除
+  `is_reasoning_model_for_stream`（rig 流式 compat 层原生把 `delta.reasoning_content` 路由
+  到 `ReasoningDelta`，无需 model 级门控）；tui `client/chat.rs` 的同名死代码一并删除。
+- **`list_models` 桥接**：`RigLlmClient` 增加 `list_models` trait 覆写——当 `http` 字段为
+  `Some`（仅 DeepSeek 工厂传入）时 GET `{base_url}/models`，解析 `{data:[{id}]}` 后
+  sort+dedup；其余家族返空（与非 DeepSeek 一致）。
+
+**已知行为差异 / 回归（需后续评估）：**
+- **`health_check` 不探活**：rig adapter 未覆写 `health_check`，沿用 trait 默认 `Ok(true)`，
+  不再像 `DeepSeekClient` 那样探 `/models`。路由测试正是用 `health_check()==Ok(true)` 反证
+  anthropic 走 rig。副作用：`test_api_connectivity` 等健康检查恒报健康；`list_models` 仍真探。
+- **`caller` 字段丢失**：旧线构建器在 tool-call JSON 注入 `caller`（`caller_type`/身份，供
+  代理路由用，`client/chat.rs:867`）；rig 不发送该字段。若代理依赖它，需经 `RequestShaper`
+  补回。
+- **模型列表无 owner 分组**：`run_models` 现收到 `Vec<String>`（纯 ID），旧 `AvailableModel`
+  携带的 `owned_by`（DeepSeek 自有 vs 第三方）分组显示已移除。
+- **线层压缩退役**：`DeepSeekClient` 线构建器的第二轮 dedup/截断
+  （`compact_tool_result_for_wire` 等）随线客户端删除；运行期 capture-time 压缩
+  （`compact_tool_result_for_context` / `micro_compact_messages`）现为唯一压缩点
+  （效率而非正确性差异）。
+
+**残留重复 / 后续清理：**
+- `requires_reasoning_content` / `should_replay_reasoning_content` /
+  `has_deepseek_r_series_marker` 仍同时存在于 `providers/src/rig_adapter/reasoning.rs` 与
+  `tui/src/client/chat.rs`（后者是 inspect/warmup 的传递依赖）；后续抽到 `codesmith-agent`
+  共享，使 reasoning.rs 成为唯一源。
+- `crates/agent` / `crates/agent-runtime` 的 `LlmClient` trait 文档仍以 `DeepSeekClient`
+  为具体实现示例（已退役，属陈旧文档，不影响编译）。
+
+**下一聚焦工作：** §D2（config 选自定义 provider）、§E（agent executor / tool 抽象）维持
+原计划。B3（`ApiProvider` → `ProviderKind`）降级为低优先（rig adapter 按 `&str` provider
+名键控已规避该边）。
+
 ---
 
 ## §A — Provider extraction (bulk migration)

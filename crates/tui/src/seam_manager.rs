@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn seam_levels_fire_in_order() {
-        // Cannot create DeepSeekClient without API key in test env.
+        // Cannot resolve an LLM client without an API key in test env.
         // Test the pure logic functions only.
         let config = SeamConfig::default();
 
