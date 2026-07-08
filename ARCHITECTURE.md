@@ -137,21 +137,28 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
 - **`Callback`** (`callback::Callback`) — observation hooks (LangChain
   `Callbacks` analog): `on_llm_start` / `on_llm_end` / `on_tool_start` /
   `on_tool_end` / `on_step` / `on_complete`, all default no-ops. `CallbackSet`
-  fans out to several observers; `NoopCallback` is the default.
+  fans out to several observers; `NoopCallback` is the default. The bridge onto
+  the host's `Event` UI channel + `HookHost` shell hooks is `CallbackBridge`
+  (in `codesmith-agent-runtime::callback_bridge`, §E): it forwards the
+  tool-lifecycle hooks onto both paths; the LLM/step/complete hooks are
+  documented no-ops (the production caller and stream-reduction code own those).
 - **`AgentExecutor`** (`executor::AgentExecutor`) — drives the loop;
   `DefaultAgentExecutor` is the reference impl. `StopReason` (`NoToolCalls` /
   `MaxSteps` / `Error`) is the terminal outcome.
 
 What is **not** here yet (later §E slices): migrating the production `Engine`
-/`turn_loop.rs` onto these traits, bridging the `Event` channel / `HookHost`
-→ `Callback`, and E4 (declarative `providers.toml` + lazy loading). The
-`ToolSpec`+`ToolContext` → `Tool` bridge is landed (`ToolSpecAdapter`, §E). The
-framework traits are validated against an inline mock LLM + mock tool (see
-`crates/agent/src/executor/mod.rs` tests) — no `codesmith-providers`
-dependency required, mirroring the provider foundation slice's `mock` sample.
-The adapter is additionally validated by driving a real `ToolSpec` through the
-framework executor end-to-end (see
-`crates/agent-runtime/src/tools/framework_adapter.rs` tests).
+/`turn_loop.rs` onto these traits, and E4 (declarative `providers.toml` + lazy
+loading). The `ToolSpec`+`ToolContext` → `Tool` bridge is landed
+(`ToolSpecAdapter`, §E), and the `Event` channel / `HookHost` → `Callback`
+bridge is landed (`CallbackBridge`, §E). The framework traits are validated
+against an inline mock LLM + mock tool (see `crates/agent/src/executor/mod.rs`
+tests) — no `codesmith-providers` dependency required, mirroring the provider
+foundation slice's `mock` sample. The `ToolSpec` adapter is additionally
+validated by driving a real `ToolSpec` through the framework executor
+end-to-end (see `crates/agent-runtime/src/tools/framework_adapter.rs` tests),
+and the `CallbackBridge` is validated by driving a tool-call roundtrip through
+the executor that lights up both a mock `Event` channel and a mock `HookHost`
+(see `crates/agent-runtime/src/callback_bridge.rs` tests).
 
 ## What is wired today (foundation slice + §D1 parity bridge)
 
@@ -170,7 +177,7 @@ framework executor end-to-end (see
 | Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ⏳ deferred | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); production `Engine` migration + `Callback` bridge deferred | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/tools/framework_adapter.rs` |
+| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); production `Engine` migration deferred | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge}.rs` |
 
 ## Registering a provider (developer guide)
 

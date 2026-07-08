@@ -297,6 +297,65 @@ registry 一个方法），零既有调用点改动；production `Engine`/`turn_
 
 ---
 
+**进度（2026-07-08 §E Callback 桥接落地，框架核心 callback 桥接，`feat/pluggable-framework-core`）：**
+
+§E 的第三个切片落地——把生产 host 的两条观测通道（`mpsc::Sender<Event>` UI 推送 +
+`HookHost` shell-command 钩子）桥接到框架核心 `Callback`（`codesmith-agent`），对应 ROADMAP
+§E "Callback 桥接" deferred 项，也是 `Engine`/`turn_loop` 迁移的两个前置之一（另一个
+`ToolSpec`→`Tool` adapter 已落地）。本轮纯新增（一个 adapter 模块），零既有调用点改动；
+production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
+
+- **`CallbackBridge`**（`crates/agent-runtime/src/callback_bridge.rs`）：`impl
+  codesmith_agent::callback::Callback`，持有 `Option<mpsc::Sender<Event>>` +
+  `Option<Arc<dyn HookHost>>` + turn 级 `HookContext` 模板 + `Arc<Mutex<BridgeState>>`
+  （合成 id + 暂存 input 的 LIFO 栈）。`on_tool_start`/`on_tool_end` **双发**：既推
+  `Event::ToolCallStarted`/`ToolCallComplete` 到 UI 通道，又
+  `HookHost::execute(ToolCallBefore/After, &ctx)` 触发 shell 钩子；`has_hooks_for_event`
+  门控与生产 `execute_pre/post_tool_hook` 一致，`HookContext` 由模板 clone + per-call 填
+  `tool_name`/`tool_args`/`tool_result`，镜像 `build_tool_hook_context`。
+- **合成 tool-call id**：框架 `Tool::run`/`on_tool_start` 契约是 id-less 的（只有 parsed
+  input），不携带 wire `ToolUse.id`。bridge 合成 `bridge-{n}` id 并用 LIFO 栈配对
+  start↔end，使 UI 仍能关联；同时把 start 暂存的 `input` 回放到 `ToolCallAfter` 的
+  `tool_args`——框架 `on_tool_end(name, result)` 签名不含 input，但生产 post-hook 需要
+  `tool_args`，pending 栈补上该缺口。**不改**已落地的 §E `Callback` trait 签名（扩 id 会
+  波及 executor + 全部 §E 测试，超出本轮）。
+- **刻意部分桥接（by design）**：`on_llm_start`/`on_llm_end`/`on_step`/`on_complete` 不覆写，
+  沿用 trait 默认 no-op——见模块 doc 的 "Bridged vs. documented gaps" 表。原因：`on_llm_start`
+  无精确 event（`TurnStarted` 只带 turn_id 且由 engine caller 而非 executor 发）；
+  `on_llm_end` content 不在线（`MessageComplete` 只带 block index，由 stream-reduction 代码
+  拥有）；`on_step` 无 event 变体；`on_complete` 的 `TurnComplete` 携带 `Callback` 没有的
+  `usage`/`tool_catalog`/`base_url`，由 engine caller 在 executor 返回后发，bridge 不重复。
+  流式 delta（`MessageDelta`/`ThinkingDelta`）无 `Callback` 方法，**Event 通道保留**，由
+  stream-reduction 代码直发——bridge 是叠加而非替代。
+- **类型统一**：`Event` 用 `codesmith_tools::{ToolError, ToolResult}`（`events.rs:19`），与
+  框架 `Callback`/`Tool` re-export（`tools/mod.rs:35`）同型，故
+  `Event::ToolCallComplete { result: result.clone() }` 零翻译直过——与 ToolSpec adapter 一致。
+- **验证**：3 个单测——(1) 单元：`on_tool_start`/`on_tool_end` 双发到 mock `mpsc` 通道 +
+  `RecordingHookHost`（test `HookHost` impl），断言 `ToolCallStarted`/`ToolCallComplete` id
+  配对 + name/input/result，`ToolCallBefore`/`After` 的 `tool_name`/`tool_args`/`tool_result`/
+  `session_id`（template 流过）；(2) `hooks: None` 仍发 event；(3) **executor 集成**：mock LLM
+  驱动 `DefaultAgentExecutor` 跑 tool-call roundtrip，`CallbackBridge` 作 `Arc<dyn Callback>`
+  ——单一 seam 同时点亮 UI event 通道与 shell 钩子。`cargo build -p codesmith-agent-runtime`
+  零新警告；`cargo test -p codesmith-agent-runtime` 1002 passed（含 3 新，原 999）；
+  `cargo test -p codesmith-agent` 79 passed；`cargo build --workspace` 全绿（tui 143 warning 均
+  既有死代码，与本轮无关）。
+- **无新依赖边**：`agent-runtime` 已依赖 `codesmith-agent`，`Event` + `HookHost` 在树内，故
+  本切片零 Cargo 改动（与 ToolSpec adapter 切片一致）。
+
+**下一聚焦工作：**
+- **生产 `Engine`/`turn_loop` 迁移**（§E "接真引擎"步）：`handle_deepseek_turn`
+  （`turn_loop.rs:239-2672`，~2434 行）迁到 `AgentExecutor`。两个前置现已就位：`ToolSpec`→`Tool`
+  adapter + `CallbackBridge`。迁移需 per-turn 构造 `CallbackBridge`（注入 turn 级 `HookContext`
+  模板 + `tx_event` + `Arc<dyn HookHost>`）交给 executor，并把 inline `tx_event.send`/
+  `execute_pre/post_tool_hook` 调用替换为 executor 回调驱动。guardrail（compaction/capacity/
+  approval/early-tool-start/steer/transparent-retry/subagent/LSP/cycle/loop-guard）在
+  `DefaultAgentExecutor` 不存在，需增量迁移或作为 host 前后置逻辑保留；stream-reduction 的
+  `MessageDelta`/`ThinkingDelta` 直发 `tx_event` 保留（不经 `Callback`）。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项（CLI flag / per-entry 写入 / 裸形式）、
+  B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

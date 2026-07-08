@@ -27,6 +27,7 @@ pub mod agent_memory;
 pub mod artifacts;
 pub mod auto_reasoning;
 pub mod background_task;
+pub mod callback_bridge;
 pub mod capacity;
 pub mod capacity_memory;
 pub mod child_env;
