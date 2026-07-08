@@ -91,6 +91,62 @@ A client is built without the host naming a concrete type:
   `register` upserts (last wins, like pi-ai's `setProvider`); `build` resolves
   and delegates, erroring with the registered ids if none match.
 
+## The framework-core agent seam (§E)
+
+The provider seam above is the first LangChain analog. §E extends the core
+toward a fuller agent framework with four host-agnostic traits that mirror
+LangChain's `BaseTool` / `Memory` / `Callbacks` / `AgentExecutor`. They live in
+`codesmith-agent` so any provider or host can drive an agent loop without
+depending on `codesmith-agent-runtime`'s production `Engine`.
+
+```text
+  Host                             codesmith-agent (CORE)
+  ────                             ──────────────────────
+  Arc<dyn AgentExecutor> ◀── built from LlmClientHandle + Arc<ToolSet> + Arc<dyn Callback>
+        │
+        ▼  AgentExecutor::run(&mut dyn ChatHistory, user_text)
+   ┌────┴────────────────────────────────────────────────────┐
+   │ DefaultAgentExecutor loop (cap = config.max_steps):      │
+   │   build MessageRequest from ChatHistory + ToolSet        │
+   │   ▶ Callback::on_llm_start  → LlmClient::create_message  │
+   │                                _stream                   │
+   │   ▶ accumulate StreamEvent → Vec<ContentBlock>           │
+   │   ▶ Callback::on_llm_end    → push assistant Message     │
+   │   extract ContentBlock::ToolUse{ id, name, input }       │
+   │   if none → Callback::on_complete(NoToolCalls); return   │
+   │   for each tool_use:                                     │
+   │     ▶ Callback::on_tool_start → Tool::run(input)         │
+   │     ▶ Callback::on_tool_end   → push ToolResult Message  │
+   │   ▶ Callback::on_step; if step+1 >= max_steps → return  │
+   └──────────────────────────────────────────────────────────┘
+```
+
+- **`Tool`** (`tools::Tool`) — the executable tool contract (LangChain
+  `BaseTool` analog). Host-agnostic: each impl owns its dependencies and
+  [`run`](tools::Tool::run) takes only a parsed `input` — there is **no fat
+  per-call `ToolContext`** in the core (that lives in
+  `codesmith-agent-runtime::tools::spec` and is bridged later). The wire
+  definition sent to the model is the separate `models::Tool`; `ToolSet`
+  converts executable → wire via `to_api_tools()`.
+- **`ChatHistory`** (`memory::ChatHistory`) — the transcript view (LangChain
+  `Memory` analog): `messages` / `push` / `clear`. `VecChatHistory` is the
+  in-memory default; a host backs it with its `Session`.
+- **`Callback`** (`callback::Callback`) — observation hooks (LangChain
+  `Callbacks` analog): `on_llm_start` / `on_llm_end` / `on_tool_start` /
+  `on_tool_end` / `on_step` / `on_complete`, all default no-ops. `CallbackSet`
+  fans out to several observers; `NoopCallback` is the default.
+- **`AgentExecutor`** (`executor::AgentExecutor`) — drives the loop;
+  `DefaultAgentExecutor` is the reference impl. `StopReason` (`NoToolCalls` /
+  `MaxSteps` / `Error`) is the terminal outcome.
+
+What is **not** here yet (later §E slices): migrating the production `Engine`
+/`turn_loop.rs` onto these traits, bridging `ToolSpec`+`ToolContext` → `Tool`
+via an adapter, bridging the `Event` channel / `HookHost` → `Callback`, and E4
+(declarative `providers.toml` + lazy loading). The framework traits are
+validated against an inline mock LLM + mock tool (see
+`crates/agent/src/executor/mod.rs` tests) — no `codesmith-providers`
+dependency required, mirroring the provider foundation slice's `mock` sample.
+
 ## What is wired today (foundation slice + §D1 parity bridge)
 
 | Concern | Status | Where |
@@ -108,7 +164,7 @@ A client is built without the host naming a concrete type:
 | Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ⏳ deferred | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ⏳ deferred | ROADMAP §E |
+| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); production `Engine` migration deferred | `crates/agent/src/{tools,memory,callback,executor}/` |
 
 ## Registering a provider (developer guide)
 

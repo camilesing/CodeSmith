@@ -195,6 +195,66 @@ per-entry 写入 / 裸形式）低优先。B3（`ApiProvider` → `ProviderKind`
 
 ---
 
+**进度（2026-07-08 §E foundation 落地，框架核心 agent 抽象，`feat/pluggable-framework-core`）：**
+
+§E 的第一个切片落地——在 `codesmith-agent`（CORE crate）新增 LangChain-parity 的四个
+host-agnostic trait + 一个参考执行器，镜像 provider foundation slice 的"落地抽象 + 一个
+sample、后续再接真引擎"模式。本轮范围仅 §E 的 E1/E2/E3（纯新增模块，零既有代码改动）；
+E4（声明式 `providers.toml` + 懒构造）与生产 `Engine` 迁移延后。
+
+- **E2 — `codesmith_agent::tools`**（`crates/agent/src/tools/mod.rs`）：`Tool` trait
+  （LangChain `BaseTool` analog）——`name`/`description`/`input_schema`（默认
+  `{"type":"object"}`）/`capabilities`（默认空）/`run(input) -> boxed Future`。**host-agnostic**：
+  每个 impl 自持依赖、`run` 只收 parsed input，刻意不带 fat `ToolContext`（那住在
+  `agent-runtime::tools::spec`，后续用 adapter 桥接）。`ToolSet`（`HashMap<String,
+  Arc<dyn Tool>>`）+ `to_api_tools()` 把可执行 tool 转成 wire `models::Tool`。leaf 类型
+  （`ToolResult`/`ToolError`/`ToolCapability`/`ApprovalRequirement`）复用 `codesmith-tools`
+  并 re-export，避免第三份拷贝。3 个单测。
+- **E3 — `codesmith_agent::memory`**（`memory/mod.rs`）：`ChatHistory` trait
+  （LangChain `Memory` analog：`messages`/`push`/`clear`/`len`）+ `VecChatHistory` 默认实现。
+  2 个单测。compaction 仍留 `agent-runtime::Session`/`compaction`，host 用 `Session` 背书
+  `ChatHistory` 即可让执行器看到已压缩的消息列。
+- **E3 — `codesmith_agent::callback`**（`callback/mod.rs`）：`Callback` trait
+  （LangChain `Callbacks` analog：`on_llm_start`/`on_llm_end`/`on_tool_start`/`on_tool_end`/
+  `on_step`/`on_complete`，全默认 no-op）+ `StopReason`（`NoToolCalls`/`MaxSteps`/`Error`）+
+  `NoopCallback` + `CallbackSet`（fan-out，零拷贝转发）。单一 `'a` 把 `&self` 与各 `&` 参数
+  绑一起，impl 可按引用转发 request/response。2 个单测。
+- **E1 — `codesmith_agent::executor`**（`executor/mod.rs`）：`AgentExecutor` trait
+  （`run(&mut dyn ChatHistory, user_text) -> Result<StopReason>`）+ `DefaultAgentExecutor`
+  参考实现（LLM↔tool 循环 + `max_steps` 上限）+ `AgentExecutorConfig`。循环：push 用户消息 →
+  建 `MessageRequest`（含 `to_api_tools()`）→ `on_llm_start` → `create_message_stream` →
+  `accumulate_stream` 把 `StreamEvent` 归约成 `Vec<ContentBlock>` + `stop_reason` → `on_llm_end`
+  → push assistant 消息 → 抽 `ToolUse` → 无则 `NoToolCalls` 收尾；否则逐个 `on_tool_start` →
+  `Tool::run` / `NotAvailable` → `on_tool_end` → push `ToolResult`（`role:"user"`）→ `on_step`
+  → 超过 `max_steps` 返 `MaxSteps`。`accumulate_stream` 处理 `ContentBlockStart`/`Delta`/`Stop`
+  （text/thinking/tool_use，`InputJsonDelta` 累积 + `ContentBlockStop` 解析，缺 delta 时用
+  start `input` 兜底）+ `MessageDelta`/`MessageStop`；无 early-start/transparent-retry/steer
+  （生产护栏，延后）。5 个单测（inline `MockLlmClient` + `EchoTool` + `RecordingCallback`，
+  不依赖 `codesmith-providers`）。
+- **新依赖边**：`codesmith-agent → codesmith-tools`（cycle-free：`tools → protocol →
+  {serde, serde_json}`，无回指 `agent`/`config`）。`crates/agent/src/lib.rs` 声明 4 个新模块
+  并扩展 crate doc。async 风格沿用 `LlmClient` 的手动 `Pin<Box<dyn Future + Send + '_>>`，
+  不引 `async-trait` 直依。
+- **ARCHITECTURE.md**：新增"The framework-core agent seam (§E)"小节（含 ASCII 流程图）+
+  "What is wired today"表 §E 行 `⏳ deferred` → `✅ framework-core traits landed`。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent` 零警告；`cargo test -p codesmith-agent`
+79 passed（含 12 个新单测）；`cargo build -p codesmith-providers` 与 `cargo build
+--workspace` 全绿（纯新增，无既有调用点改动；tui 的 143 个 warning 均为既有死代码，与本轮无关）。
+
+**后续 deferred（非本轮，后续 §E 切片）：**
+- 生产 `Engine`/`turn_loop.rs`（~2400 行）迁移到 `AgentExecutor`/`Tool`/`ChatHistory`/
+  `Callback`——"接真引擎"步，类比对 provider 的 §D1。
+- `ToolSpec`+`ToolContext`（`agent-runtime::tools::spec`）→ 框架 `Tool` 的 adapter（捕获
+  context 的桥接 struct，住 `agent-runtime`）。
+- `Callback` ↔ 既有 `mpsc::Sender<Event>` 推送通道 / `HookHost` shell-command 钩子桥接。
+- **E4**（声明式 `providers.toml` + `default_registry` 懒构造）维持原计划。
+
+**下一聚焦工作：** §E 后续切片（生产 `Engine` 迁移 / `ToolSpec` adapter / `Callback` 桥接）或
+E4。§D2 deferred 项、B3 仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

@@ -21,6 +21,16 @@
 //!   round-trips to [`RetryConfig`].
 //! - [`ModelRegistry`] — the model catalog (id/alias resolution), separate
 //!   from the provider registry.
+//! - [`tools`] — the framework-core [`tools::Tool`] trait (LangChain `BaseTool`
+//!   analog) + [`tools::ToolSet`] registry (§E). Host-agnostic: each tool holds
+//!   its own deps; `run` takes only a parsed input.
+//! - [`memory`] — the [`memory::ChatHistory`] trait (LangChain `Memory` analog)
+//!   + [`memory::VecChatHistory`] default (§E).
+//! - [`callback`] — the [`callback::Callback`] trait (LangChain `Callbacks`
+//!   analog) + [`callback::StopReason`], for observable runs (§E).
+//! - [`executor`] — the [`executor::AgentExecutor`] trait + the reference
+//!   [`executor::DefaultAgentExecutor`] (LangChain `AgentExecutor` analog):
+//!   the LLM↔tool loop with a step cap (§E).
 //!
 //! ## What does *not* live here
 //!
@@ -44,10 +54,14 @@
 //! [`RetryConfig`]: llm_client::RetryConfig
 //! [`LlmError`]: llm_client::LlmError
 
+pub mod callback;
+pub mod executor;
 pub mod llm_client;
+pub mod memory;
 pub mod models;
 pub mod provider;
 pub mod retry;
+pub mod tools;
 
 use std::collections::HashMap;
 
