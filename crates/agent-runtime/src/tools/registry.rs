@@ -20,6 +20,7 @@ use crate::hooks::HookHost;
 use crate::models::Tool;
 use crate::tool_dispatch::{ToolDispatcher, ToolMetadata};
 
+use super::framework_adapter::ToolSpecAdapter;
 use super::schema_sanitize;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -217,6 +218,32 @@ impl ToolRegistry {
     #[must_use]
     pub fn context(&self) -> &ToolContext {
         &self.context
+    }
+
+    /// Build a framework-core [`codesmith_agent::tools::ToolSet`] by wrapping
+    /// every registered `ToolSpec` in a [`ToolSpecAdapter`] that captures this
+    /// registry's `ToolContext`.
+    ///
+    /// The framework `ToolSet` is the minimal registry the framework-core
+    /// `AgentExecutor` drives (ROADMAP §E). Each adapter shares one
+    /// `Arc<ToolContext>` cloned from this registry, so all tools see the same
+    /// context. Wire defs are rebuilt by `ToolSet::to_api_tools` from the
+    /// forwarded `name` / `description` / `input_schema` — the same
+    /// `codesmith_agent::models::Tool` type this registry's `to_api_tools`
+    /// produces (re-exported via `crate::models`).
+    ///
+    /// Approval / parallelism / defer-loading metadata on `ToolSpec` has no
+    /// counterpart in the framework `Tool` and is intentionally not bridged
+    /// here; the host keeps this registry's `ToolDispatcher` surface for those
+    /// concerns.
+    #[must_use]
+    pub fn to_framework_tool_set(&self) -> codesmith_agent::tools::ToolSet {
+        let context = Arc::new(self.context.clone());
+        let mut set = codesmith_agent::tools::ToolSet::new();
+        for spec in self.tools.values() {
+            set.register(Arc::new(ToolSpecAdapter::new(spec.clone(), context.clone())));
+        }
+        set
     }
 
     /// Convert all tools to API Tool format for sending to the model.

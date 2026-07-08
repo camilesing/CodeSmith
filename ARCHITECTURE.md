@@ -125,7 +125,10 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   `BaseTool` analog). Host-agnostic: each impl owns its dependencies and
   [`run`](tools::Tool::run) takes only a parsed `input` — there is **no fat
   per-call `ToolContext`** in the core (that lives in
-  `codesmith-agent-runtime::tools::spec` and is bridged later). The wire
+  `codesmith-agent-runtime::tools::spec`). The bridge onto the production
+  `ToolSpec`+`ToolContext` is `ToolSpecAdapter` (in
+  `codesmith-agent-runtime::tools::framework_adapter`, §E): it captures a
+  shared `ToolContext` and delegates `run` → `ToolSpec::execute`. The wire
   definition sent to the model is the separate `models::Tool`; `ToolSet`
   converts executable → wire via `to_api_tools()`.
 - **`ChatHistory`** (`memory::ChatHistory`) — the transcript view (LangChain
@@ -140,12 +143,15 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   `MaxSteps` / `Error`) is the terminal outcome.
 
 What is **not** here yet (later §E slices): migrating the production `Engine`
-/`turn_loop.rs` onto these traits, bridging `ToolSpec`+`ToolContext` → `Tool`
-via an adapter, bridging the `Event` channel / `HookHost` → `Callback`, and E4
-(declarative `providers.toml` + lazy loading). The framework traits are
-validated against an inline mock LLM + mock tool (see
+/`turn_loop.rs` onto these traits, bridging the `Event` channel / `HookHost`
+→ `Callback`, and E4 (declarative `providers.toml` + lazy loading). The
+`ToolSpec`+`ToolContext` → `Tool` bridge is landed (`ToolSpecAdapter`, §E). The
+framework traits are validated against an inline mock LLM + mock tool (see
 `crates/agent/src/executor/mod.rs` tests) — no `codesmith-providers`
 dependency required, mirroring the provider foundation slice's `mock` sample.
+The adapter is additionally validated by driving a real `ToolSpec` through the
+framework executor end-to-end (see
+`crates/agent-runtime/src/tools/framework_adapter.rs` tests).
 
 ## What is wired today (foundation slice + §D1 parity bridge)
 
@@ -164,7 +170,7 @@ dependency required, mirroring the provider foundation slice's `mock` sample.
 | Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ⏳ deferred | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); production `Engine` migration deferred | `crates/agent/src/{tools,memory,callback,executor}/` |
+| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); production `Engine` migration + `Callback` bridge deferred | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/tools/framework_adapter.rs` |
 
 ## Registering a provider (developer guide)
 

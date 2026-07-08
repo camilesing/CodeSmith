@@ -6,6 +6,8 @@
 //!
 //! - `spec` — `ToolSpec` trait, `ToolContext`, `RuntimeToolServices`
 //! - `registry` — `ToolRegistry`, `ToolRegistryBuilder`
+//! - `framework_adapter` — bridges `ToolSpec`+`ToolContext` onto the
+//!   framework-core `codesmith_agent::tools::Tool` (ROADMAP §E)
 //! - Utility modules (`arg_repair`, `schema_sanitize`, …)
 //!
 //! Concrete `impl ToolSpec` blocks live in the downstream `codesmith-tool-impls`
@@ -16,6 +18,7 @@ pub mod arg_repair;
 pub mod automation_types;
 pub mod cargo_failure_summary;
 pub mod diff_format;
+pub mod framework_adapter;
 pub mod git_env;
 pub mod handle;
 pub mod js_execution;

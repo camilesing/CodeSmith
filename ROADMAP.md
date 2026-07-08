@@ -255,6 +255,48 @@ E4。§D2 deferred 项、B3 仍低优先。
 
 ---
 
+**进度（2026-07-08 §E ToolSpec→Tool adapter 落地，框架核心 tool 桥接，`feat/pluggable-framework-core`）：**
+
+§E 的第二个切片落地——把生产 `ToolSpec`+`ToolContext`（`codesmith-agent-runtime`）桥接到框架核心
+`Tool`（`codesmith-agent`），对应 ROADMAP §E "ToolSpec adapter" deferred 项。本轮纯新增（一个 adapter 模块 +
+registry 一个方法），零既有调用点改动；production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
+
+- **`ToolSpecAdapter`**（`crates/agent-runtime/src/tools/framework_adapter.rs`）：持有 `Arc<dyn ToolSpec>` +
+  `Arc<ToolContext>`（共享，clone 仅 refcount bump），`impl codesmith_agent::tools::Tool`——`name`/`description`/
+  `input_schema`/`capabilities` 转发 spec；`run(input)` 把两个 Arc clone 进 `'static` future，委托
+  `spec.execute(input, &context).await`。leaf 类型（`ToolResult`/`ToolError`/`ToolCapability`）经 `codesmith-tools`
+  已共享，零翻译；deref-coercion 把 `&Arc<ToolContext>` → `&ToolContext`。
+- **`ToolRegistry::to_framework_tool_set`**（`crates/agent-runtime/src/tools/registry.rs`）：把注册表里每个
+  `ToolSpec` 包成 adapter，共享一个 `Arc<ToolContext>`（clone 一次），产出 `codesmith_agent::tools::ToolSet`。
+  wire 定义由 `ToolSet::to_api_tools` 从转发的 `name`/`description`/`input_schema` 重建——同
+  `codesmith_agent::models::Tool` 类型（`crate::models` 经 `agent-runtime/src/lib.rs:24` re-export 即
+  `codesmith_agent::models`），零转换。
+- **刻意不桥接（by design）**：`ToolSpec` 的 approval/parallelism/destructive/interactive/defer-loading 元数据
+  在框架 `Tool` 无对应面（`capabilities` 仅 advisory），仍由 host 的 `ToolDispatcher`/`ToolMetadata` 承载。
+  adapter 只是 executor 的 `run` 路径桥接，**非 `ToolDispatcher` 替代**——与 `tools/mod.rs` 模块文档的"刻意不带
+  fat `ToolContext`"设计一致。
+- **验证**：3 个单测——(1) 元数据转发 + `run` 委托（`EchoSpec` 把 `context.workspace` 路径戳进结果，证明 context
+  流过）；(2) adapter coerce 成 `Arc<dyn Tool>` 注册进 `ToolSet` + `to_api_tools` 重建 wire def；(3) **executor 集成**：
+  mock LLM 驱动 `DefaultAgentExecutor` 经 adapter 跑 tool-call roundtrip，回灌的 `ToolResult` 带 captured context 的
+  workspace 路径——证明真实 `ToolSpec` 经 adapter 在框架 executor 循环里双向跑通。`cargo build -p
+  codesmith-agent-runtime` 零新警告；`cargo test -p codesmith-agent-runtime` 999 passed（含 3 个新）；`cargo build
+  --workspace` 全绿（tui 143 warning 均既有死代码）。
+- **无新依赖边**：`agent-runtime` 已依赖 `codesmith-agent`（`Cargo.toml:14`）并 re-export `models`
+  （`lib.rs:24`），故本切片零 Cargo 改动。
+
+**下一聚焦工作：**
+- **Callback 桥接**：把 `mpsc::Sender<Event>` + `HookHost` 桥接到框架 `Callback`（`crates/agent/src/callback/`）。
+  已知映射缺口：`on_llm_start`（无精确 event，`TurnStarted` 只带 turn_id）/`on_llm_end` content（`MessageComplete`
+  只带 index，content 在 engine 内不在 wire）/`on_step`（`Event` 无 step 变体）；streaming delta（`MessageDelta`/
+  `ThinkingDelta`）无法经 `Callback` 路由，Event 通道仍需保留。是 Engine 迁移的另一个前置。
+- **生产 `Engine`/`turn_loop` 迁移**：`handle_deepseek_turn`（`turn_loop.rs:239-2721`，~2483 行）迁到
+  `AgentExecutor`——需 ToolSpec adapter（已就位）+ Callback 桥接先就位；guardrail（compaction/capacity/approval/
+  early-tool-start/steer/transparent-retry/subagent/LSP/cycle/loop-guard）在 `DefaultAgentExecutor` 不存在，需增量
+  迁移或作为 host 前后置逻辑保留。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
