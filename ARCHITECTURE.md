@@ -147,16 +147,24 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   `DefaultAgentExecutor` is the reference impl (core). The host-side
   `HostAgentExecutor` (in `codesmith-agent-runtime::engine::host_executor`,
   §E) mirrors the bare loop over the three bridges and is the designated home
-  for absorbing the production `Engine`'s guardrails slice by slice.
+  for absorbing the production `Engine`'s guardrails slice by slice — the first
+  (loop-guard: block the 3rd identical call, warn/halt on 3/8 consecutive
+  failures) is now absorbed at its per-tool / post-tool seams. Guardrail status
+  surfaces over the host's `Event` channel (`event_tx`), not the `Callback`.
   `StopReason` (`NoToolCalls` / `MaxSteps` / `Error`) is the terminal outcome.
 
 What is **not** here yet (later §E slices): absorbing the production
 `Engine`/`turn_loop.rs` guardrails into `HostAgentExecutor` — the three
 host→framework bridges are all landed (`ToolSpecAdapter`, `CallbackBridge`,
-`SessionChatHistory`), and the host-side `HostAgentExecutor` skeleton runs the
-bare LLM↔tool loop over them; its four seams (per-step pre-request /
-post-stream / per-tool / post-tool) grow the guardrails slice by slice, after
-which `handle_deepseek_turn` retires. Streaming deltas (`MessageDelta`/
+`SessionChatHistory`), and the host-side `HostAgentExecutor` runs the bare
+LLM↔tool loop over them with the **first guardrail (loop-guard) absorbed** at
+its per-tool / post-tool seams (block the 3rd identical call, warn/halt on 3/8
+consecutive failures); its four seams (per-step pre-request / post-stream /
+per-tool / post-tool) grow the remaining nine guardrails slice by slice, after
+which `handle_deepseek_turn` retires. loop-guard proves `&self` + local state
+suffices for self-contained guardrails; the first guardrail needing `Engine`
+mutable state (LSP's `pending_lsp_blocks` / steer's `rx_steer`) will introduce
+interior-mutability handles. Streaming deltas (`MessageDelta`/
 `ThinkingDelta`) will keep flowing over the `Event` channel directly (no
 `Callback` method) once an inline stream reducer replaces `accumulate_stream`.
 E4 (declarative `providers.toml` + lazy loading) is also deferred. The
@@ -187,7 +195,7 @@ the executor that lights up both a mock `Event` channel and a mock `HookHost`
 | Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ⏳ deferred | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` skeleton landed (§E, bare loop, guardrails 待吸收); production `Engine` migration in progress | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
+| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` skeleton + loop-guard absorbed (§E, bare loop + 1/10 guardrails via `event_tx`); production `Engine` migration in progress | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
 
 ## Registering a provider (developer guide)
 

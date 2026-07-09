@@ -18,39 +18,50 @@
 //! - [`SessionChatHistory`](crate::session_history::SessionChatHistory) —
 //!   production `Session` → framework `ChatHistory` (the transcript).
 //!
-//! ## This slice: the skeleton
+//! ## This slice: loop-guard absorbed
 //!
-//! Today [`HostAgentExecutor`] mirrors the bare LLM↔tool loop of
-//! `DefaultAgentExecutor` (reusing [`accumulate_stream`](codesmith_agent::executor::accumulate_stream)
-//! for stream reduction) — only `max_steps`, sequential tools, no guardrails.
-//! It is **not yet wired into `handle_send_message`**; the production
-//! `handle_deepseek_turn` remains the live path. The value of landing it now is
-//! the composition proof — the three bridges light up end-to-end inside a real
-//! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session` (see
-//! the headline test) — and establishing that the loop lives in the host
-//! executor so later slices can insert guardrails at the per-step / per-tool
+//! [`HostAgentExecutor`] runs the LLM↔tool loop (reusing
+//! [`accumulate_stream`](codesmith_agent::executor::accumulate_stream) for stream
+//! reduction) and now absorbs the first production guardrail — **loop-guard**
+//! ([`LoopGuard`]): the 3rd identical tool call in a turn is blocked (a `ToolResult`
+//! error is fed back instead of executing), and 3 / 8 consecutive failures of
+//! the same tool warn / halt the turn. The guard state is a local `LoopGuard`
+//! that persists across steps within one `run` (matching `turn_loop`), and
+//! guardrail status surfaces over the host's `Event` channel (`event_tx`) —
+//! **not** via the framework `Callback`: guardrails are host-side concerns and
+//! the `Callback` trait stays untouched per ROADMAP §E. `&self` still suffices
+//! here — `LoopGuard` is local and `mpsc::Sender::send` takes `&self`; this slice
+//! is the proof that local-state guardrails need no interior mutability. The
+//! first guardrail needing `Engine` mutable state (e.g. LSP's `pending_lsp_blocks`,
+//! steer's `rx_steer`) will introduce `Arc<Mutex<…>>` / channel handles. It is
+//! **not yet wired into `handle_send_message`**; the production
+//! `handle_deepseek_turn` remains the live path — the value of landing it now is
+//! the composition proof (the three bridges light up end-to-end inside a real
+//! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
+//! headline test) plus the first guardrail absorbed at the per-tool / post-tool
 //! seams below.
 //!
-//! ## Guardrail insertion points (for later slices)
+//! ## Guardrail insertion points
 //!
-//! The loop has four seams where guardrails will be absorbed incrementally:
+//! The loop has four seams where guardrails are absorbed incrementally:
 //!
 //! 1. **per-step pre-request** — compaction, capacity pre-request, steer drain,
-//!    LSP flush, system-prompt refresh (top of the `loop`).
+//!    LSP flush, system-prompt refresh (top of the `loop`). *(not yet absorbed)*
 //! 2. **per-step post-stream** — transparent stream-retry, subagent handoff,
 //!    thinking-only handling (after `accumulate_stream`, before tool extraction).
-//! 3. **per-tool** — approval, loop-guard, early-tool-start, parallel dispatch
-//!    (inside the tool `for` loop; today a plain sequential `Tool::run`).
-//! 4. **per-step post-tool** — capacity post-tool, LSP post-edit, loop-guard
-//!    outcome (after the tool loop).
+//!    *(not yet absorbed)*
+//! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
+//!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures);
+//!    approval, early-tool-start, parallel dispatch still to come (inside the
+//!    tool `for` loop).
+//! 4. **per-step post-tool** — ✅ **loop-guard halt short-circuit** (returns
+//!    `StopReason::Error`); capacity post-tool, LSP post-edit still to come
+//!    (after the tool loop).
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) will continue to flow
 //! over the `Event` channel directly, emitted by an inline stream reducer (a
 //! later slice replaces the `accumulate_stream` call) — they have no `Callback`
-//! method and stay off the `Callback` path (see `callback_bridge` docs). The
-//! `&self` (not `&mut self`) trait signature is fine for the skeleton; guardrail
-//! state that needs mutation will arrive via interior-mutability handles in
-//! later slices.
+//! method and stay off the `Callback` path (see `callback_bridge` docs).
 //!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
@@ -59,13 +70,28 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
+use tokio::sync::mpsc;
 
 use codesmith_agent::callback::{Callback, StopReason};
 use codesmith_agent::executor::{accumulate_stream, AgentExecutor, AgentExecutorConfig};
 use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message, MessageRequest};
-use codesmith_agent::tools::{ToolError, ToolSet};
+use codesmith_agent::tools::{ToolError, ToolResult, ToolSet};
+
+use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
+use crate::events::Event;
+
+/// The `ToolResult` fed back when the loop-guard blocks an identical repeat
+/// call (mirrors `turn_loop::loop_guard_block_tool_result`). Duplicated here
+/// rather than imported to keep this slice additive — zero production call-site
+/// changes; a later cleanup can lift it into `loop_guard` proper as the single
+/// source of truth.
+fn block_tool_result(message: String) -> ToolResult {
+    ToolResult::error(message).with_metadata(serde_json::json!({
+        "loop_guard": "identical_tool_call"
+    }))
+}
 
 /// Host-side [`AgentExecutor`] — the growing home for the production turn loop.
 ///
@@ -73,29 +99,45 @@ use codesmith_agent::tools::{ToolError, ToolSet};
 /// [`ToolSet`] (built via
 /// [`ToolRegistry::to_framework_tool_set`](crate::tools::registry::ToolRegistry::to_framework_tool_set)
 /// in production), a [`Callback`] (a [`CallbackBridge`](crate::callback_bridge::CallbackBridge)
-/// in production), and an [`AgentExecutorConfig`]. Nothing is mutated on `self`
-/// per run; the transcript is mutated in place through [`ChatHistory`].
+/// in production), and an [`AgentExecutorConfig`]. The optional `event_tx`
+/// surfaces guardrail status (e.g. loop-guard warn/halt) onto the host's UI
+/// `Event` channel — distinct from the `Callback`, which carries the framework
+/// loop's own tool-lifecycle hooks. Nothing is mutated on `self` per run; the
+/// transcript is mutated in place through [`ChatHistory`].
 pub struct HostAgentExecutor {
     client: LlmClientHandle,
     tools: Arc<ToolSet>,
     callback: Arc<dyn Callback>,
     config: AgentExecutorConfig,
+    event_tx: Option<mpsc::Sender<Event>>,
 }
 
 impl HostAgentExecutor {
-    /// Construct from the four collaborators + config.
+    /// Construct from the four collaborators + config + an optional guardrail
+    /// status channel (`None` for embeds that don't surface guardrail status).
     #[must_use]
     pub fn new(
         client: LlmClientHandle,
         tools: Arc<ToolSet>,
         callback: Arc<dyn Callback>,
         config: AgentExecutorConfig,
+        event_tx: Option<mpsc::Sender<Event>>,
     ) -> Self {
         Self {
             client,
             tools,
             callback,
             config,
+            event_tx,
+        }
+    }
+
+    /// Surface a guardrail status message onto the host's UI `Event` channel,
+    /// if one was supplied. Guardrails emit here directly rather than through
+    /// the framework `Callback` (see the module docs).
+    async fn emit_status(&self, message: String) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(Event::status(message)).await;
         }
     }
 }
@@ -136,9 +178,13 @@ impl HostAgentExecutor {
             }],
         });
 
+        // Loop-guard state persists across steps within this run (one
+        // `LoopGuard` per turn, matching `turn_loop`).
+        let mut loop_guard = LoopGuard::default();
         let mut step: u32 = 0;
         loop {
-            // (1) per-step pre-request seam — guardrails land here later.
+            // (1) per-step pre-request seam — compaction / capacity / steer /
+            // LSP / cycle land here later.
             if step >= max_steps {
                 callback.on_complete(&StopReason::MaxSteps).await;
                 return Ok(StopReason::MaxSteps);
@@ -192,16 +238,48 @@ impl HostAgentExecutor {
 
             // Execute each tool sequentially and feed the result back as a
             // `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
-            // (3) per-tool seam — approval / loop-guard / parallel land here.
+            //
+            // (3) per-tool seam — loop-guard (absorbed); approval /
+            // early-tool-start / parallel land here later. `loop_guard_halt` is
+            // per-step: a halt short-circuits the tool loop and the whole turn
+            // at the (4) seam below.
+            let mut loop_guard_halt: Option<String> = None;
             for (id, name, input) in tool_uses {
                 callback.on_tool_start(&name, &input).await;
-                let result = match tools.get(&name) {
-                    Some(tool) => tool.run(input.clone()).await,
-                    None => Err(ToolError::NotAvailable {
-                        message: format!("no tool named '{name}'"),
-                    }),
+                // loop-guard: block the 3rd identical (name+args) call this turn.
+                let (result, blocked) = match loop_guard.record_attempt(&name, &input) {
+                    AttemptDecision::Block(message) => {
+                        (Ok(block_tool_result(message)), true)
+                    }
+                    AttemptDecision::Proceed => (
+                        match tools.get(&name) {
+                            Some(tool) => tool.run(input.clone()).await,
+                            None => Err(ToolError::NotAvailable {
+                                message: format!("no tool named '{name}'"),
+                            }),
+                        },
+                        false,
+                    ),
                 };
                 callback.on_tool_end(&name, &result).await;
+
+                // loop-guard: track consecutive failures of this tool (warn at
+                // 3, halt at 8). A guard-blocked call records no outcome — it
+                // is an intervention, not an execution, so it doesn't count
+                // toward the failure halt.
+                if !blocked {
+                    let success = result.as_ref().map(|r| r.success).unwrap_or(false);
+                    match loop_guard.record_outcome(&name, success) {
+                        OutcomeDecision::Continue => {}
+                        OutcomeDecision::Warn(message) => {
+                            tracing::warn!("{}", message);
+                            self.emit_status(message).await;
+                        }
+                        OutcomeDecision::Halt(message) => {
+                            loop_guard_halt.get_or_insert(message);
+                        }
+                    }
+                }
 
                 let (content_str, is_error) = match &result {
                     Ok(r) => (r.content.clone(), !r.success),
@@ -218,7 +296,17 @@ impl HostAgentExecutor {
                 });
             }
 
-            // (4) per-step post-tool seam — capacity / LSP / loop-guard outcome.
+            // (4) per-step post-tool seam — loop-guard halt (absorbed);
+            // capacity / LSP post-edit land here later.
+            if let Some(message) = loop_guard_halt {
+                tracing::warn!("{}", message);
+                self.emit_status(message.clone()).await;
+                callback
+                    .on_complete(&StopReason::Error(message.clone()))
+                    .await;
+                return Ok(StopReason::Error(message));
+            }
+
             callback.on_step(step).await;
             step += 1;
         }
@@ -489,6 +577,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
         );
 
         let reason = executor
@@ -584,6 +673,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
         );
 
         let reason = executor
@@ -632,6 +722,7 @@ mod tests {
                 max_steps: 2,
                 ..AgentExecutorConfig::default()
             },
+            None,
         );
 
         let reason = executor
@@ -641,5 +732,173 @@ mod tests {
         assert_eq!(reason, StopReason::MaxSteps);
         // user + (assistant + toolresult) x2 = 1 + 2*2 = 5
         assert_eq!(history.len(), 5);
+    }
+
+    // === loop-guard (seam 3 + 4) ===========================================
+
+    #[tokio::test]
+    async fn loop_guard_blocks_third_identical_call() {
+        let tmp = tempdir().expect("tempdir");
+        let workspace_stamp = tmp.path().display().to_string();
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Three identical echo calls, then a text-only turn that ends the run.
+        let call = || {
+            let mut c = text_block(0, "again");
+            c.extend(tool_use_block(1, "t1", "echo", r#"{"text":"x"}"#));
+            c.extend(finish("tool_use"));
+            c
+        };
+        let mut done = text_block(0, "done");
+        done.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call(), call(), call(), done])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // [user, asst, tr(echo), asst, tr(echo), asst, tr(block), asst] = 8.
+        assert_eq!(history.len(), 8);
+
+        // First two tool results are real echo output (workspace-stamped) —
+        // proof the tool actually ran twice.
+        for &idx in &[2usize, 4] {
+            match &sess.messages[idx].content[0] {
+                ContentBlock::ToolResult { content, is_error, .. } => {
+                    assert!(
+                        content.starts_with(&workspace_stamp),
+                        "echo ran at msg[{idx}]: {content}"
+                    );
+                    assert_eq!(*is_error, Some(false));
+                }
+                other => panic!("msg[{idx}] not ToolResult: {other:?}"),
+            }
+        }
+        // Third is the loop-guard block — echo did NOT run, error, block message.
+        match &sess.messages[6].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert!(
+                    !content.starts_with(&workspace_stamp),
+                    "echo must not run on the blocked call: {content}"
+                );
+                assert!(
+                    content.contains("already been made 3 times"),
+                    "block message: {content}"
+                );
+                assert_eq!(*is_error, Some(true));
+            }
+            other => panic!("msg[6] not ToolResult: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_guard_warns_at_three_failures() {
+        // No tools registered — every tool call hits "ghost" (NotAvailable),
+        // which counts as a failure for the loop-guard.
+        let tools = Arc::new(ToolSet::new());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Vary the args each call so `record_attempt` (keyed on name+args) never
+        // blocks; `record_outcome` is keyed on name only, so failures still
+        // accumulate toward the warn threshold (3).
+        let failing = |n: u64| {
+            let mut c = text_block(0, "trying");
+            c.extend(tool_use_block(1, "t1", "ghost", &format!(r#"{{"n":{n}}}"#)));
+            c.extend(finish("tool_use"));
+            c
+        };
+        let mut done = text_block(0, "done");
+        done.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![failing(1), failing(2), failing(3), done])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let events = drain(&mut rx);
+        let warned = events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Status { message } if message.contains("failed 3 consecutive times")
+            )
+        });
+        assert!(warned, "expected a warn status event, got: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn loop_guard_halts_after_eight_failures() {
+        let tools = Arc::new(ToolSet::new()); // ghost
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let failing = |n: u64| {
+            let mut c = text_block(0, "trying");
+            c.extend(tool_use_block(1, "t1", "ghost", &format!(r#"{{"n":{n}}}"#)));
+            c.extend(finish("tool_use"));
+            c
+        };
+        // 8 distinct-arg failures → the 8th triggers Halt.
+        let calls: Vec<Vec<StreamEvent>> = (1..=8).map(failing).collect();
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(calls)),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        let msg = match reason {
+            StopReason::Error(m) => m,
+            other => panic!("expected Error, got {other:?}"),
+        };
+        assert!(
+            msg.contains("failed 8 consecutive times"),
+            "halt message: {msg}"
+        );
+
+        let events = drain(&mut rx);
+        let halted = events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Status { message } if message.contains("failed 8 consecutive times")
+            )
+        });
+        assert!(halted, "expected a halt status event, got: {events:?}");
     }
 }

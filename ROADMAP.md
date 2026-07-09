@@ -410,6 +410,52 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
 
 ---
 
+**进度（2026-07-09 §E loop-guard 吸收落地，首个 guardrail 进 HostAgentExecutor，`feat/pluggable-framework-core`）：**
+
+§E 的第五个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第一个（loop-guard）吸收进
+`HostAgentExecutor`。loop-guard 是最干净的入口：`LoopGuard`（`engine/loop_guard.rs`）是纯数据结构
+（`call_counts`/`failure_counts` 两个 HashMap），无 Engine 可变状态、无 `&mut self` 阻抗，是热身切片。
+本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **`event_tx` 注入**：`HostAgentExecutor` 新增 `event_tx: Option<mpsc::Sender<Event>>` 字段 + 构造器参数 +
+  `emit_status` helper。guardrail 状态 surfacing 走 host 的 `Event` 通道，**不**经框架 `Callback`（§E 明确
+  不改 `Callback` trait 签名；guardrail 是 host 侧关注，`Callback` 是框架 loop 的 tool 生命周期钩子）。这是
+  后续 steer/LSP/capacity/subagent 也会复用的基础注入。
+- **seam (3) per-tool `record_attempt`**：`on_tool_start` 后、`tool.run` 前插 `LoopGuard::record_attempt`——
+  第 3 次相同（name+args）调用被 block，回灌 `ToolResult::error(...).with_metadata({"loop_guard":
+  "identical_tool_call"})`（镜像 `turn_loop::loop_guard_block_tool_result`，本轮内联、注明轻微重复、后续清理），
+  `is_error=true`，仍发 `on_tool_end`（与既有 `NotAvailable` 路径一致）。blocked call 不调 `record_outcome`
+  （guard 干预非执行 outcome，不计入失败 halt）。
+- **seam (3) per-tool `record_outcome`**：`tool.run` 后调 `LoopGuard::record_outcome(name, success)`——
+  `Warn`（3 次连续失败）→ `emit_status`；`Halt`（8 次）→ 暂存 per-step `loop_guard_halt`。
+- **seam (4) post-tool halt**：tool 循环后 `loop_guard_halt` 有值则 `emit_status` + `on_complete(Error(msg))` +
+  返 `StopReason::Error(msg)`（语义贴切「run 中止带原因」；不新加 `Halt` variant，避免动核心 enum）。
+- **`&self` 维持**：`LoopGuard` 是 `run_inner` 局部变量（跨单次 run 内 loop 迭代存活，匹配 turn_loop:281），
+  `Sender::send` 取 `&self`——本切片是「本地状态 guardrail 无需 interior-mutability」的证明。首个需 Engine
+  可变状态的 guardrail（LSP 的 `pending_lsp_blocks` / steer 的 `rx_steer`）才引入 `Arc<Mutex<...>>`/通道。
+- **3 个新单测**：`loop_guard_blocks_third_identical_call`（3 次相同 echo 调用，第 3 次 block、echo 真跑 2 次、
+  block 消息 + is_error）、`loop_guard_warns_at_three_failures`（ghost tool + 变参避开 block，第 3 次失败
+  `Event::status` "failed 3 consecutive times"）、`loop_guard_halts_after_eight_failures`（8 次失败 →
+  `StopReason::Error` "failed 8 consecutive times" + halt status 事件）。既有 3 测试构造器调用改传 `event_tx: None`。
+
+**已知设计取舍：**
+- **blocked call 仍发 `on_tool_start`/`on_tool_end`**：与 `NotAvailable` 路径一致；生产中 guard-blocked call
+  是否经 pre/post tool hook 未逐一核对，本切片选框架一致性优先。
+- **halt = `StopReason::Error`**：携带 halt 消息；若后续需区分「guardrail halt」与「运行错误」可再加 `Halt` variant。
+- **`block_tool_result` 轻微重复**：与 `turn_loop::loop_guard_block_tool_result` 同实现；后续可 lift 进
+  `loop_guard` 模块作单一源（与 reasoning.rs 去重同性质）。
+
+**下一聚焦工作：**
+- **下一个 guardrail**：建议 **transparent-retry**（seam 2 post-stream；本地计数器 + `cancel_token`/`tx_event`/
+  `client`，单 seam 为主）或 **LSP flush**（seam 1 pre-request；需 `pending_lsp_blocks`，是首个引入
+  interior-mutability 的候选）。loop-guard 已证明 `&self` + 局部状态模式可行。
+- 其余 guardrail（compaction/capacity/approval/steer/early-tool-start/subagent/cycle）+ stream delta inline
+  归约 / `on_llm_*` 桥接 / wire tool-call id 透传 / `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——
+  后续切片。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
