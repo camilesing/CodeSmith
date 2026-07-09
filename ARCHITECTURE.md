@@ -133,7 +133,8 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   converts executable → wire via `to_api_tools()`.
 - **`ChatHistory`** (`memory::ChatHistory`) — the transcript view (LangChain
   `Memory` analog): `messages` / `push` / `clear`. `VecChatHistory` is the
-  in-memory default; a host backs it with its `Session`.
+  in-memory default; the host backs it with its `Session` via `SessionChatHistory`
+  (in `codesmith-agent-runtime::session_history`, §E).
 - **`Callback`** (`callback::Callback`) — observation hooks (LangChain
   `Callbacks` analog): `on_llm_start` / `on_llm_end` / `on_tool_start` /
   `on_tool_end` / `on_step` / `on_complete`, all default no-ops. `CallbackSet`
@@ -143,14 +144,23 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   tool-lifecycle hooks onto both paths; the LLM/step/complete hooks are
   documented no-ops (the production caller and stream-reduction code own those).
 - **`AgentExecutor`** (`executor::AgentExecutor`) — drives the loop;
-  `DefaultAgentExecutor` is the reference impl. `StopReason` (`NoToolCalls` /
-  `MaxSteps` / `Error`) is the terminal outcome.
+  `DefaultAgentExecutor` is the reference impl (core). The host-side
+  `HostAgentExecutor` (in `codesmith-agent-runtime::engine::host_executor`,
+  §E) mirrors the bare loop over the three bridges and is the designated home
+  for absorbing the production `Engine`'s guardrails slice by slice.
+  `StopReason` (`NoToolCalls` / `MaxSteps` / `Error`) is the terminal outcome.
 
-What is **not** here yet (later §E slices): migrating the production `Engine`
-/`turn_loop.rs` onto these traits, and E4 (declarative `providers.toml` + lazy
-loading). The `ToolSpec`+`ToolContext` → `Tool` bridge is landed
-(`ToolSpecAdapter`, §E), and the `Event` channel / `HookHost` → `Callback`
-bridge is landed (`CallbackBridge`, §E). The framework traits are validated
+What is **not** here yet (later §E slices): absorbing the production
+`Engine`/`turn_loop.rs` guardrails into `HostAgentExecutor` — the three
+host→framework bridges are all landed (`ToolSpecAdapter`, `CallbackBridge`,
+`SessionChatHistory`), and the host-side `HostAgentExecutor` skeleton runs the
+bare LLM↔tool loop over them; its four seams (per-step pre-request /
+post-stream / per-tool / post-tool) grow the guardrails slice by slice, after
+which `handle_deepseek_turn` retires. Streaming deltas (`MessageDelta`/
+`ThinkingDelta`) will keep flowing over the `Event` channel directly (no
+`Callback` method) once an inline stream reducer replaces `accumulate_stream`.
+E4 (declarative `providers.toml` + lazy loading) is also deferred. The
+framework traits are validated
 against an inline mock LLM + mock tool (see `crates/agent/src/executor/mod.rs`
 tests) — no `codesmith-providers` dependency required, mirroring the provider
 foundation slice's `mock` sample. The `ToolSpec` adapter is additionally
@@ -177,7 +187,7 @@ the executor that lights up both a mock `Event` channel and a mock `HookHost`
 | Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ⏳ deferred | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); production `Engine` migration deferred | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge}.rs` |
+| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` skeleton landed (§E, bare loop, guardrails 待吸收); production `Engine` migration in progress | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
 
 ## Registering a provider (developer guide)
 

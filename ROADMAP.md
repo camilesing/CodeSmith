@@ -356,6 +356,60 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
 
 ---
 
+**进度（2026-07-08 §E `SessionChatHistory` 桥 + `HostAgentExecutor` 骨架落地，三桥完成，`feat/pluggable-framework-core`）：**
+
+§E 的第四个切片落地——补齐第三个、也是最后一个 host→framework 桥（`Session` → `ChatHistory`），并落地承载
+生产 turn loop 迁移的 `HostAgentExecutor` 骨架（裸 LLM↔tool 循环，无 guardrail）。两个前置桥
+（`ToolSpecAdapter`、`CallbackBridge`）已就位；本切片完成三桥组合证明，并确立"循环住在 host executor"
+的结构，为后续逐个吸收 guardrail 铺路。本轮纯新增（两个模块 + 核心一处 visibility 放宽），零既有调用点
+改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **`SessionChatHistory`**（`crates/agent-runtime/src/session_history.rs`，crate-root `pub mod`，镜像
+  `callback_bridge`）：`impl ChatHistory for SessionChatHistory<'a>`，持 `&'a mut Session`，四方法纯委托
+  `session.messages` / `session.add_message`（后者即 `push`，零行为差异）。`Session: Send + Sync` 经编译
+  验证（`&mut Session` 满足 `ChatHistory: Send + Sync` 的 trait object bound，无需回退到
+  `&mut Vec<Message>` 预案）。`push` 刻意不做 working_set 观察——那是 host guardrail 的职责，非 memory
+  trait（与 `codesmith_agent::memory` 模块文档一致）。2 个单测。
+- **`HostAgentExecutor`**（`crates/agent-runtime/src/engine/host_executor.rs`，`engine/` 下 `pub mod`）：
+  `impl AgentExecutor for HostAgentExecutor`，持 `LlmClientHandle` + `Arc<ToolSet>` + `Arc<dyn Callback>` +
+  `AgentExecutorConfig`。`run_inner` **镜像 `DefaultAgentExecutor::run_inner`** 的裸循环，复用核心
+  `codesmith_agent::executor::accumulate_stream`（pub 放宽后）做 stream 归约。循环标注四个 guardrail
+  插入点（per-step pre-request / post-stream / per-tool / post-tool），后续切片增量填入。模块文档显式
+  声明：未接入 `handle_send_message`，生产 `handle_deepseek_turn` 仍是 live path；stream delta
+  （`MessageDelta`/`ThinkingDelta`）将来由 inline 归约直发 `tx_event`（不经 `Callback`）。3 个单测。
+- **核心 visibility 放宽**：`crates/agent/src/executor/mod.rs` 的 `accumulate_stream` 由私有 `async fn` 改
+  `pub async fn`——非行为变更，使 host executor 复用 ~100 行归约器而非复制。核心 `accumulate_stream` 作为
+  可复用 helper 暴露（简单/测试用；生产将来改 inline 归约时核心此函数仍留给简单路径）。
+- **三桥组合证明**（headline `host_executor_drives_full_bridge_trio`）：`ToolRegistry` 注册真
+  `EchoSpec`（`impl ToolSpec`，把 `context.workspace` 戳进结果）→ `to_framework_tool_set()` 得 `ToolSet`；
+  真 `Session` → `SessionChatHistory`；`CallbackBridge{ mock mpsc, RecordingHookHost, hook_template }` 作
+  `Arc<dyn Callback>`；`MockLlm` 两轮（text+tool_use(echo) / text+end_turn）。断言 `StopReason::NoToolCalls`、
+  `sess.messages.len()==4`、`ToolResult` content 以 captured workspace 路径开头（证明 `ToolSpec` 经
+  `ToolSpecAdapter` 流过 + context 捕获）、mock mpsc 收到 `ToolCallStarted`+`ToolCallComplete`（id 配对）、
+  `RecordingHookHost` 收到 `ToolCallBefore`+`ToolCallAfter`（`tool_name`/`session_id`/`tool_result`/
+  `tool_success` 齐全）——三桥在框架 executor 循环里端到端组合跑通。另两个小测：
+  `missing_tool_records_error_result`（未注册 tool → `NotAvailable` 错误 `ToolResult`，行为对齐核心
+  executor）、`exhausts_steps`（`max_steps:2` → `MaxSteps`）。
+- **无新依赖边**：`agent-runtime` 已依赖 `codesmith-agent`；`tempfile`/`async-trait`/`futures-util` 既有；
+  零 Cargo 改动。
+- **验证**：`cargo +1.90.0 build -p codesmith-agent` 零警告；`cargo build -p codesmith-agent-runtime` 零新
+  警告；`cargo test -p codesmith-agent` 79 passed；`cargo test -p codesmith-agent-runtime --lib` 1007 passed
+  （含 5 新，原 1002）；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **guardrail 逐个吸收**：把 `handle_deepseek_turn` 的 10 个 guardrail 增量迁入 `HostAgentExecutor` 的四个
+  插入点。优先级建议——先迁自包含、本地状态者（loop-guard、LSP flush），再迁需 `Engine` 可变状态者
+  （compaction、capacity、approval、steer、transparent-retry、early-tool-start、subagent）。`&self` vs
+  `&mut self` 阻抗在首个需 `Engine` 可变状态的 guardrail 切片解决（interior-mutability handles：
+  `Arc<Mutex<...>>` / 通道）。
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message`
+  改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- stream delta inline 归约 / `on_llm_*` 桥接 / wire tool-call id 透传——后续切片。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项（CLI flag / per-entry 写入 / 裸形式）、
+  B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

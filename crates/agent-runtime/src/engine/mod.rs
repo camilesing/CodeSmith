@@ -2670,6 +2670,8 @@ mod tool_catalog;
 mod tool_execution;
 mod turn_loop;
 
+pub mod host_executor;
+
 pub fn default_active_native_tool_names() -> &'static [&'static str] {
     // Delegates to `codesmith_agent_runtime::tools::tool_catalog` so the
     // prompt builder (now in agent-runtime) can share the same list

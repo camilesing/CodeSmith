@@ -29,6 +29,7 @@ pub mod auto_reasoning;
 pub mod background_task;
 pub mod callback_bridge;
 pub mod capacity;
+
 pub mod capacity_memory;
 pub mod child_env;
 pub mod claudemd;
@@ -72,6 +73,7 @@ pub mod runtime_ui;
 pub mod sandbox;
 pub mod sanitization;
 pub mod session;
+pub mod session_history;
 pub mod shell_dispatcher;
 pub mod shell_manager;
 pub mod skills;
