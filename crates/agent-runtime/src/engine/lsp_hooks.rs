@@ -9,6 +9,21 @@ use std::path::PathBuf;
 
 use super::*;
 
+/// #136: derive the file path(s) edited by an `edit_file` / `write_file` call,
+/// from its `path` input field. Returns the empty vec when the input carries
+/// no `path`. Factored out of [`edited_paths_for_tool`] so the framework-core
+/// `HostAgentExecutor` (§E LSP flush) shares this single source rather than
+/// duplicating the extraction — it has no `&dyn HostServices` in hand (the
+/// `apply_patch` route below needs the host trait and is deferred there).
+pub fn edit_file_paths(input: &serde_json::Value) -> Vec<PathBuf> {
+    input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .map(|p| vec![p])
+        .unwrap_or_default()
+}
+
 /// #136: derive the file path(s) edited by a tool call. Returns the empty
 /// vec for tools that don't modify files. We intentionally only handle the
 /// three known edit tools — adding more (e.g. specialized refactor tools)
@@ -23,13 +38,7 @@ pub fn edited_paths_for_tool(
     host: &dyn crate::host_services::HostServices,
 ) -> Vec<PathBuf> {
     match tool_name {
-        "edit_file" | "write_file" => {
-            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                vec![PathBuf::from(path)]
-            } else {
-                Vec::new()
-            }
-        }
+        "edit_file" | "write_file" => edit_file_paths(input),
         "apply_patch" => host.preflight_apply_patch_paths(input),
         _ => Vec::new(),
     }

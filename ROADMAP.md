@@ -456,6 +456,74 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
 
 ---
 
+**进度（2026-07-09 §E LSP flush 吸收落地，首个 interior-mutability 切片，`feat/pluggable-framework-core`）：**
+
+§E 的第六个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第二个（LSP diagnostics flush）吸收进
+`HostAgentExecutor`。这是首个需要 `Engine` 可变状态（`pending_lsp_blocks`）的 guardrail，因此首次引入
+interior-mutability（`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`），是继 loop-guard（本地状态热身）之后的
+「需共享可变状态 guardrail」的形状证明。本轮纯增量（`host_executor.rs` + `lsp_hooks.rs` 两文件 + 文档），零既有
+调用点改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **`LspProbe` collaborator**：新增 `LspProbe { manager: Arc<dyn LspManagerApi>, workspace: PathBuf,
+  pending: Arc<std::sync::Mutex<Vec<DiagnosticBlock>>> }`，作为 `HostAgentExecutor` 的 `lsp: Option<LspProbe>` 字段
+  （构造器新增一个参数，非-LSP embed/测试传 `None`——6 个既有测试构造器改传 `None`）。`pending` 是
+  interior-mutability 句柄：`AgentExecutor::run` 是 `&self`，而累加器在 collect 时 push、flush 时 `mem::take`
+  ——锁从不在 `await` 跨点持有（匹配 `CallbackBridge` 先例）。`pending` 跨 `run()` 调用持久（匹配生产
+  `Engine.pending_lsp_blocks` 字段语义——以 `MaxSteps` 结束的 turn 其 edit 的诊断在下一 turn 首 flush 浮现）；
+  一个 per-`run_inner` 局部 `Vec` 无法跨 run 持久，故必须是 executor 字段上的 `Arc<Mutex<…>>`。
+- **最小注入而非整 `HostServices`**：注入 `Option<Arc<dyn LspManagerApi>>`（2 方法 trait：`config() -> &LspConfig`
+  sync、`diagnostics_for(&self, &Path, u64) -> Option<DiagnosticBlock>` async，Send+Sync），**不**注入完整
+  `HostServices`（~13 方法 + 子 trait，fake 代价过高）。`preflight_apply_patch` 从 agent-runtime 不可达（循环依赖：
+  `codesmith-tool-impls` 依赖 `codesmith-agent-runtime`）——故 apply_patch 路径推导延后（见已知取舍）。
+- **seam (3) per-tool `collect_lsp_diagnostics`**（async）：在 `loop_guard.record_outcome` 块之后、`ToolResult` push
+  之前插；gate `!blocked && result.is_ok() && r.success`（镜像生产 `output.success && tool_was_executed`）。master
+  switch `probe.manager.config().enabled` 先判；路径推导经共享 helper `edit_file_paths`（仅 edit_file/write_file），
+  join workspace 得绝对路径，`await diagnostics_for(&absolute, 0)`，push 进 `probe.pending`。edit_seq=0（仅 log 关联；
+  生产用 turn_counter）。
+- **seam (1) per-step pre-request `flush_pending_lsp_diagnostics`**（**SYNC**——内部无 await）：`mem::take` pending，
+  `render_lsp_blocks` 渲染，push 纯 user text `Message`（`ChatHistory::push`，落进真实 Session transcript）。插在
+  `run_inner` 循环顶 `step >= max_steps` bail 之后、`tools.to_api_tools()`/`MessageRequest` snapshot 之前——使诊断
+  消息进入模型所见请求（镜像 `turn_loop.rs:494` before:501）。
+- **`lsp_hooks.rs` 共享 helper**：新增 `pub fn edit_file_paths(&Value) -> Vec<PathBuf>`，重构
+  `edited_paths_for_tool` 的 `edit_file|write_file` 臂调它（去重，零行为变化；executor 与生产共享单一源）；
+  apply_patch 臂不动。
+- **6 个新测试**：`lsp_collect_then_flush_feeds_model`（edit_file run → FakeLsp 返 ERROR block → history 出现含
+  `<diagnostics` 的第二条 user 消息且在 call2 请求前；MockLlm 捕获的 call2 请求含它）、`lsp_disabled_skips_collect`
+  （`config().enabled=false` → 无诊断消息、`FakeLsp.calls` 空）、`lsp_skips_non_edit_tool`（echo 工具 → 无路径推导 →
+  无诊断）、`lsp_skips_failed_edit`（EditSpec 返 `Ok(success:false)` → 不 collect）、`lsp_apply_patch_paths_deferred`
+  （钉住 apply_patch 当前不收集，记录缺口）、`lsp_cross_turn_persistence_via_shared_state`（**interior-mutability
+  证明**：max_steps:1；run1 edit → MaxSteps 留 pending 非空；run2 在**同一 executor** + 新 Session → 其首 pre-request
+  flush 把 run1 残留 pending 排进 run2 history；assert run2 首请求含 run1 edit 的诊断——per-`run_inner` 局部 Vec
+  做不到，证 `Arc<Mutex<Vec>>` 跨 run 持久）。
+- **test doubles 扩展**：`MockLlm` 加 `requests: Mutex<Vec<Vec<Message>>>` + `requests()` 记录每次请求消息（增量，
+  既有测试不受影响）；新增 `FakeLsp`（`LspManagerApi` impl，`returning(block)`/`disabled()` 构造器返 `Arc<Self>`，
+  `calls()` 记 `(PathBuf, u64)` 探针）、`EditSpec`/`FailingEditSpec`（ToolSpec impls）、`error_diag_block` +
+  `has_diagnostics_msg` helper。
+
+**验证：** `cargo build -p codesmith-agent-runtime` 零新 warning；`cargo test -p codesmith-agent-runtime --lib` 1016
+通过（0 失败、2 ignored）；`cargo test -p codesmith-agent-runtime --lib host_executor` 12 通过（6 既有 + 6 新 LSP）；
+`cargo test -p codesmith-agent --lib` 79 通过；tui `edited_paths_for_*`（6）+ `parse_patch_paths`（1）helper 重构后
+全 7 通过；`cargo build --workspace` 绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**已知设计取舍（本轮缺口，by design）：**
+- **apply_patch 路径推导延后**：需 `HostServices::preflight_apply_patch_paths`（从 agent-runtime 不可达，循环依赖）；
+  本轮 apply_patch 在 collect 中返空 Vec，live `handle_deepseek_turn` 仍覆盖；待 executor 接真 `HostServices` 或
+  注入 resolver-closure 时补。
+- **合成 flush 消息无 `<turn_meta>`**：`user_text_message_with_turn_metadata` 仅读 session+config，但框架 executor 路径
+  全无 turn_meta（跨切 host 侧富化，延后到自己的切片）——故 flush 用纯 user text 消息。
+- **合成 push 无 `emit_session_updated`**：与 executor 其余消息 push 一致；UI surfacing 延后到 wire-in 步。
+
+**下一聚焦工作：**
+- **下一个 guardrail**：建议 **transparent-retry**（seam 2 post-stream；本地重试计数器 + `cancel_token`/`tx_event`/
+  `client`，单 seam 为主）——loop-guard + LSP flush 已落地，transparent-retry 是下一个自包含候选。或
+  **steer/capacity**（需更多 `Engine` 可变状态，沿用本轮 `Arc<Mutex<…>>` 形状）。
+- **apply_patch 路径推导**延后（待 `HostServices` 可达或注入 resolver-closure）。
+- 其余 guardrail（compaction/approval/early-tool-start/subagent/cycle）+ stream delta inline 归约 / `on_llm_*` 桥接 /
+  wire tool-call id 透传 / `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——后续切片。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

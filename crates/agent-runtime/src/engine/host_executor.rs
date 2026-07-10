@@ -18,54 +18,91 @@
 //! - [`SessionChatHistory`](crate::session_history::SessionChatHistory) —
 //!   production `Session` → framework `ChatHistory` (the transcript).
 //!
-//! ## This slice: loop-guard absorbed
+//! ## Absorbed guardrails
 //!
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (reusing
 //! [`accumulate_stream`](codesmith_agent::executor::accumulate_stream) for stream
-//! reduction) and now absorbs the first production guardrail — **loop-guard**
-//! ([`LoopGuard`]): the 3rd identical tool call in a turn is blocked (a `ToolResult`
-//! error is fed back instead of executing), and 3 / 8 consecutive failures of
-//! the same tool warn / halt the turn. The guard state is a local `LoopGuard`
-//! that persists across steps within one `run` (matching `turn_loop`), and
-//! guardrail status surfaces over the host's `Event` channel (`event_tx`) —
-//! **not** via the framework `Callback`: guardrails are host-side concerns and
-//! the `Callback` trait stays untouched per ROADMAP §E. `&self` still suffices
-//! here — `LoopGuard` is local and `mpsc::Sender::send` takes `&self`; this slice
-//! is the proof that local-state guardrails need no interior mutability. The
-//! first guardrail needing `Engine` mutable state (e.g. LSP's `pending_lsp_blocks`,
-//! steer's `rx_steer`) will introduce `Arc<Mutex<…>>` / channel handles. It is
-//! **not yet wired into `handle_send_message`**; the production
+//! reduction) and absorbs the production guardrails slice by slice. Two are in:
+//!
+//! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
+//!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
+//!    consecutive failures of the same tool warn / halt the turn. The guard state
+//!    is a local `LoopGuard` that persists across steps within one `run` (matching
+//!    `turn_loop`). This was the proof that local-state guardrails need no
+//!    interior mutability: `&self` suffices, `LoopGuard` is local, and
+//!    `mpsc::Sender::send` takes `&self`.
+//! 2. **LSP flush** ([`LspProbe`]) — the **first guardrail needing interior
+//!    mutability**. After a successful edit (`edit_file` / `write_file`), the
+//!    configured [`LspManagerApi`] is probed for diagnostics and the resulting
+//!    [`DiagnosticBlock`]s accumulate in `LspProbe.pending` — an
+//!    `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`, because [`AgentExecutor::run`]
+//!    is `&self` while the accumulator is mutated (push on collect, `mem::take` on
+//!    flush). The lock is never held across an `await` (collect awaits
+//!    `diagnostics_for` outside the lock; flush takes+drops the lock before
+//!    `history.push`) — matching the [`CallbackBridge`](crate::callback_bridge::CallbackBridge)
+//!    state pattern. Because the `Mutex` lives on the executor struct, pending
+//!    diagnostics persist across `run` invocations on the same executor — matching
+//!    the production `Engine.pending_lsp_blocks` field semantics (an edit on a turn
+//!    that ends before the next request — e.g. a `MaxSteps` halt — surfaces its
+//!    diagnostics on the next turn's first pre-request flush).
+//!
+//! Guardrail status (loop-guard warn/halt) surfaces over the host's `Event`
+//! channel (`event_tx`) — **not** via the framework `Callback`: guardrails are
+//! host-side concerns and the `Callback` trait stays untouched per ROADMAP §E.
+//!
+//! It is **not yet wired into `handle_send_message`**; the production
 //! `handle_deepseek_turn` remains the live path — the value of landing it now is
 //! the composition proof (the three bridges light up end-to-end inside a real
 //! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
-//! headline test) plus the first guardrail absorbed at the per-tool / post-tool
-//! seams below.
+//! headline test) plus two guardrails absorbed at the seams below.
 //!
 //! ## Guardrail insertion points
 //!
 //! The loop has four seams where guardrails are absorbed incrementally:
 //!
-//! 1. **per-step pre-request** — compaction, capacity pre-request, steer drain,
-//!    LSP flush, system-prompt refresh (top of the `loop`). *(not yet absorbed)*
+//! 1. **per-step pre-request** — ✅ **LSP flush** (drain pending diagnostics into
+//!    a synthetic `user` message before the request snapshot); compaction,
+//!    capacity pre-request, steer drain, system-prompt refresh still to come
+//!    (top of the `loop`).
 //! 2. **per-step post-stream** — transparent stream-retry, subagent handoff,
 //!    thinking-only handling (after `accumulate_stream`, before tool extraction).
 //!    *(not yet absorbed)*
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
-//!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures);
+//!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures) +
+//!    **LSP post-edit collect** (probe diagnostics after a successful edit);
 //!    approval, early-tool-start, parallel dispatch still to come (inside the
 //!    tool `for` loop).
 //! 4. **per-step post-tool** — ✅ **loop-guard halt short-circuit** (returns
-//!    `StopReason::Error`); capacity post-tool, LSP post-edit still to come
-//!    (after the tool loop).
+//!    `StopReason::Error`); capacity post-tool still to come (after the tool loop).
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) will continue to flow
 //! over the `Event` channel directly, emitted by an inline stream reducer (a
 //! later slice replaces the `accumulate_stream` call) — they have no `Callback`
 //! method and stay off the `Callback` path (see `callback_bridge` docs).
 //!
+//! ## Known gaps in the LSP flush (by design)
+//!
+//! - **`apply_patch` path derivation deferred** — production derives apply_patch
+//!   edited paths via `HostServices::preflight_apply_patch_paths` (which calls
+//!   `codesmith-tool-impls`, unreachable from this crate without a circular dep).
+//!   This executor handles only `edit_file` / `write_file` (via the shared
+//!   [`edit_file_paths`](super::lsp_hooks::edit_file_paths) helper); apply_patch
+//!   collects nothing here. The live `handle_deepseek_turn` still covers it; this
+//!   wires when the executor connects to a real `HostServices` (or a future
+//!   resolver-closure injection).
+//! - **no `<turn_meta>` enrichment** on the synthetic flush message — production
+//!   wraps it in `user_text_message_with_turn_metadata` (date / model / working
+//!   set / skills, read from `session` + `config`). The framework-executor path
+//!   carries no turn metadata anywhere yet; that cross-cutting enrichment is its
+//!   own future slice.
+//! - **no `emit_session_updated`** for the synthetic push — the executor's other
+//!   message pushes (assistant / tool result) likewise don't emit it via the
+//!   `ChatHistory` path; UI surfacing is deferred to the wire-in step.
+//!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -80,7 +117,10 @@ use codesmith_agent::models::{ContentBlock, Message, MessageRequest};
 use codesmith_agent::tools::{ToolError, ToolResult, ToolSet};
 
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
+use super::lsp_hooks::edit_file_paths;
 use crate::events::Event;
+use crate::host_services::LspManagerApi;
+use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock};
 
 /// The `ToolResult` fed back when the loop-guard blocks an identical repeat
 /// call (mirrors `turn_loop::loop_guard_block_tool_result`). Duplicated here
@@ -91,6 +131,44 @@ fn block_tool_result(message: String) -> ToolResult {
     ToolResult::error(message).with_metadata(serde_json::json!({
         "loop_guard": "identical_tool_call"
     }))
+}
+
+/// Bundles the LSP collaborators the executor needs for the post-edit collect /
+/// pre-request flush guardrail (§E, mirroring `Engine`'s
+/// `run_post_edit_lsp_hook` / `flush_pending_lsp_diagnostics`).
+///
+/// Carries the **interior-mutable** diagnostics accumulator —
+/// `Arc<Mutex<Vec<DiagnosticBlock>>>` — because [`AgentExecutor::run`] takes
+/// `&self` while the accumulator is mutated (push on collect, `mem::take` on
+/// flush). This mirrors the [`CallbackBridge`](crate::callback_bridge::CallbackBridge)
+/// state pattern: a `std::sync::Mutex` whose guard is never held across an
+/// `await` (collect awaits `diagnostics_for` *outside* the lock; flush takes
+/// and drops the lock before pushing). Because the `Mutex` lives on the
+/// executor struct (via this `Option<LspProbe>` field), pending diagnostics
+/// persist across `run` invocations on the same executor — matching the
+/// production `Engine.pending_lsp_blocks` field semantics (an edit on a turn
+/// that ends before the next request — e.g. a `MaxSteps` halt — surfaces its
+/// diagnostics on the next turn's first pre-request flush). `None` on the
+/// executor ⇒ LSP disabled for this run (collect + flush are no-ops).
+pub struct LspProbe {
+    manager: Arc<dyn LspManagerApi>,
+    /// Workspace root for relativizing edited paths (mirrors
+    /// `session.workspace`, which `ChatHistory` does not expose).
+    workspace: PathBuf,
+    pending: Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>,
+}
+
+impl LspProbe {
+    /// Construct from the LSP manager + the session workspace. The pending
+    /// accumulator starts empty (drained per-step on flush).
+    #[must_use]
+    pub fn new(manager: Arc<dyn LspManagerApi>, workspace: PathBuf) -> Self {
+        Self {
+            manager,
+            workspace,
+            pending: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
 }
 
 /// Host-side [`AgentExecutor`] — the growing home for the production turn loop.
@@ -110,25 +188,30 @@ pub struct HostAgentExecutor {
     callback: Arc<dyn Callback>,
     config: AgentExecutorConfig,
     event_tx: Option<mpsc::Sender<Event>>,
+    /// Optional LSP diagnostics probe (§E). `None` ⇒ collect/flush no-op.
+    lsp: Option<LspProbe>,
 }
 
 impl HostAgentExecutor {
-    /// Construct from the four collaborators + config + an optional guardrail
-    /// status channel (`None` for embeds that don't surface guardrail status).
-    #[must_use]
-    pub fn new(
-        client: LlmClientHandle,
-        tools: Arc<ToolSet>,
-        callback: Arc<dyn Callback>,
-        config: AgentExecutorConfig,
-        event_tx: Option<mpsc::Sender<Event>>,
-    ) -> Self {
+/// Construct from the four collaborators + config + an optional guardrail
+/// status channel (`None` for embeds that don't surface guardrail status) +
+/// an optional [`LspProbe`] (`None` ⇒ LSP collect/flush disabled).
+#[must_use]
+pub fn new(
+    client: LlmClientHandle,
+    tools: Arc<ToolSet>,
+    callback: Arc<dyn Callback>,
+    config: AgentExecutorConfig,
+    event_tx: Option<mpsc::Sender<Event>>,
+    lsp: Option<LspProbe>,
+) -> Self {
         Self {
             client,
             tools,
             callback,
             config,
             event_tx,
+            lsp,
         }
     }
 
@@ -139,6 +222,72 @@ impl HostAgentExecutor {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(Event::status(message)).await;
         }
+    }
+
+    /// (3) per-tool post-edit seam — collect LSP diagnostics after a successful
+    /// edit. Mirrors `Engine::run_post_edit_lsp_hook` (`lsp_hooks.rs`): gate on
+    /// the master switch, derive the edited path, fetch diagnostics, push onto
+    /// the interior-mutable accumulator. Failure is silent — a crashing LSP must
+    /// never block the agent. `edit_file`/`write_file` paths come from the
+    /// shared [`edit_file_paths`] helper; `apply_patch` path derivation is
+    /// deferred (needs `HostServices::preflight_apply_patch_paths`, unreachable
+    /// from this crate without the heavy host trait — see module docs).
+    async fn collect_lsp_diagnostics(&self, tool_name: &str, input: &serde_json::Value) {
+        let Some(probe) = &self.lsp else {
+            return;
+        };
+        if !probe.manager.config().enabled {
+            return;
+        }
+        let paths = match tool_name {
+            "edit_file" | "write_file" => edit_file_paths(input),
+            // apply_patch: deferred (needs HostServices); non-edit tools: nothing to probe.
+            _ => Vec::new(),
+        };
+        for path in paths {
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                probe.workspace.join(&path)
+            };
+            // `edit_seq` is log-correlation only (production uses `turn_counter`);
+            // this executor doesn't track a turn counter, so 0 suffices.
+            if let Some(block) = probe.manager.diagnostics_for(&absolute, 0).await {
+                probe.pending.lock().expect("poisoned").push(block);
+            }
+        }
+    }
+
+    /// (1) per-step pre-request seam — drain the pending LSP diagnostics into a
+    /// synthetic `user` message so the model sees compile errors before its next
+    /// reasoning step. Mirrors `Engine::flush_pending_lsp_diagnostics`
+    /// (`lsp_hooks.rs`): `mem::take` the accumulator, render, push. No-op when
+    /// nothing is pending or when LSP is disabled. Synchronous — the mutex guard
+    /// is taken and dropped before `history.push`, never held across an `await`.
+    fn flush_pending_lsp_diagnostics(&self, history: &mut dyn ChatHistory) {
+        let Some(probe) = &self.lsp else {
+            return;
+        };
+        let blocks = std::mem::take(&mut *probe.pending.lock().expect("poisoned"));
+        if blocks.is_empty() {
+            return;
+        }
+        let rendered = render_lsp_blocks(&blocks);
+        if rendered.is_empty() {
+            return;
+        }
+        // Plain `user` text message — no `<turn_meta>`: the framework-executor
+        // path carries no turn metadata anywhere yet (`turn_metadata_block`
+        // reads `session`+`config`, a cross-cutting host-side enrichment deferred
+        // to its own slice). Pushed via `ChatHistory`, so it lands in the real
+        // `Session` transcript ahead of the request snapshot below.
+        history.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: rendered,
+                cache_control: None,
+            }],
+        });
     }
 }
 
@@ -184,11 +333,17 @@ impl HostAgentExecutor {
         let mut step: u32 = 0;
         loop {
             // (1) per-step pre-request seam — compaction / capacity / steer /
-            // LSP / cycle land here later.
+            // cycle land here later; ✅ LSP flush (drain pending diagnostics
+            // into a synthetic user message before the request snapshot).
             if step >= max_steps {
                 callback.on_complete(&StopReason::MaxSteps).await;
                 return Ok(StopReason::MaxSteps);
             }
+            // LSP flush sits after the max_steps bail so a turn-ending step
+            // (e.g. MaxSteps right after an edit) leaves pending diagnostics
+            // on the executor for the next turn's first flush — matching the
+            // production `Engine.pending_lsp_blocks` field semantics.
+            self.flush_pending_lsp_diagnostics(history);
 
             let api_tools = tools.to_api_tools();
             let request = MessageRequest {
@@ -281,6 +436,18 @@ impl HostAgentExecutor {
                     }
                 }
 
+                // (3) per-tool seam — loop-guard (absorbed); ✅ LSP post-edit
+                // collect (only on a successful, non-blocked edit — mirrors
+                // production `output.success && tool_was_executed`); approval /
+                // early-tool-start / parallel land here later.
+                if !blocked {
+                    if let Ok(r) = &result {
+                        if r.success {
+                            self.collect_lsp_diagnostics(&name, &input).await;
+                        }
+                    }
+                }
+
                 let (content_str, is_error) = match &result {
                     Ok(r) => (r.content.clone(), !r.success),
                     Err(e) => (format!("Error: {e}"), true),
@@ -319,6 +486,9 @@ mod tests {
     use crate::callback_bridge::CallbackBridge;
     use crate::events::Event;
     use crate::hooks::{HookContext, HookEvent, HookHost, HookResult, MessageSubmitOutcome};
+    use crate::host_services::LspManagerApi;
+    use crate::lsp_config::LspConfig;
+    use crate::lsp_diagnostics::{Diagnostic, DiagnosticBlock, Severity};
     use crate::session::Session;
     use crate::session_history::SessionChatHistory;
     use crate::tools::registry::ToolRegistry;
@@ -327,7 +497,7 @@ mod tests {
     use codesmith_agent::models::{ContentBlockStart, Delta, MessageDelta, StreamEvent};
     use codesmith_agent::tools::{ToolCapability, ToolError, ToolResult};
     use std::collections::{HashMap, VecDeque};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
@@ -374,17 +544,109 @@ mod tests {
         }
     }
 
+    /// A `ToolSpec` standing in for `edit_file` / `write_file`: it succeeds and
+    /// reports the edited `path` back in its content, so the §E LSP collect seam
+    /// (keyed on tool name `edit_file`/`write_file` + the `path` input field)
+    /// fires and the post-edit probe runs.
+    struct EditSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for EditSpec {
+        fn name(&self) -> &str {
+            "edit_file"
+        }
+        fn description(&self) -> &str {
+            "Edits a file at `path`; used to drive the LSP post-edit collect seam."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } }
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let path = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(ToolResult {
+                content: format!("edited:{path}"),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// Like `EditSpec` (name `edit_file`, reads `path`) but reports a *failed*
+    /// edit (`success: false`) so tests can prove the LSP collect seam is gated
+    /// on a successful edit (mirrors production `output.success`).
+    struct FailingEditSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for FailingEditSpec {
+        fn name(&self) -> &str {
+            "edit_file"
+        }
+        fn description(&self) -> &str {
+            "An edit that fails; the LSP collect seam must skip it."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } }
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let path = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(ToolResult {
+                content: format!("edit failed:{path}"),
+                success: false,
+                metadata: None,
+            })
+        }
+    }
+
     /// A `LlmClient` that pops canned `StreamEvent` lists from a queue, one
     /// per `create_message_stream` call. (Mirrors the bridge tests' `MockLlm`.)
+    /// Also records the `messages` of every received request, so tests can
+    /// prove the model saw a specific synthetic message (e.g. flushed LSP
+    /// diagnostics) before a given call.
     struct MockLlm {
         calls: Mutex<VecDeque<Vec<StreamEvent>>>,
+        requests: Mutex<Vec<Vec<Message>>>,
     }
 
     impl MockLlm {
         fn new(calls: Vec<Vec<StreamEvent>>) -> Self {
             Self {
                 calls: Mutex::new(calls.into_iter().collect()),
+                requests: Mutex::new(Vec::new()),
             }
+        }
+
+        /// The `messages` snapshot of each `create_message_stream` call, in call
+        /// order.
+        fn requests(&self) -> Vec<Vec<Message>> {
+            self.requests.lock().unwrap().clone()
         }
     }
 
@@ -404,14 +666,71 @@ mod tests {
         }
         fn create_message_stream(
             &self,
-            _request: MessageRequest,
+            request: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+            self.requests.lock().unwrap().push(request.messages.clone());
             let next = self.calls.lock().unwrap().pop_front();
             Box::pin(async move {
                 let events = next.unwrap_or_default();
                 Ok(Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
                     as StreamEventBox)
             })
+        }
+    }
+
+    /// A `LspManagerApi` test double. Owns an `LspConfig` (lent via `config()`)
+    /// and returns a canned `DiagnosticBlock` per `diagnostics_for` call, while
+    /// recording every (file, edit_seq) it was probed with. `enabled(false)`
+    /// short-circuits the collect seam at the master switch before any probe.
+    struct FakeLsp {
+        config: LspConfig,
+        diagnostics: Option<DiagnosticBlock>,
+        calls: Mutex<Vec<(PathBuf, u64)>>,
+    }
+
+    impl FakeLsp {
+        /// Enabled LSP that returns `block` for every probed file.
+        fn returning(block: DiagnosticBlock) -> Arc<Self> {
+            Arc::new(Self {
+                config: LspConfig {
+                    enabled: true,
+                    ..LspConfig::default()
+                },
+                diagnostics: Some(block),
+                calls: Mutex::new(Vec::new()),
+            })
+        }
+
+        /// Disabled LSP — `config().enabled == false`, so the collect seam
+        /// early-returns before probing.
+        fn disabled() -> Arc<Self> {
+            Arc::new(Self {
+                config: LspConfig {
+                    enabled: false,
+                    ..LspConfig::default()
+                },
+                diagnostics: None,
+                calls: Mutex::new(Vec::new()),
+            })
+        }
+
+        /// The `(file, edit_seq)` pairs `diagnostics_for` was probed with.
+        fn calls(&self) -> Vec<(PathBuf, u64)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LspManagerApi for FakeLsp {
+        fn config(&self) -> &LspConfig {
+            &self.config
+        }
+        async fn diagnostics_for(&self, file: &Path, edit_seq: u64) -> Option<DiagnosticBlock> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((file.to_path_buf(), edit_seq));
+            self.diagnostics.clone()
         }
     }
 
@@ -521,6 +840,20 @@ mod tests {
         ]
     }
 
+    /// One-file `DiagnosticBlock` with a single ERROR line, the canned payload
+    /// `FakeLsp::returning` hands back per probe.
+    fn error_diag_block(file: &str, line: u32, column: u32, message: &str) -> DiagnosticBlock {
+        DiagnosticBlock {
+            file: PathBuf::from(file),
+            items: vec![Diagnostic {
+                line,
+                column,
+                severity: Severity::Error,
+                message: message.to_string(),
+            }],
+        }
+    }
+
     /// Drain all events currently buffered in `rx` into a `Vec`.
     fn drain(rx: &mut mpsc::Receiver<Event>) -> Vec<Event> {
         let mut out = Vec::new();
@@ -577,6 +910,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
         );
 
@@ -674,6 +1008,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             None,
+            None,
         );
 
         let reason = executor
@@ -723,6 +1058,7 @@ mod tests {
                 ..AgentExecutorConfig::default()
             },
             None,
+            None,
         );
 
         let reason = executor
@@ -763,6 +1099,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
         );
 
@@ -835,6 +1172,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
         );
 
         let reason = executor
@@ -877,6 +1215,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
         );
 
         let reason = executor
@@ -900,5 +1239,281 @@ mod tests {
             )
         });
         assert!(halted, "expected a halt status event, got: {events:?}");
+    }
+
+    // === LSP flush (seam 1 + 3) ==========================================
+
+    /// Helper: does any message in `sess` carry a `<diagnostics` text block?
+    fn has_diagnostics_msg(sess: &Session) -> bool {
+        sess.messages.iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics"))
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn lsp_collect_then_flush_feeds_model() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EditSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let fake = FakeLsp::returning(error_diag_block("foo.rs", 12, 8, "missing semicolon"));
+        let probe = LspProbe::new(fake.clone(), tmp.path().to_path_buf());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Call 1: edit_file -> tool_use (collect probes LSP). Call 2: text -> end.
+        let mut call1 = text_block(0, "editing");
+        call1.extend(tool_use_block(1, "t1", "edit_file", r#"{"path":"foo.rs"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            Some(probe),
+        );
+
+        let reason = executor
+            .run(&mut history, "edit foo.rs".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // [user, asst(text+tooluse), user(toolresult), user(<diagnostics>), asst]
+        assert_eq!(history.len(), 5);
+        assert_eq!(sess.messages[3].role.as_str(), "user");
+        match &sess.messages[3].content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert!(text.contains("<diagnostics"), "rendered block: {text}");
+                assert!(text.contains("missing semicolon"));
+                assert!(text.contains("foo.rs"));
+            }
+            other => panic!("expected diagnostics Text block, got {other:?}"),
+        }
+
+        // The model actually saw it — call2's request snapshot included it.
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 2);
+        let saw_diag = reqs[1].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics"))
+            })
+        });
+        assert!(saw_diag, "call2 request must include diagnostics: {reqs:?}");
+
+        // Probed once, for the edited file (relativized to the workspace).
+        assert_eq!(fake.calls().len(), 1);
+        assert!(
+            fake.calls()[0].0.ends_with("foo.rs"),
+            "probed path: {:?}",
+            fake.calls()[0].0
+        );
+    }
+
+    #[tokio::test]
+    async fn lsp_disabled_skips_collect() {
+        // Unit check of the master-switch gate inside `collect_lsp_diagnostics`.
+        let fake = FakeLsp::disabled();
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![])),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+        );
+        executor
+            .collect_lsp_diagnostics("edit_file", &serde_json::json!({"path":"foo.rs"}))
+            .await;
+        assert!(
+            fake.calls().is_empty(),
+            "disabled LSP must not be probed: {:?}",
+            fake.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn lsp_skips_non_edit_tool() {
+        // Non-edit tool name → no path derivation → no probe.
+        let fake = FakeLsp::returning(error_diag_block("foo.rs", 1, 1, "x"));
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![])),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+        );
+        executor
+            .collect_lsp_diagnostics("echo", &serde_json::json!({"text":"hi"}))
+            .await;
+        assert!(
+            fake.calls().is_empty(),
+            "non-edit tool must not probe LSP: {:?}",
+            fake.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn lsp_skips_failed_edit() {
+        // The loop's success gate (r.success) must skip collect on a failed edit.
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(FailingEditSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let fake = FakeLsp::returning(error_diag_block("foo.rs", 1, 1, "stale"));
+        let probe = LspProbe::new(fake.clone(), tmp.path().to_path_buf());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "editing");
+        call1.extend(tool_use_block(1, "t1", "edit_file", r#"{"path":"foo.rs"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            Some(probe),
+        );
+
+        let reason = executor
+            .run(&mut history, "edit foo.rs".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert!(
+            fake.calls().is_empty(),
+            "failed edit must not probe LSP: {:?}",
+            fake.calls()
+        );
+        assert!(!has_diagnostics_msg(&sess), "no diagnostics message expected");
+    }
+
+    #[tokio::test]
+    async fn lsp_apply_patch_paths_deferred() {
+        // apply_patch path derivation is deferred (needs HostServices) — collect
+        // must not probe even though config is enabled. Pins the gap; flips when
+        // the executor later wires a real HostServices.
+        let fake = FakeLsp::returning(error_diag_block("a.rs", 1, 1, "x"));
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![])),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+        );
+        executor
+            .collect_lsp_diagnostics("apply_patch", &serde_json::json!({"patch":"x"}))
+            .await;
+        assert!(
+            fake.calls().is_empty(),
+            "apply_patch must not probe LSP yet: {:?}",
+            fake.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn lsp_cross_turn_persistence_via_shared_state() {
+        // THE interior-mutability proof: `pending_lsp_blocks` (Arc<Mutex<Vec>>)
+        // persists across `run()` calls on the SAME executor. run1 edits then hits
+        // MaxSteps (max_steps:1) before flushing, leaving pending non-empty; run2
+        // on a fresh session flushes those leftovers into its first request.
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EditSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let fake = FakeLsp::returning(error_diag_block("foo.rs", 12, 8, "missing semicolon"));
+        let probe = LspProbe::new(fake.clone(), tmp.path().to_path_buf());
+
+        let mock = Arc::new(MockLlm::new(vec![
+            // run1: edit -> tool_use (then MaxSteps halts before a 2nd request).
+            {
+                let mut c = text_block(0, "editing");
+                c.extend(tool_use_block(1, "t1", "edit_file", r#"{"path":"foo.rs"}"#));
+                c.extend(finish("tool_use"));
+                c
+            },
+            // run2: text-only -> end (NoToolCalls).
+            {
+                let mut c = text_block(0, "ok");
+                c.extend(finish("end_turn"));
+                c
+            },
+        ]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig {
+                max_steps: 1,
+                ..AgentExecutorConfig::default()
+            },
+            None,
+            Some(probe),
+        );
+
+        // Run 1: edits foo.rs (collect pushes to pending), then MaxSteps halts
+        // before the next step's flush (the max_steps bail precedes the flush
+        // seam), so pending carries over.
+        let mut sess_a = fresh_session();
+        let mut history_a = SessionChatHistory::new(&mut sess_a);
+        let reason = executor
+            .run(&mut history_a, "edit foo.rs".to_string())
+            .await
+            .expect("run1");
+        assert_eq!(reason, StopReason::MaxSteps);
+        assert!(!has_diagnostics_msg(&sess_a), "run1 must not flush before MaxSteps");
+
+        // Run 2: SAME executor, FRESH session. The first pre-request flush must
+        // drain run1's leftover pending into run2's transcript — impossible with
+        // a per-run local Vec; proves the Arc<Mutex<Vec>> persists across runs.
+        let mut sess_b = fresh_session();
+        let mut history_b = SessionChatHistory::new(&mut sess_b);
+        let reason = executor
+            .run(&mut history_b, "next turn".to_string())
+            .await
+            .expect("run2");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // sess_b: [user_text, <diagnostics flush>, asst] — from run1's edit.
+        assert_eq!(history_b.len(), 3);
+        assert_eq!(sess_b.messages[1].role.as_str(), "user");
+        match &sess_b.messages[1].content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert!(text.contains("<diagnostics"), "flush block: {text}");
+                assert!(text.contains("missing semicolon"));
+            }
+            other => panic!("expected diagnostics flush msg, got {other:?}"),
+        }
+        // And the model saw it in run2's (only) request.
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 2, "run1 + run2 each fired one request");
+        let saw = reqs[1].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics"))
+            })
+        });
+        assert!(saw, "run2 request must include leftover diagnostics: {reqs:?}");
     }
 }
