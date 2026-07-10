@@ -22,7 +22,7 @@
 //!
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (reusing
 //! [`accumulate_stream`](codesmith_agent::executor::accumulate_stream) for stream
-//! reduction) and absorbs the production guardrails slice by slice. Three are in:
+//! reduction) and absorbs the production guardrails slice by slice. Four are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -57,26 +57,39 @@
 //!    event is the only retry surfacing). See "Known tradeoffs" below for the
 //!    `accumulate_stream` bail-on-error gap and the deferred cancel-token
 //!    short-circuit.
+//! 4. **steer** ([`drain_steers`](HostAgentExecutor::drain_steers)) — lets a
+//!    user inject additional text input into an in-flight turn. At the top of
+//!    each step (before the LLM request), queued steers are drained via
+//!    `try_recv` and each becomes a `user` message in the transcript so the
+//!    model re-reads them on this step's request — mirroring
+//!    `handle_deepseek_turn`'s top-of-loop drain (`turn_loop.rs:300-317`).
+//!    The receiver is `Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>`
+//!    — interior-mutable because [`AgentExecutor::run`] is `&self` while
+//!    `try_recv` takes `&mut self` (same pattern as the LSP flush's `pending`
+//!    accumulator; the lock is held only for the synchronous `try_recv`). The
+//!    three secondary drain sites (mid-stream buffer, post-stream resume,
+//!    blocking `recv` during sub-agent hold) are streaming-lifecycle-specific
+//!    and deferred.
 //!
-//! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3")
-//! surfaces over the host's `Event` channel (`event_tx`) — **not** via the
-//! framework `Callback`: guardrails are host-side concerns and the `Callback`
-//! trait stays untouched per ROADMAP §E.
+//! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
+//! steer "Steer input accepted") surfaces over the host's `Event` channel
+//! (`event_tx`) — **not** via the framework `Callback`: guardrails are
+//! host-side concerns and the `Callback` trait stays untouched per ROADMAP §E.
 //!
 //! It is **not yet wired into `handle_send_message`**; the production
 //! `handle_deepseek_turn` remains the live path — the value of landing it now is
 //! the composition proof (the three bridges light up end-to-end inside a real
 //! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
-//! headline test) plus three guardrails absorbed at the seams below.
+//! headline test) plus four guardrails absorbed at the seams below.
 //!
 //! ## Guardrail insertion points
 //!
 //! The loop has four seams where guardrails are absorbed incrementally:
 //!
-//! 1. **per-step pre-request** — ✅ **LSP flush** (drain pending diagnostics into
-//!    a synthetic `user` message before the request snapshot); compaction,
-//!    capacity pre-request, steer drain, system-prompt refresh still to come
-//!    (top of the `loop`).
+//! 1. **per-step pre-request** — ✅ **steer drain** (queued user inputs injected
+//!    before the request snapshot) + ✅ **LSP flush** (drain pending diagnostics
+//!    into a synthetic `user` message); compaction, capacity pre-request,
+//!    system-prompt refresh still to come (top of the `loop`).
 //! 2. **per-step post-stream** — ✅ **transparent-retry** (re-issue the request
 //!    when the stream dies mid-flight before any content commits, up to 3 times);
 //!    subagent handoff, thinking-only handling still to come (after the stream
@@ -156,6 +169,7 @@ use codesmith_agent::tools::{ToolError, ToolResult, ToolSet};
 
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
+use super::summarize_text;
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock};
@@ -228,12 +242,24 @@ pub struct HostAgentExecutor {
     event_tx: Option<mpsc::Sender<Event>>,
     /// Optional LSP diagnostics probe (§E). `None` ⇒ collect/flush no-op.
     lsp: Option<LspProbe>,
+    /// Optional steer input receiver (§E). `None` ⇒ steer drain is a no-op.
+    ///
+    /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
+    /// `mpsc::Receiver::try_recv` takes `&mut self` — the same
+    /// `Arc<std::sync::Mutex<…>>` pattern as [`LspProbe::pending`]. The lock is
+    /// held only for the synchronous `try_recv` (never across an `await`),
+    /// matching the LSP flush. Steers are drained (consumed) each step, so
+    /// unlike diagnostics they don't accumulate — the receiver merely persists
+    /// across `run` invocations on the same executor so a steer queued between
+    /// turns is picked up on the next turn's first pre-request drain.
+    steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>,
 }
 
 impl HostAgentExecutor {
 /// Construct from the four collaborators + config + an optional guardrail
 /// status channel (`None` for embeds that don't surface guardrail status) +
-/// an optional [`LspProbe`] (`None` ⇒ LSP collect/flush disabled).
+/// an optional [`LspProbe`] (`None` ⇒ LSP collect/flush disabled) + an
+/// optional steer input receiver (`None` ⇒ steer drain disabled).
 #[must_use]
 pub fn new(
     client: LlmClientHandle,
@@ -242,6 +268,7 @@ pub fn new(
     config: AgentExecutorConfig,
     event_tx: Option<mpsc::Sender<Event>>,
     lsp: Option<LspProbe>,
+    steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>,
 ) -> Self {
         Self {
             client,
@@ -250,6 +277,7 @@ pub fn new(
             config,
             event_tx,
             lsp,
+            steer,
         }
     }
 
@@ -397,6 +425,59 @@ pub fn new(
             }],
         });
     }
+
+    /// (1) per-step pre-request seam — drain queued steer inputs into the
+    /// transcript as `user` messages so the model sees them before its next
+    /// request. Mirrors `handle_deepseek_turn`'s top-of-loop steer drain
+    /// (`turn_loop.rs:300-317`): `try_recv` loop → trim → skip-empty → push a
+    /// `user` message → emit status. `try_recv` is non-blocking — this only
+    /// drains what's already queued; it never waits for new input.
+    ///
+    /// Unlike production, this does NOT call `working_set.observe_user_message`
+    /// (the [`ChatHistory`] trait doesn't expose the working set — that's a
+    /// host-side concern deferred to the wire-in step) and does NOT wrap the
+    /// steer in `user_text_message_with_turn_metadata` (the framework-executor
+    /// path carries no turn metadata anywhere yet — same gap as the LSP
+    /// flush). The three secondary drain sites (mid-stream buffer, post-stream
+    /// resume, blocking `recv` during sub-agent hold) are
+    /// streaming-lifecycle-specific and deferred — they need inline stream
+    /// reduction / sub-agent support respectively.
+    async fn drain_steers(&self, history: &mut dyn ChatHistory) {
+        let Some(rx) = &self.steer else {
+            return;
+        };
+        loop {
+            // `try_recv` is synchronous and non-blocking — the std::sync::Mutex
+            // guard is taken and dropped within this block, never across an
+            // `await` (matching the LSP flush pattern).
+            let steer = {
+                let mut guard = rx.lock().expect("poisoned");
+                match guard.try_recv() {
+                    Ok(s) => s,
+                    // Empty or disconnected — nothing more to drain this step.
+                    Err(_) => break,
+                }
+            };
+            let steer = steer.trim().to_string();
+            if steer.is_empty() {
+                continue;
+            }
+            // Compute the status preview before moving `steer` into the
+            // message (mirrors production's `steer.clone()` + summarize).
+            let status = format!(
+                "Steer input accepted: {}",
+                summarize_text(&steer, 120)
+            );
+            history.push(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: steer,
+                    cache_control: None,
+                }],
+            });
+            self.emit_status(status).await;
+        }
+    }
 }
 
 impl AgentExecutor for HostAgentExecutor {
@@ -445,13 +526,20 @@ impl HostAgentExecutor {
         // resets to 0 on a healthy round.
         let mut stream_retry_attempts: u32 = 0;
         loop {
-            // (1) per-step pre-request seam — compaction / capacity / steer /
-            // cycle land here later; ✅ LSP flush (drain pending diagnostics
-            // into a synthetic user message before the request snapshot).
+            // (1) per-step pre-request seam — ✅ steer drain (queued user
+            // inputs injected before the request snapshot); ✅ LSP flush (drain
+            // pending diagnostics into a synthetic user message); compaction /
+            // capacity / cycle land here later.
             if step >= max_steps {
                 callback.on_complete(&StopReason::MaxSteps).await;
                 return Ok(StopReason::MaxSteps);
             }
+            // Steer drain sits at the very top of the loop (mirrors
+            // `turn_loop.rs:300`) — before the LSP flush and the request
+            // snapshot, so steered text reaches the model on this step's
+            // request. Drains only what's already queued (`try_recv` is
+            // non-blocking); never waits for input.
+            self.drain_steers(history).await;
             // LSP flush sits after the max_steps bail so a turn-ending step
             // (e.g. MaxSteps right after an edit) leaves pending diagnostics
             // on the executor for the next turn's first flush — matching the
@@ -1057,6 +1145,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1154,6 +1243,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1204,6 +1294,7 @@ mod tests {
             },
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1244,6 +1335,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
         );
@@ -1318,6 +1410,7 @@ mod tests {
             AgentExecutorConfig::default(),
             Some(tx),
             None,
+            None,
         );
 
         let reason = executor
@@ -1360,6 +1453,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
         );
 
@@ -1426,6 +1520,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(probe),
+            None,
         );
 
         let reason = executor
@@ -1476,6 +1571,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
         );
         executor
             .collect_lsp_diagnostics("edit_file", &serde_json::json!({"path":"foo.rs"}))
@@ -1498,6 +1594,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
         );
         executor
             .collect_lsp_diagnostics("echo", &serde_json::json!({"text":"hi"}))
@@ -1537,6 +1634,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(probe),
+            None,
         );
 
         let reason = executor
@@ -1565,6 +1663,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
         );
         executor
             .collect_lsp_diagnostics("apply_patch", &serde_json::json!({"patch":"x"}))
@@ -1616,6 +1715,7 @@ mod tests {
             },
             None,
             Some(probe),
+            None,
         );
 
         // Run 1: edits foo.rs (collect pushes to pending), then MaxSteps halts
@@ -1710,6 +1810,7 @@ mod tests {
             AgentExecutorConfig::default(),
             Some(tx),
             None,
+            None,
         );
 
         let reason = executor
@@ -1753,6 +1854,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
         );
 
@@ -1812,6 +1914,7 @@ mod tests {
             AgentExecutorConfig::default(),
             Some(tx),
             None,
+            None,
         );
 
         let reason = executor
@@ -1852,6 +1955,7 @@ mod tests {
             AgentExecutorConfig::default(),
             Some(tx),
             None,
+            None,
         );
 
         let reason = executor
@@ -1863,5 +1967,269 @@ mod tests {
         // Exactly one request — no retry on a clean (error-free) empty stream.
         assert_eq!(mock.requests().len(), 1, "clean empty stream must not retry");
         assert!(statuses(&drain(&mut rx)).is_empty(), "no retry status");
+    }
+
+    // === steer (seam 1) ==================================================
+    //
+    // The production `handle_deepseek_turn` drains queued steer inputs at the
+    // very top of each step (`turn_loop.rs:300-317`) — before the LLM request
+    // snapshot — so the user's in-flight text reaches the model this step.
+    // `HostAgentExecutor` absorbs that at the (1) pre-request seam:
+    // `drain_steers` does a non-blocking `try_recv` loop, trimming and pushing
+    // each as a `user` message, emitting a status per accepted input. The
+    // receiver is `Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>` —
+    // interior-mutable because `AgentExecutor::run` is `&self` while
+    // `try_recv` takes `&mut self`. Only the pre-request drain is absorbed;
+    // the mid-stream buffer / post-stream resume / blocking `recv` during
+    // sub-agent hold are streaming-lifecycle-specific and deferred.
+
+    /// Create a steer channel pair: the sender for tests to enqueue steers, and
+    /// the interior-mutable receiver the executor expects.
+    fn steer_channel() -> (mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>) {
+        let (tx, rx) = mpsc::channel::<String>(64);
+        (tx, Arc::new(Mutex::new(rx)))
+    }
+
+    #[tokio::test]
+    async fn steer_drain_injects_queued_input_before_request() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+        // Pre-queue two steers before run starts.
+        tx_steer.send("remember this".to_string()).await.unwrap();
+        tx_steer.send("and also this".to_string()).await.unwrap();
+
+        let mut ok = text_block(0, "acknowledged");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![ok]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+        );
+
+        let reason = executor
+            .run(&mut history, "start".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // [user(seed), user(steer1), user(steer2), assistant]
+        assert_eq!(history.len(), 4);
+        assert_eq!(sess.messages[1].role.as_str(), "user");
+        assert_eq!(sess.messages[2].role.as_str(), "user");
+        match &sess.messages[1].content[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "remember this"),
+            other => panic!("expected steer Text, got {other:?}"),
+        }
+        match &sess.messages[2].content[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "and also this"),
+            other => panic!("expected steer Text, got {other:?}"),
+        }
+
+        // The model saw both steers in its (only) request.
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 1);
+        let saw1 = reqs[0].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text == "remember this")
+            })
+        });
+        let saw2 = reqs[0].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text == "and also this")
+            })
+        });
+        assert!(saw1, "request must include first steer: {reqs:?}");
+        assert!(saw2, "request must include second steer: {reqs:?}");
+    }
+
+    #[tokio::test]
+    async fn steer_none_is_noop() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call = text_block(0, "hello");
+        call.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None, // no steer receiver
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // [user(seed), assistant] — no extra steer messages.
+        assert_eq!(history.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn steer_skips_empty_and_whitespace() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+        // Empty / whitespace-only strings must all be skipped (trimmed to "").
+        tx_steer.send(String::new()).await.unwrap();
+        tx_steer.send("   ".to_string()).await.unwrap();
+        tx_steer.send("\t\n".to_string()).await.unwrap();
+
+        let mut ok = text_block(0, "nothing steered");
+        ok.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![ok])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // [user(seed), assistant] — no steer messages (all were empty).
+        assert_eq!(history.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn steer_emits_status_per_accepted_input() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+        tx_steer.send("first steer".to_string()).await.unwrap();
+        tx_steer.send("second steer".to_string()).await.unwrap();
+
+        let mut ok = text_block(0, "ok");
+        ok.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![ok])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            Some(rx_steer),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let accepted: Vec<_> = statuses(&drain(&mut rx))
+            .iter()
+            .filter(|s| s.contains("Steer input accepted"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            accepted.len(),
+            2,
+            "one status per accepted steer: {accepted:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn steer_picks_up_input_queued_between_runs() {
+        // THE receiver-persistence proof: the steer receiver lives on the
+        // executor struct (Arc<Mutex<Receiver>>), not as a per-run local — so a
+        // steer queued between two runs on the SAME executor is picked up on
+        // the second run's first pre-request drain (mirrors the LSP
+        // cross-turn persistence test pattern).
+        let tools = Arc::new(ToolSet::new());
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+
+        // Run 1: text-only "first" + end_turn. Run 2: text-only "second" + end_turn.
+        let mut run1 = text_block(0, "first turn");
+        run1.extend(finish("end_turn"));
+        let mut run2 = text_block(0, "second turn");
+        run2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![run1, run2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+        );
+
+        // Run 1: no steers queued — clean text-only turn.
+        let mut sess_a = fresh_session();
+        let mut history_a = SessionChatHistory::new(&mut sess_a);
+        let reason = executor
+            .run(&mut history_a, "start".to_string())
+            .await
+            .expect("run1");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // [user(seed), assistant] — no steer messages.
+        assert_eq!(history_a.len(), 2);
+
+        // Queue a steer between runs.
+        tx_steer
+            .send("steered between runs".to_string())
+            .await
+            .unwrap();
+
+        // Run 2: SAME executor, FRESH session — the steer is picked up on the
+        // first pre-request drain. A per-run local receiver couldn't do this.
+        let mut sess_b = fresh_session();
+        let mut history_b = SessionChatHistory::new(&mut sess_b);
+        let reason = executor
+            .run(&mut history_b, "next".to_string())
+            .await
+            .expect("run2");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // sess_b: [user(seed), user(steer), assistant]
+        assert_eq!(history_b.len(), 3);
+        assert_eq!(sess_b.messages[1].role.as_str(), "user");
+        match &sess_b.messages[1].content[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "steered between runs"),
+            other => panic!("expected steer Text, got {other:?}"),
+        }
+        // And the model saw it in run2's request.
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 2, "run1 + run2 each fired one request");
+        let saw = reqs[1].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text == "steered between runs")
+            })
+        });
+        assert!(saw, "run2 request must include the steer: {reqs:?}");
     }
 }

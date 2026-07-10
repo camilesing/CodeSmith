@@ -578,6 +578,71 @@ interior-mutability（`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`），是继 
 
 ---
 
+**进度（2026-07-10 §E steer 吸收落地，第四个 guardrail，seam-1 pre-request，`feat/pluggable-framework-core`）：**
+
+§E 的第八个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第四个（steer 输入排空）吸收进
+`HostAgentExecutor`。steer 让用户在 in-flight turn 中注入额外文本输入；生产在 `turn_loop.rs:300-317`（loop 顶部、
+LLM 请求之前）以 `try_recv` 非阻塞排空 `rx_steer`，每条 steer trim→skip-empty→push `user` 消息→发 status，使模型
+在本步请求中看到。本切片吸收的是**pre-request 排空（seam 1）**——生产另有三个流生命周期相关的次级排空点
+（mid-stream buffer、post-stream resume、subagent hold 阻塞 `recv`），需 inline 流归约 / subagent 支持，延后。
+本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **`steer` 字段**：`HostAgentExecutor` 新增 `steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>`
+  字段 + 构造器参数（非-steer embed/测试传 `None`——16 个既有测试构造器改传 `None`）。**interior-mutability**：
+  `AgentExecutor::run` 是 `&self`，而 `mpsc::Receiver::try_recv` 取 `&mut self`——与 LSP flush 的
+  `LspProbe.pending: Arc<Mutex<Vec<DiagnosticBlock>>>` 同形。锁仅在同步 `try_recv` 时持有（不跨 `await`，
+  匹配 `CallbackBridge` 先例）。receiver 跨 `run` 调用持久（匹配生产 `Engine.rx_steer` 字段语义——
+  turn 间排入的 steer 在下一 turn 首 pre-request 排空被取出）。
+- **`drain_steers`（seam 1 pre-request）**：`on_llm_start` 前、`flush_pending_lsp_diagnostics` 前插（匹配生产顺序：
+  steer 在 loop 顶 `turn_loop.rs:300`，LSP flush 在 `turn_loop.rs:494`）。`try_recv` 循环：取 `&self.steer`，
+  `Arc<Mutex>` 锁内 `try_recv`（`Ok` → trim → skip-empty → `history.push(user text)` → `emit_status`
+  `"Steer input accepted: {summarize_text(120)}"`；`Err(Empty/Disconnected)` → break）。`summarize_text`
+  经 `use super::summarize_text` 引入（`engine/mod.rs` 的私有 `use` binding 对后裔模块可见）。
+- **刻意部分桥接（by design）**：
+  - **不调 `working_set.observe_user_message`**：`ChatHistory` trait 不暴露 working set（host 侧关注，延后到
+    wire-in 步）；steer 消息是纯 `user` text，与 LSP flush 的合成消息一致。
+  - **无 `<turn_meta>` 富化**：生产用 `user_text_message_with_turn_metadata` 包 steer（date/model/working_set/
+    skills），但框架 executor 路径全无 turn_meta（与 LSP flush 同缺口，延后到自己的切片）。
+  - **三个次级排空点延后**：mid-stream buffer（`turn_loop.rs:683/721`，流消费循环内 `try_recv` 缓冲
+    `pending_steers`）、post-stream resume（`turn_loop.rs:1297`，无 tool calls 时 drain `pending_steers` 并
+    `continue`）、subagent hold 阻塞 `recv`（`turn_loop.rs:1347`，`biased select!` 等 subagent 完成 / steer）。
+    三者分别需 inline 流归约 / subagent 支持，延后。本切片只吸收 pre-request 排空——steer 在 turn 开始前排入
+    或在步间排入（下一步首 drain 取出）即被覆盖。
+- **5 个新测试**：`steer_drain_injects_queued_input_before_request`（2 条 steer 预排队→transcript 出现 2 条
+  user 消息、且模型唯一请求含这两条）、`steer_none_is_noop`（`steer: None`→无额外消息、NoToolCalls）、
+  `steer_skips_empty_and_whitespace`（空/纯空白字符串→全 skip、无额外消息）、`steer_emits_status_per_accepted_input`
+  （2 条 steer→2 条 `"Steer input accepted"` status）、`steer_picks_up_input_queued_between_runs`（**receiver
+  持久证明**：run1 无 steer 干净收尾→turn 间排入 1 条 steer→run2 在同一 executor + 新 Session 首 pre-request
+  drain 取出该 steer→transcript 出现、且 run2 请求含它——per-run 局部 receiver 做不到，证 `Arc<Mutex<Receiver>>`
+  跨 run 持久）。`steer_channel()` helper 封装 `mpsc::channel::<String>(64)` + `Arc::new(Mutex::new(rx))`。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning（build 0 warning；test build 9 warning 均既有，
+与本轮无关）；`cargo test -p codesmith-agent-runtime --lib host_executor` 21 通过（16 既有 + 5 新 steer）；
+`cargo test -p codesmith-agent-runtime --lib` 1025 通过（0 失败、2 ignored，原 1020 +5）；`cargo test -p codesmith-agent --lib`
+79 通过；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**已知设计取舍（本轮缺口，by design）：**
+- **三个次级排空点延后**：见上"刻意部分桥接"——需 inline 流归约 / subagent 支持。
+- **无 `working_set.observe_user_message` / 无 `<turn_meta>`**：与 LSP flush 同缺口，延后到 wire-in / turn_meta 切片。
+- **无 cancel-token stale-drain**：生产在 `handle_send_message` 开头（`mod.rs:1013-1014`）`while self.rx_steer.try_recv().is_ok() {}`
+  排空前 turn 残留 steer；本 executor 无 `CancellationToken` 也无 stale-drain——turn 间残留 steer 会泄漏到下一 turn
+  首 drain（被当作新输入注入）。生产靠 stale-drain 在 turn 开始前清空；短路在 wire-in 步接入。
+
+**下一聚焦工作：**
+- **下一个 guardrail**：建议 **capacity**（seam 1 pre-request + seam 4 post-tool；`CapacityController` 默认 disabled，
+  硬 token-budget preflight 无条件运行——需 `api_provider` + token 计数 + `recover_context_overflow` 级联，
+  是迄今最重 guardrail，可能需拆多切片）或 **approval**（seam 3 per-tool；审批门控，本地状态为主）。
+  steer 已证 `Arc<Mutex<Receiver>>` seam-1 可行，loop-guard/transparent-retry 已证本地状态可行。
+- **inline 流归约**（替换 `accumulate_stream` 调用）：闭合 transparent-retry 的 `accumulate_stream` bail-on-error 缺口
+  + 接通 stream delta（`MessageDelta`/`ThinkingDelta`）直发 `tx_event` + early-tool-start + steer mid-stream buffer。
+  是多个 guardrail / 次级排空点的共同前置。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + loop 顶取消检查，在 wire-in 步或单独小切片接入。
+- 其余 guardrail（compaction/approval/subagent/cycle）+ `on_llm_*` 桥接 / wire tool-call id 透传 /
+  `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——后续切片。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
