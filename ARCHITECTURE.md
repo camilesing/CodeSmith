@@ -147,49 +147,68 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   `DefaultAgentExecutor` is the reference impl (core). The host-side
   `HostAgentExecutor` (in `codesmith-agent-runtime::engine::host_executor`,
   §E) mirrors the bare loop over the three bridges and is the designated home
-  for absorbing the production `Engine`'s guardrails slice by slice — **two**
+  for absorbing the production `Engine`'s guardrails slice by slice — **three**
   are now absorbed: **loop-guard** (block the 3rd identical call, warn/halt on
-  3/8 consecutive failures) at its per-tool / post-tool seams, and **LSP
-  flush** (collect diagnostics per successful edit, flush them as a user
-  message before the next request) at its per-tool / per-step-pre-request seams.
-  The LSP accumulator is the **first interior-mutability slice**: the
-  `LspProbe.pending` field is `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`
-  (because `AgentExecutor::run` is `&self` while the accumulator mutates on
-  collect/flush; lock never held across an `await`, matching `CallbackBridge`),
-  persisting across `run` calls so diagnostics from an edit on a turn ending
-  via `MaxSteps` surface on the next turn's first flush. Guardrail status
-  surfaces over the host's `Event` channel (`event_tx`), not the `Callback`.
+  3/8 consecutive failures) at its per-tool / post-tool seams, **LSP flush**
+  (collect diagnostics per successful edit, flush them as a user message before
+  the next request) at its per-tool / per-step-pre-request seams, and
+  **transparent-retry** (re-issue the request when the stream dies mid-flight
+  before any content commits, up to 3 times; reset the budget on a healthy
+  round) at its per-step post-stream seam. The LSP accumulator is the **first
+  interior-mutability slice**: the `LspProbe.pending` field is
+  `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` (because `AgentExecutor::run`
+  is `&self` while the accumulator mutates on collect/flush; lock never held
+  across an `await`, matching `CallbackBridge`), persisting across `run` calls
+  so diagnostics from an edit on a turn ending via `MaxSteps` surface on the
+  next turn's first flush. transparent-retry reuses the local-state pattern
+  (a per-run `u32` counter, matching loop-guard). Guardrail status surfaces
+  over the host's `Event` channel (`event_tx`), not the `Callback`.
   `StopReason` (`NoToolCalls` / `MaxSteps` / `Error`) is the terminal outcome.
 
 What is **not** here yet (later §E slices): absorbing the production
 `Engine`/`turn_loop.rs` guardrails into `HostAgentExecutor` — the three
 host→framework bridges are all landed (`ToolSpecAdapter`, `CallbackBridge`,
 `SessionChatHistory`), and the host-side `HostAgentExecutor` runs the bare
-LLM↔tool loop over them with **two guardrails absorbed**: **loop-guard** at its
-per-tool / post-tool seams (block the 3rd identical call, warn/halt on 3/8
-consecutive failures), and **LSP flush** at its per-tool (post-edit collect) /
+LLM↔tool loop over them with **three guardrails absorbed**: **loop-guard** at
+its per-tool / post-tool seams (block the 3rd identical call, warn/halt on 3/8
+consecutive failures), **LSP flush** at its per-tool (post-edit collect) /
 per-step pre-request (flush) seams — the first guardrail to need `Engine`
 mutable state, landed as `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` on
 `LspProbe` (the first interior-mutability slice; lock never held across an
 `await`, matching `CallbackBridge`; persists across `run` calls so a
-`MaxSteps`-ended turn's edit diagnostics surface next turn). Its four seams
-(per-step pre-request / post-stream / per-tool / post-tool) grow the remaining
-eight guardrails slice by slice, after which `handle_deepseek_turn` retires.
-loop-guard proved `&self` + local state suffices for self-contained
+`MaxSteps`-ended turn's edit diagnostics surface next turn) — and
+**transparent-retry** at its per-step post-stream seam (re-issue the request
+when the stream dies mid-flight before any content commits, up to 3 times;
+budget resets on a healthy round; transparent to the `Callback`). Its four
+seams (per-step pre-request / post-stream / per-tool / post-tool) grow the
+remaining seven guardrails slice by slice, after which `handle_deepseek_turn`
+retires. loop-guard proved `&self` + local state suffices for self-contained
 guardrails; LSP flush proves the `Arc<Mutex<…>>` shape for guardrails needing
-shared mutable state (steer's `rx_steer` will follow the same pattern).
-**Known gaps in the LSP flush (by design):** `apply_patch` path derivation is
-deferred (needs `HostServices::preflight_apply_patch_paths`, unreachable from
-`agent-runtime` without the heavy host trait; the live `handle_deepseek_turn`
-still covers it); the synthetic flush message carries no `<turn_meta>`
-enrichment (the framework path has no turn_meta anywhere yet — cross-cutting
-host-side concern, deferred to its own slice); no `emit_session_updated` for
-the push (consistent with the executor's other message pushes; UI surfacing
-deferred to the wire-in step). Streaming deltas (`MessageDelta`/
-`ThinkingDelta`) will keep flowing over the `Event` channel directly (no
-`Callback` method) once an inline stream reducer replaces `accumulate_stream`.
-E4 (declarative `providers.toml` + lazy loading) is also deferred. The
-framework traits are validated
+shared mutable state (steer's `rx_steer` will follow the same pattern);
+transparent-retry proves the seam-2 post-stream shape (local counter + the
+`accumulate_stream` `Err` signal). **Known gaps in the LSP flush (by design):**
+`apply_patch` path derivation is deferred (needs
+`HostServices::preflight_apply_patch_paths`, unreachable from `agent-runtime`
+without the heavy host trait; the live `handle_deepseek_turn` still covers
+it); the synthetic flush message carries no `<turn_meta>` enrichment (the
+framework path has no turn_meta anywhere yet — cross-cutting host-side
+concern, deferred to its own slice); no `emit_session_updated` for the push
+(consistent with the executor's other message pushes; UI surfacing deferred
+to the wire-in step). **Known tradeoffs in transparent-retry (by design):**
+`accumulate_stream` bails on the first erroring stream item and drops partial
+blocks, so the retry fires even when production would ship partial content (it
+tracks `any_content_received` inline) — since the partial content is lost,
+retrying is the only recovery path, and inline stream reduction (a later slice
+that replaces `accumulate_stream`) closes the gap; pre-stream connection
+errors (`create_message_stream` `Err`) are not retried (production treats those
+as context-recovery / hard-fail, a separate guardrail); the cancel-token
+short-circuit (production's `should_transparently_retry_stream` checks
+`!cancelled`) is deferred to the wire-in step — the bounded budget
+(`MAX_STREAM_RETRIES = 3`) can't loop forever. Streaming deltas
+(`MessageDelta`/`ThinkingDelta`) will keep flowing over the `Event` channel
+directly (no `Callback` method) once an inline stream reducer replaces
+`accumulate_stream`. E4 (declarative `providers.toml` + lazy loading) is also
+deferred. The framework traits are validated
 against an inline mock LLM + mock tool (see `crates/agent/src/executor/mod.rs`
 tests) — no `codesmith-providers` dependency required, mirroring the provider
 foundation slice's `mock` sample. The `ToolSpec` adapter is additionally
@@ -216,7 +235,7 @@ the executor that lights up both a mock `Event` channel and a mock `HookHost`
 | Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ⏳ deferred | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` skeleton + loop-guard + LSP flush absorbed (§E, bare loop + 2/10 guardrails via `event_tx`; first interior-mutability slice `Arc<Mutex<…>>` on `LspProbe`); production `Engine` migration in progress | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
+| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` skeleton + loop-guard + LSP flush + transparent-retry absorbed (§E, bare loop + 3/10 guardrails via `event_tx`; first interior-mutability slice `Arc<Mutex<…>>` on `LspProbe`; transparent-retry at seam-2 post-stream); production `Engine` migration in progress | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
 
 ## Registering a provider (developer guide)
 

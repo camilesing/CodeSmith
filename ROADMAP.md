@@ -524,6 +524,60 @@ interior-mutability（`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`），是继 
 
 ---
 
+**进度（2026-07-10 §E transparent-retry 吸收落地，首个 seam-2 guardrail，`feat/pluggable-framework-core`）：**
+
+§E 的第七个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第三个（transparent stream-retry）吸收进
+`HostAgentExecutor`。这是首个 seam-2（post-stream）guardrail，也是继 loop-guard（本地状态热身）、LSP flush（interior-mutability）之后
+回到「本地状态」形状的切片——重试计数器是 per-run `u32`，沿用 loop-guard 的 `&self` + 局部变量模式。本轮纯增量
+（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **吸收的是外层重试（seam 2 post-stream）**：生产有**两层**重试——内层（`transparent_stream_retries`，MAX=2）在流消费循环内，
+  当流在产出任何内容前报错时立即重发 `create_message_stream`；外层（`stream_retry_attempts`，MAX=3）在流消费完之后，当「流带错误死亡且
+  无任何可操作内容」时 `continue` 重跑整轮。内层重试与 inline 流归约（deferred）耦合，本轮不碰；本轮吸收的是外层。由于
+  `accumulate_stream` 在首个 erroring 流项即 `?` 返回 `Err` 并丢弃已累积的块，一个 `Err` 即等价于「无可操作内容已提交」——外层重试
+  天然覆盖了 `accumulate_stream` 路径下的两层语义（内层在 inline 归约切片落地后才有意义）。
+- **`stream_with_transparent_retry`**（`host_executor.rs`，seam (2)）：`on_llm_start` 后、`on_llm_end` 前的 helper，循环
+  `create_message_stream(request.clone())` + `accumulate_stream`。`Ok` → 重置预算、返回内容；`Err`（mid-flight 流死亡）→ 预算内
+  （`< MAX_STREAM_RETRIES = 3`）则 `emit_status("Connection interrupted; retrying (n/3)")` 后 `continue` 重发，预算耗尽则传播 `Err`。
+  重试对 `Callback` **透明**：`on_llm_start`/`on_llm_end` 每步只各发一次，唯一 surfacing 是 `Status` 事件（镜像生产的静默重发）。
+  `request.clone()` 复用 wire `MessageRequest: Clone`（生产 `turn_loop.rs:613` 同款 clone）。
+- **预算跨步持久 + 健康轮重置**：`stream_retry_attempts: u32` 是 `run_inner` 局部变量，声明在 `loop_guard`/`step` 旁（匹配生产
+  `turn_loop.rs:292` 的 per-turn 计数器）；`stream_with_transparent_retry` 在 `Ok` 路径把它重置为 0（镜像 `turn_loop.rs:1186`），故一个坏步
+  的预算不带到下一步——headline 测试 `transparent_retry_resets_budget_across_steps` 用「两步各重试一次、两 status 均为 1/3」证之
+  （若不重置，第二步首重试会是 2/3）。
+- **`MockRound` test double**：`MockLlm` 从 `Vec<Vec<StreamEvent>>` 升级为 `Vec<MockRound>`（`Events(Vec<StreamEvent>)` | `StreamErr(String)`）。
+  `StreamErr` 让流产出单个 `Err` 项 → `accumulate_stream` 返回 `Err`（模拟 mid-flight 流死亡，#103「stream died with nothing」）。
+  `MockLlm::new`（既有签名）把每个 `Vec<StreamEvent>` 包成 `Events`，故 12 个既有测试零改动；新测试用 `with_rounds` 注入 `StreamErr`。
+  `MockLlm` 现持 `Arc`（测试持一份 `.clone()` 句柄调 `requests()` 数 `create_message_stream` 次数，另一份经 unsized coercion 喂 executor）。
+- **刻意部分桥接（by design）**：
+  - **`accumulate_stream` bail-on-error**：核心 reducer 在首个 erroring 流项即 `?` 返回 `Err` 并丢弃部分块，故 `Err` 恒为「无可操作内容」。
+    这使本切片在生产本应 ship 部分内容时（生产 inline 跟踪 `any_content_received`、用户已见输出则不重试）仍重试。因部分内容已丢，
+    重试是唯一恢复路径；double-billing（provider 计了部分 output 的费）是 provider 侧而非用户可见。inline 流归约（后续切片替换
+    `accumulate_stream` 调用）闭合该缺口。
+  - **pre-stream 连接错误不重试**：`create_message_stream` 返回 `Err`（连接拒绝 / auth / context-length）径直 `?` 硬失败。生产把这类当
+    context-recovery / 硬失败（独立 guardrail，deferred）；只 mid-flight 流错误重试。
+  - **无 cancel-token 短路**：生产 `should_transparently_retry_stream` 查 `!cancelled` 在取消的 turn 上中止重试。本 executor 尚不持
+    `CancellationToken`；有界预算（`MAX_STREAM_RETRIES = 3`）防死循环，故取消的 turn 至多浪费 3 次快速重试后失败。短路在 wire-in 步
+    （executor 接真 `Engine` 的 cancel token 时）接入。刻意不做本轮——为守「单 seam 为主」，避免 cancel_token 字段 + 12 处测试构造器改动的
+    churn（cancel threading 是 host 接入关注，非 seam-2 重试机制本身）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning；`cargo test -p codesmith-agent-runtime --lib host_executor` 16 通过
+（12 既有 + 4 新 transparent-retry）；`cargo test -p codesmith-agent-runtime --lib` 1020 通过（0 失败、2 ignored，原 1016 +4）；
+`cargo test -p codesmith-agent --lib` 79 通过；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **下一个 guardrail**：建议 **steer** 或 **capacity**——两者都需更多 `Engine` 可变状态，沿用 LSP flush 的 `Arc<Mutex<…>>` 形状
+  （steer 的 `rx_steer`、capacity 的 token 预算）。loop-guard + transparent-retry 已证本地状态 seam 可行，LSP flush 已证共享可变状态 seam 可行。
+- 或 **early-tool-start**（seam 2，在流归约中检测 tool_use 起始并提前 dispatch——需 inline 流归约，与 transparent-retry 的 inline 归约依赖同源）。
+- **inline 流归约**（替换 `accumulate_stream` 调用）：闭合 transparent-retry 的 `accumulate_stream` bail-on-error 缺口 + 接通 stream delta
+  （`MessageDelta`/`ThinkingDelta`）直发 `tx_event` + early-tool-start。是多个 guardrail 的共同前置。
+- **cancel-token 注入**：transparent-retry 短路 + loop 顶取消检查，在 wire-in 步或单独小切片接入。
+- 其余 guardrail（compaction/approval/subagent/cycle）+ `on_llm_*` 桥接 / wire tool-call id 透传 / `HostAgentExecutor` 接入 +
+  `handle_deepseek_turn` 退役——后续切片。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

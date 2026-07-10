@@ -22,7 +22,7 @@
 //!
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (reusing
 //! [`accumulate_stream`](codesmith_agent::executor::accumulate_stream) for stream
-//! reduction) and absorbs the production guardrails slice by slice. Two are in:
+//! reduction) and absorbs the production guardrails slice by slice. Three are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -45,16 +45,29 @@
 //!    the production `Engine.pending_lsp_blocks` field semantics (an edit on a turn
 //!    that ends before the next request — e.g. a `MaxSteps` halt — surfaces its
 //!    diagnostics on the next turn's first pre-request flush).
+//! 3. **transparent-retry** ([`stream_with_transparent_retry`]) — the **first
+//!    seam-2 guardrail**. When the stream dies mid-flight before any content is
+//!    committed (`accumulate_stream` returns `Err`), the executor silently re-issues
+//!    the SAME request up to `MAX_STREAM_RETRIES` (3) times before propagating the
+//!    failure, mirroring `handle_deepseek_turn`'s outer "stream died with nothing"
+//!    retry (`turn_loop.rs:1152-1190`). A healthy round resets the budget. The
+//!    retry counter is a local `u32` that persists across steps within one `run`
+//!    (matching loop-guard's local-state pattern); the retry is transparent to the
+//!    [`Callback`] (`on_llm_start` / `on_llm_end` fire once per step, a `Status`
+//!    event is the only retry surfacing). See "Known tradeoffs" below for the
+//!    `accumulate_stream` bail-on-error gap and the deferred cancel-token
+//!    short-circuit.
 //!
-//! Guardrail status (loop-guard warn/halt) surfaces over the host's `Event`
-//! channel (`event_tx`) — **not** via the framework `Callback`: guardrails are
-//! host-side concerns and the `Callback` trait stays untouched per ROADMAP §E.
+//! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3")
+//! surfaces over the host's `Event` channel (`event_tx`) — **not** via the
+//! framework `Callback`: guardrails are host-side concerns and the `Callback`
+//! trait stays untouched per ROADMAP §E.
 //!
 //! It is **not yet wired into `handle_send_message`**; the production
 //! `handle_deepseek_turn` remains the live path — the value of landing it now is
 //! the composition proof (the three bridges light up end-to-end inside a real
 //! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
-//! headline test) plus two guardrails absorbed at the seams below.
+//! headline test) plus three guardrails absorbed at the seams below.
 //!
 //! ## Guardrail insertion points
 //!
@@ -64,9 +77,10 @@
 //!    a synthetic `user` message before the request snapshot); compaction,
 //!    capacity pre-request, steer drain, system-prompt refresh still to come
 //!    (top of the `loop`).
-//! 2. **per-step post-stream** — transparent stream-retry, subagent handoff,
-//!    thinking-only handling (after `accumulate_stream`, before tool extraction).
-//!    *(not yet absorbed)*
+//! 2. **per-step post-stream** — ✅ **transparent-retry** (re-issue the request
+//!    when the stream dies mid-flight before any content commits, up to 3 times);
+//!    subagent handoff, thinking-only handling still to come (after the stream
+//!    resolves, before tool extraction).
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
 //!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures) +
 //!    **LSP post-edit collect** (probe diagnostics after a successful edit);
@@ -98,6 +112,30 @@
 //! - **no `emit_session_updated`** for the synthetic push — the executor's other
 //!   message pushes (assistant / tool result) likewise don't emit it via the
 //!   `ChatHistory` path; UI surfacing is deferred to the wire-in step.
+//!
+//! ## Known tradeoffs in transparent-retry (by design)
+//!
+//! - **`accumulate_stream` bail-on-error** — the shared core reducer returns `Err`
+//!   on the first erroring stream item and drops any partially-accumulated blocks,
+//!   so an `Err` always means "no actionable content committed". This makes the
+//!   retry fire even when production would ship partial content (it tracks
+//!   `any_content_received` inline and skips the retry once the user has seen
+//!   output). Since the partial content is lost here, retrying is the only
+//!   recovery path; the double-billing concern (the provider billed for the
+//!   partial output) is provider-side, not user-visible. Inline stream reduction
+//!   (a later §E slice that replaces the `accumulate_stream` call) closes this
+//!   gap.
+//! - **pre-stream connection errors not retried** — `create_message_stream`
+//!   returning `Err` (connection refused / auth / context-length) propagates as a
+//!   hard fail here. Production treats those as context-recovery or hard-fail (a
+//!   separate guardrail, deferred); only mid-flight stream errors retry.
+//! - **no cancel-token short-circuit** — production's
+//!   `should_transparently_retry_stream` checks `!cancelled` to abort a retry
+//!   loop on a cancelled turn. This executor doesn't hold a `CancellationToken`
+//!   yet; the bounded budget (`MAX_STREAM_RETRIES = 3`) prevents an infinite
+//!   loop, so a cancelled turn wastes at most 3 quick retries before failing. The
+//!   short-circuit threads in at the wire-in step (when the executor connects to
+//!   the real `Engine`'s cancel token).
 //!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
@@ -224,6 +262,76 @@ pub fn new(
         }
     }
 
+    /// (2) per-step post-stream seam — transparent stream retry.
+    ///
+    /// Drives `create_message_stream` + `accumulate_stream` with a bounded
+    /// transparent-retry loop. When the stream dies mid-flight before any
+    /// content is committed — `accumulate_stream` returns `Err` (it drops any
+    /// partial blocks on the first erroring item, so an `Err` means "no
+    /// actionable content committed") — re-issue the SAME request up to
+    /// [`MAX_STREAM_RETRIES`] (3) times before propagating the failure. This
+    /// mirrors `handle_deepseek_turn`'s outer "stream died with nothing"
+    /// retry (`turn_loop.rs:1152-1190`). A healthy round resets the budget
+    /// (`turn_loop.rs:1186`), so a bad prior step doesn't carry over.
+    ///
+    /// Pre-stream connection errors (`create_message_stream` returning `Err`)
+    /// are **not** retried here — production treats those as hard-fail /
+    /// context-recovery (a separate guardrail, deferred). Only mid-flight
+    /// stream errors retry. The retry is transparent to the [`Callback`]:
+    /// `on_llm_start` / `on_llm_end` fire once per step, and a `Status` event
+    /// is the only retry surfacing (matching production's silent re-issue).
+    ///
+    /// # Known tradeoff vs production
+    ///
+    /// `accumulate_stream` bails on the first erroring stream item and drops
+    /// accumulated blocks, so this retries even when production would ship
+    /// partial content (it tracks `any_content_received` inline and skips the
+    /// retry when the user has already seen output). Inline stream reduction
+    /// (a later §E slice that replaces the `accumulate_stream` call) closes
+    /// that gap; until then retrying is the only recovery path since the
+    /// partial content is lost. The cancel-token short-circuit (production's
+    /// `should_transparently_retry_stream` checks `!cancelled`) is deferred
+    /// to the wire-in slice — the bounded budget can't loop forever.
+    async fn stream_with_transparent_retry(
+        &self,
+        client: &LlmClientHandle,
+        request: MessageRequest,
+        stream_retry_attempts: &mut u32,
+    ) -> Result<(Vec<ContentBlock>, Option<String>)> {
+        /// Cap on transparent stream retries — matches `turn_loop`'s
+        /// `MAX_STREAM_RETRIES` (3). One initial attempt + 3 retries = 4 total
+        /// `create_message_stream` calls before the failure surfaces.
+        const MAX_STREAM_RETRIES: u32 = 3;
+        loop {
+            // Pre-stream connection errors are hard-fails (context recovery is
+            // a separate guardrail). Only mid-flight stream errors retry.
+            let stream = client.create_message_stream(request.clone()).await?;
+            match accumulate_stream(stream).await {
+                Ok(outcome) => {
+                    // Healthy round → reset the retry budget so a bad prior
+                    // step doesn't carry over (mirrors `turn_loop.rs:1186`).
+                    *stream_retry_attempts = 0;
+                    return Ok(outcome);
+                }
+                Err(e) => {
+                    // Stream died mid-flight. `accumulate_stream` drops partial
+                    // blocks on error, so no actionable content was committed.
+                    if *stream_retry_attempts < MAX_STREAM_RETRIES {
+                        *stream_retry_attempts = stream_retry_attempts.saturating_add(1);
+                        self.emit_status(format!(
+                            "Connection interrupted; retrying ({}/{MAX_STREAM_RETRIES})",
+                            *stream_retry_attempts,
+                        ))
+                        .await;
+                        continue;
+                    }
+                    // Budget exhausted → surface the failure.
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     /// (3) per-tool post-edit seam — collect LSP diagnostics after a successful
     /// edit. Mirrors `Engine::run_post_edit_lsp_hook` (`lsp_hooks.rs`): gate on
     /// the master switch, derive the edited path, fetch diagnostics, push onto
@@ -331,6 +439,11 @@ impl HostAgentExecutor {
         // `LoopGuard` per turn, matching `turn_loop`).
         let mut loop_guard = LoopGuard::default();
         let mut step: u32 = 0;
+        // Transparent stream-retry counter: re-issue the request when the
+        // stream dies mid-flight before any content commits (mirrors
+        // `turn_loop.rs:284-292`). Persists across steps within one run;
+        // resets to 0 on a healthy round.
+        let mut stream_retry_attempts: u32 = 0;
         loop {
             // (1) per-step pre-request seam — compaction / capacity / steer /
             // cycle land here later; ✅ LSP flush (drain pending diagnostics
@@ -366,9 +479,14 @@ impl HostAgentExecutor {
             };
 
             callback.on_llm_start(&request).await;
-            let stream = client.create_message_stream(request).await?;
-            let (content, _stop_reason) = accumulate_stream(stream).await?;
-            // (2) per-step post-stream seam — transparent-retry / subagent land here.
+            // (2) per-step post-stream seam — ✅ transparent-retry (re-issue
+            // when the stream dies mid-flight before any content commits).
+            // `on_llm_start` fires once per step; retries are transparent to
+            // the Callback. Subagent handoff / thinking-only handling land here
+            // later.
+            let (content, _stop_reason) = self
+                .stream_with_transparent_retry(&client, request, &mut stream_retry_attempts)
+                .await?;
             callback.on_llm_end(&content).await;
 
             // Persist the assistant turn.
@@ -630,15 +748,34 @@ mod tests {
     /// Also records the `messages` of every received request, so tests can
     /// prove the model saw a specific synthetic message (e.g. flushed LSP
     /// diagnostics) before a given call.
+    /// A canned response for one `create_message_stream` call.
+    ///
+    /// - `Events` streams a list of `StreamEvent`s (all `Ok`) — the normal path.
+    /// - `StreamErr` yields a single `Err` item, so `accumulate_stream` returns
+    ///   `Err` — simulating a mid-flight stream death (the #103 "stream died
+    ///   with nothing" case) for the transparent-retry tests.
+    enum MockRound {
+        Events(Vec<StreamEvent>),
+        StreamErr(String),
+    }
+
     struct MockLlm {
-        calls: Mutex<VecDeque<Vec<StreamEvent>>>,
+        rounds: Mutex<VecDeque<MockRound>>,
         requests: Mutex<Vec<Vec<Message>>>,
     }
 
     impl MockLlm {
+        /// Convenience: each `Vec<StreamEvent>` becomes a `MockRound::Events`,
+        /// popped one per `create_message_stream` call (front first).
         fn new(calls: Vec<Vec<StreamEvent>>) -> Self {
+            Self::with_rounds(calls.into_iter().map(MockRound::Events).collect())
+        }
+
+        /// Full control: one `MockRound` per `create_message_stream` call, popped
+        /// in order (front first). Use this to inject `StreamErr` rounds.
+        fn with_rounds(rounds: Vec<MockRound>) -> Self {
             Self {
-                calls: Mutex::new(calls.into_iter().collect()),
+                rounds: Mutex::new(rounds.into_iter().collect()),
                 requests: Mutex::new(Vec::new()),
             }
         }
@@ -669,11 +806,19 @@ mod tests {
             request: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
             self.requests.lock().unwrap().push(request.messages.clone());
-            let next = self.calls.lock().unwrap().pop_front();
+            let next = self.rounds.lock().unwrap().pop_front();
             Box::pin(async move {
-                let events = next.unwrap_or_default();
-                Ok(Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
-                    as StreamEventBox)
+                let round = next.unwrap_or(MockRound::Events(vec![]));
+                match round {
+                    MockRound::Events(events) => Ok(Box::pin(
+                        futures_util::stream::iter(events.into_iter().map(Ok)),
+                    )
+                        as StreamEventBox),
+                    MockRound::StreamErr(msg) => Ok(Box::pin(
+                        futures_util::stream::iter(vec![Err(anyhow::anyhow!(msg))]),
+                    )
+                        as StreamEventBox),
+                }
             })
         }
     }
@@ -1515,5 +1660,208 @@ mod tests {
             })
         });
         assert!(saw, "run2 request must include leftover diagnostics: {reqs:?}");
+    }
+
+    // === transparent-retry (seam 2) =======================================
+    //
+    // The production `handle_deepseek_turn` silently re-issues a request when
+    // the chunked-transfer stream dies mid-flight before any content was
+    // committed (the #103 "stream died with nothing" retry, `turn_loop.rs`
+    // :1152). `HostAgentExecutor` absorbs that at the (2) post-stream seam:
+    // `accumulate_stream` returns `Err` on the first erroring stream item
+    // (dropping any partial blocks — so an `Err` means "no actionable content
+    // committed"), and the executor re-sends the same request up to
+    // `MAX_STREAM_RETRIES` (3) times before propagating the failure. A healthy
+    // round resets the budget. (Cancel-token short-circuit is deferred to the
+    // wire-in slice; the bounded budget can't loop forever.)
+
+    /// All `Event::Status` messages drained from `rx`, in arrival order.
+    fn statuses(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Status { message } => Some(message.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn transparent_retry_recovers_after_stream_error() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // First round: stream dies mid-flight (no content). Second round: a
+        // clean text+end_turn turn that ends the run.
+        let mut ok = text_block(0, "recovered");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::StreamErr("connection reset".into()),
+            MockRound::Events(ok),
+        ]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run should recover via transparent retry");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The request was issued twice: the failed attempt + the retry.
+        assert_eq!(mock.requests().len(), 2, "initial attempt + one retry");
+
+        // A status surfaced the retry, and no partial assistant message was
+        // committed before the retry (only the seed user + the recovered turn).
+        let msgs = statuses(&drain(&mut rx));
+        assert!(
+            msgs.iter().any(|m| m.contains("retrying (1/3")),
+            "expected a retry status, got: {msgs:?}"
+        );
+        assert_eq!(history.len(), 2, "[user, assistant(text recovered)]");
+    }
+
+    #[tokio::test]
+    async fn transparent_retry_exhausts_budget_then_fails() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Four consecutive stream deaths — budget is 3 retries (4 attempts).
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::StreamErr("die 1".into()),
+            MockRound::StreamErr("die 2".into()),
+            MockRound::StreamErr("die 3".into()),
+            MockRound::StreamErr("die 4".into()),
+        ]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+        );
+
+        let err = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect_err("budget exhausted should surface the failure");
+
+        // 1 initial attempt + 3 retries = 4 create_message_stream calls.
+        assert_eq!(mock.requests().len(), 4, "initial + 3 retries");
+        assert!(
+            err.to_string().contains("die 4"),
+            "last attempt's error should propagate: {err}"
+        );
+
+        // Three retry statuses (1/3, 2/3, 3/3) — the 4th attempt fails outright.
+        let msgs = statuses(&drain(&mut rx));
+        assert_eq!(msgs.len(), 3, "one status per retry: {msgs:?}");
+        assert!(msgs[0].contains("1/3"), "{}", msgs[0]);
+        assert!(msgs[1].contains("2/3"), "{}", msgs[1]);
+        assert!(msgs[2].contains("3/3"), "{}", msgs[2]);
+        // No assistant turn was committed — only the seed user message.
+        assert_eq!(history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn transparent_retry_resets_budget_across_steps() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Step 1: die then recover (text + tool_use(echo)); Step 2: die then
+        // recover (text + end_turn). Both steps retry exactly once — proving
+        // the budget reset between steps (else step 2's retry would be 2/3).
+        let mut step1 = text_block(0, "step one");
+        step1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"a"}"#));
+        step1.extend(finish("tool_use"));
+        let mut step2 = text_block(0, "done");
+        step2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::StreamErr("die s1".into()),
+            MockRound::Events(step1),
+            MockRound::StreamErr("die s2".into()),
+            MockRound::Events(step2),
+        ]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // 2 calls per step (die + retry) = 4 total.
+        assert_eq!(mock.requests().len(), 4, "die+recover per step");
+
+        // Both retry statuses numbered 1/3 — the budget reset between steps.
+        let msgs = statuses(&drain(&mut rx));
+        assert_eq!(msgs.len(), 2, "one retry per step: {msgs:?}");
+        assert!(
+            msgs.iter().all(|m| m.contains("retrying (1/3")),
+            "both steps' first retry must be 1/3 (budget reset): {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transparent_retry_skips_clean_empty_stream() {
+        // A stream that completes cleanly but produced no content blocks is
+        // NOT a "stream died" situation (production gates on `stream_errors >
+        // 0`). The executor must not retry it — it surfaces NoToolCalls.
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::Events(vec![])]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Exactly one request — no retry on a clean (error-free) empty stream.
+        assert_eq!(mock.requests().len(), 1, "clean empty stream must not retry");
+        assert!(statuses(&drain(&mut rx)).is_empty(), "no retry status");
     }
 }
