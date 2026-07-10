@@ -643,6 +643,70 @@ LLM 请求之前）以 `try_recv` 非阻塞排空 `rx_steer`，每条 steer trim
 
 ---
 
+**进度（2026-07-10 §E approval 吸收落地，第五个 guardrail，seam-3 per-tool，`feat/pluggable-framework-core`）：**
+
+§E 的第九个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第五个（工具调用用户审批）吸收进
+`HostAgentExecutor`。审批把写文件 / 代码执行类工具挡在用户许可之后：运行此类工具前，执行器先发
+`Event::ApprovalRequired`（携带两个指纹 key 供 host 做 approve-for-session / deny-exact 去重，以及写工具的模型
+intent summary），再阻塞在审批决策 channel 上按 wire tool id 配对（stale id 丢弃）——镜像 `handle_deepseek_turn`
+的 per-tool 审批流（`turn_loop.rs:2283-2371`）。拒绝时工具不运行，回灌 `permission_denied` 错误让模型反应
+（turn 继续）。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径
+`handle_deepseek_turn` 不受影响。
+
+- **`approval` 字段**：`HostAgentExecutor` 新增 `approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>`
+  字段 + 构造器参数（非-审批 embed/测试传 `None`——21 个既有测试构造器改传第 8 个 `None`）。**首个用 `tokio::sync::Mutex`
+  的 guardrail**（steer/LSP 用 `std::sync::Mutex`）：审批需**阻塞**在 `recv().await`，guard 必须跨 `await`——std mutex
+  guard 非 `Send` 不行；`tokio::sync::Mutex` 的 guard 在 receiver `Send` 时亦 `Send`。锁仅单消费者（本执行器审批路径）
+  持有，无竞争。receiver 跨 `run` 调用持久（匹配生产 `Engine.rx_approval`）。
+- **`requires_approval(caps)`**（free fn）：`ToolCapability` 含 `RequiresApproval | ExecutesCode | WritesFiles` 即需审批——
+  镜像 `ToolSpec::approval_requirement()` 默认推导（`ExecutesCode`→Required、`WritesFiles`→Suggest，皆 `!=Auto`）+
+  显式 `RequiresApproval`。从框架 `Tool::capabilities()` 可达的最忠实静态近似。
+- **`approval_intent_summary(content)`**（free fn）：合并本步 assistant `Text` 块，截断 2000 字符——镜像
+  `turn_loop::approval_intent_summary`（本地轻微重复，后续 lift，同 `block_tool_result` 去重性质）。
+- **`request_approval`（seam 3 per-tool）**：返回 `Ok(())`（放行：无需审批 / 无 channel / 已批准）或 `Err(denial_msg)`（拒绝）。
+  逻辑：无 channel 或工具不需审批 → `Ok(())`；否则经 `event_tx` 发 `Event::ApprovalRequired { id, tool_name, description:
+  tool.description(), input, approval_key, approval_grouping_key, intent_summary(只读工具 None) }`；再 `rx.lock().await` +
+  `guard.recv().await` 按 id 配对（`Approved`→Ok、`Denied`→Err、`RetryWithPolicy`→Ok、`None`→Err("channel closed")）。
+- **`run_inner` 接线**：在 `content.into_iter()` 前算 `intent_summary`；在 `AttemptDecision::Proceed` 臂内、`tool.run` 前包审批门：
+  `Ok(()) → tool.run(input)`，`Err(denial) → Err(ToolError::permission_denied(denial))`。顺序保持 `on_tool_start` → loop-guard
+  `record_attempt` →（若 Proceed）审批门 → `tool.run` → `on_tool_end`。拒绝调用仍发 `on_tool_end` + `record_outcome(success=false)`
+  + push `is_error:true` ToolResult（与 `NotAvailable`/loop-guard-block 路径一致）。
+- **刻意部分桥接（by design）**：
+  - **无 cancel-token race**：生产 `await_tool_approval` select `cancel_token.cancelled()` 以在取消的 turn 上脱出审批等待；
+    本执行器无 `CancellationToken`，阻塞到匹配决策到达或 channel 关闭。延后到 wire-in（同 transparent-retry/steer）。
+  - **静态推导审批**：用 `Tool::capabilities()`，无 per-input 动态覆盖（`ToolSpec::approval_requirement_for_input`，如
+    `exec_shell rm`→Required vs `ls`→Auto）；框架 `Tool` trait 刻意不带该面（§E 设计注记）。延后到 wire-in 接 `ToolDispatcher`。
+  - **`RetryWithPolicy` 视为 `Approved`**：sandbox 提权需 `ToolDispatcher::execute` + `sandbox_override`（host 重建提权
+    context），框架 `Tool::run` 路径不携带（`ToolSpecAdapter` 用固定 `ToolContext`）。执行器以未变 context 运行；提权延后。
+- **test doubles**：`approval_channel()` helper（镜像 `steer_channel()`，capacity 64，`tokio::sync::Mutex`）；新增 `WriteSpec`
+  （`impl ToolSpec`，声明 `WritesFiles`，回显 `path`，返成功）。6 个新测试：`approval_approved_runs_tool`（批准→运行、
+  ToolResult `wrote:/tmp/x` 成功）、`approval_denied_skips_tool_with_permission_error`（拒绝→不运行、`is_error`、content 含
+  "denied"）、`approval_none_skips_gating`（无 channel→不门控、工具直接运行）、`approval_readonly_tool_skips_gating`
+  （EchoSpec(ReadOnly) + channel 有但不推决策；若门控误触发则 `recv()` 阻塞→2s 超时失败证之）、
+  `approval_emits_approval_required_event`（event channel 收到 `ApprovalRequired`：id/tool_name/description/approval_key/
+  approval_grouping_key/intent_summary 齐全）、`approval_retry_with_policy_treated_as_approved`（RetryWithPolicy→运行、
+  content `wrote:/tmp/x`）。决策预先推入有界 channel（无需并发 task）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning；`cargo test -p codesmith-agent-runtime --lib host_executor`
+27 通过（21 既有 + 6 新 approval）；`cargo test -p codesmith-agent-runtime --lib` 1031 通过（0 失败、2 ignored，原 1025 +6）；
+`cargo test -p codesmith-agent --lib` 79 通过；`cargo build --workspace` 全绿（tui warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **下一个 guardrail**：建议 **capacity**（seam 1 pre-request + seam 4 post-tool；硬 token-budget preflight 无条件运行——需
+  `api_provider` + token 计数 + `recover_context_overflow` 级联，是迄今最重 guardrail，可能需拆多切片，建议先单独吸收硬
+  preflight 而非 off-by-default 的软 `CapacityController`）或 **compaction**（seam 1；与 capacity 强耦合——capacity 的
+  overflow 恢复即 compaction 级联，两者可能需一起规划）。approval 已证 `tokio::sync::Mutex` + 阻塞 `recv()` seam-3 可行。
+- **inline 流归约**（替换 `accumulate_stream` 调用）：闭合 transparent-retry 的 `accumulate_stream` bail-on-error 缺口
+  + 接通 stream delta（`MessageDelta`/`ThinkingDelta`）直发 `tx_event` + early-tool-start + steer mid-stream buffer。
+  是多个 guardrail / 次级排空点的共同前置。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + loop 顶取消检查，在 wire-in
+  步或单独小切片接入。
+- 其余 guardrail（compaction/capacity/subagent/cycle）+ `on_llm_*` 桥接 / wire tool-call id 透传 /
+  `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——后续切片。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

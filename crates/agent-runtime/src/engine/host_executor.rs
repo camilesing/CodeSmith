@@ -22,7 +22,7 @@
 //!
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (reusing
 //! [`accumulate_stream`](codesmith_agent::executor::accumulate_stream) for stream
-//! reduction) and absorbs the production guardrails slice by slice. Four are in:
+//! reduction) and absorbs the production guardrails slice by slice. Five are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -70,6 +70,27 @@
 //!    three secondary drain sites (mid-stream buffer, post-stream resume,
 //!    blocking `recv` during sub-agent hold) are streaming-lifecycle-specific
 //!    and deferred.
+//! 5. **approval** ([`request_approval`](HostAgentExecutor::request_approval))
+//!    — gates write / code-execution tools behind user permission. Before
+//!    running such a tool, the executor emits `Event::ApprovalRequired`
+//!    (carrying the two fingerprint keys the host uses for approve-for-session
+//!    / deny-exact dedup, plus the model's intent summary for write tools) and
+//!    blocks on the approval-decision channel, matching by wire tool id (stale
+//!    decisions for other ids are dropped) — mirroring
+//!    `handle_deepseek_turn`'s per-tool approval flow
+//!    (`turn_loop.rs:2283-2371`). A denied call never runs the tool and feeds
+//!    back a `permission_denied` error so the model can react (the turn
+//!    continues). The receiver is
+//!    `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>` —
+//!    the first guardrail to use a `tokio::sync::Mutex` (rather than
+//!    `std::sync::Mutex` like steer / LSP), because the guard must cross the
+//!    blocking `recv().await` (a std mutex guard isn't `Send`). Approval
+//!    requirement is derived statically from [`Tool::capabilities`]
+//!    (`ExecutesCode` / `WritesFiles` / `RequiresApproval`) — the framework
+//!    `Tool` trait deliberately carries no per-input approval surface (§E
+//!    design note); the dynamic override threads in at the wire-in step. See
+//!    "Known gaps in approval" below for the cancel-token, sandbox-elevation,
+//!    and static-derivation gaps.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
 //! steer "Steer input accepted") surfaces over the host's `Event` channel
@@ -80,7 +101,7 @@
 //! `handle_deepseek_turn` remains the live path — the value of landing it now is
 //! the composition proof (the three bridges light up end-to-end inside a real
 //! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
-//! headline test) plus four guardrails absorbed at the seams below.
+//! headline test) plus five guardrails absorbed at the seams below.
 //!
 //! ## Guardrail insertion points
 //!
@@ -96,9 +117,11 @@
 //!    resolves, before tool extraction).
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
 //!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures) +
+//!    ✅ **approval** (emit `ApprovalRequired` + block on the decision channel
+//!    for write/code tools; denied ⇒ `permission_denied` error, tool skipped) +
 //!    **LSP post-edit collect** (probe diagnostics after a successful edit);
-//!    approval, early-tool-start, parallel dispatch still to come (inside the
-//!    tool `for` loop).
+//!    early-tool-start, parallel dispatch still to come (inside the tool `for`
+//!    loop).
 //! 4. **per-step post-tool** — ✅ **loop-guard halt short-circuit** (returns
 //!    `StopReason::Error`); capacity post-tool still to come (after the tool loop).
 //!
@@ -150,6 +173,30 @@
 //!   short-circuit threads in at the wire-in step (when the executor connects to
 //!   the real `Engine`'s cancel token).
 //!
+//! ## Known gaps in approval (by design)
+//!
+//! - **no cancel-token race** — production's `await_tool_approval` selects over
+//!   `cancel_token.cancelled()` so a cancelled turn breaks out of the approval
+//!   wait. This executor holds no `CancellationToken` yet; it blocks on the
+//!   decision channel until a matching decision arrives or the channel closes. A
+//!   cancelled turn thus parks at the approval await until the host resolves it
+//!   (the bounded test harness pushes a decision; production's stale-drain + the
+//!   cancel race thread in at the wire-in step).
+//! - **static-only approval derivation** — [`requires_approval`] checks
+//!   [`Tool::capabilities`] (`ExecutesCode` / `WritesFiles` /
+//!   `RequiresApproval`), mirroring `ToolSpec::approval_requirement()`'s default.
+//!   The per-input dynamic override (`ToolSpec::approval_requirement_for_input`,
+//!   e.g. `exec_shell rm` ⇒ `Required` vs `exec_shell ls` ⇒ `Auto`) and any
+//!   `ToolSpec::approval_requirement()` overrides that declare none of these
+//!   capabilities are not visible from the framework `Tool` trait; they thread in
+//!   at the wire-in step when the executor consults a `ToolDispatcher`.
+//! - **`RetryWithPolicy` treated as `Approved`** — sandbox elevation needs
+//!   `ToolDispatcher::execute` with a `sandbox_override` (the host rebuilds the
+//!   tool context with elevated sandbox access), which the framework `Tool::run`
+//!   path doesn't carry (the `ToolSpecAdapter` runs with a fixed `ToolContext`).
+//!   The executor therefore runs the tool with the unchanged context on a
+//!   `RetryWithPolicy` decision; the elevation threads in at the wire-in step.
+//!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
 use std::future::Future;
@@ -165,14 +212,16 @@ use codesmith_agent::executor::{accumulate_stream, AgentExecutor, AgentExecutorC
 use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message, MessageRequest};
-use codesmith_agent::tools::{ToolError, ToolResult, ToolSet};
+use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
+use super::approval::ApprovalDecision;
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock};
+use crate::tools::approval_cache::{build_approval_grouping_key, build_approval_key};
 
 /// The `ToolResult` fed back when the loop-guard blocks an identical repeat
 /// call (mirrors `turn_loop::loop_guard_block_tool_result`). Duplicated here
@@ -183,6 +232,60 @@ fn block_tool_result(message: String) -> ToolResult {
     ToolResult::error(message).with_metadata(serde_json::json!({
         "loop_guard": "identical_tool_call"
     }))
+}
+
+/// Whether a tool requires user approval before execution, derived from its
+/// declared capabilities. Mirrors `ToolSpec::approval_requirement()`'s default
+/// derivation (`ExecutesCode` ⇒ `Required`, `WritesFiles` ⇒ `Suggest`, both
+/// `!= Auto` ⇒ gate) plus an explicit `RequiresApproval` capability — the
+/// most faithful static approximation reachable from the framework `Tool`
+/// trait (which deliberately carries no `approval_requirement_for_input`
+/// surface; see the §E `ToolSpecAdapter` design note).
+///
+/// **By-design gap:** static only. Production also consults the per-input
+/// `ToolSpec::approval_requirement_for_input` (e.g. `exec_shell rm` ⇒ Required
+/// vs `exec_shell ls` ⇒ Auto) via the `ToolDispatcher`. That dynamic override
+/// and any `ToolSpec::approval_requirement()` overrides that don't declare one
+/// of these capabilities are not visible here; they thread in at the wire-in
+/// step when the executor consults a `ToolDispatcher`.
+fn requires_approval(caps: &[ToolCapability]) -> bool {
+    caps.iter().any(|c| {
+        matches!(
+            c,
+            ToolCapability::RequiresApproval
+                | ToolCapability::ExecutesCode
+                | ToolCapability::WritesFiles
+        )
+    })
+}
+
+/// Cap on the approval intent-summary length (mirrors
+/// `turn_loop::MAX_APPROVAL_INTENT_SUMMARY_CHARS`).
+const APPROVAL_INTENT_SUMMARY_MAX_CHARS: usize = 2_000;
+
+/// Extract the model's preceding text this step as an approval "intent summary"
+/// — the *why* shown in the approval view before the *what*. Joins the step's
+/// `Text` blocks and caps the length. Mirrors `turn_loop::approval_intent_summary`
+/// (which takes an already-extracted `&str`); duplicated here to keep this slice
+/// additive (a later cleanup can lift the turn-loop helper to `pub(super)` as the
+/// single source, same as the `block_tool_result` dedup note above).
+fn approval_intent_summary(content: &[ContentBlock]) -> Option<String> {
+    let mut text = String::new();
+    for block in content {
+        if let ContentBlock::Text { text: t, .. } = block {
+            text.push_str(t);
+        }
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut chars = trimmed.chars();
+    let mut summary: String = chars.by_ref().take(APPROVAL_INTENT_SUMMARY_MAX_CHARS).collect();
+    if chars.next().is_some() {
+        summary.push_str("...");
+    }
+    Some(summary)
 }
 
 /// Bundles the LSP collaborators the executor needs for the post-edit collect /
@@ -253,13 +356,31 @@ pub struct HostAgentExecutor {
     /// across `run` invocations on the same executor so a steer queued between
     /// turns is picked up on the next turn's first pre-request drain.
     steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>,
+    /// Optional approval-decision receiver (§E). `None` ⇒ approval gating is a
+    /// no-op (all tools run ungated — for embeds/tests that never prompt).
+    ///
+    /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
+    /// `mpsc::Receiver::recv` takes `&mut self`. Unlike the steer/LSP fields
+    /// (which use `std::sync::Mutex` because their access — `try_recv` / push /
+    /// `mem::take` — is synchronous), approval **blocks** on `recv().await`, so
+    /// the guard must cross an `await` — a `std::sync::Mutex` guard isn't
+    /// `Send` and can't. Hence `tokio::sync::Mutex`, whose guard is `Send` when
+    /// the receiver is. The lock is held only by the single consumer (this
+    /// executor's approval path); there is no contention. The receiver persists
+    /// across `run` invocations on the same executor, matching the production
+    /// `Engine.rx_approval` field — a decision queued between turns is matched
+    /// on the next turn's per-tool approval await. No `CancellationToken` race
+    /// yet (production's `await_tool_approval` also selects on
+    /// `cancel_token.cancelled()`); see "Known gaps in approval" below.
+    approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
 }
 
 impl HostAgentExecutor {
 /// Construct from the four collaborators + config + an optional guardrail
 /// status channel (`None` for embeds that don't surface guardrail status) +
 /// an optional [`LspProbe`] (`None` ⇒ LSP collect/flush disabled) + an
-/// optional steer input receiver (`None` ⇒ steer drain disabled).
+/// optional steer input receiver (`None` ⇒ steer drain disabled) + an
+/// optional approval-decision receiver (`None` ⇒ approval gating disabled).
 #[must_use]
 pub fn new(
     client: LlmClientHandle,
@@ -269,6 +390,7 @@ pub fn new(
     event_tx: Option<mpsc::Sender<Event>>,
     lsp: Option<LspProbe>,
     steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>,
+    approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
 ) -> Self {
         Self {
             client,
@@ -278,6 +400,7 @@ pub fn new(
             event_tx,
             lsp,
             steer,
+            approval,
         }
     }
 
@@ -478,6 +601,86 @@ pub fn new(
             self.emit_status(status).await;
         }
     }
+
+    /// Per-tool approval gate (seam 3). Returns `Ok(())` to proceed with
+    /// execution (the tool doesn't require approval, no approval channel was
+    /// supplied, or the user approved) or `Err(denial_message)` to skip the
+    /// tool and feed back a `permission_denied` error so the model can react
+    /// (mirrors `handle_deepseek_turn`'s per-tool approval flow,
+    /// `turn_loop.rs:2283-2371`).
+    ///
+    /// The approval requirement is derived statically from [`Tool::capabilities`]
+    /// (see [`requires_approval`]); the dynamic per-input override is a by-design
+    /// gap. The executor emits `Event::ApprovalRequired` (carrying the two
+    /// fingerprint keys the host uses for approve-for-session / deny-exact
+    /// dedup, plus the model's intent summary for write tools) and then blocks
+    /// on the decision channel, matching by wire tool id — stale decisions for
+    /// other ids are dropped (mirrors production's `_ => continue`).
+    async fn request_approval(
+        &self,
+        tool_id: &str,
+        name: &str,
+        input: &serde_json::Value,
+        tool: &Arc<dyn Tool>,
+        intent_summary: &Option<String>,
+    ) -> Result<(), String> {
+        let Some(rx) = &self.approval else {
+            return Ok(()); // no approval channel ⇒ gating disabled
+        };
+        if !requires_approval(&tool.capabilities()) {
+            return Ok(()); // tool doesn't require approval
+        }
+        let is_read_only = tool
+            .capabilities()
+            .iter()
+            .any(|c| *c == ToolCapability::ReadOnly);
+        // Emit the approval request so a host UI can prompt and resolve. The
+        // fingerprints are built here (not inside the await) and carried on the
+        // event — the runtime emits them, the host owns the dedup sets (same
+        // split as production).
+        if let Some(tx) = &self.event_tx {
+            let approval_key = build_approval_key(name, input).0;
+            let approval_grouping_key = build_approval_grouping_key(name, input).0;
+            let _ = tx
+                .send(Event::ApprovalRequired {
+                    id: tool_id.to_string(),
+                    tool_name: name.to_string(),
+                    description: tool.description().to_string(),
+                    input: input.clone(),
+                    approval_key,
+                    approval_grouping_key,
+                    intent_summary: if is_read_only {
+                        None
+                    } else {
+                        intent_summary.clone()
+                    },
+                })
+                .await;
+        }
+        // Block on the decision channel, matching by tool id. `tokio::sync::Mutex`
+        // (not `std::sync::Mutex`) so the guard may cross the blocking
+        // `recv().await`. Single consumer ⇒ holding the guard across the await
+        // cannot deadlock. No `CancellationToken` race yet — blocks until a
+        // matching decision arrives or the channel closes (deferred to wire-in).
+        let mut guard = rx.lock().await;
+        loop {
+            match guard.recv().await {
+                Some(ApprovalDecision::Approved { id }) if id == tool_id => return Ok(()),
+                Some(ApprovalDecision::Denied { id }) if id == tool_id => {
+                    return Err(format!("Tool '{name}' denied by user"));
+                }
+                // Sandbox elevation needs `ToolDispatcher::execute` with a
+                // `sandbox_override`, which the framework `Tool::run` path
+                // doesn't carry; treat as approved (run with the fixed context).
+                // By-design gap — threads in at the wire-in step.
+                Some(ApprovalDecision::RetryWithPolicy { id, .. }) if id == tool_id => {
+                    return Ok(());
+                }
+                Some(_) => continue, // stale id for a different call — ignore
+                None => return Err("Approval channel closed".to_string()),
+            }
+        }
+    }
 }
 
 impl AgentExecutor for HostAgentExecutor {
@@ -583,6 +786,11 @@ impl HostAgentExecutor {
                 content: content.clone(),
             });
 
+            // The model's preceding text this step — the "intent summary" the
+            // approval view shows for write tools (extracted before `content`
+            // is moved into `tool_uses`).
+            let intent_summary = approval_intent_summary(&content);
+
             // Collect tool calls (preserve order).
             let tool_uses: Vec<(String, String, serde_json::Value)> = content
                 .into_iter()
@@ -600,10 +808,12 @@ impl HostAgentExecutor {
             // Execute each tool sequentially and feed the result back as a
             // `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
             //
-            // (3) per-tool seam — loop-guard (absorbed); approval /
-            // early-tool-start / parallel land here later. `loop_guard_halt` is
-            // per-step: a halt short-circuits the tool loop and the whole turn
-            // at the (4) seam below.
+            // (3) per-tool seam — loop-guard (absorbed); ✅ approval (emit
+            // `ApprovalRequired` + block on the decision channel for write/code
+            // tools; denied ⇒ `permission_denied` error, tool skipped); LSP
+            // post-edit collect (absorbed); early-tool-start / parallel land here
+            // later. `loop_guard_halt` is per-step: a halt short-circuits the
+            // tool loop and the whole turn at the (4) seam below.
             let mut loop_guard_halt: Option<String> = None;
             for (id, name, input) in tool_uses {
                 callback.on_tool_start(&name, &input).await;
@@ -612,15 +822,31 @@ impl HostAgentExecutor {
                     AttemptDecision::Block(message) => {
                         (Ok(block_tool_result(message)), true)
                     }
-                    AttemptDecision::Proceed => (
-                        match tools.get(&name) {
-                            Some(tool) => tool.run(input.clone()).await,
+                    AttemptDecision::Proceed => {
+                        let result = match tools.get(&name) {
+                            // approval gate: a tool that requires approval is
+                            // gated behind the decision channel; denied ⇒ the
+                            // tool never runs and a `permission_denied` error
+                            // is fed back so the model can react (turn
+                            // continues). Order: loop-guard first (matches
+                            // production), then approval.
+                            Some(tool) => {
+                                match self
+                                    .request_approval(&id, &name, &input, tool, &intent_summary)
+                                    .await
+                                {
+                                    Ok(()) => tool.run(input.clone()).await,
+                                    Err(denial) => {
+                                        Err(ToolError::permission_denied(denial))
+                                    }
+                                }
+                            }
                             None => Err(ToolError::NotAvailable {
                                 message: format!("no tool named '{name}'"),
                             }),
-                        },
-                        false,
-                    ),
+                        };
+                        (result, false)
+                    }
                 };
                 callback.on_tool_end(&name, &result).await;
 
@@ -744,6 +970,48 @@ mod tests {
                 .to_string();
             Ok(ToolResult {
                 content: format!("{}|{text}", context.workspace.display()),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// A `ToolSpec` that declares `WritesFiles` (so the §E approval gate fires),
+    /// echoes its `path` input, and returns success — lets approval tests prove
+    /// the gate runs the tool on approve / skips it with a `permission_denied`
+    /// error on deny. Distinct from `EditSpec` (used for the LSP collect seam)
+    /// so approval assertions stay decoupled.
+    struct WriteSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for WriteSpec {
+        fn name(&self) -> &str {
+            "write_file"
+        }
+        fn description(&self) -> &str {
+            "Writes a file (requires approval)."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } }
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::WritesFiles]
+        }
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let path = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            Ok(ToolResult {
+                content: format!("wrote:{path}"),
                 success: true,
                 metadata: None,
             })
@@ -1146,6 +1414,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1244,6 +1513,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1295,6 +1565,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1335,6 +1606,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -1411,6 +1683,7 @@ mod tests {
             Some(tx),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1453,6 +1726,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
         );
@@ -1521,6 +1795,7 @@ mod tests {
             None,
             Some(probe),
             None,
+            None,
         );
 
         let reason = executor
@@ -1572,6 +1847,7 @@ mod tests {
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
             None,
+            None,
         );
         executor
             .collect_lsp_diagnostics("edit_file", &serde_json::json!({"path":"foo.rs"}))
@@ -1594,6 +1870,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
         );
         executor
@@ -1635,6 +1912,7 @@ mod tests {
             None,
             Some(probe),
             None,
+            None,
         );
 
         let reason = executor
@@ -1663,6 +1941,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
         );
         executor
@@ -1715,6 +1994,7 @@ mod tests {
             },
             None,
             Some(probe),
+            None,
             None,
         );
 
@@ -1811,6 +2091,7 @@ mod tests {
             Some(tx),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1854,6 +2135,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
         );
@@ -1915,6 +2197,7 @@ mod tests {
             Some(tx),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1956,6 +2239,7 @@ mod tests {
             Some(tx),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1990,6 +2274,19 @@ mod tests {
         (tx, Arc::new(Mutex::new(rx)))
     }
 
+    /// Create an approval channel pair: the sender for tests to push
+    /// `ApprovalDecision`s (matched by wire tool id), and the interior-mutable
+    /// receiver the executor expects. Uses `tokio::sync::Mutex` (unlike
+    /// `steer_channel`'s `std::sync::Mutex`) because the approval await blocks
+    /// on `recv().await` — the guard must cross an `await`.
+    fn approval_channel() -> (
+        mpsc::Sender<ApprovalDecision>,
+        Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>,
+    ) {
+        let (tx, rx) = mpsc::channel::<ApprovalDecision>(64);
+        (tx, Arc::new(tokio::sync::Mutex::new(rx)))
+    }
+
     #[tokio::test]
     async fn steer_drain_injects_queued_input_before_request() {
         let tools = Arc::new(ToolSet::new());
@@ -2014,6 +2311,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
         );
 
         let reason = executor
@@ -2070,6 +2368,7 @@ mod tests {
             None,
             None,
             None, // no steer receiver
+            None,
         );
 
         let reason = executor
@@ -2105,6 +2404,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
         );
 
         let reason = executor
@@ -2139,6 +2439,7 @@ mod tests {
             Some(tx),
             None,
             Some(rx_steer),
+            None,
         );
 
         let reason = executor
@@ -2186,6 +2487,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
         );
 
         // Run 1: no steers queued — clean text-only turn.
@@ -2231,5 +2533,314 @@ mod tests {
             })
         });
         assert!(saw, "run2 request must include the steer: {reqs:?}");
+    }
+
+    // === approval ===========================================================
+
+    /// Build a `WriteSpec` tool registry → framework `ToolSet`. `WriteSpec`
+    /// declares `WritesFiles`, so the §E approval gate fires for it.
+    fn write_tools() -> Arc<ToolSet> {
+        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/ws")));
+        registry.register(Arc::new(WriteSpec));
+        Arc::new(registry.to_framework_tool_set())
+    }
+
+    /// Round 1: the model explains intent then calls `write_file` (id `call_1`).
+    fn write_call() -> Vec<StreamEvent> {
+        let mut call = text_block(0, "writing the file now");
+        call.extend(tool_use_block(1, "call_1", "write_file", r#"{"path":"/tmp/x"}"#));
+        call.extend(finish("tool_use"));
+        call
+    }
+
+    /// Round 2: a clean text turn ending the loop.
+    fn end_call() -> Vec<StreamEvent> {
+        let mut call = text_block(0, "done");
+        call.extend(finish("end_turn"));
+        call
+    }
+
+    #[tokio::test]
+    async fn approval_approved_runs_tool() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_approval, rx_approval) = approval_channel();
+        // Pre-push an Approved decision matching the tool_use id.
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "call_1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mock = Arc::new(MockLlm::new(vec![write_call(), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            write_tools(),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            Some(rx_approval),
+        );
+
+        let reason = executor
+            .run(&mut history, "please write the file".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // [user(seed), assistant(text+tool_use), user(tool_result), assistant]
+        assert_eq!(history.len(), 4);
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert_eq!(content, "wrote:/tmp/x", "approved tool must run");
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_denied_skips_tool_with_permission_error() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Denied {
+                id: "call_1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mock = Arc::new(MockLlm::new(vec![write_call(), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            write_tools(),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            Some(rx_approval),
+        );
+
+        let reason = executor
+            .run(&mut history, "please write the file".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The tool never ran: the result is a permission-denied error fed back
+        // to the model (turn continues).
+        assert_eq!(history.len(), 4);
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert!(!content.contains("wrote:"), "tool must not have run: {content}");
+                assert!(content.contains("denied"), "must be a denial: {content}");
+                assert_eq!(*is_error, Some(true));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_none_skips_gating() {
+        // No approval channel ⇒ WriteSpec runs ungated (no event, no blocking).
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mock = Arc::new(MockLlm::new(vec![write_call(), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            write_tools(),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None, // no approval channel
+        );
+
+        let reason = executor
+            .run(&mut history, "please write the file".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert_eq!(content, "wrote:/tmp/x", "ungated tool must run");
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_readonly_tool_skips_gating() {
+        // EchoSpec (ReadOnly) + an approval channel with NO decision pushed: a
+        // read-only tool must not hit the gate (else `recv()` would block).
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (_tx_approval, rx_approval) = approval_channel(); // no decision pushed
+
+        let tmp = tempdir().expect("tempdir");
+        let workspace_stamp = tmp.path().display().to_string();
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut call1 = text_block(0, "echoing");
+        call1.extend(tool_use_block(1, "call_1", "echo", r#"{"text":"hi"}"#));
+        call1.extend(finish("tool_use"));
+        let mock = Arc::new(MockLlm::new(vec![call1, end_call()]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            Some(rx_approval),
+        );
+
+        // If the gate wrongly fires, recv() blocks → the timeout fails the test.
+        let reason = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            executor.run(&mut history, "echo hi".to_string()),
+        )
+        .await
+        .expect("read-only tool must skip the approval gate (no hang)")
+        .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Echo ran, stamped with the workspace path (context flowed through).
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert!(
+                    content.starts_with(&workspace_stamp),
+                    "echo ran ungated: {content}"
+                );
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_emits_approval_required_event() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_event, mut rx_event) = mpsc::channel(256);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "call_1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mock = Arc::new(MockLlm::new(vec![write_call(), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            write_tools(),
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx_event),
+            None,
+            None,
+            Some(rx_approval),
+        );
+
+        let reason = executor
+            .run(&mut history, "please write the file".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Drain the event channel; find the ApprovalRequired.
+        let mut found: Option<Event> = None;
+        while let Ok(ev) = rx_event.try_recv() {
+            if matches!(ev, Event::ApprovalRequired { .. }) {
+                found = Some(ev);
+            }
+        }
+        let ev = found.expect("an ApprovalRequired event was emitted");
+        match ev {
+            Event::ApprovalRequired {
+                id,
+                tool_name,
+                description,
+                approval_key,
+                approval_grouping_key,
+                intent_summary,
+                ..
+            } => {
+                assert_eq!(id, "call_1");
+                assert_eq!(tool_name, "write_file");
+                assert_eq!(description, "Writes a file (requires approval).");
+                assert!(!approval_key.is_empty(), "fingerprint must be built");
+                assert!(!approval_grouping_key.is_empty());
+                // write tool (not read-only) → the model's preceding text is attached.
+                assert!(
+                    intent_summary.as_ref().is_some_and(|s| s.contains("writing")),
+                    "intent summary must carry the model's text: {intent_summary:?}"
+                );
+            }
+            _ => unreachable!("matched ApprovalRequired above"),
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_retry_with_policy_treated_as_approved() {
+        // RetryWithPolicy carries a sandbox policy the framework `Tool::run` path
+        // can't honor; the by-design treatment is Approved (tool runs with the
+        // fixed context). Sandbox elevation threads in at the wire-in step.
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::RetryWithPolicy {
+                id: "call_1".to_string(),
+                policy: crate::sandbox::SandboxPolicy::default(),
+            })
+            .await
+            .unwrap();
+
+        let mock = Arc::new(MockLlm::new(vec![write_call(), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            write_tools(),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            Some(rx_approval),
+        );
+
+        let reason = executor
+            .run(&mut history, "please write the file".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert_eq!(content, "wrote:/tmp/x", "tool ran on RetryWithPolicy");
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 }
