@@ -139,9 +139,10 @@
 //!    `StopReason::Error`. The probe is stateless — the per-run recovery
 //!    counter is a local `u8` (like the transparent-retry counter), resetting
 //!    to 0 on a healthy stream round. The opt-in `CapacityController` (Gate A,
-//!    off by default since v0.8.11) and the reactive seam-2 path (provider
-//!    context-length rejection → recovery) are deferred. See "Known gaps in
-//!    capacity" below.
+//!    off by default since v0.8.11) is deferred. The reactive seam-2 path
+//!    (provider context-length rejection → recovery) is absorbed —
+//!    `stream_with_transparent_retry` classifies a pre-stream `Err` and runs
+//!    the same `recover_context_overflow`. See "Known gaps in capacity" below.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
 //! steer "Steer input accepted", compaction "Compaction completed/failed",
@@ -228,14 +229,15 @@
 //!   `accumulate_stream` dropped partial blocks on the first erroring item, so
 //!   the executor retried even when production would ship partial content — that
 //!   gap is now closed.
-//! - **pre-stream connection errors not retried** — `create_message_stream`
-//!   returning `Err` (connection refused / auth / context-length) propagates as a
-//!   hard fail here. Production treats those as context-recovery or hard-fail.
-//!   Reactive capacity recovery (classifying the error via
-//!   `is_context_length_error_message` and triggering `recover_context_overflow`)
-//!   is the immediate next sub-slice — the inline reducer is the prerequisite
-//!   (it surfaces the error message for classification); only mid-flight stream
-//!   errors retry today.
+//! - **pre-stream connection errors: reactive recovery absorbed** ✅ — a
+//!   `create_message_stream` `Err` is now classified via
+//!   `is_context_length_error_message` before propagating. A context-length
+//!   rejection triggers `try_recover_context_overflow` (emergency compaction);
+//!   on success the step restarts so the request snapshot picks up the
+//!   compacted transcript, and on failure (or a non-context-length error) the
+//!   turn hard-fails (mirrors `turn_loop.rs:620-633`). Only mid-flight stream
+//!   errors (from `reduce_stream`) retry transparently; pre-stream errors are
+//!   either recovered or hard-failed.
 //! - **no cancel-token short-circuit** — production's
 //!   `should_transparently_retry_stream` checks `!cancelled` to abort a retry
 //!   loop on a cancelled turn. This executor doesn't hold a `CancellationToken`
@@ -328,16 +330,19 @@
 //!   responsive cascade threads in with the inline-stream-reduction slice
 //!   (partial compaction needs the responsive state machine, which is
 //!   `Session`-internal).
-//! - **reactive seam-2 path deferred** — production also triggers
+//! - **reactive seam-2 path absorbed** ✅ — production also triggers
 //!   `recover_context_overflow` when the provider rejects the request with a
-//!   context-length error (`turn_loop.ts:620-633`). This executor's
-//!   `stream_with_transparent_retry` propagates pre-stream errors via `?`
-//!   without inspecting the message for `is_context_length_error_message`. The
-//!   inline stream reducer (§E inline-stream-reduction slice) is now in place
-//!   (the prerequisite), but the error-classification + recovery plumbing into
-//!   the stream error path is the immediate next sub-slice — `reduce_stream`
-//!   surfaces the error message, but `stream_with_transparent_retry` doesn't
-//!   yet route context-length errors to `recover_context_overflow`.
+//!   context-length error (`turn_loop.rs:620-633`). This executor now does the
+//!   same: `stream_with_transparent_retry` classifies a pre-stream `Err` via
+//!   `is_context_length_error_message` and, on a context-length rejection with
+//!   recovery budget remaining, runs `recover_context_overflow` and signals
+//!   the caller to restart the step. A successful stream open resets the
+//!   recovery budget (mirrors `turn_loop.rs:617`). The budget is bounded by
+//!   `MAX_CONTEXT_RECOVERY_ATTEMPTS` (2) — in practice a second reactive
+//!   recovery in the same turn almost always fails (the first compaction
+//!   leaves a short transcript; re-summarizing the single older summary is a
+//!   no-op), so the cap is a safety net the preflight path is more likely to
+//!   reach than this reactive path.
 //! - **opt-in `CapacityController` (Gate A) deferred** — the off-by-default
 //!   soft controller (`run_capacity_pre_request_checkpoint` /
 //!   `run_capacity_post_tool_checkpoint` / `run_capacity_error_escalation_checkpoint`)
@@ -380,7 +385,8 @@ use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSe
 use super::approval::ApprovalDecision;
 use super::context::{
     context_input_budget_for_provider, estimate_input_tokens_conservative,
-    MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
+    is_context_length_error_message, MAX_CONTEXT_RECOVERY_ATTEMPTS,
+    MIN_RECENT_MESSAGES_TO_KEEP,
 };
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
@@ -693,6 +699,25 @@ enum StreamReduceOutcome {
     Empty { error: String },
 }
 
+/// Outcome of one (possibly retried) stream round in
+/// [`HostAgentExecutor::stream_with_transparent_retry`]. Replaces the binary
+/// `Result<(Vec<ContentBlock>, Option<String>)>` so the caller can distinguish
+/// "content produced — proceed" from "reactive recovery succeeded — restart
+/// the step" (the seam-2 reactive context-length recovery signal).
+enum StreamRoundOutcome {
+    /// The stream produced content (clean completion or partial surfacing).
+    /// The assembled blocks and stop reason feed back into the transcript.
+    Content {
+        content: Vec<ContentBlock>,
+        stop_reason: Option<String>,
+    },
+    /// A pre-stream context-length rejection was classified (via
+    /// [`is_context_length_error_message`]) and emergency compaction succeeded
+    /// — the caller should `continue` the step loop so the request snapshot
+    /// picks up the compacted transcript (mirrors `turn_loop.rs:631-632`).
+    RecoveredContextOverflow,
+}
+
 /// Host-side [`AgentExecutor`] — the growing home for the production turn loop.
 ///
 /// Construct from the four framework collaborators: an [`LlmClientHandle`], a
@@ -957,7 +982,8 @@ pub fn new(
         StreamReduceOutcome::Complete { content, stop_reason }
     }
 
-    /// (2) per-step post-stream seam — transparent stream retry.
+    /// (2) per-step post-stream seam — transparent stream retry + reactive
+    /// capacity recovery.
     ///
     /// Drives `create_message_stream` + [`reduce_stream`] with a bounded
     /// transparent-retry loop. Only `StreamReduceOutcome::Empty` (the stream
@@ -975,18 +1001,28 @@ pub fn new(
     /// round resets the budget (`turn_loop.rs:1186`), so a bad prior step
     /// doesn't carry over.
     ///
-    /// Pre-stream connection errors (`create_message_stream` returning `Err`)
-    /// are **not** retried here — production treats those as hard-fail /
-    /// context-recovery (a separate guardrail, deferred). Only mid-flight
-    /// stream errors retry. The retry is transparent to the [`Callback`]:
-    /// `on_llm_start` / `on_llm_end` fire once per step, and a `Status` event
-    /// is the only retry surfacing (matching production's silent re-issue).
+    /// **Reactive context-length recovery (seam 2):** a pre-stream error
+    /// (`create_message_stream` returning `Err`) is classified via
+    /// [`is_context_length_error_message`] before propagating. A
+    /// context-length rejection triggers [`try_recover_context_overflow`] — if
+    /// emergency compaction succeeds, the round returns
+    /// [`StreamRoundOutcome::RecoveredContextOverflow`] so the caller restarts
+    /// the step (the request snapshot picks up the compacted transcript),
+    /// mirroring `turn_loop.rs:620-633`. Other pre-stream errors (connection /
+    /// auth / timeout) and budget-exhausted / failed-recovery context-length
+    /// errors propagate as a hard fail. A successful stream open resets the
+    /// reactive recovery budget (mirrors `turn_loop.rs:617`). The retry and
+    /// recovery are transparent to the [`Callback`]: `on_llm_start` /
+    /// `on_llm_end` fire once per step, and a `Status` event is the only
+    /// surfacing (matching production's silent re-issue / recovery).
     ///
     /// # Remaining gap vs production
     ///
     /// The cancel-token short-circuit (production's
-    /// `should_transparently_retry_stream` checks `!cancelled`) is deferred to
-    /// the wire-in slice — the bounded budget can't loop forever. Production's
+    /// `should_transparently_retry_stream` checks `!cancelled`, and
+    /// `recover_context_overflow` is guarded by `!cancelled`) is deferred to
+    /// the wire-in slice — the bounded budgets (`MAX_STREAM_RETRIES` = 3,
+    /// [`MAX_CONTEXT_RECOVERY_ATTEMPTS`] = 2) can't loop forever. Production's
     /// inner mid-flight retry (resetting the stream *inside* the event loop
     /// when no content was received yet, `turn_loop.rs:775-834`) is not
     /// replicated here; this executor uses the simpler outer retry (re-call
@@ -999,15 +1035,52 @@ pub fn new(
         client: &LlmClientHandle,
         request: MessageRequest,
         stream_retry_attempts: &mut u32,
-    ) -> Result<(Vec<ContentBlock>, Option<String>)> {
+        context_recovery_attempts: &mut u8,
+        history: &mut dyn ChatHistory,
+        system: Option<&SystemPrompt>,
+    ) -> Result<StreamRoundOutcome> {
         /// Cap on transparent stream retries — matches `turn_loop`'s
         /// `MAX_STREAM_RETRIES` (3). One initial attempt + 3 retries = 4 total
         /// `create_message_stream` calls before the failure surfaces.
         const MAX_STREAM_RETRIES: u32 = 3;
         loop {
-            // Pre-stream connection errors are hard-fails (context recovery is
-            // a separate guardrail). Only mid-flight stream errors retry.
-            let stream = client.create_message_stream(request.clone()).await?;
+            // A pre-stream error may be a context-length rejection — classify
+            // before propagating so reactive recovery (seam 2) can run. Only
+            // mid-flight stream errors (from `reduce_stream`) retry
+            // transparently; pre-stream errors are either recovered (restart
+            // the step) or hard-failed.
+            let stream = match client.create_message_stream(request.clone()).await {
+                Ok(s) => {
+                    // The provider accepted the request — the context was
+                    // fine. Reset the reactive recovery budget (mirrors
+                    // `turn_loop.rs:617`).
+                    *context_recovery_attempts = 0;
+                    s
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    if self
+                        .try_recover_context_overflow(
+                            client,
+                            history,
+                            system,
+                            &message,
+                            context_recovery_attempts,
+                        )
+                        .await
+                    {
+                        // Recovery succeeded — signal the caller to restart
+                        // the step so the request snapshot picks up the
+                        // compacted transcript (mirrors `turn_loop.rs:631-632`).
+                        // Reset the stream-retry budget too (fresh step).
+                        *stream_retry_attempts = 0;
+                        return Ok(StreamRoundOutcome::RecoveredContextOverflow);
+                    }
+                    // Not a context-length error, no probe, budget exhausted,
+                    // or recovery failed — hard-fail the turn.
+                    return Err(anyhow::anyhow!(message));
+                }
+            };
             match self.reduce_stream(stream).await {
                 StreamReduceOutcome::Complete {
                     content,
@@ -1016,7 +1089,7 @@ pub fn new(
                     // Healthy round → reset the retry budget so a bad prior
                     // step doesn't carry over (mirrors `turn_loop.rs:1186`).
                     *stream_retry_attempts = 0;
-                    return Ok((content, stop_reason));
+                    return Ok(StreamRoundOutcome::Content { content, stop_reason });
                 }
                 StreamReduceOutcome::Partial {
                     content,
@@ -1033,7 +1106,7 @@ pub fn new(
                         "Stream interrupted after partial content; surfacing what was received: {error}"
                     ))
                     .await;
-                    return Ok((content, stop_reason));
+                    return Ok(StreamRoundOutcome::Content { content, stop_reason });
                 }
                 StreamReduceOutcome::Empty { error } => {
                     // Stream died before any content — safe to retry
@@ -1052,6 +1125,79 @@ pub fn new(
                 }
             }
         }
+    }
+
+    /// Reactive seam-2 context-length recovery. When the provider rejects a
+    /// request with a context-length error (classified via
+    /// [`is_context_length_error_message`]), run emergency compaction via
+    /// [`recover_context_overflow`] and signal the caller to restart the step
+    /// — mirrors `turn_loop.rs:622-632`. Returns `true` only when **all** of:
+    /// a [`CapacityProbe`] is present, the error is a context-length
+    /// rejection, the recovery budget (`*context_recovery_attempts` bounded by
+    /// [`MAX_CONTEXT_RECOVERY_ATTEMPTS`]) allows, the model's budget is known,
+    /// **and** [`recover_context_overflow`] succeeded.
+    ///
+    /// Any miss returns `false` so [`stream_with_transparent_retry`] hard-fails
+    /// the turn: a non-context-length error (connection / auth / timeout), a
+    /// missing probe (capacity disabled), an unknown model (no budget to judge
+    /// recovery against), or budget exhaustion all propagate as a hard fail.
+    /// On success the budget is incremented (mirrors `turn_loop.rs:631`); the
+    /// reset lives in [`stream_with_transparent_retry`] on a successful stream
+    /// open (`turn_loop.rs:617`).
+    ///
+    /// In practice a second reactive recovery in the same turn almost always
+    /// fails: the first compaction leaves a short transcript (summary + recent
+    /// tail), and re-summarizing the single older summary message is a no-op
+    /// (no shrinkage ⇒ `recover_context_overflow` returns `false`). The
+    /// [`MAX_CONTEXT_RECOVERY_ATTEMPTS`] cap is therefore a safety net that the
+    /// preflight path (`run_capacity_preflight`) is far more likely to reach
+    /// than this reactive path — matching production's defensive `MAX = 2`.
+    async fn try_recover_context_overflow(
+        &self,
+        client: &LlmClientHandle,
+        history: &mut dyn ChatHistory,
+        system: Option<&SystemPrompt>,
+        error_message: &str,
+        context_recovery_attempts: &mut u8,
+    ) -> bool {
+        let Some(probe) = &self.capacity else {
+            // No capacity probe ⇒ reactive recovery is disabled (mirrors the
+            // preflight's `None` ⇒ `Proceed`, but here a pre-stream error has
+            // no in-band fallback — hard-fail).
+            return false;
+        };
+        if !is_context_length_error_message(error_message) {
+            return false;
+        }
+        if *context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
+            self.emit_status(format!(
+                "Context length exceeded but recovery budget exhausted \
+                 ({MAX_CONTEXT_RECOVERY_ATTEMPTS} attempts); failing the turn."
+            ))
+            .await;
+            return false;
+        }
+        let Some(target_budget) =
+            context_input_budget_for_provider(probe.api_provider, &probe.model)
+        else {
+            // Unknown model ⇒ no budget ⇒ can't judge recovery. Hard-fail
+            // (mirrors the preflight's `None` budget ⇒ `Proceed`, but here the
+            // provider already rejected — there's nothing to fall through to).
+            return false;
+        };
+        let recovered = self
+            .recover_context_overflow(
+                client,
+                history,
+                system,
+                target_budget,
+                "provider context-length rejection",
+            )
+            .await;
+        if recovered {
+            *context_recovery_attempts = context_recovery_attempts.saturating_add(1);
+        }
+        recovered
     }
 
     /// (3) per-tool post-edit seam — collect LSP diagnostics after a successful
@@ -1351,7 +1497,8 @@ pub fn new(
             // request goes out and will likely be rejected by the provider
             // (mirrors production: `recover_context_overflow` returning false
             // falls through without `continue`). The reactive seam-2 path
-            // (provider context-length rejection → recovery) is deferred.
+            // (provider context-length rejection → recovery) now catches such
+            // a rejection inside `stream_with_transparent_retry`.
             self.emit_status(format!(
                 "Context overflow recovery failed; sending request anyway \
                  (~{estimated} vs ~{target_budget} tokens)."
@@ -1721,19 +1868,35 @@ impl HostAgentExecutor {
 
             callback.on_llm_start(&request).await;
             // (2) per-step post-stream seam — ✅ transparent-retry (re-issue
-            // when the stream dies mid-flight before any content commits).
-            // `on_llm_start` fires once per step; retries are transparent to
-            // the Callback. Subagent handoff / thinking-only handling land here
-            // later.
+            // when the stream dies mid-flight before any content commits);
+            // ✅ reactive capacity recovery (a pre-stream context-length
+            // rejection triggers emergency compaction and restarts the step).
+            // `on_llm_start` fires once per step; retries and recovery are
+            // transparent to the Callback. Subagent handoff / thinking-only
+            // handling land here later.
             let (content, _stop_reason) = match self
-                .stream_with_transparent_retry(&client, request, &mut stream_retry_attempts)
+                .stream_with_transparent_retry(
+                    &client,
+                    request,
+                    &mut stream_retry_attempts,
+                    &mut context_recovery_attempts,
+                    history,
+                    system.as_ref(),
+                )
                 .await
             {
-                Ok(result) => {
-                    // A healthy round resets the capacity recovery budget
+                Ok(StreamRoundOutcome::Content { content, stop_reason }) => {
+                    // The reactive recovery budget is reset on a successful
+                    // stream open inside `stream_with_transparent_retry`
                     // (mirrors `turn_loop.rs:617`).
-                    context_recovery_attempts = 0;
-                    result
+                    (content, stop_reason)
+                }
+                Ok(StreamRoundOutcome::RecoveredContextOverflow) => {
+                    // Emergency compaction succeeded on a context-length
+                    // rejection — restart the step so the request snapshot
+                    // picks up the compacted transcript (mirrors
+                    // `turn_loop.rs:631-632`).
+                    continue;
                 }
                 Err(e) => return Err(e),
             };
@@ -2078,10 +2241,16 @@ mod tests {
     ///   simulates a mid-flight stream death *after* content was produced.
     ///   Returns `StreamReduceOutcome::Partial` (the bail-on-error gap closure:
     ///   partial content is surfaced, not retried).
+    /// - `StreamOpenErr` makes `create_message_stream` itself return `Err` —
+    ///   simulates a pre-stream provider rejection (e.g. a context-length
+    ///   error), the seam-2 reactive-recovery trigger. Distinct from
+    ///   `StreamErr`, which opens the stream successfully then yields a
+    ///   mid-flight `Err` item (drives transparent retry, not recovery).
     enum MockRound {
         Events(Vec<StreamEvent>),
         StreamErr(String),
         EventsThenErr(Vec<StreamEvent>, String),
+        StreamOpenErr(String),
     }
 
     struct MockLlm {
@@ -2206,6 +2375,11 @@ mod tests {
                         items.push(Err(anyhow::anyhow!(msg)));
                         Ok(Box::pin(futures_util::stream::iter(items)) as StreamEventBox)
                     }
+                    // Pre-stream rejection: `create_message_stream` itself
+                    // returns `Err` (the stream never opens). Drives the
+                    // seam-2 reactive-recovery tests. The request was already
+                    // recorded above, so `requests()` still sees this call.
+                    MockRound::StreamOpenErr(msg) => Err(anyhow::anyhow!(msg)),
                 }
             })
         }
@@ -4485,6 +4659,225 @@ mod tests {
         // MAX), so the request went out (Proceed) and the mock replied.
         assert_eq!(reason, StopReason::NoToolCalls);
         assert_eq!(mock.compaction_calls(), 1);
+    }
+
+    // === reactive capacity recovery (seam 2) ===============================
+    //
+    // When the provider rejects a request with a context-length error before
+    // the stream opens, the executor classifies it (`is_context_length_error_message`)
+    // and triggers `recover_context_overflow`, then restarts the step so the
+    // request snapshot picks up the compacted transcript (mirrors
+    // `turn_loop.rs:620-633`). `MockRound::StreamOpenErr` makes
+    // `create_message_stream` itself return `Err` (a pre-stream rejection),
+    // distinct from `StreamErr` (mid-flight death → transparent retry).
+
+    /// A context-length rejection recovers via emergency compaction and the
+    /// turn proceeds (happy path). The transcript is seeded under the local
+    /// budget estimate so the preflight (seam 1) does not fire — the rejection
+    /// comes from the provider, exercising the reactive seam-2 path.
+    #[tokio::test]
+    async fn reactive_recovery_recovers_on_context_length_error() {
+        let mut sess = fresh_session();
+        // 10 text messages (~750 tokens) ≪ the 3072 Ollama/llama2 budget, so
+        // the preflight proceeds; the provider "rejects" with a context-length
+        // error (its real count exceeds its limit).
+        seed_text_messages(&mut sess, 10);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let ctx_len_msg = "This model's maximum context length is 128000 tokens, \
+                           however you requested 200000 tokens.";
+        let mock = Arc::new(
+            MockLlm::with_rounds(vec![
+                MockRound::StreamOpenErr(ctx_len_msg.to_string()),
+                MockRound::Events(end_call()),
+            ])
+            .with_compaction_summary("SUMMARY"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run should succeed after reactive recovery");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // The reactive recovery ran one forced-compaction LLM call.
+        assert_eq!(mock.compaction_calls(), 1);
+        // create_message_stream was called twice: the rejected attempt, then
+        // the post-recovery successful round.
+        assert_eq!(mock.requests().len(), 2);
+        // The transcript was compacted (10 seeded + user → a few messages).
+        assert!(history.len() <= 6, "history len = {}", history.len());
+    }
+
+    /// A non-context-length pre-stream error (timeout) is not recovered — it
+    /// hard-fails the turn immediately, with no compaction attempt.
+    #[tokio::test]
+    async fn reactive_recovery_non_context_length_error_hard_fails() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 10);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        // "Connection timed out" classifies as Timeout, not context-length.
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::StreamOpenErr("Connection timed out".to_string()),
+        ]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let err = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect_err("non-context-length error should hard-fail");
+        assert!(
+            err.to_string().contains("Connection timed out"),
+            "err = {err}"
+        );
+        // No recovery attempted for a non-context-length error.
+        assert_eq!(mock.compaction_calls(), 0);
+    }
+
+    /// A context-length rejection where emergency compaction fails (and the
+    /// transcript can't be trimmed below the local estimate) hard-fails the
+    /// turn — recovery failure is not a fall-through-to-Proceed here (unlike
+    /// the preflight path), because the provider already rejected the request.
+    #[tokio::test]
+    async fn reactive_recovery_failed_hard_fails() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 10);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let ctx_len_msg = "This model's maximum context length is 128000 tokens.";
+        // Compaction errors, and the transcript is already under the local
+        // estimate so the hard-trim can't shrink it → recovery fails.
+        let mock = Arc::new(
+            MockLlm::with_rounds(vec![MockRound::StreamOpenErr(ctx_len_msg.to_string())])
+                .with_compaction_error("mock compaction error"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let err = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect_err("recovery failure should hard-fail");
+        assert!(
+            err.to_string().contains("maximum context length"),
+            "err = {err}"
+        );
+        // Compaction was attempted (1 create_message call) but failed.
+        assert_eq!(mock.compaction_calls(), 1);
+    }
+
+    /// Without a capacity probe, reactive recovery is disabled — a
+    /// context-length rejection hard-fails (no in-band fallback).
+    #[tokio::test]
+    async fn reactive_recovery_without_capacity_probe_hard_fails() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 10);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let ctx_len_msg = "This model's maximum context length is 128000 tokens.";
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::StreamOpenErr(ctx_len_msg.to_string()),
+        ]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // no capacity probe ⇒ reactive recovery disabled
+        );
+        let err = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect_err("no probe ⇒ context-length error hard-fails");
+        assert!(
+            err.to_string().contains("maximum context length"),
+            "err = {err}"
+        );
+        assert_eq!(mock.compaction_calls(), 0);
+    }
+
+    /// Reactive recovery surfaces status events on the host's `Event` channel
+    /// (the "Emergency context compaction started/complete" guardrail
+    /// surfacing), proving the host UI sees the recovery happen.
+    #[tokio::test]
+    async fn reactive_recovery_surfaces_status_events() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 10);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let ctx_len_msg = "This model's maximum context length is 128000 tokens.";
+        let mock = Arc::new(
+            MockLlm::with_rounds(vec![
+                MockRound::StreamOpenErr(ctx_len_msg.to_string()),
+                MockRound::Events(end_call()),
+            ])
+            .with_compaction_summary("SUMMARY"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run should succeed after reactive recovery");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 1);
+        // The Event channel received the compaction-started + complete
+        // status messages.
+        let events = drain(&mut rx);
+        let recovery_surfaced = events.iter().any(|e| match e {
+            Event::Status { message, .. } => message.contains("compaction"),
+            _ => false,
+        });
+        assert!(
+            recovery_surfaced,
+            "expected a compaction status event, got: {events:?}"
+        );
     }
 
     // === inline stream reduction (§E) =======================================

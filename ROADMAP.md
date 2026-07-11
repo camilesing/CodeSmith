@@ -926,6 +926,55 @@ reactive capacity recovery（需 error message 供 `is_context_length_error_mess
 
 ---
 
+**进度（2026-07-11 §E reactive capacity recovery 落地，seam-2 前置闭合，`feat/pluggable-framework-core`）：**
+
+§E 的第十三个切片落地——把生产 `handle_deepseek_turn` 的 reactive context-length recovery（seam 2）吸收进 `HostAgentExecutor`。当 LLM provider 在流开起前以 context-length 错误拒绝请求时，执行器先用 `is_context_length_error_message` 分类该错误，命中即跑
+`recover_context_overflow`（已吸收的 capacity 恢复级联），成功则重启 step 使请求快照拾起压缩后的 transcript（镜像 `turn_loop.rs:620-633`）；非 context-length 错误或恢复失败则硬失败。这是 §E inline 流归约切片（第十二切片）落地的"前置价值兑现"——
+内联归约器已 surface 错误消息供分类，本切片接通 error-classification + recovery plumbing。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；
+生产路径 `handle_deepseek_turn` 不受影响。
+
+- **`StreamRoundOutcome` 三态**（新 enum）：替换 `stream_with_transparent_retry` 的 binary `Result<(Vec<ContentBlock>, Option<String>)>`。`Content { content, stop_reason }`——流产出内容（clean completion 或 partial surfacing）；
+`RecoveredContextOverflow`——pre-stream context-length 拒绝经 emergency compaction 恢复成功，signal 调用者 `continue` 重启 step（请求快照拾起压缩后的 transcript，镜像 `turn_loop.rs:631-632`）。
+- **`try_recover_context_overflow` helper**（新 `async fn`，`&self` 方法）：分类 + 预算 + 恢复。门控序列（全 `&&`，任一 miss 返 `false` 使 caller 硬失败）：
+  `self.capacity` 为 `Some`（probe 存在）→ `is_context_length_error_message(error_message)`（非 context-length 错误不恢复）→
+  `*context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS`（2，预算耗尽则发 status 并硬失败）→ `context_input_budget_for_provider(probe.api_provider, &probe.model)` 为 `Some`（未知模型无 budget 则硬失败）→
+  `recover_context_overflow(client, history, system, target_budget, "provider context-length rejection").await`（复用已吸收的三阶段级联：micro-compact → forced full LLM compaction → hard trim）。
+  成功则 `*context_recovery_attempts = saturating_add(1)`（镜像 `turn_loop.rs:631`）。budget reset 不在此处——在 `stream_with_transparent_retry` 的 stream-open Ok 臂（镜像 `turn_loop.rs:617`）。
+- **`stream_with_transparent_retry` 重构**：签名 +3 参数（`context_recovery_attempts: &mut u8` / `history: &mut dyn ChatHistory` / `system: Option<&SystemPrompt>`）+ 返回 `Result<StreamRoundOutcome>`。
+  把 `client.create_message_stream(request.clone()).await?` 改为 `match`：`Ok(s)` → `*context_recovery_attempts = 0`（stream 开起即 provider 接受请求，context 无恙，镜像 `turn_loop.rs:617`）+ 取 stream；
+  `Err(e)` → `try_recover_context_overflow(...)` 成功则 `*stream_retry_attempts = 0`（fresh step）+ 返 `RecoveredContextOverflow`，否则 `Err`。三个 `reduce_stream` 臂的 `return Ok((content, stop_reason))` 改为 `return Ok(StreamRoundOutcome::Content { content, stop_reason })`。
+- **`run_inner` 调用点**：传 +3 参数（`history` / `system.as_ref()` 借用，与 `run_capacity_preflight` 同 pattern；reborrow 在调用返回后释放，不与后续 `history.push` 冲突）。
+  `Ok(StreamRoundOutcome::Content { content, stop_reason })` → `(content, stop_reason)`；`Ok(RecoveredContextOverflow)` → `continue`（重启 step）；`Err(e)` → `return Err(e)`。
+  移除旧 `Ok(result) => context_recovery_attempts = 0`（现由 stream-open Ok 臂负责，更贴 production 的 `turn_loop.rs:617` 重置时机——stream 开起即重置，而非整轮 Ok 后）。
+- **reset 语义变更（行为对齐，非 break）**：旧代码在整轮 Ok（Complete/Partial）后重置 `context_recovery_attempts`；新代码在 stream 开起（`create_message_stream` Ok）即重置。两者对 Complete/Partial 等价；对 Empty→retry 路径，新代码在首次 stream 开起即重置（匹配 production 617），旧代码不重置——这是对 production 行为的更忠实现，既有透明重试测试不受影响（它们不触发 capacity recovery，`context_recovery_attempts` 恒 0）。
+- **刻意部分桥接（by design）**：
+  - **reset-on-stream-open vs reset-on-round-Ok**：见上"reset 语义变更"——选择贴 production 的 stream-open 重置。
+  - **第二个 reactive recovery 几乎必失败**：首次 compaction 后 transcript 收缩为 summary + recent tail（~5 消息），再压缩唯一的较旧 summary 消息是 no-op（无 shrinkage ⇒ `recover_context_overflow` 返 `false`）。故 `MAX_CONTEXT_RECOVERY_ATTEMPTS`（2）cap 是安全网，preflight 路径比 reactive 路径更可能触达——匹配 production 的防御性 `MAX = 2`。
+  - **非 context-length pre-stream 错误硬失败**：connection / auth / timeout 错误径直 `Err`（production 把这类当 hard-fail / context-recovery 的独立 guardrail；本执行器不重试、不恢复，直接硬失败）。reactive 路径只覆盖 context-length 拒绝。
+  - **cancel-token 短路延后**：production 在 `!cancelled` 时中止 recovery；本执行器无 `CancellationToken`。有界 `MAX_CONTEXT_RECOVERY_ATTEMPTS`（2）防死循环；短路在 wire-in 步接入（同 transparent-retry/steer/approval/capacity preflight 的既有 gap）。
+  - **同 compaction/capacity 的 recovery gaps**：`recover_context_overflow` 调 `compact_messages_safe` 时同样缺 `merge_compaction_summary` / `reinject_compaction_attachments` / `post_compact_cleanup` / `enhancements` / working-set pins/paths（见 "Known gaps in compaction"）。
+- **test doubles 扩展**：`MockRound` 新增 `StreamOpenErr(String)` variant——`create_message_stream` 本身返 `Err`（stream 不开起，模拟 pre-stream provider 拒绝），与 `StreamErr`（stream 开起后产出 mid-flight `Err` item，驱动透明重试）区分；request 仍在 match 前 push 进 `requests()`（故 `requests().len()` 仍记录该失败调用）。
+  5 个新测试：`reactive_recovery_recovers_on_context_length_error`（10 条 seed 消息 ≪ 3072 budget → preflight 不触 → `StreamOpenErr(ctx_msg)` → 恢复（compaction_calls==1）→ `RecoveredContextOverflow` → continue → `end_call` → NoToolCalls；requests().len()==2；history 收缩），
+  `reactive_recovery_non_context_length_error_hard_fails`（`StreamOpenErr("Connection timed out")` → Timeout 分类非 context-length → `Err`；compaction_calls==0），
+  `reactive_recovery_failed_hard_fails`（`StreamOpenErr(ctx_msg)` + `with_compaction_error` → 恢复尝试失败（compaction error + transcript 已在本地 estimate 之下无法 trim）→ `Err`；compaction_calls==1），
+  `reactive_recovery_without_capacity_probe_hard_fails`（无 capacity probe → `try_recover_context_overflow` 返 false → `Err`；compaction_calls==0），
+  `reactive_recovery_surfaces_status_events`（event channel 收到含 "compaction" 的 `Event::Status`，证明恢复 surfacing 走 host Event 通道）。共 48 个 host_executor 测试通过（43 既有 + 5 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零 warning；`cargo test -p codesmith-agent-runtime --lib host_executor` 48 通过（43 既有 + 5 新 reactive-recovery）；
+`cargo test -p codesmith-agent-runtime --lib` 1054 通过（0 失败、2 ignored，原 1049 +5）；`cargo test -p codesmith-agent --lib` 79 通过；
+`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关；agent-runtime test build 10 warning 均既有——9 pre-existing + 1 `mut partial` 属前一 inline-stream-reduction 切片的测试，本轮未触碰——零新 warning）。
+
+**下一聚焦工作：**
+- **early-tool-start**（seam 2）：在 `reduce_stream` 中检测 `ContentBlockStart::ToolUse` → `ContentBlockStop` 后，preflight 校验 + `tokio::spawn` 提前 dispatch read-only tool。需 tool catalog + approval + loop-guard——可能随 wire-in 切片（需 `ToolDispatcher` 接通）。block-lifecycle 事件（`MessageStarted`/`ThinkingStarted` 等）可同期补上（在 `reduce_stream` 的 `ContentBlockStart`/`ContentBlockStop` 分支发 lifecycle 事件——需 CORE `Callback` 新方法或扩展 `StreamDelta`）。inline 流归约 + reactive recovery 均已就位。
+- **subagent**（seam 3，sub-agent handoff/hold）、**cycle**（seam 1/4，per-file cycle state）：后续 guardrail。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片，需完整 `CapacityController` 状态机。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路（preflight + reactive）+ loop 顶取消检查，在 wire-in 步或单独小切片接入。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery（preflight + reactive）。
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
