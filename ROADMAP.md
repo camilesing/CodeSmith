@@ -707,6 +707,84 @@ intent summary），再阻塞在审批决策 channel 上按 wire tool id 配对�
 
 ---
 
+**进度（2026-07-10 §E compaction 吸收落地，第六个 guardrail，seam-1 pre-request，`feat/pluggable-framework-core`）：**
+
+§E 的第十个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第六个（上下文 compaction）吸收进
+`HostAgentExecutor`。compaction 把 transcript 压在模型上下文窗内：每步顶部（steer 排空之后、LSP flush 之前）跑两段收缩，
+镜像 `handle_deepseek_turn` 的 pre-request compaction（`turn_loop.rs:378-440`）——(a) **micro-compaction**：累计 tool-result
+字节触 32KB cache trigger 即 `micro_compact_messages` 把旧 tool result 改写为 cleared placeholder（无 LLM 调用）；
+(b) **auto-compaction**：`should_compact` 过阈（keep-recent 窗外的可摘要消息够多）即 `compact_messages_safe` 调 LLM 出摘要、
+替换 transcript。两段皆经 `ChatHistory::clear()` + `push()` loop 整体替换（trait 无 bulk replace——复用其原语，同 "不动核心
+trait" 先例）。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+选 compaction 先于 capacity：capacity 的 `recover_context_overflow` 恢复级联复用 `compact_messages_safe`/`micro_compact`，
+compaction 机制是 capacity 的前置；且 compaction 只 seam-1（capacity 需 seam 1+4+reactive seam 2，更重）。
+
+- **`CompactionProbe` collaborator**（新 `pub struct`，镜像 `LspProbe` 的 interior-mutability 模式）：`config: CompactionConfig` +
+  `workspace: PathBuf` + `micro_state: Arc<std::sync::Mutex<MicroCompactState>>` + `circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>`。
+  `std::sync::Mutex`（同 steer/LSP——锁不跨 `await`：调用 async `compact_messages_safe` 前先 `history.messages().to_vec()` 克隆出
+  消息释放借用）。因 `Mutex` 在执行器结构体上，breaker / micro_state 跨 `run` 调用持久（匹配生产 `Engine.micro_compact_state` /
+  `.compaction_circuit_breaker` 字段——turn N 失败的 compaction 仍使 turn N+1 的 breaker 被跳闸）。breaker 跳闸（连续 3 次失败）
+  抑制后续 compaction 尝试。`CompactionProbe::new(config, workspace)` 构造；`#[cfg(test)]` 暴露 `breaker()` 供持久性测试断言。
+- **`compaction` 字段**：`HostAgentExecutor` 新增 `compaction: Option<CompactionProbe>` 字段 + 第 9 个构造器参数（非-compaction
+  embed/测试传 `None`——27 个既有测试构造器改传第 9 个 `None`）。
+- **`run_compaction`（seam 1 pre-request）**（`async fn run_compaction(&self, client, history)`）：`None` / `!config.enabled` → return；
+  breaker `should_attempt()` 不过 → return（被节流）；micro 阶段：`should_trigger_micro_compact(messages, &state, false)` → 克隆消息、
+  `micro_compact_messages(&mut, &mut state)`、清出字节 >0 则 `clear()`+push loop 应用；auto 阶段：`should_compact(history.messages(),
+  &config, Some(&workspace), None, None)` 不过 → return（镜像生产门控——`compact_messages_safe` 内部**不**在阈下早返，无此门会
+  对 in-budget transcript 白调一次 LLM）；过则克隆消息（释放借用后再 await）、`compact_messages_safe(client.as_ref(), &msgs, &config,
+  Some(&workspace), None, None, None)` → Ok(result)：`clear()`+push `result.messages`、`record_success()`、发 status；
+  Err(e)：`record_failure()`、发 status（非 transient 错误即时返回自 `compact_messages_safe`——测试无 backoff）。
+- **`run_inner` 接线**：在 `drain_steers` 之后、`flush_pending_lsp_diagnostics` 之前插 `self.run_compaction(&client, history).await;`
+  （生产顺序：steer→compaction→…→LSP flush→request）。更新 seam-1 注释（compaction 已吸收；capacity/cycle 仍 "to come"）。
+- **刻意部分桥接（by design）**：
+  - **summary-prompt merge 丢弃**：`compact_messages_safe` 算出 `CompactionResult.summary_prompt`（卷起的摘要，本应 `merge_compaction_summary`
+    折入 system prompt），但框架 `ChatHistory` 无 system-prompt setter（执行器 system prompt 是静态 `config.system`）——算出即丢。
+    LLM 仍能在卷起的 transcript 体里看到摘要，缺的只是 system-prompt 重注入。延后到 wire-in 接 `Session`（其 system prompt 可变）。
+  - **attachment reinject 延后**：生产 `reinject_compaction_attachments` 重插被压掉的 plan/todos/subagents/read-file 快照（host 耦合，
+    `session.plans`/`.todos`/sub-agent state）；框架 `ChatHistory` 不携带。延后到 wire-in（同 LSP 的 `apply_patch` 路径延迟性质）。
+  - **post-compact cleanup 延后**：生产 `post_compact_cleanup` 在 compaction 后强重建 working set + 重置 per-file cycle state
+    （transcript 已变，working set 源已 stale）；working set/cycle state host 耦合，不经 `ChatHistory`——延后 wire-in。
+  - **enhancements 传 `None`**：生产 `build_compaction_enhancements` 供 PreCompact hooks + session-memory-first 摘要 seed；框架
+    `Callback`/`ChatHistory` 暂不带其面，`compact_messages_safe` 以 `enhancements=None` 调。随 PreCompact hook 切片接入。
+  - **working-set pins/paths 传 `None`**：生产把 `external_pins`/`external_working_set_paths`（host 派生 working set）喂给
+    `should_compact`/`compact_messages_safe` 以保 pinned 文件；执行器无 working set 派生，两者皆 `None`（用内部派生路径，同
+    `recover_context_overflow` 的 forced path）。随 working-set 切片接入。
+  - **无 `emit_session_updated`**：同 LSP flush 的合成 push，`clear()`+`push()` 替换不经 `ChatHistory` 路径发 session-updated UI 事件。
+  - **测试无 backoff**：失败只记 breaker + 发 status（无 sleep）；生产在重试前加指数 backoff。非 transient 错误即时返回自
+    `compact_messages_safe`，故 breaker 连续失败跳闸（3）即节流。backoff 延后 wire-in。
+- **test doubles**：`MockLlm` 扩展 3 字段（`compaction_reply: Mutex<Option<MessageResponse>>` + `compaction_error: Mutex<Option<String>>` +
+  `compaction_calls: Mutex<u32>`）+ 3 方法（`with_compaction_summary(self, &str)`、`with_compaction_error(self, &str)`、`compaction_calls() -> u32`）；
+  `create_message` 增计数 + 返 canned reply/error（原 `bail!` 行为保留为 reply=None 时）。测试 helper：`compaction_config_low_threshold()`
+  （阈 100，触 auto-compact）、`compaction_config_high_threshold()`（967000，不触）、`compaction_config_disabled()`（`enabled:false`）、
+  `seed_text_messages(sess, n)`、`seed_large_file_read(sess)`（>32KB 触 micro trigger）。6 个新测试：`compaction_none_is_noop`（`None`→无变、
+  NoToolCalls）、`compaction_disabled_skips_even_when_over_threshold`（`enabled:false`→无变）、`micro_compact_clears_old_tool_results`
+  （大 tool result 触 32KB→清为 placeholder、`compaction_calls()==0` 无 LLM）、`auto_compact_summarizes_when_over_threshold`（12 消息+阈 100→
+  `should_compact` 过→mock "SUMMARY"→transcript 收缩、`compaction_calls()==1`）、`compaction_circuit_breaker_records_failure`（mock Err→
+  `consecutive_failures()==1`、status 发）、`compaction_cross_turn_circuit_breaker_persistence`（interior-mutability 证：run1 breaker=1、
+  run2 同执行器仍=1，跨 `run` 持久）。共 33 个 host_executor 测试通过（27 既有 + 6 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning；`cargo test -p codesmith-agent-runtime --lib host_executor`
+33 通过（27 既有 + 6 新 compaction）；`cargo test -p codesmith-agent-runtime --lib` 1037 通过（0 失败、2 ignored，原 1031 +6）；
+`cargo test -p codesmith-agent --lib` 79 通过；`cargo build --workspace` 全绿（tui warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **下一个 guardrail**：建议 **capacity**（seam 1 pre-request + seam 4 post-tool；硬 token-budget preflight 无条件运行——需
+  `api_provider` + token 计数 + `recover_context_overflow` 级联，是迄今最重 guardrail，可能需拆多切片，建议先单独吸收硬
+  preflight 而非 off-by-default 的软 `CapacityController`）。compaction 已证 `std::sync::Mutex` + 克隆-再-await seam-1 可行，
+  且 capacity 的 overflow 恢复级联可直接复用已吸收的 `compact_messages_safe`/`micro_compact`/breaker 机制（本切片的前置价值兑现）。
+- **inline 流归约**（替换 `accumulate_stream` 调用）：闭合 transparent-retry 的 `accumulate_stream` bail-on-error 缺口
+  + 接通 stream delta（`MessageDelta`/`ThinkingDelta`）直发 `tx_event` + early-tool-start + steer mid-stream buffer。
+  是多个 guardrail / 次级排空点的共同前置。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + loop 顶取消检查，在 wire-in
+  步或单独小切片接入。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins /
+  `emit_session_updated` 随 wire-in 切片接入（`Session` 接通后 system prompt 可变 + working set 派生可达）。
+- 其余 guardrail（capacity/subagent/cycle）+ `on_llm_*` 桥接 / wire tool-call id 透传 /
+  `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——后续切片。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

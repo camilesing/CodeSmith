@@ -22,7 +22,7 @@
 //!
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (reusing
 //! [`accumulate_stream`](codesmith_agent::executor::accumulate_stream) for stream
-//! reduction) and absorbs the production guardrails slice by slice. Five are in:
+//! reduction) and absorbs the production guardrails slice by slice. Six are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -91,9 +91,36 @@
 //!    design note); the dynamic override threads in at the wire-in step. See
 //!    "Known gaps in approval" below for the cancel-token, sandbox-elevation,
 //!    and static-derivation gaps.
+//! 6. **compaction** ([`run_compaction`](HostAgentExecutor::run_compaction)) —
+//!    keeps the transcript within the model's context window. At the top of
+//!    each step (after steer drain, before the LSP flush), the executor runs a
+//!    two-stage shrink mirroring `handle_deepseek_turn`'s pre-request
+//!    compaction (`turn_loop.rs:378-440`): (a) **micro-compaction** — if the
+//!    accumulated tool-result bytes breach the `32KB` cache trigger,
+//!    [`micro_compact_messages`] rewrites stale tool results to the cleared
+//!    placeholder (no LLM call); then (b) **auto-compaction** — if
+//!    [`should_compact`] passes (enough messages past the keep-recent window),
+//!    [`compact_messages_safe`] calls the LLM for a summary and replaces the
+//!    transcript with the compacted one. Both stages wholesale-replace the
+//!    transcript via `ChatHistory::clear()` + `push()` loop (the trait exposes
+//!    no bulk replace — this composes its primitives, matching the "don't
+//!    change core traits" precedent). The probe carries
+//!    `micro_state: Arc<std::sync::Mutex<MicroCompactState>>` and
+//!    `circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>` —
+//!    `std::sync::Mutex` like steer / LSP (no lock crosses an `await`: messages
+//!    are cloned out before the async `compact_messages_safe` call), and
+//!    because the `Mutex`es live on the executor struct the breaker / micro
+//!    state persist across `run` invocations on the same executor (matching
+//!    the production `Engine.micro_compact_state` / `.compaction_circuit_breaker`
+//!    fields — a failed compaction on turn N still trips the breaker on turn
+//!    N+1). A tripped breaker (3 consecutive failures) throttles further
+//!    compaction attempts. See "Known gaps in compaction" below for the
+//!    summary-prompt merge, attachment reinject, post-compact cleanup, and
+//!    enhancements deferrals.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
-//! steer "Steer input accepted") surfaces over the host's `Event` channel
+//! steer "Steer input accepted", compaction "Compaction completed/failed")
+//! surfaces over the host's `Event` channel
 //! (`event_tx`) — **not** via the framework `Callback`: guardrails are
 //! host-side concerns and the `Callback` trait stays untouched per ROADMAP §E.
 //!
@@ -101,16 +128,18 @@
 //! `handle_deepseek_turn` remains the live path — the value of landing it now is
 //! the composition proof (the three bridges light up end-to-end inside a real
 //! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
-//! headline test) plus five guardrails absorbed at the seams below.
+//! headline test) plus six guardrails absorbed at the seams below.
 //!
 //! ## Guardrail insertion points
 //!
 //! The loop has four seams where guardrails are absorbed incrementally:
 //!
 //! 1. **per-step pre-request** — ✅ **steer drain** (queued user inputs injected
-//!    before the request snapshot) + ✅ **LSP flush** (drain pending diagnostics
-//!    into a synthetic `user` message); compaction, capacity pre-request,
-//!    system-prompt refresh still to come (top of the `loop`).
+//!    before the request snapshot) + ✅ **compaction** (micro-compact stale
+//!    tool results, then auto-compact via an LLM summary when over threshold)
+//!    + ✅ **LSP flush** (drain pending diagnostics into a synthetic `user`
+//!    message); capacity pre-request, system-prompt refresh still to come
+//!    (top of the `loop`).
 //! 2. **per-step post-stream** — ✅ **transparent-retry** (re-issue the request
 //!    when the stream dies mid-flight before any content commits, up to 3 times);
 //!    subagent handoff, thinking-only handling still to come (after the stream
@@ -197,6 +226,53 @@
 //!   The executor therefore runs the tool with the unchanged context on a
 //!   `RetryWithPolicy` decision; the elevation threads in at the wire-in step.
 //!
+//! ## Known gaps in compaction (by design)
+//!
+//! - **summary-prompt merge dropped** — [`compact_messages_safe`] computes a
+//!   `CompactionResult` carrying `summary_prompt: Option<SystemPrompt>` (the
+//!   rolled-up summary meant to be merged into the system prompt). Production
+//!   feeds it through `merge_compaction_summary`, which folds it into
+//!   `session.system_prompt`. The framework [`ChatHistory`] exposes no
+//!   system-prompt setter (the executor's system prompt is the static
+//!   `config.system`), so the summary prompt is computed and **dropped** here.
+//!   The LLM still sees the summary in the rolled-up transcript body; only the
+//!   system-prompt re-injection is missing. It threads in at the wire-in step
+//!   when the executor connects to a `Session` whose system prompt is mutable.
+//! - **attachment reinject deferred** — production's
+//!   `reinject_compaction_attachments` re-inserts plan / todos / subagents /
+//!   read-file snapshots that were compacted out, so the model keeps the
+//!   working set. Those attachments are host-coupled (`session.plans` /
+//!   `session.todos` / sub-agent state); the framework `ChatHistory` carries
+//!   none of it. Deferred to the wire-in step (same pattern as LSP's
+//!   `apply_patch` path deferral).
+//! - **post-compact cleanup deferred** — production's `post_compact_cleanup`
+//!   forces a working-set rebuild and resets per-file cycle state after a
+//!   compaction (the transcript the working set was derived from is now stale).
+//!   Working-set / cycle state are host-coupled and not reachable through
+//!   `ChatHistory`; deferred to the wire-in step.
+//! - **enhancements passed `None`** — production's
+//!   `build_compaction_enhancements` supplies PreCompact hooks + a
+//!   session-memory-first summary seed. None of that surfaces through the
+//!   framework `Callback` / `ChatHistory` seam yet; `compact_messages_safe` is
+//!   called with `enhancements = None`. Wires in with the PreCompact hook
+//!   slice.
+//! - **working-set pins/paths passed `None`** — production threads
+//!   `external_pins` / `external_working_set_paths` (the host's derived
+//!   working set) into `should_compact` / `compact_messages_safe` so the
+//!   summarizer preserves pinned files. The executor has no working-set
+//!   derivation here; both are `None` (compaction uses the internally-derived
+//!   paths, matching `recover_context_overflow`'s forced path). Wires in with
+//!   the working-set slice.
+//! - **no `emit_session_updated`** — like the LSP flush's synthetic push, the
+//!   `clear()` + `push()` replacement doesn't emit a session-updated UI event
+//!   via the `ChatHistory` path; UI surfacing is deferred to the wire-in step.
+//! - **no backoff delay in tests** — on a compaction failure the executor only
+//!   records it with the breaker and surfaces a status event (no sleep);
+//!   production adds an exponential backoff before retrying. Non-transient
+//!   errors return immediately from `compact_messages_safe`, so the breaker's
+//!   consecutive-failure trip (3) is the throttle. The backoff threads in at
+//!   the wire-in step.
+//!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
 use std::future::Future;
@@ -218,6 +294,11 @@ use super::approval::ApprovalDecision;
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
+use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
+use crate::compaction::micro_compact::{
+    micro_compact_messages, should_trigger_micro_compact, MicroCompactState,
+};
+use crate::compaction::{compact_messages_safe, should_compact, CompactionConfig};
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock};
@@ -326,6 +407,62 @@ impl LspProbe {
     }
 }
 
+/// Bundles the compaction collaborators the executor needs for the per-step
+/// auto-compaction guardrail (§E, mirroring `Engine`'s seam-1 micro-compact +
+/// `compact_messages_safe` auto-compaction at the top of
+/// `handle_deepseek_turn`'s loop — `turn_loop.rs:341-454`).
+///
+/// Carries two **interior-mutable** state slots —
+/// `micro_state` and `circuit_breaker`, both `Arc<std::sync::Mutex<…>>` —
+/// because [`AgentExecutor::run`] takes `&self` while compaction mutates them
+/// (micro-compact accumulates `bytes_cleared`; the circuit breaker records
+/// success/failure). This mirrors the [`LspProbe::pending`] /
+/// [`HostAgentExecutor::steer`] pattern: a `std::sync::Mutex` whose guard is
+/// never held across an `await` (the LLM summary call happens outside the
+/// lock). Because the `Mutex`es live on the executor struct (via this
+/// `Option<CompactionProbe>` field), both persist across `run` invocations on
+/// the same executor — matching the production `Session.micro_compact_state`
+/// / `Session.circuit_breaker` field semantics. `None` on the executor ⇒
+/// compaction disabled for this run (micro-compact + auto-compact are no-ops).
+///
+/// The transcript itself is read/written through [`ChatHistory`]: the compacted
+/// messages are applied via `clear()` + `push()`, composing the existing trait
+/// surface (no core-trait change). Host-coupled follow-ups
+/// (`merge_compaction_summary`, `reinject_compaction_attachments`,
+/// `post_compact_cleanup`, working-set pins/paths, `CompactionEnhancements`)
+/// are deferred — see "Known gaps in compaction" in the module docs.
+pub struct CompactionProbe {
+    config: CompactionConfig,
+    /// Workspace root for `plan_compaction`'s path normalization (mirrors
+    /// `session.workspace`, which `ChatHistory` does not expose).
+    workspace: PathBuf,
+    micro_state: Arc<std::sync::Mutex<MicroCompactState>>,
+    circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>,
+}
+
+impl CompactionProbe {
+    /// Construct from the compaction config + the session workspace. The
+    /// micro-compact state and circuit breaker start fresh (default).
+    #[must_use]
+    pub fn new(config: CompactionConfig, workspace: PathBuf) -> Self {
+        Self {
+            config,
+            workspace,
+            micro_state: Arc::new(std::sync::Mutex::new(MicroCompactState::default())),
+            circuit_breaker: Arc::new(std::sync::Mutex::new(
+                CompactionCircuitBreaker::new(),
+            )),
+        }
+    }
+
+    /// Borrow the inner circuit breaker (test-only — proves cross-run
+    /// persistence of failure tracking).
+    #[cfg(test)]
+    pub(crate) fn breaker(&self) -> &Arc<std::sync::Mutex<CompactionCircuitBreaker>> {
+        &self.circuit_breaker
+    }
+}
+
 /// Host-side [`AgentExecutor`] — the growing home for the production turn loop.
 ///
 /// Construct from the four framework collaborators: an [`LlmClientHandle`], a
@@ -373,6 +510,13 @@ pub struct HostAgentExecutor {
     /// yet (production's `await_tool_approval` also selects on
     /// `cancel_token.cancelled()`); see "Known gaps in approval" below.
     approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
+    /// Optional compaction probe (§E). `None` ⇒ micro-compact + auto-compact
+    /// are no-ops. The probe carries interior-mutable `micro_state` +
+    /// `circuit_breaker` (both `Arc<std::sync::Mutex<…>>`, matching the
+    /// steer/LSP pattern); the transcript is read/written through `ChatHistory`
+    /// (compacted messages applied via `clear()` + `push()`). Persists across
+    /// `run` calls (matches `Session.micro_compact_state` / `.circuit_breaker`).
+    compaction: Option<CompactionProbe>,
 }
 
 impl HostAgentExecutor {
@@ -380,7 +524,8 @@ impl HostAgentExecutor {
 /// status channel (`None` for embeds that don't surface guardrail status) +
 /// an optional [`LspProbe`] (`None` ⇒ LSP collect/flush disabled) + an
 /// optional steer input receiver (`None` ⇒ steer drain disabled) + an
-/// optional approval-decision receiver (`None` ⇒ approval gating disabled).
+/// optional approval-decision receiver (`None` ⇒ approval gating disabled) +
+/// an optional [`CompactionProbe`] (`None` ⇒ compaction disabled).
 #[must_use]
 pub fn new(
     client: LlmClientHandle,
@@ -391,6 +536,7 @@ pub fn new(
     lsp: Option<LspProbe>,
     steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>,
     approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
+    compaction: Option<CompactionProbe>,
 ) -> Self {
         Self {
             client,
@@ -401,6 +547,7 @@ pub fn new(
             lsp,
             steer,
             approval,
+            compaction,
         }
     }
 
@@ -602,6 +749,128 @@ pub fn new(
         }
     }
 
+    /// (1) per-step pre-request seam — auto-compaction. Mirrors
+    /// `handle_deepseek_turn`'s top-of-loop compaction
+    /// (`turn_loop.rs:341-454`): a cheap no-API micro-compact pass (clear old
+    /// tool-result bytes) followed, when the token budget is exceeded, by an
+    /// LLM summary compaction that replaces the transcript with the pinned
+    /// recent tail + summary. Placed after the steer drain and before the LSP
+    /// flush (production order: steer → compaction → … → LSP flush → request)
+    /// so a fresh LSP diagnostic message survives compaction.
+    ///
+    /// The transcript is read/written through [`ChatHistory`]: the compacted
+    /// messages are applied via `clear()` + `push()`, composing the existing
+    /// trait surface (no core-trait change). The `micro_state` /
+    /// `circuit_breaker` live on [`CompactionProbe`] as
+    /// `Arc<std::sync::Mutex<…>>` (interior-mutable because [`AgentExecutor::run`]
+    /// is `&self`); the locks are never held across an `await` — the LLM
+    /// summary call happens with the messages cloned out, so no `ChatHistory`
+    /// borrow crosses the `await`. Both persist across `run` calls, matching
+    /// `Session.micro_compact_state` / `.circuit_breaker`.
+    ///
+    /// Host-coupled follow-ups are deferred (see "Known gaps in compaction"
+    /// in the module docs): `merge_compaction_summary` (the summary system
+    /// prompt has nowhere to land — the executor's `system` is static from
+    /// `config`), `reinject_compaction_attachments`, `post_compact_cleanup`,
+    /// working-set `external_pins` / `external_working_set_paths`, and
+    /// `CompactionEnhancements` (PreCompact hooks / session-memory-first).
+    async fn run_compaction(&self, client: &LlmClientHandle, history: &mut dyn ChatHistory) {
+        let Some(probe) = &self.compaction else {
+            return;
+        };
+        if !probe.config.enabled {
+            return;
+        }
+        // Circuit breaker: a tripped breaker (too many compaction failures)
+        // throttles auto-compaction until the recovery timeout elapses. Mirrors
+        // `turn_loop.rs:371` (`session.circuit_breaker.should_attempt()`).
+        {
+            let mut breaker = probe.circuit_breaker.lock().expect("poisoned");
+            if !breaker.should_attempt() {
+                return;
+            }
+        }
+
+        // Phase 1 — micro-compaction (no API call): clear content from old
+        // tool results (file reads, shell output, …) when a time/byte trigger
+        // fires. Mirrors `turn_loop.rs:341-359`. `ChatHistory::messages()` is
+        // `&[Message]` (immutable), so clone → mutate → clear+repush.
+        {
+            let mut state = probe.micro_state.lock().expect("poisoned");
+            if should_trigger_micro_compact(history.messages(), &state, false) {
+                let mut msgs = history.messages().to_vec();
+                let cleared = micro_compact_messages(&mut msgs, &mut state);
+                if cleared > 0 {
+                    history.clear();
+                    for m in msgs {
+                        history.push(m);
+                    }
+                    tracing::info!(
+                        "{cleared} bytes cleared by micro-compaction before the request"
+                    );
+                }
+            }
+        }
+
+        // Phase 2 — auto-compaction (LLM summary). Gate on `should_compact`
+        // (mirrors `turn_loop.rs:380`) BEFORE calling `compact_messages_safe`:
+        // the safe wrapper does NOT early-return when under threshold, so
+        // without this gate it would summarize an in-budget transcript.
+        if !should_compact(
+            history.messages(),
+            &probe.config,
+            Some(&probe.workspace),
+            None,
+            None,
+        ) {
+            return;
+        }
+        // Clone the messages out so no `ChatHistory` borrow crosses the await
+        // (the summary call is async — the compacted result is applied after).
+        let messages = history.messages().to_vec();
+        match compact_messages_safe(
+            client.as_ref(),
+            &messages,
+            &probe.config,
+            Some(&probe.workspace),
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(result) => {
+                // Apply the compacted transcript (wholesale replace, mirroring
+                // `self.session.messages = result.messages`). Deferred:
+                // `merge_compaction_summary` (no system-prompt path via
+                // `ChatHistory`), `reinject_compaction_attachments`,
+                // `post_compact_cleanup`, `emit_session_updated`.
+                history.clear();
+                for m in result.messages {
+                    history.push(m);
+                }
+                probe
+                    .circuit_breaker
+                    .lock()
+                    .expect("poisoned")
+                    .record_success();
+                self.emit_status(format!(
+                    "Compaction completed ({} messages after)",
+                    history.len()
+                ))
+                .await;
+            }
+            Err(e) => {
+                probe
+                    .circuit_breaker
+                    .lock()
+                    .expect("poisoned")
+                    .record_failure();
+                self.emit_status(format!("Compaction failed: {e}")).await;
+            }
+        }
+    }
+
     /// Per-tool approval gate (seam 3). Returns `Ok(())` to proceed with
     /// execution (the tool doesn't require approval, no approval channel was
     /// supplied, or the user approved) or `Err(denial_message)` to skip the
@@ -730,19 +999,26 @@ impl HostAgentExecutor {
         let mut stream_retry_attempts: u32 = 0;
         loop {
             // (1) per-step pre-request seam — ✅ steer drain (queued user
-            // inputs injected before the request snapshot); ✅ LSP flush (drain
-            // pending diagnostics into a synthetic user message); compaction /
-            // capacity / cycle land here later.
+            // inputs injected before the request snapshot); ✅ compaction
+            // (micro-compact + LLM-summary auto-compact, runs after steer and
+            // before the LSP flush so a fresh diagnostic message survives
+            // compaction); ✅ LSP flush (drain pending diagnostics into a
+            // synthetic user message); capacity / cycle land here later.
             if step >= max_steps {
                 callback.on_complete(&StopReason::MaxSteps).await;
                 return Ok(StopReason::MaxSteps);
             }
             // Steer drain sits at the very top of the loop (mirrors
-            // `turn_loop.rs:300`) — before the LSP flush and the request
-            // snapshot, so steered text reaches the model on this step's
-            // request. Drains only what's already queued (`try_recv` is
+            // `turn_loop.rs:300`) — before compaction, the LSP flush, and the
+            // request snapshot, so steered text reaches the model on this
+            // step's request. Drains only what's already queued (`try_recv` is
             // non-blocking); never waits for input.
             self.drain_steers(history).await;
+            // Auto-compaction mirrors `turn_loop.rs:341-454` (steer →
+            // compaction → … → LSP flush → request). Runs before the LSP
+            // flush so a freshly-collected diagnostic message (pushed by the
+            // flush below) is not summarized away.
+            self.run_compaction(&client, history).await;
             // LSP flush sits after the max_steps bail so a turn-ending step
             // (e.g. MaxSteps right after an edit) leaves pending diagnostics
             // on the executor for the next turn's first flush — matching the
@@ -926,7 +1202,9 @@ mod tests {
     use crate::tools::registry::ToolRegistry;
     use crate::tools::spec::{ToolContext, ToolSpec};
     use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
-    use codesmith_agent::models::{ContentBlockStart, Delta, MessageDelta, StreamEvent};
+    use codesmith_agent::models::{
+        ContentBlockStart, Delta, MessageDelta, MessageResponse, StreamEvent, Usage,
+    };
     use codesmith_agent::tools::{ToolCapability, ToolError, ToolResult};
     use std::collections::{HashMap, VecDeque};
     use std::path::{Path, PathBuf};
@@ -1118,6 +1396,15 @@ mod tests {
     struct MockLlm {
         rounds: Mutex<VecDeque<MockRound>>,
         requests: Mutex<Vec<Vec<Message>>>,
+        /// Canned reply for a non-streaming `create_message` call (used by the
+        /// compaction summary path). `None` ⇒ `create_message` bails (the
+        /// pre-compaction default, so non-compaction tests are unaffected).
+        compaction_reply: Mutex<Option<MessageResponse>>,
+        /// When set, `create_message` returns this error instead of the reply
+        /// — drives the compaction-failure / circuit-breaker tests.
+        compaction_error: Mutex<Option<String>>,
+        /// Count of `create_message` calls (compaction summary attempts).
+        compaction_calls: Mutex<u32>,
     }
 
     impl MockLlm {
@@ -1133,6 +1420,9 @@ mod tests {
             Self {
                 rounds: Mutex::new(rounds.into_iter().collect()),
                 requests: Mutex::new(Vec::new()),
+                compaction_reply: Mutex::new(None),
+                compaction_error: Mutex::new(None),
+                compaction_calls: Mutex::new(0),
             }
         }
 
@@ -1140,6 +1430,39 @@ mod tests {
         /// order.
         fn requests(&self) -> Vec<Vec<Message>> {
             self.requests.lock().unwrap().clone()
+        }
+
+        /// Make `create_message` (the compaction summary call) return a canned
+        /// `MessageResponse` whose text is `summary`. The summary is what
+        /// `compact_messages` writes back as the compaction result.
+        fn with_compaction_summary(self, summary: &str) -> Self {
+            *self.compaction_reply.lock().unwrap() = Some(MessageResponse {
+                id: "compaction".to_string(),
+                r#type: "message".to_string(),
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: summary.to_string(),
+                    cache_control: None,
+                }],
+                model: "mock-v0".to_string(),
+                stop_reason: Some("end_turn".to_string()),
+                stop_sequence: None,
+                container: None,
+                usage: Usage::default(),
+            });
+            self
+        }
+
+        /// Make `create_message` (the compaction summary call) return a
+        /// non-transient error — drives the circuit-breaker failure path.
+        fn with_compaction_error(self, message: &str) -> Self {
+            *self.compaction_error.lock().unwrap() = Some(message.to_string());
+            self
+        }
+
+        /// How many `create_message` (compaction summary) calls were made.
+        fn compaction_calls(&self) -> u32 {
+            *self.compaction_calls.lock().unwrap()
         }
     }
 
@@ -1153,9 +1476,21 @@ mod tests {
         fn create_message(
             &self,
             _request: MessageRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<codesmith_agent::models::MessageResponse>> + Send + '_>>
-        {
-            Box::pin(async { anyhow::bail!("mock does not implement create_message") })
+        ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+            // Locks are taken and dropped here (sync, before the async block) so
+            // no guard crosses an `await` — the returned future captures only
+            // owned data (`reply` / `error`).
+            *self.compaction_calls.lock().unwrap() += 1;
+            let reply = self.compaction_reply.lock().unwrap().clone();
+            let error = self.compaction_error.lock().unwrap().clone();
+            Box::pin(async move {
+                if let Some(msg) = error {
+                    anyhow::bail!("{msg}");
+                }
+                reply.ok_or_else(|| {
+                    anyhow::anyhow!("mock does not implement create_message")
+                })
+            })
         }
         fn create_message_stream(
             &self,
@@ -1415,6 +1750,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1514,6 +1850,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1566,6 +1903,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1606,6 +1944,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -1684,6 +2023,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1726,6 +2066,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -1796,6 +2137,7 @@ mod tests {
             Some(probe),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1848,6 +2190,7 @@ mod tests {
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
             None,
             None,
+            None,
         );
         executor
             .collect_lsp_diagnostics("edit_file", &serde_json::json!({"path":"foo.rs"}))
@@ -1870,6 +2213,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
         );
@@ -1913,6 +2257,7 @@ mod tests {
             Some(probe),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1941,6 +2286,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
         );
@@ -1994,6 +2340,7 @@ mod tests {
             },
             None,
             Some(probe),
+            None,
             None,
             None,
         );
@@ -2092,6 +2439,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2135,6 +2483,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -2198,6 +2547,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2237,6 +2587,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -2312,6 +2663,7 @@ mod tests {
             None,
             Some(rx_steer),
             None,
+            None,
         );
 
         let reason = executor
@@ -2369,6 +2721,7 @@ mod tests {
             None,
             None, // no steer receiver
             None,
+            None,
         );
 
         let reason = executor
@@ -2405,6 +2758,7 @@ mod tests {
             None,
             Some(rx_steer),
             None,
+            None,
         );
 
         let reason = executor
@@ -2439,6 +2793,7 @@ mod tests {
             Some(tx),
             None,
             Some(rx_steer),
+            None,
             None,
         );
 
@@ -2487,6 +2842,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
             None,
         );
 
@@ -2584,6 +2940,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
         );
 
         let reason = executor
@@ -2626,6 +2983,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
         );
 
         let reason = executor
@@ -2664,6 +3022,7 @@ mod tests {
             None,
             None,
             None, // no approval channel
+            None,
         );
 
         let reason = executor
@@ -2710,6 +3069,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
         );
 
         // If the gate wrongly fires, recv() blocks → the timeout fails the test.
@@ -2759,6 +3119,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
         );
 
         let reason = executor
@@ -2827,6 +3188,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
         );
 
         let reason = executor
@@ -2842,5 +3204,332 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    // === compaction helpers ===============================================
+
+    fn compaction_config_low_threshold() -> CompactionConfig {
+        CompactionConfig {
+            enabled: true,
+            token_threshold: 100,
+            model: "mock-v0".to_string(),
+            cache_summary: false,
+            auto_floor_tokens: 0,
+        }
+    }
+
+    fn compaction_config_high_threshold() -> CompactionConfig {
+        CompactionConfig {
+            enabled: true,
+            token_threshold: 967_000,
+            ..CompactionConfig::default()
+        }
+    }
+
+    fn compaction_config_disabled() -> CompactionConfig {
+        CompactionConfig {
+            enabled: false,
+            ..CompactionConfig::default()
+        }
+    }
+
+    /// Seed `n` alternating user/assistant text messages (~200 chars each) so
+    /// the transcript exceeds a low compaction threshold.
+    fn seed_text_messages(sess: &mut Session, n: usize) {
+        let body = "x".repeat(200);
+        for i in 0..n {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            sess.add_message(Message {
+                role: role.to_string(),
+                content: vec![ContentBlock::Text {
+                    text: format!("{i}: {body}"),
+                    cache_control: None,
+                }],
+            });
+        }
+    }
+
+    /// Seed a `file_read` tool call + a >32 KB tool result so micro-compaction's
+    /// byte trigger fires (`estimate_compactable_bytes >= 32 KB`).
+    fn seed_large_file_read(sess: &mut Session) {
+        sess.add_message(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "fr1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({"path": "a.rs"}),
+                caller: None,
+            }],
+        });
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "fr1".to_string(),
+                content: "x".repeat(33_000),
+                is_error: None,
+                content_blocks: None,
+            }],
+        });
+    }
+
+    // === compaction tests =================================================
+
+    #[tokio::test]
+    async fn compaction_none_is_noop() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // No probe ⇒ no create_message call at all.
+        assert_eq!(mock.compaction_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn compaction_disabled_skips_even_when_over_threshold() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_disabled(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // enabled=false ⇒ run_compaction bails before any LLM call, even though
+        // the transcript (13 seeded + user text) would exceed a low threshold.
+        assert_eq!(mock.compaction_calls(), 0);
+        // Transcript untouched by compaction: 12 seeded + user text + assistant.
+        assert_eq!(history.len(), 14);
+    }
+
+    #[tokio::test]
+    async fn micro_compact_clears_old_tool_results() {
+        let mut sess = fresh_session();
+        seed_large_file_read(&mut sess);
+        // A couple of trailing text messages so the transcript is well-formed.
+        sess.add_message(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "analysis done".to_string(),
+                cache_control: None,
+            }],
+        });
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "follow up".to_string(),
+                cache_control: None,
+            }],
+        });
+        let transcript_len_before = sess.messages.len();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            // High threshold ⇒ auto-compaction won't fire; only micro-compact.
+            Some(CompactionProbe::new(
+                compaction_config_high_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+        );
+        let reason = executor
+            .run(&mut history, "what did the file say".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Micro-compact is a no-API pass — no LLM call.
+        assert_eq!(mock.compaction_calls(), 0);
+        // The 33 KB file_read result is now the cleared placeholder. Mirrors
+        // `micro_compact::CLEARED_PLACEHOLDER` (private in that module). Read
+        // via `history.messages()` (not `sess.messages`) — `history` holds the
+        // `&mut Session` borrow, so `sess` can't be borrowed again here.
+        let placeholder = "[tool result cleared for context economy]";
+        match &history.messages()[1].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert_eq!(content, placeholder, "tool result was micro-compacted");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        // Message count is unchanged — micro-compact clears content in place,
+        // it doesn't drop messages (unlike the LLM-summary auto-compact).
+        assert_eq!(history.len(), transcript_len_before + 2);
+    }
+
+    #[tokio::test]
+    async fn auto_compact_summarizes_when_over_threshold() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_summary("Conversation summary."),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+        );
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // One create_message call for the compaction summary.
+        assert_eq!(mock.compaction_calls(), 1);
+        // The transcript shrank: 12 seeded + user text (13) → compacted
+        // (recent tail + summary), well under 13.
+        assert!(
+            history.len() < 13,
+            "transcript compacted: {} < 13",
+            history.len()
+        );
+        // The stream request saw the *compacted* transcript, not the 13-message
+        // original — proof the summary was applied before the request snapshot.
+        assert!(
+            mock.requests()[0].len() < 13,
+            "stream request used compacted transcript: {} < 13",
+            mock.requests()[0].len()
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_circuit_breaker_records_failure() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock =
+            Arc::new(MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction failure"));
+        let probe = CompactionProbe::new(
+            compaction_config_low_threshold(),
+            PathBuf::from("/tmp/codesmith-test"),
+        );
+        let breaker = probe.breaker().clone();
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            Some(probe),
+        );
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        // The turn still completes — a failed compaction is caught, not fatal.
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 1);
+        assert_eq!(breaker.lock().unwrap().consecutive_failures(), 1);
+        let statuses = statuses(&drain(&mut rx));
+        assert!(
+            statuses.iter().any(|s| s.contains("Compaction failed")),
+            "compaction-failure status emitted: {statuses:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_cross_turn_circuit_breaker_persistence() {
+        // Interior-mutability proof: the Arc<Mutex<CompactionCircuitBreaker>>
+        // on the executor persists across `run` calls (matching
+        // `Session.circuit_breaker`). A per-run local breaker would reset to 0
+        // each run; here run1 records failure #1 and run2 (same executor, new
+        // session) records failure #2.
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call(), end_call()]).with_compaction_error("mock compaction failure"),
+        );
+        let probe = CompactionProbe::new(
+            compaction_config_low_threshold(),
+            PathBuf::from("/tmp/codesmith-test"),
+        );
+        let breaker = probe.breaker().clone();
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(probe),
+        );
+
+        // run1: seed an over-threshold transcript → compaction attempted → fails.
+        let mut sess1 = fresh_session();
+        seed_text_messages(&mut sess1, 12);
+        let mut history1 = SessionChatHistory::new(&mut sess1);
+        let reason1 = executor
+            .run(&mut history1, "turn one".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason1, StopReason::NoToolCalls);
+        assert_eq!(breaker.lock().unwrap().consecutive_failures(), 1);
+
+        // run2: SAME executor (same probe → same breaker), NEW session.
+        let mut sess2 = fresh_session();
+        seed_text_messages(&mut sess2, 12);
+        let mut history2 = SessionChatHistory::new(&mut sess2);
+        let reason2 = executor
+            .run(&mut history2, "turn two".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason2, StopReason::NoToolCalls);
+        // A per-run-local breaker would be 1 here; persistence ⇒ 2.
+        assert_eq!(breaker.lock().unwrap().consecutive_failures(), 2);
+        assert_eq!(mock.compaction_calls(), 2);
     }
 }
