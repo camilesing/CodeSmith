@@ -11,12 +11,11 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use serde_json::json;
 use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -33,7 +32,7 @@ use crate::cycle_manager::{
     CycleBriefing, archive_cycle, build_seed_messages, estimate_briefing_tokens, produce_briefing,
     should_advance_cycle,
 };
-use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
+use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
 use crate::features::Feature;
 use crate::hooks::HookContext;
 use crate::llm_client::LlmClientHandle;
@@ -42,8 +41,7 @@ use crate::mode::AppMode;
 #[cfg(test)]
 use crate::models::ToolCaller;
 use crate::models::{
-    ContentBlock, ContentBlockStart, Delta, LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, Message,
-    MessageRequest, StreamEvent, SystemPrompt, Tool, Usage,
+    ContentBlock, LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, Message, SystemPrompt, Tool, Usage,
 };
 use crate::prompts;
 use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, run_purge};
@@ -64,7 +62,6 @@ use super::coherence::{CoherenceSignal, CoherenceState, next_coherence_state};
 use super::events::{Event, TurnOutcomeStatus};
 use super::ops::Op;
 use super::session::Session;
-use super::tool_parser;
 use super::turn::{TurnContext, TurnToolCall, post_turn_snapshot, pre_turn_snapshot};
 
 // === Types ===
@@ -84,6 +81,19 @@ use crate::host_services::{
     HostServices, ShellExecStatus, SpawnSubAgentRequest, StructuredStateRequest,
     TurnDispatchRequest,
 };
+
+// Framework-core executor seam (slice 20 §E). `HostAgentExecutor` is the
+// production `AgentExecutor` impl that absorbs the 10 in-loop guardrails; the
+// four probe structs carry the host-coupled collaborators (LSP, compaction,
+// capacity, sub-agent). `CallbackBridge` + `SessionChatHistory` close the
+// framework ↔ host bridge. `AgentExecutor` (trait) is in scope so `.run()`
+// resolves on the executor.
+use host_executor::{CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe};
+use crate::callback_bridge::CallbackBridge;
+use crate::session_history::SessionChatHistory;
+use codesmith_agent::callback::{Callback, StopReason};
+use codesmith_agent::executor::{AgentExecutor, AgentExecutorConfig};
+use codesmith_agent::tools::ToolSet;
 
 /// Reason the active turn was cancelled. The token from `tokio_util`
 /// does not carry a cause, so the engine keeps a sibling latch for
@@ -107,18 +117,6 @@ pub enum CancelReason {
     /// shutdown). Rare — surfaced as an internal error.
     Internal,
 }
-
-impl CancelReason {
-    fn describe(self) -> &'static str {
-        match self {
-            Self::User => "user cancelled the request",
-            Self::External => "request cancelled by external caller",
-            Self::Preempted => "request was preempted by a new turn",
-            Self::Internal => "engine torn down before approval resolved",
-        }
-    }
-}
-
 /// The core engine that processes operations and emits events
 pub struct Engine {
     pub config: EngineConfig,
@@ -130,18 +128,31 @@ pub struct Engine {
     pub(crate) api_provider: ApiProvider,
     pub(crate) mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     pub(crate) rx_op: mpsc::Receiver<Op>,
-    pub(crate) rx_approval: mpsc::Receiver<ApprovalDecision>,
+    /// Wrapped in `Arc<tokio::sync::Mutex<…>>` (slice 20 §E) so the
+    /// `HostAgentExecutor` can `Arc::clone` it per turn — the single consumer
+    /// is the executor's `request_approval` (the legacy `await_tool_approval`
+    /// path on `Engine` is retired with `handle_deepseek_turn`).
+    pub(crate) rx_approval: Arc<AsyncMutex<mpsc::Receiver<ApprovalDecision>>>,
+    /// Write-only after slice 20 §E: its consumer (`await_user_input`) retired
+    /// with `handle_deepseek_turn`; the executor owns its own user-input path.
+    /// Retained for the `tx_user_input` sender's paired receiver lifetime.
+    #[allow(dead_code)]
     pub(crate) rx_user_input: mpsc::Receiver<UserInputDecision>,
-    pub(crate) rx_steer: mpsc::Receiver<String>,
+    /// Wrapped in `Arc<tokio::sync::Mutex<…>>` (slice 20 §E); cloned per turn
+    /// into the executor's `steer` field for the stale-drain + mid-stream drain.
+    pub(crate) rx_steer: Arc<AsyncMutex<mpsc::Receiver<String>>>,
     pub(crate) tx_event: mpsc::Sender<Event>,
     /// Wakeup channel for the parent turn loop when a direct child sub-agent
     /// terminates (issue #756). Cloned into `SubAgentRuntime` so the runtime
     /// can fan completion events back into the engine.
     pub(crate) tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
-    /// Receiver paired with `tx_subagent_completion`. Drained at the
-    /// turn-loop's empty-tool_uses branch to surface `<codesmith:subagent.done>`
+    /// Receiver paired with `tx_subagent_completion`. Wrapped in an
+    /// `Arc<tokio::sync::Mutex<…>>` (slice 20 §E) so the executor can
+    /// `Arc::clone` it per turn — the single consumer is the executor's
+    /// post-stream completion drain, which surfaces `<codesmith:subagent.done>`
     /// sentinels into the parent's transcript before deciding to end the turn.
-    pub(crate) rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
+    pub(crate) rx_subagent_completion:
+        Arc<AsyncMutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>,
     pub cancel_token: CancellationToken,
     pub(crate) shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     /// Latched reason for the current cancellation, mirrored to
@@ -149,6 +160,11 @@ pub struct Engine {
     /// surfacing the "Request cancelled while awaiting …" error so the
     /// user-facing message names a cause.
     pub(crate) cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
+    /// Orphaned by slice 20 §E: `handle_deepseek_turn` serialized tool calls
+    /// through this lock; `HostAgentExecutor` runs tools sequentially in its
+    /// own `run_inner`. Retained pending a follow-up slice that decides whether
+    /// the executor needs cross-turn tool serialization.
+    #[allow(dead_code)]
     pub(crate) tool_exec_lock: Arc<RwLock<()>>,
     pub capacity_controller: CapacityController,
     pub(crate) coherence_state: CoherenceState,
@@ -162,6 +178,7 @@ pub struct Engine {
     pub(crate) slop_ledger_gate_cache: Option<(Option<SystemTime>, Option<String>)>,
     /// Knowledge On Demand prefetch orchestrator. Tracks already-surfaced
     /// memory paths and session byte budget across turns.
+    #[allow(dead_code)]
     pub(crate) knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch,
     /// Sender half of the engine op channel. Cloned into long-lived background
     /// lifecycle tasks such as the team inbox poller watcher.
@@ -202,6 +219,7 @@ impl Engine {
     /// (scan → rank → read → truncate) as a tokio task. The JoinHandle
     /// is stored in `self.knowledge_prefetch` for collection after tool
     /// execution.
+    #[allow(dead_code)]
     fn kod_prefetch_spawn(&mut self) {
         if !self.config.kod_enabled {
             return;
@@ -314,6 +332,7 @@ impl Engine {
     /// prefetch completed, deduplicates against tool result file paths,
     /// enforces session byte budget, and injects surfaced memories as
     /// a `<system-reminder>` message. On timeout or error, silently skips.
+    #[allow(dead_code)]
     async fn kod_prefetch_collect(&mut self) {
         let handle = match self.knowledge_prefetch.take_prefetch_handle() {
             Some(h) => h,
@@ -1010,11 +1029,11 @@ impl Engine {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
 
-        // Drain stale steer messages from previous turns.
-        while self.rx_steer.try_recv().is_ok() {}
+        // Stale-steer drain now happens inside the executor (slice 20 §E),
+        // just before `executor.run` — see the wire-in below.
 
         // Create turn context first so start event includes a stable turn id.
-        let mut turn = TurnContext::new(self.config.max_steps);
+        let turn = TurnContext::new(self.config.max_steps);
         self.turn_counter = self.turn_counter.saturating_add(1);
         self.capacity_controller.mark_turn_start(self.turn_counter);
 
@@ -1084,7 +1103,7 @@ impl Engine {
         self.session
             .working_set
             .observe_user_message(&content, &self.session.workspace);
-        let force_update_plan_first = should_force_update_plan_first(mode, &content);
+        let _force_update_plan_first = should_force_update_plan_first(mode, &content);
 
         // Add user message to session
         let user_msg = self.user_text_message_with_turn_metadata_for_route(
@@ -1169,16 +1188,99 @@ impl Engine {
             .as_ref()
             .map(|client| client.base_url().to_string());
 
-        // Main turn loop
-        let (status, error) = self
-            .handle_deepseek_turn(
-                &mut turn,
-                plan.tool_registry,
-                plan.tools,
-                mode,
-                force_update_plan_first,
-            )
-            .await;
+        // Main turn: route through HostAgentExecutor (slice 20 §E) — the
+        // framework-core executor with the 10 absorbed guardrails. The host
+        // pre-pushed the enriched initial user message above (turn_meta +
+        // working_set observe), so the executor is invoked with empty
+        // `user_text` (its seed push is guarded with `if !user_text.is_empty()`).
+        // `handle_deepseek_turn` is retired (deleted with its 3373-line body +
+        // private helpers in turn_loop.rs).
+        let client = self
+            .llm_client
+            .clone()
+            .expect("llm_client guarded non-None at handle_send_message line 1070");
+        let tools = plan
+            .framework_tool_set
+            .clone()
+            .unwrap_or_else(|| Arc::new(ToolSet::default()));
+        let hook_host = plan.tool_registry.as_ref().and_then(|r| r.hook_host());
+        let total_tokens = self
+            .session
+            .total_usage
+            .input_tokens
+            .saturating_add(self.session.total_usage.output_tokens)
+            .min(u64::from(u32::MAX)) as u32;
+        let hook_template = crate::hooks::HookContext::new()
+            .with_mode(mode.label())
+            .with_workspace(self.session.workspace.clone())
+            .with_model(&self.session.model)
+            .with_session_id(&self.session.telemetry_session_id)
+            .with_thread_id(&self.session.id)
+            .with_tokens(total_tokens);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(self.tx_event.clone()),
+            hook_host,
+            hook_template,
+        ));
+        let executor_config = AgentExecutorConfig {
+            max_steps: self.config.max_steps,
+            max_tokens: effective_max_output_tokens_for_provider(
+                self.api_provider,
+                &self.session.model,
+            ),
+            system: self.session.system_prompt.clone(),
+            temperature: None,
+        };
+        let lsp_manager = self.host.lsp();
+        let lsp = if lsp_manager.config().enabled {
+            Some(LspProbe::new(lsp_manager, self.session.workspace.clone()))
+        } else {
+            None
+        };
+        let executor = HostAgentExecutor::new(
+            client,
+            tools,
+            callback,
+            executor_config,
+            Some(self.tx_event.clone()),
+            lsp,
+            Some(Arc::clone(&self.rx_steer)),
+            Some(Arc::clone(&self.rx_approval)),
+            Some(CompactionProbe::new(
+                self.config.compaction.clone(),
+                self.session.workspace.clone(),
+            )),
+            Some(CapacityProbe::new(
+                self.api_provider,
+                self.session.model.clone(),
+                self.config.compaction.clone(),
+                self.session.workspace.clone(),
+            )),
+            Some(Arc::clone(&self.rx_subagent_completion)),
+            Some(self.cancel_token.clone()),
+            Some(self.host.subagents()),
+        )
+        .with_tool_dispatcher(plan.tool_registry.clone());
+        let mut history = SessionChatHistory::new_with_event_tx(
+            &mut self.session,
+            Some(self.tx_event.clone()),
+        );
+        // Drain steers queued between turns (mirrors the retired pre-turn
+        // `while rx_steer.try_recv().is_ok() {}`).
+        executor.drain_stale_steers().await;
+        let stop_reason = executor.run(&mut history, String::new()).await;
+        // Release the `&mut self.session` borrow before the post-turn logic
+        // (cwd sync / `maybe_advance_cycle` / usage / `TurnComplete` / snapshot)
+        // touches `self.session` again.
+        drop(history);
+        let (status, error) = match stop_reason {
+            Ok(StopReason::NoToolCalls) | Ok(StopReason::MaxSteps) => {
+                (TurnOutcomeStatus::Completed, None)
+            }
+            Ok(StopReason::Interrupted) => (TurnOutcomeStatus::Interrupted, None),
+            Ok(StopReason::Error(msg)) => (TurnOutcomeStatus::Failed, Some(msg)),
+            Err(e) => (TurnOutcomeStatus::Failed, Some(e.to_string())),
+        };
 
         // Sync session.cwd from worktree state after each turn.
         {
@@ -1667,6 +1769,7 @@ impl Engine {
         removed
     }
 
+    #[allow(dead_code)]
     async fn recover_context_overflow(
         &mut self,
         client: &dyn crate::llm_client::LlmClient,
@@ -1935,6 +2038,7 @@ impl Engine {
     /// produces an `<archived_context>` block via Flash and appends it as an
     /// assistant message. Called from `handle_deepseek_turn` before each API
     /// request so the model always has the latest navigation aids.
+    #[allow(dead_code)]
     async fn layered_context_checkpoint(&mut self) {
         let Some(seam_mgr) = self.host.seam() else {
             return;
@@ -2500,12 +2604,12 @@ impl Engine {
             api_provider,
             mcp_pool: None,
             rx_op,
-            rx_approval,
+            rx_approval: Arc::new(AsyncMutex::new(rx_approval)),
             rx_user_input,
-            rx_steer,
+            rx_steer: Arc::new(AsyncMutex::new(rx_steer)),
             tx_event,
             tx_subagent_completion,
-            rx_subagent_completion,
+            rx_subagent_completion: Arc::new(AsyncMutex::new(rx_subagent_completion)),
             cancel_token,
             shared_cancel_token,
             cancel_reason,
@@ -2658,7 +2762,7 @@ pub use context::{
 // is kept private here. Private `use` bindings remain visible to this
 // module's descendants, so sibling submodules still resolve them via `super::`.
 use context::{
-    MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
+    MIN_RECENT_MESSAGES_TO_KEEP,
     estimate_input_tokens_conservative, summarize_text, turn_response_headroom_tokens,
 };
 mod dispatch;
@@ -2680,7 +2784,6 @@ pub fn default_active_native_tool_names() -> &'static [&'static str] {
 }
 
 pub use self::approval::{ApprovalDecision, UserInputDecision};
-use self::approval::ApprovalResult;
 pub use self::dispatch::should_parallelize_tool_batch;
 pub use self::dispatch::{
     ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool,
@@ -2688,21 +2791,15 @@ pub use self::dispatch::{
     should_force_update_plan_first, should_stop_after_plan_tool,
 };
 use self::dispatch::{
-    ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, caller_type_for_tool_use,
-    mcp_tool_approval_description, mcp_tool_is_parallel_safe, mcp_tool_is_read_only,
-    parse_parallel_tool_calls, parse_tool_input,
+    ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, mcp_tool_is_parallel_safe, mcp_tool_is_read_only,
+    parse_parallel_tool_calls,
 };
-use self::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 pub use self::lsp_hooks::edited_paths_for_tool;
 pub use self::streaming::TOOL_CALL_START_MARKERS;
 pub use self::streaming::{
     FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL, MAX_TRANSPARENT_STREAM_RETRIES,
     ToolUseState, contains_fake_tool_wrapper, filter_tool_call_delta,
     should_transparently_retry_stream,
-};
-use self::streaming::{
-    ContentBlockKind, STREAM_MAX_CONTENT_BYTES, STREAM_MAX_DURATION_SECS,
-    stream_chunk_timeout_secs,
 };
 pub use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME,
@@ -2712,8 +2809,5 @@ pub use self::tool_catalog::{
     missing_tool_error_message, preflight_requested_deferred_tool, should_default_defer_tool,
 };
 use self::tool_catalog::{
-    JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
-    is_tool_search_tool,
+    MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
 };
-use self::tool_execution::emit_tool_audit;
-use crate::tools::js_execution::execute_js_execution_tool;

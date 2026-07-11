@@ -588,7 +588,9 @@ use crate::config_types::ApiProvider;
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock};
+use crate::tool_dispatch::ToolDispatcher;
 use crate::tools::approval_cache::{build_approval_grouping_key, build_approval_key};
+use crate::tools::spec::ApprovalRequirement;
 
 /// The `ToolResult` fed back when the loop-guard blocks an identical repeat
 /// call (mirrors `turn_loop::loop_guard_block_tool_result`). Duplicated here
@@ -1103,6 +1105,15 @@ pub struct HostAgentExecutor {
     /// in the hold's own `biased select!` cancel arm. Early-tool-start spawn
     /// has no production cancel guard (bounded by `early_tasks.clear()`/`Drop`).
     cancel_token: Option<CancellationToken>,
+    /// Optional host tool-dispatcher (slice 20 §E) for per-input approval
+    /// overrides. `None` (default; all embeds/tests) ⇒ `request_approval`
+    /// falls back to the static [`requires_approval`] capability gate. When
+    /// `Some` (production wire-in), consults
+    /// [`ToolDispatcher::approval_requirement_for`] first — mirroring
+    /// production's `registry.approval_requirement_for(..)` (turn_loop.rs
+    /// ~1700). A `Some(Auto)` answer downgrades an `ExecutesCode` tool to
+    /// no-approval for a specific safe input.
+    tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
 }
 
 impl HostAgentExecutor {
@@ -1148,8 +1159,23 @@ pub fn new(
         subagent,
         cancel_token,
         subagent_api,
+        tool_dispatcher: None,
     }
 }
+
+    /// Opt into per-input approval consultation (slice 20 §E). The production
+    /// wire-in calls this after [`new`] with `plan.tool_registry.clone()` so
+    /// [`request_approval`] consults [`ToolDispatcher::approval_requirement_for`]
+    /// before the static capability gate. Embeds/tests skip it — the field
+    /// defaults to `None`. Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_tool_dispatcher(
+        mut self,
+        tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
+    ) -> Self {
+        self.tool_dispatcher = tool_dispatcher;
+        self
+    }
 
     /// Surface a guardrail status message onto the host's UI `Event` channel,
     /// if one was supplied. Guardrails emit here directly rather than through
@@ -2192,8 +2218,22 @@ pub fn new(
         let Some(rx) = &self.approval else {
             return Ok(()); // no approval channel ⇒ gating disabled
         };
-        if !requires_approval(&tool.capabilities()) {
-            return Ok(()); // tool doesn't require approval
+        // Per-input approval override (slice 20 §E): when a host dispatcher is
+        // attached, consult its `approval_requirement_for` first — a `Some`
+        // answer downgrades/upgrades the gate per input (mirrors production's
+        // `registry.approval_requirement_for(..)` at turn_loop.rs:1700). `None`
+        // (no dispatcher, or dispatcher has no opinion) falls back to the
+        // static capability gate.
+        let approval_required = match self
+            .tool_dispatcher
+            .as_ref()
+            .and_then(|d| d.approval_requirement_for(name, input))
+        {
+            Some(req) => req != ApprovalRequirement::Auto,
+            None => requires_approval(&tool.capabilities()),
+        };
+        if !approval_required {
+            return Ok(()); // dispatcher said Auto, or static gate says no
         }
         let is_read_only = tool
             .capabilities()

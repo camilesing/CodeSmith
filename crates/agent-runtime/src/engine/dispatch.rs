@@ -390,6 +390,11 @@ pub fn mcp_tool_is_read_only(name: &str) -> bool {
     )
 }
 
+/// Human-readable approval-gate description for an MCP tool name. Orphaned
+/// when `handle_deepseek_turn` retired (slice 20 §E) — the executor's
+/// approval path builds its own intent summary; retained for a follow-up
+/// slice that re-wires MCP descriptions into `CallbackBridge`.
+#[allow(dead_code)]
 pub fn mcp_tool_approval_description(name: &str) -> String {
     if mcp_tool_is_read_only(name) {
         format!("Read-only MCP tool '{name}'")

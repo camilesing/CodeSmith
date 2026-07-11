@@ -94,8 +94,12 @@ impl LspManagerApi for LspManager {
 /// and stays free of these concrete TUI types.
 #[async_trait::async_trait]
 impl HostServices for super::EngineHost {
-    fn lsp(&self) -> &dyn LspManagerApi {
-        &*self.lsp_manager
+    fn lsp(&self) -> Arc<dyn LspManagerApi> {
+        // `lsp_manager` is held as `Arc<LspManager>` (see `engine.rs`);
+        // cloning the Arc and coercing `Arc<LspManager>` →
+        // `Arc<dyn LspManagerApi>` is a cheap refcount bump (no per-call
+        // re-wrap), matching `bg_registry` / `subagents` / `shell`.
+        self.lsp_manager.clone()
     }
 
     fn bg_registry(&self) -> Arc<dyn BgRegistryApi> {

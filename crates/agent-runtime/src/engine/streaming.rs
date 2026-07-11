@@ -3,6 +3,17 @@
 //! This module owns the local state used while decoding one model stream:
 //! content block kind tracking, streamed tool-use buffers, transparent retry
 //! policy, and scrubbers for text that looks like a forged tool-call wrapper.
+//
+// After slice 20 §E the stream-reducer config cluster
+// (`*_STREAM_CHUNK_TIMEOUT_SECS`, `stream_chunk_timeout_secs`,
+// `ContentBlockKind`, `STREAM_MAX_*`) is orphaned: `handle_deepseek_turn`
+// was its sole consumer and `HostAgentExecutor::reduce_stream` carries its
+// own config. The scrubbers / retry policy (`filter_tool_call_delta`,
+// `should_transparently_retry_stream`, `TOOL_CALL_*_MARKERS`) remain live.
+// `#![allow(dead_code)]` silences the orphaned config until a follow-up
+// slice deletes it (kept because the constants document the prior policy).
+
+#![allow(dead_code)]
 
 use crate::models::ToolCaller;
 

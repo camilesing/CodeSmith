@@ -30,7 +30,9 @@
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
 use codesmith_agent::memory::ChatHistory;
+use tokio::sync::mpsc;
 
+use crate::events::Event;
 use crate::models::Message;
 use crate::session::Session;
 
@@ -43,13 +45,38 @@ use crate::session::Session;
 /// `&'a mut dyn ChatHistory`).
 pub struct SessionChatHistory<'a> {
     session: &'a mut Session,
+    /// UI event channel for `Event::SessionUpdated` on each push (slice 20 §E).
+    /// `None` in embeds/tests that don't surface session updates — the
+    /// executor's ~73 existing tests use [`new`](Self::new) (=> `None`) and are
+    /// unchanged. `Some` in the production wire-in
+    /// ([`new_with_event_tx`](Self::new_with_event_tx)) so every
+    /// assistant/tool-result/steer/LSP push refreshes the host UI.
+    event_tx: Option<mpsc::Sender<Event>>,
 }
 
 impl<'a> SessionChatHistory<'a> {
-    /// Borrow a `Session`'s transcript for use as a [`ChatHistory`].
+    /// Borrow a `Session`'s transcript for use as a [`ChatHistory`], with no
+    /// `SessionUpdated` emission on push (embed/test path — unchanged behavior
+    /// for the executor's existing tests).
     #[must_use]
     pub fn new(session: &'a mut Session) -> Self {
-        Self { session }
+        Self {
+            session,
+            event_tx: None,
+        }
+    }
+
+    /// Like [`new`](Self::new) but emits `Event::SessionUpdated` on every
+    /// [`ChatHistory::push`] (production wire-in path). The host's
+    /// `emit_session_updated().await` still runs once pre-turn for a guaranteed
+    /// refresh; this covers the N mid-turn pushes (assistant, tool-result,
+    /// steer, LSP flush) so the UI tracks the transcript live.
+    #[must_use]
+    pub fn new_with_event_tx(
+        session: &'a mut Session,
+        event_tx: Option<mpsc::Sender<Event>>,
+    ) -> Self {
+        Self { session, event_tx }
     }
 }
 
@@ -63,6 +90,20 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
         // for parity with the rest of the engine, which routes message appends
         // through `add_message`.
         self.session.add_message(message);
+        // Best-effort UI refresh (slice 20 §E). `try_send` (sync, not
+        // `.await`) because `ChatHistory::push` is a sync trait method.
+        // Drop-on-full is acceptable: the post-turn `TurnComplete` carries the
+        // final transcript, and `handle_send_message` keeps its
+        // `emit_session_updated` pre-turn for a guaranteed refresh.
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.try_send(Event::SessionUpdated {
+                session_id: self.session.id.clone(),
+                messages: self.session.messages.clone(),
+                system_prompt: self.session.system_prompt.clone(),
+                model: self.session.model.clone(),
+                workspace: self.session.workspace.clone(),
+            });
+        }
     }
 
     fn clear(&mut self) {

@@ -1327,6 +1327,101 @@ host_executor` 73 通过（67 既有 + 6 新 blocking-hold）；`cargo test -p c
   包进 `Arc<tokio::sync::Mutex<…>>` 交给 executor。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
+**进度（2026-07-11 §E HostAgentExecutor wire-in + handle_deepseek_turn 退役，cutover 主切片，`feat/pluggable-framework-core`）：**
+
+§E 的第二十个切片落地——wire-in cutover：`HostAgentExecutor` 接入 `handle_send_message` 成为 live production path，`handle_deepseek_turn`
+（`turn_loop.rs`，~2400 行）整体退役。十个 in-loop guardrail 已全部吸收（slice 11–19），本轮是收口。用户决策"Priority wire-in"——接入
+cheap/moderate 行为 gap（`emit_session_updated` / per-input approval），退役 legacy turn loop；expensive gap（`ToolCallStarted` stream-time /
+post-compact cleanup / per-turn usage）显式 defer。cutover 单 commit，零既有调用点行为改动（生产路径语义不变：构造 executor → `drain_stale_steers` →
+`run` → map `StopReason → TurnOutcomeStatus`，post-turn 逻辑 mod.rs:1183-1237 原样消费 tuple）。
+
+- **Step 1 — Receiver-wrap（`Arc<tokio::sync::Mutex<…>>`）**（`mod.rs` Engine struct + `new_runtime` literal）：`rx_approval` /
+  `rx_steer` / `rx_subagent_completion` 三个字段从 bare `mpsc::Receiver`/`UnboundedReceiver` 改为
+  `Arc<tokio::sync::Mutex<…>>`，对齐 executor 既有字段类型。`new_runtime` struct literal 内 wrap
+  （`Arc::new(AsyncMutex::new(rx_approval))` 等），tui `build_engine` 传 bare receiver（`new_runtime` 内部 wrap）。
+  bare consumer `handle_deepseek_turn` 退役（删除耦合到 wrap）；stale-drain（`mod.rs:1023` `while self.rx_steer.try_recv().is_ok() {}`）
+  移入 executor 的 `drain_stale_steers()`，在 `executor.run` 前调用。单 consumer：仅 executor 消费（legacy 路径退役）。
+- **Step 1b — `HostServices::lsp()` → `Arc<dyn LspManagerApi>`**（`host_services.rs` trait + `runtime_traits.rs` impl）：
+  executor 的 `LspProbe` 需 capture `Arc<dyn LspManagerApi>`（生命周期独立于 `&self Engine` 借用），故 `lsp()` 返回 `Arc`
+  而非 `&dyn`，对齐 `bg_registry`/`subagents`/`shell` 的既有 shape。`EngineHost` 持 `Arc<LspManager>`，clone coerces。
+- **Step 2 — `handle_send_message` 路由到 executor + StopReason map**（`mod.rs` ~1181-1190）：替换 `handle_deepseek_turn`
+  调用为：构造 `HostAgentExecutor`（14 字段从 Engine/plan/Session 映射——`client`/`tools`/`callback`/`config`/`event_tx`/
+  `lsp`/`steer`/`approval`/`compaction`/`capacity`/`subagent`/`cancel_token`/`subagent_api` + `with_tool_dispatcher`）→
+  `drain_stale_steers().await` → `let mut history = SessionChatHistory::new_with_event_tx(&mut self.session, …);` →
+  `executor.run(&mut history, String::new()).await` → map `StopReason`（`NoToolCalls`/`MaxSteps`→`Completed`、`Interrupted`→
+  `Interrupted`、`Error(msg)`→`Failed(Some(msg))`、`Err(e)`→`Failed(Some(e.to_string()))`）。`drop(history)` 释 `&mut self.session`
+  借用再进 post-turn 逻辑。**Host 预推 enriched 初始 user message 不变**（mod.rs:1084-1097：working_set observe +
+  `user_text_message_with_turn_metadata_for_route` push），executor 以 `user_text: String::new()` 调用、seed push 由
+  `if !user_text.is_empty()` 守卫（空⇒不 seed，host 已 seed；非空⇒73 个 executor test 不变）。`force_update_plan_first` →
+  `_force_update_plan_first`（plan-force-on-final-step 特性 defer）。
+- **Step 3 — `emit_session_updated` via `SessionChatHistory`**（`session_history.rs`）：加 `event_tx: Option<mpsc::Sender<Event>>`
+  字段；保留 `pub fn new(session)`（`event_tx: None`——73 个 executor test 不变）+ 新增 `pub fn new_with_event_tx(session, event_tx)`。
+  `push` 内 `session.add_message` 后 `try_send(Event::SessionUpdated{…})`（sync——`ChatHistory::push` 是 sync 不能 `.await`；
+  drop-on-full 可接受——post-turn `TurnComplete` 携带终态 transcript + mod.rs:1133 pre-turn `emit_session_updated` 保底刷新）。
+  覆盖 executor 的全部 push：steer / LSP flush / subagent sentinel / tool-result / assistant。
+- **Step 4 — Per-input approval via `tool_dispatcher`**（`host_executor.rs`）：加第 14 字段
+  `tool_dispatcher: Option<Arc<dyn ToolDispatcher>>`（构造器 Self literal 默认 `None`——71 个 test 调用点不动）+
+  `with_tool_dispatcher(…)` builder（避免第 14 positional param 破 71 处 test）。`request_approval` 在静态
+  `requires_approval(&tool.capabilities())` gate 前先 consult `tool_dispatcher.approval_requirement_for(name, input)`——
+  `Some(req)` 用 `req != ApprovalRequirement::Auto`，`None` 回退静态 gate（镜像 turn_loop.rs:1704-1706 的 per-input override）。
+- **Step 6 — 删除 `handle_deepseek_turn` + 私有 helper**：`turn_loop.rs` 3374→83 行（删 `handle_deepseek_turn`
+  239-2671 + ~22 私有 helper + 22/23 test）。保留 `subagent_completion_runtime_message`（executor host_executor.rs:579 引用）+
+  其 test + `messages_with_turn_metadata`（tui test 引用）+ `EarlyToolResult`/`EarlyToolTask`（dispatch.rs:61 type 引用）。
+  `approval.rs` 173→45 行（删 `cancel_reason_suffix`/`await_tool_approval`/`await_user_input` 三个 orphan impl-Engine 方法 +
+  整个 `impl Engine {}` block；保留 `ApprovalDecision`/`UserInputDecision` 跨 crate pub-reexport + use `UserInputResponse`）。
+  删 genuinely-orphan `ApprovalResult` enum + `CancelReason::describe` 方法（cargo-fix 删了 14 个 unused import——handle_deepseek_turn
+  的 sole-consumer imports）。
+- **Warning cleanup**（17 个 dead-code 全是 handle_deepseek_turn 孤儿）：module-level `#![allow(dead_code)]` 于
+  `streaming.rs`（stream-reducer config cluster：`*_STREAM_CHUNK_TIMEOUT_SECS`/`stream_chunk_timeout_secs`/`ContentBlockKind`/
+  `STREAM_MAX_*`——executor `reduce_stream` 自带 config，scrubber/retry-policy 仍 live）+ `turn_loop.rs`（residual
+  `EarlyToolResult`/`EarlyToolTask` 字段 unread——dispatch.rs 仅 type 引用未构造，待 follow-up re-wire speculative dispatch）；
+  per-item `#[allow(dead_code)]` 于 `mod.rs` 四个 superseded impl-Engine 方法（`kod_prefetch_spawn`/`kod_prefetch_collect`/
+  `recover_context_overflow`/`layered_context_checkpoint`——executor 有对应 probe，待 re-wire Kod prefetch）+ 三字段
+ （`rx_user_input` write-only post-retire / `tool_exec_lock` executor 自串行 / `knowledge_prefetch` 待 re-wire）+
+  `emit_tool_audit`（env-gated 审计钩子）+ `mcp_tool_approval_description`（待 re-wire 进 CallbackBridge）。均带 doc 注明
+  "deferred deletion / re-wire"，非永久 allow。
+
+**Deferred gaps（本轮显式 defer，附理由）：**
+- **per-turn usage tracking**：executor 的 `reduce_stream` 解构 `MessageDelta { stop_reason: sr, .. }`——`..` 丢 `usage`；
+  生产原经 `turn.add_usage` 累加，token 计数器停转。需在 `reduce_stream` 透传 usage 或 `Callback::on_llm_end` 携带。
+- **`<turn_meta>` enrichment for steer/LSP/subagent sentinel**：executor 经 `&mut dyn ChatHistory` 在 run 内构建这些消息时
+  `&mut self.session` 已借用，host 端 `&self Engine` callback 读 live `working_set`/`config` 无法 capture 而不冲突借用。
+  初始 user message 保留 turn_meta（host mod.rs:1084-1097 push 不变）。follow-up 重设计 seam（Arc-shared working_set 或
+  post-stream host callback 从 buffered steer text 构建 enriched message）。
+- **working_set `observe_user_message` for steer**：同 turn_meta borrow-conflict。初始 user message observe 保留。
+- **`ToolCallStarted` stream-time 合成**：需 `Callback::on_tool_start` 透传 wire tool id（CORE trait change）或
+  `CallbackBridge` name+input pairing；executor 当前在 execute-time 合成 `bridge-{n}` id。
+- **post-compact cleanup**（`merge_compaction_summary` / `reinject_compaction_attachments` / `post_compact_cleanup`）：
+  需 Session system-prompt 可变 + host-coupled attachment/working-set 可达，`ChatHistory` seam 够不到；
+  summary-prompt 当前 compute-and-discard。
+- **`ContextPatch` apply**：今天 no-op（dispatch 在 11 处 hardcode `None`），安全 defer。
+- **mid-stream steer drain**（`reduce_stream` 内 `try_recv` + `run_inner` flush）：deferred——其 push 是 plain user message
+  （turn_meta 已 defer），边际价值低；stale-drain 已在 `drain_stale_steers` 覆盖 pre-turn 清空。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool checkpoint + error-escalation）：独立 opt-in 切片，仍低优先。
+- **per-input-approval 专用测试**：Step 4 impl 已落地（`request_approval` per-input consult 路径在 73 个 test 的 build path
+  验证无回归），专用 override-downgrade 断言 test 待补。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning
+（17 dead-code 全清理——module-level/per-item `#[allow]` + 删 `ApprovalResult`/`CancelReason::describe` + cargo-fix 删 14 unused
+import）；`cargo +1.90.0 build -p codesmith-tui` 零新 warning（143 均既有死代码，`lsp()→Arc` + `build_engine` 不改——
+`new_runtime` 内部 wrap）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过；`cargo +1.90.0 test -p codesmith-agent-runtime
+--lib host_executor` 73 通过（含 9 个 subagent test、approval test——per-input consult 路径无回归）；`cargo +1.90.0 test
+-p codesmith-agent-runtime --lib` 1055 通过 + 1 flaky `mcp::streamable_http_stale_session_reconnects_and_retries_tool_call`
+（isolated rerun pass——已知网络/timing flaky，与本轮无关）；`cargo +1.90.0 build --workspace` 全绿。无新 test——Step 4 per-input
+override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
+
+**下一聚焦工作：**
+- **deferred-gaps cleanup 切片**：最高价值是 `<turn_meta>` enrichment 的 seam 重设计（Arc-shared working_set 或 post-stream
+  host callback）——解锁 steer/LSP/subagent 的 turn_meta + working_set observe + mid-stream steer drain（三 gap 同根）。
+- **per-turn usage tracking**：`reduce_stream` 透传 `MessageDelta.usage` 或 `Callback::on_llm_end` 携带——token 计数器修复。
+- **`ToolCallStarted` stream-time + bridge 去重**：`Callback::on_tool_start` 透传 wire id 或 bridge name+input pairing。
+- **post-compact cleanup**：`Session` system-prompt mutability + host-coupled attachment/working-set 可达（summary-prompt 当前丢弃）。
+- **per-input-approval 专用 test**：override-downgrade 断言（ExecutesCode 工具 + dispatcher 返 Auto ⇒ 不 approval）。
+- **dead-code deletion 切片**：把本轮 `#[allow(dead_code)]` 的 17 项中真正 orphan 的删掉（streaming config cluster /
+  `mcp_tool_approval_description` / `emit_tool_audit`），superseded 方法按 re-wire 决策保留或删。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
 ---
 
 ## §A — Provider extraction (bulk migration)

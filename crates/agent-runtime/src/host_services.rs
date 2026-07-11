@@ -452,8 +452,12 @@ pub trait NotifierHost: Send + Sync {
 /// manager, seam manager, shell, workshop to follow).
 #[async_trait::async_trait]
 pub trait HostServices: Send + Sync {
-    /// Post-edit LSP diagnostics service.
-    fn lsp(&self) -> &dyn LspManagerApi;
+    /// Post-edit LSP diagnostics service. Returned as an owned, cloneable
+    /// handle so the executor's [`LspProbe`] can capture it for the duration
+    /// of a run (matching `bg_registry` / `subagents` / `shell`); a borrow
+    /// cannot escape the `&self Engine` accessor into the executor's owned
+    /// probe field.
+    fn lsp(&self) -> Arc<dyn LspManagerApi>;
 
     /// Background-task registry. Returned as an owned, cloneable handle so
     /// the engine's background poller can capture it across a `spawn`.

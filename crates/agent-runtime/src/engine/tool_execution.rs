@@ -121,6 +121,11 @@ impl Drop for InteractiveTerminalGuard {
     }
 }
 
+/// Emit a tool-call audit line to `$DEEPSEEK_TOOL_AUDIT_LOG` when set.
+/// Runtime-gated (env var); orphaned as a production caller when
+/// `handle_deepseek_turn` retired (slice 20 §E) — retained for ad-hoc
+/// observability and the `#[cfg(test)]` assertions below.
+#[allow(dead_code)]
 pub fn emit_tool_audit(event: serde_json::Value) {
     let Some(path) = std::env::var_os("DEEPSEEK_TOOL_AUDIT_LOG") else {
         return;
