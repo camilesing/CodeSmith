@@ -22,7 +22,7 @@
 //!
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (reusing
 //! [`accumulate_stream`](codesmith_agent::executor::accumulate_stream) for stream
-//! reduction) and absorbs the production guardrails slice by slice. Six are in:
+//! reduction) and absorbs the production guardrails slice by slice. Seven are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -117,10 +117,32 @@
 //!    compaction attempts. See "Known gaps in compaction" below for the
 //!    summary-prompt merge, attachment reinject, post-compact cleanup, and
 //!    enhancements deferrals.
+//! 7. **capacity** ([`run_capacity_preflight`](HostAgentExecutor::run_capacity_preflight))
+//!    — the **always-on hard token-budget preflight** (Gate B). After
+//!    compaction (so the estimate reflects the just-compacted transcript) and
+//!    before the LSP flush, the executor estimates input tokens via
+//!    [`estimate_input_tokens_conservative`] and, if the estimate exceeds the
+//!    provider's input budget ([`context_input_budget_for_provider`]),
+//!    attempts emergency recovery via [`recover_context_overflow`]
+//!    (mirrors `turn_loop.rs:463-489`). The recovery cascade runs
+//!    micro-compaction (best-effort, fresh state) → forced full LLM compaction
+//!    (`compact_messages_safe` with `enabled = true`, lowered
+//!    `token_threshold`, zeroed `auto_floor_tokens` — bypassing the
+//!    cache-preservation floor) → hard trim of oldest messages (keeping
+//!    [`MIN_RECENT_MESSAGES_TO_KEEP`]). On success, the step restarts so the
+//!    request snapshot picks up the compacted transcript; on budget exhaustion
+//!    (`MAX_CONTEXT_RECOVERY_ATTEMPTS = 2`), the turn hard-fails with
+//!    `StopReason::Error`. The probe is stateless — the per-run recovery
+//!    counter is a local `u8` (like the transparent-retry counter), resetting
+//!    to 0 on a healthy stream round. The opt-in `CapacityController` (Gate A,
+//!    off by default since v0.8.11) and the reactive seam-2 path (provider
+//!    context-length rejection → recovery) are deferred. See "Known gaps in
+//!    capacity" below.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
-//! steer "Steer input accepted", compaction "Compaction completed/failed")
-//! surfaces over the host's `Event` channel
+//! steer "Steer input accepted", compaction "Compaction completed/failed",
+//! capacity "Emergency context compaction …") surfaces over the host's `Event`
+//! channel
 //! (`event_tx`) — **not** via the framework `Callback`: guardrails are
 //! host-side concerns and the `Callback` trait stays untouched per ROADMAP §E.
 //!
@@ -128,7 +150,7 @@
 //! `handle_deepseek_turn` remains the live path — the value of landing it now is
 //! the composition proof (the three bridges light up end-to-end inside a real
 //! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
-//! headline test) plus six guardrails absorbed at the seams below.
+//! headline test) plus seven guardrails absorbed at the seams below.
 //!
 //! ## Guardrail insertion points
 //!
@@ -137,9 +159,10 @@
 //! 1. **per-step pre-request** — ✅ **steer drain** (queued user inputs injected
 //!    before the request snapshot) + ✅ **compaction** (micro-compact stale
 //!    tool results, then auto-compact via an LLM summary when over threshold)
-//!    + ✅ **LSP flush** (drain pending diagnostics into a synthetic `user`
-//!    message); capacity pre-request, system-prompt refresh still to come
-//!    (top of the `loop`).
+//!    + ✅ **capacity preflight** (hard token-budget gate + emergency recovery
+//!    via forced compaction / hard trim) + ✅ **LSP flush** (drain pending
+//!    diagnostics into a synthetic `user` message); system-prompt refresh still
+//!    to come (top of the `loop`).
 //! 2. **per-step post-stream** — ✅ **transparent-retry** (re-issue the request
 //!    when the stream dies mid-flight before any content commits, up to 3 times);
 //!    subagent handoff, thinking-only handling still to come (after the stream
@@ -152,7 +175,9 @@
 //!    early-tool-start, parallel dispatch still to come (inside the tool `for`
 //!    loop).
 //! 4. **per-step post-tool** — ✅ **loop-guard halt short-circuit** (returns
-//!    `StopReason::Error`); capacity post-tool still to come (after the tool loop).
+//!    `StopReason::Error`); capacity post-tool checkpoint (opt-in
+//!    `CapacityController` Gate A + error-escalation) still to come (after the
+//!    tool loop). The hard token-budget preflight (Gate B) is absorbed at seam 1.
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) will continue to flow
 //! over the `Event` channel directly, emitted by an inline stream reducer (a
@@ -273,6 +298,43 @@
 //!   consecutive-failure trip (3) is the throttle. The backoff threads in at
 //!   the wire-in step.
 //!
+//! ## Known gaps in capacity (by design)
+//!
+//! - **responsive compact cascade (Phase 1) deferred** — production's
+//!   `recover_context_overflow` runs a four-step responsive cascade
+//!   (micro → partial-from → partial-up-to → full) before falling back to
+//!   forced full compaction. Partial compaction summarizes only a slice of the
+//!   transcript (preserving the prefix cache) — an optimization, not a
+//!   correctness path. This executor skips straight to forced full compaction
+//!   + hard trim, which is more aggressive (full summary instead of partial)
+//!   but always recovers (the hard trim is the ultimate fallback). The
+//!   responsive cascade threads in with the inline-stream-reduction slice
+//!   (partial compaction needs the responsive state machine, which is
+//!   `Session`-internal).
+//! - **reactive seam-2 path deferred** — production also triggers
+//!   `recover_context_overflow` when the provider rejects the request with a
+//!   context-length error (`turn_loop.rs:620-633`). This executor's
+//!   `stream_with_transparent_retry` propagates stream errors via `?` without
+//!   inspecting the message for `is_context_length_error_message`; the
+//!   reactive recovery threads in with the inline-stream-reduction slice
+//!   (which surfaces the error message for classification).
+//! - **opt-in `CapacityController` (Gate A) deferred** — the off-by-default
+//!   soft controller (`run_capacity_pre_request_checkpoint` /
+//!   `run_capacity_post_tool_checkpoint` / `run_capacity_error_escalation_checkpoint`)
+//!   is not absorbed; only the always-on hard preflight (Gate B) is. Gate A
+//!   requires the full `CapacityController` state machine (slack window,
+//!   recent tool/ref counts, model priors) — a separate, opt-in slice.
+//! - **same recovery gaps as compaction** — `recover_context_overflow` calls
+//!   `compact_messages_safe` with the same deferred parameters
+//!   (`merge_compaction_summary`, `reinject_compaction_attachments`,
+//!   `post_compact_cleanup`, `enhancements`, working-set pins/paths all
+//!   absent). See "Known gaps in compaction" above.
+//! - **no cancel-token short-circuit** — production checks `!cancelled` before
+//!   retrying after overflow recovery; this executor has no
+//!   `CancellationToken`. The bounded `MAX_CONTEXT_RECOVERY_ATTEMPTS` (2)
+//!   prevents an infinite loop; the short-circuit threads in at the wire-in
+//!   step.
+//!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
 use std::future::Future;
@@ -287,10 +349,14 @@ use codesmith_agent::callback::{Callback, StopReason};
 use codesmith_agent::executor::{accumulate_stream, AgentExecutor, AgentExecutorConfig};
 use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::memory::ChatHistory;
-use codesmith_agent::models::{ContentBlock, Message, MessageRequest};
+use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
+use super::context::{
+    context_input_budget_for_provider, estimate_input_tokens_conservative,
+    MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
+};
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
@@ -299,6 +365,7 @@ use crate::compaction::micro_compact::{
     micro_compact_messages, should_trigger_micro_compact, MicroCompactState,
 };
 use crate::compaction::{compact_messages_safe, should_compact, CompactionConfig};
+use crate::config_types::ApiProvider;
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock};
@@ -463,6 +530,57 @@ impl CompactionProbe {
     }
 }
 
+/// Capacity preflight collaborator (§E). Carries the provider + model needed
+/// to compute the input-side token budget ([`context_input_budget_for_provider`]),
+/// a [`CompactionConfig`] for the forced-compaction recovery path, and the
+/// workspace root for [`compact_messages_safe`].
+///
+/// The probe itself is stateless — the per-run recovery counter
+/// (`context_recovery_attempts`) lives as a local in [`HostAgentExecutor::run_inner`],
+/// matching the production per-turn counter (`turn_loop.rs:292`). The forced
+/// compaction inside [`HostAgentExecutor::recover_context_overflow`] uses a
+/// local [`MicroCompactState`] (best-effort pass; the persistent micro-compact
+/// state lives on [`CompactionProbe`] if present).
+pub struct CapacityProbe {
+    api_provider: ApiProvider,
+    model: String,
+    compaction_config: CompactionConfig,
+    workspace: PathBuf,
+}
+
+impl CapacityProbe {
+    /// Construct from the provider + model (for budget computation), the
+    /// compaction config (cloned + forced during recovery), and the workspace
+    /// root (for `compact_messages_safe` path normalization).
+    #[must_use]
+    pub fn new(
+        api_provider: ApiProvider,
+        model: String,
+        compaction_config: CompactionConfig,
+        workspace: PathBuf,
+    ) -> Self {
+        Self {
+            api_provider,
+            model,
+            compaction_config,
+            workspace,
+        }
+    }
+}
+
+/// Outcome of the per-step capacity preflight (seam 1).
+enum CapacityPreflight {
+    /// Within budget (or no probe / unknown model) — proceed with the request.
+    Proceed,
+    /// Over budget, emergency recovery succeeded — restart the step so the
+    /// request snapshot picks up the compacted transcript (mirrors
+    /// `turn_loop.rs:484` `continue`).
+    RetryStep,
+    /// Over budget, recovery budget exhausted — hard-fail the turn (mirrors
+    /// `turn_loop.rs:466-470`).
+    Fail(String),
+}
+
 /// Host-side [`AgentExecutor`] — the growing home for the production turn loop.
 ///
 /// Construct from the four framework collaborators: an [`LlmClientHandle`], a
@@ -517,6 +635,15 @@ pub struct HostAgentExecutor {
     /// (compacted messages applied via `clear()` + `push()`). Persists across
     /// `run` calls (matches `Session.micro_compact_state` / `.circuit_breaker`).
     compaction: Option<CompactionProbe>,
+    /// Optional capacity probe (§E). `None` ⇒ token-budget preflight is a
+    /// no-op. The probe carries the provider/model (for budget computation
+    /// via [`context_input_budget_for_provider`]), a [`CompactionConfig`]
+    /// (cloned + forced during emergency recovery), and the workspace root
+    /// (for [`compact_messages_safe`]). Unlike [`CompactionProbe`] the probe
+    /// is stateless — the per-run recovery counter is a local in `run_inner`,
+    /// and the forced-compaction micro-compact pass uses a fresh
+    /// [`MicroCompactState`].
+    capacity: Option<CapacityProbe>,
 }
 
 impl HostAgentExecutor {
@@ -525,7 +652,8 @@ impl HostAgentExecutor {
 /// an optional [`LspProbe`] (`None` ⇒ LSP collect/flush disabled) + an
 /// optional steer input receiver (`None` ⇒ steer drain disabled) + an
 /// optional approval-decision receiver (`None` ⇒ approval gating disabled) +
-/// an optional [`CompactionProbe`] (`None` ⇒ compaction disabled).
+/// an optional [`CompactionProbe`] (`None` ⇒ compaction disabled) + an
+/// optional [`CapacityProbe`] (`None` ⇒ capacity preflight disabled).
 #[must_use]
 pub fn new(
     client: LlmClientHandle,
@@ -537,6 +665,7 @@ pub fn new(
     steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>,
     approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
     compaction: Option<CompactionProbe>,
+    capacity: Option<CapacityProbe>,
 ) -> Self {
         Self {
             client,
@@ -548,6 +677,7 @@ pub fn new(
             steer,
             approval,
             compaction,
+            capacity,
         }
     }
 
@@ -871,6 +1001,225 @@ pub fn new(
         }
     }
 
+    /// (1) per-step capacity preflight (seam 1) — hard token-budget gate.
+    ///
+    /// Estimates input tokens and, if the estimate exceeds the provider's
+    /// input budget, attempts emergency recovery (forced compaction + hard
+    /// trim). Mirrors `handle_deepseek_turn`'s Gate B
+    /// (`turn_loop.rs:463-489`) — the always-on hard token-budget preflight,
+    /// **not** the opt-in `CapacityController` (Gate A, off by default since
+    /// v0.8.11 — deferred).
+    ///
+    /// Returns [`CapacityPreflight::Proceed`] when within budget or when
+    /// recovery failed but the budget isn't exhausted (the request goes out
+    /// anyway, mirroring production's fall-through); [`CapacityPreflight::RetryStep`]
+    /// when recovery succeeded (restart the step so the snapshot picks up the
+    /// compacted transcript); [`CapacityPreflight::Fail`] when the recovery
+    /// budget is exhausted.
+    async fn run_capacity_preflight(
+        &self,
+        client: &LlmClientHandle,
+        history: &mut dyn ChatHistory,
+        system: Option<&SystemPrompt>,
+        context_recovery_attempts: &mut u8,
+    ) -> CapacityPreflight {
+        let Some(probe) = &self.capacity else {
+            return CapacityPreflight::Proceed;
+        };
+        let Some(target_budget) =
+            context_input_budget_for_provider(probe.api_provider, &probe.model)
+        else {
+            // Unknown model ⇒ no budget ⇒ preflight silently disabled
+            // (mirrors `turn_loop.rs:465` — `None` budget skips the gate).
+            return CapacityPreflight::Proceed;
+        };
+        let estimated = estimate_input_tokens_conservative(history.messages(), system);
+        if estimated <= target_budget {
+            return CapacityPreflight::Proceed;
+        }
+        // Over budget — check the recovery budget before attempting.
+        if *context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
+            let msg = format!(
+                "Context overflow: estimated ~{estimated} tokens exceeds budget \
+                 ~{target_budget} after {MAX_CONTEXT_RECOVERY_ATTEMPTS} recovery attempts."
+            );
+            self.emit_status(msg.clone()).await;
+            return CapacityPreflight::Fail(msg);
+        }
+        if self
+            .recover_context_overflow(client, history, system, target_budget, "preflight token budget")
+            .await
+        {
+            *context_recovery_attempts = context_recovery_attempts.saturating_add(1);
+            CapacityPreflight::RetryStep
+        } else {
+            // Recovery failed but budget not exhausted — fall through; the
+            // request goes out and will likely be rejected by the provider
+            // (mirrors production: `recover_context_overflow` returning false
+            // falls through without `continue`). The reactive seam-2 path
+            // (provider context-length rejection → recovery) is deferred.
+            self.emit_status(format!(
+                "Context overflow recovery failed; sending request anyway \
+                 (~{estimated} vs ~{target_budget} tokens)."
+            ))
+            .await;
+            CapacityPreflight::Proceed
+        }
+    }
+
+    /// Emergency context-overflow recovery. Mirrors
+    /// `Engine::recover_context_overflow` (`engine/mod.rs:1670-1893`),
+    /// simplified to two of the production's three phases:
+    ///
+    /// - **Micro-compact** (best-effort, no API call): clear old tool-result
+    ///   content with a fresh [`MicroCompactState`]. Production Phase 1
+    ///   (responsive compact cascade: micro → partial-from → partial-up-to →
+    ///   full) is deferred — the preflight runs after `run_compaction` in the
+    ///   same step, so persistent-state micro-compact already ran; partial
+    ///   compaction is a prefix-cache optimization, not a correctness path.
+    /// - **Forced full compaction** (Phase 2): [`compact_messages_safe`] with a
+    ///   forced config (`enabled = true`, `token_threshold = target - 1`,
+    ///   `auto_floor_tokens = 0` — bypassing the cache-preservation floor
+    ///   because we're at a hard ceiling).
+    /// - **Hard trim** (Phase 3): drop oldest messages from the front while the
+    ///   estimate exceeds the budget, always keeping
+    ///   [`MIN_RECENT_MESSAGES_TO_KEEP`].
+    ///
+    /// Returns `true` only if the post-recovery estimate is within budget and
+    /// the transcript actually shrank.
+    ///
+    /// Deferred (same gaps as the compaction slice): `merge_compaction_summary`
+    /// (no system-prompt setter on [`ChatHistory`]),
+    /// `reinject_compaction_attachments`, `post_compact_cleanup`,
+    /// `CompactionEnhancements`, `emit_session_updated`.
+    async fn recover_context_overflow(
+        &self,
+        client: &LlmClientHandle,
+        history: &mut dyn ChatHistory,
+        system: Option<&SystemPrompt>,
+        target_budget: usize,
+        reason: &str,
+    ) -> bool {
+        let Some(probe) = &self.capacity else {
+            return false;
+        };
+        self.emit_status(format!("Emergency context compaction started ({reason})"))
+            .await;
+
+        let before_tokens = estimate_input_tokens_conservative(history.messages(), system);
+        let before_count = history.len();
+
+        // Phase 1 — best-effort micro-compact (no API call). Production's
+        // responsive cascade uses persistent `MicroCompactState`; we use a
+        // fresh default — the preflight runs after `run_compaction` (which
+        // already micro-compacted with persistent state if a `CompactionProbe`
+        // is present), so a second pass with fresh state re-examines all
+        // messages but only clears content that hasn't been cleared yet.
+        {
+            let mut msgs = history.messages().to_vec();
+            let mut local_state = MicroCompactState::default();
+            let cleared = micro_compact_messages(&mut msgs, &mut local_state);
+            if cleared > 0 {
+                history.clear();
+                for m in msgs {
+                    history.push(m);
+                }
+                let after_micro = estimate_input_tokens_conservative(history.messages(), system);
+                if after_micro <= target_budget {
+                    self.emit_status(
+                        "Emergency recovery: micro-compaction cleared enough context"
+                            .to_string(),
+                    )
+                    .await;
+                    return true;
+                }
+            }
+        }
+
+        // Phase 2 — forced full LLM compaction (mirrors mod.rs:1802-1847).
+        let mut forced_config = probe.compaction_config.clone();
+        forced_config.enabled = true;
+        forced_config.token_threshold = forced_config
+            .token_threshold
+            .min(target_budget.saturating_sub(1))
+            .max(1);
+        // Bypass the cache-preservation floor — at a hard ceiling we must
+        // free budget regardless of cache cost (mirrors mod.rs:1813-1816).
+        forced_config.auto_floor_tokens = 0;
+
+        let messages = history.messages().to_vec();
+        match compact_messages_safe(
+            client.as_ref(),
+            &messages,
+            &forced_config,
+            Some(&probe.workspace),
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(result) => {
+                // Apply the compacted transcript (wholesale replace, mirroring
+                // `self.session.messages = result.messages`). Deferred:
+                // `merge_compaction_summary` (no system-prompt path via
+                // `ChatHistory`), `reinject_compaction_attachments`,
+                // `post_compact_cleanup`, `emit_session_updated`.
+                if !result.messages.is_empty() || messages.is_empty() {
+                    history.clear();
+                    for m in result.messages {
+                        history.push(m);
+                    }
+                }
+                // summary_prompt discarded — same gap as run_compaction.
+            }
+            Err(e) => {
+                self.emit_status(format!(
+                    "Emergency compaction API pass failed: {e}. Falling back to local trim."
+                ))
+                .await;
+            }
+        }
+
+        // Phase 3 — hard trim oldest messages (mirrors mod.rs:1852 +
+        // trim_oldest_messages_to_budget). `ChatHistory` has no `remove(0)`,
+        // so clone → trim Vec → clear + repush (same pattern as compaction).
+        let after_compact = estimate_input_tokens_conservative(history.messages(), system);
+        if after_compact > target_budget {
+            let mut msgs = history.messages().to_vec();
+            while msgs.len() > MIN_RECENT_MESSAGES_TO_KEEP
+                && estimate_input_tokens_conservative(&msgs, system) > target_budget
+            {
+                msgs.remove(0);
+            }
+            history.clear();
+            for m in msgs {
+                history.push(m);
+            }
+        }
+
+        let after_tokens = estimate_input_tokens_conservative(history.messages(), system);
+        let after_count = history.len();
+        let recovered = after_tokens <= target_budget
+            && (after_tokens < before_tokens || after_count < before_count);
+
+        if recovered {
+            let removed = before_count.saturating_sub(after_count);
+            self.emit_status(format!(
+                "Emergency compaction complete: {before_count} → {after_count} messages \
+                 ({removed} removed), ~{before_tokens} → ~{after_tokens} tokens"
+            ))
+            .await;
+        } else {
+            self.emit_status(format!(
+                "Emergency context compaction failed to reduce request below model limit \
+                 (estimate ~{after_tokens} tokens, budget ~{target_budget})."
+            ))
+            .await;
+        }
+        recovered
+    }
+
     /// Per-tool approval gate (seam 3). Returns `Ok(())` to proceed with
     /// execution (the tool doesn't require approval, no approval channel was
     /// supplied, or the user approved) or `Err(denial_message)` to skip the
@@ -997,13 +1346,21 @@ impl HostAgentExecutor {
         // `turn_loop.rs:284-292`). Persists across steps within one run;
         // resets to 0 on a healthy round.
         let mut stream_retry_attempts: u32 = 0;
+        // Capacity recovery counter: per-turn, bounded by
+        // `MAX_CONTEXT_RECOVERY_ATTEMPTS` (2). Increments on each successful
+        // emergency compaction; resets to 0 on a healthy stream round
+        // (mirrors `turn_loop.rs:292` + the reset at `:617`).
+        let mut context_recovery_attempts: u8 = 0;
         loop {
             // (1) per-step pre-request seam — ✅ steer drain (queued user
             // inputs injected before the request snapshot); ✅ compaction
             // (micro-compact + LLM-summary auto-compact, runs after steer and
             // before the LSP flush so a fresh diagnostic message survives
-            // compaction); ✅ LSP flush (drain pending diagnostics into a
-            // synthetic user message); capacity / cycle land here later.
+            // compaction); ✅ capacity preflight (hard token-budget gate +
+            // emergency recovery, runs after compaction and before the LSP
+            // flush so the estimate reflects the just-compacted transcript);
+            // ✅ LSP flush (drain pending diagnostics into a synthetic user
+            // message); cycle land here later.
             if step >= max_steps {
                 callback.on_complete(&StopReason::MaxSteps).await;
                 return Ok(StopReason::MaxSteps);
@@ -1019,6 +1376,29 @@ impl HostAgentExecutor {
             // flush so a freshly-collected diagnostic message (pushed by the
             // flush below) is not summarized away.
             self.run_compaction(&client, history).await;
+            // Capacity preflight (Gate B — always-on hard token-budget check).
+            // Mirrors `turn_loop.rs:463-489`. Runs after compaction so the
+            // estimate reflects the just-compacted transcript; before the LSP
+            // flush (matching production order: compaction → capacity → LSP
+            // flush → request). If recovery succeeds, `continue` restarts the
+            // step so the request snapshot picks up the compacted transcript.
+            // If the budget is exhausted, hard-fail the turn.
+            match self
+                .run_capacity_preflight(
+                    &client,
+                    history,
+                    system.as_ref(),
+                    &mut context_recovery_attempts,
+                )
+                .await
+            {
+                CapacityPreflight::Proceed => {}
+                CapacityPreflight::RetryStep => continue,
+                CapacityPreflight::Fail(msg) => {
+                    callback.on_complete(&StopReason::Error(msg.clone())).await;
+                    return Ok(StopReason::Error(msg));
+                }
+            }
             // LSP flush sits after the max_steps bail so a turn-ending step
             // (e.g. MaxSteps right after an edit) leaves pending diagnostics
             // on the executor for the next turn's first flush — matching the
@@ -1051,9 +1431,18 @@ impl HostAgentExecutor {
             // `on_llm_start` fires once per step; retries are transparent to
             // the Callback. Subagent handoff / thinking-only handling land here
             // later.
-            let (content, _stop_reason) = self
+            let (content, _stop_reason) = match self
                 .stream_with_transparent_retry(&client, request, &mut stream_retry_attempts)
-                .await?;
+                .await
+            {
+                Ok(result) => {
+                    // A healthy round resets the capacity recovery budget
+                    // (mirrors `turn_loop.rs:617`).
+                    context_recovery_attempts = 0;
+                    result
+                }
+                Err(e) => return Err(e),
+            };
             callback.on_llm_end(&content).await;
 
             // Persist the assistant turn.
@@ -1172,7 +1561,9 @@ impl HostAgentExecutor {
             }
 
             // (4) per-step post-tool seam — loop-guard halt (absorbed);
-            // capacity / LSP post-edit land here later.
+            // capacity post-tool checkpoint (opt-in `CapacityController` Gate A
+            // + error-escalation) / cycle land here later. The hard
+            // token-budget preflight (Gate B) is absorbed at seam (1).
             if let Some(message) = loop_guard_halt {
                 tracing::warn!("{}", message);
                 self.emit_status(message.clone()).await;
@@ -1751,6 +2142,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1851,6 +2243,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1904,6 +2297,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -1944,6 +2338,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -2024,6 +2419,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2066,6 +2462,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -2138,6 +2535,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2191,6 +2589,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         executor
             .collect_lsp_diagnostics("edit_file", &serde_json::json!({"path":"foo.rs"}))
@@ -2213,6 +2612,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
             None,
@@ -2258,6 +2658,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2286,6 +2687,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
             None,
@@ -2340,6 +2742,7 @@ mod tests {
             },
             None,
             Some(probe),
+            None,
             None,
             None,
             None,
@@ -2440,6 +2843,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2483,6 +2887,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -2548,6 +2953,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2587,6 +2993,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -2664,6 +3071,7 @@ mod tests {
             Some(rx_steer),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2722,6 +3130,7 @@ mod tests {
             None, // no steer receiver
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2759,6 +3168,7 @@ mod tests {
             Some(rx_steer),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -2793,6 +3203,7 @@ mod tests {
             Some(tx),
             None,
             Some(rx_steer),
+            None,
             None,
             None,
         );
@@ -2842,6 +3253,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
             None,
             None,
         );
@@ -2941,6 +3353,7 @@ mod tests {
             None,
             Some(rx_approval),
             None,
+            None,
         );
 
         let reason = executor
@@ -2984,6 +3397,7 @@ mod tests {
             None,
             Some(rx_approval),
             None,
+            None,
         );
 
         let reason = executor
@@ -3022,6 +3436,7 @@ mod tests {
             None,
             None,
             None, // no approval channel
+            None,
             None,
         );
 
@@ -3069,6 +3484,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
         );
 
@@ -3119,6 +3535,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
         );
 
@@ -3188,6 +3605,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
         );
 
@@ -3290,6 +3708,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -3320,6 +3739,7 @@ mod tests {
                 compaction_config_disabled(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -3370,6 +3790,7 @@ mod tests {
                 compaction_config_high_threshold(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
         );
         let reason = executor
             .run(&mut history, "what did the file say".to_string())
@@ -3416,6 +3837,7 @@ mod tests {
                 compaction_config_low_threshold(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
         );
         let reason = executor
             .run(&mut history, "continue".to_string())
@@ -3464,6 +3886,7 @@ mod tests {
             None,
             None,
             Some(probe),
+            None,
         );
         let reason = executor
             .run(&mut history, "continue".to_string())
@@ -3506,6 +3929,7 @@ mod tests {
             None,
             None,
             Some(probe),
+            None,
         );
 
         // run1: seed an over-threshold transcript → compaction attempted → fails.
@@ -3531,5 +3955,229 @@ mod tests {
         // A per-run-local breaker would be 1 here; persistence ⇒ 2.
         assert_eq!(breaker.lock().unwrap().consecutive_failures(), 2);
         assert_eq!(mock.compaction_calls(), 2);
+    }
+
+    // === capacity helpers ================================================
+
+    fn capacity_probe(api_provider: ApiProvider, model: &str) -> CapacityProbe {
+        CapacityProbe::new(
+            api_provider,
+            model.to_string(),
+            CompactionConfig::default(),
+            PathBuf::from("/tmp/codesmith-test"),
+        )
+    }
+
+    // === capacity tests ==================================================
+
+    #[tokio::test]
+    async fn capacity_none_is_noop() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // No capacity probe ⇒ no preflight, no compaction call.
+        assert_eq!(mock.compaction_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn capacity_within_budget_proceeds() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        // Ollama / "llama2" → context_window 8192, budget = 8192 − 4096 − 1024
+        // = 3072 tokens. A single "hello" (~17 tokens) is far under budget.
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn capacity_over_budget_recovers_via_compaction() {
+        let mut sess = fresh_session();
+        // 40 text messages × ~200 chars ≈ 40 × 75 × 1.5 + framing ≈ 3615
+        // tokens > 3072 budget (Ollama / "llama2").
+        seed_text_messages(&mut sess, 40);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_summary("SUMMARY"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // One forced-compaction `create_message` call during recovery.
+        assert_eq!(mock.compaction_calls(), 1);
+        // Transcript shrank: 40 seeded + user + assistant ≪ 42.
+        assert!(history.len() < 42);
+    }
+
+    #[tokio::test]
+    async fn capacity_over_budget_recovers_via_hard_trim() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 40);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        // Compaction fails → hard trim is the fallback.
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Compaction was attempted (1 call) but failed; hard trim saved the turn.
+        assert_eq!(mock.compaction_calls(), 1);
+        // Hard trim removed oldest messages until under budget (keeping ≥ 4).
+        // The transcript shrank from 40 seeded + user text = 41 to well under
+        // that, then the assistant turn added 1. Exact count depends on the
+        // trim loop; the proof is the reduction + the turn succeeded.
+        assert!(history.len() < 42, "history len = {}", history.len());
+    }
+
+    #[tokio::test]
+    async fn capacity_micro_compact_clears_tool_results_in_recovery() {
+        let mut sess = fresh_session();
+        // A >32 KB `file_read` tool result pushes the transcript over budget.
+        // CompactionProbe is None, so run_compaction doesn't micro-compact —
+        // only the capacity recovery's best-effort micro-compact runs.
+        seed_large_file_read(&mut sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let reason = executor
+            .run(&mut history, "what did the file say".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Micro-compact cleared the tool result before forced compaction was
+        // needed — no LLM call.
+        assert_eq!(mock.compaction_calls(), 0);
+        // The tool result is now the cleared placeholder.
+        let placeholder = "[tool result cleared for context economy]";
+        match &history.messages()[1].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert_eq!(content, placeholder, "tool result was micro-compacted");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn capacity_recovery_fails_proceeds_with_request() {
+        let mut sess = fresh_session();
+        // Ten large text messages + user text = 11 messages, well over the
+        // 3072 budget. Compaction is attempted (enough messages beyond the
+        // keep-recent window for plan_compaction to produce summarize
+        // indices) but the mock errors. Hard trim can't bring 4 × 10K-char
+        // messages under 3072, so recovery fails — the request goes out
+        // anyway (Proceed), and the mock returns a canned reply.
+        let body = "x".repeat(10_000);
+        for _ in 0..10 {
+            sess.add_message(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: body.clone(),
+                    cache_control: None,
+                }],
+            });
+        }
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        // Recovery failed but the budget wasn't exhausted (attempts = 0 <
+        // MAX), so the request went out (Proceed) and the mock replied.
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 1);
     }
 }

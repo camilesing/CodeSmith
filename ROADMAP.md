@@ -785,6 +785,87 @@ compaction 机制是 capacity 的前置；且 compaction 只 seam-1（capacity �
 
 ---
 
+**进度（2026-07-11 §E capacity 吸收落地，第七个 guardrail，seam-1 pre-request，`feat/pluggable-framework-core`）：**
+
+§E 的第十一个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第七个（硬 token-budget preflight + 紧急恢复）吸收进
+`HostAgentExecutor`。capacity 是迄今最重的 guardrail：生产 `recover_context_overflow`（`engine/mod.rs:1670-1893`）是三阶段级联
+（responsive compact → forced full compaction → hard trim），且有 preflight（seam 1）+ reactive（seam 2）+ post-tool checkpoint
+（seam 4）三个接入点。本切片吸收的是 **seam 1 preflight（Gate B，always-on 硬预算检查）+ 简化的恢复级联**——reactive seam-2 路径
+（provider context-length rejection → recovery）和 opt-in `CapacityController`（Gate A，off by default since v0.8.11）延后。
+本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **`CapacityProbe` collaborator**（新 `pub struct`，镜像 `CompactionProbe` 但**无状态**）：`api_provider: ApiProvider` +
+  `model: String`（budget 计算用，`context_input_budget_for_provider`）+ `compaction_config: CompactionConfig`（forced compaction 路径
+  clone + force 后用）+ `workspace: PathBuf`（`compact_messages_safe` 路径规范化用）。**无 interior-mutability**——per-run 恢复计数器
+  （`context_recovery_attempts: u8`）是 `run_inner` 局部变量（匹配 transparent-retry 的 `stream_retry_attempts` 模式），probe 本身不持状态。
+  `CompactionProbe` 的 `micro_state` / `circuit_breaker` 在 capacity 路径不复用——recovery 的 micro-compact 用 local
+  `MicroCompactState::default()`（best-effort），因 preflight 跑在 `run_compaction` 之后（同一步），persistent-state micro-compact 已跑过。
+- **`capacity` 字段**：`HostAgentExecutor` 新增 `capacity: Option<CapacityProbe>` 字段 + 第 10 个构造器参数（非-capacity embed/测试传
+  `None`——33 个既有测试构造器改传第 10 个 `None`）。
+- **`run_capacity_preflight`（seam 1 pre-request）**（`async fn`）：`run_compaction` 之后、`flush_pending_lsp_diagnostics` 之前插
+  （匹配生产顺序：compaction → capacity → LSP flush → request）。`None` probe / `None` budget（unknown model）→ `Proceed`；
+  `estimate_input_tokens_conservative(history.messages(), system)` 超 `context_input_budget_for_provider(probe.api_provider, &probe.model)`
+  → 检查 `context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS`（2）→ `Fail`（hard fail turn）；否则调 `recover_context_overflow` →
+  success: `RetryStep`（`continue`，重启 step 使 request snapshot 拾起 compacted transcript）；fail: `Proceed`（fall through，请求照发——
+  镜像生产 `recover_context_overflow` 返 false 时不 `continue`）。
+- **`recover_context_overflow`**（`async fn`，简化三阶段级联）：
+  - **Phase 1 — best-effort micro-compact**（无 API call）：local `MicroCompactState::default()` + `micro_compact_messages`。cleared > 0 且
+    under budget → return true（复用既有 `micro_compact_messages`，零新依赖）。
+  - **Phase 2 — forced full LLM compaction**：clone `probe.compaction_config`，`enabled = true`、
+    `token_threshold = min(existing, target_budget - 1).max(1)`、`auto_floor_tokens = 0`（bypass cache-preservation floor——在硬上限处必须释放预算，
+    镜像 `mod.rs:1813-1816`）。`compact_messages_safe` 调用；`Ok` → `clear()` + `push()` loop 替换 transcript（`summary_prompt` 丢弃——同
+    compaction slice 的 gap）；`Err` → emit status，fall through to hard trim。
+  - **Phase 3 — hard trim**：clone messages → while `len > MIN_RECENT_MESSAGES_TO_KEEP && estimate > budget`: `remove(0)` → `clear()` + `push()` loop。
+  - Return `true` only if `after_tokens <= target_budget && (after_tokens < before_tokens || after_count < before_count)`。
+- **`run_inner` 接线**：新增 `let mut context_recovery_attempts: u8 = 0;`（near `stream_retry_attempts`）；seam 1 preflight match（Proceed/RetryStep/Fail）；
+  healthy stream 后 `context_recovery_attempts = 0`（镜像 `turn_loop.rs:617` reset on successful stream start）。
+- **刻意部分桥接（by design）**：
+  - **responsive compact cascade（Phase 1）延后**：生产的 `recover_context_overflow` 跑四步 responsive cascade（micro → partial-from →
+    partial-up-to → full）；partial compaction 只摘要 transcript 切片（保 prefix cache）——是优化非正确性路径。本切片跳到 forced full
+    compaction + hard trim（更激进但总是恢复——hard trim 是终极兜底）。responsive cascade 随 inline 流归约切片接入（partial compaction 需
+    responsive state machine，`Session`-internal）。
+  - **reactive seam-2 路径延后**：生产也在 provider 拒绝 context-length error 时触发 recovery（`turn_loop.rs:620-633`）。本执行器的
+    `stream_with_transparent_retry` 经 `?` 传播流错误，不检查 `is_context_length_error_message`；reactive recovery 随 inline 流归约切片接入
+    （需 error message 供分类）。
+  - **opt-in `CapacityController`（Gate A）延后**：off-by-default 软控制器（`run_capacity_pre_request_checkpoint` /
+    `run_capacity_post_tool_checkpoint` / `run_capacity_error_escalation_checkpoint`）未吸收；只吸收 always-on 硬 preflight（Gate B）。
+    Gate A 需完整 `CapacityController` 状态机（slack window / recent tool+ref counts / model priors）——独立 opt-in 切片。
+  - **cancel-token 短路延后**：生产在 `!cancelled` 时中止 recovery；本执行器无 `CancellationToken`。有界 `MAX_CONTEXT_RECOVERY_ATTEMPTS`（2）防死循环；
+    短路在 wire-in 步接入。
+  - **同 compaction 的 recovery gaps**：`recover_context_overflow` 调 `compact_messages_safe` 时同样缺 `merge_compaction_summary` /
+    `reinject_compaction_attachments` / `post_compact_cleanup` / `enhancements` / working-set pins/paths（见 "Known gaps in compaction"）。
+- **test doubles 扩展**：新增 `capacity_probe(api_provider, model)` helper（构造 `CapacityProbe` 用 `CompactionConfig::default()` + test workspace）。
+  6 个新测试：`capacity_none_is_noop`（`None`→NoToolCalls、`compaction_calls()==0`）、`capacity_within_budget_proceeds`（小 transcript→Proceed、
+  `compaction_calls()==0`）、`capacity_over_budget_recovers_via_compaction`（40 条 ~200 chars 消息超 Ollama/llama2 budget 3072→forced compaction→
+  `compaction_calls()==1`、history 收缩）、`capacity_over_budget_recovers_via_hard_trim`（compaction 失败→hard trim→recovery succeeds、
+  `compaction_calls()==1`、`history.len()<42`）、`capacity_micro_compact_clears_tool_results_in_recovery`（>32KB file_read tool result→recovery 的
+  micro-compact 清为 placeholder→`compaction_calls()==0` 无 LLM）、`capacity_recovery_fails_proceeds_with_request`（10 条 10K-char 消息→
+  compaction 失败、hard trim 受 `MIN_RECENT_MESSAGES_TO_KEEP` 限制无法降至 budget 下→recovery fails→Proceed→mock 返回→NoToolCalls、
+  `compaction_calls()==1`）。共 39 个 host_executor 测试通过（33 既有 + 6 新 capacity）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning；`cargo test -p codesmith-agent-runtime --lib host_executor` 39 通过
+（33 既有 + 6 新 capacity）；`cargo test -p codesmith-agent-runtime --lib` 1043 通过（0 失败、2 ignored，原 1037 +6）；
+`cargo test -p codesmith-agent --lib` 79 通过；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **下一个 guardrail**：剩余 guardrail 是 **early-tool-start**（seam 2，在流归约中检测 tool_use 起始并提前 dispatch——需 inline 流归约）、
+  **subagent**（seam 3，sub-agent handoff/hold）、**cycle**（seam 1/4，per-file cycle state）。建议优先 **inline 流归约**（替换 `accumulate_stream`
+  调用）——它是多个 guardrail / 次级排空点（steer mid-stream buffer / early-tool-start / transparent-retry 的 `accumulate_stream` bail-on-error
+  缺口 / reactive capacity recovery）的共同前置。capacity 已证 `CapacityProbe` 无状态 seam-1 可行，且 recovery 级联直接复用已吸收的
+  `compact_messages_safe` / `micro_compact_messages` / `estimate_input_tokens_conservative` 机制（compaction slice 的前置价值继续兑现）。
+- **reactive capacity recovery**（seam 2）：provider context-length rejection → `recover_context_overflow`——随 inline 流归约接入
+  （需 error message 供 `is_context_length_error_message` 分类）。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片，需完整 `CapacityController` 状态机。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路 + loop 顶取消检查，
+  在 wire-in 步或单独小切片接入。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins /
+  `emit_session_updated` 随 wire-in 切片接入（`Session` 接通后 system prompt 可变 + working set 派生可达）。同样适用于 capacity recovery。
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删
+  `handle_deepseek_turn`。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
