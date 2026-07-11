@@ -27,7 +27,7 @@
 //! | `on_llm_end`          | — (content not on wire²)   | — (no LLM-end hook)   |
 //! | `on_step`             | — (no step event variant)  | —                     |
 //! | `on_complete`         | — (`TurnComplete`³)         | —                     |
-//! | `on_stream_delta`     | `MessageDelta` / `ThinkingDelta` | —              |
+//! | `on_stream_delta`     | `MessageDelta` / `ThinkingDelta` / `MessageStarted` / `ThinkingStarted` / `ThinkingComplete` / `MessageComplete` | — |
 //!
 //! ¹ `TurnStarted` only carries a turn id and is emitted by the engine caller,
 //!   not the executor loop. ² `MessageComplete` only carries a block index; the
@@ -37,15 +37,20 @@
 //!   engine caller emits it after the executor returns, so the bridge does not
 //!   duplicate it.
 //!
-//! Streaming deltas (`MessageDelta` / `ThinkingDelta`) flow through the
-//! `on_stream_delta` hook (§E inline-stream-reduction slice). The bridge maps
-//! [`StreamDelta::Text`] → `Event::MessageDelta` and [`StreamDelta::Thinking`]
-//! → `Event::ThinkingDelta`, forwarding each delta to the `Event` channel as it
-//! arrives. Block-lifecycle events (`MessageStarted` / `ThinkingStarted` /
-//! `ThinkingComplete` / `MessageComplete`) are not yet bridged — they're
-//! emitted by the production stream-reduction code on `ContentBlockStart` /
-//! `ContentBlockStop`, and the inline reducer doesn't synthesize them yet
-//! (deferred to a follow-up that emits block-lifecycle deltas).
+//! Streaming deltas (`MessageDelta` / `ThinkingDelta`) and block-lifecycle
+//! events (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
+//! `MessageComplete`) flow through the `on_stream_delta` hook (§E
+//! inline-stream-reduction + block-lifecycle slices). The bridge maps
+//! [`StreamDelta::Text`] → `Event::MessageDelta`, [`StreamDelta::Thinking`]
+//! → `Event::ThinkingDelta`, and the four lifecycle `StreamDelta` variants →
+//! their same-named `Event` variants, forwarding each to the `Event` channel as
+//! it arrives (lifecycle events fire at `ContentBlockStart` / `ContentBlockStop`
+//! in the inline reducer). The stream-time `Event::ToolCallStarted` for tool
+//! blocks is **not** bridged through `on_stream_delta` yet — production emits it
+//! at `ContentBlockStop` for tool blocks, but the inline reducer defers it to
+//! the early-tool-start slice (which needs the tool catalog to validate input
+//! before announcing the call, and a bridge refactor to avoid duplicating the
+//! execute-time `on_tool_start` → `ToolCallStarted` emission).
 //!
 //! ## Synthesized tool-call id
 //!
@@ -248,6 +253,16 @@ impl Callback for CallbackBridge {
                     index: *index,
                     content: content.clone(),
                 },
+                StreamDelta::MessageStarted { index } => Event::MessageStarted { index: *index },
+                StreamDelta::ThinkingStarted { index } => {
+                    Event::ThinkingStarted { index: *index }
+                }
+                StreamDelta::ThinkingComplete { index } => {
+                    Event::ThinkingComplete { index: *index }
+                }
+                StreamDelta::MessageComplete { index } => {
+                    Event::MessageComplete { index: *index }
+                }
             };
             let _ = tx.send(event).await;
         })

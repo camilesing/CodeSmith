@@ -30,11 +30,26 @@ pub enum StopReason {
     Error(String),
 }
 
-/// A UI-relevant streaming delta, emitted by the inline stream reducer in real
-/// time (not buffered until stream end). Text and thinking deltas flow to the
-/// host's UI as they arrive; tool-input JSON deltas are **not** emitted here
-/// (they're assembled into the final [`ContentBlock::ToolUse`] block, which is
-/// not user-visible until `on_llm_end`).
+/// A UI-relevant streaming event, emitted by the inline stream reducer in real
+/// time (not buffered until stream end). Two families of variant:
+///
+/// - **Content deltas** ([`StreamDelta::Text`] / [`StreamDelta::Thinking`]):
+///   incremental text/thinking chunks that flow to the host's UI as they
+///   arrive. Tool-input JSON deltas are **not** emitted here (they're assembled
+///   into the final [`ContentBlock::ToolUse`] block, which is not user-visible
+///   until `on_llm_end`).
+/// - **Block-lifecycle markers** ([`StreamDelta::MessageStarted`] /
+///   [`StreamDelta::ThinkingStarted`] / [`StreamDelta::ThinkingComplete`] /
+///   [`StreamDelta::MessageComplete`]): block-boundary signals synthesized at
+///   `ContentBlockStart` / `ContentBlockStop` (no content payload). They let
+///   the host's UI frame a block before its first delta arrives and mark it
+///   done when its last delta lands — matching the production
+///   `Event::MessageStarted` / `Event::ThinkingStarted` / `Event::ThinkingComplete`
+///   / `Event::MessageComplete` emissions. The stream-time `ToolCallStarted`
+///   for tool blocks is **not** here yet — it's deferred to the early-tool-start
+///   slice (which needs the tool catalog to validate input before announcing
+///   the call, and a bridge refactor to avoid duplicating the execute-time
+///   `on_tool_start` emission).
 ///
 /// The `index` is the content-block index from the wire `StreamEvent`, so a
 /// host can correlate deltas with their block (matching the production
@@ -54,6 +69,34 @@ pub enum StreamDelta {
         index: usize,
         /// The incremental thinking chunk.
         content: String,
+    },
+    /// A text block started (maps to `Event::MessageStarted`). Fired at
+    /// `ContentBlockStart::Text`, before the block's first [`StreamDelta::Text`]
+    /// delta — lets the host frame the message before content lands.
+    MessageStarted {
+        /// Content-block index from the wire stream event.
+        index: usize,
+    },
+    /// A thinking block started (maps to `Event::ThinkingStarted`). Fired at
+    /// `ContentBlockStart::Thinking`, before the block's first
+    /// [`StreamDelta::Thinking`] delta.
+    ThinkingStarted {
+        /// Content-block index from the wire stream event.
+        index: usize,
+    },
+    /// A thinking block completed (maps to `Event::ThinkingComplete`). Fired at
+    /// `ContentBlockStop` for a thinking block, after its last
+    /// [`StreamDelta::Thinking`] delta.
+    ThinkingComplete {
+        /// Content-block index from the wire stream event.
+        index: usize,
+    },
+    /// A text block completed (maps to `Event::MessageComplete`). Fired at
+    /// `ContentBlockStop` for a text block, after its last [`StreamDelta::Text`]
+    /// delta.
+    MessageComplete {
+        /// Content-block index from the wire stream event.
+        index: usize,
     },
 }
 
@@ -273,6 +316,10 @@ mod tests {
             content: "hello".to_string(),
         })
         .await;
+        cb.on_stream_delta(&StreamDelta::MessageStarted { index: 0 })
+            .await;
+        cb.on_stream_delta(&StreamDelta::MessageComplete { index: 0 })
+            .await;
     }
 
     #[tokio::test]

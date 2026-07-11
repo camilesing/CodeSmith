@@ -975,6 +975,38 @@ reactive capacity recovery（需 error message 供 `is_context_length_error_mess
 
 ---
 
+**进度（2026-07-11 §E block-lifecycle 事件落地，seam-2 流式生命周期，`feat/pluggable-framework-core`）：**
+
+§E 的第十四个切片落地——把生产 `handle_deepseek_turn` 在流归约中合成、但内联归约器（第十二切片）留下为 no-op 的 block-lifecycle 事件接通：`reduce_stream` 现在 `ContentBlockStart`/`ContentBlockStop` 处合成 `MessageStarted`/`ThinkingStarted`/`ThinkingComplete`/`MessageComplete`，经 CORE `StreamDelta`（新增 4 lifecycle variant）→ `Callback::on_stream_delta` → `CallbackBridge` → 同名 `Event` variant 端到端流到 host UI 通道。这是 ROADMAP "early-tool-start" 焦点项的自包含子集——block-lifecycle 是 "可同期补上" 的部分，**不**需 `ToolDispatcher`（early-tool-start 的 speculative dispatch 仍需 `ToolDispatcher`，"可能随 wire-in 切片"），且是 early-tool-start 的前置（生产在 `ContentBlockStop` 发 `ToolCallStarted` 后才做 early dispatch）。本轮跨 3 文件 2 crate（CORE `StreamDelta` + `reduce_stream` + `CallbackBridge`），纯增量（新 `StreamDelta` variant 默认 no-op——所有既有 `Callback` impl 不受影响）；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **CORE `StreamDelta` 扩展**（`crates/agent/src/callback/mod.rs`）：`StreamDelta` 从 2 variant（`Text`/`Thinking`）扩为 6——新增 `MessageStarted { index }` / `ThinkingStarted { index }` / `ThinkingComplete { index }` / `MessageComplete { index }`（各携带 `index: usize`，1:1 映射到既有 `Event` variant）。枚举文档重写为 "two families"（content delta + block-lifecycle marker）。`CallbackSet`/`NoopCallback` 无改动（按引用转发 / 默认 no-op）。`noop_callback_defaults_are_callable` 测试加 2 个 lifecycle variant 调用保覆盖。
+- **`reduce_stream` 合成**（`crates/agent-runtime/src/engine/host_executor.rs`）：
+  - `ContentBlockStart::Text` 臂：insert 前发 `StreamDelta::MessageStarted { index }`。
+  - `ContentBlockStart::Thinking` 臂：insert 前发 `StreamDelta::ThinkingStarted { index }`。
+  - `ContentBlockStop { index }` 臂（原 no-op `{}`）：bind `index`，`blocks.get(&index)` 查块类型（**不 remove**——块留到 `finalize_blocks`）：`Thinking` → `ThinkingComplete`、`Text` → `MessageComplete`、`ToolUse` → 无 lifecycle（deferred to early-tool-start）。
+  - `reduce_stream` doc 更新：lifecycle 已就位（text/thinking）；`ToolCallStarted` for tool blocks 仍 deferred。
+- **`CallbackBridge::on_stream_delta`**（`callback_bridge.rs`）：match 扩 4 臂——`MessageStarted`→`Event::MessageStarted`、`ThinkingStarted`→`Event::ThinkingStarted`、`ThinkingComplete`→`Event::ThinkingComplete`、`MessageComplete`→`Event::MessageComplete`（既有 `Event` variant 全已存在，`events.rs:34-69`，各携带 `index: usize`）。模块 doc gap 表 `on_stream_delta` 行 + "Block-lifecycle events … not yet bridged" 段更新为已桥接；`ToolCallStarted` for tool blocks 仍是 deferred gap。
+- **既有测试调整**：`stream_emits_text_deltas_to_callback` + `stream_emits_thinking_deltas_to_callback` 原用位置断言 `deltas[0]`/`deltas[1]`——lifecycle 事件现在交错插入，`deltas[0]` 变为 `MessageStarted`/`ThinkingStarted`。改为 filter-by-variant（`.filter_map` 取 `Text`/`Thinking` content delta），与既有 `stream_deltas_flow_through_callback_bridge` 的 filter 风格一致。零行为变化，只调整断言策略。
+- **2 个新测试**：`stream_emits_block_lifecycle_events`（thinking block(0) + text block(1) → `DeltaRecorder` 捕获完整交错序列 `ThinkingStarted(0)` → `Thinking("pondering")` → `ThinkingComplete(0)` → `MessageStarted(1)` → `Text("answer")` → `MessageComplete(1)`，用 `delta_tags` helper 渲染为可读 tag 串断言顺序 + index）、`stream_lifecycle_events_flow_through_callback_bridge`（端到端：executor → `CallbackBridge` → `Event::ThinkingStarted{0}`/`ThinkingComplete{0}`/`MessageStarted{1}`/`MessageComplete{1}` 在 Event channel，且 `ThinkingComplete(0)` 先于 `MessageStarted(1)` 证块序）。共 50 个 host_executor 测试通过（48 既有 + 2 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime`（含 `--tests`）零新 warning（10 warning 均既有，与本轮无关）；`cargo test -p codesmith-agent --lib` 79 通过；`cargo test -p codesmith-agent-runtime --lib host_executor` 50 通过（48 既有 + 2 新）；`cargo test -p codesmith-agent-runtime --lib callback_bridge` 5 通过（模块测试不变，2 个 host_executor 的 `*_callback_bridge` 测试含在 host_executor 计数）；`cargo test -p codesmith-agent-runtime --lib` 1056 通过（0 失败、2 ignored，原 1054 +2；1 个 MCP streamable-http 测试在并发全量跑时偶发失败、隔离/重跑通过，与本轮无关）；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码）。
+
+**已知设计取舍（本轮缺口，by design）：**
+- **`ToolCallStarted` for tool blocks 延后**：生产在 `ContentBlockStop`（tool 块）解析 input 后发 `Event::ToolCallStarted { id, name, input }`（wire tool id）。`CallbackBridge` 现在 `on_tool_start`（execute time）发 `ToolCallStarted`（合成 `bridge-{n}` id）。移到 stream-time 需重构 bridge 避免重复 + 透传 wire tool id——与 early-tool-start 耦合，同切片接入。
+- **`MessageComplete` 在 `ContentBlockStop` per-block发**：生产 post-stream、gated by `pending_message_complete`（只发一次）。本切片每 text 块 `ContentBlockStop` 发一次；多 text 块 → 多 `MessageComplete`。可接受——`Event::MessageComplete { index }` 携带 index 供 UI 关联。
+- **mid-flight 死亡的块无 `MessageComplete`**：未到 `ContentBlockStop` 的块不发 complete——匹配生产（只 complete 到达 Stop 的块）。
+
+**下一聚焦工作：**
+- **early-tool-start**（seam 2）：在 `reduce_stream` 中检测 `ContentBlockStart::ToolUse` → `ContentBlockStop` 后，preflight 校验 + `tokio::spawn` 提前 dispatch read-only tool。需 tool catalog + approval + loop-guard——可能随 wire-in 切片（需 `ToolDispatcher` 接通，或用框架 `Tool::capabilities()` 做静态近似 + loop-guard 线程化）。block-lifecycle 已就位（`ToolCallStarted` 的 stream-time 合成 + bridge 去重可在此切片同期补上）。inline 流归约 + reactive recovery + block-lifecycle 均已就位。
+- **subagent**（seam 3，sub-agent handoff/hold）、**cycle**（seam 1/4，per-file cycle state）：后续 guardrail。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片，需完整 `CapacityController` 状态机。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路（preflight + reactive）+ loop 顶取消检查，在 wire-in 步或单独小切片接入。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery（preflight + reactive）。
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

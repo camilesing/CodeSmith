@@ -853,11 +853,16 @@ pub fn new(
     ///
     /// Tool-input JSON deltas (`Delta::InputJsonDelta`) are **not** emitted
     /// to the callback — they're assembled into the `ToolUse` block's input,
-    /// which isn't user-visible until `on_llm_end`. Production's
-    /// `Event::ToolCallStarted` (fired on `ContentBlockStop` for tool blocks)
-    /// is not synthesized here yet — it's deferred to the early-tool-start
-    /// slice (which needs the tool catalog to validate input before announcing
-    /// the call).
+    /// which isn't user-visible until `on_llm_end`. Block-lifecycle events
+    /// (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
+    /// `MessageComplete`) **are** synthesized here, at `ContentBlockStart` /
+    /// `ContentBlockStop` for text/thinking blocks — letting the host's UI frame
+    /// a block before its first delta and mark it done when its last delta
+    /// lands (matching production's `turn_loop.rs:864/874/985/1254`). Production's
+    /// `Event::ToolCallStarted` (fired on `ContentBlockStop` for tool blocks) is
+    /// not synthesized here yet — it's deferred to the early-tool-start slice
+    /// (which needs the tool catalog to validate input before announcing the
+    /// call).
     async fn reduce_stream(&self, mut stream: StreamEventBox) -> StreamReduceOutcome {
         let mut blocks: BTreeMap<u32, BlockBuild> = BTreeMap::new();
         let mut stop_reason: Option<String> = None;
@@ -896,8 +901,22 @@ pub fn new(
                     content_block,
                 } => {
                     let build = match content_block {
-                        ContentBlockStart::Text { text } => BlockBuild::Text(text),
+                        ContentBlockStart::Text { text } => {
+                            // Block-lifecycle: a text block started — let the
+                            // host frame the message before its first delta.
+                            self.callback
+                                .on_stream_delta(&StreamDelta::MessageStarted {
+                                    index: index as usize,
+                                })
+                                .await;
+                            BlockBuild::Text(text)
+                        }
                         ContentBlockStart::Thinking { thinking } => {
+                            self.callback
+                                .on_stream_delta(&StreamDelta::ThinkingStarted {
+                                    index: index as usize,
+                                })
+                                .await;
                             BlockBuild::Thinking(thinking)
                         }
                         ContentBlockStart::ToolUse {
@@ -964,7 +983,37 @@ pub fn new(
                         }
                     }
                 }
-                StreamEvent::ContentBlockStop { .. } => {}
+                StreamEvent::ContentBlockStop { index } => {
+                    // Block-lifecycle: mark the block done. Production emits
+                    // `ThinkingComplete` / `MessageComplete` here (and
+                    // `ToolCallStarted` for tool blocks — the latter is
+                    // deferred to the early-tool-start slice, which needs the
+                    // tool catalog to validate input before announcing the
+                    // call). The block is looked up (not removed) so it stays
+                    // available for `finalize_blocks` at stream end.
+                    if let Some(build) = blocks.get(&index) {
+                        match build {
+                            BlockBuild::Thinking(_) => {
+                                self.callback
+                                    .on_stream_delta(&StreamDelta::ThinkingComplete {
+                                        index: index as usize,
+                                    })
+                                    .await;
+                            }
+                            BlockBuild::Text(_) => {
+                                self.callback
+                                    .on_stream_delta(&StreamDelta::MessageComplete {
+                                        index: index as usize,
+                                    })
+                                    .await;
+                            }
+                            BlockBuild::ToolUse { .. } => {
+                                // Tool-block lifecycle deferred to
+                                // early-tool-start.
+                            }
+                        }
+                    }
+                }
                 StreamEvent::MessageDelta {
                     delta: MessageDelta { stop_reason: sr, .. },
                     ..
@@ -4971,23 +5020,20 @@ mod tests {
             .expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
 
-        // Two text deltas were emitted — one per ContentBlockDelta.
+        // Two text deltas were emitted — one per ContentBlockDelta. Lifecycle
+        // events (MessageStarted/MessageComplete) now interleave, so filter for
+        // the content deltas rather than asserting positional indices.
         let deltas = recorder.deltas();
-        assert_eq!(deltas.len(), 2, "two text deltas: {deltas:?}");
-        match &deltas[0] {
-            StreamDelta::Text { index, content } => {
-                assert_eq!(*index, 0);
-                assert_eq!(content, "hello ");
-            }
-            other => panic!("expected Text delta, got {other:?}"),
-        }
-        match &deltas[1] {
-            StreamDelta::Text { index, content } => {
-                assert_eq!(*index, 1);
-                assert_eq!(content, "world");
-            }
-            other => panic!("expected Text delta, got {other:?}"),
-        }
+        let text_deltas: Vec<_> = deltas
+            .iter()
+            .filter_map(|d| match d {
+                StreamDelta::Text { index, content } => Some((*index, content.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text_deltas.len(), 2, "two text deltas: {deltas:?}");
+        assert_eq!(text_deltas[0], (0, "hello ".to_string()));
+        assert_eq!(text_deltas[1], (1, "world".to_string()));
     }
 
     #[tokio::test]
@@ -5023,16 +5069,18 @@ mod tests {
             .expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
 
-        // The thinking delta was emitted (the text delta too).
+        // The thinking delta was emitted (the text delta too). Filter for the
+        // thinking content delta (lifecycle events interleave).
         let deltas = recorder.deltas();
-        assert_eq!(deltas.len(), 2, "thinking + text delta: {deltas:?}");
-        match &deltas[0] {
-            StreamDelta::Thinking { index, content } => {
-                assert_eq!(*index, 0);
-                assert_eq!(content, "pondering");
-            }
-            other => panic!("expected Thinking delta, got {other:?}"),
-        }
+        let thinking_deltas: Vec<_> = deltas
+            .iter()
+            .filter_map(|d| match d {
+                StreamDelta::Thinking { index, content } => Some((*index, content.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking_deltas.len(), 1, "one thinking delta: {deltas:?}");
+        assert_eq!(thinking_deltas[0], (0, "pondering".to_string()));
     }
 
     #[tokio::test]
@@ -5150,5 +5198,183 @@ mod tests {
         assert_eq!(t_content, "reasoning");
         assert_eq!(x_idx, 1);
         assert_eq!(x_content, "output");
+    }
+
+    // (4) Block-lifecycle events — the inline reducer synthesizes
+    // MessageStarted/ThinkingStarted at ContentBlockStart and
+    // ThinkingComplete/MessageComplete at ContentBlockStop, interleaved with
+    // the content deltas. This is the §E block-lifecycle slice.
+
+    /// Render a `StreamDelta` sequence as readable tags so a lifecycle-ordering
+    /// assertion reads as a list of block-boundary + content events.
+    fn delta_tags(deltas: &[StreamDelta]) -> Vec<String> {
+        deltas
+            .iter()
+            .map(|d| match d {
+                StreamDelta::Text { index, content } => {
+                    format!("Text({index}, {content:?})")
+                }
+                StreamDelta::Thinking { index, content } => {
+                    format!("Thinking({index}, {content:?})")
+                }
+                StreamDelta::MessageStarted { index } => {
+                    format!("MessageStarted({index})")
+                }
+                StreamDelta::ThinkingStarted { index } => {
+                    format!("ThinkingStarted({index})")
+                }
+                StreamDelta::ThinkingComplete { index } => {
+                    format!("ThinkingComplete({index})")
+                }
+                StreamDelta::MessageComplete { index } => {
+                    format!("MessageComplete({index})")
+                }
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn stream_emits_block_lifecycle_events() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let recorder = Arc::new(DeltaRecorder::new());
+        let callback: Arc<dyn Callback> = recorder.clone();
+
+        // A thinking block(0) followed by a text block(1) + finish.
+        let mut call = thinking_block(0, "pondering");
+        call.extend(text_block(1, "answer"));
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The full interleaved sequence: lifecycle markers frame each block
+        // around its content delta. ThinkingStarted fires before the thinking
+        // delta; ThinkingComplete fires at ContentBlockStop(0); then the text
+        // block's Started/Complete bracket its delta.
+        let tags = delta_tags(&recorder.deltas());
+        assert_eq!(
+            tags,
+            vec![
+                "ThinkingStarted(0)".to_string(),
+                "Thinking(0, \"pondering\")".to_string(),
+                "ThinkingComplete(0)".to_string(),
+                "MessageStarted(1)".to_string(),
+                "Text(1, \"answer\")".to_string(),
+                "MessageComplete(1)".to_string(),
+            ],
+            "lifecycle + content sequence: {tags:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_events_flow_through_callback_bridge() {
+        // End-to-end: executor → CallbackBridge → Event::ThinkingStarted /
+        // ThinkingComplete / MessageStarted / MessageComplete on the host's
+        // Event channel (mirrors `stream_deltas_flow_through_callback_bridge`).
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let bridge = Arc::new(CallbackBridge::new(Some(tx), None, HookContext::new()));
+        let callback: Arc<dyn Callback> = bridge;
+
+        let mut call = thinking_block(0, "reasoning");
+        call.extend(text_block(1, "output"));
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The four lifecycle Events arrived on the channel, with the right
+        // block indices.
+        let events = drain(&mut rx);
+        let started = events.iter().find_map(|e| match e {
+            Event::MessageStarted { index } => Some(*index),
+            _ => None,
+        });
+        let complete = events.iter().find_map(|e| match e {
+            Event::MessageComplete { index } => Some(*index),
+            _ => None,
+        });
+        let t_started = events.iter().find_map(|e| match e {
+            Event::ThinkingStarted { index } => Some(*index),
+            _ => None,
+        });
+        let t_complete = events.iter().find_map(|e| match e {
+            Event::ThinkingComplete { index } => Some(*index),
+            _ => None,
+        });
+        assert_eq!(
+            t_started.expect("Event::ThinkingStarted"),
+            0,
+            "thinking block started: {events:?}"
+        );
+        assert_eq!(
+            t_complete.expect("Event::ThinkingComplete"),
+            0,
+            "thinking block completed: {events:?}"
+        );
+        assert_eq!(
+            started.expect("Event::MessageStarted"),
+            1,
+            "text block started: {events:?}"
+        );
+        assert_eq!(
+            complete.expect("Event::MessageComplete"),
+            1,
+            "text block completed: {events:?}"
+        );
+
+        // Ordering: ThinkingComplete(0) precedes MessageStarted(1) — a block
+        // completes before the next one starts.
+        let t_complete_pos = events
+            .iter()
+            .position(|e| matches!(e, Event::ThinkingComplete { index: 0 }));
+        let msg_started_pos = events
+            .iter()
+            .position(|e| matches!(e, Event::MessageStarted { index: 1 }));
+        match (t_complete_pos, msg_started_pos) {
+            (Some(a), Some(b)) => assert!(
+                a < b,
+                "ThinkingComplete(0) at {a} should precede MessageStarted(1) at {b}: {events:?}"
+            ),
+            _ => panic!("lifecycle events missing: {events:?}"),
+        }
     }
 }
