@@ -30,6 +30,33 @@ pub enum StopReason {
     Error(String),
 }
 
+/// A UI-relevant streaming delta, emitted by the inline stream reducer in real
+/// time (not buffered until stream end). Text and thinking deltas flow to the
+/// host's UI as they arrive; tool-input JSON deltas are **not** emitted here
+/// (they're assembled into the final [`ContentBlock::ToolUse`] block, which is
+/// not user-visible until `on_llm_end`).
+///
+/// The `index` is the content-block index from the wire `StreamEvent`, so a
+/// host can correlate deltas with their block (matching the production
+/// `Event::MessageDelta { index, .. }` / `Event::ThinkingDelta { index, .. }`).
+#[derive(Debug, Clone)]
+pub enum StreamDelta {
+    /// Incremental assistant text (maps to `Event::MessageDelta`).
+    Text {
+        /// Content-block index from the wire stream event.
+        index: usize,
+        /// The incremental text chunk.
+        content: String,
+    },
+    /// Incremental reasoning/thinking text (maps to `Event::ThinkingDelta`).
+    Thinking {
+        /// Content-block index from the wire stream event.
+        index: usize,
+        /// The incremental thinking chunk.
+        content: String,
+    },
+}
+
 /// No-op boxed future, the default body for every [`Callback`] method.
 ///
 /// `'static` so it satisfies any `'a` the caller ties to `&self` + the params.
@@ -97,6 +124,25 @@ pub trait Callback: Send + Sync {
         reason: &'a StopReason,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let _ = reason;
+        noop()
+    }
+
+    /// Fired for each streaming text/thinking delta, in real time as the LLM
+    /// stream produces them (before [`Callback::on_llm_end`]). Default no-op;
+    /// a host that wants live UI streaming implements this to push deltas to
+    /// its event channel. The `index` correlates consecutive deltas that
+    /// belong to the same content block.
+    ///
+    /// This is the framework seam for the production stream-reduction loop's
+    /// `Event::MessageDelta` / `Event::ThinkingDelta` emission — without it,
+    /// the executor buffers the whole stream before surfacing any content,
+    /// which means the user sees nothing until the stream completes (and a
+    /// mid-flight stream error loses all partial content).
+    fn on_stream_delta<'a>(
+        &'a self,
+        delta: &'a StreamDelta,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let _ = delta;
         noop()
     }
 }
@@ -199,6 +245,18 @@ impl Callback for CallbackSet {
             }
         })
     }
+
+    fn on_stream_delta<'a>(
+        &'a self,
+        delta: &'a StreamDelta,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let cbs = self.callbacks.clone();
+        Box::pin(async move {
+            for cb in &cbs {
+                cb.on_stream_delta(delta).await;
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +268,11 @@ mod tests {
         let cb = NoopCallback;
         cb.on_step(0).await;
         cb.on_complete(&StopReason::NoToolCalls).await;
+        cb.on_stream_delta(&StreamDelta::Text {
+            index: 0,
+            content: "hello".to_string(),
+        })
+        .await;
     }
 
     #[tokio::test]

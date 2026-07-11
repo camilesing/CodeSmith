@@ -866,6 +866,66 @@ compaction 机制是 capacity 的前置；且 compaction 只 seam-1（capacity �
 
 ---
 
+**进度（2026-07-11 §E inline 流归约落地，闭合 bail-on-error 缺口，`feat/pluggable-framework-core`）：**
+
+§E 的第十二个切片落地——把 `HostAgentExecutor` 的 `accumulate_stream` 调用替换为内联流归约器 `reduce_stream`，使流式 delta（text/thinking）实时发到 `Callback::on_stream_delta`（新 CORE trait 方法），并跟踪 `any_content_received`
+闭合 transparent-retry 的 bail-on-error 缺口（流死后部分内容不再丢弃——partial surfaced 不 retry，empty 才 retry）。这是多个 guardrail / 次级排空点的共同前置：early-tool-start（在流中检测 tool_use 起始）、steer mid-stream buffer、
+reactive capacity recovery（需 error message 供 `is_context_length_error_message` 分类）的前置。本轮跨 3 文件 2 crate（CORE `Callback` trait + `CallbackBridge` + `HostAgentExecutor`），纯增量（CORE trait 新方法有默认 no-op——
+所有既有 `Callback` impl 不受影响）；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **CORE `StreamDelta` + `on_stream_delta`**（`codesmith-agent/src/callback/mod.rs`）：新增 `pub enum StreamDelta { Text { index, content }, Thinking { index, content } }`——UI-relevant 流 delta（tool-input JSON delta 不在此——它 assemble 进
+  `ContentBlock::ToolUse`，非用户可见直到 `on_llm_end`）。`Callback` trait 新增 `on_stream_delta(&self, delta: &StreamDelta)` 方法（默认 no-op，匹配既有 6 方法的 `noop()` 模式）。`CallbackSet` 扇出已补上。向后兼容：所有默认 no-op，
+  既有 `NoopCallback` / `CallbackBridge` / `RecordingCallback` 不受影响（不 override 即 no-op）。
+- **`CallbackBridge::on_stream_delta`**（`codesmith-agent-runtime/src/callback_bridge.rs`）：map `StreamDelta::Text` → `Event::MessageDelta { index, content }`、`StreamDelta::Thinking` → `Event::ThinkingDelta { index, content }`，发到 `tx` channel。
+  模块文档更新：bridged-vs-gap 表新增 `on_stream_delta` 行，"streaming deltas have no Callback method" 段改为"now flow through `on_stream_delta`"。block-lifecycle 事件（`MessageStarted`/`ThinkingStarted`/`ThinkingComplete`/`MessageComplete`）
+  尚未桥接——`reduce_stream` 不在 `ContentBlockStart`/`ContentBlockStop` 时合成它们（延后到 early-tool-start 切片，需 tool catalog 校验 input 后才 announce）。
+- **`reduce_stream` 内联归约器**（`host_executor.rs`）：替换 `accumulate_stream(stream).await` 调用。accumulation 逻辑镜像 CORE `accumulate_stream`（`BTreeMap<u32, BlockBuild>` keyed by wire block index；text/thinking delta append 到
+  block buffer；tool-input JSON delta buffer 后 final `serde_json::from_str`）。关键差异：每个 text/thinking delta 在 buffer 前**也**发到 `self.callback.on_stream_delta()`——host UI 实时流式（不再等整个 stream buffer 完才显示）。
+  `any_content_received` 在首个非-`MessageStart` event 翻转——cross from "stream not yet productive"（eligible for transparent retry）into "model has billed for output"（must surface），镜像 `turn_loop.rs:770-772`。
+- **`StreamReduceOutcome` 三态枚举**（替换 CORE `accumulate_stream` 的 binary `Result<(Vec<ContentBlock>, Option<String>)>`）：
+  - `Complete` — stream clean 完成（`MessageStop` 或 stream 结束无 error）。
+  - `Partial` — stream 产了 content（text/thinking/tool delta 到达）后 mid-flight 死。partial content surfaced（不 retry），镜像生产 `any_content_received` guard（`streaming.rs:81-87` 的 `should_transparently_retry_stream`）。
+  - `Empty` — stream 死前无任何 content（只有 `MessageStart` 或什么都没有）。safe to retry transparently。
+- **`stream_with_transparent_retry` 更新**：`reduce_stream` 返回三态 → `Complete`/`Partial` 均 `return Ok(...)`（surface content，reset budget），仅 `Empty` retry（budget ≤ `MAX_STREAM_RETRIES` = 3）。这闭合了 bail-on-error 缺口：
+  旧 `accumulate_stream` 在首个 erroring item bail 并丢弃 partial blocks → executor retry 即使生产会 ship partial content（它 track `any_content_received` inline 跳过 retry）。内联归约器现在做同样的区分。`stream_with_transparent_retry`
+  签名不变（`&self` 方法可直接用 `self.callback`）——`run_inner` 调用点零改动。
+- **`BlockBuild` + `finalize_blocks`**（private）：`BlockBuild` enum 镜像 CORE `accumulate_stream` 的 local enum（`Text(String)` / `Thinking(String)` / `ToolUse { id, name, input_buf, start_input, caller: Option<ToolCaller> }`）。
+  `finalize_blocks(BTreeMap) → Vec<ContentBlock>` extracted 为独立 fn，供 clean completion 和 mid-flight error 两路径复用。
+- **刻意部分桥接（by design）**：
+  - **block-lifecycle 事件延后**：`MessageStarted`/`ThinkingStarted`/`ThinkingComplete`/`MessageComplete` 不在 `reduce_stream` 合成——生产在 `ContentBlockStart`/`ContentBlockStop` 时发它们。延后到 early-tool-start 切片
+    （`ToolCallStarted` 需 tool catalog 校验 input 后才 announce；block-lifecycle 可同期补上）。
+  - **inner mid-flight retry 不复制**：生产在 event loop 内部（no content received 时）reset stream（`turn_loop.rs:775-834`）；本执行器用更简单的外层 retry（re-call `create_message_stream`）。两者对 retry 决策功能等价；
+    inner retry 的优势是避免多余 `MessageStart` round-trip（仅 latency-sensitive 生产路径 relevant）。
+  - **reactive capacity recovery 延后**：`stream_with_transparent_retry` 仍用 `?` 传播 pre-stream error（不检查 `is_context_length_error_message`）。内联归约器已就位（前置价值兑现——它 surfaces error message 供分类），
+    但 error-classification + recovery plumbing（route context-length errors to `recover_context_overflow`）是 immediate next sub-slice。
+  - **cancel-token 短路延后**：同 transparent-retry 的既有 gap。
+- **test doubles 扩展**：`MockRound` 新增 `EventsThenErr(Vec<StreamEvent>, String)` variant（stream 产 events 后 trailing `Err`——simulates mid-flight death *after* content）。`DeltaRecorder` callback（records `on_stream_delta` calls）。
+  `thinking_block(idx, body)` helper（mirrors `text_block`，builds `ContentBlockStart::Thinking` + `ThinkingDelta` + `ContentBlockStop`）。4 个新测试：
+  `stream_emits_text_deltas_to_callback`（两 text block → 2 `StreamDelta::Text` delta，index/content 匹配）、`stream_emits_thinking_deltas_to_callback`（thinking + text block → `StreamDelta::Thinking` + `StreamDelta::Text`）、
+  `stream_partial_content_surfaces_without_retry`（`EventsThenErr` with text_block("partial answer") + Err → 1 request only（no retry）、partial text in history、partial-content status）、`stream_deltas_flow_through_callback_bridge`
+  （end-to-end：executor → `CallbackBridge` → `Event::ThinkingDelta` + `Event::MessageDelta` on Event channel）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime` 零 warning；
+`cargo test -p codesmith-agent --lib` 79 通过；`cargo test -p codesmith-agent-runtime --lib` 1049 通过（原 1043 +6：4 host_executor + 2 callback_bridge，0 失败、2 ignored）；
+`cargo test -p codesmith-agent-runtime --lib host_executor` 43 通过（39 既有 + 4 新）；`cargo test -p codesmith-agent-runtime --lib callback_bridge` 5 通过（3 既有 + 2 新）；
+`cargo build --workspace` 全绿（tui 143 warning 均既有死代码）。
+
+**下一聚焦工作：**
+- **reactive capacity recovery**（seam 2）：provider context-length rejection → `recover_context_overflow`。内联归约器已就位（surfaces error message 供 `is_context_length_error_message` 分类），但 `stream_with_transparent_retry` 仍用 `?`
+  传播 pre-stream error。下一 sub-slice：在 `stream_with_transparent_retry` 的 `create_message_stream` error 路径检查 `is_context_length_error_message` + 调 `recover_context_overflow`（需 history/system/context_recovery_attempts——
+  可能需拆 `stream_with_transparent_retry` 使 pre-stream error 可分类传播回 `run_inner` 处理，或把必要参数传入）。
+- **early-tool-start**（seam 2）：在 `reduce_stream` 中检测 `ContentBlockStart::ToolUse` → `ContentBlockStop` 后，preflight 校验 + `tokio::spawn` 提前 dispatch read-only tool（需 tool catalog + approval + loop-guard——需 `ToolDispatcher` 接通，
+  可能随 wire-in 切片）。block-lifecycle 事件（`MessageStarted`/`ThinkingStarted` 等）可同期补上（在 `reduce_stream` 的 `ContentBlockStart`/`ContentBlockStop` 分支发 `on_stream_delta` 之外的 lifecycle 事件——需 CORE `Callback` 新方法
+  或扩展 `StreamDelta`）。
+- **subagent**（seam 3，sub-agent handoff/hold）、**cycle**（seam 1/4，per-file cycle state）：后续 guardrail。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路 + loop 顶取消检查，在 wire-in 步或单独小切片接入。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery。
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

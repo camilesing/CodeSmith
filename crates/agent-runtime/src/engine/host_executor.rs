@@ -20,9 +20,10 @@
 //!
 //! ## Absorbed guardrails
 //!
-//! [`HostAgentExecutor`] runs the LLM↔tool loop (reusing
-//! [`accumulate_stream`](codesmith_agent::executor::accumulate_stream) for stream
-//! reduction) and absorbs the production guardrails slice by slice. Seven are in:
+//! [`HostAgentExecutor`] runs the LLM↔tool loop (with an inline stream reducer,
+//! [`reduce_stream`], that replaced the CORE `accumulate_stream` and emits
+//! streaming deltas to `Callback::on_stream_delta` in real time) and absorbs
+//! the production guardrails slice by slice. Seven are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -47,16 +48,19 @@
 //!    diagnostics on the next turn's first pre-request flush).
 //! 3. **transparent-retry** ([`stream_with_transparent_retry`]) — the **first
 //!    seam-2 guardrail**. When the stream dies mid-flight before any content is
-//!    committed (`accumulate_stream` returns `Err`), the executor silently re-issues
-//!    the SAME request up to `MAX_STREAM_RETRIES` (3) times before propagating the
-//!    failure, mirroring `handle_deepseek_turn`'s outer "stream died with nothing"
-//!    retry (`turn_loop.rs:1152-1190`). A healthy round resets the budget. The
-//!    retry counter is a local `u32` that persists across steps within one `run`
-//!    (matching loop-guard's local-state pattern); the retry is transparent to the
-//!    [`Callback`] (`on_llm_start` / `on_llm_end` fire once per step, a `Status`
-//!    event is the only retry surfacing). See "Known tradeoffs" below for the
-//!    `accumulate_stream` bail-on-error gap and the deferred cancel-token
-//!    short-circuit.
+//!    committed (`reduce_stream` returns `StreamReduceOutcome::Empty`), the
+//!    executor silently re-issues the SAME request up to
+//!    `MAX_STREAM_RETRIES` (3) times before propagating the failure, mirroring
+//!    `handle_deepseek_turn`'s outer "stream died with nothing" retry
+//!    (`turn_loop.rs:1152-1190`). A stream that dies *after* content was
+//!    received returns `Partial` — the partial content is surfaced (not
+//!    retried), mirroring production's `any_content_received` guard. A healthy
+//!    round resets the budget. The retry counter is a local `u32` that
+//!    persists across steps within one `run` (matching loop-guard's local-state
+//!    pattern); the retry is transparent to the [`Callback`] (`on_llm_start` /
+//!    `on_llm_end` fire once per step, a `Status` event is the only retry
+//!    surfacing). See "Known gaps" below for the deferred cancel-token
+//!    short-circuit and reactive capacity recovery.
 //! 4. **steer** ([`drain_steers`](HostAgentExecutor::drain_steers)) — lets a
 //!    user inject additional text input into an in-flight turn. At the top of
 //!    each step (before the LLM request), queued steers are drained via
@@ -163,8 +167,12 @@
 //!    via forced compaction / hard trim) + ✅ **LSP flush** (drain pending
 //!    diagnostics into a synthetic `user` message); system-prompt refresh still
 //!    to come (top of the `loop`).
-//! 2. **per-step post-stream** — ✅ **transparent-retry** (re-issue the request
-//!    when the stream dies mid-flight before any content commits, up to 3 times);
+//! 2. **per-step post-stream** — ✅ **inline stream reduction** (the
+//!    `reduce_stream` reducer replaced `accumulate_stream`; it emits text /
+//!    thinking deltas to `Callback::on_stream_delta` in real time and tracks
+//!    `any_content_received` so a stream that dies after content surfaces the
+//!    partial turn instead of retrying) + ✅ **transparent-retry** (re-issue the
+//!    request when the stream dies before any content commits, up to 3 times);
 //!    subagent handoff, thinking-only handling still to come (after the stream
 //!    resolves, before tool extraction).
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
@@ -179,10 +187,15 @@
 //!    `CapacityController` Gate A + error-escalation) still to come (after the
 //!    tool loop). The hard token-budget preflight (Gate B) is absorbed at seam 1.
 //!
-//! Streaming deltas (`MessageDelta` / `ThinkingDelta`) will continue to flow
-//! over the `Event` channel directly, emitted by an inline stream reducer (a
-//! later slice replaces the `accumulate_stream` call) — they have no `Callback`
-//! method and stay off the `Callback` path (see `callback_bridge` docs).
+//! Streaming deltas (`MessageDelta` / `ThinkingDelta`) now flow through the
+//! framework `Callback::on_stream_delta` seam — the inline stream reducer
+//! ([`reduce_stream`]) replaced the CORE `accumulate_stream` call, emitting
+//! each text/thinking delta to the callback in real time (§E inline-stream-
+//! reduction slice). The [`CallbackBridge`] maps them onto the host's
+//! `Event::MessageDelta` / `Event::ThinkingDelta` channel. Block-lifecycle
+//! events (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
+//! `MessageComplete`) and tool-call-start deltas are not yet synthesized —
+//! they're deferred to the early-tool-start slice.
 //!
 //! ## Known gaps in the LSP flush (by design)
 //!
@@ -203,22 +216,26 @@
 //!   message pushes (assistant / tool result) likewise don't emit it via the
 //!   `ChatHistory` path; UI surfacing is deferred to the wire-in step.
 //!
-//! ## Known tradeoffs in transparent-retry (by design)
+//! ## Known gaps in transparent-retry (by design)
 //!
-//! - **`accumulate_stream` bail-on-error** — the shared core reducer returns `Err`
-//!   on the first erroring stream item and drops any partially-accumulated blocks,
-//!   so an `Err` always means "no actionable content committed". This makes the
-//!   retry fire even when production would ship partial content (it tracks
-//!   `any_content_received` inline and skips the retry once the user has seen
-//!   output). Since the partial content is lost here, retrying is the only
-//!   recovery path; the double-billing concern (the provider billed for the
-//!   partial output) is provider-side, not user-visible. Inline stream reduction
-//!   (a later §E slice that replaces the `accumulate_stream` call) closes this
-//!   gap.
+//! - **bail-on-error gap closed** ✅ — the inline `reduce_stream` reducer (§E
+//!   inline-stream-reduction slice) replaced the CORE `accumulate_stream` call.
+//!   It tracks `any_content_received` and returns `StreamReduceOutcome::Partial`
+//!   (surface partial content, don't retry) when the stream dies after content
+//!   was produced, and `StreamReduceOutcome::Empty` (retry transparently) only
+//!   when no content arrived. This mirrors production's
+//!   `should_transparently_retry_stream` guard (`streaming.rs:81-87`). The old
+//!   `accumulate_stream` dropped partial blocks on the first erroring item, so
+//!   the executor retried even when production would ship partial content — that
+//!   gap is now closed.
 //! - **pre-stream connection errors not retried** — `create_message_stream`
 //!   returning `Err` (connection refused / auth / context-length) propagates as a
-//!   hard fail here. Production treats those as context-recovery or hard-fail (a
-//!   separate guardrail, deferred); only mid-flight stream errors retry.
+//!   hard fail here. Production treats those as context-recovery or hard-fail.
+//!   Reactive capacity recovery (classifying the error via
+//!   `is_context_length_error_message` and triggering `recover_context_overflow`)
+//!   is the immediate next sub-slice — the inline reducer is the prerequisite
+//!   (it surfaces the error message for classification); only mid-flight stream
+//!   errors retry today.
 //! - **no cancel-token short-circuit** — production's
 //!   `should_transparently_retry_stream` checks `!cancelled` to abort a retry
 //!   loop on a cancelled turn. This executor doesn't hold a `CancellationToken`
@@ -313,11 +330,14 @@
 //!   `Session`-internal).
 //! - **reactive seam-2 path deferred** — production also triggers
 //!   `recover_context_overflow` when the provider rejects the request with a
-//!   context-length error (`turn_loop.rs:620-633`). This executor's
-//!   `stream_with_transparent_retry` propagates stream errors via `?` without
-//!   inspecting the message for `is_context_length_error_message`; the
-//!   reactive recovery threads in with the inline-stream-reduction slice
-//!   (which surfaces the error message for classification).
+//!   context-length error (`turn_loop.ts:620-633`). This executor's
+//!   `stream_with_transparent_retry` propagates pre-stream errors via `?`
+//!   without inspecting the message for `is_context_length_error_message`. The
+//!   inline stream reducer (§E inline-stream-reduction slice) is now in place
+//!   (the prerequisite), but the error-classification + recovery plumbing into
+//!   the stream error path is the immediate next sub-slice — `reduce_stream`
+//!   surfaces the error message, but `stream_with_transparent_retry` doesn't
+//!   yet route context-length errors to `recover_context_overflow`.
 //! - **opt-in `CapacityController` (Gate A) deferred** — the off-by-default
 //!   soft controller (`run_capacity_pre_request_checkpoint` /
 //!   `run_capacity_post_tool_checkpoint` / `run_capacity_error_escalation_checkpoint`)
@@ -337,19 +357,24 @@
 //!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
+use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
-use codesmith_agent::callback::{Callback, StopReason};
-use codesmith_agent::executor::{accumulate_stream, AgentExecutor, AgentExecutorConfig};
-use codesmith_agent::llm_client::LlmClientHandle;
+use codesmith_agent::callback::{Callback, StopReason, StreamDelta};
+use codesmith_agent::executor::{AgentExecutor, AgentExecutorConfig};
+use codesmith_agent::llm_client::{LlmClientHandle, StreamEventBox};
 use codesmith_agent::memory::ChatHistory;
-use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
+use codesmith_agent::models::{
+    ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, StreamEvent,
+    SystemPrompt, ToolCaller,
+};
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
@@ -581,6 +606,93 @@ enum CapacityPreflight {
     Fail(String),
 }
 
+/// Accumulator for a single content block being built from streaming deltas.
+/// Mirrors `accumulate_stream`'s local `BlockBuild` (in
+/// `codesmith-agent::executor`) — kept here as a private duplicate so the
+/// inline reducer can emit deltas *while* accumulating, which the CORE reducer
+/// cannot (it has no `Callback` handle). The `BTreeMap<u32, BlockBuild>` keying
+/// preserves wire order (block indices are monotonic but not necessarily
+/// contiguous, so `BTreeMap` not `Vec`).
+enum BlockBuild {
+    Text(String),
+    Thinking(String),
+    ToolUse {
+        id: String,
+        name: String,
+        input_buf: String,
+        start_input: serde_json::Value,
+        caller: Option<ToolCaller>,
+    },
+}
+
+/// Finalize an accumulated `BlockBuild` map into assembled `ContentBlock`s.
+/// This is the same assembly logic as `accumulate_stream`'s tail — extracted
+/// so the inline reducer can call it both on clean completion and on
+/// mid-flight error (partial content).
+fn finalize_blocks(blocks: BTreeMap<u32, BlockBuild>) -> Vec<ContentBlock> {
+    blocks
+        .into_values()
+        .map(|build| match build {
+            BlockBuild::Text(text) => ContentBlock::Text {
+                text,
+                cache_control: None,
+            },
+            BlockBuild::Thinking(thinking) => ContentBlock::Thinking { thinking },
+            BlockBuild::ToolUse {
+                id,
+                name,
+                input_buf,
+                start_input,
+                caller,
+            } => {
+                let input = if !input_buf.is_empty() {
+                    serde_json::from_str(&input_buf).unwrap_or(serde_json::Value::Null)
+                } else if !start_input.is_null() {
+                    start_input
+                } else {
+                    serde_json::Value::Object(serde_json::Map::new())
+                };
+                ContentBlock::ToolUse {
+                    id,
+                    name,
+                    input,
+                    caller,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Outcome of the inline stream reducer ([`HostAgentExecutor::reduce_stream`]).
+/// Replaces the CORE `accumulate_stream`'s binary `Result<(Vec<ContentBlock>,
+/// Option<String>)>` with a three-way result that distinguishes "clean
+/// completion" from "partial content + error" from "empty + error" — the
+/// distinction drives the transparent-retry decision (only `Empty` retries).
+enum StreamReduceOutcome {
+    /// Stream completed cleanly (either `MessageStop` seen or the stream ended
+    /// without error). The assembled content blocks and stop reason are
+    /// available.
+    Complete {
+        content: Vec<ContentBlock>,
+        stop_reason: Option<String>,
+    },
+    /// The stream produced content (text/thinking/tool deltas arrived) and
+    /// then died mid-flight. The partial content assembled so far is available
+    /// — the caller should surface it (not retry), matching production's
+    /// `any_content_received` guard (`turn_loop.rs:764-834`: once the user has
+    /// seen output, retrying double-bills and loses the partial turn).
+    Partial {
+        content: Vec<ContentBlock>,
+        stop_reason: Option<String>,
+        error: String,
+    },
+    /// The stream died before any content was produced (only `MessageStart`
+    /// or nothing arrived). Safe to retry transparently — the provider hasn't
+    /// billed for output and the user has seen nothing (mirrors
+    /// `should_transparently_retry_stream` in `streaming.rs:81`).
+    Empty { error: String },
+}
+
 /// Host-side [`AgentExecutor`] — the growing home for the production turn loop.
 ///
 /// Construct from the four framework collaborators: an [`LlmClientHandle`], a
@@ -690,17 +802,178 @@ pub fn new(
         }
     }
 
+    /// Inline stream reducer — replaces the CORE `accumulate_stream` call so
+    /// the executor can emit streaming deltas to the [`Callback`] in real time
+    /// and track `any_content_received` (closing the transparent-retry
+    /// bail-on-error gap). This is the §E inline-stream-reduction slice.
+    ///
+    /// The accumulation logic mirrors `accumulate_stream`
+    /// (`codesmith-agent::executor::mod.rs`): a `BTreeMap<u32, BlockBuild>`
+    /// keyed by the wire content-block index, with text/thinking deltas
+    /// appended to their block's buffer and tool-input JSON deltas buffered
+    /// for a final `serde_json::from_str` at assembly time. The key difference
+    /// from the CORE reducer is that each text/thinking delta is **also**
+    /// forwarded to [`Callback::on_stream_delta`] before being buffered, so
+    /// the host's UI lights up as the stream arrives (not after the whole
+    /// stream is buffered).
+    ///
+    /// `any_content_received` flips on the first non-`MessageStart` event —
+    /// the moment we cross from "stream not yet productive" (eligible for
+    /// transparent retry) into "the model has billed for output" (must
+    /// surface). On a mid-flight `Err`, this drives the
+    /// [`StreamReduceOutcome`] variant: `Empty` (no content → safe to retry)
+    /// vs `Partial` (content received → surface, don't retry). This mirrors
+    /// production's `any_content_received` guard in
+    /// `should_transparently_retry_stream` (`streaming.rs:81-87`).
+    ///
+    /// Tool-input JSON deltas (`Delta::InputJsonDelta`) are **not** emitted
+    /// to the callback — they're assembled into the `ToolUse` block's input,
+    /// which isn't user-visible until `on_llm_end`. Production's
+    /// `Event::ToolCallStarted` (fired on `ContentBlockStop` for tool blocks)
+    /// is not synthesized here yet — it's deferred to the early-tool-start
+    /// slice (which needs the tool catalog to validate input before announcing
+    /// the call).
+    async fn reduce_stream(&self, mut stream: StreamEventBox) -> StreamReduceOutcome {
+        let mut blocks: BTreeMap<u32, BlockBuild> = BTreeMap::new();
+        let mut stop_reason: Option<String> = None;
+        let mut any_content_received = false;
+
+        while let Some(item) = stream.next().await {
+            let event = match item {
+                Ok(e) => e,
+                Err(e) => {
+                    // Stream died mid-flight. Whether to retry depends on
+                    // whether any content was produced before the error.
+                    let error = e.to_string();
+                    if any_content_received {
+                        let content = finalize_blocks(std::mem::take(&mut blocks));
+                        return StreamReduceOutcome::Partial {
+                            content,
+                            stop_reason,
+                            error,
+                        };
+                    }
+                    return StreamReduceOutcome::Empty { error };
+                }
+            };
+
+            // Flip on the first non-MessageStart event — that's the moment we
+            // cross from "stream not yet productive" into "the model has billed
+            // for output" (mirrors `turn_loop.rs:770-772`).
+            if !any_content_received && !matches!(event, StreamEvent::MessageStart { .. }) {
+                any_content_received = true;
+            }
+
+            match event {
+                StreamEvent::MessageStart { .. } => {}
+                StreamEvent::ContentBlockStart {
+                    index,
+                    content_block,
+                } => {
+                    let build = match content_block {
+                        ContentBlockStart::Text { text } => BlockBuild::Text(text),
+                        ContentBlockStart::Thinking { thinking } => {
+                            BlockBuild::Thinking(thinking)
+                        }
+                        ContentBlockStart::ToolUse {
+                            id,
+                            name,
+                            input,
+                            caller,
+                        } => BlockBuild::ToolUse {
+                            id,
+                            name,
+                            input_buf: String::new(),
+                            start_input: input,
+                            caller,
+                        },
+                        ContentBlockStart::ServerToolUse { id, name, input } => {
+                            BlockBuild::ToolUse {
+                                id,
+                                name,
+                                input_buf: String::new(),
+                                start_input: input,
+                                caller: None,
+                            }
+                        }
+                    };
+                    blocks.insert(index, build);
+                }
+                StreamEvent::ContentBlockDelta { index, delta } => {
+                    if let Some(build) = blocks.get_mut(&index) {
+                        match (build, delta) {
+                            (BlockBuild::Text(buf), Delta::TextDelta { text }) => {
+                                // Forward the delta to the callback before
+                                // buffering — the host's UI streams as the
+                                // model produces text.
+                                self.callback
+                                    .on_stream_delta(&StreamDelta::Text {
+                                        index: index as usize,
+                                        content: text.clone(),
+                                    })
+                                    .await;
+                                buf.push_str(&text);
+                            }
+                            (
+                                BlockBuild::Thinking(buf),
+                                Delta::ThinkingDelta { thinking },
+                            ) => {
+                                self.callback
+                                    .on_stream_delta(&StreamDelta::Thinking {
+                                        index: index as usize,
+                                        content: thinking.clone(),
+                                    })
+                                    .await;
+                                buf.push_str(&thinking);
+                            }
+                            (
+                                BlockBuild::ToolUse { input_buf, .. },
+                                Delta::InputJsonDelta { partial_json },
+                            ) => {
+                                // Tool-input JSON is not user-visible — buffer
+                                // for assembly, no callback emission.
+                                input_buf.push_str(&partial_json);
+                            }
+                            // Delta/block kind mismatch — ignore (provider quirk).
+                            _ => {}
+                        }
+                    }
+                }
+                StreamEvent::ContentBlockStop { .. } => {}
+                StreamEvent::MessageDelta {
+                    delta: MessageDelta { stop_reason: sr, .. },
+                    ..
+                } => {
+                    if sr.is_some() {
+                        stop_reason = sr;
+                    }
+                }
+                StreamEvent::MessageStop => break,
+                StreamEvent::Ping => {}
+            }
+        }
+
+        let content = finalize_blocks(blocks);
+        StreamReduceOutcome::Complete { content, stop_reason }
+    }
+
     /// (2) per-step post-stream seam — transparent stream retry.
     ///
-    /// Drives `create_message_stream` + `accumulate_stream` with a bounded
-    /// transparent-retry loop. When the stream dies mid-flight before any
-    /// content is committed — `accumulate_stream` returns `Err` (it drops any
-    /// partial blocks on the first erroring item, so an `Err` means "no
-    /// actionable content committed") — re-issue the SAME request up to
-    /// [`MAX_STREAM_RETRIES`] (3) times before propagating the failure. This
-    /// mirrors `handle_deepseek_turn`'s outer "stream died with nothing"
-    /// retry (`turn_loop.rs:1152-1190`). A healthy round resets the budget
-    /// (`turn_loop.rs:1186`), so a bad prior step doesn't carry over.
+    /// Drives `create_message_stream` + [`reduce_stream`] with a bounded
+    /// transparent-retry loop. Only `StreamReduceOutcome::Empty` (the stream
+    /// died before any content was produced) is eligible for retry — `Complete`
+    /// and `Partial` both surface immediately. This closes the
+    /// `accumulate_stream` bail-on-error gap: the old CORE reducer dropped
+    /// partial blocks on the first erroring item, so the executor retried even
+    /// when production would ship partial content (it tracks
+    /// `any_content_received` and skips the retry once the user has seen
+    /// output). The inline reducer now makes the same distinction.
+    ///
+    /// Re-issue the SAME request up to [`MAX_STREAM_RETRIES`] (3) times before
+    /// propagating the failure. This mirrors `handle_deepseek_turn`'s outer
+    /// "stream died with nothing" retry (`turn_loop.rs:1152-1190`). A healthy
+    /// round resets the budget (`turn_loop.rs:1186`), so a bad prior step
+    /// doesn't carry over.
     ///
     /// Pre-stream connection errors (`create_message_stream` returning `Err`)
     /// are **not** retried here — production treats those as hard-fail /
@@ -709,17 +982,18 @@ pub fn new(
     /// `on_llm_start` / `on_llm_end` fire once per step, and a `Status` event
     /// is the only retry surfacing (matching production's silent re-issue).
     ///
-    /// # Known tradeoff vs production
+    /// # Remaining gap vs production
     ///
-    /// `accumulate_stream` bails on the first erroring stream item and drops
-    /// accumulated blocks, so this retries even when production would ship
-    /// partial content (it tracks `any_content_received` inline and skips the
-    /// retry when the user has already seen output). Inline stream reduction
-    /// (a later §E slice that replaces the `accumulate_stream` call) closes
-    /// that gap; until then retrying is the only recovery path since the
-    /// partial content is lost. The cancel-token short-circuit (production's
-    /// `should_transparently_retry_stream` checks `!cancelled`) is deferred
-    /// to the wire-in slice — the bounded budget can't loop forever.
+    /// The cancel-token short-circuit (production's
+    /// `should_transparently_retry_stream` checks `!cancelled`) is deferred to
+    /// the wire-in slice — the bounded budget can't loop forever. Production's
+    /// inner mid-flight retry (resetting the stream *inside* the event loop
+    /// when no content was received yet, `turn_loop.rs:775-834`) is not
+    /// replicated here; this executor uses the simpler outer retry (re-call
+    /// `create_message_stream`). The two are functionally equivalent for the
+    /// retry decision; the inner retry's advantage is avoiding a redundant
+    /// `MessageStart` round-trip, which matters only for latency-sensitive
+    /// production paths.
     async fn stream_with_transparent_retry(
         &self,
         client: &LlmClientHandle,
@@ -734,16 +1008,36 @@ pub fn new(
             // Pre-stream connection errors are hard-fails (context recovery is
             // a separate guardrail). Only mid-flight stream errors retry.
             let stream = client.create_message_stream(request.clone()).await?;
-            match accumulate_stream(stream).await {
-                Ok(outcome) => {
+            match self.reduce_stream(stream).await {
+                StreamReduceOutcome::Complete {
+                    content,
+                    stop_reason,
+                } => {
                     // Healthy round → reset the retry budget so a bad prior
                     // step doesn't carry over (mirrors `turn_loop.rs:1186`).
                     *stream_retry_attempts = 0;
-                    return Ok(outcome);
+                    return Ok((content, stop_reason));
                 }
-                Err(e) => {
-                    // Stream died mid-flight. `accumulate_stream` drops partial
-                    // blocks on error, so no actionable content was committed.
+                StreamReduceOutcome::Partial {
+                    content,
+                    stop_reason,
+                    error,
+                } => {
+                    // Stream died after content was received — surface the
+                    // partial content, don't retry (the model has billed for
+                    // output; retrying would double-bill and lose the partial
+                    // turn). Reset the budget so a bad prior step doesn't
+                    // carry over (mirrors `turn_loop.rs:1186`).
+                    *stream_retry_attempts = 0;
+                    self.emit_status(format!(
+                        "Stream interrupted after partial content; surfacing what was received: {error}"
+                    ))
+                    .await;
+                    return Ok((content, stop_reason));
+                }
+                StreamReduceOutcome::Empty { error } => {
+                    // Stream died before any content — safe to retry
+                    // transparently (no output billed, nothing shown).
                     if *stream_retry_attempts < MAX_STREAM_RETRIES {
                         *stream_retry_attempts = stream_retry_attempts.saturating_add(1);
                         self.emit_status(format!(
@@ -754,7 +1048,7 @@ pub fn new(
                         continue;
                     }
                     // Budget exhausted → surface the failure.
-                    return Err(e);
+                    return Err(anyhow::anyhow!(error));
                 }
             }
         }
@@ -1776,12 +2070,18 @@ mod tests {
     /// A canned response for one `create_message_stream` call.
     ///
     /// - `Events` streams a list of `StreamEvent`s (all `Ok`) — the normal path.
-    /// - `StreamErr` yields a single `Err` item, so `accumulate_stream` returns
-    ///   `Err` — simulating a mid-flight stream death (the #103 "stream died
-    ///   with nothing" case) for the transparent-retry tests.
+    /// - `StreamErr` yields a single `Err` item, so `reduce_stream` sees an
+    ///   error before any content — simulating a mid-flight stream death with no
+    ///   content (the #103 "stream died with nothing" case) for the
+    ///   transparent-retry tests. Returns `StreamReduceOutcome::Empty`.
+    /// - `EventsThenErr` streams the events (all `Ok`) then a trailing `Err` —
+    ///   simulates a mid-flight stream death *after* content was produced.
+    ///   Returns `StreamReduceOutcome::Partial` (the bail-on-error gap closure:
+    ///   partial content is surfaced, not retried).
     enum MockRound {
         Events(Vec<StreamEvent>),
         StreamErr(String),
+        EventsThenErr(Vec<StreamEvent>, String),
     }
 
     struct MockLlm {
@@ -1900,6 +2200,12 @@ mod tests {
                         futures_util::stream::iter(vec![Err(anyhow::anyhow!(msg))]),
                     )
                         as StreamEventBox),
+                    MockRound::EventsThenErr(events, msg) => {
+                        let mut items: Vec<Result<StreamEvent>> =
+                            events.into_iter().map(Ok).collect();
+                        items.push(Err(anyhow::anyhow!(msg)));
+                        Ok(Box::pin(futures_util::stream::iter(items)) as StreamEventBox)
+                    }
                 }
             })
         }
@@ -4179,5 +4485,277 @@ mod tests {
         // MAX), so the request went out (Proceed) and the mock replied.
         assert_eq!(reason, StopReason::NoToolCalls);
         assert_eq!(mock.compaction_calls(), 1);
+    }
+
+    // === inline stream reduction (§E) =======================================
+    //
+    // The inline `reduce_stream` replaced `accumulate_stream` so the executor
+    // emits streaming deltas to `Callback::on_stream_delta` in real time and
+    // tracks `any_content_received` (closing the transparent-retry bail-on-error
+    // gap). These tests prove: (1) text/thinking deltas flow to the callback,
+    // (2) a stream that dies after content surfaces the partial turn (no retry),
+    // (3) end-to-end delta flow through `CallbackBridge` → `Event::MessageDelta`.
+
+    /// A `Callback` that records every `on_stream_delta` call, so tests can
+    /// prove the executor emitted specific text/thinking deltas during streaming.
+    struct DeltaRecorder {
+        deltas: Arc<std::sync::Mutex<Vec<StreamDelta>>>,
+    }
+
+    impl DeltaRecorder {
+        fn new() -> Self {
+            Self {
+                deltas: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+        fn deltas(&self) -> Vec<StreamDelta> {
+            self.deltas.lock().unwrap().clone()
+        }
+    }
+
+    impl Callback for DeltaRecorder {
+        fn on_stream_delta<'a>(
+            &'a self,
+            delta: &'a StreamDelta,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            let deltas = self.deltas.clone();
+            let delta = delta.clone();
+            Box::pin(async move {
+                deltas.lock().unwrap().push(delta);
+            })
+        }
+    }
+
+    /// Build a thinking-block stream-event sequence (mirrors `text_block`).
+    fn thinking_block(idx: u32, body: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::ContentBlockStart {
+                index: idx,
+                content_block: ContentBlockStart::Thinking {
+                    thinking: String::new(),
+                },
+            },
+            StreamEvent::ContentBlockDelta {
+                index: idx,
+                delta: Delta::ThinkingDelta {
+                    thinking: body.to_string(),
+                },
+            },
+            StreamEvent::ContentBlockStop { index: idx },
+        ]
+    }
+
+    #[tokio::test]
+    async fn stream_emits_text_deltas_to_callback() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let recorder = Arc::new(DeltaRecorder::new());
+        let callback: Arc<dyn Callback> = recorder.clone();
+
+        // Two text blocks in one stream: "hello " then "world".
+        let mut call = text_block(0, "hello ");
+        call.extend(text_block(1, "world"));
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Two text deltas were emitted — one per ContentBlockDelta.
+        let deltas = recorder.deltas();
+        assert_eq!(deltas.len(), 2, "two text deltas: {deltas:?}");
+        match &deltas[0] {
+            StreamDelta::Text { index, content } => {
+                assert_eq!(*index, 0);
+                assert_eq!(content, "hello ");
+            }
+            other => panic!("expected Text delta, got {other:?}"),
+        }
+        match &deltas[1] {
+            StreamDelta::Text { index, content } => {
+                assert_eq!(*index, 1);
+                assert_eq!(content, "world");
+            }
+            other => panic!("expected Text delta, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_emits_thinking_deltas_to_callback() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let recorder = Arc::new(DeltaRecorder::new());
+        let callback: Arc<dyn Callback> = recorder.clone();
+
+        // A thinking block followed by a text block.
+        let mut call = thinking_block(0, "pondering");
+        call.extend(text_block(1, "answer"));
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The thinking delta was emitted (the text delta too).
+        let deltas = recorder.deltas();
+        assert_eq!(deltas.len(), 2, "thinking + text delta: {deltas:?}");
+        match &deltas[0] {
+            StreamDelta::Thinking { index, content } => {
+                assert_eq!(*index, 0);
+                assert_eq!(content, "pondering");
+            }
+            other => panic!("expected Thinking delta, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_partial_content_surfaces_without_retry() {
+        // The bail-on-error gap closure: a stream that produces text content
+        // then dies with an Err returns StreamReduceOutcome::Partial — the
+        // partial text is surfaced (not retried). Before the inline reducer,
+        // accumulate_stream dropped partial blocks and the executor retried.
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Stream emits a text block ("partial answer") then dies with an Err.
+        let mut partial = text_block(0, "partial answer");
+        // Don't add finish — the stream dies before MessageStop.
+        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::EventsThenErr(
+            partial,
+            "connection reset".into(),
+        )]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run should surface partial content");
+        // Partial text has no tool calls → NoToolCalls.
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The request was issued only ONCE — no retry (content was received).
+        assert_eq!(mock.requests().len(), 1, "partial content must not retry");
+
+        // The partial text was committed to the transcript.
+        assert_eq!(history.len(), 2, "[user, assistant(partial)]");
+        match &history.messages()[1].content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "partial answer", "partial text surfaced");
+            }
+            other => panic!("expected Text block, got {other:?}"),
+        }
+
+        // A status surfaced the partial-content interruption.
+        let msgs = statuses(&drain(&mut rx));
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("partial content") || m.contains("Stream interrupted")),
+            "expected a partial-content status, got: {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_deltas_flow_through_callback_bridge() {
+        // End-to-end: executor → CallbackBridge → Event::MessageDelta /
+        // Event::ThinkingDelta on the host's Event channel.
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let bridge = Arc::new(CallbackBridge::new(Some(tx), None, HookContext::new()));
+        let callback: Arc<dyn Callback> = bridge;
+
+        // A thinking block + a text block + finish.
+        let mut call = thinking_block(0, "reasoning");
+        call.extend(text_block(1, "output"));
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The Event channel received a ThinkingDelta then a MessageDelta.
+        let events = drain(&mut rx);
+        let thinking = events.iter().find_map(|e| match e {
+            Event::ThinkingDelta { index, content } => Some((*index, content.clone())),
+            _ => None,
+        });
+        let text = events.iter().find_map(|e| match e {
+            Event::MessageDelta { index, content } => Some((*index, content.clone())),
+            _ => None,
+        });
+        let (t_idx, t_content) =
+            thinking.expect("Event::ThinkingDelta should have been emitted");
+        let (x_idx, x_content) =
+            text.expect("Event::MessageDelta should have been emitted");
+        assert_eq!(t_idx, 0);
+        assert_eq!(t_content, "reasoning");
+        assert_eq!(x_idx, 1);
+        assert_eq!(x_content, "output");
     }
 }

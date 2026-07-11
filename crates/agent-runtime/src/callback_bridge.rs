@@ -27,6 +27,7 @@
 //! | `on_llm_end`          | — (content not on wire²)   | — (no LLM-end hook)   |
 //! | `on_step`             | — (no step event variant)  | —                     |
 //! | `on_complete`         | — (`TurnComplete`³)         | —                     |
+//! | `on_stream_delta`     | `MessageDelta` / `ThinkingDelta` | —              |
 //!
 //! ¹ `TurnStarted` only carries a turn id and is emitted by the engine caller,
 //!   not the executor loop. ² `MessageComplete` only carries a block index; the
@@ -36,10 +37,15 @@
 //!   engine caller emits it after the executor returns, so the bridge does not
 //!   duplicate it.
 //!
-//! Streaming deltas (`MessageDelta` / `ThinkingDelta`) have **no** `Callback`
-//! method and continue to flow over the `Event` channel directly, emitted by
-//! the stream-reduction code — the bridge is additive, not a replacement for
-//! the channel.
+//! Streaming deltas (`MessageDelta` / `ThinkingDelta`) flow through the
+//! `on_stream_delta` hook (§E inline-stream-reduction slice). The bridge maps
+//! [`StreamDelta::Text`] → `Event::MessageDelta` and [`StreamDelta::Thinking`]
+//! → `Event::ThinkingDelta`, forwarding each delta to the `Event` channel as it
+//! arrives. Block-lifecycle events (`MessageStarted` / `ThinkingStarted` /
+//! `ThinkingComplete` / `MessageComplete`) are not yet bridged — they're
+//! emitted by the production stream-reduction code on `ContentBlockStart` /
+//! `ContentBlockStop`, and the inline reducer doesn't synthesize them yet
+//! (deferred to a follow-up that emits block-lifecycle deltas).
 //!
 //! ## Synthesized tool-call id
 //!
@@ -69,7 +75,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use codesmith_agent::callback::Callback;
+use codesmith_agent::callback::{Callback, StreamDelta};
 use codesmith_tools::{ToolError, ToolResult};
 
 use crate::events::Event;
@@ -224,11 +230,34 @@ impl Callback for CallbackBridge {
         })
     }
 
+    fn on_stream_delta<'a>(
+        &'a self,
+        delta: &'a StreamDelta,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let tx = self.tx.clone();
+        Box::pin(async move {
+            let Some(tx) = tx.as_ref() else {
+                return;
+            };
+            let event = match delta {
+                StreamDelta::Text { index, content } => Event::MessageDelta {
+                    index: *index,
+                    content: content.clone(),
+                },
+                StreamDelta::Thinking { index, content } => Event::ThinkingDelta {
+                    index: *index,
+                    content: content.clone(),
+                },
+            };
+            let _ = tx.send(event).await;
+        })
+    }
+
     // `on_llm_start`, `on_llm_end`, `on_step`, `on_complete`: intentionally
     // un-overridden — see the "Bridged vs. documented gaps" table in the module
     // docs. The trait's default no-ops apply; the host's `TurnStarted` /
-    // `TurnComplete` / streaming-delta events are emitted directly by the
-    // engine caller and stream-reduction code, not through this bridge.
+    // `TurnComplete` events are emitted directly by the engine caller, not
+    // through this bridge.
 }
 
 #[cfg(test)]
@@ -521,6 +550,69 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Event::ToolCallComplete { name, .. } if name == "echo"))
         );
+    }
+
+    #[tokio::test]
+    async fn bridge_forwards_stream_deltas_to_event_channel() {
+        let (tx, mut rx) = mpsc::channel(256);
+        let bridge = CallbackBridge::new(Some(tx), None, test_template());
+
+        // Emit a text delta then a thinking delta — the bridge should map them
+        // to Event::MessageDelta and Event::ThinkingDelta respectively.
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "hello ".to_string(),
+            })
+            .await;
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "world".to_string(),
+            })
+            .await;
+        bridge
+            .on_stream_delta(&StreamDelta::Thinking {
+                index: 1,
+                content: "pondering".to_string(),
+            })
+            .await;
+
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 3, "three deltas → three events");
+        match &events[0] {
+            Event::MessageDelta { index, content } => {
+                assert_eq!(*index, 0);
+                assert_eq!(content, "hello ");
+            }
+            other => panic!("expected MessageDelta, got {other:?}"),
+        }
+        match &events[1] {
+            Event::MessageDelta { index, content } => {
+                assert_eq!(*index, 0);
+                assert_eq!(content, "world");
+            }
+            other => panic!("expected MessageDelta, got {other:?}"),
+        }
+        match &events[2] {
+            Event::ThinkingDelta { index, content } => {
+                assert_eq!(*index, 1);
+                assert_eq!(content, "pondering");
+            }
+            other => panic!("expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_stream_delta_noop_without_tx() {
+        // No tx → on_stream_delta is a silent no-op (no panic).
+        let bridge = CallbackBridge::new(None, None, test_template());
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "ghost".to_string(),
+            })
+            .await;
     }
 
     // === Executor integration ================================================
