@@ -1227,6 +1227,47 @@ host_executor` 67 通过（60 既有 + 7 新 cancel-token）；`cargo test -p co
 
 ---
 
+**进度（2026-07-11 §E subagent blocking hold 落地，第十一个 guardrail 收尾 + 最后一个 in-loop gap，seam-2 阻塞，`feat/pluggable-framework-core`）：**
+
+§E 的第十八个切片落地——当模型完成一步无工具调用、非阻塞 drain 为空、但子 agent 仍在运行时（`should_hold_turn_for_subagents(0, running_count)`），`run_inner` 在 seam-2（post-stream、drain 之后、inject+resume 之前）发起一个 `biased select!` 阻塞 hold：cancel arm（Checkpoint E）/ completion `recv().await` arm（push + `try_recv` 批量 drain → 注入 sentinel → resume）/ steer `recv().await` arm（trim → push user message → emit status → step+=1 → continue），镜像 `turn_loop.rs:1321-1397`。这是最后一个 in-loop guardrail gap，也是 `handle_deepseek_turn` 退役（wire-in）的直接前置——阻塞 hold + 闭合项就位后即可接入。本轮纯增量（`host_executor.rs` 单文件 + docs），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **`should_hold_turn_for_subagents(queued, running)` free fn**（`host_executor.rs:676`）：`queued > 0 || running > 0`，镜像 `turn_loop.rs:2846-2848`。非阻塞 drain 已吸收（第十六切片）；本轮补上阻塞 hold 的判定。
+- **steer + subagent 字段迁移 `std::sync::Mutex` → `tokio::sync::Mutex`**：`biased select!` 的 `recv().await` arm 的 guard 必须 cross `await`（与 approval 字段同 rationale）。`drain_steers` / `drain_stale_steers`（`pub fn` → `pub async fn`）/ 非阻塞 subagent drain 的 `lock().expect("poisoned")` 改为 `lock().await`——机械改动，行为不变（无竞争单消费者锁）。
+- **`subagent_api: Option<Arc<dyn SubAgentApi>>` 字段**（构造器第 13 参数——65 个既有测试构造器各加一个 `None`）：最小注入（不拉入完整 `HostServices`），镜像 `LspProbe` 的 `Arc<dyn LspManagerApi>` 模式。仅用于 `running_count().await`；`None` ⇒ 阻塞 hold 禁用。`SubAgentApi` 是 `#[async_trait]` + `Send + Sync`，已是 `agent-runtime` 依赖（`host_services.rs:196`）。
+- **阻塞 hold 逻辑**（`tool_uses.is_empty()` arm，非阻塞 drain 之后）：`completions.is_empty()` && `subagent_api` is Some && `running_count().await > 0` 时触发。emit `"Waiting on {running} sub-agent(s) to complete..."`。`Arc::clone(probe)` 后 `sub_guard = sub_arc.lock().await`——guard 借用 local Arc，steer arm 可自由访问 `self.steer`。`biased select!`：
+  - **cancel arm**（token present → `token.cancelled().await`，否则 `pending()` fallback）：emit `"Request cancelled while waiting for sub-agents"` + `callback.on_complete(Interrupted)` + `return Ok(StopReason::Interrupted)`——**Checkpoint E**，已吸收（guardrail 10）。
+  - **completion arm**（`sub_guard.recv()`）：push completion，`select!` 之后 `try_recv` drain 批量 extras（`turn_loop.rs:1342-1345`），fall through 到既有 inject+resume 路径。
+  - **steer arm**（steer present → `rx.lock().await.recv().await`，否则 `pending()` fallback）：trim → skip-empty → push user message → emit `"Steer input accepted"` status → `step += 1` → `continue`。**闭合 steer post-stream resume gap**（第十七切片 deferred 的 secondary drain site）。
+- **刻意部分桥接（by design / gaps）**：
+  - **`ContextPatch` apply 仍 deferred**：生产 drain 每个 completion 的 `context_patch` 并 tighten-only 应用（`auto_approve`/`trust_mode`→`false`；loosen 拒绝）到 `Session` + `config.trust_mode`（`turn_loop.rs:1373-1388`）。`ChatHistory` 无接口，生产今天 hardcode `context_patch: None`——安全 no-op。随 wire-in 切片接入（同样适用于 capacity recovery）。
+  - **mid-stream buffer steer drain 仍 deferred**：streaming-lifecycle-specific，与本轮 post-stream hold 的 steer arm 不同路径。随 wire-in 切片接入。
+  - **`<turn_meta>` enrichment**：steer / sentinel 消息无 `user_text_message_with_turn_metadata` wrapper——与 LSP flush / compaction / steer drain 同 gap。
+  - **Late-drain 折叠进单一非阻塞 drain**：executor 无 thinking-only / REPL / goal-continuation 分支。
+  - **`UnboundedReceiver`（生产）vs bounded `Receiver`（executor）**：shape 差异，wire-in 时 reconcile。
+- **test doubles**：`FakeSubAgentApi`（`#[async_trait]`，`VecDeque<usize>` 配置 `running_count` 序列——每次 `running_count()` pop front，耗尽返回 0；`list`/`cleanup`/`live_running_snapshots` no-op）。设计意图：测试可声明"首次 poll running=1（hold 触发），二次 poll running=0（hold skip）"——`FakeSubAgentApi::new(vec![1])`。`steer_channel()` / `subagent_channel()` 迁移 `tokio::sync::Mutex::new(...)`。
+  6 个新测试：`subagent_hold_waits_for_running_children_then_resumes`（running=1 + 后台 50ms push completion → hold 触发 → "Waiting on 1 sub-agent(s)" status → completion 注入 → resume → NoToolCalls、2 次 stream）、`subagent_hold_cancel_returns_interrupted`（running=1 + 后台 50ms cancel → Checkpoint E → Interrupted、1 次 stream 证明 cancel 在 stream 之后非 Checkpoint A）、`subagent_hold_steer_arm_resumes_with_steered_text`（running=1 + 后台 50ms push steer → steer arm → push user message → resume → request 含 steer 文本 → NoToolCalls、2 次 stream）、`subagent_hold_no_subagent_api_skips_hold`（无 `subagent_api` → hold skip → NoToolCalls、1 次 stream）、`subagent_hold_no_running_children_skips_hold`（running=0 → `should_hold` false → hold skip → NoToolCalls、1 次 stream）、`subagent_hold_drains_batched_completions`（后台 50ms push 3 completion → `recv()` 取首 + `try_recv` drain 2 → 3 sentinel 消息注入 → resume → NoToolCalls、2 次 stream）。共 73 个 host_executor 测试通过（67 既有 + 6 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime`
+（lib）零 warning；`cargo test -p codesmith-agent --lib` 79 通过；`cargo test -p codesmith-agent-runtime --lib
+host_executor` 73 通过（67 既有 + 6 新 blocking-hold）；`cargo test -p codesmith-agent-runtime --lib` 1079
+通过、0 失败、2 ignored；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：全部十个 in-loop guardrail 已吸收
+  （compaction/capacity/approval/steer/transparent-retry/early-tool-start/subagent/LSP/loop-guard/cancel-token）；
+  **阻塞 hold 已就位**（本轮吸收），闭合项就位后即可接入。wire-in 是下一个主聚焦。
+- **wire-in 前置闭合项**：`ContextPatch` apply（tongten-only）、`<turn_meta>` enrichment、mid-stream buffer
+  steer drain、`UnboundedReceiver` shape reconcile——随 wire-in 切片接入。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in
+  切片，需完整 `CapacityController` 状态机，仍低优先。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements /
+  working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery 的 `ContextPatch` apply。
+- **`ToolCallStarted` stream-time 合成 + bridge 去重**：需 `Callback::on_tool_start` 透传 wire id 或
+  bridge 层 name+input pairing——与 wire-in 耦合，可同期接入。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

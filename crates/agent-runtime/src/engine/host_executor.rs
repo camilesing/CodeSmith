@@ -71,8 +71,10 @@
 //!    `try_recv` takes `&mut self` (same pattern as the LSP flush's `pending`
 //!    accumulator; the lock is held only for the synchronous `try_recv`). The
 //!    three secondary drain sites (mid-stream buffer, post-stream resume,
-//!    blocking `recv` during sub-agent hold) are streaming-lifecycle-specific
-//!    and deferred.
+//!    blocking `recv` during sub-agent hold) — the post-stream resume +
+//!    blocking `recv` during the hold are absorbed (the hold's own `biased
+//!    select!` arms); the mid-stream buffer variant is streaming-lifecycle-
+//!    specific and deferred.
 //! 5. **approval** ([`request_approval`](HostAgentExecutor::request_approval))
 //!    — gates write / code-execution tools behind user permission. Before
 //!    running such a tool, the executor emits `Event::ApprovalRequired`
@@ -176,20 +178,20 @@
 //!    has no thinking-only / goal-continuation / REPL branches, so this single
 //!    drain site (the `tool_uses.is_empty()` arm) covers both production drains.
 //!    The receiver is
-//!    `Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>` —
-//!    the same `std::sync::Mutex` pattern as the steer receiver (`try_recv` is
-//!    synchronous; the lock is never held across an `await`), and it persists
-//!    across `run` invocations (matching `Engine.rx_subagent_completion`). The
-//!    **blocking hold** for still-running children (`should_hold_turn_for_subagents`
-//!    + a `biased select!` over cancel / completion `recv().await` / steer
-//!    `recv().await`) is deferred to the wire-in step — it needs
-//!    `SubAgentApi::running_count` and a `tokio::sync::Mutex` receiver (the
-//!    steer receiver migrates in the same slice); the cancel race for the
-//!    hold itself is part of that deferred slice (the executor's
-//!    `CancellationToken` is absorbed — see guardrail 10 — and bounds the
-//!    hold's `continue` at Checkpoint A, but the hold's own `select!` cancel
-//!    arm isn't wired). `ContextPatch` apply
-//!    (tighten-only `auto_approve`/`trust_mode`) is also deferred — it mutates
+//!    `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>` —
+//!    `tokio::sync::Mutex` (not `std::sync::Mutex`) because the blocking hold's
+//!    `biased select!` calls `recv().await` across the guard (same rationale as
+//!    the steer receiver's migration), and it persists across `run` invocations
+//!    (matching `Engine.rx_subagent_completion`). The **blocking hold** for
+//!    still-running children (`should_hold_turn_for_subagents` + a `biased
+//!    select!` over cancel / completion `recv().await` / steer `recv().await`)
+//!    is **absorbed ✅** — it uses [`SubAgentApi::running_count`] (the
+//!    [`Self::subagent_api`] field) and the `tokio::sync::Mutex` receiver; the
+//!    hold's own `select!` cancel arm is **Checkpoint E** (the executor's
+//!    `CancellationToken` is absorbed — see guardrail 10 — and the hold's cancel
+//!    race is wired there). The steer arm of the same `select!` closes the steer
+//!    post-stream resume gap (see below). `ContextPatch` apply
+//!    (tighten-only `auto_approve`/`trust_mode`) is still deferred — it mutates
 //!    `Session` state not reachable through `ChatHistory`, and production
 //!    hardcodes `context_patch: None` today. See "Known gaps in subagent" below.
 //! 10. **cancel-token** (`cancel_token` field + [`is_cancelled`]) — the
@@ -214,8 +216,9 @@
 //!     `pub` host-side method — the host calls it before `run` (mirrors
 //!     `handle_send_message`'s `while rx_steer.try_recv().is_ok() {}`), not
 //!     inside the turn loop. The subagent **blocking hold** cancel race
-//!     (Checkpoint E) is deferred — it needs the hold itself. See "Known gaps"
-//!     below for per-guardrail cancel status.
+//!     (Checkpoint E) is **absorbed ✅** — it lives in the hold's own `biased
+//!     select!` cancel arm. See "Known gaps in subagent" below for per-guardrail
+//!     cancel status.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
 //! steer "Steer input accepted", compaction "Compaction completed/failed",
@@ -251,9 +254,12 @@
 //!    the input and `tokio::spawn` a read-only tool so its result is ready by
 //!    the tool loop) + ✅ **subagent post-stream drain** (when the model returns
 //!    no tool calls, `try_recv`-drain queued child completions, inject each as a
-//!    sentinel `user` message, and resume the turn); thinking-only handling +
-//!    the blocking hold for running children still to come (after the stream
-//!    resolves, before tool extraction / turn end).
+//!    sentinel `user` message, and resume the turn) + ✅ **subagent blocking
+//!    hold** (when the non-blocking drain found nothing but children are still
+//!    running, block on a `biased select!` over cancel / completion `recv().await`
+//!    / steer `recv().await`, emitting "Waiting on N sub-agent(s)"); thinking-only
+//!    handling still to come (after the stream resolves, before tool extraction /
+//!    turn end).
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
 //!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures) +
 //!    ✅ **approval** (emit `ApprovalRequired` + block on the decision channel
@@ -505,23 +511,19 @@
 //!
 //! ## Known gaps in subagent (by design)
 //!
-//! - **blocking hold deferred** — production, when the model returns no tool
-//!   calls *and* no completion is queued *but* children are still running
+//! - **blocking hold absorbed ✅** — production, when the model returns no
+//!   tool calls *and* no completion is queued *but* children are still running
 //!   (`should_hold_turn_for_subagents(0, running)`), blocks on a `biased
 //!   select!` (`turn_loop.rs:1330-1368`) over cancel / completion `recv().await`
 //!   / steer `recv().await`, emitting "Waiting on N sub-agent(s)". This executor
-//!   has no `SubAgentApi::running_count` (the minimal-probe pattern doesn't
-//!   inject the full `HostServices`), and its steer receiver uses
-//!   `std::sync::Mutex` (can't `recv().await`). So with `subagent` set but no
-//!   queued completion, the turn ends immediately (`NoToolCalls`) rather than
-//!   holding. The child's completion surfaces on the *next* turn's drain
-//!   instead of mid-turn. The `CancellationToken` is now absorbed (guardrail
-//!   10), so the hold's cancel race is no longer blocked on the token — but
-//!   the hold itself still needs `running_count` + `tokio::sync::Mutex`
-//!   receivers; the post-stream drain's cancel is bounded by Checkpoint A
-//!   (loop-top). The blocking hold threads in at the wire-in step, whereupon
-//!   the steer + subagent receivers migrate to `tokio::sync::Mutex` (matching
-//!   approval).
+//!   now mirrors that: the `subagent_api` field supplies `running_count().await`,
+//!   and the steer + subagent receivers are `tokio::sync::Mutex` (matching
+//!   approval), so the `biased select!` arms can `recv().await` across the guard.
+//!   The hold's cancel arm is **Checkpoint E** (absorbed — guardrail 10). The
+//!   steer arm resumes mid-turn with the steered text (closing the steer
+//!   post-stream resume gap). Batched completions behind the first `recv()` are
+//!   drained by a `try_recv` loop after the `select!` (mirrors
+//!   `turn_loop.rs:1342-1345`).
 //! - **`ContextPatch` apply deferred** — production drains each completion's
 //!   `context_patch` and applies them **tighten-only** (`auto_approve` /
 //!   `trust_mode` → `false`; loosen attempts rejected) to `Session` +
@@ -536,13 +538,12 @@
 //!   plain `subagent_completion_runtime_message` (role `user`, no
 //!   `user_text_message_with_turn_metadata` wrapper), same gap as the steer /
 //!   LSP-flush synthetic messages.
-//! - **steer post-stream resume deferred** — production, when the model returns
-//!   no tool calls and `pending_steers` is non-empty, resumes with the steered
-//!   text (`turn_loop.rs:1297-1307`). This executor's steer drain is seam-1
-//!   (pre-request `try_recv`), so post-stream steers are picked up on the
-//!   *next* step's pre-request drain instead of mid-turn — same deferral as
-//!   the steer slice's three secondary drain sites. Threads in with the
-//!   blocking hold (the `biased select!` steer arm).
+//! - **steer post-stream resume absorbed ✅** — production, when the model
+//!   returns no tool calls and `pending_steers` is non-empty, resumes with the
+//!   steered text (`turn_loop.rs:1297-1307`). This executor now mirrors that via
+//!   the blocking hold's `biased select!` steer arm: a steer arriving during the
+//!   hold is injected as a `user` message and `continue`s on a fresh step (the
+//!   mid-stream buffer variant — streaming-lifecycle-specific — remains deferred).
 //!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
@@ -671,6 +672,18 @@ fn approval_intent_summary(content: &[ContentBlock]) -> Option<String> {
         summary.push_str("...");
     }
     Some(summary)
+}
+
+/// Decide whether the turn should hold (block) for still-running sub-agents
+/// when the non-blocking completion drain found nothing (mirrors
+/// `turn_loop.rs:2846-2848`). Hold fires when there are already-queued
+/// completions OR children still running — so the turn waits for a child to
+/// finish rather than ending prematurely.
+fn should_hold_turn_for_subagents(
+    queued_completions: usize,
+    running_children: usize,
+) -> bool {
+    queued_completions > 0 || running_children > 0
 }
 
 /// Bundles the LSP collaborators the executor needs for the post-edit collect /
@@ -1000,14 +1013,17 @@ pub struct HostAgentExecutor {
     /// Optional steer input receiver (§E). `None` ⇒ steer drain is a no-op.
     ///
     /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
-    /// `mpsc::Receiver::try_recv` takes `&mut self` — the same
-    /// `Arc<std::sync::Mutex<…>>` pattern as [`LspProbe::pending`]. The lock is
-    /// held only for the synchronous `try_recv` (never across an `await`),
-    /// matching the LSP flush. Steers are drained (consumed) each step, so
-    /// unlike diagnostics they don't accumulate — the receiver merely persists
-    /// across `run` invocations on the same executor so a steer queued between
-    /// turns is picked up on the next turn's first pre-request drain.
-    steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>,
+    /// `mpsc::Receiver::try_recv`/`recv` takes `&mut self`. Uses
+    /// `tokio::sync::Mutex` (not `std::sync::Mutex`) so the guard may cross the
+    /// blocking `recv().await` in the sub-agent blocking hold's `biased select!`
+    /// steer arm — the same rationale as the `approval` field. The pre-request
+    /// drain (`try_recv`) is non-blocking and the lock is uncontended (single
+    /// consumer), so the tokio mutex is a no-cost upgrade there. Steers are
+    /// drained (consumed) each step, so unlike diagnostics they don't
+    /// accumulate — the receiver merely persists across `run` invocations on
+    /// the same executor so a steer queued between turns is picked up on the
+    /// next turn's first pre-request drain.
+    steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
     /// Optional approval-decision receiver (§E). `None` ⇒ approval gating is a
     /// no-op (all tools run ungated — for embeds/tests that never prompt).
     ///
@@ -1049,36 +1065,43 @@ pub struct HostAgentExecutor {
     /// `<codesmith:runtime_event kind="subagent_completion">` user messages
     /// (the sentinel contract documented in `prompts/base.md`), then the turn
     /// resumes — mirroring `handle_deepseek_turn`'s non-blocking completion
-    /// drain (`turn_loop.rs:1317-1397`). The **blocking hold** for still-running
-    /// children (`should_hold_turn_for_subagents` + a `biased select!` over
-    /// cancel / completion `recv().await` / steer `recv().await`) is deferred
-    /// to the wire-in step — it needs `SubAgentApi::running_count` and a
-    /// `tokio::sync::Mutex` receiver (the steer receiver would migrate from
-    /// `std::sync::Mutex` in the same slice). The `CancellationToken` is
-    /// absorbed (guardrail 10); the hold's own `select!` cancel arm threads
-    /// in with the hold itself. Interior-mutable because [`AgentExecutor::run`] takes
-    /// `&self` while `mpsc::Receiver::try_recv` takes `&mut self` — the same
-    /// `Arc<std::sync::Mutex<…>>` pattern as the steer receiver (the lock is
-    /// held only for the synchronous `try_recv`, never across an `await`). The
-    /// receiver persists across `run` invocations on the same executor,
-    /// matching the production `Engine.rx_subagent_completion` field — a
-    /// completion that arrives between turns is surfaced on the next turn's
-    /// post-stream drain. `ContextPatch` apply (tighten-only
-    /// `auto_approve`/`trust_mode`) is deferred — it mutates `Session` state
-    /// not reachable through `ChatHistory`, and production hardcodes
-    /// `context_patch: None` today.
-    subagent: Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
+    /// drain (`turn_loop.rs:1317-1397`). The **blocking hold** for
+    /// still-running children (`should_hold_turn_for_subagents` + a `biased
+    /// select!` over cancel / completion `recv().await` / steer `recv().await`)
+    /// is absorbed ✅ — it needs [`SubAgentApi::running_count`] (the
+    /// [`Self::subagent_api`] field) and a `tokio::sync::Mutex` receiver (the
+    /// guard must cross the `recv().await`, same rationale as the `approval`
+    /// field; the steer receiver migrated from `std::sync::Mutex` in this same
+    /// slice). The `CancellationToken` is absorbed (guardrail 10); the hold's
+    /// own `select!` cancel arm is Checkpoint E. Interior-mutable because
+    /// [`AgentExecutor::run`] takes `&self` while
+    /// `mpsc::Receiver::try_recv`/`recv` takes `&mut self`. The non-blocking
+    /// drain holds the lock only for the synchronous `try_recv` (never across
+    /// an `await`); the blocking hold holds it across `recv().await` (single
+    /// consumer, no contention). The receiver persists across `run`
+    /// invocations on the same executor, matching the production
+    /// `Engine.rx_subagent_completion` field — a completion that arrives
+    /// between turns is surfaced on the next turn's post-stream drain.
+    /// `ContextPatch` apply (tighten-only `auto_approve`/`trust_mode`) is
+    /// deferred — it mutates `Session` state not reachable through
+    /// `ChatHistory`, and production hardcodes `context_patch: None` today.
+    subagent: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
+    /// Optional sub-agent manager handle (§E). `None` ⇒ the blocking hold is
+    /// disabled (no `running_count` to check). Injected as `Arc<dyn
+    /// SubAgentApi>` — the minimal surface (mirrors [`LspProbe`]'s `Arc<dyn
+    /// LspManagerApi>` pattern, not full [`HostServices`]). `SubAgentApi` is
+    /// `#[async_trait]` + `Send + Sync`, already a dependency of this crate.
+    /// Used only for `running_count().await` in the blocking-hold gate.
+    subagent_api: Option<Arc<dyn crate::host_services::SubAgentApi>>,
     /// Optional cancel token (§E). `None` ⇒ cancel checks are no-ops
     /// (`is_cancelled()` returns `false`). When `Some`, mirrors production
     /// `handle_deepseek_turn`'s seven cancel checkpoints: (A) loop-top gate,
     /// (B) stream-open race, (C) transparent-retry `!cancelled` guard,
     /// (D) post-stream gate, (G) post-tool-loop final gate, plus the approval
     /// `select!` race and the steer stale-drain at `run_inner` start. The
-    /// sub-agent blocking hold race (Checkpoint E) is deferred — it needs the
-    /// blocking hold itself (which needs `CancellationToken` +
-    /// `SubAgentApi::running_count` + tokio-Mutex receivers); the post-stream
-    /// drain's cancel is bounded by Checkpoint A. Early-tool-start spawn has no
-    /// production cancel guard (bounded by `early_tasks.clear()`/`Drop`).
+    /// sub-agent blocking hold race (Checkpoint E) is absorbed ✅ — it lives
+    /// in the hold's own `biased select!` cancel arm. Early-tool-start spawn
+    /// has no production cancel guard (bounded by `early_tasks.clear()`/`Drop`).
     cancel_token: Option<CancellationToken>,
 }
 
@@ -1093,7 +1116,8 @@ impl HostAgentExecutor {
 /// optional sub-agent completion receiver (`None` ⇒ the post-stream
 /// completion drain is disabled — the turn ends on the first no-tool-call
 /// round) + an optional [`CancellationToken`] (`None` ⇒ cancel checks are
-/// no-ops).
+/// no-ops) + an optional sub-agent manager handle (`None` ⇒ the blocking hold
+/// for still-running children is disabled — no `running_count` to check).
 #[must_use]
 pub fn new(
     client: LlmClientHandle,
@@ -1102,12 +1126,13 @@ pub fn new(
     config: AgentExecutorConfig,
     event_tx: Option<mpsc::Sender<Event>>,
     lsp: Option<LspProbe>,
-    steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>,
+    steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
     approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
     compaction: Option<CompactionProbe>,
     capacity: Option<CapacityProbe>,
-    subagent: Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
+    subagent: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
     cancel_token: Option<CancellationToken>,
+    subagent_api: Option<Arc<dyn crate::host_services::SubAgentApi>>,
 ) -> Self {
     Self {
         client,
@@ -1122,6 +1147,7 @@ pub fn new(
         capacity,
         subagent,
         cancel_token,
+        subagent_api,
     }
 }
 
@@ -1744,11 +1770,12 @@ pub fn new(
             return;
         };
         loop {
-            // `try_recv` is synchronous and non-blocking — the std::sync::Mutex
+            // `try_recv` is synchronous and non-blocking — the tokio mutex
             // guard is taken and dropped within this block, never across an
-            // `await` (matching the LSP flush pattern).
+            // `await` (matching the LSP flush pattern). The lock is
+            // uncontended (single consumer) so `.await` is effectively instant.
             let steer = {
-                let mut guard = rx.lock().expect("poisoned");
+                let mut guard = rx.lock().await;
                 match guard.try_recv() {
                     Ok(s) => s,
                     // Empty or disconnected — nothing more to drain this step.
@@ -1782,18 +1809,21 @@ pub fn new(
     /// reset so steers queued during an interrupted previous turn don't leak
     /// into the new turn. Unlike [`drain_steers`](Self::drain_steers), this
     /// **discards** (does not inject into the transcript): stale steers are not
-    /// the user's intent for this turn. Synchronous — the std mutex guard is
-    /// taken and dropped within the loop, never across an `await`.
+    /// the user's intent for this turn. Async — the tokio mutex guard is
+    /// taken and dropped within the loop, never across another `await` (the
+    /// steer receiver migrated from `std::sync::Mutex` to `tokio::sync::Mutex`
+    /// in the blocking-hold slice so the `biased select!` steer arm can hold
+    /// the guard across `recv().await`).
     ///
     /// **Host-side concern:** the host calls this BEFORE
     /// [`AgentExecutor::run`], not inside the turn loop. Calling it inside
     /// `run_inner` would discard steers the host queued for the current turn
     /// before calling `run`.
-    pub fn drain_stale_steers(&self) {
+    pub async fn drain_stale_steers(&self) {
         let Some(rx) = &self.steer else {
             return;
         };
-        let mut guard = rx.lock().expect("steer rx mutex poisoned");
+        let mut guard = rx.lock().await;
         while guard.try_recv().is_ok() {}
     }
     /// `handle_deepseek_turn`'s top-of-loop compaction
@@ -2465,18 +2495,124 @@ impl HostAgentExecutor {
                 // thinking-only / goal-continuation / REPL branches, so this single
                 // drain covers both production drain sites. The **blocking hold**
                 // for still-running children (`should_hold_turn_for_subagents` +
-                // a `biased select!`) is deferred to the wire-in step — it needs a
-                // `CancellationToken` + `SubAgentApi::running_count` + a tokio-Mutex
-                // receiver (see the `subagent` field doc).
+                // a `biased select!` over cancel / completion `recv().await` /
+                // steer `recv().await`) is absorbed ✅ — it fires when the
+                // non-blocking drain found nothing but children are still
+                // running (needs `subagent_api::running_count` + the
+                // `subagent` receiver; absent either, the hold is skipped and
+                // the turn ends on `NoToolCalls`).
                 if let Some(probe) = &self.subagent {
                     let mut completions: Vec<SubAgentCompletion> = Vec::new();
-                    // `std::sync::Mutex` — the lock is held only for the
-                    // synchronous `try_recv`, never across the `history.push`
-                    // `await` below (matches the steer drain pattern).
+                    // Non-blocking drain (`try_recv`). `tokio::sync::Mutex` —
+                    // the lock is held only for the synchronous `try_recv`,
+                    // never across the `history.push` `await` below (matches
+                    // the steer drain pattern).
                     {
-                        let mut rx = probe.lock().expect("subagent rx mutex poisoned");
+                        let mut rx = probe.lock().await;
                         while let Ok(c) = rx.try_recv() {
                             completions.push(c);
+                        }
+                    }
+                    // Blocking hold (mirrors `turn_loop.rs:1321-1397`): when
+                    // the non-blocking drain found nothing but children are
+                    // still running, block on a `biased select!` over cancel
+                    // / completion `recv().await` / steer `recv().await` until
+                    // a child completes, the turn is cancelled, or the user
+                    // steers. Needs `subagent_api` (for `running_count`) and
+                    // the subagent receiver; absent `subagent_api`, skip the
+                    // hold and fall through to `NoToolCalls`.
+                    if completions.is_empty()
+                        && let Some(api) = &self.subagent_api
+                    {
+                        let running = api.running_count().await;
+                        if should_hold_turn_for_subagents(0, running) {
+                            self.emit_status(format!(
+                                "Waiting on {running} sub-agent(s) to complete..."
+                            ))
+                            .await;
+                            // Clone the Arc so the lock guard borrows a
+                            // local, leaving `self.steer` freely accessible in
+                            // the steer arm (mirrors `let cancel_token =
+                            // self.cancel_token.clone()` in the approval
+                            // race). The lock is uncontended (single
+                            // consumer) and held across `recv().await` only
+                            // inside the `select!` below.
+                            let sub_arc = Arc::clone(probe);
+                            let mut sub_guard = sub_arc.lock().await;
+                            let cancel_token = self.cancel_token.clone();
+                            // Checkpoint E — sub-agent blocking-hold cancel
+                            // race (mirrors `turn_loop.rs:1330-1339`).
+                            // `biased` so cancel wins if both are ready. The
+                            // cancel arm `return`s, the steer arm `continue`s
+                            // — only the completion arm falls through to the
+                            // `try_recv` drain + inject+resume path below.
+                            tokio::select! {
+                                biased;
+                                _ = async {
+                                    match &cancel_token {
+                                        Some(token) => token.cancelled().await,
+                                        None => std::future::pending::<()>().await,
+                                    }
+                                } => {
+                                    self.emit_status(
+                                        "Request cancelled while waiting for sub-agents"
+                                            .to_string(),
+                                    )
+                                    .await;
+                                    callback
+                                        .on_complete(&StopReason::Interrupted)
+                                        .await;
+                                    return Ok(StopReason::Interrupted);
+                                }
+                                Some(c) = sub_guard.recv() => {
+                                    completions.push(c);
+                                }
+                                Some(steer) = async {
+                                    match &self.steer {
+                                        Some(rx) => rx.lock().await.recv().await,
+                                        None => {
+                                            std::future::pending::<Option<String>>().await
+                                        }
+                                    }
+                                } => {
+                                    // Steer arm: inject the steered text as a
+                                    // user message and resume the turn on a
+                                    // fresh step (mirrors
+                                    // `turn_loop.rs:1352-1368` + the
+                                    // post-stream resume at `1297-1307`).
+                                    // Closes the "steer post-stream resume"
+                                    // gap — steers that arrive during the
+                                    // hold are now surfaced immediately
+                                    // rather than waiting for the next step's
+                                    // pre-request drain.
+                                    let trimmed = steer.trim().to_string();
+                                    if !trimmed.is_empty() {
+                                        let status = format!(
+                                            "Steer input accepted: {}",
+                                            summarize_text(&trimmed, 120)
+                                        );
+                                        history.push(Message {
+                                            role: "user".to_string(),
+                                            content: vec![ContentBlock::Text {
+                                                text: trimmed,
+                                                cache_control: None,
+                                            }],
+                                        });
+                                        self.emit_status(status).await;
+                                    }
+                                    step += 1;
+                                    continue;
+                                }
+                            }
+                            // Only reached if the completion arm won (cancel
+                            // `return`ed, steer `continue`d). The `recv()`
+                            // future was consumed, releasing the borrow on
+                            // `sub_guard` — drain any completions batched
+                            // behind the first (mirrors
+                            // `turn_loop.rs:1342-1345`).
+                            while let Ok(extra) = sub_guard.try_recv() {
+                                completions.push(extra);
+                            }
                         }
                     }
                     if !completions.is_empty() {
@@ -2484,11 +2620,12 @@ impl HostAgentExecutor {
                         for c in completions {
                             history.push(subagent_completion_runtime_message(&c.payload));
                             // `ContextPatch` apply (tighten-only
-                            // `auto_approve`/`trust_mode`) is deferred — it mutates
-                            // `Session` state not reachable through `ChatHistory`,
-                            // and production hardcodes `context_patch: None`
-                            // today (same gap class as compaction's working-set
-                            // / cycle-state reinject).
+                            // `auto_approve`/`trust_mode`) is deferred — it
+                            // mutates `Session` state not reachable through
+                            // `ChatHistory`, and production hardcodes
+                            // `context_patch: None` today (same gap class
+                            // as compaction's working-set / cycle-state
+                            // reinject).
                         }
                         self.emit_status(format!(
                             "Resuming turn with {count} sub-agent completion(s)"
@@ -2497,7 +2634,8 @@ impl HostAgentExecutor {
                         // A subagent resume is a new step (production's
                         // `turn.next_step()`), unlike the capacity/reactive
                         // `continue`s which retry the *same* step — so the
-                        // `max_steps` bound still covers a chain of completions.
+                        // `max_steps` bound still covers a chain of
+                        // completions.
                         step += 1;
                         continue;
                     }
@@ -2698,10 +2836,12 @@ mod tests {
     use crate::events::Event;
     use crate::hooks::{HookContext, HookEvent, HookHost, HookResult, MessageSubmitOutcome};
     use crate::host_services::LspManagerApi;
+    use crate::host_services::SubAgentApi;
     use crate::lsp_config::LspConfig;
     use crate::lsp_diagnostics::{Diagnostic, DiagnosticBlock, Severity};
     use crate::session::Session;
     use crate::session_history::SessionChatHistory;
+    use crate::subagent::SubAgentResult;
     use crate::tools::registry::ToolRegistry;
     use crate::tools::spec::{ToolContext, ToolSpec};
     use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
@@ -3126,6 +3266,38 @@ mod tests {
         }
     }
 
+    /// A `SubAgentApi` test double with a configurable sequence of
+    /// `running_count` values (all other methods are no-ops). Each call to
+    /// `running_count` pops the front of the sequence; when empty it returns 0.
+    /// This lets a test say "one running child on the first poll (hold fires),
+    /// then zero on the next (hold skipped)" — e.g. `FakeSubAgentApi::new(vec![1])`
+    /// fires the hold once then stops, simulating a child completing.
+    struct FakeSubAgentApi {
+        counts: std::sync::Mutex<VecDeque<usize>>,
+    }
+
+    impl FakeSubAgentApi {
+        fn new(counts: Vec<usize>) -> Arc<Self> {
+            Arc::new(Self {
+                counts: std::sync::Mutex::new(counts.into_iter().collect()),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SubAgentApi for FakeSubAgentApi {
+        async fn running_count(&self) -> usize {
+            self.counts.lock().unwrap().pop_front().unwrap_or(0)
+        }
+        async fn list(&self) -> Vec<SubAgentResult> {
+            Vec::new()
+        }
+        async fn cleanup(&self, _max_age: std::time::Duration) {}
+        async fn live_running_snapshots(&self) -> Vec<SubAgentResult> {
+            Vec::new()
+        }
+    }
+
     /// A `HookHost` test double that records every `execute` call.
     /// (Mirrors `callback_bridge` tests' `RecordingHookHost`.)
     #[derive(Default)]
@@ -3310,6 +3482,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3413,6 +3586,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3469,6 +3643,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3509,6 +3684,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -3595,6 +3771,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3637,6 +3814,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -3715,6 +3893,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3771,6 +3950,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         executor
             .collect_lsp_diagnostics("edit_file", &serde_json::json!({"path":"foo.rs"}))
@@ -3793,6 +3973,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
             None,
@@ -3844,6 +4025,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3872,6 +4054,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
             None,
@@ -3929,6 +4112,7 @@ mod tests {
             },
             None,
             Some(probe),
+            None,
             None,
             None,
             None,
@@ -4035,6 +4219,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4078,6 +4263,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -4149,6 +4335,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4195,6 +4382,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4216,24 +4404,31 @@ mod tests {
     // `HostAgentExecutor` absorbs that at the (1) pre-request seam:
     // `drain_steers` does a non-blocking `try_recv` loop, trimming and pushing
     // each as a `user` message, emitting a status per accepted input. The
-    // receiver is `Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>` —
+    // receiver is `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` —
     // interior-mutable because `AgentExecutor::run` is `&self` while
-    // `try_recv` takes `&mut self`. Only the pre-request drain is absorbed;
-    // the mid-stream buffer / post-stream resume / blocking `recv` during
-    // sub-agent hold are streaming-lifecycle-specific and deferred.
+    // `try_recv`/`recv` takes `&mut self`. The pre-request drain is absorbed
+    // (seam 1, non-blocking `try_recv`); the post-stream resume / blocking
+    // `recv().await` during the sub-agent hold are absorbed in the blocking-hold
+    // slice (the `biased select!` steer arm).
 
     /// Create a steer channel pair: the sender for tests to enqueue steers, and
-    /// the interior-mutable receiver the executor expects.
-    fn steer_channel() -> (mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>) {
+    /// the interior-mutable receiver the executor expects. Uses
+    /// `tokio::sync::Mutex` (matching `approval_channel`) so the guard may
+    /// cross the blocking `recv().await` in the sub-agent blocking hold's
+    /// `biased select!` steer arm.
+    fn steer_channel() -> (
+        mpsc::Sender<String>,
+        Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>,
+    ) {
         let (tx, rx) = mpsc::channel::<String>(64);
-        (tx, Arc::new(Mutex::new(rx)))
+        (tx, Arc::new(tokio::sync::Mutex::new(rx)))
     }
 
     /// Create an approval channel pair: the sender for tests to push
     /// `ApprovalDecision`s (matched by wire tool id), and the interior-mutable
-    /// receiver the executor expects. Uses `tokio::sync::Mutex` (unlike
-    /// `steer_channel`'s `std::sync::Mutex`) because the approval await blocks
-    /// on `recv().await` — the guard must cross an `await`.
+    /// receiver the executor expects. Uses `tokio::sync::Mutex` because the
+    /// approval await blocks on `recv().await` — the guard must cross an
+    /// `await`.
     fn approval_channel() -> (
         mpsc::Sender<ApprovalDecision>,
         Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>,
@@ -4244,16 +4439,17 @@ mod tests {
 
     /// Create a sub-agent completion channel pair: the sender for tests to push
     /// [`SubAgentCompletion`]s, and the interior-mutable receiver the executor
-    /// expects. Uses `std::sync::Mutex` (like `steer_channel`) because the
-    /// post-stream drain uses the synchronous `try_recv` — the lock is never
-    /// held across an `await`. (The deferred blocking hold will migrate both
-    /// steer and subagent receivers to `tokio::sync::Mutex` in the same slice.)
+    /// expects. Uses `tokio::sync::Mutex` (matching `steer_channel` /
+    /// `approval_channel`) so the guard may cross the blocking `recv().await`
+    /// in the blocking hold's `biased select!` completion arm. The
+    /// non-blocking `try_recv` drain holds the lock only synchronously
+    /// (uncontended single consumer).
     fn subagent_channel() -> (
         mpsc::Sender<SubAgentCompletion>,
-        Arc<Mutex<mpsc::Receiver<SubAgentCompletion>>>,
+        Arc<tokio::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>,
     ) {
         let (tx, rx) = mpsc::channel::<SubAgentCompletion>(64);
-        (tx, Arc::new(Mutex::new(rx)))
+        (tx, Arc::new(tokio::sync::Mutex::new(rx)))
     }
 
     /// Build a `SubAgentCompletion` with a sentinel payload mirroring the
@@ -4305,6 +4501,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
             None,
             None,
             None,
@@ -4371,6 +4568,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4411,6 +4609,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4445,6 +4644,7 @@ mod tests {
             Some(tx),
             None,
             Some(rx_steer),
+            None,
             None,
             None,
             None,
@@ -4497,6 +4697,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
             None,
             None,
             None,
@@ -4602,6 +4803,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4648,6 +4850,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4686,6 +4889,7 @@ mod tests {
             None,
             None,
             None, // no approval channel
+            None,
             None,
             None,
             None,
@@ -4740,6 +4944,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // If the gate wrongly fires, recv() blocks → the timeout fails the test.
@@ -4789,6 +4994,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
             None,
             None,
@@ -4861,6 +5067,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
             None,
             None,
@@ -4969,6 +5176,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -4999,6 +5207,7 @@ mod tests {
                 compaction_config_disabled(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
             None,
             None,
             None,
@@ -5055,6 +5264,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "what did the file say".to_string())
@@ -5101,6 +5311,7 @@ mod tests {
                 compaction_config_low_threshold(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
             None,
             None,
             None,
@@ -5155,6 +5366,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "continue".to_string())
@@ -5197,6 +5409,7 @@ mod tests {
             None,
             None,
             Some(probe),
+            None,
             None,
             None,
             None,
@@ -5259,6 +5472,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5288,6 +5502,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
             None,
         );
@@ -5323,6 +5538,7 @@ mod tests {
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5356,6 +5572,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
             None,
         );
@@ -5394,6 +5611,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
             None,
         );
@@ -5452,6 +5670,7 @@ mod tests {
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5508,6 +5727,7 @@ mod tests {
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5546,6 +5766,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
             None,
         );
@@ -5591,6 +5812,7 @@ mod tests {
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
             None,
             None,
+            None,
         );
         let err = executor
             .run(&mut history, "hello".to_string())
@@ -5627,6 +5849,7 @@ mod tests {
             None,
             None,
             None, // no capacity probe ⇒ reactive recovery disabled
+            None,
             None,
             None,
         );
@@ -5670,6 +5893,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
             None,
         );
@@ -5777,6 +6001,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -5820,6 +6045,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -5883,6 +6109,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -5935,6 +6162,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -6031,6 +6259,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -6080,6 +6309,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -6338,6 +6568,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // Run on a spawned task so the test can observe the tool's signal
@@ -6393,6 +6624,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -6476,6 +6708,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // Suppress the panic message on stderr (the panic is caught by the
@@ -6537,6 +6770,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -6630,6 +6864,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -6671,6 +6906,7 @@ mod tests {
             None,
             None,
             Some(rx_sub),
+            None,
             None,
         );
 
@@ -6727,6 +6963,7 @@ mod tests {
             None,
             None,
             Some(rx_sub),
+            None,
             None,
         );
 
@@ -6813,6 +7050,7 @@ mod tests {
             None,
             Some(rx_sub),
             None,
+            None,
         );
 
         // run1: no completion queued → NoToolCalls, no sentinel.
@@ -6858,6 +7096,342 @@ mod tests {
         );
     }
 
+    // === §E subagent blocking hold =========================================
+
+    /// When the model finishes a step with no tool calls, no queued
+    /// completions, but children still running (`running_count > 0`), the
+    /// executor blocks on a `biased select!` until a child completes. The
+    /// completion is injected as a sentinel and the turn resumes — proving the
+    /// hold fires and the completion arm works.
+    #[tokio::test]
+    async fn subagent_hold_waits_for_running_children_then_resumes() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx_event, mut rx_event) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_sub, rx_sub) = subagent_channel();
+        let api = FakeSubAgentApi::new(vec![1]); // 1 running → hold fires, then 0
+
+        // Round 1: no tool calls → post-stream hold. Round 2: no tool calls →
+        // running_count is now 0 → no hold → NoToolCalls.
+        let mut call1 = text_block(0, "working on it");
+        call1.extend(finish("end_turn"));
+        let mut call2 = text_block(0, "all done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        // Push a completion AFTER the hold starts blocking (50ms delay ensures
+        // the non-blocking drain ran first and found nothing).
+        let tx_clone = tx_sub.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = tx_clone.send(completion("child finished")).await;
+        });
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx_event),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+            None,
+            Some(api),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // The hold fired and the completion was injected.
+        assert!(has_subagent_completion_msg(sess.messages.as_slice()));
+        // Two stream rounds: round 1 + resume.
+        assert_eq!(mock.requests().len(), 2, "hold resumed the turn once");
+        // The "Waiting on 1 sub-agent(s)" status proves the hold fired (the
+        // non-blocking drain alone would not emit this).
+        let events = drain(&mut rx_event);
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Status { message, .. } if message
+                .contains("Waiting on 1 sub-agent(s)"))),
+            "hold must emit the waiting status: {events:?}"
+        );
+    }
+
+    /// A cancel token that fires during the hold breaks out via Checkpoint E
+    /// (the hold's own `biased select!` cancel arm) and returns `Interrupted`.
+    /// Asserting `requests().len() == 1` proves the stream completed and the
+    /// cancel landed during the hold (not at Checkpoint A before the stream).
+    #[tokio::test]
+    async fn subagent_hold_cancel_returns_interrupted() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (_tx_sub, rx_sub) = subagent_channel();
+        let api = FakeSubAgentApi::new(vec![1]);
+        let token = CancellationToken::new();
+
+        let mut call1 = text_block(0, "working on it");
+        call1.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1]));
+
+        // Cancel during the hold (after the stream completes).
+        let token_clone = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            token_clone.cancel();
+        });
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+            Some(token),
+            Some(api),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::Interrupted);
+        // One stream call proves the cancel landed after the stream (during
+        // the hold), not at Checkpoint A (which would be 0 streams).
+        assert_eq!(mock.requests().len(), 1);
+        assert!(!has_subagent_completion_msg(sess.messages.as_slice()));
+    }
+
+    /// A steer that arrives during the hold fires the steer arm: the steered
+    /// text is injected as a user message and the turn resumes on a fresh step
+    /// (closes the "steer post-stream resume" gap). Round 2: no running children
+    /// → `NoToolCalls`.
+    #[tokio::test]
+    async fn subagent_hold_steer_arm_resumes_with_steered_text() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_steer, rx_steer) = steer_channel();
+        let (_tx_sub, rx_sub) = subagent_channel();
+        let api = FakeSubAgentApi::new(vec![1]);
+
+        let mut call1 = text_block(0, "working on it");
+        call1.extend(finish("end_turn"));
+        let mut call2 = text_block(0, "redirected");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        // Push a steer during the hold.
+        let tx_clone = tx_steer.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = tx_clone.send("please use Python".to_string()).await;
+        });
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            Some(rx_sub),
+            None,
+            Some(api),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // The steer text was injected as a user message.
+        assert!(
+            sess.messages.iter().any(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text, .. } if text.contains("please use Python"))
+                })
+            }),
+            "steer text must appear in the transcript"
+        );
+        // Two stream rounds (round 1 + resume after steer).
+        assert_eq!(mock.requests().len(), 2);
+        // The steer text reached the model on the resume request.
+        assert!(
+            mock.requests()[1].iter().any(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("please use Python")))
+            }),
+            "steer text must be in the resume request"
+        );
+    }
+
+    /// No `subagent_api` ⇒ the hold is skipped even with a present receiver
+    /// and an empty queue (no `running_count` to check). The turn ends on the
+    /// first no-tool-call round.
+    #[tokio::test]
+    async fn subagent_hold_no_subagent_api_skips_hold() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (_tx_sub, rx_sub) = subagent_channel();
+
+        let mut call1 = text_block(0, "all done");
+        call1.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+            None,
+            None, // no subagent_api
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.requests().len(), 1, "no resume without the hold");
+        assert!(!has_subagent_completion_msg(sess.messages.as_slice()));
+    }
+
+    /// `running_count == 0` ⇒ `should_hold_turn_for_subagents` returns false ⇒
+    /// the hold is skipped. The turn ends on `NoToolCalls`.
+    #[tokio::test]
+    async fn subagent_hold_no_running_children_skips_hold() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (_tx_sub, rx_sub) = subagent_channel();
+        let api = FakeSubAgentApi::new(vec![0]); // no running children
+
+        let mut call1 = text_block(0, "all done");
+        call1.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+            None,
+            Some(api),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.requests().len(), 1, "no hold when no children running");
+        assert!(!has_subagent_completion_msg(sess.messages.as_slice()));
+    }
+
+    /// Multiple completions batched behind the first are drained by the
+    /// `try_recv` loop after `recv()` returns (mirrors `turn_loop.rs:1342-1345`).
+    /// All three are injected as sentinel messages.
+    #[tokio::test]
+    async fn subagent_hold_drains_batched_completions() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_sub, rx_sub) = subagent_channel();
+        let api = FakeSubAgentApi::new(vec![1]);
+
+        let mut call1 = text_block(0, "working on it");
+        call1.extend(finish("end_turn"));
+        let mut call2 = text_block(0, "all done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        // Push 3 completions during the hold (batched behind each other).
+        let tx_clone = tx_sub.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = tx_clone.send(completion("child 1 done")).await;
+            let _ = tx_clone.send(completion("child 2 done")).await;
+            let _ = tx_clone.send(completion("child 3 done")).await;
+        });
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+            None,
+            Some(api),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Count sentinel messages — all 3 must be injected.
+        let sentinel_count = sess
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text, .. } if text
+                        .contains("kind=\"subagent_completion\""))
+                })
+            })
+            .count();
+        assert_eq!(
+            sentinel_count, 3,
+            "all 3 batched completions must be drained and injected"
+        );
+        assert_eq!(mock.requests().len(), 2, "hold resumed the turn once");
+    }
+
     // === §E cancel-token ===================================================
 
     /// `cancel_token = None` is a no-op — the turn runs normally and returns
@@ -6885,6 +7459,7 @@ mod tests {
             None,
             None,
             None, // cancel_token = None
+            None,
         );
 
         let reason = executor
@@ -6924,6 +7499,7 @@ mod tests {
             None,
             None,
             Some(token),
+            None,
         );
 
         let reason = executor
@@ -6978,6 +7554,7 @@ mod tests {
             None,
             None,
             Some(token),
+            None,
         );
 
         let reason = executor
@@ -7021,6 +7598,7 @@ mod tests {
             None,
             None,
             Some(token),
+            None,
         );
 
         let reason = executor
@@ -7066,6 +7644,7 @@ mod tests {
             None,
             None,
             Some(token),
+            None,
         );
 
         let reason = executor
@@ -7122,6 +7701,7 @@ mod tests {
             None,
             None,
             Some(token.clone()),
+            None,
         );
 
         // Background task: cancel the token after a short delay so the
@@ -7183,11 +7763,12 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // Drain stale steers BEFORE run — mirrors the host calling this
         // before the turn starts (production: handle_send_message start).
-        executor.drain_stale_steers();
+        executor.drain_stale_steers().await;
 
         let reason = executor
             .run(&mut history, "fresh start".to_string())
