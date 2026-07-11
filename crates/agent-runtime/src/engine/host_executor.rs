@@ -178,7 +178,7 @@
 //!    has no thinking-only / goal-continuation / REPL branches, so this single
 //!    drain site (the `tool_uses.is_empty()` arm) covers both production drains.
 //!    The receiver is
-//!    `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>` —
+//!    `Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>` —
 //!    `tokio::sync::Mutex` (not `std::sync::Mutex`) because the blocking hold's
 //!    `biased select!` calls `recv().await` across the guard (same rationale as
 //!    the steer receiver's migration), and it persists across `run` invocations
@@ -1085,7 +1085,7 @@ pub struct HostAgentExecutor {
     /// `ContextPatch` apply (tighten-only `auto_approve`/`trust_mode`) is
     /// deferred — it mutates `Session` state not reachable through
     /// `ChatHistory`, and production hardcodes `context_patch: None` today.
-    subagent: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
+    subagent: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>,
     /// Optional sub-agent manager handle (§E). `None` ⇒ the blocking hold is
     /// disabled (no `running_count` to check). Injected as `Arc<dyn
     /// SubAgentApi>` — the minimal surface (mirrors [`LspProbe`]'s `Arc<dyn
@@ -1130,7 +1130,7 @@ pub fn new(
     approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
     compaction: Option<CompactionProbe>,
     capacity: Option<CapacityProbe>,
-    subagent: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
+    subagent: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>,
     cancel_token: Option<CancellationToken>,
     subagent_api: Option<Arc<dyn crate::host_services::SubAgentApi>>,
 ) -> Self {
@@ -4445,10 +4445,10 @@ mod tests {
     /// non-blocking `try_recv` drain holds the lock only synchronously
     /// (uncontended single consumer).
     fn subagent_channel() -> (
-        mpsc::Sender<SubAgentCompletion>,
-        Arc<tokio::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>,
+        mpsc::UnboundedSender<SubAgentCompletion>,
+        Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>,
     ) {
-        let (tx, rx) = mpsc::channel::<SubAgentCompletion>(64);
+        let (tx, rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
         (tx, Arc::new(tokio::sync::Mutex::new(rx)))
     }
 
@@ -6936,8 +6936,8 @@ mod tests {
         ));
 
         let (tx_sub, rx_sub) = subagent_channel();
-        tx_sub.send(completion("child-a finished")).await.unwrap();
-        tx_sub.send(completion("child-b finished")).await.unwrap();
+        tx_sub.send(completion("child-a finished")).unwrap();
+        tx_sub.send(completion("child-b finished")).unwrap();
 
         let call1 = {
             let mut c = text_block(0, "let me wait for children");
@@ -7065,7 +7065,7 @@ mod tests {
         assert_eq!(mock.requests().len(), 1, "run1: one round, no resume");
 
         // Between runs: queue a completion on the SAME receiver.
-        tx_sub.send(completion("child finished between turns")).await.unwrap();
+        tx_sub.send(completion("child finished between turns")).unwrap();
 
         // run2: SAME executor (+ new Session). Post-stream drain surfaces the
         // queued completion → resume → second round ends.
@@ -7126,7 +7126,7 @@ mod tests {
         let tx_clone = tx_sub.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let _ = tx_clone.send(completion("child finished")).await;
+            let _ = tx_clone.send(completion("child finished"));
         });
 
         let executor = HostAgentExecutor::new(
@@ -7388,9 +7388,9 @@ mod tests {
         let tx_clone = tx_sub.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let _ = tx_clone.send(completion("child 1 done")).await;
-            let _ = tx_clone.send(completion("child 2 done")).await;
-            let _ = tx_clone.send(completion("child 3 done")).await;
+            let _ = tx_clone.send(completion("child 1 done"));
+            let _ = tx_clone.send(completion("child 2 done"));
+            let _ = tx_clone.send(completion("child 3 done"));
         });
 
         let executor = HostAgentExecutor::new(

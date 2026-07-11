@@ -586,6 +586,14 @@ pub struct TurnDispatchRequest<'a> {
 /// the `TurnComplete` event. `tools` is `None` iff `tool_registry` is `None`
 /// (mirroring the pre-factory `tool_registry.as_ref().map(build_catalog)`
 /// derivation).
+///
+/// `framework_tool_set` is the framework-core [`ToolSet`] (§E) derived from the
+/// concrete `ToolRegistry` *before* it is erased into `Arc<dyn ToolDispatcher>`
+/// — the trait object cannot be recovered, so the `ToolSet` must be built while
+/// the concrete type is still in hand. It is `None` iff `tool_registry` is
+/// `None`. Unused until `HostAgentExecutor` is wired into `handle_send_message`;
+/// populated here so the wire-in has the `Arc<ToolSet>` it needs for
+/// [`HostAgentExecutor::new`](crate::engine::HostAgentExecutor::new).
 pub struct TurnDispatchPlan {
     /// Trait-erased registry (`ToolRegistry` in the TUI host) when tools are
     /// available for this mode, else `None`.
@@ -593,6 +601,10 @@ pub struct TurnDispatchPlan {
     /// Model-visible tool catalog (built-ins + MCP, with deferral applied),
     /// paired with `tool_registry`.
     pub tools: Option<Vec<Tool>>,
+    /// Framework-core `ToolSet` (§E) for [`HostAgentExecutor`], derived from
+    /// the concrete `ToolRegistry` before the type erase. `None` iff
+    /// `tool_registry` is `None`.
+    pub framework_tool_set: Option<Arc<codesmith_agent::tools::ToolSet>>,
 }
 
 /// Inputs the engine body supplies to [`HostServices::spawn_subagent`].

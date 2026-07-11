@@ -1268,6 +1268,67 @@ host_executor` 73 通过（67 既有 + 6 新 blocking-hold）；`cargo test -p c
 
 ---
 
+**进度（2026-07-11 §E wire-in 机械前置项落地，UnboundedReceiver shape reconcile + TurnDispatchPlan.framework_tool_set，`feat/pluggable-framework-core`）：**
+
+§E 的第十九个切片落地——wire-in 的两个自包含机械前置项。十个 in-loop guardrail 已全部吸收（slice 18 收尾），wire-in（`HostAgentExecutor` 接入 `handle_send_message` + 退役 `handle_deepseek_turn`）是下一个主聚焦。
+用户决策"分阶段：先做机械前置项"——先把两个不碰 live path、不需 `Session` 可达的机械前置项落地，下一切片再做真正的 wire-in。本轮纯增量，零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **Part A — `UnboundedReceiver` shape reconcile**（`host_executor.rs` 单文件）：executor 的 `subagent` 字段从 bounded
+  `mpsc::Receiver<SubAgentCompletion>` 改为 `mpsc::UnboundedReceiver<SubAgentCompletion>`，对齐生产
+  `Engine.rx_subagent_completion`（`mod.rs:144`，unbounded）。这是 ROADMAP "wire-in 前置闭合项" 的 §d 项——wire-in 时
+  `handle_send_message` 需把 `self.rx_subagent_completion` 直接交给 executor（bounded/unbounded shape 不匹配则需转换层）。
+  - **edit sites（12 处）**：模块 doc prose（line 181）；字段声明（line 1088）；构造器 param（line 1133）；
+    `subagent_channel()` 返回类型 `mpsc::Sender`→`mpsc::UnboundedSender` + `mpsc::Receiver`→`mpsc::UnboundedReceiver`
+    （lines 4448-4449）；`subagent_channel()` body `mpsc::channel::<SubAgentCompletion>(64)`→`mpsc::unbounded_channel::<SubAgentCompletion>()`
+    （line 4451）；7 处 test `send(...).await`→`send(...)`（lines 6939/6940/7068/7129/7391/7392/7393——`UnboundedSender::send`
+    是同步的，`.await` 会编译错误）。
+  - **不需改动**：`run_inner` 的 3 个用法点（2512 `try_recv`、2567 `recv().await`、2613 `try_recv`）——
+    `UnboundedReceiver` 的 `try_recv`/`recv()` API 与 bounded 完全一致；71 个 test 构造器调用——类型推导自动适配
+    （62 个 `None` 类型无关、9 个 `Some(rx_sub)` 从 `subagent_channel()` 推导）。
+- **Part B — `TurnDispatchPlan.framework_tool_set` 字段**（2 文件）：给 `TurnDispatchPlan` 加
+  `pub framework_tool_set: Option<Arc<codesmith_agent::tools::ToolSet>>` 字段，在 TUI `build_turn_dispatcher`
+  里于 type-erase（`runtime_traits.rs:422` `Arc::new(r) as Arc<dyn ToolDispatcher>`）之前调
+  `registry.to_framework_tool_set()` 填充。这是 wire-in 的关键前置——`handle_send_message` 需从 plan 拿到 framework
+  `ToolSet` 喂 `HostAgentExecutor::new`（第二个构造器参数 `tools: Arc<ToolSet>`），但 `ToolDispatcher` trait-erase 后
+  无法恢复 concrete `ToolRegistry`（无 `as_any` / 无 `ToolSet` accessor），故 `ToolSet` 必须在 erase 之前从 concrete
+  type 派生。
+  - **edit sites（2 处）**：`host_services.rs:589-596` `TurnDispatchPlan` 加字段 + doc comment；
+    `runtime_traits.rs:421-424` erase 之前（~line 420）算 `let framework_tool_set = tool_registry.as_ref().map(|r|
+    Arc::new(r.to_framework_tool_set()));`（`to_framework_tool_set(&self)` 借用非 move，与后续 `.map()` move 不冲突），
+    加进 struct literal。
+  - **不需改动**：consumer `handle_send_message`（`mod.rs:1165-1177`）纯字段访问、无解构；无 `HostServices` test mock
+    需更新（workspace 内唯一 `impl HostServices` 是 `EngineHost`）；`TurnDispatchPlan` 不 derive `Default`，无
+    `..Default::default()` 静默丢字段风险。`to_framework_tool_set()` 方法（`registry.rs:240`）已在 host_executor 14 处
+    测试中端到端验证（含 `host_executor_drives_full_bridge_trio` 三桥组合证明），本轮只是首个**生产**调用点。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零 warning；`cargo +1.90.0 build -p codesmith-tui` 零新 warning
+（143 warning 均既有死代码，与本轮无关）；`cargo test -p codesmith-agent-runtime --lib host_executor` 73 通过（含 9 个 subagent
+测试用新 `UnboundedReceiver` 跑通——`try_recv` drain、`recv().await` hold、batched drain 三路径全覆盖）；`cargo test
+-p codesmith-agent-runtime --lib` 1079 通过、0 失败、2 ignored；`cargo test -p codesmith-agent --lib` 79 通过；
+`cargo build -p codesmith-agent-runtime --tests` 零新 warning（10 warning 均既有）；`cargo build --workspace` 全绿。
+无新测试——UnboundedReceiver 改动由既有 9 个 subagent 测试作回归；`framework_tool_set` 字段在 wire-in 前无行为面。
+
+**下一聚焦工作：**
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**（wire-in 主切片）：机械前置项已就位
+  （`UnboundedReceiver` shape 对齐 + `TurnDispatchPlan.framework_tool_set` 可达）。构造 `HostAgentExecutor`（13 字段从
+  Engine 状态映射）、在 `handle_send_message` 里路由到 `executor.run(&mut SessionChatHistory, user_text)`、map 返回
+  `(StopReason → TurnOutcomeStatus)`、退役 `handle_deepseek_turn`（~2434 行）。已知 wire-in gap（ContextPatch apply /
+  `<turn_meta>` enrichment / mid-stream buffer steer drain / compaction 闭合项 / `ToolCallStarted` stream-time / per-input
+  approval）在 wire-in 切片内按优先级接入或显式 defer。
+- **wire-in 前置闭合项（剩余两项）**：`ContextPatch` apply（tighten-only `auto_approve`/`trust_mode`，生产今天 hardcode
+  `None` 故安全 no-op）、`<turn_meta>` enrichment（steer/LSP/subagent sentinel 消息无 `user_text_message_with_turn_metadata`
+  包裹）、mid-stream buffer steer drain（`reduce_stream` 内 `try_recv`）——随 wire-in 切片接入。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片，仍低优先。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins /
+  `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery + subagent 的 `ContextPatch` apply。
+- **`ToolCallStarted` stream-time 合成 + bridge 去重**：需 `Callback::on_tool_start` 透传 wire id 或 bridge 层 name+input
+  pairing——与 wire-in 耦合，可同期接入。
+- **subagent 阻塞 hold 的 `UnboundedReceiver` shape**：已对齐（Part A）；wire-in 时 `self.rx_subagent_completion` 直接
+  包进 `Arc<tokio::sync::Mutex<…>>` 交给 executor。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

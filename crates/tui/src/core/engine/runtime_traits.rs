@@ -418,9 +418,18 @@ impl HostServices for super::EngineHost {
             catalog
         });
 
+        // Derive the framework-core `ToolSet` (§E) from the concrete `ToolRegistry`
+        // *before* the type erase below — `to_framework_tool_set()` takes `&self`
+        // so it borrows, not moves. After the `.map()` erase the concrete type is
+        // unrecoverable from `Arc<dyn ToolDispatcher>`.
+        let framework_tool_set = tool_registry
+            .as_ref()
+            .map(|r| Arc::new(r.to_framework_tool_set()));
+
         TurnDispatchPlan {
             tool_registry: tool_registry.map(|r| Arc::new(r) as Arc<dyn ToolDispatcher>),
             tools,
+            framework_tool_set,
         }
     }
 
