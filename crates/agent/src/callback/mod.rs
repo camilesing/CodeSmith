@@ -28,6 +28,10 @@ pub enum StopReason {
     MaxSteps,
     /// The run aborted with an error.
     Error(String),
+    /// The run was cancelled (user/external interruption). Distinct from
+    /// [`StopReason::Error`] so the host can surface "cancelled" rather than
+    /// "error" — mirrors production's `TurnOutcomeStatus::Interrupted`.
+    Interrupted,
 }
 
 /// A UI-relevant streaming event, emitted by the inline stream reducer in real

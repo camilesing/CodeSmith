@@ -23,7 +23,7 @@
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (with an inline stream reducer,
 //! [`reduce_stream`], that replaced the CORE `accumulate_stream` and emits
 //! streaming deltas to `Callback::on_stream_delta` in real time) and absorbs
-//! the production guardrails slice by slice. Nine are in:
+//! the production guardrails slice by slice. Ten are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -59,8 +59,7 @@
 //!    persists across steps within one `run` (matching loop-guard's local-state
 //!    pattern); the retry is transparent to the [`Callback`] (`on_llm_start` /
 //!    `on_llm_end` fire once per step, a `Status` event is the only retry
-//!    surfacing). See "Known gaps" below for the deferred cancel-token
-//!    short-circuit and reactive capacity recovery.
+//!    surfacing). See "Known gaps" below for reactive capacity recovery.
 //! 4. **steer** ([`drain_steers`](HostAgentExecutor::drain_steers)) — lets a
 //!    user inject additional text input into an in-flight turn. At the top of
 //!    each step (before the LLM request), queued steers are drained via
@@ -93,8 +92,8 @@
 //!    (`ExecutesCode` / `WritesFiles` / `RequiresApproval`) — the framework
 //!    `Tool` trait deliberately carries no per-input approval surface (§E
 //!    design note); the dynamic override threads in at the wire-in step. See
-//!    "Known gaps in approval" below for the cancel-token, sandbox-elevation,
-//!    and static-derivation gaps.
+//!    "Known gaps in approval" below for the sandbox-elevation and
+//!    static-derivation gaps.
 //! 6. **compaction** ([`run_compaction`](HostAgentExecutor::run_compaction)) —
 //!    keeps the transcript within the model's context window. At the top of
 //!    each step (after steer drain, before the LSP flush), the executor runs a
@@ -165,7 +164,7 @@
 //!    unreused task never leaks a background task (aborting a completed task is
 //!    a no-op, so the reuse path's await-then-drop is safe). See "Known gaps in
 //!    early-tool-start" below for the ToolCallStarted bridge dedup, the
-//!    spawn-time loop-guard, the per-input approval, and the cancel-token.
+//!    spawn-time loop-guard, and the per-input approval.
 //! 9. **subagent post-stream drain** (`subagent` field) — the **third seam-2
 //!    guardrail**. When the model finishes a step with no tool calls, any child
 //!    sub-agent completions that arrived (queued during inference or between
@@ -183,13 +182,40 @@
 //!    across `run` invocations (matching `Engine.rx_subagent_completion`). The
 //!    **blocking hold** for still-running children (`should_hold_turn_for_subagents`
 //!    + a `biased select!` over cancel / completion `recv().await` / steer
-//!    `recv().await`) is deferred to the wire-in step — it needs a
-//!    `CancellationToken` (an existing cross-guardrail gap),
-//!    `SubAgentApi::running_count`, and a `tokio::sync::Mutex` receiver (the
-//!    steer receiver migrates in the same slice). `ContextPatch` apply
+//!    `recv().await`) is deferred to the wire-in step — it needs
+//!    `SubAgentApi::running_count` and a `tokio::sync::Mutex` receiver (the
+//!    steer receiver migrates in the same slice); the cancel race for the
+//!    hold itself is part of that deferred slice (the executor's
+//!    `CancellationToken` is absorbed — see guardrail 10 — and bounds the
+//!    hold's `continue` at Checkpoint A, but the hold's own `select!` cancel
+//!    arm isn't wired). `ContextPatch` apply
 //!    (tighten-only `auto_approve`/`trust_mode`) is also deferred — it mutates
 //!    `Session` state not reachable through `ChatHistory`, and production
 //!    hardcodes `context_patch: None` today. See "Known gaps in subagent" below.
+//! 10. **cancel-token** (`cancel_token` field + [`is_cancelled`]) — the
+//!     **first cross-cutting guardrail**. An optional
+//!     [`CancellationToken`](tokio_util::sync::CancellationToken) (`None` ⇒ all
+//!     cancel checks are no-ops) mirrors production's seven turn-cancellation
+//!     checkpoints. When set, a cancelled turn surfaces
+//!     [`StopReason::Interrupted`](codesmith_agent::callback::StopReason::Interrupted)
+//!     (distinct from `Error`) so the host can show "cancelled" rather than
+//!     "failed". **Checkpoint A** (loop-top, before `max_steps`) bounds all
+//!     `continue` loops (capacity `RetryStep`, reactive `RecoveredContextOverflow`,
+//!     subagent resume); **Checkpoint B** (stream-open race) races the token
+//!     against `create_message_stream` in a `biased select!` so a cancelled turn
+//!     aborts before the stream opens; **Checkpoint C** (`Empty` arm) aborts a
+//!     transparent retry; **Checkpoint D** (post-stream `Complete`/`Partial`)
+//!     discards already-produced content; **Checkpoint G** (post-tool-loop, before
+//!     `loop_guard_halt`) lets a tool-triggered cancel take priority over a
+//!     loop-guard halt; the **approval cancel race** breaks out of the blocking
+//!     `recv().await` via `select!` (the tool records an error result, then
+//!     Checkpoint G catches the cancel); and the **steer stale-drain**
+//!     ([`drain_stale_steers`](HostAgentExecutor::drain_stale_steers)) is a
+//!     `pub` host-side method — the host calls it before `run` (mirrors
+//!     `handle_send_message`'s `while rx_steer.try_recv().is_ok() {}`), not
+//!     inside the turn loop. The subagent **blocking hold** cancel race
+//!     (Checkpoint E) is deferred — it needs the hold itself. See "Known gaps"
+//!     below for per-guardrail cancel status.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
 //! steer "Steer input accepted", compaction "Compaction completed/failed",
@@ -299,23 +325,23 @@
 //!   turn hard-fails (mirrors `turn_loop.rs:620-633`). Only mid-flight stream
 //!   errors (from `reduce_stream`) retry transparently; pre-stream errors are
 //!   either recovered or hard-failed.
-//! - **no cancel-token short-circuit** — production's
+//! - **cancel-token short-circuit** ✅ — production's
 //!   `should_transparently_retry_stream` checks `!cancelled` to abort a retry
-//!   loop on a cancelled turn. This executor doesn't hold a `CancellationToken`
-//!   yet; the bounded budget (`MAX_STREAM_RETRIES = 3`) prevents an infinite
-//!   loop, so a cancelled turn wastes at most 3 quick retries before failing. The
-//!   short-circuit threads in at the wire-in step (when the executor connects to
-//!   the real `Engine`'s cancel token).
+//!   loop on a cancelled turn. This executor now mirrors it: Checkpoint C (the
+//!   `Empty` arm) checks `is_cancelled()` and returns
+//!   `StreamRoundOutcome::Interrupted` (no retry); Checkpoint B (stream-open
+//!   race) and Checkpoint D (post-stream `Complete`/`Partial`) are also wired.
+//!   See guardrail 10 (cancel-token) for the full checkpoint map.
 //!
 //! ## Known gaps in approval (by design)
 //!
-//! - **no cancel-token race** — production's `await_tool_approval` selects over
+//! - **cancel-token race** ✅ — production's `await_tool_approval` selects over
 //!   `cancel_token.cancelled()` so a cancelled turn breaks out of the approval
-//!   wait. This executor holds no `CancellationToken` yet; it blocks on the
-//!   decision channel until a matching decision arrives or the channel closes. A
-//!   cancelled turn thus parks at the approval await until the host resolves it
-//!   (the bounded test harness pushes a decision; production's stale-drain + the
-//!   cancel race thread in at the wire-in step).
+//!   wait. This executor now mirrors it: `request_approval`'s `recv().await`
+//!   loop is wrapped in a `biased select!` over the cancel token — cancel wins
+//!   ⇒ `Err("Request cancelled while awaiting approval")` (fed back as a tool
+//!   error; Checkpoint G then surfaces `StopReason::Interrupted`). See
+//!   guardrail 10 (cancel-token).
 //! - **static-only approval derivation** — [`requires_approval`] checks
 //!   [`Tool::capabilities`] (`ExecutesCode` / `WritesFiles` /
 //!   `RequiresApproval`), mirroring `ToolSpec::approval_requirement()`'s default.
@@ -415,11 +441,13 @@
 //!   (`merge_compaction_summary`, `reinject_compaction_attachments`,
 //!   `post_compact_cleanup`, `enhancements`, working-set pins/paths all
 //!   absent). See "Known gaps in compaction" above.
-//! - **no cancel-token short-circuit** — production checks `!cancelled` before
-//!   retrying after overflow recovery; this executor has no
-//!   `CancellationToken`. The bounded `MAX_CONTEXT_RECOVERY_ATTEMPTS` (2)
-//!   prevents an infinite loop; the short-circuit threads in at the wire-in
-//!   step.
+//! - **cancel-token short-circuit** ✅ — production checks `!cancelled` before
+//!   retrying after overflow recovery. This executor's `CancellationToken` is
+//!   now absorbed: the reactive-recovery `continue` (restart step) is bounded
+//!   by Checkpoint A (loop-top gate), so a cancel that landed during recovery
+//!   is caught before the next step. The `recover_context_overflow` function
+//!   itself has no internal cancel check (mirrors production); Checkpoint A is
+//!   the bound. See guardrail 10 (cancel-token).
 //!
 //! ## Known gaps in early-tool-start (by design)
 //!
@@ -466,11 +494,14 @@
 //!   is popped + `Drop`-aborted (the approval `Err(denial)` arm). Again wasted
 //!   work, not a correctness bug. Threads in with the per-input approval
 //!   surface at the wire-in step.
-//! - **no cancel-token short-circuit** — a cancelled turn still spawns
-//!   speculative tasks for tool blocks that close before the stream errors; the
-//!   `early_tasks.clear()` at the end of the step (and `Drop` on map drop)
-//!   aborts them. The work is bounded by the number of tool blocks in the
-//!   partial stream. The cancel-token threads in at the wire-in step.
+//! - **cancel-token short-circuit** — by design (N/A): production's
+//!   `early_tool_start_safe` doesn't check cancel at spawn time either; a
+//!   cancelled turn still spawns speculative tasks for tool blocks that close
+//!   before the stream errors, but the `early_tasks.clear()` at the end of the
+//!   step (and `Drop` on map drop) aborts them. The work is bounded by the
+//!   number of tool blocks in the partial stream. Checkpoint A (loop-top) and
+//!   Checkpoint D (post-stream) bound the turn before the next step's
+//!   speculative dispatch.
 //!
 //! ## Known gaps in subagent (by design)
 //!
@@ -479,15 +510,18 @@
 //!   (`should_hold_turn_for_subagents(0, running)`), blocks on a `biased
 //!   select!` (`turn_loop.rs:1330-1368`) over cancel / completion `recv().await`
 //!   / steer `recv().await`, emitting "Waiting on N sub-agent(s)". This executor
-//!   has no `CancellationToken` (an existing cross-guardrail gap), no
-//!   `SubAgentApi::running_count` (the minimal-probe pattern doesn't inject the
-//!   full `HostServices`), and its steer receiver uses `std::sync::Mutex`
-//!   (can't `recv().await`). So with `subagent` set but no queued completion,
-//!   the turn ends immediately (`NoToolCalls`) rather than holding. The child's
-//!   completion surfaces on the *next* turn's drain instead of mid-turn. The
-//!   blocking hold threads in at the wire-in step, whereupon the steer +
-//!   subagent receivers migrate to `tokio::sync::Mutex` (matching approval) and
-//!   `running_count` + `CancellationToken` become available.
+//!   has no `SubAgentApi::running_count` (the minimal-probe pattern doesn't
+//!   inject the full `HostServices`), and its steer receiver uses
+//!   `std::sync::Mutex` (can't `recv().await`). So with `subagent` set but no
+//!   queued completion, the turn ends immediately (`NoToolCalls`) rather than
+//!   holding. The child's completion surfaces on the *next* turn's drain
+//!   instead of mid-turn. The `CancellationToken` is now absorbed (guardrail
+//!   10), so the hold's cancel race is no longer blocked on the token — but
+//!   the hold itself still needs `running_count` + `tokio::sync::Mutex`
+//!   receivers; the post-stream drain's cancel is bounded by Checkpoint A
+//!   (loop-top). The blocking hold threads in at the wire-in step, whereupon
+//!   the steer + subagent receivers migrate to `tokio::sync::Mutex` (matching
+//!   approval).
 //! - **`ContextPatch` apply deferred** — production drains each completion's
 //!   `context_patch` and applies them **tighten-only** (`auto_approve` /
 //!   `trust_mode` → `false`; loosen attempts rejected) to `Session` +
@@ -543,6 +577,7 @@ use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
 use super::turn_loop::subagent_completion_runtime_message;
 use crate::subagent::SubAgentCompletion;
+use tokio_util::sync::CancellationToken;
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
 use crate::compaction::micro_compact::{
     micro_compact_messages, should_trigger_micro_compact, MicroCompactState,
@@ -934,6 +969,13 @@ enum StreamRoundOutcome {
     /// — the caller should `continue` the step loop so the request snapshot
     /// picks up the compacted transcript (mirrors `turn_loop.rs:631-632`).
     RecoveredContextOverflow,
+    /// The turn was cancelled during the stream phase (Checkpoint B race at
+    /// stream-open, Checkpoint C guard in the transparent-retry `Empty` arm,
+    /// or Checkpoint D post-stream gate). The caller should surface
+    /// [`StopReason::Interrupted`] — mirroring production's
+    /// `TurnOutcomeStatus::Interrupted` (`turn_loop.rs:294-298`, `:607-614`,
+    /// `:1147-1150`).
+    Interrupted,
 }
 
 /// Host-side [`AgentExecutor`] — the growing home for the production turn loop.
@@ -979,9 +1021,10 @@ pub struct HostAgentExecutor {
     /// executor's approval path); there is no contention. The receiver persists
     /// across `run` invocations on the same executor, matching the production
     /// `Engine.rx_approval` field — a decision queued between turns is matched
-    /// on the next turn's per-tool approval await. No `CancellationToken` race
-    /// yet (production's `await_tool_approval` also selects on
-    /// `cancel_token.cancelled()`); see "Known gaps in approval" below.
+    /// on the next turn's per-tool approval await. The cancel race is absorbed
+    /// ✅ (production's `await_tool_approval` also selects on
+    /// `cancel_token.cancelled()` — see guardrail 10 / "Known gaps in
+    /// approval" below).
     approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
     /// Optional compaction probe (§E). `None` ⇒ micro-compact + auto-compact
     /// are no-ops. The probe carries interior-mutable `micro_state` +
@@ -1009,10 +1052,11 @@ pub struct HostAgentExecutor {
     /// drain (`turn_loop.rs:1317-1397`). The **blocking hold** for still-running
     /// children (`should_hold_turn_for_subagents` + a `biased select!` over
     /// cancel / completion `recv().await` / steer `recv().await`) is deferred
-    /// to the wire-in step — it needs a `CancellationToken` (an existing cross-
-    /// guardrail gap), `SubAgentApi::running_count`, and a `tokio::sync::Mutex`
-    /// receiver (the steer receiver would migrate from `std::sync::Mutex` in
-    /// the same slice). Interior-mutable because [`AgentExecutor::run`] takes
+    /// to the wire-in step — it needs `SubAgentApi::running_count` and a
+    /// `tokio::sync::Mutex` receiver (the steer receiver would migrate from
+    /// `std::sync::Mutex` in the same slice). The `CancellationToken` is
+    /// absorbed (guardrail 10); the hold's own `select!` cancel arm threads
+    /// in with the hold itself. Interior-mutable because [`AgentExecutor::run`] takes
     /// `&self` while `mpsc::Receiver::try_recv` takes `&mut self` — the same
     /// `Arc<std::sync::Mutex<…>>` pattern as the steer receiver (the lock is
     /// held only for the synchronous `try_recv`, never across an `await`). The
@@ -1024,6 +1068,18 @@ pub struct HostAgentExecutor {
     /// not reachable through `ChatHistory`, and production hardcodes
     /// `context_patch: None` today.
     subagent: Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
+    /// Optional cancel token (§E). `None` ⇒ cancel checks are no-ops
+    /// (`is_cancelled()` returns `false`). When `Some`, mirrors production
+    /// `handle_deepseek_turn`'s seven cancel checkpoints: (A) loop-top gate,
+    /// (B) stream-open race, (C) transparent-retry `!cancelled` guard,
+    /// (D) post-stream gate, (G) post-tool-loop final gate, plus the approval
+    /// `select!` race and the steer stale-drain at `run_inner` start. The
+    /// sub-agent blocking hold race (Checkpoint E) is deferred — it needs the
+    /// blocking hold itself (which needs `CancellationToken` +
+    /// `SubAgentApi::running_count` + tokio-Mutex receivers); the post-stream
+    /// drain's cancel is bounded by Checkpoint A. Early-tool-start spawn has no
+    /// production cancel guard (bounded by `early_tasks.clear()`/`Drop`).
+    cancel_token: Option<CancellationToken>,
 }
 
 impl HostAgentExecutor {
@@ -1036,7 +1092,8 @@ impl HostAgentExecutor {
 /// optional [`CapacityProbe`] (`None` ⇒ capacity preflight disabled) + an
 /// optional sub-agent completion receiver (`None` ⇒ the post-stream
 /// completion drain is disabled — the turn ends on the first no-tool-call
-/// round).
+/// round) + an optional [`CancellationToken`] (`None` ⇒ cancel checks are
+/// no-ops).
 #[must_use]
 pub fn new(
     client: LlmClientHandle,
@@ -1050,6 +1107,7 @@ pub fn new(
     compaction: Option<CompactionProbe>,
     capacity: Option<CapacityProbe>,
     subagent: Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
+    cancel_token: Option<CancellationToken>,
 ) -> Self {
     Self {
         client,
@@ -1063,6 +1121,7 @@ pub fn new(
         compaction,
         capacity,
         subagent,
+        cancel_token,
     }
 }
 
@@ -1073,6 +1132,13 @@ pub fn new(
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(Event::status(message)).await;
         }
+    }
+
+    /// Whether the turn has been cancelled. `None` cancel token ⇒ never
+    /// cancelled (embeds/tests that don't need cancellation). Mirrors production
+    /// `self.cancel_token.is_cancelled()` checks at every turn-loop checkpoint.
+    fn is_cancelled(&self) -> bool {
+        self.cancel_token.as_ref().map_or(false, |t| t.is_cancelled())
     }
 
     /// Inline stream reducer — replaces the CORE `accumulate_stream` call so
@@ -1361,20 +1427,22 @@ pub fn new(
     /// `on_llm_end` fire once per step, and a `Status` event is the only
     /// surfacing (matching production's silent re-issue / recovery).
     ///
-    /// # Remaining gap vs production
+    /// # Cancel-token checkpoints (absorbed)
     ///
-    /// The cancel-token short-circuit (production's
-    /// `should_transparently_retry_stream` checks `!cancelled`, and
-    /// `recover_context_overflow` is guarded by `!cancelled`) is deferred to
-    /// the wire-in slice — the bounded budgets (`MAX_STREAM_RETRIES` = 3,
-    /// [`MAX_CONTEXT_RECOVERY_ATTEMPTS`] = 2) can't loop forever. Production's
-    /// inner mid-flight retry (resetting the stream *inside* the event loop
-    /// when no content was received yet, `turn_loop.rs:775-834`) is not
-    /// replicated here; this executor uses the simpler outer retry (re-call
-    /// `create_message_stream`). The two are functionally equivalent for the
-    /// retry decision; the inner retry's advantage is avoiding a redundant
-    /// `MessageStart` round-trip, which matters only for latency-sensitive
-    /// production paths.
+    /// The cancel-token short-circuits are **absorbed** — Checkpoint B (stream-
+    /// open race), Checkpoint C (`!cancelled` in the transparent-retry `Empty`
+    /// arm, mirroring `should_transparently_retry_stream`), and Checkpoint D
+    /// (post-stream gate, discarding even cleanly-completed content if the turn
+    /// was cancelled mid-stream). All return [`StreamRoundOutcome::Interrupted`]
+    /// so `run_inner` surfaces [`StopReason::Interrupted`]. The loop-top gate
+    /// (Checkpoint A in `run_inner`) bounds the capacity/reactive `continue`
+    /// loops on a cancelled turn. Production's inner mid-flight retry (resetting
+    /// the stream *inside* the event loop when no content was received yet,
+    /// `turn_loop.rs:775-834`) is not replicated here; this executor uses the
+    /// simpler outer retry (re-call `create_message_stream`). The two are
+    /// functionally equivalent for the retry decision; the inner retry's
+    /// advantage is avoiding a redundant `MessageStart` round-trip, which
+    /// matters only for latency-sensitive production paths.
     async fn stream_with_transparent_retry(
         &self,
         client: &LlmClientHandle,
@@ -1389,42 +1457,63 @@ pub fn new(
         /// `MAX_STREAM_RETRIES` (3). One initial attempt + 3 retries = 4 total
         /// `create_message_stream` calls before the failure surfaces.
         const MAX_STREAM_RETRIES: u32 = 3;
+        // Clone the token once per round so the cancel future owns a local
+        // (not a `&self` borrow) — avoids borrow-checker conflicts with the
+        // `self.emit_status` / `self.try_recover_context_overflow` calls in the
+        // select arms. `CancellationToken::clone` is a cheap Arc bump.
+        let cancel_token = self.cancel_token.clone();
         loop {
+            // Checkpoint B — stream-open cancel race (mirrors
+            // `turn_loop.rs:607-614`): race the cancel token against
+            // `create_message_stream` so a cancelled turn aborts before the
+            // stream even opens. `biased` so cancel wins if both are ready.
             // A pre-stream error may be a context-length rejection — classify
             // before propagating so reactive recovery (seam 2) can run. Only
             // mid-flight stream errors (from `reduce_stream`) retry
             // transparently; pre-stream errors are either recovered (restart
             // the step) or hard-failed.
-            let stream = match client.create_message_stream(request.clone()).await {
-                Ok(s) => {
-                    // The provider accepted the request — the context was
-                    // fine. Reset the reactive recovery budget (mirrors
-                    // `turn_loop.rs:617`).
-                    *context_recovery_attempts = 0;
-                    s
-                }
-                Err(e) => {
-                    let message = e.to_string();
-                    if self
-                        .try_recover_context_overflow(
-                            client,
-                            history,
-                            system,
-                            &message,
-                            context_recovery_attempts,
-                        )
-                        .await
-                    {
-                        // Recovery succeeded — signal the caller to restart
-                        // the step so the request snapshot picks up the
-                        // compacted transcript (mirrors `turn_loop.rs:631-632`).
-                        // Reset the stream-retry budget too (fresh step).
-                        *stream_retry_attempts = 0;
-                        return Ok(StreamRoundOutcome::RecoveredContextOverflow);
+            let stream = tokio::select! {
+                biased;
+                _ = async {
+                    match &cancel_token {
+                        Some(token) => token.cancelled().await,
+                        None => std::future::pending::<()>().await,
                     }
-                    // Not a context-length error, no probe, budget exhausted,
-                    // or recovery failed — hard-fail the turn.
-                    return Err(anyhow::anyhow!(message));
+                } => {
+                    self.emit_status("Request cancelled".to_string()).await;
+                    return Ok(StreamRoundOutcome::Interrupted);
+                }
+                result = client.create_message_stream(request.clone()) => match result {
+                    Ok(s) => {
+                        // The provider accepted the request — the context was
+                        // fine. Reset the reactive recovery budget (mirrors
+                        // `turn_loop.rs:617`).
+                        *context_recovery_attempts = 0;
+                        s
+                    }
+                    Err(e) => {
+                        let message = e.to_string();
+                        if self
+                            .try_recover_context_overflow(
+                                client,
+                                history,
+                                system,
+                                &message,
+                                context_recovery_attempts,
+                            )
+                            .await
+                        {
+                            // Recovery succeeded — signal the caller to restart
+                            // the step so the request snapshot picks up the
+                            // compacted transcript (mirrors `turn_loop.rs:631-632`).
+                            // Reset the stream-retry budget too (fresh step).
+                            *stream_retry_attempts = 0;
+                            return Ok(StreamRoundOutcome::RecoveredContextOverflow);
+                        }
+                        // Not a context-length error, no probe, budget exhausted,
+                        // or recovery failed — hard-fail the turn.
+                        return Err(anyhow::anyhow!(message));
+                    }
                 }
             };
             match self.reduce_stream(stream, early_tasks).await {
@@ -1432,6 +1521,13 @@ pub fn new(
                     content,
                     stop_reason,
                 } => {
+                    // Checkpoint D — post-stream cancel gate (mirrors
+                    // `turn_loop.rs:1147-1150`): even a cleanly-completed
+                    // stream is discarded if the turn was cancelled mid-stream.
+                    if self.is_cancelled() {
+                        self.emit_status("Request cancelled".to_string()).await;
+                        return Ok(StreamRoundOutcome::Interrupted);
+                    }
                     // Healthy round → reset the retry budget so a bad prior
                     // step doesn't carry over (mirrors `turn_loop.rs:1186`).
                     *stream_retry_attempts = 0;
@@ -1442,6 +1538,13 @@ pub fn new(
                     stop_reason,
                     error,
                 } => {
+                    // Checkpoint D — post-stream cancel gate. Same as Complete:
+                    // if cancelled, discard the partial content and return
+                    // `Interrupted`.
+                    if self.is_cancelled() {
+                        self.emit_status("Request cancelled".to_string()).await;
+                        return Ok(StreamRoundOutcome::Interrupted);
+                    }
                     // Stream died after content was received — surface the
                     // partial content, don't retry (the model has billed for
                     // output; retrying would double-bill and lose the partial
@@ -1455,6 +1558,14 @@ pub fn new(
                     return Ok(StreamRoundOutcome::Content { content, stop_reason });
                 }
                 StreamReduceOutcome::Empty { error } => {
+                    // Checkpoint C — transparent-retry `!cancelled` guard
+                    // (mirrors `should_transparently_retry_stream` in
+                    // `streaming.rs:81-87`): if the turn was cancelled, don't
+                    // retry — return `Interrupted` (not `Err`).
+                    if self.is_cancelled() {
+                        self.emit_status("Request cancelled".to_string()).await;
+                        return Ok(StreamRoundOutcome::Interrupted);
+                    }
                     // Stream died before any content — safe to retry
                     // transparently (no output billed, nothing shown).
                     if *stream_retry_attempts < MAX_STREAM_RETRIES {
@@ -1665,7 +1776,26 @@ pub fn new(
         }
     }
 
-    /// (1) per-step pre-request seam — auto-compaction. Mirrors
+    /// Drain stale steer inputs from a previous (possibly cancelled) turn.
+    /// Mirrors production's `while self.rx_steer.try_recv().is_ok() {}` at the
+    /// start of `handle_send_message` (`engine/mod.rs:1013-1014`) — a per-turn
+    /// reset so steers queued during an interrupted previous turn don't leak
+    /// into the new turn. Unlike [`drain_steers`](Self::drain_steers), this
+    /// **discards** (does not inject into the transcript): stale steers are not
+    /// the user's intent for this turn. Synchronous — the std mutex guard is
+    /// taken and dropped within the loop, never across an `await`.
+    ///
+    /// **Host-side concern:** the host calls this BEFORE
+    /// [`AgentExecutor::run`], not inside the turn loop. Calling it inside
+    /// `run_inner` would discard steers the host queued for the current turn
+    /// before calling `run`.
+    pub fn drain_stale_steers(&self) {
+        let Some(rx) = &self.steer else {
+            return;
+        };
+        let mut guard = rx.lock().expect("steer rx mutex poisoned");
+        while guard.try_recv().is_ok() {}
+    }
     /// `handle_deepseek_turn`'s top-of-loop compaction
     /// (`turn_loop.rs:341-454`): a cheap no-API micro-compact pass (clear old
     /// tool-result bytes) followed, when the token budget is exceeded, by an
@@ -2065,24 +2195,41 @@ pub fn new(
         // Block on the decision channel, matching by tool id. `tokio::sync::Mutex`
         // (not `std::sync::Mutex`) so the guard may cross the blocking
         // `recv().await`. Single consumer ⇒ holding the guard across the await
-        // cannot deadlock. No `CancellationToken` race yet — blocks until a
-        // matching decision arrives or the channel closes (deferred to wire-in).
+        // cannot deadlock. The cancel race (mirrors production's
+        // `await_tool_approval` select over `cancel_token.cancelled()` at
+        // `approval.rs:76-82`) lets a cancelled turn break out of the wait:
+        // cancel wins ⇒ `Err("Request cancelled while awaiting approval")`
+        // (fed back as a tool error; Checkpoint G in `run_inner` then surfaces
+        // `StopReason::Interrupted`).
+        let cancel_token = self.cancel_token.clone();
         let mut guard = rx.lock().await;
         loop {
-            match guard.recv().await {
-                Some(ApprovalDecision::Approved { id }) if id == tool_id => return Ok(()),
-                Some(ApprovalDecision::Denied { id }) if id == tool_id => {
-                    return Err(format!("Tool '{name}' denied by user"));
+            let cancelled = async {
+                match &cancel_token {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
                 }
-                // Sandbox elevation needs `ToolDispatcher::execute` with a
-                // `sandbox_override`, which the framework `Tool::run` path
-                // doesn't carry; treat as approved (run with the fixed context).
-                // By-design gap — threads in at the wire-in step.
-                Some(ApprovalDecision::RetryWithPolicy { id, .. }) if id == tool_id => {
-                    return Ok(());
+            };
+            tokio::select! {
+                biased;
+                _ = cancelled => {
+                    return Err("Request cancelled while awaiting approval".to_string());
                 }
-                Some(_) => continue, // stale id for a different call — ignore
-                None => return Err("Approval channel closed".to_string()),
+                decision = guard.recv() => match decision {
+                    Some(ApprovalDecision::Approved { id }) if id == tool_id => return Ok(()),
+                    Some(ApprovalDecision::Denied { id }) if id == tool_id => {
+                        return Err(format!("Tool '{name}' denied by user"));
+                    }
+                    // Sandbox elevation needs `ToolDispatcher::execute` with a
+                    // `sandbox_override`, which the framework `Tool::run` path
+                    // doesn't carry; treat as approved (run with the fixed context).
+                    // By-design gap — threads in at the wire-in step.
+                    Some(ApprovalDecision::RetryWithPolicy { id, .. }) if id == tool_id => {
+                        return Ok(());
+                    }
+                    Some(_) => continue, // stale id for a different call — ignore
+                    None => return Err("Approval channel closed".to_string()),
+                }
             }
         }
     }
@@ -2138,7 +2285,23 @@ impl HostAgentExecutor {
         // emergency compaction; resets to 0 on a healthy stream round
         // (mirrors `turn_loop.rs:292` + the reset at `:617`).
         let mut context_recovery_attempts: u8 = 0;
+        // NOTE: the steer stale-drain (`drain_stale_steers`) is a host-side
+        // concern — production runs it in `handle_send_message` BEFORE
+        // `handle_deepseek_turn`. Calling it inside `run_inner` would discard
+        // steers the host queued for THIS turn before calling `run`. It is a
+        // `pub` method the host calls before `run` at the wire-in step.
         loop {
+            // Checkpoint A — loop-top cancel gate (mirrors
+            // `turn_loop.rs:294-298`). First thing every iteration: if the
+            // turn was cancelled, surface `Interrupted` and bail. This also
+            // bounds all `continue` loops (capacity `RetryStep`, reactive
+            // `RecoveredContextOverflow`, subagent resume) — a cancel that
+            // landed during recovery is caught here before the next step.
+            if self.is_cancelled() {
+                self.emit_status("Request cancelled".to_string()).await;
+                callback.on_complete(&StopReason::Interrupted).await;
+                return Ok(StopReason::Interrupted);
+            }
             // (1) per-step pre-request seam — ✅ steer drain (queued user
             // inputs injected before the request snapshot); ✅ compaction
             // (micro-compact + LLM-summary auto-compact, runs after steer and
@@ -2255,6 +2418,15 @@ impl HostAgentExecutor {
                     // picks up the compacted transcript (mirrors
                     // `turn_loop.rs:631-632`).
                     continue;
+                }
+                Ok(StreamRoundOutcome::Interrupted) => {
+                    // The turn was cancelled during the stream phase
+                    // (Checkpoint B/C/D inside `stream_with_transparent_retry`).
+                    // Surface `Interrupted` — mirrors production's
+                    // `TurnOutcomeStatus::Interrupted`.
+                    self.emit_status("Request cancelled".to_string()).await;
+                    callback.on_complete(&StopReason::Interrupted).await;
+                    return Ok(StopReason::Interrupted);
                 }
                 Err(e) => return Err(e),
             };
@@ -2491,11 +2663,19 @@ impl HostAgentExecutor {
             // is consumed or aborted within the loop, so this is defensive.
             early_tasks.clear();
 
-            // (4) per-step post-tool seam — loop-guard halt (absorbed);
-            // capacity post-tool checkpoint (opt-in `CapacityController` Gate A
-            // + error-escalation) still to come; cycle (checkpoint-restart) is a
+            // (4) per-step post-tool seam — ✅ cancel-token (Checkpoint G:
+            // post-loop final gate — cancel takes priority over loop-guard
+            // halt, mirroring `turn_loop.rs:2665-2671` where cancel is
+            // checked before `turn_error`); ✅ loop-guard halt; capacity
+            // post-tool checkpoint (opt-in `CapacityController` Gate A +
+            // error-escalation) still to come; cycle (checkpoint-restart) is a
             // post-turn concern deferred to the wire-in step. The hard
             // token-budget preflight (Gate B) is absorbed at seam (1).
+            if self.is_cancelled() {
+                self.emit_status("Request cancelled".to_string()).await;
+                callback.on_complete(&StopReason::Interrupted).await;
+                return Ok(StopReason::Interrupted);
+            }
             if let Some(message) = loop_guard_halt {
                 tracing::warn!("{}", message);
                 self.emit_status(message.clone()).await;
@@ -2740,6 +2920,13 @@ mod tests {
         compaction_error: Mutex<Option<String>>,
         /// Count of `create_message` calls (compaction summary attempts).
         compaction_calls: Mutex<u32>,
+        /// §E cancel-token test hook: when set, `create_message_stream`
+        /// cancels this token as a side-effect when the stream opens. Taken
+        /// (fired once) so only the first stream call triggers it. This lets
+        /// cancel-checkpoint tests (C/D) fire deterministically — the token
+        /// is cancelled by the time `reduce_stream` runs, but the stream
+        /// still opened (so Checkpoint B's stream-open race doesn't win).
+        cancel_on_stream: Mutex<Option<CancellationToken>>,
     }
 
     impl MockLlm {
@@ -2758,6 +2945,7 @@ mod tests {
                 compaction_reply: Mutex::new(None),
                 compaction_error: Mutex::new(None),
                 compaction_calls: Mutex::new(0),
+                cancel_on_stream: Mutex::new(None),
             }
         }
 
@@ -2799,6 +2987,16 @@ mod tests {
         fn compaction_calls(&self) -> u32 {
             *self.compaction_calls.lock().unwrap()
         }
+
+        /// §E cancel-token test hook: cancel `token` as a side-effect when the
+        /// next `create_message_stream` opens. Fired once (taken). Lets
+        /// cancel-checkpoint tests prove the token is cancelled by the time
+        /// `reduce_stream` runs — Checkpoint C (Empty arm) or D (Complete arm)
+        /// catches it — without Checkpoint B winning the stream-open race.
+        fn with_cancel_on_stream(self, token: CancellationToken) -> Self {
+            *self.cancel_on_stream.lock().unwrap() = Some(token);
+            self
+        }
     }
 
     impl LlmClient for MockLlm {
@@ -2833,7 +3031,19 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
             self.requests.lock().unwrap().push(request.messages.clone());
             let next = self.rounds.lock().unwrap().pop_front();
+            // §E cancel-token test hook: take the token (if set) here so the
+            // lock doesn't cross an await, but cancel it INSIDE the async
+            // block. The cancel future (Checkpoint B) is polled first (biased)
+            // and found pending — the token isn't cancelled yet. Then this
+            // async block runs, cancels the token, and returns the stream.
+            // Checkpoint B doesn't win the race; the cancel is caught at
+            // Checkpoint C (Empty arm) or D (Complete arm) in `reduce_stream`'s
+            // outcome — which is what these tests prove.
+            let cancel_token = self.cancel_on_stream.lock().unwrap().take();
             Box::pin(async move {
+                if let Some(token) = cancel_token {
+                    token.cancel();
+                }
                 let round = next.unwrap_or(MockRound::Events(vec![]));
                 match round {
                     MockRound::Events(events) => Ok(Box::pin(
@@ -3099,6 +3309,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3201,6 +3412,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3256,6 +3468,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3296,6 +3509,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -3380,6 +3594,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3422,6 +3637,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -3498,6 +3714,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3553,6 +3770,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         executor
             .collect_lsp_diagnostics("edit_file", &serde_json::json!({"path":"foo.rs"}))
@@ -3575,6 +3793,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
             None,
@@ -3624,6 +3843,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3652,6 +3872,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
             None,
@@ -3708,6 +3929,7 @@ mod tests {
             },
             None,
             Some(probe),
+            None,
             None,
             None,
             None,
@@ -3812,6 +4034,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3855,6 +4078,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -3924,6 +4148,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3963,6 +4188,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -4083,6 +4309,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4143,6 +4370,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4182,6 +4410,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4216,6 +4445,7 @@ mod tests {
             Some(tx),
             None,
             Some(rx_steer),
+            None,
             None,
             None,
             None,
@@ -4267,6 +4497,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
             None,
             None,
             None,
@@ -4370,6 +4601,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4415,6 +4647,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4453,6 +4686,7 @@ mod tests {
             None,
             None,
             None, // no approval channel
+            None,
             None,
             None,
             None,
@@ -4505,6 +4739,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // If the gate wrongly fires, recv() blocks → the timeout fails the test.
@@ -4554,6 +4789,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
             None,
             None,
@@ -4625,6 +4861,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
             None,
             None,
@@ -4731,6 +4968,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -4761,6 +4999,7 @@ mod tests {
                 compaction_config_disabled(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
             None,
             None,
         );
@@ -4815,6 +5054,7 @@ mod tests {
             )),
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "what did the file say".to_string())
@@ -4861,6 +5101,7 @@ mod tests {
                 compaction_config_low_threshold(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
             None,
             None,
         );
@@ -4913,6 +5154,7 @@ mod tests {
             Some(probe),
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "continue".to_string())
@@ -4955,6 +5197,7 @@ mod tests {
             None,
             None,
             Some(probe),
+            None,
             None,
             None,
         );
@@ -5015,6 +5258,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5044,6 +5288,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
         );
         let reason = executor
@@ -5076,6 +5321,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
         );
         let reason = executor
@@ -5110,6 +5356,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
         );
         let reason = executor
@@ -5147,6 +5394,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
         );
         let reason = executor
@@ -5203,6 +5451,7 @@ mod tests {
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5258,6 +5507,7 @@ mod tests {
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5296,6 +5546,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
         );
         let err = executor
@@ -5339,6 +5590,7 @@ mod tests {
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
             None,
+            None,
         );
         let err = executor
             .run(&mut history, "hello".to_string())
@@ -5375,6 +5627,7 @@ mod tests {
             None,
             None,
             None, // no capacity probe ⇒ reactive recovery disabled
+            None,
             None,
         );
         let err = executor
@@ -5417,6 +5670,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
             None,
         );
         let reason = executor
@@ -5522,6 +5776,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -5565,6 +5820,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -5626,6 +5882,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -5678,6 +5935,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -5772,6 +6030,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -5821,6 +6080,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -5969,6 +6229,43 @@ mod tests {
         }
     }
 
+    /// A read-only `ToolSpec` that cancels a `CancellationToken` on execute —
+    /// proves a tool can trigger a mid-turn cancel that Checkpoint G (the
+    /// post-tool-loop gate) catches, surfacing `StopReason::Interrupted`
+    /// instead of continuing to the next step. Read-only so it skips the
+    /// approval gate (the cancel comes from `execute`, not the approval wait).
+    struct CancelOnCallSpec {
+        token: CancellationToken,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for CancelOnCallSpec {
+        fn name(&self) -> &str {
+            "cancel_on_call"
+        }
+        fn description(&self) -> &str {
+            "Cancels the turn token when executed."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.token.cancel();
+            Ok(ToolResult {
+                content: "cancelled".to_string(),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
     #[test]
     fn early_start_safe_allows_readonly() {
         assert!(early_start_safe(&[ToolCapability::ReadOnly]));
@@ -6040,6 +6337,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // Run on a spawned task so the test can observe the tool's signal
@@ -6095,6 +6393,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -6176,6 +6475,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // Suppress the panic message on stderr (the panic is caught by the
@@ -6237,6 +6537,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -6328,6 +6629,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -6369,6 +6671,7 @@ mod tests {
             None,
             None,
             Some(rx_sub),
+            None,
         );
 
         let reason = executor
@@ -6424,6 +6727,7 @@ mod tests {
             None,
             None,
             Some(rx_sub),
+            None,
         );
 
         let reason = executor
@@ -6508,6 +6812,7 @@ mod tests {
             None,
             None,
             Some(rx_sub),
+            None,
         );
 
         // run1: no completion queued → NoToolCalls, no sentinel.
@@ -6550,6 +6855,359 @@ mod tests {
                 })
             }),
             "run2's second request must include the sentinel"
+        );
+    }
+
+    // === §E cancel-token ===================================================
+
+    /// `cancel_token = None` is a no-op — the turn runs normally and returns
+    /// `NoToolCalls`. Proves the opt-in nature: existing callers that don't
+    /// supply a token are unaffected (every `is_cancelled()` returns `false`).
+    #[tokio::test]
+    async fn cancel_none_is_noop() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call = text_block(0, "hello");
+        call.extend(finish("end_turn"));
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // cancel_token = None
+        );
+
+        let reason = executor
+            .run(&mut history, "hi".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(history.len(), 2, "[user, assistant]");
+    }
+
+    /// A pre-cancelled token short-circuits at Checkpoint A (loop-top gate)
+    /// before any stream call. The turn returns `Interrupted` (not `Error`),
+    /// and the mock records zero `create_message_stream` calls.
+    #[tokio::test]
+    async fn cancel_pre_cancelled_returns_interrupted() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let mut call = text_block(0, "hello");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(token),
+        );
+
+        let reason = executor
+            .run(&mut history, "hi".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::Interrupted);
+        assert_eq!(
+            mock.requests().len(),
+            0,
+            "no stream call — caught at loop-top (Checkpoint A)"
+        );
+        assert_eq!(history.len(), 1, "only the seed user message");
+    }
+
+    /// A tool that cancels the token during `execute` is caught by Checkpoint G
+    /// (post-tool-loop gate) — the turn returns `Interrupted` instead of
+    /// continuing to the next step. The second mock round is never consumed.
+    #[tokio::test]
+    async fn cancel_between_steps_returns_interrupted() {
+        let tmp = tempdir().expect("tempdir");
+        let token = CancellationToken::new();
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(CancelOnCallSpec {
+            token: token.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Round 1: text + tool_use(cancel_on_call) → cancels the token.
+        let mut call1 = text_block(0, "cancelling now");
+        call1.extend(tool_use_block(1, "c1", "cancel_on_call", "{}"));
+        call1.extend(finish("tool_use"));
+        // Round 2: text-only → never reached (Checkpoint G catches the cancel).
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(token),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::Interrupted);
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "second round never consumed — caught at Checkpoint G"
+        );
+    }
+
+    /// When the token is cancelled as a side-effect of `create_message_stream`
+    /// (stream opened, then died empty), Checkpoint C (transparent-retry
+    /// `!cancelled` guard) aborts the retry — the turn returns `Interrupted`
+    /// instead of burning the retry budget.
+    #[tokio::test]
+    async fn cancel_short_circuits_transparent_retry() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let token = CancellationToken::new();
+        let mock = Arc::new(
+            MockLlm::with_rounds(vec![MockRound::StreamErr("connection reset".into())])
+                .with_cancel_on_stream(token.clone()),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(token),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::Interrupted);
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "no retry — Checkpoint C aborted the retry loop"
+        );
+    }
+
+    /// When the token is cancelled as a side-effect of `create_message_stream`
+    /// but the stream completes cleanly, Checkpoint D (post-stream gate)
+    /// discards the content and returns `Interrupted` — the assistant turn is
+    /// NOT committed to the transcript.
+    #[tokio::test]
+    async fn cancel_after_clean_stream_returns_interrupted() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let token = CancellationToken::new();
+        let mut call = text_block(0, "clean content");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(
+            MockLlm::with_rounds(vec![MockRound::Events(call)])
+                .with_cancel_on_stream(token.clone()),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(token),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::Interrupted);
+        assert_eq!(mock.requests().len(), 1, "one stream call");
+        assert_eq!(
+            history.len(),
+            1,
+            "content discarded — only the seed user message remains"
+        );
+    }
+
+    /// A cancel that lands while the approval gate is blocking breaks out of
+    /// the `recv().await` via the `select!` race — the tool records an error
+    /// result, and Checkpoint G catches the cancel so the turn returns
+    /// `Interrupted` (not a next-step continuation).
+    #[tokio::test]
+    async fn cancel_during_approval_returns_interrupted() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(WriteSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (_tx_approval, rx_approval) = approval_channel();
+        // No decision pushed — the gate blocks until the cancel fires.
+
+        let token = CancellationToken::new();
+        // Round 1: text + tool_use(write_file) → requires approval (blocks).
+        let mut call1 = text_block(0, "writing the file");
+        call1.extend(tool_use_block(1, "call_1", "write_file", r#"{"path":"/tmp/x"}"#));
+        call1.extend(finish("tool_use"));
+        // Round 2: never reached.
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            Some(token.clone()),
+        );
+
+        // Background task: cancel the token after a short delay so the
+        // approval gate is definitely blocking when it fires.
+        let bg_token = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            bg_token.cancel();
+        });
+
+        // Wrap in a timeout so the test fails fast if the cancel race doesn't
+        // fire (instead of hanging on the approval recv).
+        let reason = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            executor.run(&mut history, "please write".to_string()),
+        )
+        .await
+        .expect("must not hang — cancel should break the approval wait")
+        .expect("run");
+        assert_eq!(reason, StopReason::Interrupted);
+        assert_eq!(mock.requests().len(), 1, "second round never consumed");
+    }
+
+    /// `drain_stale_steers` discards steers queued before the turn — they do
+    /// NOT appear in the LLM request or the transcript. Mirrors production's
+    /// `while self.rx_steer.try_recv().is_ok() {}` at the start of
+    /// `handle_send_message` (`engine/mod.rs:1013-1014`).
+    #[tokio::test]
+    async fn steer_stale_drain_discards_previous_turn_steers() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+        tx_steer
+            .send("stale steer 1".to_string())
+            .await
+            .unwrap();
+        tx_steer
+            .send("stale steer 2".to_string())
+            .await
+            .unwrap();
+
+        let mut call = text_block(0, "acknowledged");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Drain stale steers BEFORE run — mirrors the host calling this
+        // before the turn starts (production: handle_send_message start).
+        executor.drain_stale_steers();
+
+        let reason = executor
+            .run(&mut history, "fresh start".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.requests().len(), 1);
+        // The stale steers must NOT appear in the request or transcript.
+        let reqs = mock.requests();
+        assert!(
+            !reqs[0].iter().any(|m| {
+                m.content.iter().any(|b| matches!(b,
+                    ContentBlock::Text { text, .. } if text.contains("stale steer")))
+            }),
+            "stale steers must be discarded, not injected"
+        );
+        assert_eq!(
+            history.len(),
+            2,
+            "[user(seed), assistant] — no steer messages"
         );
     }
 }

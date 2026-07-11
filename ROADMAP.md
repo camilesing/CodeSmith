@@ -1148,6 +1148,83 @@ test build 10 warning 均既有（零新 warning）；`cargo build --workspace` 
   post-turn 非 in-loop。阻塞 hold + cancel-token + 闭合项就位后即可接入。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
+**进度（2026-07-11 §E cancel-token 注入落地，第十个 guardrail，跨切面取消，`feat/pluggable-framework-core`）：**
+
+§E 的第十七个切片落地——把 `CancellationToken` 注入 `HostAgentExecutor`，镜像生产
+`handle_deepseek_turn` 的取消检查点：取消的 turn 短路 transparent-retry、脱出 approval 等待、
+bound capacity-recovery `continue` 循环，并返回 `StopReason::Interrupted`（而非 `Error`）。本轮
+纯增量（一个新字段 + helper + 7 个检查点 + 模块文档 + 7 个新测试），零既有调用点行为改动；
+生产路径 `handle_deepseek_turn` 不受影响。起点是上一轮未提交的 `StopReason::Interrupted` 变体
+（`crates/agent/src/callback/mod.rs`）。
+
+- **`cancel_token: Option<CancellationToken>` 字段**（构造器第 12 参数——60 个既有测试构造器各加一个
+  `None`）。`None` ⇒ `is_cancelled()` 返回 `false`，所有取消检查点全 no-op（embed/测试不需取消时零影响）。
+  `Some` 时镜像生产 7 个取消检查点。字段用 `tokio_util::sync::CancellationToken`（workspace 已有依赖，
+  feature unification 使 `sync` 可用——既有 5 个文件已用）。
+- **`is_cancelled()` helper**：`self.cancel_token.as_ref().map_or(false, |t| t.is_cancelled())`。
+- **`StreamRoundOutcome::Interrupted` 变体**：`stream_with_transparent_retry` → `run_inner` 的取消信号
+  （区别于 `Err`——取消不传播为错误，而是 `Interrupted`）。
+- **7 个取消检查点（10 中 7 个吸收）：**
+  - **Checkpoint A（loop-top）**：`run_inner` 的 `loop` 顶、`step >= max_steps` 之前——`is_cancelled()` →
+    emit "Request cancelled" + `on_complete(Interrupted)` + return `Interrupted`。bound 所有 `continue` 循环
+    （capacity `RetryStep` / reactive `RecoveredContextOverflow` / subagent resume）——取消在 recovery 期间
+    落地时在下一步首被捕获。
+  - **Checkpoint B（stream-open race）**：`stream_with_transparent_retry` 内 `biased select!` over
+    `cancel_token.cancelled()` vs `create_message_stream`——cancel 赢则 return `Interrupted`（流未开就中止）。
+    用 `self.cancel_token.clone()`（cheap Arc bump）+ `pending::<()>()` 兜底 `None`，避免 `&self` 借用冲突。
+  - **Checkpoint C（transparent-retry `!cancelled`）**：`Empty` 臂内 `is_cancelled()` → return `Interrupted`
+    （不 retry），镜像 `should_transparently_retry_stream` 的 `!cancelled` 守卫。
+  - **Checkpoint D（post-stream）**：`Complete`/`Partial` 臂内 `is_cancelled()` → return `Interrupted`
+    （丢弃已产出的 content——镜像生产 post-stream gate）。
+  - **Checkpoint G（post-tool-loop）**：tool 循环后、`loop_guard_halt` 检查之前——`is_cancelled()` →
+    `Interrupted`（cancel 优先于 halt，镜像 `turn_loop.rs:2665-2671` cancel 优先于 `turn_error`）。
+    工具执行时取消 token（如 `CancelOnCallSpec`）在此被捕获。
+  - **Approval cancel race**：`request_approval` 的 `recv().await` 循环内加 `biased select!` over
+    `cancel_token.cancelled()` vs `guard.recv()`——cancel 赢则 return `Err("Request cancelled while awaiting
+    approval")`（tool error 回灌；Checkpoint G 捕获 cancel）。同 `cancel_token.clone()` + `pending()` 模式。
+  - **Steer stale-drain**：`drain_stale_steers()` pub 方法——host 在 `run` 前调用（镜像
+    `handle_send_message` 开头的 `while rx_steer.try_recv().is_ok() {}`，`engine/mod.rs:1013-1014`），
+    非 `run_inner` 内部（否则会丢弃 host 为当前 turn 排入的 steer——前一轮 stale drain vs 当前 turn
+    per-step drain 的语义区分）。
+- **deferred（3 个不吸收）：**
+  - **Checkpoint E（subagent 阻塞 hold cancel race）**：阻塞 hold 本身 deferred（需
+    `SubAgentApi::running_count` + tokio-Mutex receiver）。其 cancel race 属该切片。post-stream drain 的
+    cancel 由 Checkpoint A bound（loop-top bound `continue`）。
+  - **Checkpoint F（thinking-only status）**：executor 无 thinking-only 分支——N/A。
+  - **Early-tool-start spawn short-circuit**：生产 `early_tool_start_safe` 不检查 cancel（by design）。
+    bounded by `early_tasks.clear()`/`Drop`。
+- **test doubles**：`CancelOnCallSpec`（read-only ToolSpec，execute 时取消 token——证明 Checkpoint G）、
+  `MockLlm` 扩展 `cancel_on_stream` 副作用（`create_message_stream` 的 async block 内取消 token——证明
+  Checkpoint C/D；cancel 在 async block 内而非 sync part 以确保 Checkpoint B 的 `biased select!` 不先赢）。
+  7 个新测试：`cancel_none_is_noop`（无 token→NoToolCalls）、`cancel_pre_cancelled_returns_interrupted`
+  （预取消→Checkpoint A→Interrupted、0 次 stream）、`cancel_between_steps_returns_interrupted`（工具执行时
+  取消→Checkpoint G→Interrupted、1 次 stream）、`cancel_short_circuits_transparent_retry`（流死空 + mock
+  取消→Checkpoint C→不 retry→Interrupted）、`cancel_after_clean_stream_returns_interrupted`（流干净完成 +
+  mock 取消→Checkpoint D→content 丢弃→Interrupted、history.len()==1）、`cancel_during_approval_returns_interrupted`
+  （approval 阻塞 + 后台 50ms 取消→approval select!→tool error→Checkpoint G→Interrupted）、
+  `steer_stale_drain_discards_previous_turn_steers`（排入 2 条 steer→drain_stale_steers()→steer 不出现在
+  request/transcript）。共 67 个 host_executor 测试通过（60 既有 + 7 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime`
+（lib）零 warning；`cargo test -p codesmith-agent --lib` 79 通过；`cargo test -p codesmith-agent-runtime --lib
+host_executor` 67 通过（60 既有 + 7 新 cancel-token）；`cargo test -p codesmith-agent-runtime --lib` 1073
+通过、0 失败、2 ignored；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：剩余 in-loop guardrail 已吸收（十个——
+  compaction/capacity/approval/steer/transparent-retry/early-tool-start/subagent/LSP/loop-guard/cancel-token）；
+  cycle 是 post-turn 非 in-loop。阻塞 hold + 闭合项就位后即可接入。
+- **subagent 阻塞 hold**（`biased select!` for running children）：cancel-token 已就位（本轮吸收），仍需
+  steer/subagent receiver 迁 tokio mutex + `SubAgentApi::running_count`。随 wire-in 或单独小切片。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in
+  切片，需完整 `CapacityController` 状态机。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements /
+  working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery + subagent
+  的 `ContextPatch` apply。
+- **`ToolCallStarted` stream-time 合成 + bridge 去重**：需 `Callback::on_tool_start` 透传 wire id 或
+  bridge 层 name+input pairing——与 wire-in 耦合，可同期接入。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
 ---
 
 ## §A — Provider extraction (bulk migration)
