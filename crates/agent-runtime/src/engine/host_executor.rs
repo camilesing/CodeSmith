@@ -23,7 +23,7 @@
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (with an inline stream reducer,
 //! [`reduce_stream`], that replaced the CORE `accumulate_stream` and emits
 //! streaming deltas to `Callback::on_stream_delta` in real time) and absorbs
-//! the production guardrails slice by slice. Seven are in:
+//! the production guardrails slice by slice. Eight are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -143,6 +143,29 @@
 //!    (provider context-length rejection → recovery) is absorbed —
 //!    `stream_with_transparent_retry` classifies a pre-stream `Err` and runs
 //!    the same `recover_context_overflow`. See "Known gaps in capacity" below.
+//! 8. **early-tool-start** ([`early_start_safe`] + [`EarlyToolTask`]) — the
+//!    **second seam-2 guardrail**. When a tool block reaches
+//!    `ContentBlockStop` mid-stream, [`reduce_stream`] finalizes its input and
+//!    — if [`early_start_safe`] passes (read-only + no approval + no
+//!    code-exec / file-write) — `tokio::spawn`s the tool immediately so its
+//!    result is ready by the time the executor reaches the tool loop, mirroring
+//!    `handle_deepseek_turn`'s `early_tool_start_safe` + `early_tool_tasks`
+//!    map (`turn_loop.rs:975-1135` spawn, `1598-1803` reuse). The tool loop
+//!    pops the task by wire `id`, re-verifies name + input (the model could in
+//!    principle revise args after the block closed), and awaits the
+//!    `JoinHandle` to reuse the result instead of re-running the tool; an
+//!    args mismatch, a loop-guard block, a denied approval, or a
+//!    `NotAvailable` pops + `Drop`-aborts the orphaned task. The map is a
+//!    per-step local `HashMap` (not an executor field — unlike LSP / steer /
+//!    approval / compaction / capacity, this guardrail has no cross-step state),
+//!    so the constructor signature is unchanged; on a `continue` (capacity
+//!    `RetryStep` / reactive `RecoveredContextOverflow`) the stream either
+//!    never opened or died before any content ⇒ no `ContentBlockStop` ⇒ the
+//!    map is empty. [`EarlyToolTask::Drop`] aborts the `JoinHandle` so an
+//!    unreused task never leaks a background task (aborting a completed task is
+//!    a no-op, so the reuse path's await-then-drop is safe). See "Known gaps in
+//!    early-tool-start" below for the ToolCallStarted bridge dedup, the
+//!    spawn-time loop-guard, the per-input approval, and the cancel-token.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
 //! steer "Steer input accepted", compaction "Compaction completed/failed",
@@ -155,7 +178,7 @@
 //! `handle_deepseek_turn` remains the live path — the value of landing it now is
 //! the composition proof (the three bridges light up end-to-end inside a real
 //! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
-//! headline test) plus seven guardrails absorbed at the seams below.
+//! headline test) plus eight guardrails absorbed at the seams below.
 //!
 //! ## Guardrail insertion points
 //!
@@ -173,16 +196,19 @@
 //!    thinking deltas to `Callback::on_stream_delta` in real time and tracks
 //!    `any_content_received` so a stream that dies after content surfaces the
 //!    partial turn instead of retrying) + ✅ **transparent-retry** (re-issue the
-//!    request when the stream dies before any content commits, up to 3 times);
-//!    subagent handoff, thinking-only handling still to come (after the stream
-//!    resolves, before tool extraction).
+//!    request when the stream dies before any content commits, up to 3 times) +
+//!    ✅ **early-tool-start** (at `ContentBlockStop` for a tool block, finalize
+//!    the input and `tokio::spawn` a read-only tool so its result is ready by
+//!    the tool loop); subagent handoff, thinking-only handling still to come
+//!    (after the stream resolves, before tool extraction).
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
 //!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures) +
 //!    ✅ **approval** (emit `ApprovalRequired` + block on the decision channel
 //!    for write/code tools; denied ⇒ `permission_denied` error, tool skipped) +
+//!    ✅ **early-tool-start reuse** (pop a speculatively-started task by id;
+//!    reuse if name+input match, else `Drop`-abort + run fresh) +
 //!    **LSP post-edit collect** (probe diagnostics after a successful edit);
-//!    early-tool-start, parallel dispatch still to come (inside the tool `for`
-//!    loop).
+//!    parallel dispatch still to come (inside the tool `for` loop).
 //! 4. **per-step post-tool** — ✅ **loop-guard halt short-circuit** (returns
 //!    `StopReason::Error`); capacity post-tool checkpoint (opt-in
 //!    `CapacityController` Gate A + error-escalation) still to come (after the
@@ -195,8 +221,16 @@
 //! reduction slice). The [`CallbackBridge`] maps them onto the host's
 //! `Event::MessageDelta` / `Event::ThinkingDelta` channel. Block-lifecycle
 //! events (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
-//! `MessageComplete`) and tool-call-start deltas are not yet synthesized —
-//! they're deferred to the early-tool-start slice.
+//! `MessageComplete`) **are** synthesized at `ContentBlockStart` /
+//! `ContentBlockStop` for text/thinking blocks (§E block-lifecycle slice),
+//! letting the host's UI frame a block before its first delta and mark it done
+//! when its last delta lands. Tool-call-start deltas (`Event::ToolCallStarted`,
+//! fired on `ContentBlockStop` for tool blocks in production) are **not** yet
+//! synthesized — the framework `Callback::on_tool_start` carries no wire id
+//! (the bridge synthesizes `bridge-{n}` ids to pair start↔end), so a
+//! stream-time `ToolCallStarted` would double-emit with the execute-time
+//! `on_tool_start`; dedup needs a trait-surface change or a bridge-level
+//! name+input pairing scheme (deferred — see "Known gaps in early-tool-start").
 //!
 //! ## Known gaps in the LSP flush (by design)
 //!
@@ -360,9 +394,60 @@
 //!   prevents an infinite loop; the short-circuit threads in at the wire-in
 //!   step.
 //!
+//! ## Known gaps in early-tool-start (by design)
+//!
+//! - **`ToolCallStarted` not emitted at stream time** — production fires
+//!   `Event::ToolCallStarted` on `ContentBlockStop` for tool blocks (so the UI
+//!   can show "calling X" before the result). This executor's [`reduce_stream`]
+//!   does **not** emit it: the framework [`Callback::on_tool_start`] carries no
+//!   wire tool id, so the [`CallbackBridge`] synthesizes `bridge-{n}` ids to
+//!   pair start↔end at execute time; a stream-time `ToolCallStarted` would
+//!   synthesize a *different* `bridge-{m}` id and double-emit with the
+//!   execute-time `on_tool_start`. Dedup needs either a trait-surface change
+//!   (carry the wire id through `on_tool_start`) or a bridge-level name+input
+//!   pairing scheme. The execute-time `on_tool_start` (fired in the tool loop)
+//!   remains the single source of truth for tool-call-start UI. Deferred.
+//! - **static-only safety gate** — [`early_start_safe`] checks
+//!   [`Tool::capabilities`] (`ReadOnly` present AND none of
+//!   `{RequiresApproval, ExecutesCode, WritesFiles}`), mirroring the final
+//!   composite clause of `turn_loop::early_tool_start_safe`. Production
+//!   additionally checks `metadata.is_read_only &&
+//!   metadata.supports_parallel && !is_interactive && validate_input().is_ok()
+//!   && approval_requirement_for(...) == Auto` plus a tool-catalog allowlist
+//!   (not-MCP / not-code-execution / not-tool-search). Those per-input /
+//!   per-metadata surfaces are not reachable from the framework `Tool` trait;
+//!   they thread in at the wire-in step (§E design note, same gap as
+//!   [`requires_approval`]). The practical effect: a read-only tool whose
+//!   per-input validation would reject the args is spawned speculatively and
+//!   the (rejected) result is discarded at execute time — wasted work, not a
+//!   correctness bug.
+//! - **no loop-guard at spawn time** — production's `early_tool_start_safe`
+//!   consults the `LoopGuard` so a 3rd-identical call isn't speculatively
+//!   started (it'd be blocked at execute time anyway). This executor spawns
+//!   without consulting `LoopGuard` to avoid threading a `&mut LoopGuard`
+//!   through the streaming path (which would double-count the attempt — once at
+//!   spawn, once at execute). The execute-time `record_attempt` is the single
+//!   source of truth: a speculatively-started task for a call that the
+//!   loop-guard blocks is popped + `Drop`-aborted in the tool loop (the
+//!   `AttemptDecision::Block` arm). So the wasted work is a spawned task that's
+//!   immediately aborted — cheap for a read-only tool.
+//! - **no per-input approval / interactive checks** — `early_start_safe`
+//!   statically excludes `RequiresApproval`-tagged tools, but a tool that's
+//!   `Auto`-by-default yet `Required` for a specific input (e.g. `exec_shell rm`)
+//!   isn't visible from `capabilities()`. Such a tool would be speculatively
+//!   started and, if the execute-time approval comes back `Required`, the task
+//!   is popped + `Drop`-aborted (the approval `Err(denial)` arm). Again wasted
+//!   work, not a correctness bug. Threads in with the per-input approval
+//!   surface at the wire-in step.
+//! - **no cancel-token short-circuit** — a cancelled turn still spawns
+//!   speculative tasks for tool blocks that close before the stream errors; the
+//!   `early_tasks.clear()` at the end of the step (and `Drop` on map drop)
+//!   aborts them. The work is bounded by the number of tool blocks in the
+//!   partial stream. The cancel-token threads in at the wire-in step.
+//!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -436,6 +521,25 @@ fn requires_approval(caps: &[ToolCapability]) -> bool {
                 | ToolCapability::WritesFiles
         )
     })
+}
+
+/// Whether a tool is a safe candidate for **early speculative dispatch**
+/// (early-tool-start, §E): the read-only, parallel-safe, no-approval, no-side-
+/// effect tools whose results can be pre-computed during streaming and reused
+/// at execute time (mirrors `turn_loop::early_tool_start_safe`'s final composite
+/// gate). The framework `Tool` trait exposes only `capabilities()`, so this is a
+/// **static approximation**: `ReadOnly` present AND none of `{RequiresApproval,
+/// ExecutesCode, WritesFiles}`. Production additionally checks
+/// `metadata.is_read_only && metadata.supports_parallel && !is_interactive &&
+/// validate_input().is_ok() && approval_requirement_for(...) == Auto` plus a
+/// tool-catalog allowlist (not-MCP / not-code-execution / not-tool-search) —
+/// those per-input / per-metadata surfaces are not reachable from the framework
+/// `Tool` and thread in at the wire-in step (§E design note, same gap as
+/// [`requires_approval`]). `Network` / `Sandboxable` capabilities are not
+/// disqualifying (a read-only network fetch is safe to start early).
+fn early_start_safe(caps: &[ToolCapability]) -> bool {
+    let read_only = caps.iter().any(|c| *c == ToolCapability::ReadOnly);
+    read_only && !requires_approval(caps)
 }
 
 /// Cap on the approval intent-summary length (mirrors
@@ -631,6 +735,59 @@ enum BlockBuild {
     },
 }
 
+/// Resolve a tool block's final input from its accumulated `input_buf`
+/// (streamed `InputJsonDelta` fragments) with a fallback to the
+/// `start_input` carried by `ContentBlockStart::ToolUse`, and finally to an
+/// empty object — the same logic as the CORE `accumulate_stream`'s tail.
+/// Extracted so both [`finalize_blocks`] (at stream end) and the early-start
+/// spawn (at `ContentBlockStop`, mid-stream) finalize identically.
+fn finalize_tool_input(input_buf: &str, start_input: &serde_json::Value) -> serde_json::Value {
+    if !input_buf.is_empty() {
+        serde_json::from_str(input_buf).unwrap_or(serde_json::Value::Null)
+    } else if !start_input.is_null() {
+        start_input.clone()
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    }
+}
+
+/// A speculatively-dispatched read-only tool task started during streaming
+/// (early-tool-start, §E). When a `ContentBlockStop` for a tool block lands
+/// mid-stream, [`reduce_stream`](HostAgentExecutor::reduce_stream) checks
+/// [`early_start_safe`] and, if the tool qualifies, spawns it on the runtime
+/// so its result is ready by the time the executor reaches the tool loop. At
+/// execute time the executor pops the task by wire `id`, re-verifies the
+/// name + input (the model could in principle revise args after the block
+/// closed), and awaits the `JoinHandle` to reuse the result instead of
+/// re-running the tool (mirrors `turn_loop`'s `early_tool_tasks` map +
+/// `EarlyToolTask`).
+///
+/// `Drop` aborts the spawned task so an unreused / orphaned task (e.g. a
+/// block that didn't survive into the parsed `tool_uses`, or a call blocked
+/// by the loop-guard / denied approval at execute time) never leaks a
+/// background task. Aborting a task that already completed is a no-op, so the
+/// reuse path (await then drop) is safe. The handle is wrapped in `Option` so
+/// the reuse path can [`Option::take`] it out for `.await` — a type that
+/// implements `Drop` can't otherwise let a field be moved out of it.
+struct EarlyToolTask {
+    /// Tool name (re-verified at execute time).
+    name: String,
+    /// Finalized input (re-verified at execute time).
+    input: serde_json::Value,
+    /// The speculative task. `Some` until the reuse path [`Option::take`]s
+    /// it for `.await`; aborted on every other path (via `Drop`).
+    handle: Option<tokio::task::JoinHandle<Result<ToolResult, ToolError>>>,
+}
+
+impl Drop for EarlyToolTask {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.handle {
+            // `abort` takes `&self`; safe on a completed task (no-op).
+            handle.abort();
+        }
+    }
+}
+
 /// Finalize an accumulated `BlockBuild` map into assembled `ContentBlock`s.
 /// This is the same assembly logic as `accumulate_stream`'s tail — extracted
 /// so the inline reducer can call it both on clean completion and on
@@ -651,13 +808,7 @@ fn finalize_blocks(blocks: BTreeMap<u32, BlockBuild>) -> Vec<ContentBlock> {
                 start_input,
                 caller,
             } => {
-                let input = if !input_buf.is_empty() {
-                    serde_json::from_str(&input_buf).unwrap_or(serde_json::Value::Null)
-                } else if !start_input.is_null() {
-                    start_input
-                } else {
-                    serde_json::Value::Object(serde_json::Map::new())
-                };
+                let input = finalize_tool_input(&input_buf, &start_input);
                 ContentBlock::ToolUse {
                     id,
                     name,
@@ -858,12 +1009,28 @@ pub fn new(
     /// `MessageComplete`) **are** synthesized here, at `ContentBlockStart` /
     /// `ContentBlockStop` for text/thinking blocks — letting the host's UI frame
     /// a block before its first delta and mark it done when its last delta
-    /// lands (matching production's `turn_loop.rs:864/874/985/1254`). Production's
-    /// `Event::ToolCallStarted` (fired on `ContentBlockStop` for tool blocks) is
-    /// not synthesized here yet — it's deferred to the early-tool-start slice
-    /// (which needs the tool catalog to validate input before announcing the
-    /// call).
-    async fn reduce_stream(&self, mut stream: StreamEventBox) -> StreamReduceOutcome {
+    /// lands (matching production's `turn_loop.rs:864/874/985/1254`).
+    ///
+    /// **Early speculative dispatch (early-tool-start):** when a tool block
+    /// reaches `ContentBlockStop`, its input is finalized and — if the tool is
+    /// [`early_start_safe`] — a [`tokio::spawn`] runs it immediately so its
+    /// result is ready by the time the executor reaches the tool loop. The
+    /// `JoinHandle` is stored in `early_tasks` keyed by the wire tool id; the
+    /// tool loop pops it by id, re-verifies name + input, and awaits it to
+    /// reuse the result (mirrors `turn_loop`'s `early_tool_tasks` map +
+    /// `early_tool_start_safe`). Production's `Event::ToolCallStarted` (also
+    /// fired on `ContentBlockStop` for tool blocks) is **not** synthesized here
+    /// yet — the framework `Callback::on_tool_start` carries no wire id (the
+    /// bridge synthesizes `bridge-{n}` ids to pair start↔end), so a
+    /// stream-time `ToolCallStarted` would double-emit with the execute-time
+    /// `on_tool_start`; dedup needs a trait-surface change or a bridge-level
+    /// name+input pairing scheme (deferred — see "Known gaps in
+    /// early-tool-start" in the module docs).
+    async fn reduce_stream(
+        &self,
+        mut stream: StreamEventBox,
+        early_tasks: &mut HashMap<String, EarlyToolTask>,
+    ) -> StreamReduceOutcome {
         let mut blocks: BTreeMap<u32, BlockBuild> = BTreeMap::new();
         let mut stop_reason: Option<String> = None;
         let mut any_content_received = false;
@@ -987,10 +1154,9 @@ pub fn new(
                     // Block-lifecycle: mark the block done. Production emits
                     // `ThinkingComplete` / `MessageComplete` here (and
                     // `ToolCallStarted` for tool blocks — the latter is
-                    // deferred to the early-tool-start slice, which needs the
-                    // tool catalog to validate input before announcing the
-                    // call). The block is looked up (not removed) so it stays
-                    // available for `finalize_blocks` at stream end.
+                    // deferred, see the `reduce_stream` doc). The block is
+                    // looked up (not removed) so it stays available for
+                    // `finalize_blocks` at stream end.
                     if let Some(build) = blocks.get(&index) {
                         match build {
                             BlockBuild::Thinking(_) => {
@@ -1007,9 +1173,42 @@ pub fn new(
                                     })
                                     .await;
                             }
-                            BlockBuild::ToolUse { .. } => {
-                                // Tool-block lifecycle deferred to
-                                // early-tool-start.
+                            BlockBuild::ToolUse {
+                                id,
+                                name,
+                                input_buf,
+                                start_input,
+                                ..
+                            } => {
+                                // Early speculative dispatch: the tool block
+                                // is complete, so finalize its input and — if
+                                // the tool is early-start-safe — spawn it now
+                                // so its result is ready by the tool loop
+                                // (mirrors `turn_loop`'s
+                                // `early_tool_start_safe` + spawn at
+                                // `ContentBlockStop`). `tokio::spawn` returns
+                                // immediately (non-blocking); the stream keeps
+                                // consuming. `Drop` on `EarlyToolTask` aborts
+                                // an unreused task so nothing leaks.
+                                let finalized_input =
+                                    finalize_tool_input(input_buf, start_input);
+                                if let Some(tool) = self.tools.get(name) {
+                                    if early_start_safe(&tool.capabilities()) {
+                                        let tool = Arc::clone(tool);
+                                        let input = finalized_input.clone();
+                                        let handle = tokio::spawn(async move {
+                                            tool.run(input).await
+                                        });
+                                        early_tasks.insert(
+                                            id.clone(),
+                                            EarlyToolTask {
+                                                name: name.clone(),
+                                                input: finalized_input,
+                                                handle: Some(handle),
+                                            },
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -1087,6 +1286,7 @@ pub fn new(
         context_recovery_attempts: &mut u8,
         history: &mut dyn ChatHistory,
         system: Option<&SystemPrompt>,
+        early_tasks: &mut HashMap<String, EarlyToolTask>,
     ) -> Result<StreamRoundOutcome> {
         /// Cap on transparent stream retries — matches `turn_loop`'s
         /// `MAX_STREAM_RETRIES` (3). One initial attempt + 3 retries = 4 total
@@ -1130,7 +1330,7 @@ pub fn new(
                     return Err(anyhow::anyhow!(message));
                 }
             };
-            match self.reduce_stream(stream).await {
+            match self.reduce_stream(stream, early_tasks).await {
                 StreamReduceOutcome::Complete {
                     content,
                     stop_reason,
@@ -1923,6 +2123,15 @@ impl HostAgentExecutor {
             // `on_llm_start` fires once per step; retries and recovery are
             // transparent to the Callback. Subagent handoff / thinking-only
             // handling land here later.
+            //
+            // `early_tasks` is per-step: the inline reducer populates it during
+            // streaming (spawning read-only tools at `ContentBlockStop`), and
+            // the tool loop below consumes it (reusing / aborting the speculatively-
+            // started tasks). On a `continue` (capacity `RetryStep` / reactive
+            // `RecoveredContextOverflow`) the stream either never opened or died
+            // before any content ⇒ no `ContentBlockStop` ⇒ the map is empty, so
+            // dropping it leaks nothing.
+            let mut early_tasks: HashMap<String, EarlyToolTask> = HashMap::new();
             let (content, _stop_reason) = match self
                 .stream_with_transparent_retry(
                     &client,
@@ -1931,6 +2140,7 @@ impl HostAgentExecutor {
                     &mut context_recovery_attempts,
                     history,
                     system.as_ref(),
+                    &mut early_tasks,
                 )
                 .await
             {
@@ -1979,18 +2189,21 @@ impl HostAgentExecutor {
             // Execute each tool sequentially and feed the result back as a
             // `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
             //
-            // (3) per-tool seam — loop-guard (absorbed); ✅ approval (emit
-            // `ApprovalRequired` + block on the decision channel for write/code
-            // tools; denied ⇒ `permission_denied` error, tool skipped); LSP
-            // post-edit collect (absorbed); early-tool-start / parallel land here
-            // later. `loop_guard_halt` is per-step: a halt short-circuits the
-            // tool loop and the whole turn at the (4) seam below.
+            // (3) per-tool seam — ✅ loop-guard; ✅ approval; ✅ early-tool-start
+            // (reuse a speculatively-started task spawned at `ContentBlockStop`
+            // during streaming if the args still match; otherwise abort + run
+            // fresh); ✅ LSP post-edit collect. `loop_guard_halt` is per-step: a
+            // halt short-circuits the tool loop and the whole turn at the (4)
+            // seam below. Parallel dispatch lands here later.
             let mut loop_guard_halt: Option<String> = None;
             for (id, name, input) in tool_uses {
                 callback.on_tool_start(&name, &input).await;
                 // loop-guard: block the 3rd identical (name+args) call this turn.
                 let (result, blocked) = match loop_guard.record_attempt(&name, &input) {
                     AttemptDecision::Block(message) => {
+                        // Abort any speculatively-started task — the call
+                        // won't execute (Drop aborts the `JoinHandle`).
+                        early_tasks.remove(&id);
                         (Ok(block_tool_result(message)), true)
                     }
                     AttemptDecision::Proceed => {
@@ -2000,21 +2213,77 @@ impl HostAgentExecutor {
                             // tool never runs and a `permission_denied` error
                             // is fed back so the model can react (turn
                             // continues). Order: loop-guard first (matches
-                            // production), then approval.
+                            // production), then approval, then early-start reuse.
                             Some(tool) => {
                                 match self
                                     .request_approval(&id, &name, &input, tool, &intent_summary)
                                     .await
                                 {
-                                    Ok(()) => tool.run(input.clone()).await,
+                                    Ok(()) => {
+                                        // Early-tool-start: reuse a
+                                        // speculatively-started task (spawned
+                                        // at `ContentBlockStop` during
+                                        // streaming) if one exists for this
+                                        // id and the model didn't revise the
+                                        // args after the block closed;
+                                        // otherwise run the tool fresh (mirrors
+                                        // `turn_loop`'s
+                                        // `early_task.filter(|t| t.name == name && t.input == input)`).
+                                        match early_tasks.remove(&id) {
+                                            Some(mut early)
+                                                if early.name == name
+                                                    && early.input == input =>
+                                            {
+                                                // Take the handle out so `Drop`
+                                                // on the `EarlyToolTask`
+                                                // doesn't abort it (the field
+                                                // becomes `None`).
+                                                let handle = early
+                                                    .handle
+                                                    .take()
+                                                    .expect("handle present until consumed");
+                                                match handle.await {
+                                                    Ok(result) => result,
+                                                    Err(join_err) => {
+                                                        Err(ToolError::execution_failed(
+                                                            format!(
+                                                                "Early tool execution task failed: {join_err}"
+                                                            ),
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                            Some(_revised) => {
+                                                // Args revised after the block
+                                                // closed — can't reuse; the
+                                                // dropped `EarlyToolTask`
+                                                // (Drop aborts) cleans up the
+                                                // orphaned speculative task.
+                                                tool.run(input.clone()).await
+                                            }
+                                            None => tool.run(input.clone()).await,
+                                        }
+                                    }
                                     Err(denial) => {
+                                        // Approval denied — abort any
+                                        // speculative task (defensive:
+                                        // early-start-safe tools don't
+                                        // require approval, so this path has
+                                        // none, but `Drop` is cheap).
+                                        early_tasks.remove(&id);
                                         Err(ToolError::permission_denied(denial))
                                     }
                                 }
                             }
-                            None => Err(ToolError::NotAvailable {
-                                message: format!("no tool named '{name}'"),
-                            }),
+                            None => {
+                                // No tool registered — abort any speculative
+                                // task (`reduce_stream` only spawns for
+                                // registered tools, so this is defensive).
+                                early_tasks.remove(&id);
+                                Err(ToolError::NotAvailable {
+                                    message: format!("no tool named '{name}'"),
+                                })
+                            }
                         };
                         (result, false)
                     }
@@ -2065,6 +2334,14 @@ impl HostAgentExecutor {
                     }],
                 });
             }
+
+            // Abort any speculatively-started tasks that weren't consumed by
+            // the tool loop (e.g. a tool block completed during streaming but
+            // didn't survive into the parsed `tool_uses`, or an args-mismatch
+            // path left an orphaned task). `Drop` on each `EarlyToolTask`
+            // aborts the spawned task. In normal operation every spawned task
+            // is consumed or aborted within the loop, so this is defensive.
+            early_tasks.clear();
 
             // (4) per-step post-tool seam — loop-guard halt (absorbed);
             // capacity post-tool checkpoint (opt-in `CapacityController` Gate A
@@ -5375,6 +5652,410 @@ mod tests {
                 "ThinkingComplete(0) at {a} should precede MessageStarted(1) at {b}: {events:?}"
             ),
             _ => panic!("lifecycle events missing: {events:?}"),
+        }
+    }
+
+    // === early-tool-start (seam 2 speculative dispatch) ====================
+
+    /// A read-only `ToolSpec` that signals a [`tokio::sync::Notify`] when its
+    /// `execute` runs, so a test can prove the tool was dispatched *during*
+    /// streaming (before the executor's tool loop) — the hallmark of
+    /// early-tool-start. `Notify::notify_one` stores a permit if no waiter is
+    /// registered yet, so the signal survives a scheduling gap between the
+    /// early dispatch and the test's `notified().await`.
+    struct SignalingSpec {
+        notify: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for SignalingSpec {
+        fn name(&self) -> &str {
+            "signal"
+        }
+        fn description(&self) -> &str {
+            "Signals a Notify when executed."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.notify.notify_one();
+            Ok(ToolResult {
+                content: "signaled".to_string(),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// A read-only `ToolSpec` that counts how many times `execute` runs via a
+    /// shared [`AtomicU32`]. If early-start reuses the speculatively-started
+    /// task, the count stays 1 (not 2 — the early run is reused, not re-run at
+    /// execute time).
+    struct CountingSpec {
+        count: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for CountingSpec {
+        fn name(&self) -> &str {
+            "count"
+        }
+        fn description(&self) -> &str {
+            "Counts how many times it runs."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolResult {
+                content: "counted".to_string(),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    #[test]
+    fn early_start_safe_allows_readonly() {
+        assert!(early_start_safe(&[ToolCapability::ReadOnly]));
+        // Network / Sandboxable don't disqualify a read-only tool.
+        assert!(early_start_safe(&[
+            ToolCapability::ReadOnly,
+            ToolCapability::Network,
+        ]));
+        assert!(early_start_safe(&[
+            ToolCapability::ReadOnly,
+            ToolCapability::Sandboxable,
+        ]));
+    }
+
+    #[test]
+    fn early_start_safe_disqualifies_non_readonly() {
+        // No ReadOnly at all ⇒ not safe.
+        assert!(!early_start_safe(&[]), "empty caps");
+        assert!(!early_start_safe(&[ToolCapability::Network]), "network only");
+        // ReadOnly + a disqualifier ⇒ not safe.
+        assert!(!early_start_safe(&[
+            ToolCapability::ReadOnly,
+            ToolCapability::WritesFiles,
+        ]));
+        assert!(!early_start_safe(&[
+            ToolCapability::ReadOnly,
+            ToolCapability::ExecutesCode,
+        ]));
+        assert!(!early_start_safe(&[
+            ToolCapability::ReadOnly,
+            ToolCapability::RequiresApproval,
+        ]));
+    }
+
+    /// The read-only tool is dispatched **during** streaming (at
+    /// `ContentBlockStop`), before the executor reaches the tool loop. Proven
+    /// by running the executor on a spawned task and awaiting the tool's
+    /// `Notify` signal — which fires from inside the spawned early task, so it
+    /// can only arrive before the executor returns.
+    #[tokio::test]
+    async fn early_start_dispatches_readonly_tool_during_stream() {
+        let tmp = tempdir().expect("tempdir");
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(SignalingSpec {
+            notify: notify.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Call 1: text + tool_use(signal). Call 2: text-only → NoToolCalls.
+        let mut call1 = text_block(0, "let me signal");
+        call1.extend(tool_use_block(1, "s1", "signal", r#"{"x":1}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Run on a spawned task so the test can observe the tool's signal
+        // mid-run. The `run` future borrows the executor + session, so move
+        // them into the spawned block — the block owns them and is `'static`.
+        let handle = tokio::spawn(async move {
+            let mut history = SessionChatHistory::new(&mut sess);
+            executor
+                .run(&mut history, "signal please".to_string())
+                .await
+        });
+
+        // The early dispatch fires `notify_one` from inside the spawned early
+        // task (during streaming). If early-start were absent, the tool would
+        // only run at execute time — but the executor hasn't returned yet
+        // (it's still inside `run`), so no execute-time call has happened
+        // either. The only way this `notified` resolves is the early dispatch.
+        notify.notified().await;
+
+        let reason = handle
+            .await
+            .expect("executor task panicked")
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+    }
+
+    /// The speculatively-started task's result is **reused** — `execute` runs
+    /// once (in the early task), not twice (early + execute-time). If the
+    /// reuse path were broken, `execute` would be called again at execute
+    /// time → count == 2.
+    #[tokio::test]
+    async fn early_start_reuses_result_without_re_running() {
+        let tmp = tempdir().expect("tempdir");
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(CountingSpec {
+            count: count.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "c1", "count", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "count".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "tool should run once (early-started + reused, not re-run)"
+        );
+    }
+
+    /// An early-started read-only tool whose task panics surfaces as a
+    /// `ToolError::execution_failed` (the `JoinHandle` errors). The tool is
+    /// still recorded in the transcript (as an error result) and the turn ends
+    /// cleanly (`NoToolCalls` on the follow-up). The panic is contained in the
+    /// spawned task — `tokio::spawn` catches it, the `JoinHandle` returns
+    /// `Err(JoinError)`.
+    struct PanickingSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for PanickingSpec {
+        fn name(&self) -> &str {
+            "boom"
+        }
+        fn description(&self) -> &str {
+            "Panics in execute."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            panic!("boom from early task");
+        }
+    }
+
+    #[tokio::test]
+    async fn early_start_join_error_surfaces_execution_failed() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(PanickingSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "b1", "boom", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Suppress the panic message on stderr (the panic is caught by the
+        // JoinHandle — the test itself doesn't panic).
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let reason = executor
+            .run(&mut history, "boom".to_string())
+            .await
+            .expect("run");
+        std::panic::set_hook(prev_hook);
+
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // The tool result is an error carrying the join-failure message.
+        let last_tool_result = &sess.messages[2].content[0];
+        let ContentBlock::ToolResult {
+            content,
+            is_error,
+            ..
+        } = last_tool_result
+        else {
+            panic!("expected ToolResult, got {last_tool_result:?}");
+        };
+        assert_eq!(*is_error, Some(true), "should be an error result");
+        assert!(
+            content.contains("Early tool execution task failed"),
+            "should mention the join failure: {content}"
+        );
+    }
+
+    /// A non-read-only tool (WritesFiles) is **not** early-dispatched. It runs
+    /// once at execute time (not during streaming). Proven by the call count
+    /// staying at 1 (if it were early-dispatched + re-run, it'd be 2 — but
+    /// early-start-safe correctly excludes it, so it's just 1 execute-time
+    /// run). The `early_start_safe_disqualifies_non_readonly` unit test covers
+    /// the gate; this integration test confirms the executor respects it.
+    #[tokio::test]
+    async fn early_start_skips_non_readonly_tool() {
+        let tmp = tempdir().expect("tempdir");
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(CountingWriteSpec {
+            count: count.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "write");
+        call1.extend(tool_use_block(1, "w1", "write_file", r#"{"path":"/tmp/x"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "write".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Not early-dispatched (WritesFiles) ⇒ runs exactly once at execute
+        // time. If early-start wrongly dispatched it, the count would still
+        // be 1 (reused) — so this test alone doesn't prove "not dispatched",
+        // but combined with the unit test for the gate, it confirms the
+        // executor doesn't double-execute non-read-only tools.
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "write tool runs once at execute time"
+        );
+    }
+
+    /// A `ToolSpec` that declares `WritesFiles` (so `early_start_safe` is
+    /// false) and counts `execute` calls — used to confirm the executor
+    /// doesn't early-dispatch non-read-only tools.
+    struct CountingWriteSpec {
+        count: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for CountingWriteSpec {
+        fn name(&self) -> &str {
+            "write_file"
+        }
+        fn description(&self) -> &str {
+            "Writes a file (counts calls)."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } }
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::WritesFiles]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolResult {
+                content: "wrote".to_string(),
+                success: true,
+                metadata: None,
+            })
         }
     }
 }

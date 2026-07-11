@@ -1007,6 +1007,50 @@ reactive capacity recovery（需 error message 供 `is_context_length_error_mess
 
 ---
 
+**进度（2026-07-11 §E early-tool-start speculative dispatch 落地，seam-2 提前 dispatch，`feat/pluggable-framework-core`）：**
+
+§E 的第十五个切片落地——把生产 `handle_deepseek_turn` 的 early-tool-start（seam 2）吸收进 `HostAgentExecutor`：内联归约器 `reduce_stream` 在 `ContentBlockStop`（tool 块）处 finalize input，若工具 `early_start_safe`（read-only + 无 approval + 无 code-exec/file-write）则 `tokio::spawn` 立即执行，使结果在执行器到达 tool loop 时就绪；tool loop 按 wire id pop 出任务，重验 name+input（模型可能在块关闭后修订 args），命中则 await `JoinHandle` 复用结果而非重跑工具（镜像 `turn_loop` 的 `early_tool_tasks` map + `early_tool_start_safe`，`turn_loop.rs:975-1135` spawn / `1598-1803` reuse）。args 不匹配 / loop-guard block / 审批拒绝 / `NotAvailable` 路径 pop + `Drop`-abort 孤儿任务。map 是 per-step 本地 `HashMap`（非 executor 字段——与 LSP/steer/approval/compaction/capacity 不同，此 guardrail 无跨 step 状态），故构造器签名不变。本轮纯增量（`host_executor.rs` 一个文件 + 模块文档），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **`early_start_safe` free fn**（新）：镜像 `turn_loop::early_tool_start_safe` 的最终复合门控——`ReadOnly` present AND none of `{RequiresApproval, ExecutesCode, WritesFiles}`。框架 `Tool` trait 仅暴露 `capabilities()`，故这是**静态近似**：production 额外查 `metadata.is_read_only && supports_parallel && !interactive && validate_input().is_ok() && approval_requirement_for(...) == Auto` + tool-catalog allowlist（not-MCP / not-code-exec / not-tool-search），这些 per-input / per-metadata 面不可从框架 `Tool` 触达，延后到 wire-in 步（§E design note，同 `requires_approval` gap）。`Network`/`Sandboxable` 不 disqualify（read-only network fetch 可提前起）。
+- **`EarlyToolTask` struct + `Drop` abort**（新）：`{ name, input, handle: Option<JoinHandle<Result<ToolResult, ToolError>>> }`。`handle` 用 `Option` 包裹使 reuse 路径可 `Option::take` 出来 `.await`（实现 `Drop` 的类型不能让字段被 move out）。`Drop` abort `JoinHandle`——孤儿任务（未存活进 `tool_uses` 的块 / args 不匹配 / blocked / denied / NotAvailable）永不泄漏后台任务；abort 已完成任务是 no-op，故 reuse 路径的 await-then-drop 安全。
+- **`finalize_tool_input` helper**（新，extracted）：`input_buf`（streamed `InputJsonDelta` 片段）→ fallback `start_input`（`ContentBlockStart::ToolUse` 携带）→ fallback 空 object，同 CORE `accumulate_stream` 尾部逻辑。提取使 `finalize_blocks`（stream end）与 early-start spawn（`ContentBlockStop`，mid-stream）finalize 完全一致。
+- **`reduce_stream` ContentBlockStop tool 分支**（原 no-op `{}`，现 spawn）：finalize input → `self.tools.get(name)` → `early_start_safe(&tool.capabilities())` → `Arc::clone(tool)` + move 进 `tokio::spawn(async move { tool.run(input).await })`（Arc cheap refcount bump；owned by async block 故 borrow `'static`）→ `early_tasks.insert(id, EarlyToolTask { ... })`。spawn 立即返回（非阻塞），流继续消费。签名 +`early_tasks: &mut HashMap<String, EarlyToolTask>` 参数。
+- **`stream_with_transparent_retry` 签名**：+`early_tasks` 参数，透传给 `reduce_stream(stream, early_tasks)`。
+- **`run_inner` tool loop 复用/abort**：per-step 声明 `let mut early_tasks: HashMap<String, EarlyToolTask> = HashMap::new();`（stream 前），传 `&mut early_tasks` 给 stream 调用。tool loop：
+  - `AttemptDecision::Block`（loop-guard 第 3 次同 call）→ `early_tasks.remove(&id)`（Drop abort）。
+  - `Proceed` + approval `Ok(())` → `match early_tasks.remove(&id)`：`Some(mut early) if early.name == name && early.input == input` → `handle.take().expect(...)` + `handle.await`（Ok→result，Err(join_err)→`ToolError::execution_failed("Early tool execution task failed: ...")`）；`Some(_revised)`（args 改）→ `tool.run(input.clone()).await`（dropped `EarlyToolTask` Drop abort 孤儿）；`None` → `tool.run(input.clone()).await`。
+  - approval `Err(denial)` → `early_tasks.remove(&id)`（防御性——early-start-safe 工具不需审批，此路径本无任务）。
+  - `NotAvailable`（无注册工具）→ `early_tasks.remove(&id)`（防御性——`reduce_stream` 只为注册工具 spawn）。
+  - tool loop 后 `early_tasks.clear()`（防御性 abort 残留）。
+  - `continue` 路径（capacity `RetryStep` / reactive `RecoveredContextOverflow`）stream 未开起或死前无 content ⇒ 无 `ContentBlockStop` ⇒ map 为空，drop 不泄漏。
+- **6 个新测试 + 4 个 test double**：`SignalingSpec`（read-only，execute 时 `Notify::notify_one`——证明**流期间** dispatch）、`CountingSpec`（read-only，`AtomicU32` 计数——证明 reuse count==1）、`PanickingSpec`（read-only，execute panic——证 JoinError surfaces 为 `execution_failed`）、`CountingWriteSpec`（`WritesFiles`，证非 read-only 不提前 dispatch）。测试：
+  - `early_start_safe_allows_readonly` / `early_start_safe_disqualifies_non_readonly`（单元：gate 覆盖 ReadOnly + Network/Sandboxable 放行、空/WritesFiles/ExecutesCode/RequiresApproval 拒绝）。
+  - `early_start_dispatches_readonly_tool_during_stream`（executor 跑在 `tokio::spawn` 上，`notify.notified().await` 在 executor 返回前 resolve——唯一解释是 early dispatch）。
+  - `early_start_reuses_result_without_re_running`（count==1，证 early task 被 reuse 而非 execute-time 重跑）。
+  - `early_start_join_error_surfaces_execution_failed`（panic 的 early task → `JoinHandle` Err → `ToolError::execution_failed`，transcript 记 error result，turn 干净结束 NoToolCalls；`std::panic::set_hook` 抑制 stderr panic 输出）。
+  - `early_start_skips_non_readonly_tool`（WritesFiles 工具 count==1，执行器尊重 gate 不 double-execute）。
+  共 56 个 host_executor 测试通过（50 既有 + 6 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零 warning；`cargo test -p codesmith-agent-runtime --lib host_executor` 56 通过（50 既有 + 6 新 early-tool-start）；`cargo test -p codesmith-agent-runtime --lib` 1061 通过、1 失败（`mcp::tests::streamable_http_stale_session_reconnects_and_retries_tool_call`——既有偶发，隔离重跑通过，与本轮无关）、2 ignored（原 1056 +6 = 1062，-1 flaky = 1061 passed）；`cargo test -p codesmith-agent --lib` 79 通过；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**已知设计取舍（本轮缺口，by design）：**
+- **`ToolCallStarted` 不在 stream-time 发**：生产在 `ContentBlockStop`（tool 块）解析 input 后发 `Event::ToolCallStarted { id, name, input }`（wire tool id）。`CallbackBridge` 现在在 `on_tool_start`（execute time）发 `ToolCallStarted`（合成 `bridge-{n}` id）。移到 stream-time 会用不同 `bridge-{m}` id 与 execute-time `on_tool_start` 重复发；去重需 trait-surface 改（透传 wire id）或 bridge 层 name+input pairing。execute-time `on_tool_start` 仍是 tool-call-start UI 的单一真源。延后。
+- **静态-only 安全门**：`early_start_safe` 仅查 `capabilities()`——per-input `validate_input` / `is_interactive` / `approval_requirement_for` 不可从框架 `Tool` 触达。实际效果：read-only 工具若 per-input 校验会拒 args，仍被 speculative spawn，结果在 execute time 丢弃——浪费工，非正确性 bug。
+- **spawn 时不查 loop-guard**：production `early_tool_start_safe` 查 `LoopGuard` 避免为第 3 次同 call 提前起。本执行器 spawn 时不查（避免 `&mut LoopGuard` 线程化过 streaming 路径 + 双计 attempt）。execute-time `record_attempt` 是单一真源：被 loop-guard block 的 speculative task 在 tool loop pop + Drop-abort。浪费工 = 一个被立即 abort 的 read-only 任务（廉价）。
+- **无 per-input approval / interactive 检查**：`early_start_safe` 静态排除 `RequiresApproval`-tagged 工具，但 per-input `Required`（如 `exec_shell rm`）不可见。此类工具会被 speculative 起，若 execute-time 审批返 `Required` 则 task 被 pop + Drop-abort。浪费工，非正确性 bug。随 wire-in 步 per-input approval 面接入。
+- **无 cancel-token 短路**：取消的 turn 仍为 partial stream 中关闭的 tool 块 spawn 任务；step 末 `early_tasks.clear()`（+ map drop 时）abort 它们。工量被 partial stream 的 tool 块数 bound。cancel-token 在 wire-in 步接入。
+
+**下一聚焦工作：**
+- **subagent**（seam 3，sub-agent handoff/hold）、**cycle**（seam 1/4，per-file cycle state）：剩余两个 guardrail（十 guardrail 已吸收八个——compaction/capacity/approval/steer/transparent-retry/early-tool-start/LSP/loop-guard）。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片，需完整 `CapacityController` 状态机。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路（preflight + reactive）+ early-tool-start spawn 短路 + loop 顶取消检查，在 wire-in 步或单独小切片接入。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery（preflight + reactive）。
+- **`ToolCallStarted` stream-time 合成 + bridge 去重**：需 `Callback::on_tool_start` 透传 wire id 或 bridge 层 name+input pairing——与 wire-in 耦合，可同期接入。
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
