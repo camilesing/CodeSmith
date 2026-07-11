@@ -2817,7 +2817,7 @@ fn resolve_context_patch(
     (auto_approve, trust_mode, rejected_auto, rejected_trust)
 }
 
-fn subagent_completion_runtime_message(payload: &str) -> Message {
+pub(crate) fn subagent_completion_runtime_message(payload: &str) -> Message {
     // Role is "user", not "system": some OpenAI-compatible backends apply a
     // strict chat template (e.g. vLLM serving Qwen3) that requires any system
     // message to be messages[0]. A system message appended mid-conversation

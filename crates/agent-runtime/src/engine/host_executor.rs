@@ -23,7 +23,7 @@
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (with an inline stream reducer,
 //! [`reduce_stream`], that replaced the CORE `accumulate_stream` and emits
 //! streaming deltas to `Callback::on_stream_delta` in real time) and absorbs
-//! the production guardrails slice by slice. Eight are in:
+//! the production guardrails slice by slice. Nine are in:
 //!
 //! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
@@ -166,11 +166,35 @@
 //!    a no-op, so the reuse path's await-then-drop is safe). See "Known gaps in
 //!    early-tool-start" below for the ToolCallStarted bridge dedup, the
 //!    spawn-time loop-guard, the per-input approval, and the cancel-token.
+//! 9. **subagent post-stream drain** (`subagent` field) — the **third seam-2
+//!    guardrail**. When the model finishes a step with no tool calls, any child
+//!    sub-agent completions that arrived (queued during inference or between
+//!    turns) are drained via `try_recv` and injected as
+//!    `<codesmith:runtime_event kind="subagent_completion">` user messages
+//!    (the sentinel contract in `prompts/base.md`), then the turn resumes —
+//!    mirroring `handle_deepseek_turn`'s non-blocking completion drain
+//!    (`turn_loop.rs:1317-1397` + the late drain at `1501-1532`). The executor
+//!    has no thinking-only / goal-continuation / REPL branches, so this single
+//!    drain site (the `tool_uses.is_empty()` arm) covers both production drains.
+//!    The receiver is
+//!    `Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>` —
+//!    the same `std::sync::Mutex` pattern as the steer receiver (`try_recv` is
+//!    synchronous; the lock is never held across an `await`), and it persists
+//!    across `run` invocations (matching `Engine.rx_subagent_completion`). The
+//!    **blocking hold** for still-running children (`should_hold_turn_for_subagents`
+//!    + a `biased select!` over cancel / completion `recv().await` / steer
+//!    `recv().await`) is deferred to the wire-in step — it needs a
+//!    `CancellationToken` (an existing cross-guardrail gap),
+//!    `SubAgentApi::running_count`, and a `tokio::sync::Mutex` receiver (the
+//!    steer receiver migrates in the same slice). `ContextPatch` apply
+//!    (tighten-only `auto_approve`/`trust_mode`) is also deferred — it mutates
+//!    `Session` state not reachable through `ChatHistory`, and production
+//!    hardcodes `context_patch: None` today. See "Known gaps in subagent" below.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
 //! steer "Steer input accepted", compaction "Compaction completed/failed",
-//! capacity "Emergency context compaction …") surfaces over the host's `Event`
-//! channel
+//! capacity "Emergency context compaction …", subagent "Resuming turn with N
+//! sub-agent completion(s)") surfaces over the host's `Event` channel
 //! (`event_tx`) — **not** via the framework `Callback`: guardrails are
 //! host-side concerns and the `Callback` trait stays untouched per ROADMAP §E.
 //!
@@ -199,8 +223,11 @@
 //!    request when the stream dies before any content commits, up to 3 times) +
 //!    ✅ **early-tool-start** (at `ContentBlockStop` for a tool block, finalize
 //!    the input and `tokio::spawn` a read-only tool so its result is ready by
-//!    the tool loop); subagent handoff, thinking-only handling still to come
-//!    (after the stream resolves, before tool extraction).
+//!    the tool loop) + ✅ **subagent post-stream drain** (when the model returns
+//!    no tool calls, `try_recv`-drain queued child completions, inject each as a
+//!    sentinel `user` message, and resume the turn); thinking-only handling +
+//!    the blocking hold for running children still to come (after the stream
+//!    resolves, before tool extraction / turn end).
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
 //!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures) +
 //!    ✅ **approval** (emit `ApprovalRequired` + block on the decision channel
@@ -445,6 +472,44 @@
 //!   aborts them. The work is bounded by the number of tool blocks in the
 //!   partial stream. The cancel-token threads in at the wire-in step.
 //!
+//! ## Known gaps in subagent (by design)
+//!
+//! - **blocking hold deferred** — production, when the model returns no tool
+//!   calls *and* no completion is queued *but* children are still running
+//!   (`should_hold_turn_for_subagents(0, running)`), blocks on a `biased
+//!   select!` (`turn_loop.rs:1330-1368`) over cancel / completion `recv().await`
+//!   / steer `recv().await`, emitting "Waiting on N sub-agent(s)". This executor
+//!   has no `CancellationToken` (an existing cross-guardrail gap), no
+//!   `SubAgentApi::running_count` (the minimal-probe pattern doesn't inject the
+//!   full `HostServices`), and its steer receiver uses `std::sync::Mutex`
+//!   (can't `recv().await`). So with `subagent` set but no queued completion,
+//!   the turn ends immediately (`NoToolCalls`) rather than holding. The child's
+//!   completion surfaces on the *next* turn's drain instead of mid-turn. The
+//!   blocking hold threads in at the wire-in step, whereupon the steer +
+//!   subagent receivers migrate to `tokio::sync::Mutex` (matching approval) and
+//!   `running_count` + `CancellationToken` become available.
+//! - **`ContextPatch` apply deferred** — production drains each completion's
+//!   `context_patch` and applies them **tighten-only** (`auto_approve` /
+//!   `trust_mode` → `false`; loosen attempts rejected) to `Session` +
+//!   `config.trust_mode` (`turn_loop.rs:1373-1388`). `ChatHistory` exposes no
+//!   `auto_approve` / `trust_mode` setter (host-coupled, same gap class as
+//!   compaction's working-set / cycle-state reinject), so the patches are
+//!   dropped. Production hardcodes `context_patch: None` at every
+//!   `emit_parent_completion` site today, so this is a safe no-op; it matters
+//!   only when a future child sets a by-value patch. Threads in at the wire-in
+//!   step (`Session` reachable).
+//! - **no `<turn_meta>` enrichment** — the synthetic sentinel message uses the
+//!   plain `subagent_completion_runtime_message` (role `user`, no
+//!   `user_text_message_with_turn_metadata` wrapper), same gap as the steer /
+//!   LSP-flush synthetic messages.
+//! - **steer post-stream resume deferred** — production, when the model returns
+//!   no tool calls and `pending_steers` is non-empty, resumes with the steered
+//!   text (`turn_loop.rs:1297-1307`). This executor's steer drain is seam-1
+//!   (pre-request `try_recv`), so post-stream steers are picked up on the
+//!   *next* step's pre-request drain instead of mid-turn — same deferral as
+//!   the steer slice's three secondary drain sites. Threads in with the
+//!   blocking hold (the `biased select!` steer arm).
+//!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
 use std::collections::{BTreeMap, HashMap};
@@ -476,6 +541,8 @@ use super::context::{
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
+use super::turn_loop::subagent_completion_runtime_message;
+use crate::subagent::SubAgentCompletion;
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
 use crate::compaction::micro_compact::{
     micro_compact_messages, should_trigger_micro_compact, MicroCompactState,
@@ -932,6 +999,31 @@ pub struct HostAgentExecutor {
     /// and the forced-compaction micro-compact pass uses a fresh
     /// [`MicroCompactState`].
     capacity: Option<CapacityProbe>,
+    /// Optional sub-agent completion receiver (§E). `None` ⇒ the post-stream
+    /// completion drain is a no-op (the turn ends on the first no-tool-call
+    /// round). When the model finishes a step with no tool calls, queued
+    /// child completions are drained via `try_recv` and injected as
+    /// `<codesmith:runtime_event kind="subagent_completion">` user messages
+    /// (the sentinel contract documented in `prompts/base.md`), then the turn
+    /// resumes — mirroring `handle_deepseek_turn`'s non-blocking completion
+    /// drain (`turn_loop.rs:1317-1397`). The **blocking hold** for still-running
+    /// children (`should_hold_turn_for_subagents` + a `biased select!` over
+    /// cancel / completion `recv().await` / steer `recv().await`) is deferred
+    /// to the wire-in step — it needs a `CancellationToken` (an existing cross-
+    /// guardrail gap), `SubAgentApi::running_count`, and a `tokio::sync::Mutex`
+    /// receiver (the steer receiver would migrate from `std::sync::Mutex` in
+    /// the same slice). Interior-mutable because [`AgentExecutor::run`] takes
+    /// `&self` while `mpsc::Receiver::try_recv` takes `&mut self` — the same
+    /// `Arc<std::sync::Mutex<…>>` pattern as the steer receiver (the lock is
+    /// held only for the synchronous `try_recv`, never across an `await`). The
+    /// receiver persists across `run` invocations on the same executor,
+    /// matching the production `Engine.rx_subagent_completion` field — a
+    /// completion that arrives between turns is surfaced on the next turn's
+    /// post-stream drain. `ContextPatch` apply (tighten-only
+    /// `auto_approve`/`trust_mode`) is deferred — it mutates `Session` state
+    /// not reachable through `ChatHistory`, and production hardcodes
+    /// `context_patch: None` today.
+    subagent: Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
 }
 
 impl HostAgentExecutor {
@@ -941,7 +1033,10 @@ impl HostAgentExecutor {
 /// optional steer input receiver (`None` ⇒ steer drain disabled) + an
 /// optional approval-decision receiver (`None` ⇒ approval gating disabled) +
 /// an optional [`CompactionProbe`] (`None` ⇒ compaction disabled) + an
-/// optional [`CapacityProbe`] (`None` ⇒ capacity preflight disabled).
+/// optional [`CapacityProbe`] (`None` ⇒ capacity preflight disabled) + an
+/// optional sub-agent completion receiver (`None` ⇒ the post-stream
+/// completion drain is disabled — the turn ends on the first no-tool-call
+/// round).
 #[must_use]
 pub fn new(
     client: LlmClientHandle,
@@ -954,20 +1049,22 @@ pub fn new(
     approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
     compaction: Option<CompactionProbe>,
     capacity: Option<CapacityProbe>,
+    subagent: Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>,
 ) -> Self {
-        Self {
-            client,
-            tools,
-            callback,
-            config,
-            event_tx,
-            lsp,
-            steer,
-            approval,
-            compaction,
-            capacity,
-        }
+    Self {
+        client,
+        tools,
+        callback,
+        config,
+        event_tx,
+        lsp,
+        steer,
+        approval,
+        compaction,
+        capacity,
+        subagent,
     }
+}
 
     /// Surface a guardrail status message onto the host's UI `Event` channel,
     /// if one was supplied. Guardrails emit here directly rather than through
@@ -2050,7 +2147,9 @@ impl HostAgentExecutor {
             // emergency recovery, runs after compaction and before the LSP
             // flush so the estimate reflects the just-compacted transcript);
             // ✅ LSP flush (drain pending diagnostics into a synthetic user
-            // message); cycle land here later.
+            // message); cycle (checkpoint-restart) is a post-turn Session-level
+            // concern (lives in `handle_send_message` after the turn returns), so
+            // it lands at the wire-in step, not in this in-loop seam.
             if step >= max_steps {
                 callback.on_complete(&StopReason::MaxSteps).await;
                 return Ok(StopReason::MaxSteps);
@@ -2182,6 +2281,55 @@ impl HostAgentExecutor {
                 .collect();
 
             if tool_uses.is_empty() {
+                // Sub-agent completion handoff (seam 2 post-stream resume).
+                // Mirrors `handle_deepseek_turn`'s non-blocking completion drain
+                // (`turn_loop.rs:1317-1397` + the late drain at `1501-1532`):
+                // when the model finishes a step with no tool calls, surface any
+                // child completions that arrived (queued during inference or
+                // between turns) as `<codesmith:runtime_event
+                // kind="subagent_completion">` user messages and resume the turn
+                // instead of ending it — fulfilling the sentinel contract the
+                // model was promised in `prompts/base.md`. The executor has no
+                // thinking-only / goal-continuation / REPL branches, so this single
+                // drain covers both production drain sites. The **blocking hold**
+                // for still-running children (`should_hold_turn_for_subagents` +
+                // a `biased select!`) is deferred to the wire-in step — it needs a
+                // `CancellationToken` + `SubAgentApi::running_count` + a tokio-Mutex
+                // receiver (see the `subagent` field doc).
+                if let Some(probe) = &self.subagent {
+                    let mut completions: Vec<SubAgentCompletion> = Vec::new();
+                    // `std::sync::Mutex` — the lock is held only for the
+                    // synchronous `try_recv`, never across the `history.push`
+                    // `await` below (matches the steer drain pattern).
+                    {
+                        let mut rx = probe.lock().expect("subagent rx mutex poisoned");
+                        while let Ok(c) = rx.try_recv() {
+                            completions.push(c);
+                        }
+                    }
+                    if !completions.is_empty() {
+                        let count = completions.len();
+                        for c in completions {
+                            history.push(subagent_completion_runtime_message(&c.payload));
+                            // `ContextPatch` apply (tighten-only
+                            // `auto_approve`/`trust_mode`) is deferred — it mutates
+                            // `Session` state not reachable through `ChatHistory`,
+                            // and production hardcodes `context_patch: None`
+                            // today (same gap class as compaction's working-set
+                            // / cycle-state reinject).
+                        }
+                        self.emit_status(format!(
+                            "Resuming turn with {count} sub-agent completion(s)"
+                        ))
+                        .await;
+                        // A subagent resume is a new step (production's
+                        // `turn.next_step()`), unlike the capacity/reactive
+                        // `continue`s which retry the *same* step — so the
+                        // `max_steps` bound still covers a chain of completions.
+                        step += 1;
+                        continue;
+                    }
+                }
                 callback.on_complete(&StopReason::NoToolCalls).await;
                 return Ok(StopReason::NoToolCalls);
             }
@@ -2345,7 +2493,8 @@ impl HostAgentExecutor {
 
             // (4) per-step post-tool seam — loop-guard halt (absorbed);
             // capacity post-tool checkpoint (opt-in `CapacityController` Gate A
-            // + error-escalation) / cycle land here later. The hard
+            // + error-escalation) still to come; cycle (checkpoint-restart) is a
+            // post-turn concern deferred to the wire-in step. The hard
             // token-budget preflight (Gate B) is absorbed at seam (1).
             if let Some(message) = loop_guard_halt {
                 tracing::warn!("{}", message);
@@ -2949,6 +3098,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3050,6 +3200,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3104,6 +3255,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3144,6 +3296,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -3226,6 +3379,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3268,6 +3422,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -3342,6 +3497,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3396,6 +3552,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         executor
             .collect_lsp_diagnostics("edit_file", &serde_json::json!({"path":"foo.rs"}))
@@ -3418,6 +3575,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
             None,
@@ -3465,6 +3623,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3493,6 +3652,7 @@ mod tests {
             AgentExecutorConfig::default(),
             None,
             Some(LspProbe::new(fake.clone(), PathBuf::from("/tmp/ws"))),
+            None,
             None,
             None,
             None,
@@ -3548,6 +3708,7 @@ mod tests {
             },
             None,
             Some(probe),
+            None,
             None,
             None,
             None,
@@ -3650,6 +3811,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3693,6 +3855,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -3760,6 +3923,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3799,6 +3963,7 @@ mod tests {
             callback,
             AgentExecutorConfig::default(),
             Some(tx),
+            None,
             None,
             None,
             None,
@@ -3851,6 +4016,45 @@ mod tests {
         (tx, Arc::new(tokio::sync::Mutex::new(rx)))
     }
 
+    /// Create a sub-agent completion channel pair: the sender for tests to push
+    /// [`SubAgentCompletion`]s, and the interior-mutable receiver the executor
+    /// expects. Uses `std::sync::Mutex` (like `steer_channel`) because the
+    /// post-stream drain uses the synchronous `try_recv` — the lock is never
+    /// held across an `await`. (The deferred blocking hold will migrate both
+    /// steer and subagent receivers to `tokio::sync::Mutex` in the same slice.)
+    fn subagent_channel() -> (
+        mpsc::Sender<SubAgentCompletion>,
+        Arc<Mutex<mpsc::Receiver<SubAgentCompletion>>>,
+    ) {
+        let (tx, rx) = mpsc::channel::<SubAgentCompletion>(64);
+        (tx, Arc::new(Mutex::new(rx)))
+    }
+
+    /// Build a `SubAgentCompletion` with a sentinel payload mirroring the
+    /// `emit_parent_completion` wire shape (human summary line 1, sentinel
+    /// line 2). `context_patch` is `None` — matching production today.
+    fn completion(summary: &str) -> SubAgentCompletion {
+        SubAgentCompletion {
+            agent_id: "test-agent".to_string(),
+            payload: format!(
+                "{summary}\n<codesmith:subagent.done>{{\"agent_id\":\"test-agent\"}}</codesmith:subagent.done>"
+            ),
+            context_patch: None,
+        }
+    }
+
+    /// True if any block of any message is a `Text` block containing the
+    /// sub-agent completion sentinel (`<codesmith:runtime_event kind="subagent_completion">`).
+    fn has_subagent_completion_msg(messages: &[Message]) -> bool {
+        messages.iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text
+                    .contains("kind=\"subagent_completion\""))
+            })
+        })
+    }
+
+
     #[tokio::test]
     async fn steer_drain_injects_queued_input_before_request() {
         let tools = Arc::new(ToolSet::new());
@@ -3875,6 +4079,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
             None,
             None,
             None,
@@ -3937,6 +4142,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -3975,6 +4181,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4009,6 +4216,7 @@ mod tests {
             Some(tx),
             None,
             Some(rx_steer),
+            None,
             None,
             None,
             None,
@@ -4059,6 +4267,7 @@ mod tests {
             None,
             None,
             Some(rx_steer),
+            None,
             None,
             None,
             None,
@@ -4160,6 +4369,7 @@ mod tests {
             Some(rx_approval),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4204,6 +4414,7 @@ mod tests {
             Some(rx_approval),
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -4242,6 +4453,7 @@ mod tests {
             None,
             None,
             None, // no approval channel
+            None,
             None,
             None,
         );
@@ -4290,6 +4502,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
             None,
         );
@@ -4341,6 +4554,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
             None,
         );
@@ -4411,6 +4625,7 @@ mod tests {
             None,
             None,
             Some(rx_approval),
+            None,
             None,
             None,
         );
@@ -4515,6 +4730,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -4545,6 +4761,7 @@ mod tests {
                 compaction_config_disabled(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
             None,
         );
         let reason = executor
@@ -4597,6 +4814,7 @@ mod tests {
                 PathBuf::from("/tmp/codesmith-test"),
             )),
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "what did the file say".to_string())
@@ -4643,6 +4861,7 @@ mod tests {
                 compaction_config_low_threshold(),
                 PathBuf::from("/tmp/codesmith-test"),
             )),
+            None,
             None,
         );
         let reason = executor
@@ -4693,6 +4912,7 @@ mod tests {
             None,
             Some(probe),
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "continue".to_string())
@@ -4735,6 +4955,7 @@ mod tests {
             None,
             None,
             Some(probe),
+            None,
             None,
         );
 
@@ -4793,6 +5014,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -4822,6 +5044,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -4853,6 +5076,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -4886,6 +5110,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -4922,6 +5147,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let reason = executor
             .run(&mut history, "what did the file say".to_string())
@@ -4976,6 +5202,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5030,6 +5257,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5068,6 +5296,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let err = executor
             .run(&mut history, "hello".to_string())
@@ -5109,6 +5338,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let err = executor
             .run(&mut history, "hello".to_string())
@@ -5145,6 +5375,7 @@ mod tests {
             None,
             None,
             None, // no capacity probe ⇒ reactive recovery disabled
+            None,
         );
         let err = executor
             .run(&mut history, "hello".to_string())
@@ -5186,6 +5417,7 @@ mod tests {
             None,
             None,
             Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
         );
         let reason = executor
             .run(&mut history, "hello".to_string())
@@ -5289,6 +5521,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -5332,6 +5565,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -5391,6 +5625,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -5443,6 +5678,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -5535,6 +5771,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -5584,6 +5821,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -5801,6 +6039,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // Run on a spawned task so the test can observe the tool's signal
@@ -5856,6 +6095,7 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
+            None,
             None,
             None,
             None,
@@ -5935,6 +6175,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // Suppress the panic message on stderr (the panic is caught by the
@@ -6002,6 +6243,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let reason = executor
@@ -6057,5 +6299,257 @@ mod tests {
                 metadata: None,
             })
         }
+    }
+
+    // === subagent post-stream completion drain =================================
+
+    #[tokio::test]
+    async fn subagent_none_is_noop() {
+        // No subagent receiver ⇒ the turn ends on the first no-tool-call round,
+        // no extra messages injected.
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut ok = text_block(0, "all done");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![ok]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // [user(seed), assistant(text)] — no completion injected.
+        assert_eq!(history.len(), 2);
+        assert!(!has_subagent_completion_msg(sess.messages.as_slice()));
+        assert_eq!(mock.requests().len(), 1, "one stream round, no resume");
+    }
+
+    #[tokio::test]
+    async fn subagent_empty_queue_returns_no_tool_calls() {
+        // A present-but-empty completion queue ⇒ NoToolCalls (the blocking hold
+        // for running children is deferred; with no queued completion and no
+        // running-count probe, the turn ends).
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (_tx_sub, rx_sub) = subagent_channel();
+
+        let mut ok = text_block(0, "all done");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![ok]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(history.len(), 2);
+        assert!(!has_subagent_completion_msg(sess.messages.as_slice()));
+        assert_eq!(mock.requests().len(), 1, "no resume when queue empty");
+    }
+
+    #[tokio::test]
+    async fn subagent_drain_injects_queued_completions_and_resumes() {
+        // Two completions queued before run. Round 1: model returns no tool
+        // calls ⇒ drain finds 2 completions ⇒ inject 2 sentinel user messages
+        // ⇒ resume. Round 2: model returns no tool calls ⇒ drain empty ⇒ end.
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx.clone()),
+            None,
+            test_template(),
+        ));
+
+        let (tx_sub, rx_sub) = subagent_channel();
+        tx_sub.send(completion("child-a finished")).await.unwrap();
+        tx_sub.send(completion("child-b finished")).await.unwrap();
+
+        let call1 = {
+            let mut c = text_block(0, "let me wait for children");
+            c.extend(finish("end_turn"));
+            c
+        };
+        let call2 = {
+            let mut c = text_block(0, "resuming, all done");
+            c.extend(finish("end_turn"));
+            c
+        };
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Two stream rounds — the turn resumed after the first drain.
+        assert_eq!(mock.requests().len(), 2, "drain resumed the turn");
+
+        // The injected sentinels reached the transcript. Layout:
+        // [user(seed), assistant(text), user(sentinel-a), user(sentinel-b),
+        //  assistant(text)]
+        assert!(history.len() >= 5, "expected ≥5 messages, got {}", history.len());
+        // Both sentinel messages are present in the session transcript.
+        let sentinel_msgs: Vec<&Message> = sess
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text, .. } if text
+                        .contains("kind=\"subagent_completion\""))
+                })
+            })
+            .collect();
+        assert_eq!(sentinel_msgs.len(), 2, "expected 2 sentinel messages");
+        // The second stream request saw the sentinels (they were pushed before
+        // the resume, so the request snapshot includes them).
+        let reqs = mock.requests();
+        let second_req_has_sentinels = reqs[1]
+            .iter()
+            .filter(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text, .. } if text
+                        .contains("kind=\"subagent_completion\""))
+                })
+            })
+            .count();
+        assert_eq!(
+            second_req_has_sentinels, 2,
+            "second request must include both sentinels"
+        );
+
+        // Status surfaced the resume count.
+        let msgs = statuses(&drain(&mut rx));
+        assert!(
+            msgs.iter().any(|m| m.contains("Resuming turn with 2 sub-agent completion(s)")),
+            "expected resume status, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_picks_up_completion_queued_between_runs() {
+        // Cross-run persistence: the `Arc<Mutex<Receiver>>` lives on the
+        // executor struct, so a completion queued between runs is surfaced on
+        // the next run's post-stream drain — a per-run local receiver could
+        // not do this.
+        let tools = Arc::new(ToolSet::new());
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_sub, rx_sub) = subagent_channel();
+
+        // run1: one text round, no completion queued ⇒ clean NoToolCalls.
+        let mut ok = text_block(0, "first turn");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![ok, {
+            let mut c = text_block(0, "second turn after child finished");
+            c.extend(finish("end_turn"));
+            c
+        }]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+        );
+
+        // run1: no completion queued → NoToolCalls, no sentinel.
+        let mut sess1 = fresh_session();
+        let mut history1 = SessionChatHistory::new(&mut sess1);
+        let reason1 = executor
+            .run(&mut history1, "turn one".to_string())
+            .await
+            .expect("run1");
+        assert_eq!(reason1, StopReason::NoToolCalls);
+        assert!(!has_subagent_completion_msg(sess1.messages.as_slice()));
+        assert_eq!(mock.requests().len(), 1, "run1: one round, no resume");
+
+        // Between runs: queue a completion on the SAME receiver.
+        tx_sub.send(completion("child finished between turns")).await.unwrap();
+
+        // run2: SAME executor (+ new Session). Post-stream drain surfaces the
+        // queued completion → resume → second round ends.
+        let mut sess2 = fresh_session();
+        let mut history2 = SessionChatHistory::new(&mut sess2);
+        let reason2 = executor
+            .run(&mut history2, "turn two".to_string())
+            .await
+            .expect("run2");
+        assert_eq!(reason2, StopReason::NoToolCalls);
+        // The completion was drained on run2 (2 stream rounds in run2 alone:
+        // round1 resumes, round2 ends). Total rounds across both runs = 3.
+        assert_eq!(mock.requests().len(), 3, "run2 resumed after draining");
+        assert!(
+            has_subagent_completion_msg(sess2.messages.as_slice()),
+            "run2 transcript must contain the completion drained from the shared receiver"
+        );
+        // The run2 resume request (the 3rd overall, the 2nd of run2) saw the sentinel.
+        let reqs = mock.requests();
+        assert!(
+            reqs[2].iter().any(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text, .. } if text
+                        .contains("kind=\"subagent_completion\""))
+                })
+            }),
+            "run2's second request must include the sentinel"
+        );
     }
 }

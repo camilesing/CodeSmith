@@ -1051,6 +1051,105 @@ reactive capacity recovery（需 error message 供 `is_context_length_error_mess
 
 ---
 
+**进度（2026-07-11 §E subagent post-stream completion drain 落地，第九个 guardrail，seam-2 非阻塞，`feat/pluggable-framework-core`）：**
+
+§E 的第十六个切片落地——把生产 `handle_deepseek_turn` 的 sub-agent completion handoff 吸收进
+`HostAgentExecutor`。当模型在某步无 tool calls 结束时，执行器 `try_recv` 排空
+`rx_subagent_completion`，把已到达的子 agent 完成事件（queued during inference 或 turn 间到达）
+作为 `<codesmith:runtime_event kind="subagent_completion">` sentinel user 消息注入 transcript 并
+resume turn（而非结束 turn）——镜像 `turn_loop.rs:1317-1397` 的非阻塞 drain + late drain
+（`1501-1532`）。这兑现了 `prompts/base.md` 对模型的 sentinel 契约。本轮纯增量（`host_executor.rs` +
+`turn_loop.rs` 一处 visibility 放宽），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+
+- **选型：subagent 先于 cycle。** ROADMAP 列剩余两 guardrail：subagent + cycle。经核实 **cycle
+  （`cycle_manager.rs`）不在 `handle_deepseek_turn` 内**——它是 768K-token 检查点重启，跑在
+  `handle_send_message` 里 `handle_deepseek_turn` 返回 `Completed` 之后（`engine/mod.rs:1199-1201`），
+  是 post-turn / Session 级关注（swap `Session.messages` / `cycle_count` / `cycle_briefings`），不契合
+  executor 的四 seam loop 模型，且其状态不经 `ChatHistory` 可达——**deferred 到 wire-in 步**（接
+  `handle_send_message` 时自然落地）。subagent 是真正的 in-loop guardrail（seam-2 post-stream，
+  `turn_loop.rs:1296-1567`），是退役 `handle_deepseek_turn` 的阻塞项，故本轮吸收之。
+- **吸收的是非阻塞 drain；阻塞 hold deferred。** 镜像 steer/capacity 的拆法。生产有两段 drain：
+  非阻塞 `try_recv`（`turn_loop.rs:1318` + `1506`）+ 阻塞 hold（`biased select!` over cancel /
+  completion `recv().await` / steer `recv().await`，`turn_loop.rs:1330-1368`）。本轮吸收非阻塞 drain；
+  阻塞 hold 需 `CancellationToken`（跨 guardrail 既有 gap）+ `SubAgentApi::running_count` + tokio-Mutex
+  receiver（steer receiver 须同步迁移），deferred 到 wire-in。executor 无 thinking-only /
+  goal-continuation / REPL 分支，故 `tool_uses.is_empty()` 臂**一个 drain 点**同时覆盖生产的主 drain
+  + late drain。
+- **`subagent` 字段**：`HostAgentExecutor` 新增
+  `subagent: Option<Arc<std::sync::Mutex<mpsc::Receiver<SubAgentCompletion>>>>` + 构造器第 11 参数
+  （非-subagent embed/测试传 `None`——54 个既有测试构造器各加一个 `None`）。**mutex 选
+  `std::sync::Mutex`**（同 steer——`try_recv` 同步、锁不跨 `await`；最接近的同类先例）。forward-compat
+  注记：阻塞 hold 切片（future）会把 steer + subagent 两个 receiver 一并迁 `tokio::sync::Mutex`（同
+  approval 先例）以支持 `recv().await`。receiver 跨 `run` 调用持久（匹配生产
+  `Engine.rx_subagent_completion` 字段——turn 间到达的 completion 在下一 turn 首 drain 取出）。
+- **`subagent_completion_runtime_message` → `pub(crate)`**（`turn_loop.rs:2820`）：单一源，避免
+  sentinel 格式漂移（同 `summarize_text` / `accumulate_stream` 放宽先例）。executor 直接引用
+  `super::turn_loop::subagent_completion_runtime_message`，零格式重复。
+- **drain 接线（seam 2）**：`run_inner` 的 `tool_uses.is_empty()` 臂（原直接 return `NoToolCalls`）
+  改为先 `probe.lock()` + `try_recv` 循环排空 completion（锁在同步 try_recv 后立即 drop，不跨
+  `history.push` 的 await——匹配 steer/LSP 先例）；非空则逐条 `history.push(subagent_completion_runtime_message(&c.payload))`、
+  发 `"Resuming turn with N sub-agent completion(s)"` status、`step += 1`（匹配生产 `turn.next_step()`——
+  subagent resume 是新 step，非"重试同 step"，故 `max_steps` bound 仍覆盖 completion 链；既有
+  capacity/reactive `continue` 是重试同 step 故不增，语义不同）、`continue`。空则（阻塞 hold deferred）
+  return `NoToolCalls`。
+- **刻意部分桥接（by design / gaps）**：
+  - **阻塞 hold deferred**：`should_hold_turn_for_subagents` + `biased select!` 需
+    `CancellationToken` + `SubAgentApi::running_count` + tokio-Mutex receiver。故 `subagent` 有值但队列
+    空时 turn 立即结束（`NoToolCalls`）而非 hold——子 agent 的 completion 在下一 turn 的 drain 浮现
+    而非 mid-turn。随 wire-in 接入。
+  - **`ContextPatch` apply deferred**：生产 drain 后 tighten-only apply `auto_approve`/`trust_mode`
+    （`turn_loop.rs:1373-1388`）；`ChatHistory` 不暴露这些（host 耦合，同 compaction 的 working-set/
+    cycle-state gap），故 patches 丢弃。生产今日 `emit_parent_completion` 硬编码 `context_patch: None`，
+    故 defer 是安全 no-op。随 wire-in（`Session` 可达）。
+  - **无 `<turn_meta>` 富化**：sentinel 用纯 `subagent_completion_runtime_message`（role `user`，无
+    `user_text_message_with_turn_metadata` 包裹），同 steer/LSP flush 既有 gap。
+  - **steer post-stream resume deferred**：生产无 tool calls 且 `pending_steers` 非空时也 resume
+    （`turn_loop.rs:1297`）；executor 的 steer 是 seam-1 try_recv，post-stream steer 在下一步首 pre-request
+    drain 取出——同 steer 切片的三次级排空点 deferral。随阻塞 hold 同期接入（`biased select!` steer 臂）。
+- **test doubles**：`subagent_channel()`（`mpsc::channel::<SubAgentCompletion>(64)` +
+  `Arc::new(Mutex::new(rx))`，镜像 `steer_channel`）、`completion(summary)` 构造器（payload =
+  `summary + sentinel`，`context_patch: None`）、`has_subagent_completion_msg(messages)` 断言 helper。
+  4 个新测试：`subagent_none_is_noop`（无 receiver→NoToolCalls、无 sentinel、1 次 stream）、
+  `subagent_empty_queue_returns_no_tool_calls`（receiver 空队列→NoToolCalls、无 resume）、
+  `subagent_drain_injects_queued_completions_and_resumes`（2 条预排队→transcript 出现 2 条 sentinel user
+  消息、第 2 次 stream 请求含两条 sentinel、2 次 stream 后 NoToolCalls、status "Resuming turn with 2
+  sub-agent completion(s)"）、`subagent_picks_up_completion_queued_between_runs`（**receiver 持久证明**：
+  run1 无 completion 干净收尾→turn 间推 1 条 completion→run2 同 executor + 新 Session 首 drain 取出→
+  transcript 出现、run2 第 2 次请求含它——per-run 局部 receiver 做不到，证 `Arc<Mutex<Receiver>>` 跨
+  run 持久）。共 60 个 host_executor 测试通过（56 既有 + 4 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime`
+（lib）零 warning；`cargo test -p codesmith-agent --lib` 79 通过；`cargo test -p codesmith-agent-runtime --lib
+host_executor` 60 通过（56 既有 + 4 新 subagent）；`cargo test -p codesmith-agent-runtime --lib` 1066 通过、
+1 失败（`mcp::tests::streamable_http_stale_session_reconnects_and_retries_tool_call`——既有偶发，隔离重跑通过，
+与本轮无关）、2 ignored（原 1061 +4 = 1065 passed，+1 因 flaky 计入 failed 故 1066 passed/1 failed）；
+test build 10 warning 均既有（零新 warning）；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，
+与本轮无关）。
+
+**下一聚焦工作：**
+- **cycle（wire-in 步）**：cycle 是 post-turn / Session 级 checkpoint-restart，不在 turn loop 内；
+  随 `HostAgentExecutor` 接入 `handle_send_message` 时落地（`maybe_advance_cycle` 是 turn 返回
+  `Completed` 后的 post-turn 步）。本轮已从 host_executor 的 seam-1/seam-4 注释移除"cycle land
+  here later"误导，改为"post-turn concern, deferred to wire-in"。
+- **subagent 阻塞 hold**（`biased select!` for running children）：需 cancel-token + steer/subagent
+  receiver 迁 tokio mutex + `SubAgentApi::running_count`。随 wire-in 或单独小切片。
+- **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in
+  切片，需完整 `CapacityController` 状态机。
+- **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity
+  recovery 短路（preflight + reactive）+ early-tool-start spawn 短路 + subagent 阻塞 hold + loop 顶取消检查，
+  在 wire-in 步或单独小切片接入。
+- **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements /
+  working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery + subagent
+  的 `ContextPatch` apply。
+- **`ToolCallStarted` stream-time 合成 + bridge 去重**：需 `Callback::on_tool_start` 透传 wire id 或
+  bridge 层 name+input pairing——与 wire-in 耦合，可同期接入。
+- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：剩余 in-loop guardrail 已吸收（九个——
+  compaction/capacity/approval/steer/transparent-retry/early-tool-start/subagent/LSP/loop-guard）；cycle 是
+  post-turn 非 in-loop。阻塞 hold + cancel-token + 闭合项就位后即可接入。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
