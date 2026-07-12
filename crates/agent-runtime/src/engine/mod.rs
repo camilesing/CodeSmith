@@ -1033,7 +1033,7 @@ impl Engine {
         // just before `executor.run` — see the wire-in below.
 
         // Create turn context first so start event includes a stable turn id.
-        let turn = TurnContext::new(self.config.max_steps);
+        let mut turn = TurnContext::new(self.config.max_steps);
         self.turn_counter = self.turn_counter.saturating_add(1);
         self.capacity_controller.mark_turn_start(self.turn_counter);
 
@@ -1273,6 +1273,14 @@ impl Engine {
         // (cwd sync / `maybe_advance_cycle` / usage / `TurnComplete` / snapshot)
         // touches `self.session` again.
         drop(history);
+        // Harvest per-turn token usage from the executor (slice 21 §E). The
+        // inline stream reducer captured `MessageStart`/`MessageDelta` usage
+        // and accumulated it across the turn's streams; this replaces the
+        // end-of-turn handoff the retired `turn_loop.rs:1193`
+        // (`turn.add_usage(&usage)`) used to do inline. Flows into
+        // `total_usage.add` below and `Event::TurnComplete.usage`. The
+        // executor is constructed fresh each turn, so this starts at zero.
+        turn.usage = executor.take_usage();
         let (status, error) = match stop_reason {
             Ok(StopReason::NoToolCalls) | Ok(StopReason::MaxSteps) => {
                 (TurnOutcomeStatus::Completed, None)

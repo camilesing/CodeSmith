@@ -1422,6 +1422,32 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 - **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
+**进度（2026-07-12 §E per-turn usage tracking（token 计数器修复），slice 21，`feat/pluggable-framework-core`）：**
+
+§E 的第二十一个切片落地——修复 wire-in cutover（slice 20）丢的 token-usage 采集。cutover 后 `reduce_stream` 把 `MessageStart` 当 no-op（丢 `message.usage`）、`MessageDelta` 解构 `..` 丢 `usage: Option<Usage>`，致 `turn.usage` 恒零、`session.total_usage` 不累加（mod.rs:1306 add 空值）、`Event::TurnComplete.usage` 恒空（mod.rs:1313）——token 计数器停转。本轮按"不动核心 trait"约束，在 executor 内部用 interior-mutability 字段复刻退役 `handle_deepseek_turn` 的 usage 语义（经 `git show 42123572~1:turn_loop.rs` 核实）。零既有调用点行为改动（73 个 test 调用点不动——usage 字段在 `new()` Self literal 默认，镜像 slice 20 的 `tool_dispatcher: None` 模式）。
+
+- **Step 1 — usage 字段 + 采集 helper**（`host_executor.rs`）：加 `usage: std::sync::Mutex<Usage>` 字段（`std::sync` 非 tokio——累加是 sync 字段算术，锁不跨 `await`，镜像 LSP/steer/compaction 先例），`new()` Self literal 内 `usage: std::sync::Mutex::new(Usage::default())` 默认（无新构造器 param——73 test 不动）。加 `take_usage(&self) -> Usage`（lock+clone，executor 每轮 fresh 构造故无跨轮泄漏）+ `accumulate_usage(&self, &Usage)`（`input`/`output` saturating_add，`prompt_cache_hit`/`miss`/`reasoning_tokens` 经 `add_optional_usage`——镜像 `TurnContext::add_usage` 同 5 字段；`reasoning_replay_tokens`/`server_tool_use` 不累加，镜像 `add_usage` 亦不碰——faithful）。模块级 free fn `add_optional_usage`（`turn.rs` 同名 fn private 不可达，duplicate 注 "lift later"，同 `approval_intent_summary`/`block_tool_result` class）。
+- **Step 2 — `reduce_stream` 采集**（`host_executor.rs`）：local `let mut usage = Usage { input_tokens: 0, ..default };`。`MessageStart` arm `{ message } => { usage = message.usage; }`（REPLACE——镜像 `turn_loop.rs:838`）。`MessageDelta` arm bind `usage: delta_usage`，`if let Some(u) = delta_usage { usage = u; }`（REPLACE——latest cumulative wins，镜像 `turn_loop.rs:1137-1141`）。`StreamReduceOutcome`：`Complete` + `Partial` 加 `usage: Usage` 字段；`Empty` 不带（Empty→retry 丢 usage，镜像生产 `continue` before `turn.add_usage`——by-design divergence：失败轮的 partial MessageStart usage 丢，`total_usage` 仅反映成功 step）。
+- **Step 3 — 透传 `StreamRoundOutcome::Content` + `run_inner` 累加**（`host_executor.rs`）：`StreamRoundOutcome::Content` 加 `usage: Usage`；`stream_with_transparent_retry` 从 `Complete`/`Partial` destructure `usage` 透传进 `Content { content, stop_reason, usage }`。`run_inner` Content arm destructure `usage` → `self.accumulate_usage(&usage);`（跨 step ADD——镜像 `turn_loop.rs:1193` `turn.add_usage`）。
+- **Step 4 — host 回读**（`mod.rs handle_send_message`）：`let turn =` → `let mut turn =`（可赋值 `turn.usage`）。`drop(history);` 后、`self.session.total_usage.add(&turn.usage)` 前插 `turn.usage = executor.take_usage();`——流入既有 `total_usage.add`（mod.rs:1306）+ `Event::TurnComplete { usage: turn.usage }`（mod.rs:1313），无其他 post-turn 改动。early-failure 路径（mod.rs:1093）不构造 executor，`turn.usage` 恒零（正确——无 LLM 跑）。
+- **Tests**（`host_executor.rs #[cfg(test)]`）：helpers `message_start_with_usage(input)` / `finish_with_usage(stop, input, output)`（cumulative——MessageDelta usage 在生产是 cumulative，REPLACE 覆盖整 `Usage`，故 delta 重发 input）/ `usage_round(input, output)`。5 个新 test：(1) `usage_captures_message_start_and_delta_within_a_stream`（单流 MessageStart{in:100}+text+Delta{cumulative in:100,out:50} → take_usage in:100/out:50）；(2) `usage_accumulates_across_multiple_steps`（echo tool roundtrip 两流 in:100/out:50 + in:120/out:30 → in:220/out:80，跨 step ADD）；(3) `usage_replaces_within_stream_keeps_latest_delta`（单流两 Delta usage out:30→70 → out:70，within-stream REPLACE）；(4) `usage_none_on_clean_stream_is_zero`（`end_call()` 无 MessageStart、usage:None → 零，legacy event shape 无回归）；(5) `usage_empty_retry_drops_failed_attempt_usage`（MessageStart{in:100} then mid-flight Err（Empty）then clean round in:200/out:60 → take_usage 仅计 clean round，failed attempt 的 100 丢——验证"thread through Content not Empty"+transparent-retry 交互）。
+
+**By-design divergences（附理由）：**
+- **Empty→budget-exhausted→Err**：生产在失败流也累加 partial（MessageStart）usage；executor 返 `Err`（轮失败）丢之。失败轮的 minor divergence——`total_usage` 仅反映成功 step。
+- **`reasoning_replay_tokens`/`server_tool_use`**：`TurnContext::add_usage` 亦不累加（生产 `turn.usage` 从不带），`accumulate_usage` 镜像同 5 字段保持 faithful。
+- **`take_usage` read-once**：host 每轮后读一次；executor 每轮 fresh 构造故无跨轮泄漏。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 78 通过（73 既有 + 5 新）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改——不动核心 trait）；`cargo +1.90.0 build --workspace` 全绿（tui 143 均既有死代码）。
+
+**下一聚焦工作：**
+- **deferred-gaps cleanup 切片**：最高价值是 `<turn_meta>` enrichment 的 seam 重设计（Arc-shared working_set 或 post-stream host callback）——解锁 steer/LSP/subagent 的 turn_meta + working_set observe + mid-stream steer drain（三 gap 同根）。
+- **`ToolCallStarted` stream-time + bridge 去重**：`Callback::on_tool_start` 透传 wire id 或 bridge name+input pairing。
+- **post-compact cleanup**：`Session` system-prompt mutability + host-coupled attachment/working-set 可达（summary-prompt 当前丢弃）。
+- **per-input-approval 专用 test**：override-downgrade 断言（ExecutesCode 工具 + dispatcher 返 Auto ⇒ 不 approval）。
+- **dead-code deletion 切片**：把 slice 20 `#[allow(dead_code)]` 的 17 项中真正 orphan 的删掉（streaming config cluster / `mcp_tool_approval_description` / `emit_tool_audit`），superseded 方法按 re-wire 决策保留或删。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
 ---
 
 ## §A — Provider extraction (bulk migration)

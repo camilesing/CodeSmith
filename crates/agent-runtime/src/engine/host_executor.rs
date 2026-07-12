@@ -563,7 +563,7 @@ use codesmith_agent::llm_client::{LlmClientHandle, StreamEventBox};
 use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, StreamEvent,
-    SystemPrompt, ToolCaller,
+    SystemPrompt, ToolCaller, Usage,
 };
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
@@ -937,6 +937,20 @@ fn finalize_blocks(blocks: BTreeMap<u32, BlockBuild>) -> Vec<ContentBlock> {
         .collect()
 }
 
+/// `Option<u32>` saturating add — mirrors `turn.rs::add_optional_usage`
+/// (`Some` + `Some` → saturating add; `Some` + `None` → keep the `Some`;
+/// `None` + `None` → `None`). Defined inline here rather than re-exported
+/// from `turn.rs` to keep the slice self-contained; the two can be unified
+/// into a shared `Usage::add` later.
+fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
+    match (total, delta) {
+        (Some(t), Some(d)) => Some(t.saturating_add(d)),
+        (Some(t), None) => Some(t),
+        (None, Some(d)) => Some(d),
+        (None, None) => None,
+    }
+}
+
 /// Outcome of the inline stream reducer ([`HostAgentExecutor::reduce_stream`]).
 /// Replaces the CORE `accumulate_stream`'s binary `Result<(Vec<ContentBlock>,
 /// Option<String>)>` with a three-way result that distinguishes "clean
@@ -949,6 +963,13 @@ enum StreamReduceOutcome {
     Complete {
         content: Vec<ContentBlock>,
         stop_reason: Option<String>,
+        /// Token usage captured for this stream (slice 21 §E):
+        /// `MessageStart` sets input tokens, `MessageDelta` overwrites with
+        /// the latest cumulative usage (replace-within-stream — mirrors the
+        /// retired `turn_loop.rs:838` / `:1137-1141`). The caller adds it to
+        /// the per-turn total (mirrors `turn_loop.rs:1193`
+        /// `turn.add_usage`).
+        usage: Usage,
     },
     /// The stream produced content (text/thinking/tool deltas arrived) and
     /// then died mid-flight. The partial content assembled so far is available
@@ -959,6 +980,10 @@ enum StreamReduceOutcome {
         content: Vec<ContentBlock>,
         stop_reason: Option<String>,
         error: String,
+        /// Same capture as [`StreamReduceOutcome::Complete`]'s `usage` — the
+        /// partial stream's usage up to the mid-flight death (surfaced, not
+        /// retried, so its tokens still count).
+        usage: Usage,
     },
     /// The stream died before any content was produced (only `MessageStart`
     /// or nothing arrived). Safe to retry transparently — the provider hasn't
@@ -978,6 +1003,10 @@ enum StreamRoundOutcome {
     Content {
         content: Vec<ContentBlock>,
         stop_reason: Option<String>,
+        /// Per-stream usage threaded up from [`reduce_stream`] (slice 21 §E)
+        /// — `run_inner` adds it to the per-turn total via
+        /// [`HostAgentExecutor::accumulate_usage`].
+        usage: Usage,
     },
     /// A pre-stream context-length rejection was classified (via
     /// [`is_context_length_error_message`]) and emergency compaction succeeded
@@ -1114,6 +1143,18 @@ pub struct HostAgentExecutor {
     /// ~1700). A `Some(Auto)` answer downgrades an `ExecutesCode` tool to
     /// no-approval for a specific safe input.
     tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
+    /// Per-turn token usage accumulated across streams (slice 21 §E). The
+    /// inline stream reducer ([`reduce_stream`]) captures `MessageStart` +
+    /// `MessageDelta` usage (replace-within-stream — the latest cumulative
+    /// value wins, mirroring the retired `turn_loop.rs:838` /
+    /// `:1137-1141`); `run_inner` adds each completed stream's usage here
+    /// (mirrors `turn_loop.rs:1193` `turn.add_usage(&usage)`). The host
+    /// reads it back via [`HostAgentExecutor::take_usage`] after `run`
+    /// returns — the executor is constructed fresh per turn, so there is
+    /// no cross-turn leakage. `std::sync::Mutex` (not tokio): accumulation
+    /// is synchronous field arithmetic, and the lock is never held across
+    /// an `await` (matches the `LspProbe` / `CompactionProbe` precedent).
+    usage: std::sync::Mutex<Usage>,
 }
 
 impl HostAgentExecutor {
@@ -1160,6 +1201,7 @@ pub fn new(
         cancel_token,
         subagent_api,
         tool_dispatcher: None,
+        usage: std::sync::Mutex::new(Usage::default()),
     }
 }
 
@@ -1175,6 +1217,43 @@ pub fn new(
     ) -> Self {
         self.tool_dispatcher = tool_dispatcher;
         self
+    }
+
+    /// Read back the per-turn token usage accumulated by the inline stream
+    /// reducer (slice 21 §E). The host calls this after `run` returns to
+    /// populate `turn.usage` — the end-of-turn handoff the retired
+    /// `turn_loop.rs:1193` (`turn.add_usage(&usage)`) used to do inline. The
+    /// executor is constructed fresh each turn, so this starts at zero and
+    /// reflects only the current turn's streams. Clones under the lock (cheap;
+    /// read once).
+    #[must_use]
+    pub fn take_usage(&self) -> Usage {
+        self.usage.lock().expect("usage mutex poisoned").clone()
+    }
+
+    /// Add one completed stream's usage to the per-turn total (slice 21 §E).
+    /// Mirrors `TurnContext::add_usage` (`turn.rs:106`):
+    /// `input_tokens` / `output_tokens` saturating-add, the optional cache /
+    /// reasoning fields add when both sides are present. (`reasoning_replay_
+    /// tokens` / `server_tool_use` are intentionally not accumulated —
+    /// `add_usage` omits them too, so production's `turn.usage` never carried
+    /// them; this stays faithful.) The `add_optional_usage` helper duplicates
+    /// `turn.rs`'s private one — to be unified into a shared `Usage::add`
+    /// later, same class of "lift later" duplication as
+    /// `approval_intent_summary` / `block_tool_result`.
+    fn accumulate_usage(&self, delta: &Usage) {
+        let mut acc = self.usage.lock().expect("usage mutex poisoned");
+        acc.input_tokens = acc.input_tokens.saturating_add(delta.input_tokens);
+        acc.output_tokens = acc.output_tokens.saturating_add(delta.output_tokens);
+        acc.prompt_cache_hit_tokens = add_optional_usage(
+            acc.prompt_cache_hit_tokens,
+            delta.prompt_cache_hit_tokens,
+        );
+        acc.prompt_cache_miss_tokens = add_optional_usage(
+            acc.prompt_cache_miss_tokens,
+            delta.prompt_cache_miss_tokens,
+        );
+        acc.reasoning_tokens = add_optional_usage(acc.reasoning_tokens, delta.reasoning_tokens);
     }
 
     /// Surface a guardrail status message onto the host's UI `Event` channel,
@@ -1249,6 +1328,18 @@ pub fn new(
         let mut blocks: BTreeMap<u32, BlockBuild> = BTreeMap::new();
         let mut stop_reason: Option<String> = None;
         let mut any_content_received = false;
+        // Per-stream usage (slice 21 §E): `MessageStart` sets input tokens,
+        // `MessageDelta` overwrites with the latest cumulative usage
+        // (replace-within-stream — mirrors the retired `turn_loop.rs:838` /
+        // `:1137-1141`). Returned on `Complete`/`Partial` so the caller adds
+        // it to the per-turn total (mirrors `turn_loop.rs:1193`). `Empty`
+        // carries none — a retried stream's partial usage is dropped, matching
+        // production's `continue` before `turn.add_usage`.
+        let mut usage = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            ..Usage::default()
+        };
 
         while let Some(item) = stream.next().await {
             let event = match item {
@@ -1263,6 +1354,7 @@ pub fn new(
                             content,
                             stop_reason,
                             error,
+                            usage,
                         };
                     }
                     return StreamReduceOutcome::Empty { error };
@@ -1277,7 +1369,13 @@ pub fn new(
             }
 
             match event {
-                StreamEvent::MessageStart { .. } => {}
+                StreamEvent::MessageStart { message } => {
+                    // Replace the running usage with the message's usage
+                    // (input tokens + cache tokens arrive here for Anthropic
+                    // / OpenAI). Mirrors the retired `turn_loop.rs:838`
+                    // `usage = message.usage;`.
+                    usage = message.usage;
+                }
                 StreamEvent::ContentBlockStart {
                     index,
                     content_block,
@@ -1430,8 +1528,14 @@ pub fn new(
                 }
                 StreamEvent::MessageDelta {
                     delta: MessageDelta { stop_reason: sr, .. },
-                    ..
+                    usage: delta_usage,
                 } => {
+                    if let Some(u) = delta_usage {
+                        // Replace — the latest cumulative usage wins (mirrors
+                        // the retired `turn_loop.rs:1137-1141`
+                        // `if let Some(u) = delta_usage { usage = u; }`).
+                        usage = u;
+                    }
                     if sr.is_some() {
                         stop_reason = sr;
                     }
@@ -1442,7 +1546,11 @@ pub fn new(
         }
 
         let content = finalize_blocks(blocks);
-        StreamReduceOutcome::Complete { content, stop_reason }
+        StreamReduceOutcome::Complete {
+            content,
+            stop_reason,
+            usage,
+        }
     }
 
     /// (2) per-step post-stream seam — transparent stream retry + reactive
@@ -1572,6 +1680,7 @@ pub fn new(
                 StreamReduceOutcome::Complete {
                     content,
                     stop_reason,
+                    usage,
                 } => {
                     // Checkpoint D — post-stream cancel gate (mirrors
                     // `turn_loop.rs:1147-1150`): even a cleanly-completed
@@ -1583,12 +1692,13 @@ pub fn new(
                     // Healthy round → reset the retry budget so a bad prior
                     // step doesn't carry over (mirrors `turn_loop.rs:1186`).
                     *stream_retry_attempts = 0;
-                    return Ok(StreamRoundOutcome::Content { content, stop_reason });
+                    return Ok(StreamRoundOutcome::Content { content, stop_reason, usage });
                 }
                 StreamReduceOutcome::Partial {
                     content,
                     stop_reason,
                     error,
+                    usage,
                 } => {
                     // Checkpoint D — post-stream cancel gate. Same as Complete:
                     // if cancelled, discard the partial content and return
@@ -1607,7 +1717,7 @@ pub fn new(
                         "Stream interrupted after partial content; surfacing what was received: {error}"
                     ))
                     .await;
-                    return Ok(StreamRoundOutcome::Content { content, stop_reason });
+                    return Ok(StreamRoundOutcome::Content { content, stop_reason, usage });
                 }
                 StreamReduceOutcome::Empty { error } => {
                     // Checkpoint C — transparent-retry `!cancelled` guard
@@ -2476,7 +2586,12 @@ impl HostAgentExecutor {
                 )
                 .await
             {
-                Ok(StreamRoundOutcome::Content { content, stop_reason }) => {
+                Ok(StreamRoundOutcome::Content { content, stop_reason, usage }) => {
+                    // Add this stream's usage to the per-turn total — the
+                    // end-of-stream handoff the retired `turn_loop.rs:1193`
+                    // (`turn.add_usage(&usage)`) used to do inline; the host
+                    // now reads it back via `take_usage` after `run` returns.
+                    self.accumulate_usage(&usage);
                     // The reactive recovery budget is reset on a successful
                     // stream open inside `stream_with_transparent_retry`
                     // (mirrors `turn_loop.rs:617`).
@@ -3442,6 +3557,67 @@ mod tests {
             },
             StreamEvent::MessageStop,
         ]
+    }
+
+    /// A `MessageStart` carrying `input_tokens` — mirrors production, where the
+    /// stream's first event seeds per-stream usage (`reduce_stream`'s
+    /// `MessageStart` arm does `usage = message.usage;`, a REPLACE). Other
+    /// `MessageResponse` fields are canned; only `usage` flows into
+    /// `reduce_stream`. (slice 21 §E usage-tracking tests.)
+    fn message_start_with_usage(input_tokens: u32) -> StreamEvent {
+        StreamEvent::MessageStart {
+            message: MessageResponse {
+                id: "usage-start".to_string(),
+                r#type: "message".to_string(),
+                role: "assistant".to_string(),
+                content: Vec::new(),
+                model: "mock-v0".to_string(),
+                stop_reason: None,
+                stop_sequence: None,
+                container: None,
+                usage: Usage {
+                    input_tokens,
+                    output_tokens: 0,
+                    ..Usage::default()
+                },
+            },
+        }
+    }
+
+    /// Like `finish` but the trailing `MessageDelta` carries cumulative usage
+    /// — the per-stream usage the provider sends at stream end (`reduce_stream`'s
+    /// `MessageDelta` arm REPLACE: the whole `Usage` is replaced, latest wins).
+    /// The `input_tokens` is cumulative (re-sent by the provider alongside
+    /// `output_tokens`), so a stream that opened with `MessageStart(input)`
+    /// still reports that input after the delta replaces it. (slice 21 §E.)
+    fn finish_with_usage(stop: &str, input_tokens: u32, output_tokens: u32) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: Some(stop.to_string()),
+                    stop_sequence: None,
+                },
+                usage: Some(Usage {
+                    input_tokens,
+                    output_tokens,
+                    ..Usage::default()
+                }),
+            },
+            StreamEvent::MessageStop,
+        ]
+    }
+
+    /// A clean single-stream round carrying usage: `MessageStart(input)` + a
+    /// text block + `MessageDelta(usage input,output)` + `MessageStop`. Composes
+    /// [`message_start_with_usage`] + [`text_block`] + [`finish_with_usage`].
+    /// The delta repeats `input` (cumulative) so the round reports
+    /// `{input_tokens: input, output_tokens: output}` after reduction.
+    /// (slice 21 §E usage-tracking tests.)
+    fn usage_round(input: u32, output: u32) -> Vec<StreamEvent> {
+        let mut call = vec![message_start_with_usage(input)];
+        call.extend(text_block(0, "answer"));
+        call.extend(finish_with_usage("end_turn", input, output));
+        call
     }
 
     /// One-file `DiagnosticBlock` with a single ERROR line, the canned payload
@@ -7830,5 +8006,212 @@ mod tests {
             2,
             "[user(seed), assistant] — no steer messages"
         );
+    }
+
+    // === usage tracking (slice 21 §E) ======================================
+    //
+    // Restores the token-counter that the §E wire-in cutover (slice 20) dropped:
+    // `reduce_stream` now seeds per-stream usage on `MessageStart` and replaces
+    // it on each `MessageDelta` (latest cumulative wins), and `run_inner`
+    // accumulates across steps into the executor's `usage` field, which the
+    // host harvests via `take_usage`. These tests pin the three semantics:
+    //   - within a stream: REPLACE (MessageStart seeds, MessageDelta overwrites)
+    //   - across steps:    ADD (each step's final usage sums into the turn total)
+    //   - Empty → retry:   DROP (a stream that dies before content contributes
+    //     no usage — usage threads through `Content`, not `Empty`).
+
+    #[tokio::test]
+    async fn usage_captures_message_start_and_delta_within_a_stream() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // One stream: MessageStart(input=100) + text + MessageDelta(cumulative
+        // input=100, output=50). After reduction the delta's usage replaces the
+        // MessageStart seed, so the round reports {input:100, output:50}.
+        let mock = Arc::new(MockLlm::new(vec![usage_round(100, 50)]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        );
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let usage = executor.take_usage();
+        assert_eq!(usage.input_tokens, 100, "MessageStart input captured");
+        assert_eq!(usage.output_tokens, 50, "MessageDelta output captured");
+    }
+
+    #[tokio::test]
+    async fn usage_accumulates_across_multiple_steps() {
+        // A tool-call roundtrip spans two streams, so usage accrues across
+        // steps (ADD), not just within one (REPLACE).
+        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/ws")));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Stream 1: text + tool_use(echo); MessageStart(100) / Delta(100, 50).
+        let mut call1 = vec![message_start_with_usage(100)];
+        call1.extend(text_block(0, "calling echo"));
+        call1.extend(tool_use_block(1, "call_1", "echo", r#"{"text":"hi"}"#));
+        call1.extend(finish_with_usage("tool_use", 100, 50));
+        // Stream 2: text + end; MessageStart(120) / Delta(120, 30).
+        let call2 = usage_round(120, 30);
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        );
+        let reason = executor
+            .run(&mut history, "echo hi".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Across steps: 100+120 input, 50+30 output.
+        let usage = executor.take_usage();
+        assert_eq!(usage.input_tokens, 220, "100 + 120 across two steps");
+        assert_eq!(usage.output_tokens, 80, "50 + 30 across two steps");
+    }
+
+    #[tokio::test]
+    async fn usage_replaces_within_stream_keeps_latest_delta() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // One stream with two MessageDelta usage events (provider sends a
+        // partial cumulative 30, then the final 70). Within a stream the latest
+        // delta wins (REPLACE), so output=70 — not 30+70=100.
+        let mut call = vec![message_start_with_usage(0)];
+        call.extend(text_block(0, "answer"));
+        call.push(StreamEvent::MessageDelta {
+            delta: MessageDelta {
+                stop_reason: None,
+                stop_sequence: None,
+            },
+            usage: Some(Usage {
+                input_tokens: 0,
+                output_tokens: 30,
+                ..Usage::default()
+            }),
+        });
+        call.push(StreamEvent::MessageDelta {
+            delta: MessageDelta {
+                stop_reason: Some("end_turn".to_string()),
+                stop_sequence: None,
+            },
+            usage: Some(Usage {
+                input_tokens: 0,
+                output_tokens: 70,
+                ..Usage::default()
+            }),
+        });
+        call.push(StreamEvent::MessageStop);
+        let mock = Arc::new(MockLlm::new(vec![call]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        );
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let usage = executor.take_usage();
+        assert_eq!(
+            usage.output_tokens, 70,
+            "within-stream REPLACE keeps the latest cumulative delta, not 30+70"
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_none_on_clean_stream_is_zero() {
+        // Regression guard: the legacy event shape (no MessageStart, usage:None
+        // on the MessageDelta — what every existing test double emits) must
+        // leave the turn usage at zero. No behavior change for these shapes.
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        );
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let usage = executor.take_usage();
+        assert_eq!(usage.input_tokens, 0, "no MessageStart ⇒ no input");
+        assert_eq!(usage.output_tokens, 0, "usage:None ⇒ no output");
+    }
+
+    #[tokio::test]
+    async fn usage_empty_retry_drops_failed_attempt_usage() {
+        // A stream that yields only MessageStart(input=100) then dies mid-flight
+        // produces an Empty outcome (MessageStart doesn't flip
+        // any_content_received, so no content ⇒ Empty ⇒ transparent retry).
+        // Empty carries no usage, so the failed attempt's input=100 is dropped —
+        // usage threads through Content, not Empty. The retry's clean round
+        // (input=200, output=60) is what the host harvests.
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::EventsThenErr(
+                vec![message_start_with_usage(100)],
+                "connection reset".to_string(),
+            ),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        );
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run recovers via transparent retry");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // The failed attempt was issued, then retried: two stream calls.
+        assert_eq!(mock.requests().len(), 2, "failed attempt + one retry");
+
+        let usage = executor.take_usage();
+        assert_eq!(
+            usage.input_tokens, 200,
+            "failed attempt's MessageStart(100) dropped; only the clean round's 200 kept"
+        );
+        assert_eq!(usage.output_tokens, 60);
     }
 }
