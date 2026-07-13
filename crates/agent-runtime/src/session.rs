@@ -246,26 +246,43 @@ impl Session {
     }
 
     /// Record a successful `read_file` output for post-compaction reminders.
+    ///
+    /// Thin wrapper over [`record_read_file_result_into`] — the shared
+    /// implementation also used by the framework-core `ReinjectProbe`
+    /// (slice 25b §E follow-on) so the executor's tool-result path can populate
+    /// the same `Arc<VecDeque>` *during* `run` (while `&mut self.session` is
+    /// borrowed by `SessionChatHistory`), mirroring the retired
+    /// `turn_loop.rs:2523-2525` observe site.
     pub fn record_read_file_result(&mut self, input: &Value, output_for_context: &str) {
-        let Some(path) = input.get("path").and_then(Value::as_str) else {
-            return;
-        };
-        let preview = summarize_chars(output_for_context, RECENT_READ_FILE_SNIPPET_CHARS);
-        let mut files = self
-            .recent_read_files
-            .lock()
-            .expect("recent_read_files poisoned");
-        if let Some(existing) = files.iter().position(|entry| entry.path == path) {
-            files.remove(existing);
-        }
-        files.push_back(RecentReadFile {
-            path: path.to_string(),
-            input: input.clone(),
-            output_preview: preview,
-        });
-        while files.len() > RECENT_READ_FILE_LIMIT {
-            files.pop_front();
-        }
+        record_read_file_result_into(&self.recent_read_files, input, output_for_context);
+    }
+}
+
+/// Shared implementation: dedup by `path`, push back a capped preview, trim to
+/// [`RECENT_READ_FILE_LIMIT`]. Both [`Session::record_read_file_result`] and
+/// the framework-core `ReinjectProbe::record_read_file_result` call this so
+/// the observe logic has a single source (lifted now rather than duplicated —
+/// same precedent as `edit_file_paths` / `summarize_subagents`).
+pub(crate) fn record_read_file_result_into(
+    files: &Arc<StdMutex<VecDeque<RecentReadFile>>>,
+    input: &Value,
+    output_for_context: &str,
+) {
+    let Some(path) = input.get("path").and_then(Value::as_str) else {
+        return;
+    };
+    let preview = summarize_chars(output_for_context, RECENT_READ_FILE_SNIPPET_CHARS);
+    let mut files = files.lock().expect("recent_read_files poisoned");
+    if let Some(existing) = files.iter().position(|entry| entry.path == path) {
+        files.remove(existing);
+    }
+    files.push_back(RecentReadFile {
+        path: path.to_string(),
+        input: input.clone(),
+        output_preview: preview,
+    });
+    while files.len() > RECENT_READ_FILE_LIMIT {
+        files.pop_front();
     }
 }
 

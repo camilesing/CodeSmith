@@ -401,12 +401,18 @@
 //!   budget trial + push). The micro-compact arms are untouched (they clear
 //!   tool-result content in place, not attachment messages). See
 //!   [`HostAgentExecutor::reinject_compaction_attachments`].
-//!   - **read-file observe site still deferred** — `recent_read_files` is
-//!     populated by `Session::record_read_file_result`, which has no production
-//!     caller yet (the read_file tool-result path doesn't feed it). The
-//!     read_files candidate therefore fires only when populated (tests);
-//!     wiring the observe site is a follow-on sub-slice. The Arc-ification +
-//!     reinject path are in place ahead of that wiring.
+//!   - **read-file observe site absorbed ✅** — `recent_read_files` is now
+//!     populated *during* `run` by the (3) per-tool seam: when a `read_file`
+//!     tool succeeds, the executor feeds the compacted/sanitized output
+//!     (`compact_tool_result_for_context` — strips hidden Unicode attacks via
+//!     `partially_sanitize_unicode`, HackerOne #3086545) into
+//!     [`ReinjectProbe::record_read_file_result`], which dedup-by-path + push +
+//!     trim on the shared `Arc<VecDeque<RecentReadFile>>`. Mirrors the retired
+//!     `turn_loop.rs:2523-2525`. No-op when `reinject` is `None` (no probe ⇒ no
+//!     `Arc` to write ⇒ the data would never be read by a reinject). The
+//!     `run_compaction` reinject's provider-budget (currently `None`; passing
+//!     `context_input_budget_for_provider` needs threading `api_provider` /
+//!     `model`) remains a refinement.
 //! - **post-compact cleanup deferred (25c)** — production's `post_compact_cleanup`
 //!   forces a working-set rebuild and resets per-file cycle state after a
 //!   compaction (the transcript the working set was derived from is now stale).
@@ -609,9 +615,9 @@ use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSe
 
 use super::approval::ApprovalDecision;
 use super::context::{
-    context_input_budget_for_provider, estimate_input_tokens_conservative,
-    is_context_length_error_message, MAX_CONTEXT_RECOVERY_ATTEMPTS,
-    MIN_RECENT_MESSAGES_TO_KEEP,
+    compact_tool_result_for_context, context_input_budget_for_provider,
+    estimate_input_tokens_conservative, is_context_length_error_message,
+    MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
 };
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
@@ -849,6 +855,11 @@ pub struct ReinjectProbe {
     plan_state: crate::tool_state::plan::SharedPlanState,
     todos: crate::tool_state::todo::SharedTodoList,
     recent_read_files: Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
+    /// Model id used by [`compact_tool_result_for_context`] (model-dependent
+    /// context limits) when observing a `read_file` result into
+    /// `recent_read_files`. Mirrors the retired `turn_loop.rs` call
+    /// `compact_tool_result_for_context(&self.session.model, …)`.
+    model: String,
 }
 
 impl ReinjectProbe {
@@ -856,18 +867,37 @@ impl ReinjectProbe {
     /// (`Engine::handle_send_message`) calls this *before* the
     /// `&mut self.session` borrow held by `SessionChatHistory`, snapshotting
     /// live handles (not values) so the executor reads current state at
-    /// reinject time (plans / todos / subagents change during a turn).
+    /// reinject time (plans / todos / subagents change during a turn). `model`
+    /// is a point-in-time snapshot of `session.model` (immutable for a turn)
+    /// feeding the read_file observe site (slice 25b §E follow-on).
     #[must_use]
     pub fn new(
         plan_state: crate::tool_state::plan::SharedPlanState,
         todos: crate::tool_state::todo::SharedTodoList,
         recent_read_files: Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
+        model: String,
     ) -> Self {
         Self {
             plan_state,
             todos,
             recent_read_files,
+            model,
         }
+    }
+
+    /// The model id carried by this probe (for
+    /// [`compact_tool_result_for_context`]).
+    pub(crate) fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Record a successful `read_file` output into the shared
+    /// `recent_read_files` queue (mirrors [`Session::record_read_file_result`]
+    /// via the shared [`record_read_file_result_into`]). Called by the
+    /// executor's tool-result path when a `read_file` tool succeeds, so the
+    /// data is live for the next compaction reinject.
+    pub fn record_read_file_result(&self, input: &serde_json::Value, output_for_context: &str) {
+        crate::session::record_read_file_result_into(&self.recent_read_files, input, output_for_context);
     }
 }
 
@@ -2188,6 +2218,36 @@ pub fn new(
         }
     }
 
+    /// (3) per-tool observe seam — record a successful `read_file` output into
+    /// the shared `recent_read_files` queue so a later compaction can re-inject
+    /// a concise reminder. Mirrors the retired `turn_loop.rs:2523-2525`:
+    ///
+    /// ```text
+    /// let output_for_context = compact_tool_result_for_context(&model, name, &output);
+    /// if output.success && name == "read_file" {
+    ///     self.session.record_read_file_result(&tool_input, &output_for_context);
+    /// }
+    /// ```
+    ///
+    /// Feeds the *compacted / sanitized* form (not raw content) so hidden
+    /// Unicode-character attacks (HackerOne #3086545) are stripped before the
+    /// preview is retained — a security property the raw-content path would
+    /// lose. Synchronous; the lock is taken and dropped before returning,
+    /// never held across an `await`. No-op when `reinject` is `None` (no
+    /// probe ⇒ no `recent_read_files` Arc ⇒ the data would never be read by a
+    /// reinject, so skipping is correct), when the tool isn't `read_file`, or
+    /// when the result didn't succeed.
+    fn record_read_file_result(&self, name: &str, input: &serde_json::Value, result: &ToolResult) {
+        if name != "read_file" || !result.success {
+            return;
+        }
+        let Some(probe) = &self.reinject else {
+            return;
+        };
+        let output_for_context = compact_tool_result_for_context(probe.model(), name, result);
+        probe.record_read_file_result(input, &output_for_context);
+    }
+
     /// (1) per-step pre-request seam — drain the pending LSP diagnostics into a
     /// synthetic `user` message so the model sees compile errors before its next
     /// reasoning step. Mirrors `Engine::flush_pending_lsp_diagnostics`
@@ -3467,12 +3527,15 @@ impl HostAgentExecutor {
 
                 // (3) per-tool seam — loop-guard (absorbed); ✅ LSP post-edit
                 // collect (only on a successful, non-blocked edit — mirrors
-                // production `output.success && tool_was_executed`); approval /
+                // production `output.success && tool_was_executed`); ✅ read_file
+                // observe (records the compacted/sanitized output into
+                // `recent_read_files` for post-compaction reinject); approval /
                 // early-tool-start / parallel land here later.
                 if !blocked {
                     if let Ok(r) = &result {
                         if r.success {
                             self.collect_lsp_diagnostics(&name, &input).await;
+                            self.record_read_file_result(&name, &input, r);
                         }
                     }
                 }
@@ -3725,6 +3788,60 @@ mod tests {
             Ok(ToolResult {
                 content: format!("edit failed:{path}"),
                 success: false,
+                metadata: None,
+            })
+        }
+    }
+
+    /// A `ToolSpec` standing in for `read_file`: returns a configurable content
+    /// + success flag so the §E read_file observe seam (keyed on tool name
+    /// `read_file` + `output.success`) can be exercised. The `path` input field
+    /// flows through to `record_read_file_result` (the observe dedup key).
+    struct ReadFileSpec {
+        content: String,
+        success: bool,
+    }
+
+    impl ReadFileSpec {
+        fn new(content: &str) -> Self {
+            Self {
+                content: content.to_string(),
+                success: true,
+            }
+        }
+        fn failing(content: &str) -> Self {
+            Self {
+                content: content.to_string(),
+                success: false,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for ReadFileSpec {
+        fn name(&self) -> &str {
+            "read_file"
+        }
+        fn description(&self) -> &str {
+            "Reads a file at `path`; used to drive the read_file observe seam."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } }
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult {
+                content: self.content.clone(),
+                success: self.success,
                 metadata: None,
             })
         }
@@ -5569,6 +5686,24 @@ mod tests {
         call
     }
 
+    /// Build a `ReadFileSpec` tool registry → framework `ToolSet`. The spec is
+    /// configured with the given content + success flag so the observe seam can
+    /// test both happy and failed paths.
+    fn read_file_tools(spec: ReadFileSpec) -> Arc<ToolSet> {
+        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/ws")));
+        registry.register(Arc::new(spec));
+        Arc::new(registry.to_framework_tool_set())
+    }
+
+    /// Round 1: the model calls `read_file` (id `call_1`) with a `path` input.
+    fn read_file_call(path: &str) -> Vec<StreamEvent> {
+        let input = format!(r#"{{"path":"{path}"}}"#);
+        let mut call = text_block(0, "reading the file now");
+        call.extend(tool_use_block(1, "call_1", "read_file", &input));
+        call.extend(finish("tool_use"));
+        call
+    }
+
     /// Round 2: a clean text turn ending the loop.
     fn end_call() -> Vec<StreamEvent> {
         let mut call = text_block(0, "done");
@@ -6493,6 +6628,7 @@ mod tests {
             Arc::clone(&plan_state),
             Arc::clone(&todos),
             Arc::clone(&sess.recent_read_files),
+            sess.model.clone(),
         );
         (plan_state, todos, probe)
     }
@@ -6756,6 +6892,282 @@ mod tests {
             .await;
         assert_eq!(pushed, 0, "no probe ⇒ reinject is a no-op");
         assert_eq!(history.messages().len(), before);
+    }
+
+    // === read_file observe site (slice 25b §E follow-on) ==================
+
+    /// Build a [`ReinjectProbe`] sharing the session's `recent_read_files`
+    /// `Arc` (so tests can assert on the live queue after `run`), carrying the
+    /// session's model for `compact_tool_result_for_context`.
+    fn read_file_reinject_probe(sess: &Session) -> ReinjectProbe {
+        ReinjectProbe::new(
+            new_shared_plan_state(),
+            new_shared_todo_list(),
+            Arc::clone(&sess.recent_read_files),
+            sess.model.clone(),
+        )
+    }
+
+    /// Snapshot the `recent_read_files` queue as a `Vec<RecentReadFile>` clone.
+    fn recent_read_files_snapshot(sess: &Session) -> Vec<crate::session::RecentReadFile> {
+        sess.recent_read_files
+            .lock()
+            .expect("recent_read_files poisoned")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn read_file_observe_populates_recent_read_files() {
+        let mut sess = fresh_session();
+        let probe = read_file_reinject_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![
+            read_file_call("src/lib.rs"),
+            end_call(),
+        ]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            read_file_tools(ReadFileSpec::new("pub fn library() {}")),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        let reason = executor
+            .run(&mut history, "read the file".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        let entries = recent_read_files_snapshot(&sess);
+        assert_eq!(entries.len(), 1, "one read_file result observed");
+        assert_eq!(entries[0].path, "src/lib.rs");
+        assert!(
+            entries[0].output_preview.contains("pub fn library()"),
+            "preview retains the (sanitized) file content: {:?}",
+            entries[0].output_preview
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_observe_skips_non_read_file_tools() {
+        let mut sess = fresh_session();
+        let probe = read_file_reinject_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        // Use the echo tool (name "echo") — not "read_file".
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut echo_round = text_block(0, "echoing");
+        echo_round.extend(tool_use_block(1, "call_1", "echo", r#"{"text":"hi"}"#));
+        echo_round.extend(finish("tool_use"));
+        let mock = Arc::new(MockLlm::new(vec![echo_round, end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        executor
+            .run(&mut history, "echo something".to_string())
+            .await
+            .expect("run");
+        let entries = recent_read_files_snapshot(&sess);
+        assert!(entries.is_empty(), "non-read_file tools are not observed");
+    }
+
+    #[tokio::test]
+    async fn read_file_observe_skips_failed_read_file() {
+        let mut sess = fresh_session();
+        let probe = read_file_reinject_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![
+            read_file_call("missing.rs"),
+            end_call(),
+        ]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            read_file_tools(ReadFileSpec::failing("Error: file not found")),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        executor
+            .run(&mut history, "read the file".to_string())
+            .await
+            .expect("run");
+        let entries = recent_read_files_snapshot(&sess);
+        assert!(
+            entries.is_empty(),
+            "a failed read_file (success: false) must not be observed"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_observe_dedup_by_path_keeps_latest() {
+        let mut sess = fresh_session();
+        let probe = read_file_reinject_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        // Two read_file calls to the same path; the second content wins.
+        let mock = Arc::new(MockLlm::new(vec![
+            {
+                let mut c = read_file_call("src/lib.rs");
+                // second tool_use in the same round
+                c.extend(tool_use_block(2, "call_2", "read_file", r#"{"path":"src/lib.rs"}"#));
+                c.extend(finish("tool_use"));
+                c
+            },
+            end_call(),
+        ]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            read_file_tools(ReadFileSpec::new("fn second_read() {}")),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        executor
+            .run(&mut history, "read the file twice".to_string())
+            .await
+            .expect("run");
+        let entries = recent_read_files_snapshot(&sess);
+        assert_eq!(entries.len(), 1, "dedup by path keeps one entry");
+        assert!(
+            entries[0].output_preview.contains("fn second_read()"),
+            "latest content retained: {:?}",
+            entries[0].output_preview
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_observe_strips_hidden_unicode() {
+        // Security: the observe feeds `compact_tool_result_for_context`, which
+        // runs `partially_sanitize_unicode` (HackerOne #3086545). A zero-width
+        // char (U+200B) injected into file content must not survive into the
+        // retained preview — otherwise it would be re-injected post-compaction.
+        let mut sess = fresh_session();
+        let probe = read_file_reinject_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![
+            read_file_call("evil.txt"),
+            end_call(),
+        ]));
+        // Content with a zero-width space injected mid-token.
+        let poisoned = format!("clean_start\u{200B}secret_end");
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            read_file_tools(ReadFileSpec::new(&poisoned)),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        executor
+            .run(&mut history, "read the file".to_string())
+            .await
+            .expect("run");
+        let entries = recent_read_files_snapshot(&sess);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            !entries[0].output_preview.contains('\u{200B}'),
+            "zero-width char must be stripped from the retained preview: {:?}",
+            entries[0].output_preview
+        );
+        assert!(
+            entries[0].output_preview.contains("clean_start"),
+            "non-hidden content retained: {:?}",
+            entries[0].output_preview
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_observe_none_reinject_is_noop() {
+        // No `ReinjectProbe` ⇒ the observe site must be a silent no-op (no
+        // panic, no mutation) — mirrors `reinject_no_probe_is_noop` for the
+        // observe (write) side.
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![
+            read_file_call("src/lib.rs"),
+            end_call(),
+        ]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            read_file_tools(ReadFileSpec::new("pub fn library() {}")),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(None);
+        executor
+            .run(&mut history, "read the file".to_string())
+            .await
+            .expect("run");
+        let entries = recent_read_files_snapshot(&sess);
+        assert!(
+            entries.is_empty(),
+            "no reinject probe ⇒ observe is a no-op, recent_read_files untouched"
+        );
     }
 
     // === capacity helpers ================================================

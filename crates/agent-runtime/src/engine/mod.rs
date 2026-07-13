@@ -1243,6 +1243,7 @@ impl Engine {
             Arc::clone(&self.config.plan_state),
             Arc::clone(&self.config.todos),
             Arc::clone(&self.session.recent_read_files),
+            self.session.model.clone(),
         );
         let executor = HostAgentExecutor::new(
             client,
