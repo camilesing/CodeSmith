@@ -413,14 +413,32 @@
 //!     `run_compaction` reinject's provider-budget (currently `None`; passing
 //!     `context_input_budget_for_provider` needs threading `api_provider` /
 //!     `model`) remains a refinement.
-//! - **post-compact cleanup deferred (25c)** — production's `post_compact_cleanup`
-//!   forces a working-set rebuild and resets per-file cycle state after a
-//!   compaction (the transcript the working set was derived from is now stale).
-//!   Working-set / cycle state are host-coupled and not reachable through
-//!   `ChatHistory`; also needs the mutual-exclusivity with the summary merge
-//!   (production does merge XOR cleanup by compaction type: full→merge,
-//!   micro→cleanup) plus the divorced `CompactionProbe` circuit-breaker /
-//!   micro-state slots (fresh per run, not the session's).
+//! - **post-compact cleanup absorbed ✅ (post-`run`, slice 25c §E)** — production's
+//!   `post_compact_cleanup` force-rebuilds the working set and resets per-file
+//!   cycle state (`micro_compact_state` / `circuit_breaker` /
+//!   `last_system_prompt_hash`) after a compaction (the transcript the working
+//!   set was derived from is now stale). The three plain `Session` fields are
+//!   only reachable through `&mut Session`, which the executor can't hold
+//!   during `run`; the reset only matters for the next turn anyway (like the
+//!   25a summary merge), so the executor records a [`signal_post_compact_cleanup`]
+//!   slot and the host runs the existing `post_compact_cleanup(&mut
+//!   self.session)` free fn post-`run` (single source — no mid-run `CleanupProbe`
+//!   or Arc-ification of the plain fields needed; the probe's
+//!   `circuit_breaker` / `micro_state` are fresh-each-turn anyway since the
+//!   executor is constructed per-turn, so resetting the session's vestigial
+//!   fields is harmless and matches production intent). The signal fires on
+//!   any *non-merge* compaction (pre-request micro / recovery micro /
+//!   hard-trim) and NOT on the full-compact arms (which record a
+//!   `summary_prompt` for the 25a merge), preserving the production XOR
+//!   `full→merge`, `micro/partial→cleanup`. The host runs merge FIRST then
+//!   cleanup (mirrors production's `partial→both` order at `mod.rs:1901` →
+//!   `:1905`); when both fire, cleanup clears the `last_system_prompt_hash`
+//!   merge just set → next turn re-assembles. Of the four resets, only two
+//!   are live-meaningful (`last_system_prompt_hash = None` forces next-turn
+//!   `refresh_system_prompt` re-assembly; `working_set.force_rebuild()` clears
+//!   stale entries); the `micro_compact_state` / `circuit_breaker` resets hit
+//!   vestigial session fields the live compaction path doesn't read (the live
+//!   path uses the probe's divorced slots).
 //! - **enhancements passed `None`** — production's
 //!   `build_compaction_enhancements` supplies PreCompact hooks + a
 //!   session-memory-first summary seed. None of that surfaces through the
@@ -434,10 +452,15 @@
 //!   derivation here; both are `None` (compaction uses the internally-derived
 //!   paths, matching `recover_context_overflow`'s forced path). Wires in with
 //!   the working-set slice.
-//! - **`emit_session_updated` on the merge path only (partial ✅, slice 25a §E)**
+//! - **`emit_session_updated` on the post-`run` closure ✅ (slice 25a/25c §E)**
 //!   — the host emits a `SessionUpdated` UI refresh alongside the post-`run`
-//!   summary merge. A full-cascade emit (mirroring production's per-phase
-//!   surfacing on the reinject / cleanup paths) remains deferred to 25b/25c.
+//!   compaction closure (the 25a summary merge and/or the 25c cleanup, when
+//!   either signal fired). The mid-`run` transcript replacements (`clear()` +
+//!   `push()`) in `run_compaction` / `recover_context_overflow` / `reinject`
+//!   still don't emit per-phase (they go through `ChatHistory::push`, which
+//!   `SessionChatHistory` fans out as `SessionUpdated` in production but is a
+//!   no-op in the executor's own tests); the post-`run` emit is the
+//!   authoritative refresh.
 //! - **no backoff delay in tests** — on a compaction failure the executor only
 //!   records it with the breaker and surfaces a status event (no sleep);
 //!   production adds an exponential backoff before retrying. Non-transient
@@ -481,11 +504,14 @@
 //!   shares `run_compaction`'s absorbed post-compact paths: the
 //!   `merge_compaction_summary` slot (slice 25a §E — recorded into
 //!   [`HostAgentExecutor::take_pending_compaction_summary`] for the host to
-//!   fold post-`run`) **and** the `reinject_compaction_attachments` path
-//!   (slice 25b §E — fires right after the transcript replace with
-//!   `Some(target_budget)`; dedup + budget trial + push). Still deferred (see
-//!   "Known gaps in compaction" above): `post_compact_cleanup` (25c),
-//!   `enhancements`, and working-set pins/paths.
+//!   fold post-`run`), the `reinject_compaction_attachments` path (slice 25b
+//!   §E — fires right after the transcript replace with
+//!   `Some(target_budget)`; dedup + budget trial + push), **and** the
+//!   `post_compact_cleanup` signal (slice 25c §E — the recovery-micro and
+//!   hard-trim arms set [`HostAgentExecutor::take_pending_post_compact_cleanup`]
+//!   for the host to run the cleanup free fn post-`run`). Still deferred (see
+//!   "Known gaps in compaction" above): `enhancements`, and working-set
+//!   pins/paths.
 //! - **cancel-token short-circuit** ✅ — production checks `!cancelled` before
 //!   retrying after overflow recovery. This executor's `CancellationToken` is
 //!   now absorbed: the reactive-recovery `continue` (restart step) is bounded
@@ -1420,6 +1446,28 @@ pub struct HostAgentExecutor {
     /// never held across an `await` (matches the `usage` / `LspProbe` /
     /// `CompactionProbe` precedent).
     pending_compaction_summary: std::sync::Mutex<Option<SystemPrompt>>,
+
+    /// Signal that a *non-merge* compaction changed the transcript during
+    /// `run` (slice 25c §E) — set by [`Self::signal_post_compact_cleanup`]
+    /// from the micro-compact arms of [`run_compaction`] /
+    /// [`recover_context_overflow`] and the hard-trim arm of
+    /// [`recover_context_overflow`] (i.e. any compaction that does NOT
+    /// produce a `summary_prompt` to merge). The host reads it back via
+    /// [`HostAgentExecutor::take_pending_post_compact_cleanup`] after `run`
+    /// returns and runs [`crate::compaction::post_compact_cleanup`] on
+    /// `&mut self.session` — the production closure that force-rebuilds the
+    /// working set + resets `last_system_prompt_hash` / `circuit_breaker` /
+    /// `micro_compact_state` after a compaction (the transcript the working
+    /// set was derived from is now stale). Deferred to post-`run` (like the
+    /// 25a summary merge) because the three plain `Session` fields it resets
+    /// are only reachable through `&mut Session`, which the executor can't
+    /// hold during `run`; the reset only matters for the next turn anyway.
+    /// Reuses the existing free fn (single source). The *full-compact* arms
+    /// record a `summary_prompt` (merge path, 25a) and deliberately do NOT
+    /// set this slot — preserving the production XOR `full→merge`,
+    /// `micro/partial→cleanup`. `std::sync::Mutex<bool>` (sync, never held
+    /// across an `await`; matches `usage` / `pending_compaction_summary`).
+    pending_post_compact_cleanup: std::sync::Mutex<bool>,
 }
 
 impl HostAgentExecutor {
@@ -1470,6 +1518,7 @@ pub fn new(
         reinject: None,
         usage: std::sync::Mutex::new(Usage::default()),
         pending_compaction_summary: std::sync::Mutex::new(None),
+        pending_post_compact_cleanup: std::sync::Mutex::new(false),
     }
 }
 
@@ -1562,6 +1611,41 @@ pub fn new(
             .expect("pending_compaction_summary mutex poisoned");
         let current = guard.take();
         *guard = crate::compaction::merge_system_prompts(current.as_ref(), summary);
+    }
+
+    /// Read back whether a *non-merge* compaction changed the transcript
+    /// during `run` (slice 25c §E). The host calls this after `run` returns
+    /// to decide whether to run [`crate::compaction::post_compact_cleanup`]
+    /// on `&mut self.session` (force-rebuild working set + reset
+    /// `last_system_prompt_hash` / `circuit_breaker` / `micro_compact_state`).
+    /// Drains the slot (one-shot); the executor is constructed fresh per turn,
+    /// so no cross-turn leakage. Mirrors the [`take_pending_compaction_summary`]
+    /// read-back pattern. Idempotent: multiple non-merge compactions in one
+    /// turn collapse to a single cleanup.
+    #[must_use]
+    pub fn take_pending_post_compact_cleanup(&self) -> bool {
+        std::mem::replace(
+            &mut *self
+                .pending_post_compact_cleanup
+                .lock()
+                .expect("pending_post_compact_cleanup mutex poisoned"),
+            false,
+        )
+    }
+
+    /// Signal that a *non-merge* compaction changed the transcript (slice
+    /// 25c §E). Called from the micro-compact arms of `run_compaction` /
+    /// `recover_context_overflow` and the hard-trim arm of
+    /// `recover_context_overflow`. The *full-compact* arms do NOT call this
+    /// — they record a `summary_prompt` (merge path, 25a) instead, so the
+    /// host's post-`run` closure preserves the production XOR (`full→merge`,
+    /// `micro/partial→cleanup`). Sync; the boolean is set inside one
+    /// synchronous critical section (no `await` crosses the guard).
+    fn signal_post_compact_cleanup(&self) {
+        *self
+            .pending_post_compact_cleanup
+            .lock()
+            .expect("pending_post_compact_cleanup mutex poisoned") = true;
     }
 
     /// Add one completed stream's usage to the per-turn total (slice 21 §E).
@@ -2580,6 +2664,14 @@ pub fn new(
                     tracing::info!(
                         "{cleared} bytes cleared by micro-compaction before the request"
                     );
+                    // Slice 25c §E: signal the host to run
+                    // `post_compact_cleanup` post-`run` — a non-merge
+                    // compaction just staled the transcript (tool-result
+                    // content cleared to placeholders), so the working set
+                    // + `last_system_prompt_hash` should be reset for the
+                    // next turn. Micro-compact produces no `summary_prompt`,
+                    // so this is the closure (NOT the merge path).
+                    self.signal_post_compact_cleanup();
                 }
             }
         }
@@ -2620,9 +2712,12 @@ pub fn new(
                 // snapshot). Slice 25b §E: `reinject_compaction_attachments`
                 // now fires DURING `run` (right here, after the transcript
                 // replace) — `None` budget (auto-compact isn't at a hard
-                // ceiling; dedup + push only). `post_compact_cleanup` +
-                // `emit_session_updated` remain deferred (25c; emit fires
-                // alongside the host-side post-`run` merge).
+                // ceiling; dedup + push only). Slice 25c §E: this is the *merge*
+                // path, so the cleanup signal is intentionally NOT set here
+                // (full→summary XOR: `post_compact_cleanup` fires only on the
+                // non-merge arms — pre-request micro / recovery micro /
+                // hard-trim). `emit_session_updated` remains deferred until the
+                // host-side post-`run` closure (fires alongside the merge).
                 self.record_compaction_summary(result.summary_prompt.clone());
                 history.clear();
                 for m in result.messages {
@@ -2789,6 +2884,14 @@ pub fn new(
                             .to_string(),
                     )
                     .await;
+                    // Slice 25c §E: signal the host to run
+                    // `post_compact_cleanup` post-`run` — recovery micro
+                    // changed the transcript (no `summary_prompt` produced),
+                    // so this is the cleanup closure, NOT the merge path.
+                    // Mirrors production's recovery-micro → `post_compact_cleanup`
+                    // (the `#[allow(dead_code)]` `Engine::recover_context_overflow`
+                    // micro arm at mod.rs:1850).
+                    self.signal_post_compact_cleanup();
                     return true;
                 }
             }
@@ -2826,9 +2929,13 @@ pub fn new(
                 // snapshot). Slice 25b §E: `reinject_compaction_attachments`
                 // now fires DURING `run` (right here) — `Some(target_budget)`
                 // (at the hard ceiling, mirror production's
-                // `Some(target_budget)`; dedup + budget trial + push).
-                // `post_compact_cleanup` + `emit_session_updated` remain
-                // deferred (25c; emit fires alongside the host-side merge).
+                // `Some(target_budget)`; dedup + budget trial + push). Slice
+                // 25c §E: this is the *merge* path, so the cleanup signal is
+                // intentionally NOT set here (full→summary XOR:
+                // `post_compact_cleanup` fires only on the non-merge arms —
+                // pre-request micro / recovery micro / hard-trim).
+                // `emit_session_updated` remains deferred until the host-side
+                // post-`run` closure (fires alongside the merge).
                 if !result.messages.is_empty() || messages.is_empty() {
                     history.clear();
                     for m in result.messages {
@@ -2854,14 +2961,32 @@ pub fn new(
         let after_compact = estimate_input_tokens_conservative(history.messages(), system);
         if after_compact > target_budget {
             let mut msgs = history.messages().to_vec();
+            let before_trim = msgs.len();
             while msgs.len() > MIN_RECENT_MESSAGES_TO_KEEP
                 && estimate_input_tokens_conservative(&msgs, system) > target_budget
             {
                 msgs.remove(0);
             }
+            // Capture before the `for` loop consumes `msgs`.
+            let trimmed = before_trim > msgs.len();
             history.clear();
             for m in msgs {
                 history.push(m);
+            }
+            // Slice 25c §E: hard-trim is a non-merge compaction — it changes
+            // the transcript (oldest messages removed) without producing a
+            // `summary_prompt`, so signal the host to run
+            // `post_compact_cleanup` post-`run` (force-rebuild working set +
+            // reset `last_system_prompt_hash`). Only fires when the trim
+            // actually removed messages (bounded by
+            // `MIN_RECENT_MESSAGES_TO_KEEP`); a no-op trim (already at the
+            // keep-recent floor) leaves the transcript untouched. If Phase
+            // 2 full compaction also recorded a summary here (rare:
+            // compaction succeeded but didn't free enough budget), both
+            // signals fire — the host does merge THEN cleanup (the
+            // production `partial→both` analog).
+            if trimmed {
+                self.signal_post_compact_cleanup();
             }
         }
 
@@ -6593,6 +6718,312 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
         assert_eq!(mock.compaction_calls(), 0);
         assert!(executor.take_pending_compaction_summary().is_none());
+    }
+
+    // === post-compact cleanup signal (slice 25c §E) =====================
+
+    /// Slice 25c §E: a clean run (no compaction) leaves the cleanup slot
+    /// `false`, so the host's post-`run` `take_pending_post_compact_cleanup`
+    /// is a no-op (the `if needs_cleanup` branch in `mod.rs` is skipped — no
+    /// spurious `post_compact_cleanup` / `emit_session_updated`). Mirrors
+    /// `no_compaction_yields_none_summary` (25a) for the cleanup slot.
+    #[tokio::test]
+    async fn cleanup_signal_none_on_clean_run() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 0);
+        // No compaction ⇒ cleanup slot never set.
+        assert!(
+            !executor.take_pending_post_compact_cleanup(),
+            "clean run must not signal post-compact cleanup"
+        );
+    }
+
+    /// Slice 25c §E: the pre-request Phase-1 micro-compact (inside
+    /// `run_compaction`, triggered before the stream request when the
+    /// transcript holds a large tool result) clears the tool result in place —
+    /// no `summary_prompt`, so it signals the cleanup slot (the non-merge XOR).
+    /// Mirrors `micro_compact_clears_old_tool_results` but asserts the signal.
+    #[tokio::test]
+    async fn cleanup_signal_on_pre_request_micro() {
+        let mut sess = fresh_session();
+        seed_large_file_read(&mut sess);
+        sess.add_message(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "analysis done".to_string(),
+                cache_control: None,
+            }],
+        });
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "follow up".to_string(),
+                cache_control: None,
+            }],
+        });
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        // High threshold ⇒ auto-compaction (Phase-2) won't fire; only the
+        // Phase-1 micro-compact clears the tool result (no LLM call).
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_high_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "what did the file say".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Micro-compact is a no-API pass.
+        assert_eq!(mock.compaction_calls(), 0);
+        // The non-merge micro set the cleanup signal.
+        assert!(
+            executor.take_pending_post_compact_cleanup(),
+            "pre-request micro-compact must signal post-compact cleanup"
+        );
+    }
+
+    /// Slice 25c §E: the capacity-recovery Phase-1 micro-compact (inside
+    /// `recover_context_overflow`, the best-effort in-place tool-result clear
+    /// before forced LLM compaction) signals the cleanup slot when it clears
+    /// enough to avoid the LLM call. Mirrors
+    /// `capacity_micro_compact_clears_tool_results_in_recovery` but asserts the
+    /// signal.
+    #[tokio::test]
+    async fn cleanup_signal_on_recovery_micro() {
+        let mut sess = fresh_session();
+        // A >32 KB `file_read` tool result pushes the transcript over the 3072
+        // budget (Ollama / "llama2"). No CompactionProbe ⇒ run_compaction's
+        // Phase-1 micro is skipped; only the capacity recovery's best-effort
+        // micro runs (and clears enough — no LLM compaction).
+        seed_large_file_read(&mut sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "what did the file say".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Recovery micro cleared the tool result before forced compaction was
+        // needed — no LLM call.
+        assert_eq!(mock.compaction_calls(), 0);
+        // The non-merge recovery micro set the cleanup signal.
+        assert!(
+            executor.take_pending_post_compact_cleanup(),
+            "recovery micro-compact must signal post-compact cleanup"
+        );
+    }
+
+    /// Slice 25c §E: when capacity recovery's Phase-2 LLM compaction fails,
+    /// Phase-3 hard-trim removes oldest messages (bounded by
+    /// `MIN_RECENT_MESSAGES_TO_KEEP`) — a non-merge compaction that changes the
+    /// transcript without a `summary_prompt`, so it signals the cleanup slot.
+    /// Mirrors `capacity_over_budget_recovers_via_hard_trim` but asserts the
+    /// signal.
+    #[tokio::test]
+    async fn cleanup_signal_on_hard_trim() {
+        let mut sess = fresh_session();
+        // 40 text messages × ~200 chars > 3072 budget (Ollama / "llama2").
+        seed_text_messages(&mut sess, 40);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        // Compaction fails → Phase-3 hard trim is the fallback.
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Compaction was attempted (1 call) but failed; hard trim saved the turn.
+        assert_eq!(mock.compaction_calls(), 1);
+        assert!(history.len() < 42, "history len = {}", history.len());
+        // The non-merge hard-trim set the cleanup signal.
+        assert!(
+            executor.take_pending_post_compact_cleanup(),
+            "hard-trim must signal post-compact cleanup"
+        );
+    }
+
+    /// Slice 25c §E: a successful Phase-2 LLM full-compaction records a
+    /// `summary_prompt` (the 25a merge path) and does NOT set the cleanup slot
+    /// — the `full→merge`, `micro/partial→cleanup` XOR. Guards against both
+    /// signals firing on a plain full-compact (the host would run merge THEN a
+    /// spurious cleanup that wipes the just-merged `last_system_prompt_hash`).
+    /// Mirrors `capacity_over_budget_recovers_via_compaction` but asserts the
+    /// XOR.
+    #[tokio::test]
+    async fn full_compact_does_not_signal_cleanup() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 40);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_summary("SUMMARY"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 1);
+        assert!(history.len() < 42);
+        // XOR: full-compact recorded a summary_prompt (merge path)…
+        assert!(
+            executor.take_pending_compaction_summary().is_some(),
+            "full-compact records a summary_prompt for the 25a merge"
+        );
+        // …and did NOT set the cleanup slot (full→merge, not cleanup).
+        assert!(
+            !executor.take_pending_post_compact_cleanup(),
+            "full-compact must not signal post-compact cleanup (full→merge XOR)"
+        );
+    }
+
+    /// Slice 25c §E: `take_pending_post_compact_cleanup` is a one-shot drain
+    /// (the `std::mem::replace(&mut *guard, false)` clears the slot on read),
+    /// so the host's post-`run` closure doesn't see a stale `true` from a
+    /// previous harvest. Mirrors the 25a `take_pending_compaction_summary`
+    /// one-shot semantics.
+    #[tokio::test]
+    async fn take_pending_post_compact_cleanup_is_one_shot() {
+        let mut sess = fresh_session();
+        seed_large_file_read(&mut sess);
+        sess.add_message(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "analysis done".to_string(),
+                cache_control: None,
+            }],
+        });
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "follow up".to_string(),
+                cache_control: None,
+            }],
+        });
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_high_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "what did the file say".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // First take drains the slot (set by the pre-request micro).
+        assert!(
+            executor.take_pending_post_compact_cleanup(),
+            "first take drains the signal set by the micro-compact"
+        );
+        // Second take is false — the slot was cleared on read.
+        assert!(
+            !executor.take_pending_post_compact_cleanup(),
+            "second take is false — one-shot drain cleared the slot"
+        );
     }
 
     // === compaction reinject (slice 25b §E) ==============================

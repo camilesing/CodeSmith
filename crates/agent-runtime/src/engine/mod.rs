@@ -1291,18 +1291,39 @@ impl Engine {
         // `total_usage.add` below and `Event::TurnComplete.usage`. The
         // executor is constructed fresh each turn, so this starts at zero.
         turn.usage = executor.take_usage();
-        // Slice 25a §E: apply the deferred compaction summary merge. The
-        // executor recorded `result.summary_prompt` from `run_compaction` /
-        // `recover_context_overflow` (which the static `config.system`
-        // snapshot can't fold mid-`run`); the host now has
-        // `&mut self.session` back, so it folds the summary into
-        // `session.system_prompt` + `compaction_summary_prompt` (visible to
-        // the NEXT turn's snapshot) + emits a UI refresh. Mirrors the
-        // production host-side post-compaction closure
-        // (`merge_compaction_summary` @ mod.rs:1411-1418). `reinject` +
-        // `post_compact_cleanup` remain deferred (sub-slices 25b/25c).
-        if let Some(summary) = executor.take_pending_compaction_summary() {
+        // Slice 25a/25c §E: apply the deferred compaction closure. The
+        // executor recorded two post-`run` signals during `run`:
+        //   • `summary_prompt` (25a) — from the full-compact arms of
+        //     `run_compaction` / `recover_context_overflow`. The static
+        //     `config.system` snapshot can't fold it mid-`run`; the host now
+        //     has `&mut self.session` back, so it folds the summary into
+        //     `session.system_prompt` + `compaction_summary_prompt` (visible
+        //     to the NEXT turn's snapshot).
+        //   • `post_compact_cleanup` (25c) — from the *non-merge* compaction
+        //     arms (pre-request micro, recovery micro, hard-trim). The host
+        //     runs `post_compact_cleanup` (force-rebuild working set + reset
+        //     `last_system_prompt_hash` / `circuit_breaker` /
+        //     `micro_compact_state` — the transcript the working set was
+        //     derived from is now stale).
+        // Order matters: merge FIRST then cleanup, mirroring production's
+        // `partial→both` (`mod.rs:1901` merge → `:1905` cleanup). When both
+        // fire, cleanup clears the `last_system_prompt_hash` merge just set
+        // → `None` → the next turn re-assembles the system prompt
+        // (re-folding the merged summary), matching production. The two
+        // signals together encode the production XOR: full→merge,
+        // micro/partial→cleanup. `reinject` (25b) ran DURING `run`.
+        let compaction_summary = executor.take_pending_compaction_summary();
+        let needs_cleanup = executor.take_pending_post_compact_cleanup();
+        let had_summary = compaction_summary.is_some();
+        if let Some(summary) = compaction_summary {
             self.merge_compaction_summary(Some(summary));
+        }
+        if needs_cleanup {
+            crate::compaction::post_compact_cleanup::post_compact_cleanup(
+                &mut self.session,
+            );
+        }
+        if had_summary || needs_cleanup {
             self.emit_session_updated().await;
         }
         let (status, error) = match stop_reason {
