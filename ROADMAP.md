@@ -1448,6 +1448,36 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 - **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
+**进度（2026-07-12 §E `<turn_meta>` enrichment seam 落地，Arc-shared WorkingSet + TurnMetaProbe，slice 22，`feat/pluggable-framework-core`）：**
+
+§E 的第二十二个切片落地——闭合 steer/LSP push 在 `executor.run` 期间的 `<turn_meta>` 富化 + `working_set.observe_user_message` 缺口。根因：`executor.run(&mut SessionChatHistory)` 期间 `&mut self.session` 被 `SessionChatHistory` 借走（mod.rs:1187），host 无法触达 live `working_set`/`config` 富化 mid-run push 的 steer/LSP 消息（subagent sentinel 本就 plain，匹配生产）。本轮按"全 Arc-shared"方案（用户批准）：把 `Session.working_set` 从 `WorkingSet` 改为 `Arc<std::sync::Mutex<WorkingSet>>`（既有 probe 模式——LspProbe/CompactionProbe/CapacityProbe），host 在 executor 构造时（borrow 前）clone Arc 进新 `TurnMetaProbe`，故 probe 在 run 期间仍能 observe + 构建 `<turn_meta>`。零既有 test 行为改动（`with_turn_meta` 默认 `None`，78 个既有 test 调用点不动——镜像 slice 20/21 的 `tool_dispatcher`/`usage` 模式）。经 `git show 42123572~1:turn_loop.rs` 核实退役 `handle_deepseek_turn` 的 push 语义（steer observe+enrich / LSP enrich-only / subagent plain）。
+
+- **Step 1 — WorkingSet → Arc<std::sync::Mutex>**（`session.rs` + ~12 访问点）：`pub working_set: WorkingSet` → `pub working_set: Arc<std::sync::Mutex<WorkingSet>>`（`WorkingSet` `Send+Sync`，纯 `HashMap`/`u64` 字段）。机械访问点全改 `…working_set.lock().expect("working_set poisoned").<method>()`：`engine/mod.rs`（observe_site/compaction_pins/paths/pinned/turn_meta wrappers）、`capacity_flow.rs`（4 处 top_paths/pinned）、`post_compact_cleanup.rs`（force_rebuild）、`session.rs rebuild_working_set`、`tui/tests.rs`（7 处 observe_user_message）。
+- **Step 2 — `&'a WorkingSet` borrow API 局部化**（保持 API 稳定）：`StructuredStateRequest.working_set: &'a WorkingSet` + `StructuredState::capture(working_set: &WorkingSet)` **不变**——cycle path 的 post-turn async 场景持有 std `MutexGuard` 跨 `.await` 非法（guard 非 Send）。3 处传 `&session.working_set` 的点改 clone-and-local：`engine/mod.rs` 2 处 + `tui/runtime_traits.rs:254` → `let ws = …lock()…clone(); … &ws …`（clone 是 point-in-time 快照，cycle restart 罕见故 HashMap clone 可忽略）。
+- **Step 3 — turn_meta free fn 提取**（`engine/turn_meta.rs`，dedup）：把 `Engine` 的 `turn_metadata_block` / `conditional_skills_block` / `user_text_message_with_turn_metadata(_for_route)` method body 提为 `pub(crate)` free fn（显式参数，不读 `self`）。`Engine` 对应 method 变 thin wrapper（lock working_set + 转发），单一 source 给 Engine wrapper + 新 `TurnMetaProbe` 共用——"lift now" 而非再添一个 `approval_intent_summary`/`block_tool_result`-class 重复。
+- **Step 4 — `TurnMetaProbe`**（`host_executor.rs`，镜像 `CompactionProbe`）：`pub struct TurnMetaProbe { working_set: Arc<StdMutex<WorkingSet>>, workspace, skills_dir, model, auto_model, reasoning_effort, reasoning_effort_auto }` + `new()`。`observe_user_message(&self, text)`（lock + observe，sync——生产 steer observe）+ `enrich_user_text_message(&self, text) -> Message`（lock + 调 `turn_meta::user_text_message_with_turn_metadata`）。`std::sync::Mutex`（sync read，不跨 `await`；conditional_skills fs walk 亦 sync，镜像 LSP/compaction probe 先例）。`Send+Sync`。
+- **Step 5 — executor 接线**（`host_executor.rs`）：加 `turn_meta: Option<TurnMetaProbe>` 字段（`new()` 默认 `None`）+ `with_turn_meta(Option<TurnMetaProbe>)` builder。rewire 3 个 push 点（subagent sentinel `:2891` **不变**）：LSP flush（enrich-only，无 observe——diagnostics 无 path token）；steer pre-request drain（observe+enrich）；steer blocking-hold arm（observe+enrich）。三处 `match &self.turn_meta { Some(p) => …, None => plain }`——`None` 走纯文本保 pre-slice-22 行为。更新 module doc gap 注释（LSP/subagent）标记 `<turn_meta>` 富化已落地。
+- **Step 6 — wire-in**（`mod.rs handle_send_message` ~1163，`with_tool_dispatcher` 前）：`SessionChatHistory::new` borrow 前构造 `TurnMetaProbe::new(Arc::clone(&self.session.working_set), …model 字段 snapshot from self.session.*，set at mod.rs:1043-1059)`，`.with_turn_meta(Some(turn_meta_probe))` 接 builder chain。model 字段镜像生产 session-model route 变体。
+- **Step 7 — Tests**（`host_executor.rs #[cfg(test)]`）：5 个新 test：(1) `turn_meta_probe_enrich_wraps_text_and_observe_increments_turn`（probe 单元——enrich 出 2-block user message[<turn_meta> Text, body Text]；observe 增 `working_set.turn`）；(2) `steer_drain_enriches_with_turn_meta_and_observes`（steer push → `<turn_meta>` block + turn 增；seed push 保持 plain 1-block）；(3) `lsp_flush_enriches_with_turn_meta`（LSP push → `<turn_meta>`+`<diagnostics` 2-block，turn 不增——enrich-only）；(4) `subagent_sentinel_stays_plain_under_turn_meta`（回归 guard——sentinel 仍 1-block 纯文本，无 `<turn_meta>`）；(5) `turn_meta_reflects_working_set_summary`（seed path 进 WorkingSet → steer 的 `<turn_meta>` 含 "Repo Working Set" + "src/lib.rs"）。helper `turn_meta_probe(&Session)`（镜像生产 wire-in）。既有 78 test 不动。
+
+**By-design gaps（延后）：**
+- **mid-stream steer buffer drain**（`reduce_stream` `try_recv` + flush）——独立 reduce_stream 切片；pre-request drain + blocking-hold steer arm 现已富化。
+- **`<turn_meta>` for compaction re-inject messages**——独立（compaction closure：summary-prompt merge / attachment reinject / post-compact cleanup）。
+- **`ContextPatch` apply**——不变（仍 no-op；生产硬编码 `None`）。
+- **conditional_skills fs walk 持锁**——run 期间单消费者无争用，镜像生产 per-`turn_meta` fs-walk 成本；perf 关注时可拆 extract-then-discover。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent`（未改，零 warning）；`cargo +1.90.0 build -p codesmith-agent-runtime`（零新 warning）；`cargo +1.90.0 build -p codesmith-tui`（零新 warning——Arc 字段 + 3 clone+local + 7 test lock 编译，143 均既有死代码）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 83 通过（78 既有 + 5 新）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1066 全绿；`cargo +1.90.0 test -p codesmith-tui` 2921 全绿；`cargo +1.90.0 build --workspace` 全绿。另清掉 `post_compact_cleanup.rs` 测试模块一 stale `use WorkingSet` 既有 warning。
+
+**下一聚焦工作：**
+- **mid-stream steer buffer drain**（`reduce_stream` 的 `try_recv` + flush + enrich）：现 steer 仅 pre-request drain + blocking-hold arm 富化，streaming 期间到达的 steer 仍待 mid-stream 切片。
+- **`<turn_meta>` for compaction re-inject**：compaction closure items（summary-prompt merge / attachment reinject / post-compact cleanup）的 turn_meta 富化。
+- **`ToolCallStarted` stream-time + bridge 去重**：`Callback::on_tool_start` 透传 wire id 或 bridge name+input pairing。
+- **post-compact cleanup**：`Session` system-prompt mutability + host-coupled attachment/working-set 可达（summary-prompt 当前丢弃）。
+- **per-input-approval 专用 test**：override-downgrade 断言（ExecutesCode 工具 + dispatcher 返 Auto ⇒ 不 approval）。
+- **dead-code deletion 切片**：slice 20 `#[allow(dead_code)]` 17 项中 orphan 的删掉。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
 ---
 
 ## §A — Provider extraction (bulk migration)

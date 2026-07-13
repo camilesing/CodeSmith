@@ -301,11 +301,13 @@
 //!   collects nothing here. The live `handle_deepseek_turn` still covers it; this
 //!   wires when the executor connects to a real `HostServices` (or a future
 //!   resolver-closure injection).
-//! - **no `<turn_meta>` enrichment** on the synthetic flush message — production
-//!   wraps it in `user_text_message_with_turn_metadata` (date / model / working
-//!   set / skills, read from `session` + `config`). The framework-executor path
-//!   carries no turn metadata anywhere yet; that cross-cutting enrichment is its
-//!   own future slice.
+//! - **`<turn_meta>` enrichment closed** ✅ — when a [`TurnMetaProbe`] is wired
+//!   in (production), the synthetic flush message is wrapped via
+//!   `enrich_user_text_message` (date / model / working set / skills, read
+//!   from the `Arc`-shared `WorkingSet`), matching production's
+//!   `user_text_message_with_turn_metadata`. Embeds/tests (`probe` absent) push
+//!   plain text — the pre-slice-22 behavior. No `observe_user_message` for
+//!   diagnostics (no user-intent path tokens).
 //! - **no `emit_session_updated`** for the synthetic push — the executor's other
 //!   message pushes (assistant / tool result) likewise don't emit it via the
 //!   `ChatHistory` path; UI surfacing is deferred to the wire-in step.
@@ -534,10 +536,12 @@
 //!   `emit_parent_completion` site today, so this is a safe no-op; it matters
 //!   only when a future child sets a by-value patch. Threads in at the wire-in
 //!   step (`Session` reachable).
-//! - **no `<turn_meta>` enrichment** — the synthetic sentinel message uses the
-//!   plain `subagent_completion_runtime_message` (role `user`, no
-//!   `user_text_message_with_turn_metadata` wrapper), same gap as the steer /
-//!   LSP-flush synthetic messages.
+//! - **no `<turn_meta>` enrichment (by design)** — the synthetic sentinel message
+//!   uses the plain `subagent_completion_runtime_message` (role `user`, no
+//!   `user_text_message_with_turn_metadata` wrapper), matching production: the
+//!   sentinel is a runtime-event marker, not user intent, so it carries no
+//!   `<turn_meta>`. (The steer / LSP-flush pushes are now enriched ✅ when a
+//!   [`TurnMetaProbe`] is present; the sentinel is deliberately not.)
 //! - **steer post-stream resume absorbed ✅** — production, when the model
 //!   returns no tool calls and `pending_steers` is non-empty, resumes with the
 //!   steered text (`turn_loop.rs:1297-1307`). This executor now mirrors that via
@@ -591,6 +595,7 @@ use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock
 use crate::tool_dispatch::ToolDispatcher;
 use crate::tools::approval_cache::{build_approval_grouping_key, build_approval_key};
 use crate::tools::spec::ApprovalRequirement;
+use crate::working_set::WorkingSet;
 
 /// The `ToolResult` fed back when the loop-guard blocks an identical repeat
 /// call (mirrors `turn_loop::loop_guard_block_tool_result`). Duplicated here
@@ -817,6 +822,94 @@ impl CapacityProbe {
             compaction_config,
             workspace,
         }
+    }
+}
+
+/// `<turn_meta>` enrichment probe (§E). Carries an `Arc` clone of the
+/// session's `WorkingSet` so it can observe + enrich messages pushed *during*
+/// `executor.run` — the window in which `&mut self.session` is borrowed by
+/// [`SessionChatHistory`] and the host cannot reach the live working set /
+/// config directly. The probe is constructed at executor-build time (before
+/// the borrow) and `Arc`-shared with `Session::working_set`, matching the
+/// established `LspProbe` / `CompactionProbe` / `CapacityProbe` pattern.
+///
+/// Two enrichment responsibilities (faithful to the retired production
+/// `handle_deepseek_turn` push sites):
+/// - `observe_user_message` — for **steer** pushes (records the steer text so
+///   its paths enter the working set before the next `<turn_meta>` read).
+/// - `enrich_user_text_message` — for **steer + LSP flush** pushes (wraps the
+///   text in a `<turn_meta>` block + raw text `user` message).
+///
+/// The subagent-completion sentinel push is **not** enriched (plain user
+/// text), matching production — see `HostAgentExecutor::run_inner`.
+pub struct TurnMetaProbe {
+    working_set: Arc<std::sync::Mutex<WorkingSet>>,
+    workspace: PathBuf,
+    skills_dir: PathBuf,
+    model: String,
+    auto_model: bool,
+    reasoning_effort: Option<String>,
+    reasoning_effort_auto: bool,
+}
+
+impl TurnMetaProbe {
+    /// Construct from the session-shared working set `Arc` and the config /
+    /// session model-routing fields. The model fields are snapshot values at
+    /// executor-build time (set in `Engine::handle_send_message` and equal to
+    /// the routed `model` param), matching production's session-model variant
+    /// of `user_text_message_with_turn_metadata`.
+    #[must_use]
+    pub fn new(
+        working_set: Arc<std::sync::Mutex<WorkingSet>>,
+        workspace: PathBuf,
+        skills_dir: PathBuf,
+        model: String,
+        auto_model: bool,
+        reasoning_effort: Option<String>,
+        reasoning_effort_auto: bool,
+    ) -> Self {
+        Self {
+            working_set,
+            workspace,
+            skills_dir,
+            model,
+            auto_model,
+            reasoning_effort,
+            reasoning_effort_auto,
+        }
+    }
+
+    /// Observe a steer's text against the shared working set (records the
+    /// message turn + extracts path tokens so the next `<turn_meta>` read
+    /// reflects them). Mirrors production's
+    /// `WorkingSet::observe_user_message(text, &workspace)` call for steer
+    /// pushes; deliberately **not** called for LSP flush or subagent
+    /// sentinel pushes (no path/turn semantics for those).
+    pub fn observe_user_message(&self, text: &str) {
+        self.working_set
+            .lock()
+            .expect("working_set poisoned")
+            .observe_user_message(text, &self.workspace);
+    }
+
+    /// Build a `user` message whose first content block is the `<turn_meta>`
+    /// block (date / model route / working-set summary / matched conditional
+    /// skills) and whose second is the raw `text`. The working set is locked
+    /// only for the duration of the synchronous read (std `Mutex`, not held
+    /// across `.await`); the `conditional_skills` fs walk is also sync, so the
+    /// std mutex matches the `LspProbe` / `CompactionProbe` precedent.
+    pub fn enrich_user_text_message(&self, text: String) -> Message {
+        let working_set = self.working_set.lock().expect("working_set poisoned");
+        super::turn_meta::user_text_message_with_turn_metadata(
+            &working_set,
+            &self.workspace,
+            &self.skills_dir,
+            text,
+            &self.model,
+            self.auto_model,
+            self.reasoning_effort.as_deref(),
+            self.reasoning_effort_auto,
+        )
     }
 }
 
@@ -1143,6 +1236,17 @@ pub struct HostAgentExecutor {
     /// ~1700). A `Some(Auto)` answer downgrades an `ExecutesCode` tool to
     /// no-approval for a specific safe input.
     tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
+    /// Optional `<turn_meta>` enrichment probe (slice 22 §E). `None` (default;
+    /// all embeds/tests) ⇒ steer / LSP-flush pushes emit plain user text with
+    /// no working-set observe, preserving the pre-slice-22 behavior. When
+    /// `Some` (production wire-in), the probe — an `Arc` clone of the
+    /// session's `WorkingSet` constructed before the `&mut self.session`
+    /// borrow held by `SessionChatHistory` — observes steer text and wraps
+    /// steer / LSP-flush pushes in `<turn_meta>` during `executor.run`,
+    /// matching the retired production `handle_deepseek_turn` push sites.
+    /// The subagent-completion sentinel push is **never** enriched (plain
+    /// text, matching production).
+    turn_meta: Option<TurnMetaProbe>,
     /// Per-turn token usage accumulated across streams (slice 21 §E). The
     /// inline stream reducer ([`reduce_stream`]) captures `MessageStart` +
     /// `MessageDelta` usage (replace-within-stream — the latest cumulative
@@ -1201,6 +1305,7 @@ pub fn new(
         cancel_token,
         subagent_api,
         tool_dispatcher: None,
+        turn_meta: None,
         usage: std::sync::Mutex::new(Usage::default()),
     }
 }
@@ -1216,6 +1321,20 @@ pub fn new(
         tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
     ) -> Self {
         self.tool_dispatcher = tool_dispatcher;
+        self
+    }
+
+    /// Opt into `<turn_meta>` enrichment for steer / LSP-flush pushes (slice
+    /// 22 §E). The production wire-in calls this after [`new`] with a
+    /// [`TurnMetaProbe`] built from an `Arc` clone of `session.working_set`
+    /// plus the config / session model-routing fields (snapshotted before the
+    /// `&mut self.session` borrow held by `SessionChatHistory`). Embeds /
+    /// tests skip it — the field defaults to `None`, so push sites emit plain
+    /// user text (the pre-slice-22 behavior) and all 78 existing tests stay
+    /// unchanged. Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_turn_meta(mut self, turn_meta: Option<TurnMetaProbe>) -> Self {
+        self.turn_meta = turn_meta;
         self
     }
 
@@ -1871,18 +1990,24 @@ pub fn new(
         if rendered.is_empty() {
             return;
         }
-        // Plain `user` text message — no `<turn_meta>`: the framework-executor
-        // path carries no turn metadata anywhere yet (`turn_metadata_block`
-        // reads `session`+`config`, a cross-cutting host-side enrichment deferred
-        // to its own slice). Pushed via `ChatHistory`, so it lands in the real
-        // `Session` transcript ahead of the request snapshot below.
-        history.push(Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: rendered,
-                cache_control: None,
-            }],
-        });
+        // When a `TurnMetaProbe` is wired in (production), wrap the rendered
+        // diagnostics in a `<turn_meta>` block — matching production's
+        // `user_text_message_with_turn_metadata` for the LSP flush (enrich
+        // only: no `observe_user_message`, since diagnostics carry no
+        // user-intent path tokens). Embeds/tests (`None`) push plain text
+        // (the pre-slice-22 behavior). Pushed via `ChatHistory`, so it lands
+        // in the real `Session` transcript ahead of the request snapshot.
+        let message = match &self.turn_meta {
+            Some(probe) => probe.enrich_user_text_message(rendered),
+            None => Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: rendered,
+                    cache_control: None,
+                }],
+            },
+        };
+        history.push(message);
     }
 
     /// (1) per-step pre-request seam — drain queued steer inputs into the
@@ -1892,15 +2017,14 @@ pub fn new(
     /// `user` message → emit status. `try_recv` is non-blocking — this only
     /// drains what's already queued; it never waits for new input.
     ///
-    /// Unlike production, this does NOT call `working_set.observe_user_message`
-    /// (the [`ChatHistory`] trait doesn't expose the working set — that's a
-    /// host-side concern deferred to the wire-in step) and does NOT wrap the
-    /// steer in `user_text_message_with_turn_metadata` (the framework-executor
-    /// path carries no turn metadata anywhere yet — same gap as the LSP
-    /// flush). The three secondary drain sites (mid-stream buffer, post-stream
-    /// resume, blocking `recv` during sub-agent hold) are
-    /// streaming-lifecycle-specific and deferred — they need inline stream
-    /// reduction / sub-agent support respectively.
+    /// When a [`TurnMetaProbe`] is wired in (production), this mirrors
+    /// production's `working_set.observe_user_message(text, &workspace)` +
+    /// `user_text_message_with_turn_metadata` wrap for each drained steer
+    /// (observe before the move, then enrich). Embeds/tests (`probe` absent)
+    /// push plain text — the pre-slice-22 behavior. The mid-stream buffer
+    /// drain site (inside `reduce_stream`'s `try_recv` + flush) remains
+    /// deferred — it needs inline stream reduction; the blocking `recv`
+    /// during the sub-agent hold is enriched via the hold's own steer arm.
     async fn drain_steers(&self, history: &mut dyn ChatHistory) {
         let Some(rx) = &self.steer else {
             return;
@@ -1928,13 +2052,26 @@ pub fn new(
                 "Steer input accepted: {}",
                 summarize_text(&steer, 120)
             );
-            history.push(Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: steer,
-                    cache_control: None,
-                }],
-            });
+            // When a `TurnMetaProbe` is wired in (production), observe the
+            // steer text against the shared working set (records the message
+            // turn + path tokens) and wrap it in a `<turn_meta>` block —
+            // matching production's `observe_user_message` +
+            // `user_text_message_with_turn_metadata` for steer pushes.
+            // Embeds/tests (`None`) push plain text (pre-slice-22 behavior).
+            let message = match &self.turn_meta {
+                Some(probe) => {
+                    probe.observe_user_message(&steer);
+                    probe.enrich_user_text_message(steer)
+                }
+                None => Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: steer,
+                        cache_control: None,
+                    }],
+                },
+            };
+            history.push(message);
             self.emit_status(status).await;
         }
     }
@@ -2746,13 +2883,26 @@ impl HostAgentExecutor {
                                             "Steer input accepted: {}",
                                             summarize_text(&trimmed, 120)
                                         );
-                                        history.push(Message {
-                                            role: "user".to_string(),
-                                            content: vec![ContentBlock::Text {
-                                                text: trimmed,
-                                                cache_control: None,
-                                            }],
-                                        });
+                                        // Same observe + enrich as the
+                                        // pre-request drain — a steer arriving
+                                        // during the sub-agent hold is recorded
+                                        // against the working set and wrapped in
+                                        // `<turn_meta>` when the probe is present
+                                        // (production); plain text otherwise.
+                                        let message = match &self.turn_meta {
+                                            Some(probe) => {
+                                                probe.observe_user_message(&trimmed);
+                                                probe.enrich_user_text_message(trimmed)
+                                            }
+                                            None => Message {
+                                                role: "user".to_string(),
+                                                content: vec![ContentBlock::Text {
+                                                    text: trimmed,
+                                                    cache_control: None,
+                                                }],
+                                            },
+                                        };
+                                        history.push(message);
                                         self.emit_status(status).await;
                                     }
                                     step += 1;
@@ -8213,5 +8363,337 @@ mod tests {
             "failed attempt's MessageStart(100) dropped; only the clean round's 200 kept"
         );
         assert_eq!(usage.output_tokens, 60);
+    }
+
+    // === turn_meta enrichment (slice 22 §E) =================================
+
+    /// Build a `TurnMetaProbe` from a session, mirroring the production wire-in
+    /// at `engine/mod.rs` (`Arc::clone` of the working set + snapshot of the
+    /// model-routing fields). `skills_dir` is a nonexistent path so no
+    /// conditional-skills block is emitted — these tests assert on `<turn_meta>`
+    /// presence + working-set summary, not skill matching.
+    fn turn_meta_probe(sess: &Session) -> TurnMetaProbe {
+        TurnMetaProbe::new(
+            Arc::clone(&sess.working_set),
+            sess.workspace.clone(),
+            PathBuf::from("/nonexistent-codesmith-skills-test"),
+            sess.model.clone(),
+            sess.auto_model,
+            sess.reasoning_effort.clone(),
+            sess.reasoning_effort_auto,
+        )
+    }
+
+    #[tokio::test]
+    async fn turn_meta_probe_enrich_wraps_text_and_observe_increments_turn() {
+        let sess = fresh_session();
+        let probe = turn_meta_probe(&sess);
+
+        // Fresh session ⇒ working set at turn 0, no entries.
+        assert_eq!(sess.working_set.lock().expect("poisoned").turn, 0);
+
+        // observe_user_message records the turn (mirrors production's steer
+        // observe) — increments `turn` even though "hello there" carries no
+        // path tokens.
+        probe.observe_user_message("hello there");
+        assert_eq!(
+            sess.working_set.lock().expect("poisoned").turn,
+            1,
+            "observe must increment the shared working set's turn"
+        );
+
+        // enrich wraps the text in a 2-block user message: `<turn_meta>` block
+        // first, then the raw text.
+        let msg = probe.enrich_user_text_message("steer body".to_string());
+        assert_eq!(msg.role.as_str(), "user");
+        assert_eq!(msg.content.len(), 2, "enriched message has turn_meta + text");
+        match (&msg.content[0], &msg.content[1]) {
+            (ContentBlock::Text { text: meta, .. }, ContentBlock::Text { text: body, .. }) => {
+                assert!(meta.contains("<turn_meta>"), "first block is turn_meta: {meta}");
+                assert!(meta.contains("</turn_meta>"));
+                assert!(meta.contains("Current local date"));
+                assert_eq!(body, "steer body", "second block is the raw text");
+            }
+            other => panic!("expected [turn_meta Text, body Text], got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn steer_drain_enriches_with_turn_meta_and_observes() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        // Build the probe BEFORE the `&mut sess` borrow held by the history
+        // (production takes the `Arc::clone` before `SessionChatHistory::new`).
+        let probe = turn_meta_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+        tx_steer.send("remember this".to_string()).await.unwrap();
+
+        let mut ok = text_block(0, "acknowledged");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![ok]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_turn_meta(Some(probe));
+
+        let reason = executor
+            .run(&mut history, "start".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Layout: [user(seed "start" plain), user(steer enriched), assistant].
+        assert_eq!(history.len(), 3);
+        // The seed message stays plain (single Text block) — only steer /
+        // LSP-flush pushes are enriched, not the executor's own seed push.
+        assert_eq!(sess.messages[0].role.as_str(), "user");
+        assert_eq!(
+            sess.messages[0].content.len(),
+            1,
+            "seed push is NOT enriched (only steer/LSP pushes are)"
+        );
+        match &sess.messages[0].content[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "start"),
+            other => panic!("expected plain seed Text, got {other:?}"),
+        }
+        // The steer message is enriched: `<turn_meta>` block + raw steer text.
+        assert_eq!(sess.messages[1].role.as_str(), "user");
+        assert_eq!(sess.messages[1].content.len(), 2, "steer is enriched (2 blocks)");
+        match (&sess.messages[1].content[0], &sess.messages[1].content[1]) {
+            (ContentBlock::Text { text: meta, .. }, ContentBlock::Text { text: body, .. }) => {
+                assert!(meta.contains("<turn_meta>"), "steer wrapped: {meta}");
+                assert_eq!(body, "remember this", "raw steer text is the second block");
+            }
+            other => panic!("expected [turn_meta, steer] Text blocks, got {other:?}"),
+        }
+
+        // The steer was observed against the shared working set (turn >= 1).
+        assert!(
+            sess.working_set.lock().expect("poisoned").turn >= 1,
+            "steer observe must increment the working set's turn"
+        );
+
+        // The model saw the `<turn_meta>` block in its (only) request.
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 1);
+        let saw_turn_meta = reqs[0].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text.contains("<turn_meta>"))
+            })
+        });
+        assert!(saw_turn_meta, "request must include the steer's <turn_meta>: {reqs:?}");
+    }
+
+    #[tokio::test]
+    async fn lsp_flush_enriches_with_turn_meta() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EditSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let fake = FakeLsp::returning(error_diag_block("foo.rs", 12, 8, "missing semicolon"));
+        let probe = LspProbe::new(fake.clone(), tmp.path().to_path_buf());
+
+        let mut sess = fresh_session();
+        let turn_meta = turn_meta_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Call 1: edit_file -> tool_use (collect probes LSP). Call 2: text -> end.
+        let mut call1 = text_block(0, "editing");
+        call1.extend(tool_use_block(1, "t1", "edit_file", r#"{"path":"foo.rs"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            Some(probe),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_turn_meta(Some(turn_meta));
+
+        let reason = executor
+            .run(&mut history, "edit foo.rs".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The diagnostics flush message is enriched: `<turn_meta>` then
+        // `<diagnostics`. Find it by content (robust to layout shifts).
+        let diag_msg = sess
+            .messages
+            .iter()
+            .find(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics"))
+                })
+            })
+            .expect("diagnostics message present");
+        assert_eq!(diag_msg.role.as_str(), "user");
+        assert_eq!(
+            diag_msg.content.len(),
+            2,
+            "diagnostics flush is enriched (turn_meta + diagnostics)"
+        );
+        match (&diag_msg.content[0], &diag_msg.content[1]) {
+            (ContentBlock::Text { text: meta, .. }, ContentBlock::Text { text: diag, .. }) => {
+                assert!(meta.contains("<turn_meta>"), "diagnostics wrapped: {meta}");
+                assert!(diag.contains("<diagnostics"));
+                assert!(diag.contains("missing semicolon"));
+            }
+            other => panic!("expected [turn_meta, diagnostics] Text blocks, got {other:?}"),
+        }
+
+        // LSP flush is enrich-only — no observe (working set turn stays 0).
+        assert_eq!(
+            sess.working_set.lock().expect("poisoned").turn,
+            0,
+            "LSP flush must NOT observe the working set"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_sentinel_stays_plain_under_turn_meta() {
+        // Regression guard: even with a TurnMetaProbe wired in, the subagent
+        // completion sentinel push is NOT enriched (matches production — the
+        // sentinel is a runtime-event marker, not user intent).
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let turn_meta = turn_meta_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_sub, rx_sub) = subagent_channel();
+        tx_sub.send(completion("child-a finished")).unwrap();
+
+        let call1 = {
+            let mut c = text_block(0, "let me wait for children");
+            c.extend(finish("end_turn"));
+            c
+        };
+        let call2 = {
+            let mut c = text_block(0, "resuming, all done");
+            c.extend(finish("end_turn"));
+            c
+        };
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+            None,
+            None,
+        )
+        .with_turn_meta(Some(turn_meta));
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Two stream rounds — the turn resumed after draining the sentinel.
+        assert_eq!(mock.requests().len(), 2, "sentinel drain resumed the turn");
+
+        // The sentinel message is present and PLAIN: a single Text block with
+        // the runtime-event payload, NO `<turn_meta>` block anywhere.
+        let sentinel_msgs: Vec<&Message> = sess
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text, .. } if text
+                        .contains("kind=\"subagent_completion\""))
+                })
+            })
+            .collect();
+        assert_eq!(sentinel_msgs.len(), 1, "expected 1 sentinel message");
+        let sentinel = sentinel_msgs[0];
+        assert_eq!(sentinel.role.as_str(), "user");
+        assert_eq!(
+            sentinel.content.len(),
+            1,
+            "sentinel is plain (single Text block), not enriched"
+        );
+        for b in &sentinel.content {
+            if let ContentBlock::Text { text, .. } = b {
+                assert!(
+                    !text.contains("<turn_meta>"),
+                    "sentinel must NOT carry a <turn_meta> block: {text}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_meta_reflects_working_set_summary() {
+        let sess = fresh_session();
+        // Seed a path into the working set (mirrors production observing an
+        // earlier user message) so the `<turn_meta>` summary is non-empty.
+        sess.working_set
+            .lock()
+            .expect("poisoned")
+            .observe_user_message("please inspect src/lib.rs", &sess.workspace);
+        let probe = turn_meta_probe(&sess);
+
+        // The seeded path surfaces in the working-set summary inside `<turn_meta>`.
+        let msg = probe.enrich_user_text_message("now fix the bug".to_string());
+        assert_eq!(msg.role.as_str(), "user");
+        assert_eq!(msg.content.len(), 2);
+        match &msg.content[0] {
+            ContentBlock::Text { text: meta, .. } => {
+                assert!(meta.contains("<turn_meta>"));
+                assert!(
+                    meta.contains("Repo Working Set"),
+                    "<turn_meta> must carry the working-set summary: {meta}"
+                );
+                assert!(
+                    meta.contains("src/lib.rs"),
+                    "<turn_meta> must name the seeded path: {meta}"
+                );
+            }
+            other => panic!("expected turn_meta Text block, got {other:?}"),
+        }
+        match &msg.content[1] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "now fix the bug"),
+            other => panic!("expected raw text block, got {other:?}"),
+        }
     }
 }

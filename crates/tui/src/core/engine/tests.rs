@@ -1847,6 +1847,8 @@ fn refresh_system_prompt_leaves_working_set_out_of_system_prompt() {
     engine
         .session
         .working_set
+        .lock()
+        .expect("working_set poisoned")
         .observe_user_message("please inspect src/lib.rs", tmp.path());
 
     engine.refresh_system_prompt(AppMode::Agent);
@@ -1877,6 +1879,8 @@ fn working_set_reaches_model_as_turn_metadata() {
     engine
         .session
         .working_set
+        .lock()
+        .expect("working_set poisoned")
         .observe_user_message("please inspect src/lib.rs", tmp.path());
     let user_msg =
         engine.user_text_message_with_turn_metadata("please inspect src/lib.rs".to_string());
@@ -1987,6 +1991,8 @@ fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
     engine
         .session
         .working_set
+        .lock()
+        .expect("working_set poisoned")
         .observe_user_message("inspect src/lib.rs", tmp.path());
 
     let first_user = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
@@ -2004,6 +2010,8 @@ fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
     engine
         .session
         .working_set
+        .lock()
+        .expect("working_set poisoned")
         .observe_user_message("now summarize it", tmp.path());
     let second_user = engine.user_text_message_with_turn_metadata("now summarize it".to_string());
     engine.session.add_message(second_user);
@@ -2031,6 +2039,8 @@ fn turn_metadata_skips_tool_result_messages() {
     engine
         .session
         .working_set
+        .lock()
+        .expect("working_set poisoned")
         .observe_user_message("inspect src/lib.rs", tmp.path());
 
     // Real user message — should be eligible for injection.
@@ -2097,6 +2107,8 @@ fn turn_metadata_skips_when_only_tool_results_trail() {
     engine
         .session
         .working_set
+        .lock()
+        .expect("working_set poisoned")
         .observe_user_message("inspect src/lib.rs", tmp.path());
 
     // Only a tool-result message in history — simulates the corner case
@@ -2224,6 +2236,8 @@ fn compaction_summary_stays_in_stable_system_prompt() {
     engine
         .session
         .working_set
+        .lock()
+        .expect("working_set poisoned")
         .observe_user_message("continue in src/main.rs", tmp.path());
     engine.refresh_system_prompt(AppMode::Agent);
     engine.merge_compaction_summary(Some(SystemPrompt::Blocks(vec![SystemBlock {

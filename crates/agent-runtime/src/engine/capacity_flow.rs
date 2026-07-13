@@ -236,7 +236,13 @@ impl Engine {
         for tool_call in turn.tool_calls.iter().rev().take(8) {
             refs.insert(tool_call.id.clone());
         }
-        for path in self.session.working_set.top_paths(8) {
+        for path in self
+            .session
+            .working_set
+            .lock()
+            .expect("working_set poisoned")
+            .top_paths(8)
+        {
             refs.insert(path);
         }
         refs.retain(|item| !item.is_empty());
@@ -469,8 +475,15 @@ impl Engine {
         let compaction_pins = self
             .session
             .working_set
+            .lock()
+            .expect("working_set poisoned")
             .pinned_message_indices(&self.session.messages, &self.session.workspace);
-        let compaction_paths = self.session.working_set.top_paths(24);
+        let compaction_paths = self
+            .session
+            .working_set
+            .lock()
+            .expect("working_set poisoned")
+            .top_paths(24);
 
         let mut refreshed = false;
         let should_run_summary_compaction = self.config.compaction.enabled
@@ -910,7 +923,12 @@ impl Engine {
             ]
         };
 
-        let mut critical_refs = self.session.working_set.top_paths(8);
+        let mut critical_refs = self
+            .session
+            .working_set
+            .lock()
+            .expect("working_set poisoned")
+            .top_paths(8);
         for tool_call in turn.tool_calls.iter().rev().take(4) {
             critical_refs.push(format!("tool:{}", tool_call.id));
         }

@@ -88,7 +88,9 @@ use crate::host_services::{
 // capacity, sub-agent). `CallbackBridge` + `SessionChatHistory` close the
 // framework ↔ host bridge. `AgentExecutor` (trait) is in scope so `.run()`
 // resolves on the executor.
-use host_executor::{CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe};
+use host_executor::{
+    CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe, TurnMetaProbe,
+};
 use crate::callback_bridge::CallbackBridge;
 use crate::session_history::SessionChatHistory;
 use codesmith_agent::callback::{Callback, StopReason};
@@ -890,88 +892,11 @@ impl Engine {
         self.emit_session_updated().await;
     }
 
-    fn turn_metadata_block(
-        &self,
-        routed_model: &str,
-        auto_model: bool,
-        reasoning_effort: Option<&str>,
-        reasoning_effort_auto: bool,
-    ) -> ContentBlock {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let working_set_summary = self
-            .session
-            .working_set
-            .summary_block(&self.config.workspace)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let conditional_skills = self.conditional_skills_block();
-
-        let mut lines = vec![format!("Current local date: {today}")];
-        if auto_model {
-            lines.push(format!("Auto model route: {routed_model}"));
-        }
-        if reasoning_effort_auto && let Some(reasoning_effort) = reasoning_effort {
-            lines.push(format!("Auto reasoning effort: {reasoning_effort}"));
-        }
-        if let Some(working_set_summary) = working_set_summary {
-            lines.push(working_set_summary);
-        }
-        if let Some(conditional_skills) = conditional_skills {
-            lines.push(conditional_skills);
-        }
-        let summary = lines.join("\n");
-
-        ContentBlock::Text {
-            text: format!("<turn_meta>\n{summary}\n</turn_meta>"),
-            cache_control: None,
-        }
-    }
-
-    fn conditional_skills_block(&self) -> Option<String> {
-        let paths = self.session.working_set.top_paths(16);
-        if paths.is_empty() {
-            return None;
-        }
-        let registry = crate::skills::discover_for_workspace_and_dir(
-            &self.config.workspace,
-            &self.config.skills_dir,
-        );
-        let matches = crate::skills::matching_conditional_skills(&registry, &paths);
-        if matches.is_empty() {
-            return None;
-        }
-        let mut lines = vec!["## Matched Conditional Skills".to_string()];
-        for skill in matches.into_iter().take(6) {
-            let reason = skill
-                .when_to_use
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| {
-                    let description = skill.description.trim();
-                    (!description.is_empty()).then_some(description)
-                })
-                .unwrap_or("");
-            if reason.is_empty() {
-                lines.push(format!(
-                    "- {} matched paths [{}]. Load with `load_skill` if relevant. Source: {}",
-                    skill.name,
-                    skill.paths.join(", "),
-                    skill.path.display()
-                ));
-            } else {
-                lines.push(format!(
-                    "- {}: {} Matched paths [{}]. Load with `load_skill` if relevant. Source: {}",
-                    skill.name,
-                    reason,
-                    skill.paths.join(", "),
-                    skill.path.display()
-                ));
-            }
-        }
-        Some(lines.join("\n"))
-    }
-
+    /// `<turn_meta>`-enriched `user` message for the session's current model
+    /// route. Thin wrapper over the host-agnostic free fn
+    /// [`turn_meta::user_text_message_with_turn_metadata`] (shared with the
+    /// framework-core `TurnMetaProbe`); locks the now-`Arc<Mutex>`
+    /// [`WorkingSet`] for the read.
     pub fn user_text_message_with_turn_metadata(&self, text: String) -> Message {
         self.user_text_message_with_turn_metadata_for_route(
             text,
@@ -990,21 +915,17 @@ impl Engine {
         reasoning_effort: Option<&str>,
         reasoning_effort_auto: bool,
     ) -> Message {
-        Message {
-            role: "user".to_string(),
-            content: vec![
-                self.turn_metadata_block(
-                    routed_model,
-                    auto_model,
-                    reasoning_effort,
-                    reasoning_effort_auto,
-                ),
-                ContentBlock::Text {
-                    text,
-                    cache_control: None,
-                },
-            ],
-        }
+        let working_set = self.session.working_set.lock().expect("working_set poisoned");
+        turn_meta::user_text_message_with_turn_metadata(
+            &working_set,
+            &self.config.workspace,
+            &self.config.skills_dir,
+            text,
+            routed_model,
+            auto_model,
+            reasoning_effort,
+            reasoning_effort_auto,
+        )
     }
 
     /// Handle a send message operation
@@ -1102,6 +1023,8 @@ impl Engine {
 
         self.session
             .working_set
+            .lock()
+            .expect("working_set poisoned")
             .observe_user_message(&content, &self.session.workspace);
         let _force_update_plan_first = should_force_update_plan_first(mode, &content);
 
@@ -1237,6 +1160,23 @@ impl Engine {
         } else {
             None
         };
+        // Snapshot an `Arc` clone of the working set + the model-routing
+        // fields into a `TurnMetaProbe` (slice 22 §E) *before* the
+        // `&mut self.session` borrow held by `SessionChatHistory` below — so
+        // the executor can observe steers + wrap steer / LSP-flush pushes in
+        // `<turn_meta>` during `run`, despite the session borrow. The model
+        // fields mirror production's session-model variant of
+        // `user_text_message_with_turn_metadata` (set above at
+        // `self.session.model = model` / `auto_model` / `reasoning_effort*`).
+        let turn_meta_probe = TurnMetaProbe::new(
+            Arc::clone(&self.session.working_set),
+            self.session.workspace.clone(),
+            self.config.skills_dir.clone(),
+            self.session.model.clone(),
+            self.session.auto_model,
+            self.session.reasoning_effort.clone(),
+            self.session.reasoning_effort_auto,
+        );
         let executor = HostAgentExecutor::new(
             client,
             tools,
@@ -1260,7 +1200,8 @@ impl Engine {
             Some(self.cancel_token.clone()),
             Some(self.host.subagents()),
         )
-        .with_tool_dispatcher(plan.tool_registry.clone());
+        .with_tool_dispatcher(plan.tool_registry.clone())
+        .with_turn_meta(Some(turn_meta_probe));
         let mut history = SessionChatHistory::new_with_event_tx(
             &mut self.session,
             Some(self.tx_event.clone()),
@@ -1387,8 +1328,15 @@ impl Engine {
         let compaction_pins = self
             .session
             .working_set
+            .lock()
+            .expect("working_set poisoned")
             .pinned_message_indices(&self.session.messages, &self.session.workspace);
-        let compaction_paths = self.session.working_set.top_paths(24);
+        let compaction_paths = self
+            .session
+            .working_set
+            .lock()
+            .expect("working_set poisoned")
+            .top_paths(24);
         let messages_before = self.session.messages.len();
         let mut turn_status = TurnOutcomeStatus::Completed;
         let mut turn_error = None;
@@ -2073,6 +2021,8 @@ impl Engine {
         let pinned = self
             .session
             .working_set
+            .lock()
+            .expect("working_set poisoned")
             .pinned_message_indices(&self.session.messages, &self.session.workspace);
 
         let _ = self
@@ -2188,12 +2138,23 @@ impl Engine {
         let briefing_text = if let Some(seam_mgr) = self.host.seam() {
             let seams = seam_mgr.collect_seam_texts(&self.session.messages).await;
             let state_text = {
+                // Snapshot the working set out of the lock —
+                // `capture_structured_state` is async and a `std::sync::Mutex`
+                // guard isn't `Send`, so it can't cross the `.await`. The clone
+                // is a correct point-in-time snapshot (this is the cycle-restart
+                // path, rare).
+                let ws_snapshot = self
+                    .session
+                    .working_set
+                    .lock()
+                    .expect("working_set poisoned")
+                    .clone();
                 self.host
                     .capture_structured_state(StructuredStateRequest {
                         mode_label: mode.label(),
                         workspace: self.config.workspace.clone(),
                         cwd: std::env::current_dir().ok(),
-                        working_set: &self.session.working_set,
+                        working_set: &ws_snapshot,
                         todos: &self.config.todos,
                         plan_state: &self.config.plan_state,
                     })
@@ -2282,13 +2243,19 @@ impl Engine {
         }
 
         // 3. Capture structured state. Locks are held only for the snapshot.
+        let ws_snapshot = self
+            .session
+            .working_set
+            .lock()
+            .expect("working_set poisoned")
+            .clone();
         let state_block = self
             .host
             .capture_structured_state(StructuredStateRequest {
                 mode_label: mode.label(),
                 workspace: self.config.workspace.clone(),
                 cwd: std::env::current_dir().ok(),
-                working_set: &self.session.working_set,
+                working_set: &ws_snapshot,
                 todos: &self.config.todos,
                 plan_state: &self.config.plan_state,
             })
@@ -2781,6 +2748,7 @@ mod team_inbox;
 mod tool_catalog;
 mod tool_execution;
 mod turn_loop;
+mod turn_meta;
 
 pub mod host_executor;
 

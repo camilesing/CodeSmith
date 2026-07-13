@@ -247,11 +247,16 @@ impl HostServices for super::EngineHost {
         );
 
         let fork_context_for_runtime = if config.features.enabled(Feature::Subagents) {
+            let ws_snapshot = session
+                .working_set
+                .lock()
+                .expect("working_set poisoned")
+                .clone();
             let state = StructuredState::capture(
                 mode.label(),
                 config.workspace.clone(),
                 std::env::current_dir().ok(),
-                &session.working_set,
+                &ws_snapshot,
                 &config.todos,
                 &config.plan_state,
                 Some(&self.subagent_manager),

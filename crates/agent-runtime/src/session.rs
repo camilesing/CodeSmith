@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex as StdMutex};
 
 const RECENT_READ_FILE_LIMIT: usize = 12;
 const RECENT_READ_FILE_SNIPPET_CHARS: usize = 1_200;
@@ -105,8 +106,16 @@ pub struct Session {
     /// Project context loaded from AGENTS.md, etc.
     pub project_context: Option<ProjectContext>,
 
-    /// Repo-aware working set for context management.
-    pub working_set: WorkingSet,
+    /// Repo-aware working set for context management. Behind
+    /// `Arc<std::sync::Mutex<WorkingSet>>` (slice 22 §E) so the framework-core
+    /// `TurnMetaProbe` can hold an `Arc` clone and observe + build `<turn_meta>`
+    /// blocks *during* `executor.run` — at that point `&mut self.session` is
+    /// borrowed by `SessionChatHistory`, so a plain field would be unreachable.
+    /// The `std::sync::Mutex` (not tokio) matches the `LspProbe` /
+    /// `CompactionProbe` precedent: all access is synchronous
+    /// (`observe_user_message` / `summary_block` / `top_paths` /
+    /// `force_rebuild`) and the lock is never held across an `await`.
+    pub working_set: Arc<StdMutex<WorkingSet>>,
 
     /// Number of cycle boundaries crossed in this session (issue #124). The
     /// active cycle index is `cycle_count + 1` (cycles are 1-based for users).
@@ -207,7 +216,7 @@ impl Session {
                 None
             },
             last_system_prompt_hash: None,
-            working_set: WorkingSet::default(),
+            working_set: Arc::new(StdMutex::new(WorkingSet::default())),
             cycle_count: 0,
             current_cycle_started: Utc::now(),
             cycle_briefings: Vec::new(),
@@ -227,6 +236,8 @@ impl Session {
     /// Rebuild the working set from current messages (best effort).
     pub fn rebuild_working_set(&mut self) {
         self.working_set
+            .lock()
+            .expect("working_set poisoned")
             .rebuild_from_messages(&self.messages, &self.workspace);
     }
 

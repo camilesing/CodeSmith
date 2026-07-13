@@ -32,14 +32,17 @@ pub fn post_compact_cleanup(session: &mut Session) {
 
     // 4. Rebuild working set — removed messages may have contributed
     //    path entries that no longer exist in the conversation.
-    session.working_set.force_rebuild();
+    session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .force_rebuild();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session::Session;
-    use crate::working_set::WorkingSet;
     use std::path::PathBuf;
 
     fn make_test_session() -> Session {
