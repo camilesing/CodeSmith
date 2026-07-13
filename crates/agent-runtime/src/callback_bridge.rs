@@ -27,7 +27,7 @@
 //! | `on_llm_end`          | — (content not on wire²)   | — (no LLM-end hook)   |
 //! | `on_step`             | — (no step event variant)  | —                     |
 //! | `on_complete`         | — (`TurnComplete`³)         | —                     |
-//! | `on_stream_delta`     | `MessageDelta` / `ThinkingDelta` / `MessageStarted` / `ThinkingStarted` / `ThinkingComplete` / `MessageComplete` | — |
+//! | `on_stream_delta`     | `MessageDelta` / `ThinkingDelta` / `MessageStarted` / `ThinkingStarted` / `ThinkingComplete` / `MessageComplete` / `ToolCallStarted` | — |
 //!
 //! ¹ `TurnStarted` only carries a turn id and is emitted by the engine caller,
 //!   not the executor loop. ² `MessageComplete` only carries a block index; the
@@ -39,28 +39,28 @@
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) and block-lifecycle
 //! events (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
-//! `MessageComplete`) flow through the `on_stream_delta` hook (§E
-//! inline-stream-reduction + block-lifecycle slices). The bridge maps
-//! [`StreamDelta::Text`] → `Event::MessageDelta`, [`StreamDelta::Thinking`]
-//! → `Event::ThinkingDelta`, and the four lifecycle `StreamDelta` variants →
-//! their same-named `Event` variants, forwarding each to the `Event` channel as
-//! it arrives (lifecycle events fire at `ContentBlockStart` / `ContentBlockStop`
-//! in the inline reducer). The stream-time `Event::ToolCallStarted` for tool
-//! blocks is **not** bridged through `on_stream_delta` yet — production emits it
-//! at `ContentBlockStop` for tool blocks, but the inline reducer defers it to
-//! the early-tool-start slice (which needs the tool catalog to validate input
-//! before announcing the call, and a bridge refactor to avoid duplicating the
-//! execute-time `on_tool_start` → `ToolCallStarted` emission).
+//! `MessageComplete` / `ToolCallStarted`) flow through the `on_stream_delta`
+//! hook (§E inline-stream-reduction + block-lifecycle + tool-call-start slices).
+//! The bridge maps [`StreamDelta::Text`] → `Event::MessageDelta`,
+//! [`StreamDelta::Thinking`] → `Event::ThinkingDelta`, the four lifecycle
+//! `StreamDelta` variants → their same-named `Event` variants, and
+//! [`StreamDelta::ToolCallStarted`] → `Event::ToolCallStarted` (with the real
+//! wire tool-call id), forwarding each to the `Event` channel as it arrives
+//! (lifecycle events fire at `ContentBlockStart` / `ContentBlockStop` in the
+//! inline reducer).
 //!
-//! ## Synthesized tool-call id
+//! ## Tool-call id passthrough + dedup
 //!
-//! The framework [`Tool::run`](codesmith_agent::tools::Tool::run) / `on_tool_start`
-//! contract is **id-less** (a parsed `input` only), unlike the wire
-//! `ContentBlock::ToolUse { id, .. }` the production loop carries. The bridge
-//! synthesizes a correlatable `bridge-{n}` id and pairs start↔end via a LIFO
-//! stack so the UI can still correlate a `ToolCallStarted` with its
-//! `ToolCallComplete`. The wire id is lost in the process; extending the
-//! `Callback` trait to carry it is a larger change deferred to a later slice.
+//! The framework `Callback::on_tool_start` carries the wire tool-call `id`
+//! (from `ContentBlock::ToolUse { id, .. }`), so the bridge no longer
+//! synthesizes `bridge-{n}` ids — the real wire id flows through to both
+//! `Event::ToolCallStarted` and `Event::ToolCallComplete`. When the inline
+//! reducer emits `StreamDelta::ToolCallStarted` at stream-time
+//! (`ContentBlockStop` for tool blocks), the bridge marks the id as
+//! "announced"; the execute-time `on_tool_start` then skips re-emitting
+//! `Event::ToolCallStarted` (dedup). If no stream-time emission occurred
+//! (e.g. the CORE `DefaultAgentExecutor` with `accumulate_stream`), the
+//! execute-time `on_tool_start` sends `Event::ToolCallStarted` as a fallback.
 //! The stashed start `input` is also replayed into the `ToolCallAfter` hook
 //! context — the framework `on_tool_end(name, result)` signature is input-less,
 //! but the production `execute_post_tool_hook` needs `tool_args`, so the pending
@@ -91,9 +91,13 @@ use crate::hooks::{HookContext, HookEvent, HookHost};
 /// `RecordingCallback` test double).
 #[derive(Debug, Default)]
 struct BridgeState {
-    /// Monotonic counter feeding the synthesized `bridge-{n}` tool-call id.
-    counter: u64,
-    /// LIFO of pending tool calls: `(synthesized_id, stashed_input)`. Pushed on
+    /// Tool-call ids already announced at stream-time (via
+    /// `StreamDelta::ToolCallStarted`). When `on_tool_start` fires at
+    /// execute-time, it checks this set and skips re-emitting
+    /// `Event::ToolCallStarted` if the id is present — deduplicating the
+    /// stream-time and execute-time announcements.
+    announced: std::collections::HashSet<String>,
+    /// LIFO of pending tool calls: `(wire_id, stashed_input)`. Pushed on
     /// `on_tool_start`, popped on `on_tool_end` so the end event pairs with the
     /// most recent start and `tool_args` can be replayed into the
     /// `ToolCallAfter` hook context.
@@ -142,38 +146,41 @@ impl CallbackBridge {
 impl Callback for CallbackBridge {
     fn on_tool_start<'a>(
         &'a self,
+        id: &'a str,
         name: &'a str,
         input: &'a serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         // Clone the `&self` fields into owned locals (cheap: `Sender` and
         // `HookContext` are `Clone`, `hooks`/`state` are `Arc`), then capture
-        // `name`/`input` by borrow — mirrors `CallbackSet`'s pattern so the
-        // boxed future neither borrows `&self` nor ties the args to a narrower
-        // lifetime than `'a`.
+        // `id`/`name`/`input` by borrow — mirrors `CallbackSet`'s pattern so
+        // the boxed future neither borrows `&self` nor ties the args to a
+        // narrower lifetime than `'a`.
         let tx = self.tx.clone();
         let hooks = self.hooks.clone();
         let template = self.hook_template.clone();
         let state = self.state.clone();
         Box::pin(async move {
-            // Synthesize a correlatable id and stash the input so `on_tool_end`
-            // can both pair the end event and replay `tool_args` into the
-            // `ToolCallAfter` hook context.
-            let id = {
+            // Stash the wire id + input so `on_tool_end` can both pair the end
+            // event (real wire id) and replay `tool_args` into the
+            // `ToolCallAfter` hook context. If this id was already announced at
+            // stream-time (via `StreamDelta::ToolCallStarted`), skip the
+            // execute-time `Event::ToolCallStarted` — dedup.
+            let already_announced = {
                 let mut s = state.lock().expect("bridge state mutex poisoned");
-                let id = format!("bridge-{}", s.counter);
-                s.counter += 1;
-                s.pending.push((id.clone(), input.clone()));
-                id
+                s.pending.push((id.to_string(), input.clone()));
+                !s.announced.insert(id.to_string())
             };
 
-            if let Some(tx) = tx.as_ref() {
-                let _ = tx
-                    .send(Event::ToolCallStarted {
-                        id: id.clone(),
-                        name: name.to_string(),
-                        input: input.clone(),
-                    })
-                    .await;
+            if !already_announced {
+                if let Some(tx) = tx.as_ref() {
+                    let _ = tx
+                        .send(Event::ToolCallStarted {
+                            id: id.to_string(),
+                            name: name.to_string(),
+                            input: input.clone(),
+                        })
+                        .await;
+                }
             }
 
             if let Some(hooks) = hooks.as_ref() {
@@ -198,7 +205,7 @@ impl Callback for CallbackBridge {
         let template = self.hook_template.clone();
         let state = self.state.clone();
         Box::pin(async move {
-            // Pop the most recent start: its synthesized id pairs the end event,
+            // Pop the most recent start: its wire id pairs the end event,
             // and its stashed input fills `tool_args` (the `on_tool_end`
             // signature is input-less, but `ToolCallAfter` hooks want it).
             let (id, input) = state
@@ -240,6 +247,7 @@ impl Callback for CallbackBridge {
         delta: &'a StreamDelta,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let tx = self.tx.clone();
+        let state = self.state.clone();
         Box::pin(async move {
             let Some(tx) = tx.as_ref() else {
                 return;
@@ -262,6 +270,20 @@ impl Callback for CallbackBridge {
                 }
                 StreamDelta::MessageComplete { index } => {
                     Event::MessageComplete { index: *index }
+                }
+                StreamDelta::ToolCallStarted { id, name, input } => {
+                    // Mark this id as announced so the execute-time
+                    // `on_tool_start` skips re-emitting `Event::ToolCallStarted`
+                    // (dedup — the stream-time emission is the single source).
+                    {
+                        let mut s = state.lock().expect("bridge state mutex poisoned");
+                        s.announced.insert(id.clone());
+                    }
+                    Event::ToolCallStarted {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                    }
                 }
             };
             let _ = tx.send(event).await;
@@ -460,7 +482,7 @@ mod tests {
         let bridge = CallbackBridge::new(Some(tx), Some(hooks.clone()), test_template());
 
         let input = serde_json::json!({"text":"world"});
-        bridge.on_tool_start("echo", &input).await;
+        bridge.on_tool_start("wire-1", "echo", &input).await;
         let result = Ok(ToolResult {
             content: "echo:world".to_string(),
             success: true,
@@ -468,7 +490,7 @@ mod tests {
         });
         bridge.on_tool_end("echo", &result).await;
 
-        // Event channel: start + complete with matching synthesized ids.
+        // Event channel: start + complete with matching wire ids.
         let events = drain(&mut rx);
         let (started, complete) = match (events.first(), events.get(1)) {
             (Some(Event::ToolCallStarted { .. }), Some(Event::ToolCallComplete { .. })) => {
@@ -484,7 +506,7 @@ mod tests {
             Event::ToolCallComplete { id, name, result } => (id, name, result),
             _ => unreachable!(),
         };
-        assert!(s_id.starts_with("bridge-"), "synthesized id: {s_id}");
+        assert_eq!(s_id, "wire-1", "wire id passthrough: {s_id}");
         assert_eq!(s_id, c_id, "start/end ids must correlate");
         assert_eq!(s_name, "echo");
         assert_eq!(s_input, input);
@@ -542,7 +564,7 @@ mod tests {
         let bridge = CallbackBridge::new(Some(tx), None, test_template());
 
         let input = serde_json::json!({"text":"hi"});
-        bridge.on_tool_start("echo", &input).await;
+        bridge.on_tool_start("wire-1", "echo", &input).await;
         bridge
             .on_tool_end(
                 "echo",

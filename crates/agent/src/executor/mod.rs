@@ -192,7 +192,7 @@ impl DefaultAgentExecutor {
             // Execute each tool sequentially and feed the result back as a
             // `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
             for (id, name, input) in tool_uses {
-                callback.on_tool_start(&name, &input).await;
+                callback.on_tool_start(&id, &name, &input).await;
                 let result = match tools.get(&name) {
                     Some(tool) => tool.run(input.clone()).await,
                     None => Err(ToolError::NotAvailable {
@@ -483,9 +483,11 @@ mod tests {
         }
         fn on_tool_start(
             &self,
+            id: &str,
             name: &str,
             _input: &serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            let _ = id;
             let log = self.log.clone();
             let name = name.to_string();
             Box::pin(async move {

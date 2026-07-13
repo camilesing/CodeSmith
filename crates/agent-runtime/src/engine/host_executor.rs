@@ -286,13 +286,12 @@
 //! `MessageComplete`) **are** synthesized at `ContentBlockStart` /
 //! `ContentBlockStop` for text/thinking blocks (§E block-lifecycle slice),
 //! letting the host's UI frame a block before its first delta and mark it done
-//! when its last delta lands. Tool-call-start deltas (`Event::ToolCallStarted`,
-//! fired on `ContentBlockStop` for tool blocks in production) are **not** yet
-//! synthesized — the framework `Callback::on_tool_start` carries no wire id
-//! (the bridge synthesizes `bridge-{n}` ids to pair start↔end), so a
-//! stream-time `ToolCallStarted` would double-emit with the execute-time
-//! `on_tool_start`; dedup needs a trait-surface change or a bridge-level
-//! name+input pairing scheme (deferred — see "Known gaps in early-tool-start").
+//! when its last delta lands. Tool-call-start events (`StreamDelta::ToolCallStarted`,
+//! fired on `ContentBlockStop` for tool blocks) announce a tool call as soon as
+//! its input is finalized — the `Callback::on_tool_start` trait carries the
+//! wire id, so the `CallbackBridge` uses the real wire id (no `bridge-{n}`
+//! synthesis) and deduplicates the stream-time emission against the
+//! execute-time `on_tool_start`.
 //!
 //! ## Known gaps in the LSP flush (by design)
 //!
@@ -522,17 +521,13 @@
 //!
 //! ## Known gaps in early-tool-start (by design)
 //!
-//! - **`ToolCallStarted` not emitted at stream time** — production fires
-//!   `Event::ToolCallStarted` on `ContentBlockStop` for tool blocks (so the UI
-//!   can show "calling X" before the result). This executor's [`reduce_stream`]
-//!   does **not** emit it: the framework [`Callback::on_tool_start`] carries no
-//!   wire tool id, so the [`CallbackBridge`] synthesizes `bridge-{n}` ids to
-//!   pair start↔end at execute time; a stream-time `ToolCallStarted` would
-//!   synthesize a *different* `bridge-{m}` id and double-emit with the
-//!   execute-time `on_tool_start`. Dedup needs either a trait-surface change
-//!   (carry the wire id through `on_tool_start`) or a bridge-level name+input
-//!   pairing scheme. The execute-time `on_tool_start` (fired in the tool loop)
-//!   remains the single source of truth for tool-call-start UI. Deferred.
+//! - **`ToolCallStarted` emitted at stream time ✅** — [`reduce_stream`] fires
+//!   `StreamDelta::ToolCallStarted` on `ContentBlockStop` for tool blocks
+//!   (carrying the wire id), so the UI shows "calling X" before the tool
+//!   executes. The `Callback::on_tool_start` trait now carries the wire `id`,
+//!   so the [`CallbackBridge`] uses the real wire id (no more `bridge-{n}`
+//!   synthesis) and deduplicates: the stream-time `ToolCallStarted` marks the
+//!   id as announced, and the execute-time `on_tool_start` skips re-emitting.
 //! - **static-only safety gate** — [`early_start_safe`] checks
 //!   [`Tool::capabilities`] (`ReadOnly` present AND none of
 //!   `{RequiresApproval, ExecutesCode, WritesFiles}`), mirroring the final
@@ -1729,14 +1724,10 @@ pub fn new(
     /// `JoinHandle` is stored in `early_tasks` keyed by the wire tool id; the
     /// tool loop pops it by id, re-verifies name + input, and awaits it to
     /// reuse the result (mirrors `turn_loop`'s `early_tool_tasks` map +
-    /// `early_tool_start_safe`). Production's `Event::ToolCallStarted` (also
-    /// fired on `ContentBlockStop` for tool blocks) is **not** synthesized here
-    /// yet — the framework `Callback::on_tool_start` carries no wire id (the
-    /// bridge synthesizes `bridge-{n}` ids to pair start↔end), so a
-    /// stream-time `ToolCallStarted` would double-emit with the execute-time
-    /// `on_tool_start`; dedup needs a trait-surface change or a bridge-level
-    /// name+input pairing scheme (deferred — see "Known gaps in
-    /// early-tool-start" in the module docs).
+    /// `early_tool_start_safe`). `Event::ToolCallStarted` is also fired on
+    /// `ContentBlockStop` for tool blocks via `StreamDelta::ToolCallStarted`
+    /// (carrying the wire id) — the `CallbackBridge` deduplicates this
+    /// stream-time emission against the execute-time `on_tool_start`.
     async fn reduce_stream(
         &self,
         mut stream: StreamEventBox,
@@ -1941,18 +1932,36 @@ pub fn new(
                                 start_input,
                                 ..
                             } => {
-                                // Early speculative dispatch: the tool block
-                                // is complete, so finalize its input and — if
-                                // the tool is early-start-safe — spawn it now
-                                // so its result is ready by the tool loop
-                                // (mirrors `turn_loop`'s
+                                // Finalize the tool input now that all
+                                // `InputJsonDelta` fragments have arrived.
+                                let finalized_input =
+                                    finalize_tool_input(input_buf, start_input);
+
+                                // Announce the tool call at stream-time —
+                                // production fires `Event::ToolCallStarted` on
+                                // `ContentBlockStop` for tool blocks (carrying
+                                // the wire id) so the UI can show "calling X"
+                                // before the tool actually executes. The
+                                // `CallbackBridge` marks the id as announced so
+                                // the execute-time `on_tool_start` skips
+                                // re-emitting (dedup).
+                                self.callback
+                                    .on_stream_delta(&StreamDelta::ToolCallStarted {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        input: finalized_input.clone(),
+                                    })
+                                    .await;
+
+                                // Early speculative dispatch: if the tool is
+                                // early-start-safe (read-only, no approval),
+                                // spawn it now so its result is ready by the
+                                // tool loop (mirrors `turn_loop`'s
                                 // `early_tool_start_safe` + spawn at
                                 // `ContentBlockStop`). `tokio::spawn` returns
                                 // immediately (non-blocking); the stream keeps
                                 // consuming. `Drop` on `EarlyToolTask` aborts
                                 // an unreused task so nothing leaks.
-                                let finalized_input =
-                                    finalize_tool_input(input_buf, start_input);
                                 if let Some(tool) = self.tools.get(name) {
                                     if early_start_safe(&tool.capabilities()) {
                                         let tool = Arc::clone(tool);
@@ -3539,7 +3548,7 @@ impl HostAgentExecutor {
             // seam below. Parallel dispatch lands here later.
             let mut loop_guard_halt: Option<String> = None;
             for (id, name, input) in tool_uses {
-                callback.on_tool_start(&name, &input).await;
+                callback.on_tool_start(&id, &name, &input).await;
                 // loop-guard: block the 3rd identical (name+args) call this turn.
                 let (result, blocked) = match loop_guard.record_attempt(&name, &input) {
                     AttemptDecision::Block(message) => {
@@ -8389,6 +8398,9 @@ mod tests {
                 StreamDelta::MessageComplete { index } => {
                     format!("MessageComplete({index})")
                 }
+                StreamDelta::ToolCallStarted { id, name, .. } => {
+                    format!("ToolCallStarted({id}, {name})")
+                }
             })
             .collect()
     }
@@ -8542,6 +8554,289 @@ mod tests {
             ),
             _ => panic!("lifecycle events missing: {events:?}"),
         }
+    }
+
+    // === §E slice 29 — ToolCallStarted stream-time + bridge dedup ==========
+    //
+    // `reduce_stream` fires `StreamDelta::ToolCallStarted` at `ContentBlockStop`
+    // for a tool block (carrying the wire id + finalized input). The
+    // `CallbackBridge` forwards it as `Event::ToolCallStarted` with the real
+    // wire id and marks the id announced; the execute-time `on_tool_start`
+    // sees the announcement and skips re-emitting (dedup). These four tests
+    // prove: (1) the delta fires at `ContentBlockStop` with the right wire
+    // id/name/input, (2) it flows end-to-end through the bridge with the real
+    // wire id (not a synthesized `bridge-{n}`), (3) exactly one
+    // `Event::ToolCallStarted` per call (deduped), (4) it fires even for an
+    // unregistered tool (the UI sees "calling X" before the execute-time
+    // lookup fails).
+
+    #[tokio::test]
+    async fn stream_emits_tool_call_started_at_content_block_stop() {
+        // `reduce_stream` announces a tool call at `ContentBlockStop` (after
+        // `finalize_tool_input` parses the `InputJsonDelta` fragments), before
+        // the tool actually executes. `DeltaRecorder` captures stream deltas
+        // only — no execute-time path — so this isolates the stream-time seam.
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let recorder = Arc::new(DeltaRecorder::new());
+        let callback: Arc<dyn Callback> = recorder.clone();
+
+        // text block(0) + tool block(1, wire id "toolu_1") + finish(tool_use);
+        // call 2 ends the turn.
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "toolu_1", "echo", r#"{"text":"hi"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Exactly one ToolCallStarted delta, carrying the wire id + finalized
+        // input (parsed from the InputJsonDelta fragment).
+        let started: Vec<_> = recorder
+            .deltas()
+            .iter()
+            .filter_map(|d| match d {
+                StreamDelta::ToolCallStarted { id, name, input } => {
+                    Some((id.clone(), name.clone(), input.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started.len(), 1, "one ToolCallStarted: {started:?}");
+        assert_eq!(started[0].0, "toolu_1", "wire id passthrough");
+        assert_eq!(started[0].1, "echo");
+        assert_eq!(started[0].2, serde_json::json!({"text":"hi"}));
+    }
+
+    #[tokio::test]
+    async fn tool_call_started_flows_through_callback_bridge_with_wire_id() {
+        // End-to-end: executor → CallbackBridge → Event::ToolCallStarted on the
+        // Event channel carrying the REAL wire id (not a synthesized
+        // `bridge-{n}` — that synthesis was retired in slice 29).
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx),
+            None,
+            test_template(),
+        ));
+
+        let mut call1 = text_block(0, "calling");
+        call1.extend(tool_use_block(1, "toolu_42", "echo", r#"{"text":"yo"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let events = drain(&mut rx);
+        let started = events
+            .iter()
+            .find_map(|e| match e {
+                Event::ToolCallStarted { id, name, input } => {
+                    Some((id.clone(), name.clone(), input.clone()))
+                }
+                _ => None,
+            })
+            .expect("Event::ToolCallStarted emitted");
+        // Real wire id, NOT a synthesized `bridge-{n}`.
+        assert_eq!(started.0, "toolu_42", "real wire id (not bridge-{{n}})");
+        assert!(!started.0.starts_with("bridge-"), "no synthesized id");
+        assert_eq!(started.1, "echo");
+        assert_eq!(started.2, serde_json::json!({"text":"yo"}));
+
+        // The matching complete carries the same wire id.
+        let complete = events
+            .iter()
+            .find_map(|e| match e {
+                Event::ToolCallComplete { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("Event::ToolCallComplete emitted");
+        assert_eq!(started.0, complete, "start/end wire ids correlate");
+    }
+
+    #[tokio::test]
+    async fn tool_call_started_not_duplicated_at_execute_time() {
+        // Dedup: the stream-time `on_stream_delta(ToolCallStarted)` announces +
+        // marks the id; the execute-time `on_tool_start` sees the announcement
+        // and skips re-emitting. Exactly ONE `Event::ToolCallStarted` per call.
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx),
+            None,
+            test_template(),
+        ));
+
+        let mut call1 = text_block(0, "calling");
+        call1.extend(tool_use_block(1, "toolu_99", "echo", r#"{"text":"x"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Exactly one ToolCallStarted — the stream-time emission, with the
+        // execute-time `on_tool_start` deduped against it.
+        let events = drain(&mut rx);
+        let started_count = events
+            .iter()
+            .filter(|e| matches!(e, Event::ToolCallStarted { .. }))
+            .count();
+        assert_eq!(
+            started_count,
+            1,
+            "exactly one ToolCallStarted (deduped): {events:?}"
+        );
+        let started = events
+            .iter()
+            .find_map(|e| match e {
+                Event::ToolCallStarted { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("ToolCallStarted emitted");
+        assert_eq!(started, "toolu_99");
+    }
+
+    #[tokio::test]
+    async fn tool_call_started_emitted_even_for_unregistered_tool() {
+        // The stream-time emission fires for ALL tool blocks at
+        // `ContentBlockStop`, regardless of registration — the UI sees
+        // "calling ghost" before the execute-time lookup fails (the lookup
+        // happens later, in the tool loop).
+        let tools = Arc::new(ToolSet::new()); // no tools registered
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let recorder = Arc::new(DeltaRecorder::new());
+        let callback: Arc<dyn Callback> = recorder.clone();
+
+        let mut call1 = text_block(0, "calling ghost");
+        call1.extend(tool_use_block(1, "toolu_7", "ghost", r#"{"x":1}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "ok");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The unregistered tool still surfaced a ToolCallStarted delta.
+        let started: Vec<_> = recorder
+            .deltas()
+            .iter()
+            .filter_map(|d| match d {
+                StreamDelta::ToolCallStarted { id, name, input } => {
+                    Some((id.clone(), name.clone(), input.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started.len(), 1, "ghost tool still announced: {started:?}");
+        assert_eq!(started[0].0, "toolu_7");
+        assert_eq!(started[0].1, "ghost");
+        assert_eq!(started[0].2, serde_json::json!({"x":1}));
     }
 
     // === early-tool-start (seam 2 speculative dispatch) ====================

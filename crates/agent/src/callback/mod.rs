@@ -44,16 +44,15 @@ pub enum StopReason {
 ///   until `on_llm_end`).
 /// - **Block-lifecycle markers** ([`StreamDelta::MessageStarted`] /
 ///   [`StreamDelta::ThinkingStarted`] / [`StreamDelta::ThinkingComplete`] /
-///   [`StreamDelta::MessageComplete`]): block-boundary signals synthesized at
-///   `ContentBlockStart` / `ContentBlockStop` (no content payload). They let
-///   the host's UI frame a block before its first delta arrives and mark it
-///   done when its last delta lands — matching the production
-///   `Event::MessageStarted` / `Event::ThinkingStarted` / `Event::ThinkingComplete`
-///   / `Event::MessageComplete` emissions. The stream-time `ToolCallStarted`
-///   for tool blocks is **not** here yet — it's deferred to the early-tool-start
-///   slice (which needs the tool catalog to validate input before announcing
-///   the call, and a bridge refactor to avoid duplicating the execute-time
-///   `on_tool_start` emission).
+///   [`StreamDelta::MessageComplete`] / [`StreamDelta::ToolCallStarted`]):
+///   block-boundary signals synthesized at `ContentBlockStart` /
+///   `ContentBlockStop` (no incremental content payload — `ToolCallStarted`
+///   carries the finalized tool input but it's not a delta). They let the
+///   host's UI frame a block before its first delta arrives, mark it done when
+///   its last delta lands, and announce a tool call as soon as its input is
+///   finalized — matching the production `Event::MessageStarted` /
+///   `Event::ThinkingStarted` / `Event::ThinkingComplete` /
+///   `Event::MessageComplete` / `Event::ToolCallStarted` emissions.
 ///
 /// The `index` is the content-block index from the wire `StreamEvent`, so a
 /// host can correlate deltas with their block (matching the production
@@ -102,6 +101,19 @@ pub enum StreamDelta {
         /// Content-block index from the wire stream event.
         index: usize,
     },
+    /// A tool call was finalized (maps to `Event::ToolCallStarted`). Fired at
+    /// `ContentBlockStop` for a tool block, after the tool-input JSON is fully
+    /// assembled — lets the host's UI show "calling X" before the tool actually
+    /// executes (and before the execute-time [`Callback::on_tool_start`], which
+    /// the bridge deduplicates against this stream-time emission).
+    ToolCallStarted {
+        /// The wire tool-call id from `ContentBlockStart::ToolUse { id, .. }`.
+        id: String,
+        /// The tool name.
+        name: String,
+        /// The finalized tool input (parsed from `InputJsonDelta` fragments).
+        input: serde_json::Value,
+    },
 }
 
 /// No-op boxed future, the default body for every [`Callback`] method.
@@ -139,13 +151,18 @@ pub trait Callback: Send + Sync {
         noop()
     }
 
-    /// Fired before a tool is executed.
+    /// Fired before a tool is executed. The `id` is the wire tool-call id
+    /// from `ContentBlock::ToolUse { id, .. }` — a host uses it to correlate
+    /// `ToolCallStarted`↔`ToolCallComplete` and to deduplicate a stream-time
+    /// `StreamDelta::ToolCallStarted` (if the host already announced the call
+    /// during streaming, it can skip the execute-time re-announcement).
     fn on_tool_start<'a>(
         &'a self,
+        id: &'a str,
         name: &'a str,
         input: &'a serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let _ = (name, input);
+        let _ = (id, name, input);
         noop()
     }
 
@@ -248,13 +265,14 @@ impl Callback for CallbackSet {
 
     fn on_tool_start<'a>(
         &'a self,
+        id: &'a str,
         name: &'a str,
         input: &'a serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let cbs = self.callbacks.clone();
         Box::pin(async move {
             for cb in &cbs {
-                cb.on_tool_start(name, input).await;
+                cb.on_tool_start(id, name, input).await;
             }
         })
     }
@@ -315,6 +333,8 @@ mod tests {
         let cb = NoopCallback;
         cb.on_step(0).await;
         cb.on_complete(&StopReason::NoToolCalls).await;
+        cb.on_tool_start("t1", "echo", &serde_json::Value::Null)
+            .await;
         cb.on_stream_delta(&StreamDelta::Text {
             index: 0,
             content: "hello".to_string(),
@@ -324,6 +344,12 @@ mod tests {
             .await;
         cb.on_stream_delta(&StreamDelta::MessageComplete { index: 0 })
             .await;
+        cb.on_stream_delta(&StreamDelta::ToolCallStarted {
+            id: "t1".to_string(),
+            name: "echo".to_string(),
+            input: serde_json::Value::Null,
+        })
+        .await;
     }
 
     #[tokio::test]
