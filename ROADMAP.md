@@ -1480,6 +1480,33 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 ---
 
+**进度（2026-07-13 §E mid-stream steer buffer drain 落地，闭合最后一个 steer 次级排空点，`feat/pluggable-framework-core`）：**
+
+§E 的第二十三个切片落地——闭合 steer 的最后一个次级排空点：流式期间到达的 steer 现在由 `reduce_stream` 的 `try_recv` 捕获进 per-step `pending_steers` 缓冲，并在两个位置 flush（post-stream no-tools resume + post-tool-execution），镜像退役 `handle_deepseek_turn` 的 `pending_steers` 机制（`turn_loop.rs:683` 声明、`:721-731` 流内 `try_recv` + "queued" status、`:1297-1307` post-stream flush + resume、`:2632-2637` post-tool flush）。此前 steer 仅在 pre-request drain + blocking-hold arm 被处理——流式期间到达的 steer 要么等下一步 pre-request drain（若 turn 继续），要么被下一 turn 的 `drain_stale_steers` **丢弃**（若 turn 以 NoToolCalls 结束且无子 agent 运行）。本轮闭合该正确性缺口。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径不受影响。
+
+- **`reduce_stream` 缓冲**（seam 2 内）：新增 `pending_steers: &mut Vec<String>` 参数（镜像 `early_tasks`）。在 `any_content_received` flip 之后、`match event` 之前，`try_recv` 循环排空 `self.steer`（lock tokio mutex → `try_recv` → trim → skip empty → `pending_steers.push` → `emit_status("Steer input queued: {summarize}")`）。guard 在 `{ }` 块内取/放，不跨 `emit_status().await`（匹配 `drain_steers` 先例）。每个 stream event 后都跑一次——`try_recv` 非阻塞、通常空，开销可忽略。
+- **`stream_with_transparent_retry` 透传**：新增 `pending_steers` 参数，透传给 `reduce_stream`。透明重试（Empty → retry）复用同一 `&mut` 引用，故失败流的缓冲 steer 保留（匹配生产 `pending_steers` 声明在 stream loop 之前）。`RecoveredContextOverflow` → `continue` 时 `pending_steers` 重新声明（per-step），但此时流未开起故缓冲为空——丢弃正确。`Interrupted` → return 时 `pending_steers` drop——取消的 turn 的 steer 丢弃正确（下一 turn 的 stale drain 也会丢）。
+- **`run_inner` 两个 flush 站点**：
+  - **Post-stream no-tools**（`tool_uses.is_empty()` 臂顶部、subagent drain 之前）：`flush_pending_steers` 返 count > 0 则 `step += 1; continue`（resume，镜像 `turn_loop.rs:1297-1307`）。生产顺序：pending_steers 先于 subagent drain。
+  - **Post-tool-execution**（`early_tasks.clear()` 之后、Checkpoint G cancel 检查之前）：`flush_pending_steers`（镜像 `turn_loop.rs:2632-2637`）。无 `continue`——fall through 到下一步。闭合 "last step before MaxSteps" 的 stale-drain 丢失缺口。
+- **helper 提取（dedup 3 站点 → 1）**：`push_steer_message(&self, steer: String, history)` —— observe + enrich（if `TurnMetaProbe`）or plain text + `history.push`。sync（`ChatHistory::push` sync）。`flush_pending_steers(&self, pending, history) -> usize`——`drain(..)` + `push_steer_message` per steer，返 count。refactor `drain_steers` + blocking-hold steer arm 用 `push_steer_message`（零行为变化）。三个 steer push 站点（pre-request drain / blocking-hold arm / mid-stream flush）共享单一源，不可漂移。
+- **module 文档**：line 73-77 "mid-stream buffer … deferred" → "absorbed ✅"；line 547-552 同；`drain_steers` doc + seam-2 注释更新。
+- **test doubles**：`MockLlm` 新增 `steer_on_stream: Mutex<Option<(mpsc::Sender<String>, String)>>` 字段 + `with_steer_on_stream(tx, text)` 方法（镜像 `with_cancel_on_stream`：在 `create_message_stream` 的 async block 内 `tx.try_send(text)`——在 pre-request `drain_steers` 跑完后才推，故 steer 不被 pre-request drain 拦截，而是被 `reduce_stream` 的首个 `try_recv` 捕获）。`with_rounds` 初始化新字段。
+- **5 个新测试**：`mid_stream_steer_buffered_and_flushed_on_no_tool_calls`（2-round mock + steer-on-open → 缓冲 → post-stream flush → resume → request 2 含 steer、transcript len=4）、`mid_stream_steer_buffered_and_flushed_after_tool_execution`（echo tool roundtrip + steer-on-open → post-tool flush → request 2 含 steer、transcript len=5）、`mid_stream_steer_emits_queued_status`（event channel 收 "Steer input queued:" 而非 "accepted:"——证明 mid-stream steer 不经 pre-request drain）、`mid_stream_steer_enriched_with_turn_meta`（`TurnMetaProbe` → flushed steer 是 2-block `<turn_meta>` + text、working_set turn 增）、`mid_stream_steer_empty_skipped`（空白 steer-on-open → 不缓冲、transcript len=2）。共 88 个 host_executor 测试通过（83 既有 + 5 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent` 零 warning（未改）；`cargo +1.90.0 build -p codesmith-agent-runtime` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime --tests` 零新 warning（9 均既有）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 88 通过（83 既有 + 5 新 mid-stream-steer）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1070 通过 + 1 flaky `mcp::streamable_http_stale_session_reconnects_and_retries_tool_call`（隔离重跑通过，既有偶发，与本轮无关）= 1071 总（原 1066 +5）；`cargo +1.90.0 build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **`<turn_meta>` for compaction re-inject**：compaction closure items（summary-prompt merge / attachment reinject / post-compact cleanup）的 turn_meta 富化。
+- **`ToolCallStarted` stream-time + bridge 去重**：`Callback::on_tool_start` 透传 wire id 或 bridge name+input pairing。
+- **post-compact cleanup**：`Session` system-prompt mutability + host-coupled attachment/working-set 可达（summary-prompt 当前丢弃）。
+- **per-input-approval 专用 test**：override-downgrade 断言（ExecutesCode 工具 + dispatcher 返 Auto ⇒ 不 approval）。
+- **dead-code deletion 切片**：slice 20 `#[allow(dead_code)]` 17 项中 orphan 的删掉。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

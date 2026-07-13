@@ -70,11 +70,13 @@
 //!    — interior-mutable because [`AgentExecutor::run`] is `&self` while
 //!    `try_recv` takes `&mut self` (same pattern as the LSP flush's `pending`
 //!    accumulator; the lock is held only for the synchronous `try_recv`). The
-//!    three secondary drain sites (mid-stream buffer, post-stream resume,
-//!    blocking `recv` during sub-agent hold) — the post-stream resume +
-//!    blocking `recv` during the hold are absorbed (the hold's own `biased
-//!    select!` arms); the mid-stream buffer variant is streaming-lifecycle-
-//!    specific and deferred.
+//!    three secondary drain sites are all absorbed ✅: the **mid-stream buffer**
+//!    ([`reduce_stream`](HostAgentExecutor::reduce_stream) `try_recv`s into a
+//!    per-step `pending_steers` vec after each stream event, flushed post-stream
+//!    / post-tool via [`flush_pending_steers`](HostAgentExecutor::flush_pending_steers)),
+//!    the **post-stream resume** (the no-tool-calls arm flushes + resumes), and
+//!    the **blocking `recv` during sub-agent hold** (the hold's own `biased
+//!    select!` arms).
 //! 5. **approval** ([`request_approval`](HostAgentExecutor::request_approval))
 //!    — gates write / code-execution tools behind user permission. Before
 //!    running such a tool, the executor emits `Event::ApprovalRequired`
@@ -542,12 +544,17 @@
 //!   sentinel is a runtime-event marker, not user intent, so it carries no
 //!   `<turn_meta>`. (The steer / LSP-flush pushes are now enriched ✅ when a
 //!   [`TurnMetaProbe`] is present; the sentinel is deliberately not.)
-//! - **steer post-stream resume absorbed ✅** — production, when the model
-//!   returns no tool calls and `pending_steers` is non-empty, resumes with the
-//!   steered text (`turn_loop.rs:1297-1307`). This executor now mirrors that via
-//!   the blocking hold's `biased select!` steer arm: a steer arriving during the
-//!   hold is injected as a `user` message and `continue`s on a fresh step (the
-//!   mid-stream buffer variant — streaming-lifecycle-specific — remains deferred).
+//! - **steer mid-stream buffer + post-stream resume absorbed ✅** — production
+//!   declares `pending_steers` before the stream loop (`turn_loop.rs:683`),
+//!   `try_recv`s into it after every polled event (`:721-731`, emitting "Steer
+//!   input queued"), then flushes at two points: post-stream no-tools (`:1297-
+//!   1307`, flush + resume) and post-tool (`:2632-2637`, flush + fall through).
+//!   This executor now mirrors all three: [`reduce_stream`](HostAgentExecutor::reduce_stream)
+//!   buffers steers during streaming, the no-tool-calls arm flushes + resumes
+//!   (before the sub-agent drain), the post-tool arm flushes, and the blocking
+//!   hold's `biased select!` steer arm injects a steer arriving during the hold.
+//!   Without the mid-stream buffer, steers arriving during the last step's
+//!   streaming would be discarded by the next turn's stale drain.
 //!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
@@ -1443,6 +1450,7 @@ pub fn new(
         &self,
         mut stream: StreamEventBox,
         early_tasks: &mut HashMap<String, EarlyToolTask>,
+        pending_steers: &mut Vec<String>,
     ) -> StreamReduceOutcome {
         let mut blocks: BTreeMap<u32, BlockBuild> = BTreeMap::new();
         let mut stop_reason: Option<String> = None;
@@ -1485,6 +1493,36 @@ pub fn new(
             // for output" (mirrors `turn_loop.rs:770-772`).
             if !any_content_received && !matches!(event, StreamEvent::MessageStart { .. }) {
                 any_content_received = true;
+            }
+
+            // Mid-stream steer buffer (mirrors `turn_loop.rs:721-731`): drain
+            // any steers that arrived while the stream was producing. These are
+            // buffered (not injected mid-stream) and flushed by `run_inner`
+            // post-stream / post-tool — without this, steers arriving during the
+            // last step's streaming would be discarded by the next turn's stale
+            // drain. The tokio mutex guard is taken and dropped within the `{ }`
+            // block before `emit_status().await` — no lock crosses an `await`
+            // (matching `drain_steers`).
+            if let Some(rx) = &self.steer {
+                loop {
+                    let steer = {
+                        let mut guard = rx.lock().await;
+                        match guard.try_recv() {
+                            Ok(s) => s,
+                            Err(_) => break,
+                        }
+                    };
+                    let steer = steer.trim().to_string();
+                    if steer.is_empty() {
+                        continue;
+                    }
+                    pending_steers.push(steer.clone());
+                    self.emit_status(format!(
+                        "Steer input queued: {}",
+                        summarize_text(&steer, 120)
+                    ))
+                    .await;
+                }
             }
 
             match event {
@@ -1731,6 +1769,7 @@ pub fn new(
         history: &mut dyn ChatHistory,
         system: Option<&SystemPrompt>,
         early_tasks: &mut HashMap<String, EarlyToolTask>,
+        pending_steers: &mut Vec<String>,
     ) -> Result<StreamRoundOutcome> {
         /// Cap on transparent stream retries — matches `turn_loop`'s
         /// `MAX_STREAM_RETRIES` (3). One initial attempt + 3 retries = 4 total
@@ -1795,7 +1834,7 @@ pub fn new(
                     }
                 }
             };
-            match self.reduce_stream(stream, early_tasks).await {
+            match self.reduce_stream(stream, early_tasks, pending_steers).await {
                 StreamReduceOutcome::Complete {
                     content,
                     stop_reason,
@@ -2022,9 +2061,56 @@ pub fn new(
     /// `user_text_message_with_turn_metadata` wrap for each drained steer
     /// (observe before the move, then enrich). Embeds/tests (`probe` absent)
     /// push plain text — the pre-slice-22 behavior. The mid-stream buffer
-    /// drain site (inside `reduce_stream`'s `try_recv` + flush) remains
-    /// deferred — it needs inline stream reduction; the blocking `recv`
-    /// during the sub-agent hold is enriched via the hold's own steer arm.
+    /// drain site (inside [`reduce_stream`](HostAgentExecutor::reduce_stream)'s
+    /// `try_recv` + [`flush_pending_steers`](HostAgentExecutor::flush_pending_steers))
+    /// is now absorbed ✅; the blocking `recv` during the sub-agent hold is
+    /// enriched via the hold's own steer arm.
+    /// Push a steer message into the transcript, observing against the shared
+    /// working set and wrapping in `<turn_meta>` when a [`TurnMetaProbe`] is
+    /// present (production); plain text otherwise. Shared by the pre-request
+    /// drain ([`drain_steers`](Self::drain_steers)), the sub-agent blocking-hold
+    /// steer arm, and the mid-stream buffer flush
+    /// ([`flush_pending_steers`](Self::flush_pending_steers)) — single source for
+    /// the observe + enrich + push logic so the three push sites cannot drift.
+    /// Sync: [`ChatHistory::push`] is sync and `observe_user_message` /
+    /// `enrich_user_text_message` are sync (the lock on the shared working set
+    /// is never held across an `await`).
+    fn push_steer_message(&self, steer: String, history: &mut dyn ChatHistory) {
+        let message = match &self.turn_meta {
+            Some(probe) => {
+                probe.observe_user_message(&steer);
+                probe.enrich_user_text_message(steer)
+            }
+            None => Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: steer,
+                    cache_control: None,
+                }],
+            },
+        };
+        history.push(message);
+    }
+
+    /// Flush mid-stream-buffered steers into the transcript (observe + enrich +
+    /// push). No status — "Steer input queued" was already emitted during
+    /// buffering in [`reduce_stream`](Self::reduce_stream). Returns the count
+    /// flushed so callers can decide whether to resume the turn. Mirrors
+    /// production's `pending_steers.drain(..)` at `turn_loop.rs:1297-1307`
+    /// (post-stream no-tools — caller resumes on a fresh step) and
+    /// `:2632-2637` (post-tool — caller falls through to the next step).
+    fn flush_pending_steers(
+        &self,
+        pending: &mut Vec<String>,
+        history: &mut dyn ChatHistory,
+    ) -> usize {
+        let count = pending.len();
+        for steer in pending.drain(..) {
+            self.push_steer_message(steer, history);
+        }
+        count
+    }
+
     async fn drain_steers(&self, history: &mut dyn ChatHistory) {
         let Some(rx) = &self.steer else {
             return;
@@ -2052,26 +2138,7 @@ pub fn new(
                 "Steer input accepted: {}",
                 summarize_text(&steer, 120)
             );
-            // When a `TurnMetaProbe` is wired in (production), observe the
-            // steer text against the shared working set (records the message
-            // turn + path tokens) and wrap it in a `<turn_meta>` block —
-            // matching production's `observe_user_message` +
-            // `user_text_message_with_turn_metadata` for steer pushes.
-            // Embeds/tests (`None`) push plain text (pre-slice-22 behavior).
-            let message = match &self.turn_meta {
-                Some(probe) => {
-                    probe.observe_user_message(&steer);
-                    probe.enrich_user_text_message(steer)
-                }
-                None => Message {
-                    role: "user".to_string(),
-                    content: vec![ContentBlock::Text {
-                        text: steer,
-                        cache_control: None,
-                    }],
-                },
-            };
-            history.push(message);
+            self.push_steer_message(steer, history);
             self.emit_status(status).await;
         }
     }
@@ -2699,8 +2766,10 @@ impl HostAgentExecutor {
             // when the stream dies mid-flight before any content commits);
             // ✅ reactive capacity recovery (a pre-stream context-length
             // rejection triggers emergency compaction and restarts the step).
-            // `on_llm_start` fires once per step; retries and recovery are
-            // transparent to the Callback. Subagent handoff / thinking-only
+            // ✅ mid-stream steer buffer (`reduce_stream` `try_recv`s into
+            // `pending_steers` during streaming; flushed post-stream / post-tool
+            // below). `on_llm_start` fires once per step; retries and recovery
+            // are transparent to the Callback. Subagent handoff / thinking-only
             // handling land here later.
             //
             // `early_tasks` is per-step: the inline reducer populates it during
@@ -2711,6 +2780,14 @@ impl HostAgentExecutor {
             // before any content ⇒ no `ContentBlockStop` ⇒ the map is empty, so
             // dropping it leaks nothing.
             let mut early_tasks: HashMap<String, EarlyToolTask> = HashMap::new();
+            // `pending_steers` is per-step: the inline reducer buffers steers
+            // that arrive during streaming (mirrors `turn_loop.rs:683` declaring
+            // `pending_steers` before the stream loop). Flushed post-stream /
+            // post-tool below. On a `continue` (capacity `RetryStep` / reactive
+            // `RecoveredContextOverflow`) the stream either never opened or died
+            // before any content ⇒ no `try_recv` ran in `reduce_stream` ⇒ the
+            // vec is empty, so dropping it leaks nothing.
+            let mut pending_steers: Vec<String> = Vec::new();
             let (content, _stop_reason) = match self
                 .stream_with_transparent_retry(
                     &client,
@@ -2720,6 +2797,7 @@ impl HostAgentExecutor {
                     history,
                     system.as_ref(),
                     &mut early_tasks,
+                    &mut pending_steers,
                 )
                 .await
             {
@@ -2775,6 +2853,15 @@ impl HostAgentExecutor {
                 .collect();
 
             if tool_uses.is_empty() {
+                // Mid-stream steer flush (mirrors `turn_loop.rs:1297-1307`):
+                // if steers arrived during streaming, flush them and resume the
+                // turn on a fresh step BEFORE checking for sub-agent
+                // completions — production checks `pending_steers` first.
+                let flushed = self.flush_pending_steers(&mut pending_steers, history);
+                if flushed > 0 {
+                    step += 1;
+                    continue;
+                }
                 // Sub-agent completion handoff (seam 2 post-stream resume).
                 // Mirrors `handle_deepseek_turn`'s non-blocking completion drain
                 // (`turn_loop.rs:1317-1397` + the late drain at `1501-1532`):
@@ -2889,20 +2976,7 @@ impl HostAgentExecutor {
                                         // against the working set and wrapped in
                                         // `<turn_meta>` when the probe is present
                                         // (production); plain text otherwise.
-                                        let message = match &self.turn_meta {
-                                            Some(probe) => {
-                                                probe.observe_user_message(&trimmed);
-                                                probe.enrich_user_text_message(trimmed)
-                                            }
-                                            None => Message {
-                                                role: "user".to_string(),
-                                                content: vec![ContentBlock::Text {
-                                                    text: trimmed,
-                                                    cache_control: None,
-                                                }],
-                                            },
-                                        };
-                                        history.push(message);
+                                        self.push_steer_message(trimmed, history);
                                         self.emit_status(status).await;
                                     }
                                     step += 1;
@@ -3105,6 +3179,13 @@ impl HostAgentExecutor {
             // aborts the spawned task. In normal operation every spawned task
             // is consumed or aborted within the loop, so this is defensive.
             early_tasks.clear();
+
+            // Mid-stream steer flush (mirrors `turn_loop.rs:2632-2637`): push
+            // any steers that arrived during streaming into the transcript
+            // before the next step. Steers that arrive during the last step
+            // before `MaxSteps` would otherwise be discarded by the next turn's
+            // stale drain.
+            self.flush_pending_steers(&mut pending_steers, history);
 
             // (4) per-step post-tool seam — ✅ cancel-token (Checkpoint G:
             // post-loop final gate — cancel takes priority over loop-guard
@@ -3372,6 +3453,15 @@ mod tests {
         /// is cancelled by the time `reduce_stream` runs, but the stream
         /// still opened (so Checkpoint B's stream-open race doesn't win).
         cancel_on_stream: Mutex<Option<CancellationToken>>,
+        /// §E mid-stream-steer test hook: when set, `create_message_stream`
+        /// pushes this steer text to the channel as a side-effect when the
+        /// stream opens (inside the async block, after the pre-request
+        /// `drain_steers` has already run). The first `try_recv` in
+        /// `reduce_stream` catches it — simulating a steer arriving *during*
+        /// streaming. Taken (fired once) so only the first stream call triggers
+        /// it. Uses `try_send` (sync, non-blocking) so no `.await` is needed in
+        /// the async block.
+        steer_on_stream: Mutex<Option<(mpsc::Sender<String>, String)>>,
     }
 
     impl MockLlm {
@@ -3391,6 +3481,7 @@ mod tests {
                 compaction_error: Mutex::new(None),
                 compaction_calls: Mutex::new(0),
                 cancel_on_stream: Mutex::new(None),
+                steer_on_stream: Mutex::new(None),
             }
         }
 
@@ -3442,6 +3533,17 @@ mod tests {
             *self.cancel_on_stream.lock().unwrap() = Some(token);
             self
         }
+
+        /// §E mid-stream-steer test hook: push `text` to `tx` as a side-effect
+        /// when the next `create_message_stream` opens (inside the async block,
+        /// after the pre-request `drain_steers` has already drained the channel).
+        /// Fired once (taken). Lets mid-stream-steer tests prove the steer is
+        /// buffered by `reduce_stream`'s `try_recv` and flushed post-stream /
+        /// post-tool — not caught by the pre-request drain.
+        fn with_steer_on_stream(self, tx: mpsc::Sender<String>, text: String) -> Self {
+            *self.steer_on_stream.lock().unwrap() = Some((tx, text));
+            self
+        }
     }
 
     impl LlmClient for MockLlm {
@@ -3485,9 +3587,18 @@ mod tests {
             // Checkpoint C (Empty arm) or D (Complete arm) in `reduce_stream`'s
             // outcome — which is what these tests prove.
             let cancel_token = self.cancel_on_stream.lock().unwrap().take();
+            // §E mid-stream-steer test hook: take the pair here so the lock
+            // doesn't cross an await, but push the steer INSIDE the async block
+            // (after the pre-request `drain_steers` has already run, so the
+            // steer is not caught by it — the first `try_recv` in
+            // `reduce_stream` catches it instead).
+            let steer_pair = self.steer_on_stream.lock().unwrap().take();
             Box::pin(async move {
                 if let Some(token) = cancel_token {
                     token.cancel();
+                }
+                if let Some((tx, text)) = steer_pair {
+                    let _ = tx.try_send(text);
                 }
                 let round = next.unwrap_or(MockRound::Events(vec![]));
                 match round {
@@ -8695,5 +8806,329 @@ mod tests {
             ContentBlock::Text { text, .. } => assert_eq!(text, "now fix the bug"),
             other => panic!("expected raw text block, got {other:?}"),
         }
+    }
+
+    // === mid-stream steer buffer drain (slice 23 §E) =========================
+
+    /// A steer arriving *during* streaming (after the pre-request drain ran)
+    /// is buffered by `reduce_stream`'s `try_recv` and flushed post-stream when
+    /// the model returns no tool calls — the turn resumes so the model sees the
+    /// steer on the next request. Without the mid-stream buffer, this steer
+    /// would be discarded by the next turn's stale drain.
+    #[tokio::test]
+    async fn mid_stream_steer_buffered_and_flushed_on_no_tool_calls() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+
+        // Round 1: text + end_turn (no tool calls → post-stream flush triggers).
+        // Round 2: text + end_turn (the resume after flush).
+        let mut round1 = text_block(0, "partial answer");
+        round1.extend(finish("end_turn"));
+        let mut round2 = text_block(0, "final answer");
+        round2.extend(finish("end_turn"));
+        let mock = Arc::new(
+            MockLlm::new(vec![round1, round2])
+                .with_steer_on_stream(tx_steer, "mid-stream steer".to_string()),
+        );
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "start".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Transcript: [user("start"), assistant("partial"), user(steer), assistant("final")].
+        assert_eq!(history.len(), 4);
+        assert_eq!(sess.messages[2].role.as_str(), "user");
+        match &sess.messages[2].content[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "mid-stream steer"),
+            other => panic!("expected steer Text, got {other:?}"),
+        }
+
+        // 2 stream calls (round 1 + resume). Request 2 must contain the steer.
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 2);
+        let saw_steer = reqs[1].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text == "mid-stream steer")
+            })
+        });
+        assert!(saw_steer, "request 2 must contain the mid-stream steer: {reqs:?}");
+    }
+
+    /// A steer arriving during streaming with tool calls is flushed after tool
+    /// execution (the post-tool flush site) — so the model sees it on the next
+    /// step's request.
+    #[tokio::test]
+    async fn mid_stream_steer_buffered_and_flushed_after_tool_execution() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+
+        // Round 1: text + tool_use(echo) + tool_use stop. Round 2: text + end_turn.
+        let mut round1 = text_block(0, "running echo");
+        round1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        round1.extend(finish("tool_use"));
+        let mut round2 = text_block(0, "done");
+        round2.extend(finish("end_turn"));
+        let mock = Arc::new(
+            MockLlm::new(vec![round1, round2])
+                .with_steer_on_stream(tx_steer, "mid-stream steer".to_string()),
+        );
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "start".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Transcript: [user("start"), assistant, user(tool_result), user(steer), assistant("done")].
+        assert_eq!(history.len(), 5);
+        // The steer is pushed AFTER the tool result (post-tool flush).
+        assert_eq!(sess.messages[3].role.as_str(), "user");
+        match &sess.messages[3].content[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "mid-stream steer"),
+            other => panic!("expected steer Text, got {other:?}"),
+        }
+
+        // Request 2 must contain the steer.
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 2);
+        let saw_steer = reqs[1].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text, .. } if text == "mid-stream steer")
+            })
+        });
+        assert!(saw_steer, "request 2 must contain the mid-stream steer: {reqs:?}");
+    }
+
+    /// A mid-stream-buffered steer emits "Steer input queued:" (distinct from
+    /// the pre-request drain's "Steer input accepted:") — the status signals
+    /// to the user that the steer will be processed after the current stream.
+    #[tokio::test]
+    async fn mid_stream_steer_emits_queued_status() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+
+        let mut round1 = text_block(0, "partial");
+        round1.extend(finish("end_turn"));
+        let mut round2 = text_block(0, "final");
+        round2.extend(finish("end_turn"));
+        let mock = Arc::new(
+            MockLlm::new(vec![round1, round2])
+                .with_steer_on_stream(tx_steer, "queued steer".to_string()),
+        );
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let all_statuses = statuses(&drain(&mut rx));
+        let queued: Vec<_> = all_statuses
+            .iter()
+            .filter(|s| s.contains("Steer input queued"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            queued.len(),
+            1,
+            "one 'queued' status for the mid-stream steer: {queued:?}"
+        );
+        assert!(
+            queued[0].contains("queued steer"),
+            "status previews the steer text: {queued:?}"
+        );
+        // No "accepted" status — the steer was never pre-request-drained.
+        let accepted: Vec<_> = all_statuses
+            .iter()
+            .filter(|s| s.contains("Steer input accepted"))
+            .cloned()
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "mid-stream steer must emit 'queued' not 'accepted': {accepted:?}"
+        );
+    }
+
+    /// A mid-stream-buffered steer is enriched with `<turn_meta>` and observed
+    /// against the shared working set when a `TurnMetaProbe` is present —
+    /// matching production's `observe_user_message` + `enrich` for steer pushes.
+    #[tokio::test]
+    async fn mid_stream_steer_enriched_with_turn_meta() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        // Build the probe BEFORE the `&mut sess` borrow held by the history.
+        let probe = turn_meta_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+
+        let mut round1 = text_block(0, "partial");
+        round1.extend(finish("end_turn"));
+        let mut round2 = text_block(0, "final");
+        round2.extend(finish("end_turn"));
+        let mock = Arc::new(
+            MockLlm::new(vec![round1, round2])
+                .with_steer_on_stream(tx_steer, "mid-stream steer".to_string()),
+        );
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_turn_meta(Some(probe));
+
+        let reason = executor
+            .run(&mut history, "start".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The mid-stream steer message (position 2) is enriched: 2 blocks.
+        assert_eq!(sess.messages[2].role.as_str(), "user");
+        assert_eq!(
+            sess.messages[2].content.len(),
+            2,
+            "mid-stream steer is enriched (2 blocks)"
+        );
+        match (&sess.messages[2].content[0], &sess.messages[2].content[1]) {
+            (ContentBlock::Text { text: meta, .. }, ContentBlock::Text { text: body, .. }) => {
+                assert!(meta.contains("<turn_meta>"), "steer wrapped: {meta}");
+                assert_eq!(body, "mid-stream steer");
+            }
+            other => panic!("expected [turn_meta, steer] Text blocks, got {other:?}"),
+        }
+
+        // The steer was observed against the shared working set (turn >= 1).
+        assert!(
+            sess.working_set.lock().expect("poisoned").turn >= 1,
+            "mid-stream steer observe must increment the working set's turn"
+        );
+    }
+
+    /// Empty / whitespace-only steers arriving during streaming are skipped
+    /// (not buffered, no extra user message).
+    #[tokio::test]
+    async fn mid_stream_steer_empty_skipped() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+
+        let mut round1 = text_block(0, "answer");
+        round1.extend(finish("end_turn"));
+        let mock = Arc::new(
+            MockLlm::new(vec![round1])
+                .with_steer_on_stream(tx_steer, "   ".to_string()),
+        );
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Transcript: [user("go"), assistant("answer")] — no steer message.
+        assert_eq!(
+            history.len(),
+            2,
+            "empty steer must not produce an extra user message"
+        );
     }
 }
