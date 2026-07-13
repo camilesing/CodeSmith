@@ -1274,6 +1274,20 @@ impl Engine {
         // `total_usage.add` below and `Event::TurnComplete.usage`. The
         // executor is constructed fresh each turn, so this starts at zero.
         turn.usage = executor.take_usage();
+        // Slice 25a §E: apply the deferred compaction summary merge. The
+        // executor recorded `result.summary_prompt` from `run_compaction` /
+        // `recover_context_overflow` (which the static `config.system`
+        // snapshot can't fold mid-`run`); the host now has
+        // `&mut self.session` back, so it folds the summary into
+        // `session.system_prompt` + `compaction_summary_prompt` (visible to
+        // the NEXT turn's snapshot) + emits a UI refresh. Mirrors the
+        // production host-side post-compaction closure
+        // (`merge_compaction_summary` @ mod.rs:1411-1418). `reinject` +
+        // `post_compact_cleanup` remain deferred (sub-slices 25b/25c).
+        if let Some(summary) = executor.take_pending_compaction_summary() {
+            self.merge_compaction_summary(Some(summary));
+            self.emit_session_updated().await;
+        }
         let (status, error) = match stop_reason {
             Ok(StopReason::NoToolCalls) | Ok(StopReason::MaxSteps) => {
                 (TurnOutcomeStatus::Completed, None)

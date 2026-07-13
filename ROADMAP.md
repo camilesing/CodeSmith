@@ -1531,6 +1531,30 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 ---
 
+**进度（2026-07-13 §E compaction `summary_prompt` merge（deferred post-`run`）落地，关闭 framework-core compaction closure 第一项，`feat/pluggable-framework-core`）：**
+
+§E 的第二十五个切片（item #3 "post-compact cleanup" 的子切片 25a）落地——关闭 "Known gaps in compaction" 中最显式命名的缺口：`HostAgentExecutor::run_compaction` / `recover_context_overflow` 的 `Ok(result)` 臂通过 `history.clear()` + `push()` 替换 transcript，但**丢弃 `result.summary_prompt`**（生产侧 `Engine::merge_compaction_summary` 折叠进 `session.system_prompt` 的 rolled-up 摘要）。本切片把 summary 记录进 executor slot（`take_usage` 模式），在 host **`run` 返回后**（`&mut self.session` 回到 host 手中时）合并——mirror production host-side post-compaction closure。closure 的另三项（`reinject_compaction_attachments` / `post_compact_cleanup` / full `emit_session_updated`）拆到 25b/25c（需求更硬：reinject 必须在 `run` 内、cleanup 有 merge XOR 互斥 + divorced probe slots）。
+
+- **behavior-equivalence 论证**：deferred-to-post-`run` 等价于 mid-`run` 合并，因为 executor 的 system prompt 是静态快照——`let system = self.config.system.clone();`（`host_executor.rs:2646`），在构造时从 `session.system_prompt` 快照（`mod.rs:1206`，在 `&mut session` 借用之前）。故 `run` 期间任何 `session.system_prompt` 变更对**同 turn** 的请求不可见——合并的 summary 只对**下一 turn**（重新快照）才重要。所以把合并 defer 到 post-`run` 与 mid-`run` 合并行为等价。
+- **executor slot（mirror `take_usage`）**：`pending_compaction_summary: std::sync::Mutex<Option<SystemPrompt>>` 字段（`host_executor.rs`，紧邻 `usage`）+ `new` 初始化 `None`。`#[must_use] pub fn take_pending_compaction_summary(&self) -> Option<SystemPrompt>`——one-shot drain（`lock().take()`），镜像 `take_usage`；executor 每 turn 新建故无 cross-turn 泄漏。`fn record_compaction_summary(&self, summary: Option<SystemPrompt>)` helper——通过 `crate::compaction::merge_system_prompts` 折叠（`current.take()` → `*guard = merge_system_prompts(current.as_ref(), summary)`），使一个 turn 内多次 compaction **累积**而非 last-wins（镜像生产 `merge_compaction_summary` 逐次折叠进 `session.compaction_summary_prompt`）。
+- **store（两处 Ok 臂）**：`run_compaction` Phase-2 full-compact 臂 + `recover_context_overflow` Phase-2 臂 → `self.record_compaction_summary(result.summary_prompt.clone());`（在 `history.clear()` + `push()` 之前/之后）。替换原 "summary_prompt discarded — same gap as run_compaction." 注释。Phase-1 micro-compact 臂不动（micro-compact 无 `summary_prompt`）。
+- **host post-`run` 接线**（`mod.rs`，紧邻 `turn.usage = executor.take_usage();`）：`if let Some(summary) = executor.take_pending_compaction_summary() { self.merge_compaction_summary(Some(summary)); self.emit_session_updated().await; }`。镜像生产 host-side post-compaction closure（`merge_compaction_summary` @ `mod.rs:1411-1418`）。
+- **module 文档**："Known gaps in compaction"——"summary-prompt merge dropped" → "absorbed ✅ (post-`run`, slice 25a §E)"（论证静态快照等价性）；"no `emit_session_updated`" → "partial ✅ (merge path only)"；"attachment reinject deferred" → "deferred (25b)"（补 within-`run` host-state access 需求）；"post-compact cleanup deferred" → "deferred (25c)"（补 merge XOR cleanup 互斥 + divorced probe slots）。`run_compaction` / `recover_context_overflow` doc string + inline `Ok(result)` 注释更新。
+- **4 个新测试**（`host_executor.rs` test module，新增 "compaction summary_prompt slot" 组 + `system_prompt_text` helper）：`run_compaction_records_summary_prompt`（Phase-2 auto-compact 触发 → slot `Some`、含 LLM summary 文本、one-shot drain 二次取 `None`）、`compaction_summary_flows_to_host_merge_post_run`（reactive context-length recovery → `recover_context_overflow` 记录 → slot `Some`、seam 断言而非 fold——fold 在 `Engine`）、`multiple_compactions_accumulate_summary`（两次 `record_compaction_summary` → 合并保留两个 summary、守卫累积语义非 last-wins）、`no_compaction_yields_none_summary`（high-threshold clean run → slot `None`、host merge no-op）。共 92 个 host_executor 测试通过（88 既有 + 4 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime --tests` 零新 warning（11 均既有，`task_v2.rs`/`purge.rs`，与本轮无关）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 92 通过（88 既有 + 4 新）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1075 通过（含 4 新；既有 flaky mcp 重连测试本轮通过，2 ignored）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 123 通过（host post-`run` merge 接线在 Engine run 路径中 live，零回归——含 slice 24 的 6 个 reinject 测试）；`cargo +1.90.0 build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **25b — `reinject_compaction_attachments` during `run`**（framework-core compaction closure 第二项）：compaction 后 compacted transcript + retry 必须在**同一 `run`** 内重注入 plan/todos/subagents/read_files 附件，故需 within-`run` host-state access——probe for `config.plan_state`/`config.todos` Arc-clones、`SubAgentApi::live_running_snapshots` 访问、`recent_read_files` Arc-ification on `Session`。硬骨头，独立切片。
+- **25c — `post_compact_cleanup`**（closure 第三项）：merge XOR cleanup 互斥（生产按 compaction type：full→merge、micro→cleanup）+ divorced `CompactionProbe` circuit-breaker/micro-state slots（fresh per run、非 session 的）需小心。
+- **`ToolCallStarted` stream-time + bridge 去重**：`Callback::on_tool_start` 透传 wire id 或 bridge name+input pairing。
+- **per-input-approval 专用 test**：override-downgrade 断言（ExecutesCode 工具 + dispatcher 返 Auto ⇒ 不 approval）。
+- **dead-code deletion 切片**：slice 20 `#[allow(dead_code)]` 17 项中 orphan 的删掉。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
