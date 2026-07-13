@@ -1637,8 +1637,30 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **下一聚焦工作：**
 - **`run_compaction` reinject 的 provider-budget refinement**：当前 `None` budget；传 `context_input_budget_for_provider` 需 thread `api_provider`/`model`（`ReinjectProbe.model` 已就位，缺 `api_provider`）。低优先 refinement。
-- **per-input-approval 专用 test**：override-downgrade 断言（ExecutesCode 工具 + dispatcher 返 Auto ⇒ 不 approval）。
+- ~~**per-input-approval 专用 test**~~ → ✅ 已落地（slice 30 §E，见下）。
 - **dead-code deletion 切片**：slice 20 `#[allow(dead_code)]` 17 项中 orphan 的删掉。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
+**进度（2026-07-14 §E per-input-approval 专用 test 落地，闭合 slice 20 Step 4 测试缺口，`feat/pluggable-framework-core`）：**
+
+§E 的第三十个切片落地——闭合 slice 20（wire-in cutover）遗留的测试缺口："per-input-approval 专用 test"。slice 20 Step 4 落地了 `request_approval` 的 per-input 动态 override 路径（`tool_dispatcher.approval_requirement_for(name, input)` 先于静态 `requires_approval(&tool.capabilities())` gate 查询——`Some(req)` 用 `req != Auto`，`None` 回退静态 gate，镜像 `turn_loop.rs:1700` 的 `registry.approval_requirement_for(..)`），但仅有构建路径无回归断言覆盖，缺 override-downgrade 专用测试。本切片用新 `FakeDispatcher` test double 锁定该路径的三条 match 臂，零既有调用点行为改动（`request_approval` 实现不变；纯测试新增）。
+
+- **`FakeDispatcher` test double**（`host_executor.rs` test module）：`impl ToolDispatcher`，持 `Mutex<Option<ApprovalRequirement>>`，`approval_requirement_for` 对任意 (name, input) 返同一可配置答案。其余 10 方法 stub（`has_tool`→true / `resolve`→identity / `metadata`→None / `is_destructive`+`is_interactive`→false / `validate_input`→Ok / `to_api_tools*`→空 / `execute`→`unreachable!`（executor 走 `Tool::run` 非 `ToolDispatcher::execute`）/ `hook_host`→None）。镜像 `FakeLsp`/`FakeSubAgentApi` 的最小注入模式——不拉入完整 `HostServices`。
+- **`ExecSpec` test double**（紧邻 `WriteSpec`）：`impl ToolSpec`，name `"exec_shell"`，声明 `ToolCapability::ExecutesCode`（故静态 `requires_approval` 返 true）。`exec_tools()` / `exec_call()` helper 镜像 `write_tools()` / `write_call()`。
+- **3 个新测试**（覆盖 `request_approval` override match 的三条臂）：
+  - **`per_input_approval_downgrade_skips_gating`**（headline，匹配 ROADMAP 描述）：`ExecSpec`（ExecutesCode→静态 gate says 需审批）+ `FakeDispatcher(Some(Auto))` → override-**downgrade**。approval channel 有但**不推决策**（若误触发 gate 则 `recv()` 阻塞）。2 s timeout guard 证不阻塞；断言 tool ran ungated（`ran:ls`）、**无** `ApprovalRequired` event。
+  - **`per_input_approval_upgrade_fires_gating`**：`EchoSpec`（ReadOnly→静态 gate says 不审批）+ `FakeDispatcher(Some(Required))` → override-**upgrade**。预推 Approved。断言 `ApprovalRequired` event 发出（id=`call_1`/tool_name=`echo`/fingerprint 非空）+ tool ran after approval（early-started read-only task reused，结果带 workspace stamp）。
+  - **`per_input_approval_none_opinion_falls_back_to_static_gate`**：`ExecSpec`（静态 gate says 需审批）+ `FakeDispatcher(None)`（dispatcher 无意见）→ 回退静态 gate。预推 Approved。断言 `ApprovalRequired` event 发出（证 `None` 臂不静默禁用静态 gate）+ tool ran after approval。
+- **三臂覆盖**：`Some(Auto)`（req==Auto ⇒ false，downgrade）、`Some(Required/Suggest)`（req!=Auto ⇒ true，upgrade）、`None`（fallback to `requires_approval`）。`Suggest` 与 `Required` 在 `req != Auto` 等价（gate fires），故用 `Required` 代表 non-Auto 臂即可。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime --tests` 零新 warning（11 均既有——`captured_requests`/unused imports/`tempfile::into_path` deprecated/unused vars，changed-file 专项 grep 零命中）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 116 通过（113 既有 + 3 新 per-input-approval）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1099 通过（0 失败、2 ignored，原 1096 + 3 新）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改——不动核心 trait）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 123 通过（0 失败、1 ignored——live `handle_send_message` wire-in 路径零回归，`request_approval` 实现不变）；`cargo +1.90.0 build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **`run_compaction` reinject 的 provider-budget refinement**：当前 `None` budget；传 `context_input_budget_for_provider` 需 thread `api_provider`/`model`（`ReinjectProbe.model` 已就位，缺 `api_provider`）。低优先 refinement。
+- **dead-code deletion 切片**：slice 20 `#[allow(dead_code)]` 17 项中 orphan 的删掉（streaming config cluster / `mcp_tool_approval_description` / `emit_tool_audit`），superseded 方法按 re-wire 决策保留或删。
 - **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 

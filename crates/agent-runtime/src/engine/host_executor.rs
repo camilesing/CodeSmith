@@ -3846,6 +3846,48 @@ mod tests {
         }
     }
 
+    /// A `ToolSpec` standing in for a code-execution tool (`exec_shell`): it
+    /// declares `ExecutesCode`, so the static [`requires_approval`] gate fires
+    /// for it — used to exercise the slice 20 §E per-input approval override
+    /// (override-downgrade: dispatcher `Auto` ⇒ skip gating despite
+    /// `ExecutesCode`; override-upgrade / none-opinion ⇒ gating fires).
+    struct ExecSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for ExecSpec {
+        fn name(&self) -> &str {
+            "exec_shell"
+        }
+        fn description(&self) -> &str {
+            "Executes a shell command (requires approval)."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "command": { "type": "string" } }
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ExecutesCode]
+        }
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let cmd = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            Ok(ToolResult {
+                content: format!("ran:{cmd}"),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
     /// A `ToolSpec` standing in for `edit_file` / `write_file`: it succeeds and
     /// reports the edited `path` back in its content, so the §E LSP collect seam
     /// (keyed on tool name `edit_file`/`write_file` + the `path` input field)
@@ -5820,6 +5862,99 @@ mod tests {
         call
     }
 
+    /// Build an `ExecSpec` tool registry → framework `ToolSet`. `ExecSpec`
+    /// declares `ExecutesCode`, so the static [`requires_approval`] gate fires
+    /// for it — used by the per-input override tests.
+    fn exec_tools() -> Arc<ToolSet> {
+        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/ws")));
+        registry.register(Arc::new(ExecSpec));
+        Arc::new(registry.to_framework_tool_set())
+    }
+
+    /// Round 1: the model calls `exec_shell` (id `call_1`) with a `command` input.
+    fn exec_call() -> Vec<StreamEvent> {
+        let mut call = text_block(0, "running the command now");
+        call.extend(tool_use_block(1, "call_1", "exec_shell", r#"{"command":"ls"}"#));
+        call.extend(finish("tool_use"));
+        call
+    }
+
+    /// A `ToolDispatcher` test double for the slice 20 §E per-input approval
+    /// override path. [`ToolDispatcher::approval_requirement_for`] returns a
+    /// single configurable answer for every (name, input) pair, exercising the
+    /// three arms of `request_approval`'s override match:
+    /// - `Some(Auto)` ⇒ override-**downgrade** (skip gating despite a static
+    ///   `ExecutesCode`/`WritesFiles` capability);
+    /// - `Some(Required)` / `Some(Suggest)` ⇒ override-**upgrade** (gate
+    ///   despite a static read-only capability, since `req != Auto`);
+    /// - `None` ⇒ the dispatcher has no opinion ⇒ fall back to the static
+    ///   [`requires_approval`] capability gate.
+    /// All other trait methods are stubbed: the executor's tool path goes
+    /// through `Tool::run` (via `ToolSpecAdapter`), not `ToolDispatcher::execute`.
+    struct FakeDispatcher {
+        approval: Mutex<Option<ApprovalRequirement>>,
+    }
+
+    impl FakeDispatcher {
+        /// `Some(req)` ⇒ the dispatcher opines on every (name, input) with
+        /// `req`; `None` ⇒ no opinion (falls back to the static gate).
+        fn new(approval: Option<ApprovalRequirement>) -> Self {
+            Self {
+                approval: Mutex::new(approval),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ToolDispatcher for FakeDispatcher {
+        fn has_tool(&self, _name: &str) -> bool {
+            true
+        }
+        fn resolve(&self, requested: &str) -> Option<String> {
+            Some(requested.to_string())
+        }
+        fn metadata(&self, _name: &str) -> Option<crate::tool_dispatch::ToolMetadata> {
+            None
+        }
+        fn is_destructive(&self, _name: &str, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn is_interactive(&self, _name: &str, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn approval_requirement_for(
+            &self,
+            _name: &str,
+            _input: &serde_json::Value,
+        ) -> Option<ApprovalRequirement> {
+            *self.approval.lock().expect("FakeDispatcher approval poisoned")
+        }
+        fn validate_input(
+            &self,
+            _name: &str,
+            _input: &serde_json::Value,
+        ) -> Result<(), ToolError> {
+            Ok(())
+        }
+        fn to_api_tools(&self) -> Vec<crate::models::Tool> {
+            Vec::new()
+        }
+        fn to_api_tools_with_cache(&self, _enable_cache: bool) -> Vec<crate::models::Tool> {
+            Vec::new()
+        }
+        async fn execute(
+            &self,
+            _name: &str,
+            _input: serde_json::Value,
+            _sandbox_override: Option<serde_json::Value>,
+        ) -> Result<ToolResult, ToolError> {
+            unreachable!("FakeDispatcher::execute is never called — the executor uses Tool::run")
+        }
+        fn hook_host(&self) -> Option<Arc<dyn HookHost>> {
+            None
+        }
+    }
+
     /// Build a `ReadFileSpec` tool registry → framework `ToolSet`. The spec is
     /// configured with the given content + success flag so the observe seam can
     /// test both happy and failed paths.
@@ -6153,6 +6288,227 @@ mod tests {
         match &sess.messages[2].content[0] {
             ContentBlock::ToolResult { content, is_error, .. } => {
                 assert_eq!(content, "wrote:/tmp/x", "tool ran on RetryWithPolicy");
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    // === per-input approval override (slice 20 §E) ========================
+
+    /// Override-**downgrade**: `ExecSpec` declares `ExecutesCode` (static gate
+    /// ⇒ needs approval), but the dispatcher opines `Auto` for the (name, input)
+    /// pair. The executor must skip the gate entirely — no `ApprovalRequired`
+    /// event, no blocking on the (empty) approval channel, and the tool runs
+    /// directly. A 2 s timeout guard fails the test if the gate wrongly fires
+    /// (the approval channel has no decision pushed, so `recv()` would hang).
+    #[tokio::test]
+    async fn per_input_approval_downgrade_skips_gating() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_event, mut rx_event) = mpsc::channel(256);
+        let (_tx_approval, rx_approval) = approval_channel(); // no decision pushed
+
+        let mock = Arc::new(MockLlm::new(vec![exec_call(), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            exec_tools(),
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx_event),
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_tool_dispatcher(Some(Arc::new(FakeDispatcher::new(Some(
+            ApprovalRequirement::Auto,
+        )))));
+
+        let reason = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            executor.run(&mut history, "run ls".to_string()),
+        )
+        .await
+        .expect("downgrade must skip the approval gate (no hang)")
+        .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The exec tool ran ungated.
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert_eq!(content, "ran:ls", "exec tool must run ungated: {content}");
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+
+        // No ApprovalRequired event was emitted (downgrade suppressed the gate).
+        let mut found_approval = false;
+        while let Ok(ev) = rx_event.try_recv() {
+            if matches!(ev, Event::ApprovalRequired { .. }) {
+                found_approval = true;
+            }
+        }
+        assert!(
+            !found_approval,
+            "downgrade must not emit ApprovalRequired: gate was suppressed"
+        );
+    }
+
+    /// Override-**upgrade**: `EchoSpec` declares `ReadOnly` (static gate ⇒ no
+    /// approval), but the dispatcher opines `Required` for the (name, input)
+    /// pair. The executor must fire the gate — emit `ApprovalRequired` and block
+    /// on the decision channel. After `Approved`, the (early-started read-only)
+    /// tool's result is reused and surfaced.
+    #[tokio::test]
+    async fn per_input_approval_upgrade_fires_gating() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_event, mut rx_event) = mpsc::channel(256);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "call_1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let tmp = tempdir().expect("tempdir");
+        let workspace_stamp = tmp.path().display().to_string();
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut call1 = text_block(0, "echoing");
+        call1.extend(tool_use_block(1, "call_1", "echo", r#"{"text":"hi"}"#));
+        call1.extend(finish("tool_use"));
+        let mock = Arc::new(MockLlm::new(vec![call1, end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx_event),
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_tool_dispatcher(Some(Arc::new(FakeDispatcher::new(Some(
+            ApprovalRequirement::Required,
+        )))));
+
+        let reason = executor
+            .run(&mut history, "echo hi".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The upgrade fired the gate: an ApprovalRequired event was emitted.
+        let mut found: Option<Event> = None;
+        while let Ok(ev) = rx_event.try_recv() {
+            if matches!(ev, Event::ApprovalRequired { .. }) {
+                found = Some(ev);
+            }
+        }
+        match found.expect("upgrade must emit ApprovalRequired") {
+            Event::ApprovalRequired {
+                id,
+                tool_name,
+                approval_key,
+                ..
+            } => {
+                assert_eq!(id, "call_1");
+                assert_eq!(tool_name, "echo");
+                assert!(!approval_key.is_empty(), "fingerprint must be built");
+            }
+            _ => unreachable!("matched ApprovalRequired above"),
+        }
+
+        // After approval, the read-only tool ran (early-started + reused).
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert!(
+                    content.starts_with(&workspace_stamp),
+                    "echo ran after approval: {content}"
+                );
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// No-opinion fallback: `ExecSpec` (static gate ⇒ needs approval) + a
+    /// dispatcher with **no opinion** (`None`). The executor must fall back to
+    /// the static [`requires_approval`] capability gate and fire gating —
+    /// proving the `None` arm of the override match doesn't silently disable
+    /// approval for a tool the static gate would gate.
+    #[tokio::test]
+    async fn per_input_approval_none_opinion_falls_back_to_static_gate() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_event, mut rx_event) = mpsc::channel(256);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "call_1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mock = Arc::new(MockLlm::new(vec![exec_call(), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            exec_tools(),
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx_event),
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        // Dispatcher has no opinion (None) ⇒ falls back to the static gate.
+        .with_tool_dispatcher(Some(Arc::new(FakeDispatcher::new(None))));
+
+        let reason = executor
+            .run(&mut history, "run ls".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The static gate fired (fallback): an ApprovalRequired event emitted.
+        let mut found_approval = false;
+        while let Ok(ev) = rx_event.try_recv() {
+            if matches!(ev, Event::ApprovalRequired { .. }) {
+                found_approval = true;
+            }
+        }
+        assert!(
+            found_approval,
+            "no-opinion dispatcher must fall back to the static gate and emit ApprovalRequired"
+        );
+
+        // After approval, the exec tool ran.
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                assert_eq!(content, "ran:ls", "exec tool ran after approval: {content}");
                 assert_eq!(*is_error, Some(false));
             }
             other => panic!("expected ToolResult, got {other:?}"),
