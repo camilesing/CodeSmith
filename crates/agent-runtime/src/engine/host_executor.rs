@@ -122,8 +122,9 @@
 //!    fields — a failed compaction on turn N still trips the breaker on turn
 //!    N+1). A tripped breaker (3 consecutive failures) throttles further
 //!    compaction attempts. See "Known gaps in compaction" below for the
-//!    attachment reinject (25b), post-compact cleanup (25c), and enhancements
-//!    deferrals (summary-prompt merge absorbed ✅ in slice 25a §E).
+//!    post-compact cleanup (25c) and enhancements deferrals (summary-prompt
+//!    merge absorbed ✅ in slice 25a §E; attachment reinject absorbed ✅ in
+//!    slice 25b §E).
 //! 7. **capacity** ([`run_capacity_preflight`](HostAgentExecutor::run_capacity_preflight))
 //!    — the **always-on hard token-budget preflight** (Gate B). After
 //!    compaction (so the estimate reflects the just-compacted transcript) and
@@ -384,15 +385,28 @@
 //!   merging mid-`run` since the executor's system prompt is a static snapshot
 //!   (the merged summary only matters for the *next* turn's re-snapshot). The
 //!   LLM also still sees the summary in the rolled-up transcript body.
-//! - **attachment reinject deferred (25b)** — production's
-//!   `reinject_compaction_attachments` re-inserts plan / todos / subagents /
-//!   read-file snapshots that were compacted out, so the model keeps the
-//!   working set. Those attachments are host-coupled (`session.plans` /
-//!   `session.todos` / sub-agent state); the framework `ChatHistory` carries
-//!   none of it. Must be during `run` (the compacted transcript + retry must
-//!   re-inject in the same run), so it needs within-`run` host-state access
-//!   (probe for `config.plan_state`/`config.todos` Arc-clones, `SubAgentApi`
-//!   snapshot access, `recent_read_files` Arc-ification on `Session`).
+//! - **attachment reinject absorbed ✅ (during `run`, slice 25b §E)** —
+//!   production's `reinject_compaction_attachments` re-inserts plan / todos /
+//!   subagents / read-file snapshots that were compacted out, so the model
+//!   keeps the working set. Those attachments are host-coupled
+//!   (`session.plans` / `session.todos` / sub-agent state); the framework
+//!   [`ChatHistory`] carries none of it, so the executor reaches them through a
+//!   [`ReinjectProbe`] (`plan_state` / `todos` / `recent_read_files` `Arc`
+//!   clones, the last mirroring slice 22's `working_set` Arc-ification) plus
+//!   its own `subagent_api` (`live_running_snapshots`) and `turn_meta`
+//!   (the `<turn_meta>` enrich block). It fires right after the transcript
+//!   replace in both full-compact `Ok(result)` arms of [`run_compaction`] /
+//!   [`recover_context_overflow`] — `None` budget for auto-compact (dedup +
+//!   push only), `Some(target_budget)` for the hard-ceiling recovery (dedup +
+//!   budget trial + push). The micro-compact arms are untouched (they clear
+//!   tool-result content in place, not attachment messages). See
+//!   [`HostAgentExecutor::reinject_compaction_attachments`].
+//!   - **read-file observe site still deferred** — `recent_read_files` is
+//!     populated by `Session::record_read_file_result`, which has no production
+//!     caller yet (the read_file tool-result path doesn't feed it). The
+//!     read_files candidate therefore fires only when populated (tests);
+//!     wiring the observe site is a follow-on sub-slice. The Arc-ification +
+//!     reinject path are in place ahead of that wiring.
 //! - **post-compact cleanup deferred (25c)** — production's `post_compact_cleanup`
 //!   forces a working-set rebuild and resets per-file cycle state after a
 //!   compaction (the transcript the working set was derived from is now stale).
@@ -457,11 +471,15 @@
 //!   is not absorbed; only the always-on hard preflight (Gate B) is. Gate A
 //!   requires the full `CapacityController` state machine (slack window,
 //!   recent tool/ref counts, model priors) — a separate, opt-in slice.
-//! - **same recovery gaps as compaction** — `recover_context_overflow` calls
-//!   `compact_messages_safe` with the same deferred parameters
-//!   (`merge_compaction_summary`, `reinject_compaction_attachments`,
-//!   `post_compact_cleanup`, `enhancements`, working-set pins/paths all
-//!   absent). See "Known gaps in compaction" above.
+//! - **same recovery closure as compaction** — `recover_context_overflow`
+//!   shares `run_compaction`'s absorbed post-compact paths: the
+//!   `merge_compaction_summary` slot (slice 25a §E — recorded into
+//!   [`HostAgentExecutor::take_pending_compaction_summary`] for the host to
+//!   fold post-`run`) **and** the `reinject_compaction_attachments` path
+//!   (slice 25b §E — fires right after the transcript replace with
+//!   `Some(target_budget)`; dedup + budget trial + push). Still deferred (see
+//!   "Known gaps in compaction" above): `post_compact_cleanup` (25c),
+//!   `enhancements`, and working-set pins/paths.
 //! - **cancel-token short-circuit** ✅ — production checks `!cancelled` before
 //!   retrying after overflow recovery. This executor's `CancellationToken` is
 //!   now absorbed: the reactive-recovery `continue` (restart step) is bounded
@@ -769,10 +787,13 @@ impl LspProbe {
 ///
 /// The transcript itself is read/written through [`ChatHistory`]: the compacted
 /// messages are applied via `clear()` + `push()`, composing the existing trait
-/// surface (no core-trait change). Host-coupled follow-ups
-/// (`merge_compaction_summary`, `reinject_compaction_attachments`,
-/// `post_compact_cleanup`, working-set pins/paths, `CompactionEnhancements`)
-/// are deferred — see "Known gaps in compaction" in the module docs.
+/// surface (no core-trait change). Host-coupled follow-ups that **are**
+/// absorbed: `merge_compaction_summary` (slice 25a §E —
+/// [`HostAgentExecutor::take_pending_compaction_summary`]) and
+/// `reinject_compaction_attachments` (slice 25b §E — [`ReinjectProbe`]).
+/// Still deferred (see "Known gaps in compaction" in the module docs):
+/// `post_compact_cleanup` (25c), working-set pins/paths,
+/// `CompactionEnhancements`.
 pub struct CompactionProbe {
     config: CompactionConfig,
     /// Workspace root for `plan_compaction`'s path normalization (mirrors
@@ -802,6 +823,51 @@ impl CompactionProbe {
     #[cfg(test)]
     pub(crate) fn breaker(&self) -> &Arc<std::sync::Mutex<CompactionCircuitBreaker>> {
         &self.circuit_breaker
+    }
+}
+
+/// Post-compaction attachment re-inject collaborator (slice 25b §E). Carries
+/// `Arc` clones of the three host-state sources that [`HostAgentExecutor`]'s
+/// mid-`run` reinject path needs but cannot reach through `&mut dyn
+/// ChatHistory` (the executor has no `&mut Session` during `run`):
+///
+/// - `plan_state` — `SharedPlanState = Arc<tokio::sync::Mutex<PlanState>>`,
+///   already `Arc` on `EngineConfig`; cloned at wire-in (before the `&mut
+///   session` borrow).
+/// - `todos` — `SharedTodoList = Arc<tokio::sync::Mutex<TodoList>>`, same.
+/// - `recent_read_files` — `Arc<std::sync::Mutex<VecDeque<RecentReadFile>>>`,
+///   Arc-ified on `Session` in slice 25b (mirroring `working_set` / slice 22).
+///
+/// Sub-agent state needs **no probe** — the executor already holds a
+/// `subagent_api: Option<Arc<dyn SubAgentApi>>` with `live_running_snapshots`.
+/// The `<turn_meta>` enrich block is built via the existing [`TurnMetaProbe`].
+///
+/// Matches the established `LspProbe` / `CompactionProbe` / `CapacityProbe` /
+/// [`TurnMetaProbe`] pattern: an `Option<…>` field on the executor, attached
+/// via a `.with_reinject(Some(probe))` builder (precedent: `.with_turn_meta`).
+pub struct ReinjectProbe {
+    plan_state: crate::tool_state::plan::SharedPlanState,
+    todos: crate::tool_state::todo::SharedTodoList,
+    recent_read_files: Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
+}
+
+impl ReinjectProbe {
+    /// Construct from `Arc` clones of the host-state sources. The host
+    /// (`Engine::handle_send_message`) calls this *before* the
+    /// `&mut self.session` borrow held by `SessionChatHistory`, snapshotting
+    /// live handles (not values) so the executor reads current state at
+    /// reinject time (plans / todos / subagents change during a turn).
+    #[must_use]
+    pub fn new(
+        plan_state: crate::tool_state::plan::SharedPlanState,
+        todos: crate::tool_state::todo::SharedTodoList,
+        recent_read_files: Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
+    ) -> Self {
+        Self {
+            plan_state,
+            todos,
+            recent_read_files,
+        }
     }
 }
 
@@ -923,6 +989,25 @@ impl TurnMetaProbe {
             &self.workspace,
             &self.skills_dir,
             text,
+            &self.model,
+            self.auto_model,
+            self.reasoning_effort.as_deref(),
+            self.reasoning_effort_auto,
+        )
+    }
+
+    /// Build the standalone `<turn_meta>` [`ContentBlock`] (date / model route /
+    /// working-set summary / matched conditional skills) from the probe's
+    /// snapshotted state. Slice 25b §E: used by the mid-`run` reinject path to
+    /// prepend a `<turn_meta>` block to each re-inject candidate (matching
+    /// slice 24's host-side `[turn_meta, content]` shape). Same std `Mutex`
+    /// lock-then-release precedent as [`enrich_user_text_message`].
+    pub fn turn_metadata_block(&self) -> ContentBlock {
+        let working_set = self.working_set.lock().expect("working_set poisoned");
+        super::turn_meta::turn_metadata_block(
+            &working_set,
+            &self.workspace,
+            &self.skills_dir,
             &self.model,
             self.auto_model,
             self.reasoning_effort.as_deref(),
@@ -1265,6 +1350,18 @@ pub struct HostAgentExecutor {
     /// The subagent-completion sentinel push is **never** enriched (plain
     /// text, matching production).
     turn_meta: Option<TurnMetaProbe>,
+    /// Post-compaction attachment re-inject probe (slice 25b §E). Carries
+    /// `Arc` clones of `config.plan_state` / `config.todos` /
+    /// `session.recent_read_files` (snapshotted at wire-in before the
+    /// `&mut session` borrow) so [`reinject_compaction_attachments`] can
+    /// re-insert plan / todos / subagents / read_files candidates DURING
+    /// `run`, right after [`run_compaction`] / [`recover_context_overflow`]
+    /// replace the transcript. `None` ⇒ reinject is a no-op (embeds/tests
+    /// that don't opt in — matches the absent-probe precedent for the other
+    /// probes). Sub-agent state comes from the existing [`subagent_api`]
+    /// field (no probe needed for it); the `<turn_meta>` enrich block comes
+    /// from [`turn_meta`].
+    reinject: Option<ReinjectProbe>,
     /// Per-turn token usage accumulated across streams (slice 21 §E). The
     /// inline stream reducer ([`reduce_stream`]) captures `MessageStart` +
     /// `MessageDelta` usage (replace-within-stream — the latest cumulative
@@ -1340,6 +1437,7 @@ pub fn new(
         subagent_api,
         tool_dispatcher: None,
         turn_meta: None,
+        reinject: None,
         usage: std::sync::Mutex::new(Usage::default()),
         pending_compaction_summary: std::sync::Mutex::new(None),
     }
@@ -1370,6 +1468,22 @@ pub fn new(
     #[must_use]
     pub fn with_turn_meta(mut self, turn_meta: Option<TurnMetaProbe>) -> Self {
         self.turn_meta = turn_meta;
+        self
+    }
+
+    /// Opt into post-compaction attachment re-inject (slice 25b §E). The
+    /// production wire-in calls this after [`new`] with a [`ReinjectProbe`]
+    /// built from `Arc` clones of `config.plan_state` / `config.todos` /
+    /// `session.recent_read_files` (snapshotted before the `&mut self.session`
+    /// borrow) so [`Self::reinject_compaction_attachments`] can re-insert plan /
+    /// todos / subagents / read_files candidates during `run`, right after
+    /// [`run_compaction`] / [`recover_context_overflow`] replace the
+    /// transcript. Embeds / tests skip it — the field defaults to `None`, so
+    /// the mid-`run` reinject is a no-op (the pre-slice-25b behavior) and
+    /// existing tests stay unchanged. Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_reinject(mut self, reinject: Option<ReinjectProbe>) -> Self {
+        self.reinject = reinject;
         self
     }
 
@@ -2229,6 +2343,118 @@ pub fn new(
         let mut guard = rx.lock().await;
         while guard.try_recv().is_ok() {}
     }
+
+    /// Re-inject post-compaction attachment messages (plan / todos /
+    /// subagents / read_files) into the transcript DURING `run`, right after
+    /// [`run_compaction`] / [`recover_context_overflow`] replace it via
+    /// `history.clear()` + `push(result.messages)` (slice 25b §E). Mirrors
+    /// production's `Engine::reinject_compaction_attachments` but reads from
+    /// the [`ReinjectProbe`] (`plan_state` / `todos` / `recent_read_files`
+    /// `Arc` clones) + [`subagent_api`] (`live_running_snapshots`) +
+    /// [`turn_meta`] (the `<turn_meta>` enrich block) + [`ChatHistory`] (the
+    /// live transcript for dedup / budget trial / push) — the executor has no
+    /// `&mut Session` during `run`.
+    ///
+    /// Per-candidate loop (matches production's slice-24 shape): enrich
+    /// FIRST (prepend `<turn_meta>` so byte-stable equality makes dedup
+    /// work), then dedup against `history.messages()`, then budget-trial (if
+    /// `target_input_budget` is `Some`) against `history.messages()` + the
+    /// static `config.system` snapshot (the same system prompt the request
+    /// uses), then `history.push`. Each immutable `history.messages()` read
+    /// ends (NLL) before the mutable `history.push`, and reads see prior
+    /// pushes (live) — matching production's `session.messages` semantics.
+    ///
+    /// `target_input_budget`: `None` for the auto-compact path (best-effort
+    /// dedup + push — auto-compact isn't at a hard ceiling); `Some(budget)`
+    /// for the context-overflow recovery path (at the hard ceiling, mirror
+    /// production's `Some(target_budget)`). Returns the count pushed.
+    async fn reinject_compaction_attachments(
+        &self,
+        history: &mut dyn ChatHistory,
+        target_input_budget: Option<usize>,
+    ) -> usize {
+        // No probe ⇒ no-op (embeds/tests that don't opt in — matches the
+        // absent-probe precedent for the other probes).
+        let Some(probe) = &self.reinject else {
+            return 0;
+        };
+        // Plan (`Arc<tokio::Mutex<PlanState>>` — async lock, consistent with
+        // production's `self.config.plan_state.lock().await.snapshot()`).
+        let plan_snapshot = probe.plan_state.lock().await.snapshot();
+        let plan_summary =
+            crate::compaction::attachment_reinject::format_plan_reinject_summary(&plan_snapshot);
+        // Todos (`Arc<tokio::Mutex<TodoList>>` — async lock).
+        let todo_snapshot = probe.todos.lock().await.snapshot();
+        let todo_summary =
+            crate::compaction::attachment_reinject::format_todo_reinject_summary(&todo_snapshot);
+        let mut candidates: Vec<Message> = Vec::new();
+        if let Some(message) = crate::compaction::attachment_reinject::reinject_plan_attachment(
+            plan_summary.as_deref().unwrap_or(""),
+        ) {
+            candidates.push(message);
+        }
+        if let Some(todo_summary) = todo_summary {
+            candidates.push(
+                crate::compaction::attachment_reinject::compaction_reinject_message(format!(
+                    "Active todos resumed after context compaction:\n\n{todo_summary}"
+                )),
+            );
+        }
+        // Subagents — the executor already holds a `SubAgentApi` (no probe);
+        // `live_running_snapshots` is on the trait.
+        if let Some(api) = &self.subagent_api {
+            let snapshots = api.live_running_snapshots().await;
+            let summaries =
+                crate::compaction::attachment_reinject::summarize_subagents(&snapshots);
+            if let Some(message) =
+                crate::compaction::attachment_reinject::reinject_subagent_attachments(&summaries)
+            {
+                candidates.push(message);
+            }
+        }
+        // Read files (`Arc<std::sync::Mutex<VecDeque<…>>>` — sync lock,
+        // matching `working_set`; held only for the synchronous clone-out).
+        let read_files = probe
+            .recent_read_files
+            .lock()
+            .expect("recent_read_files poisoned")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(message) =
+            crate::compaction::attachment_reinject::reinject_read_file_attachments(&read_files)
+        {
+            candidates.push(message);
+        }
+        // Enrich: prepend the `<turn_meta>` block (slice 24 shape) — built
+        // from the TurnMetaProbe's snapshotted state. Absent probe ⇒ no
+        // enrich (plain candidates, matching the pre-slice-24 behavior).
+        let turn_meta_block = self.turn_meta.as_ref().map(|p| p.turn_metadata_block());
+        let mut injected = 0usize;
+        for mut candidate in candidates {
+            if let Some(block) = &turn_meta_block {
+                candidate.content.insert(0, block.clone());
+            }
+            // Dedup (live transcript).
+            if history.messages().iter().any(|message| message == &candidate) {
+                continue;
+            }
+            // Budget trial (only on the recovery path).
+            if let Some(budget) = target_input_budget {
+                let mut trial = history.messages().to_vec();
+                trial.push(candidate.clone());
+                if estimate_input_tokens_conservative(&trial, self.config.system.as_ref())
+                    > budget
+                {
+                    continue;
+                }
+            }
+            history.push(candidate);
+            injected = injected.saturating_add(1);
+        }
+        injected
+    }
+
     /// `handle_deepseek_turn`'s top-of-loop compaction
     /// (`turn_loop.rs:341-454`): a cheap no-API micro-compact pass (clear old
     /// tool-result bytes) followed, when the token budget is exceeded, by an
@@ -2247,16 +2473,19 @@ pub fn new(
     /// borrow crosses the `await`. Both persist across `run` calls, matching
     /// `Session.micro_compact_state` / `.circuit_breaker`.
     ///
-    /// Host-coupled follow-ups: `merge_compaction_summary` is now absorbed
-    /// (slice 25a §E — `result.summary_prompt` is recorded into the
+    /// Host-coupled follow-ups: `merge_compaction_summary` is absorbed (slice
+    /// 25a §E — `result.summary_prompt` is recorded into the
     /// [`pending_compaction_summary`](Self::take_pending_compaction_summary)
     /// slot and the host folds it into `session.system_prompt` post-`run`,
     /// behavior-equivalent to merging mid-`run` since the executor's system
-    /// prompt is a static snapshot). Still deferred (see "Known gaps in
-    /// compaction" in the module docs): `reinject_compaction_attachments`
-    /// (25b — must be during `run`), `post_compact_cleanup` (25c), working-set
-    /// `external_pins` / `external_working_set_paths`, and
-    /// `CompactionEnhancements` (PreCompact hooks / session-memory-first).
+    /// prompt is a static snapshot) **and** `reinject_compaction_attachments`
+    /// is absorbed (slice 25b §E — fires right after the transcript replace
+    /// via [`Self::reinject_compaction_attachments`] with `None` budget; dedup
+    /// + push only — auto-compact isn't at a hard ceiling). Still deferred
+    /// (see "Known gaps in compaction" in the module docs):
+    /// `post_compact_cleanup` (25c), working-set `external_pins` /
+    /// `external_working_set_paths`, and `CompactionEnhancements` (PreCompact
+    /// hooks / session-memory-first).
     async fn run_compaction(&self, client: &LlmClientHandle, history: &mut dyn ChatHistory) {
         let Some(probe) = &self.compaction else {
             return;
@@ -2328,14 +2557,18 @@ pub fn new(
                 // `summary_prompt` is now recorded for the host to merge
                 // post-`run` (the static `config.system` snapshot can't fold
                 // it mid-run — the merge only matters for the next turn's
-                // snapshot); `reinject_compaction_attachments` /
-                // `post_compact_cleanup` / `emit_session_updated` remain
-                // deferred (25b/25c; emit fires alongside the host-side merge).
+                // snapshot). Slice 25b §E: `reinject_compaction_attachments`
+                // now fires DURING `run` (right here, after the transcript
+                // replace) — `None` budget (auto-compact isn't at a hard
+                // ceiling; dedup + push only). `post_compact_cleanup` +
+                // `emit_session_updated` remain deferred (25c; emit fires
+                // alongside the host-side post-`run` merge).
                 self.record_compaction_summary(result.summary_prompt.clone());
                 history.clear();
                 for m in result.messages {
                     history.push(m);
                 }
+                self.reinject_compaction_attachments(history, None).await;
                 probe
                     .circuit_breaker
                     .lock()
@@ -2446,14 +2679,17 @@ pub fn new(
     /// Returns `true` only if the post-recovery estimate is within budget and
     /// the transcript actually shrank.
     ///
-    /// Deferred (same gaps as the compaction slice): `reinject_compaction_attachments`
-    /// (25b), `post_compact_cleanup` (25c), `CompactionEnhancements`.
-    /// `merge_compaction_summary` + `emit_session_updated` are now absorbed
-    /// (slice 25a §E — `result.summary_prompt` is recorded into the
+    /// Absorbed (mirroring `run_compaction`): `merge_compaction_summary` +
+    /// `emit_session_updated` (slice 25a §E — `result.summary_prompt` is
+    /// recorded into the
     /// [`pending_compaction_summary`](Self::take_pending_compaction_summary)
     /// slot; the host folds the summary into `session.system_prompt` and
     /// emits a UI refresh post-`run`, behavior-equivalent to merging mid-`run`
-    /// since the executor's system prompt is a static snapshot).
+    /// since the executor's system prompt is a static snapshot) **and**
+    /// `reinject_compaction_attachments` (slice 25b §E — fires right after
+    /// the transcript replace with `Some(target_budget)`; dedup + budget
+    /// trial + push). Still deferred (same gaps as the compaction slice):
+    /// `post_compact_cleanup` (25c), `CompactionEnhancements`.
     async fn recover_context_overflow(
         &self,
         client: &LlmClientHandle,
@@ -2527,9 +2763,12 @@ pub fn new(
                 // `summary_prompt` is now recorded for the host to merge
                 // post-`run` (the static `config.system` snapshot can't fold
                 // it mid-run — the merge only matters for the next turn's
-                // snapshot); `reinject_compaction_attachments` /
-                // `post_compact_cleanup` / `emit_session_updated` remain
-                // deferred (25b/25c; emit fires alongside the host-side merge).
+                // snapshot). Slice 25b §E: `reinject_compaction_attachments`
+                // now fires DURING `run` (right here) — `Some(target_budget)`
+                // (at the hard ceiling, mirror production's
+                // `Some(target_budget)`; dedup + budget trial + push).
+                // `post_compact_cleanup` + `emit_session_updated` remain
+                // deferred (25c; emit fires alongside the host-side merge).
                 if !result.messages.is_empty() || messages.is_empty() {
                     history.clear();
                     for m in result.messages {
@@ -2538,6 +2777,8 @@ pub fn new(
                 }
                 // summary_prompt recorded for post-`run` merge — slice 25a §E.
                 self.record_compaction_summary(result.summary_prompt.clone());
+                self.reinject_compaction_attachments(history, Some(target_budget))
+                    .await;
             }
             Err(e) => {
                 self.emit_status(format!(
@@ -3307,6 +3548,10 @@ mod tests {
     use crate::session::Session;
     use crate::session_history::SessionChatHistory;
     use crate::subagent::SubAgentResult;
+    use crate::tool_state::plan::{
+        new_shared_plan_state, PlanItemArg, SharedPlanState, StepStatus, UpdatePlanArgs,
+    };
+    use crate::tool_state::todo::{new_shared_todo_list, SharedTodoList, TodoStatus};
     use crate::tools::registry::ToolRegistry;
     use crate::tools::spec::{ToolContext, ToolSpec};
     use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
@@ -6213,6 +6458,304 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
         assert_eq!(mock.compaction_calls(), 0);
         assert!(executor.take_pending_compaction_summary().is_none());
+    }
+
+    // === compaction reinject (slice 25b §E) ==============================
+
+    /// Build a [`ReinjectProbe`] whose `plan_state` + `todos` are populated
+    /// with recognizable content (so reinject produces non-empty plan + todo
+    /// candidates) and whose `recent_read_files` shares the session's
+    /// `Arc<VecDeque<RecentReadFile>>`. Returns the `Arc`s too — tests assert
+    /// on the probe and, for the dedup test, pre-compute the identical plan
+    /// candidate from the same snapshot. `recent_read_files` is left as-is;
+    /// callers populate it via [`Session::record_read_file_result`] before
+    /// invoking this if they want that candidate.
+    async fn populated_reinject_probe(
+        sess: &Session,
+    ) -> (SharedPlanState, SharedTodoList, ReinjectProbe) {
+        let plan_state = new_shared_plan_state();
+        plan_state
+            .lock()
+            .await
+            .update(UpdatePlanArgs {
+                explanation: Some("plan-explanation".to_string()),
+                plan: vec![PlanItemArg {
+                    step: "plan-step-one".to_string(),
+                    status: StepStatus::InProgress,
+                }],
+            });
+        let todos = new_shared_todo_list();
+        todos
+            .lock()
+            .await
+            .add("todo-item-content".to_string(), TodoStatus::Pending);
+        let probe = ReinjectProbe::new(
+            Arc::clone(&plan_state),
+            Arc::clone(&todos),
+            Arc::clone(&sess.recent_read_files),
+        );
+        (plan_state, todos, probe)
+    }
+
+    /// Slice 25b §E: a `run` that triggers Phase-2 auto-compaction re-inserts
+    /// the plan / todos / read_files attachment messages into the compacted
+    /// transcript DURING `run` (via the [`ReinjectProbe`]), so the model keeps
+    /// its working set. Mirrors `run_compaction_records_summary_prompt` (25a)
+    /// but asserts the reinject seam — the compacted-out attachments resurface
+    /// as `<system-reminder>` user messages in the post-run transcript.
+    #[tokio::test]
+    async fn reinject_pushes_plan_todo_readfile_candidates_after_compact() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        // Populate the host state the probe reaches during `run`.
+        sess.record_read_file_result(
+            &serde_json::json!({"path": "read_file_path.rs"}),
+            "file contents here",
+        );
+        let (_, _, probe) = populated_reinject_probe(&sess).await;
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_summary("Conversation summary."),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 1, "Phase-2 auto-compaction fired");
+        // Slice 25b §E: the compacted-out attachments resurface as
+        // `<system-reminder>` user messages in the live transcript.
+        let transcript: String = history
+            .messages()
+            .iter()
+            .flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            transcript.contains("plan-step-one"),
+            "plan candidate re-injected after compaction"
+        );
+        assert!(
+            transcript.contains("Active todos resumed"),
+            "todo candidate re-injected after compaction"
+        );
+        assert!(
+            transcript.contains("read_file_path.rs"),
+            "read_files candidate re-injected after compaction"
+        );
+    }
+
+    /// Slice 25b §E: reinject dedups against the live transcript — a candidate
+    /// already present (byte-stable equality, matching slice 24's host-side
+    /// dedup) is not re-pushed. Exercises the dedup gate directly via the same
+    /// private method `run_compaction`'s Ok arm calls.
+    #[tokio::test]
+    async fn reinject_dedup_skips_already_present() {
+        let mut sess = fresh_session();
+        let (plan_state, _todos, probe) = populated_reinject_probe(&sess).await;
+        // Pre-compute the exact plan candidate the method will build (same
+        // snapshot ⇒ same summary ⇒ same `<system-reminder>` message) and
+        // pre-push it so dedup must skip it on re-inject.
+        let snapshot = plan_state.lock().await.snapshot();
+        let plan_summary =
+            crate::compaction::attachment_reinject::format_plan_reinject_summary(&snapshot)
+                .expect("non-empty plan ⇒ summary");
+        let plan_candidate =
+            crate::compaction::attachment_reinject::reinject_plan_attachment(&plan_summary)
+                .expect("non-empty summary ⇒ candidate");
+        let mut history = SessionChatHistory::new(&mut sess);
+        history.push(plan_candidate.clone());
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        let pushed = executor
+            .reinject_compaction_attachments(&mut history, None)
+            .await;
+        // The plan candidate was deduped (already present); only the todo
+        // candidate is pushed (read_files is empty here).
+        assert_eq!(pushed, 1, "plan candidate skipped by dedup; only todo pushed");
+        let plan_count = history
+            .messages()
+            .iter()
+            .filter(|m| *m == &plan_candidate)
+            .count();
+        assert_eq!(plan_count, 1, "pre-pushed plan candidate not duplicated");
+    }
+
+    /// Slice 25b §E: on the context-overflow recovery path (the
+    /// `recover_context_overflow` Ok arm), reinject budget-trials each
+    /// candidate against `history.messages()` + the static `config.system`
+    /// snapshot and skips over-budget ones. A tiny `target_budget` rejects
+    /// every candidate (the candidate text alone exceeds 1 token). Exercises
+    /// the budget gate directly via the same private method (the `Some` budget
+    /// path).
+    #[tokio::test]
+    async fn reinject_budget_skips_oversized() {
+        let mut sess = fresh_session();
+        let (_, _, probe) = populated_reinject_probe(&sess).await;
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        let before = history.messages().len();
+        let pushed = executor
+            .reinject_compaction_attachments(&mut history, Some(1))
+            .await;
+        assert_eq!(pushed, 0, "tiny budget rejects all over-budget candidates");
+        assert_eq!(
+            history.messages().len(),
+            before,
+            "no over-budget candidate was pushed"
+        );
+    }
+
+    /// Slice 25b §E: with a [`TurnMetaProbe`] wired, each pushed reinject
+    /// candidate is enriched with a leading `<turn_meta>` `ContentBlock::Text`
+    /// (the slice-24 `[turn_meta, system-reminder]` shape), so byte-stable
+    /// equality still holds for the next turn's dedup. Exercises the enrich
+    /// gate directly.
+    #[tokio::test]
+    async fn reinject_enriches_with_turn_meta() {
+        let mut sess = fresh_session();
+        let (_, _, probe) = populated_reinject_probe(&sess).await;
+        let turn_meta = turn_meta_probe(&sess);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe))
+        .with_turn_meta(Some(turn_meta));
+        let pushed = executor
+            .reinject_compaction_attachments(&mut history, None)
+            .await;
+        assert!(pushed > 0, "plan + todo candidates pushed");
+        // Every pushed candidate (the trailing user messages) starts with the
+        // `<turn_meta>` block.
+        let reinjected = history
+            .messages()
+            .iter()
+            .rev()
+            .take(pushed)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reinjected.len(),
+            pushed,
+            "trailing messages match the pushed count"
+        );
+        for msg in &reinjected {
+            match msg.content.first() {
+                Some(ContentBlock::Text { text, .. }) => {
+                    assert!(
+                        text.contains("<turn_meta>"),
+                        "reinject candidate enriched with leading <turn_meta>"
+                    );
+                }
+                other => panic!("expected leading <turn_meta> Text block, got {other:?}"),
+            }
+        }
+    }
+
+    /// Slice 25b §E: absent [`ReinjectProbe`] (`.with_reinject(None)`) ⇒ reinject
+    /// is a no-op (early return, 0 pushed). Embeds / tests that don't opt in
+    /// are unaffected — matches the absent-probe precedent for the other
+    /// probes. Exercises the same private method both full-compact Ok arms call.
+    #[tokio::test]
+    async fn reinject_no_probe_is_noop() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(None);
+        let before = history.messages().len();
+        let pushed = executor
+            .reinject_compaction_attachments(&mut history, None)
+            .await;
+        assert_eq!(pushed, 0, "no probe ⇒ reinject is a no-op");
+        assert_eq!(history.messages().len(), before);
     }
 
     // === capacity helpers ================================================

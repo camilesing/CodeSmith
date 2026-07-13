@@ -89,7 +89,7 @@ use crate::host_services::{
 // framework ↔ host bridge. `AgentExecutor` (trait) is in scope so `.run()`
 // resolves on the executor.
 use host_executor::{
-    CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe, TurnMetaProbe,
+    CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe, ReinjectProbe, TurnMetaProbe,
 };
 use crate::callback_bridge::CallbackBridge;
 use crate::session_history::SessionChatHistory;
@@ -1229,6 +1229,21 @@ impl Engine {
             self.session.reasoning_effort.clone(),
             self.session.reasoning_effort_auto,
         );
+        // Snapshot `Arc` clones of the post-compaction reinject state sources
+        // (slice 25b §E) *before* the `&mut self.session` borrow held by
+        // `SessionChatHistory` below — so the executor can re-inject plan /
+        // todos / subagents / read_files candidates DURING `run`, right after
+        // `run_compaction` / `recover_context_overflow` replace the
+        // transcript. `plan_state` / `todos` are already `Arc<tokio::Mutex<…>>`
+        // on `EngineConfig`; `recent_read_files` is `Arc<std::sync::Mutex<…>>`
+        // on `Session` (Arc-ified in slice 25b). Sub-agent state comes from
+        // the `subagent_api` arg above (`self.host.subagents()`); the
+        // `<turn_meta>` enrich block comes from `turn_meta_probe` above.
+        let reinject_probe = ReinjectProbe::new(
+            Arc::clone(&self.config.plan_state),
+            Arc::clone(&self.config.todos),
+            Arc::clone(&self.session.recent_read_files),
+        );
         let executor = HostAgentExecutor::new(
             client,
             tools,
@@ -1253,7 +1268,8 @@ impl Engine {
             Some(self.host.subagents()),
         )
         .with_tool_dispatcher(plan.tool_registry.clone())
-        .with_turn_meta(Some(turn_meta_probe));
+        .with_turn_meta(Some(turn_meta_probe))
+        .with_reinject(Some(reinject_probe));
         let mut history = SessionChatHistory::new_with_event_tx(
             &mut self.session,
             Some(self.tx_event.clone()),
@@ -2512,9 +2528,11 @@ impl Engine {
         target_input_budget: Option<usize>,
     ) -> usize {
         let plan_snapshot = { self.config.plan_state.lock().await.snapshot() };
-        let plan_summary = format_plan_reinject_summary(&plan_snapshot);
+        let plan_summary =
+            crate::compaction::attachment_reinject::format_plan_reinject_summary(&plan_snapshot);
         let todo_snapshot = { self.config.todos.lock().await.snapshot() };
-        let todo_summary = format_todo_reinject_summary(&todo_snapshot);
+        let todo_summary =
+            crate::compaction::attachment_reinject::format_todo_reinject_summary(&todo_snapshot);
         let mut candidates = Vec::new();
 
         if let Some(message) = crate::compaction::attachment_reinject::reinject_plan_attachment(
@@ -2523,9 +2541,11 @@ impl Engine {
             candidates.push(message);
         }
         if let Some(todo_summary) = todo_summary {
-            candidates.push(compaction_reinject_message(format!(
-                "Active todos resumed after context compaction:\n\n{todo_summary}"
-            )));
+            candidates.push(
+                crate::compaction::attachment_reinject::compaction_reinject_message(format!(
+                    "Active todos resumed after context compaction:\n\n{todo_summary}"
+                )),
+            );
         }
         let subagent_summaries = self.compaction_subagent_summaries().await;
         if let Some(message) = crate::compaction::attachment_reinject::reinject_subagent_attachments(
@@ -2536,6 +2556,8 @@ impl Engine {
         let recent_read_files = self
             .session
             .recent_read_files
+            .lock()
+            .expect("recent_read_files poisoned")
             .iter()
             .cloned()
             .collect::<Vec<_>>();
@@ -2582,33 +2604,12 @@ impl Engine {
     async fn compaction_subagent_summaries(
         &self,
     ) -> Vec<crate::compaction::attachment_reinject::AgentSummary> {
-        self.host
-            .subagents()
-            .live_running_snapshots()
-            .await
-            .into_iter()
-            .map(|snapshot| {
-                let name = if snapshot.name.trim().is_empty() {
-                    snapshot.agent_id.clone()
-                } else {
-                    snapshot.name.clone()
-                };
-                let role = snapshot.assignment.role.as_deref().unwrap_or("unspecified");
-                let description = format!(
-                    "id={}, role={}, objective={}, model={}, steps={}",
-                    snapshot.agent_id,
-                    role,
-                    snapshot.assignment.objective,
-                    snapshot.model,
-                    snapshot.steps_taken
-                );
-                crate::compaction::attachment_reinject::AgentSummary {
-                    name,
-                    status: "running".to_string(),
-                    description,
-                }
-            })
-            .collect()
+        // Slice 25b §E: the SubAgentResult → AgentSummary mapping lives in the
+        // shared `summarize_subagents` free fn (compaction/attachment_reinject)
+        // so the framework-core `HostAgentExecutor` reinject path (which holds
+        // a `SubAgentApi`, not the full `HostServices`) can reuse it.
+        let snapshots = self.host.subagents().live_running_snapshots().await;
+        crate::compaction::attachment_reinject::summarize_subagents(&snapshots)
     }
 
     /// Assemble an [`Engine`] from pre-wired portable fields.
@@ -2685,60 +2686,6 @@ impl Engine {
         engine.rehydrate_latest_canonical_state();
         engine
     }
-}
-
-fn compaction_reinject_message(content: String) -> Message {
-    Message {
-        role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: format!("<system-reminder>\n{content}\n</system-reminder>"),
-            cache_control: None,
-        }],
-    }
-}
-
-fn format_plan_reinject_summary(
-    snapshot: &crate::tool_state::plan::PlanSnapshot,
-) -> Option<String> {
-    if snapshot.items.is_empty()
-        && snapshot
-            .explanation
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-    {
-        return None;
-    }
-    let mut lines = Vec::new();
-    if let Some(explanation) = snapshot
-        .explanation
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-    {
-        lines.push(explanation.trim().to_string());
-        lines.push(String::new());
-    }
-    for item in &snapshot.items {
-        lines.push(format!("- {:?}: {}", item.status, item.step));
-    }
-    Some(lines.join("\n"))
-}
-
-fn format_todo_reinject_summary(
-    snapshot: &crate::tool_state::todo::TodoListSnapshot,
-) -> Option<String> {
-    if snapshot.items.is_empty() {
-        return None;
-    }
-    let mut lines = Vec::new();
-    for item in &snapshot.items {
-        lines.push(format!(
-            "- #{} {:?}: {}",
-            item.id, item.status, item.content
-        ));
-    }
-    Some(lines.join("\n"))
 }
 
 pub fn system_prompt_hash(prompt: Option<&SystemPrompt>) -> u64 {

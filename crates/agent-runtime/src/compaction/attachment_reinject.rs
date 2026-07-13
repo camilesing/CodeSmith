@@ -7,6 +7,9 @@
 
 use crate::models::{ContentBlock, Message};
 use crate::session::RecentReadFile;
+use crate::subagent::SubAgentResult;
+use crate::tool_state::plan::PlanSnapshot;
+use crate::tool_state::todo::TodoListSnapshot;
 
 /// Types of attachments that can be re-injected after compaction.
 #[derive(Debug, Clone)]
@@ -41,8 +44,11 @@ pub struct AttachmentReinjectResult {
     pub types_reinjected: Vec<AttachmentType>,
 }
 
-/// Build a re-injection message from attachment content.
-fn build_reinject_message(content: String) -> Message {
+/// Build a re-injection message from attachment content (the shared
+/// `<system-reminder>` wrapper used by every reinject candidate). `pub(crate)`
+/// (slice 25b §E) so the framework-core `HostAgentExecutor` reinject path can
+/// reuse the same wrapper as production's `Engine::reinject_compaction_attachments`.
+pub(crate) fn compaction_reinject_message(content: String) -> Message {
     Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -50,6 +56,86 @@ fn build_reinject_message(content: String) -> Message {
             cache_control: None,
         }],
     }
+}
+
+/// Format an active plan snapshot into a re-injectable summary body. Returns
+/// `None` when the plan is empty (no explanation + no steps) so the caller
+/// skips the candidate. Extracted from `Engine` (slice 25b §E) so the
+/// framework-core executor reinject path formats plans identically.
+pub(crate) fn format_plan_reinject_summary(snapshot: &PlanSnapshot) -> Option<String> {
+    if snapshot.items.is_empty()
+        && snapshot
+            .explanation
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
+        return None;
+    }
+    let mut lines = Vec::new();
+    if let Some(explanation) = snapshot
+        .explanation
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        lines.push(explanation.trim().to_string());
+        lines.push(String::new());
+    }
+    for item in &snapshot.items {
+        lines.push(format!("- {:?}: {}", item.status, item.step));
+    }
+    Some(lines.join("\n"))
+}
+
+/// Format a todo-list snapshot into a re-injectable summary body. Returns
+/// `None` when there are no items so the caller skips the candidate. Extracted
+/// from `Engine` (slice 25b §E) so the framework-core executor formats todos
+/// identically.
+pub(crate) fn format_todo_reinject_summary(snapshot: &TodoListSnapshot) -> Option<String> {
+    if snapshot.items.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::new();
+    for item in &snapshot.items {
+        lines.push(format!(
+            "- #{} {:?}: {}",
+            item.id, item.status, item.content
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+/// Map live-running sub-agent snapshots into re-injectable [`AgentSummary`]s
+/// (name / "running" status / id+role+objective+model+steps description).
+/// Extracted from `Engine::compaction_subagent_summaries` (slice 25b §E) so
+/// the framework-core executor (which holds a `SubAgentApi`, not the full
+/// `HostServices`) can summarize sub-agents identically.
+pub(crate) fn summarize_subagents(snapshots: &[SubAgentResult]) -> Vec<AgentSummary> {
+    snapshots
+        .iter()
+        .map(|snapshot| {
+            let name = if snapshot.name.trim().is_empty() {
+                snapshot.agent_id.clone()
+            } else {
+                snapshot.name.clone()
+            };
+            let role = snapshot.assignment.role.as_deref().unwrap_or("unspecified");
+            let description = format!(
+                "id={}, role={}, objective={}, model={}, steps={}",
+                snapshot.agent_id,
+                role,
+                snapshot.assignment.objective,
+                snapshot.model,
+                snapshot.steps_taken
+            );
+            AgentSummary {
+                name,
+                status: "running".to_string(),
+                description,
+            }
+        })
+        .collect()
 }
 
 /// Re-inject plan state after compaction.
@@ -60,7 +146,7 @@ pub fn reinject_plan_attachment(plan_summary: &str) -> Option<Message> {
     if plan_summary.trim().is_empty() {
         return None;
     }
-    Some(build_reinject_message(format!(
+    Some(compaction_reinject_message(format!(
         "Active plan resumed after context compaction:\n\n{plan_summary}"
     )))
 }
@@ -78,7 +164,7 @@ pub fn reinject_skill_attachments(skill_definitions: &[String]) -> Option<Messag
         .map(|def| format!("---\n{def}\n---"))
         .collect::<Vec<_>>()
         .join("\n\n");
-    Some(build_reinject_message(format!(
+    Some(compaction_reinject_message(format!(
         "Active skills resumed after context compaction:\n\n{content}"
     )))
 }
@@ -96,7 +182,7 @@ pub fn reinject_subagent_attachments(agent_summaries: &[AgentSummary]) -> Option
         .map(|a| format!("- **{}** ({}): {}", a.name, a.status, a.description))
         .collect::<Vec<_>>()
         .join("\n");
-    Some(build_reinject_message(format!(
+    Some(compaction_reinject_message(format!(
         "Running subagents resumed after context compaction:\n\n{content}"
     )))
 }
@@ -118,7 +204,7 @@ pub fn reinject_read_file_attachments(read_files: &[RecentReadFile]) -> Option<M
             ),
         );
     }
-    Some(build_reinject_message(content.trim_end().to_string()))
+    Some(compaction_reinject_message(content.trim_end().to_string()))
 }
 
 /// Re-inject all available attachments after compaction.

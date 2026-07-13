@@ -69,7 +69,11 @@ pub struct Session {
 
     /// Successful recent `read_file` outputs, retained outside the transcript so
     /// compaction can re-inject concise file context without synthetic tool blocks.
-    pub recent_read_files: VecDeque<RecentReadFile>,
+    /// Behind `Arc<std::sync::Mutex<…>>` (slice 25b §E) so the framework-core
+    /// `ReinjectProbe` can hold an `Arc` clone and read the live set *during*
+    /// `executor.run` (while `&mut self.session` is borrowed by
+    /// `SessionChatHistory`), mirroring the `working_set` precedent (slice 22).
+    pub recent_read_files: Arc<StdMutex<VecDeque<RecentReadFile>>>,
 
     /// Total tokens used in this session
     pub total_usage: SessionUsage,
@@ -200,7 +204,7 @@ impl Session {
             system_prompt_override: false,
             compaction_summary_prompt: None,
             messages: Vec::new(),
-            recent_read_files: VecDeque::new(),
+            recent_read_files: Arc::new(StdMutex::new(VecDeque::new())),
             total_usage: SessionUsage::default(),
             allow_shell,
             trust_mode,
@@ -247,20 +251,20 @@ impl Session {
             return;
         };
         let preview = summarize_chars(output_for_context, RECENT_READ_FILE_SNIPPET_CHARS);
-        if let Some(existing) = self
+        let mut files = self
             .recent_read_files
-            .iter()
-            .position(|entry| entry.path == path)
-        {
-            self.recent_read_files.remove(existing);
+            .lock()
+            .expect("recent_read_files poisoned");
+        if let Some(existing) = files.iter().position(|entry| entry.path == path) {
+            files.remove(existing);
         }
-        self.recent_read_files.push_back(RecentReadFile {
+        files.push_back(RecentReadFile {
             path: path.to_string(),
             input: input.clone(),
             output_preview: preview,
         });
-        while self.recent_read_files.len() > RECENT_READ_FILE_LIMIT {
-            self.recent_read_files.pop_front();
+        while files.len() > RECENT_READ_FILE_LIMIT {
+            files.pop_front();
         }
     }
 }
@@ -361,8 +365,8 @@ mod tests {
             "new contents",
         );
 
-        assert_eq!(session.recent_read_files.len(), 1);
-        let entry = session.recent_read_files.back().unwrap();
+        assert_eq!(session.recent_read_files.lock().unwrap().len(), 1);
+        let entry = session.recent_read_files.lock().unwrap().back().unwrap().clone();
         assert_eq!(entry.path, "src/lib.rs");
         assert_eq!(entry.input["offset"], 10);
         assert_eq!(entry.output_preview, "new contents");
@@ -381,7 +385,7 @@ mod tests {
 
         session.record_read_file_result(&serde_json::json!({"file": "src/lib.rs"}), "contents");
 
-        assert!(session.recent_read_files.is_empty());
+        assert!(session.recent_read_files.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -403,18 +407,12 @@ mod tests {
             );
         }
 
-        assert_eq!(session.recent_read_files.len(), RECENT_READ_FILE_LIMIT);
+        let files = session.recent_read_files.lock().unwrap();
+        assert_eq!(files.len(), RECENT_READ_FILE_LIMIT);
+        assert_eq!(files.front().unwrap().path, "src/file_2.rs");
+        assert_eq!(files.back().unwrap().path, "src/file_13.rs");
         assert_eq!(
-            session.recent_read_files.front().unwrap().path,
-            "src/file_2.rs"
-        );
-        assert_eq!(
-            session.recent_read_files.back().unwrap().path,
-            "src/file_13.rs"
-        );
-        assert_eq!(
-            session
-                .recent_read_files
+            files
                 .back()
                 .unwrap()
                 .output_preview
@@ -423,8 +421,7 @@ mod tests {
             RECENT_READ_FILE_SNIPPET_CHARS
         );
         assert!(
-            session
-                .recent_read_files
+            files
                 .back()
                 .unwrap()
                 .output_preview
