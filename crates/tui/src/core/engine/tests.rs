@@ -1565,6 +1565,145 @@ async fn reinject_compaction_attachments_skips_messages_that_exceed_budget() {
     assert!(engine.session.messages.is_empty());
 }
 
+#[tokio::test]
+async fn reinject_compaction_attachments_prepends_turn_meta_block() {
+    // Slice 24 §E: re-inject messages now carry a leading `<turn_meta>` block
+    // (date / model route / working-set summary / conditional skills), giving
+    // the model orientation immediately post-compaction — consistent with the
+    // [turn_meta, content] pattern used for user / steer / LSP messages.
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Restore after compaction".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Continue the work".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.add("Finish slice".to_string(), TodoStatus::Pending);
+    }
+    engine.session.record_read_file_result(
+        &json!({"path": "src/lib.rs", "limit": 20}),
+        "pub fn library() {}",
+    );
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(injected, 3);
+    assert_eq!(engine.session.messages.len(), 3);
+
+    // Every re-inject message: first block is `<turn_meta>`, second is the
+    // `<system-reminder>`-wrapped restoration content.
+    for message in &engine.session.messages {
+        assert!(
+            message.content.len() >= 2,
+            "re-inject message should carry turn_meta + system-reminder blocks"
+        );
+        let ContentBlock::Text { text, .. } = &message.content[0] else {
+            panic!("first block should be the <turn_meta> text block");
+        };
+        assert!(
+            text.starts_with("<turn_meta>\n"),
+            "first block should start with <turn_meta>; got: {text}"
+        );
+        let ContentBlock::Text { text, .. } = &message.content[1] else {
+            panic!("second block should be the <system-reminder> text block");
+        };
+        assert!(
+            text.contains("<system-reminder>"),
+            "second block should wrap the restoration in <system-reminder>"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_turn_meta_reflects_working_set() {
+    // Slice 24 §E: the <turn_meta> block prepended to a re-inject message
+    // re-reads the working-set summary at enrich-time, so a just-observed path
+    // surfaces in the re-inject's leading block (matching the user-message
+    // behavior in `working_set_reaches_model_as_turn_metadata`).
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("please inspect src/lib.rs", tmp.path());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Restore after compaction".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Continue".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(injected, 1);
+    assert_eq!(engine.session.messages.len(), 1);
+
+    let message = &engine.session.messages[0];
+    let ContentBlock::Text { text, .. } = &message.content[0] else {
+        panic!("first block should be the <turn_meta> text block");
+    };
+    assert!(
+        text.starts_with("<turn_meta>\n"),
+        "first block should start with <turn_meta>; got: {text}"
+    );
+    assert!(
+        text.contains(WORKING_SET_SUMMARY_MARKER),
+        "turn_meta block should reflect the observed working-set path; got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_dedup_still_works_with_enrichment() {
+    // Slice 24 §E regression guard: the byte-stable <turn_meta> block
+    // (working-set summary_block is byte-stable; date + model route stable
+    // within a session; enrich-only means no observe between calls) keeps the
+    // dedup check (`message == &candidate`) working — a second consecutive
+    // reinject injects nothing.
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Plan".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Step".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+
+    let first = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(first, 1);
+    let len_after_first = engine.session.messages.len();
+
+    let second = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(
+        second, 0,
+        "enriched dedup should skip already-injected messages"
+    );
+    assert_eq!(
+        engine.session.messages.len(),
+        len_after_first,
+        "second reinject should not add messages"
+    );
+}
+
 #[test]
 fn detects_context_length_errors_from_provider_payloads() {
     let msg = r#"SSE stream request failed: HTTP 400 Bad Request: {"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 153056 tokens (148960 in the messages, 4096 in the completion).","type":"invalid_request_error"}}"#;

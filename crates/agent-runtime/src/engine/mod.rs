@@ -915,17 +915,69 @@ impl Engine {
         reasoning_effort: Option<&str>,
         reasoning_effort_auto: bool,
     ) -> Message {
+        let block = self.turn_metadata_content_block_for_route(
+            routed_model,
+            auto_model,
+            reasoning_effort,
+            reasoning_effort_auto,
+        );
+        Message {
+            role: "user".to_string(),
+            content: vec![
+                block,
+                ContentBlock::Text {
+                    text,
+                    cache_control: None,
+                },
+            ],
+        }
+    }
+
+    /// Build just the `<turn_meta>` `ContentBlock` for the given model route.
+    /// Single source for the block on the `Engine` side — used by
+    /// [`user_text_message_with_turn_metadata_for_route`] (wrapping the
+    /// initial user message) and by [`enrich_reinject_message`] (prepending to
+    /// a compaction re-inject candidate, slice 24 §E). Locks the
+    /// now-`Arc<Mutex>` [`WorkingSet`] for the sync read; the block re-reads
+    /// the working-set summary + conditional skills at call time (faithful to
+    /// production, so a just-observed steer's paths surface in the next block).
+    pub(crate) fn turn_metadata_content_block_for_route(
+        &self,
+        routed_model: &str,
+        auto_model: bool,
+        reasoning_effort: Option<&str>,
+        reasoning_effort_auto: bool,
+    ) -> ContentBlock {
         let working_set = self.session.working_set.lock().expect("working_set poisoned");
-        turn_meta::user_text_message_with_turn_metadata(
+        turn_meta::turn_metadata_block(
             &working_set,
             &self.config.workspace,
             &self.config.skills_dir,
-            text,
             routed_model,
             auto_model,
             reasoning_effort,
             reasoning_effort_auto,
         )
+    }
+
+    /// Prepend a `<turn_meta>` block to a compaction re-inject candidate
+    /// message (slice 24 §E). Mirrors the `[turn_meta, content]` shape of
+    /// [`user_text_message_with_turn_metadata`]: the re-inject message keeps
+    /// its `<system-reminder>`-wrapped restoration body as the trailing block;
+    /// the leading `<turn_meta>` gives the model current state (date / model
+    /// route / working-set summary / conditional skills) immediately
+    /// post-compaction. Enrich-only (no `observe_user_message`) — re-inject
+    /// messages are synthetic system-reminders, not user intent (matches the
+    /// LSP-flush precedent, slice 22 §E).
+    pub(crate) fn enrich_reinject_message(&self, mut msg: Message) -> Message {
+        let block = self.turn_metadata_content_block_for_route(
+            &self.session.model,
+            self.session.auto_model,
+            self.session.reasoning_effort.as_deref(),
+            self.session.reasoning_effort_auto,
+        );
+        msg.content.insert(0, block);
+        msg
     }
 
     /// Handle a send message operation
@@ -2430,6 +2482,17 @@ impl Engine {
         self.session.system_prompt = merged;
     }
 
+    /// Re-inject plan / todos / live sub-agents / recent `read_file` outputs
+    /// after a context compaction so the model keeps its structural context.
+    /// Each candidate is prepended with a `<turn_meta>` block (slice 24 §E) —
+    /// date / model route / working-set summary / conditional skills — giving
+    /// the model current state immediately post-compaction, consistent with
+    /// the `[turn_meta, content]` shape of [`user_text_message_with_turn_metadata`].
+    /// Enrich-only (no `observe_user_message`) — re-inject messages are
+    /// synthetic `<system-reminder>`s, not user intent (matches the LSP-flush
+    /// precedent, slice 22 §E). Candidates are deduped against existing
+    /// `session.messages` (byte-stable `<turn_meta>` keeps the equality check
+    /// working across consecutive calls) and budget-trialled before the push.
     pub async fn reinject_compaction_attachments(
         &mut self,
         target_input_budget: Option<usize>,
@@ -2472,6 +2535,13 @@ impl Engine {
 
         let mut injected = 0usize;
         for candidate in candidates {
+            // Slice 24 §E: prepend a `<turn_meta>` block to each re-inject
+            // candidate so the model gets current state (date / model route /
+            // working-set summary / conditional skills) immediately
+            // post-compaction. Enrich-only (no observe) — matches the LSP-flush
+            // precedent (slice 22). Done here so the dedup check, budget trial,
+            // and push all see the enriched candidate.
+            let candidate = self.enrich_reinject_message(candidate);
             if self
                 .session
                 .messages

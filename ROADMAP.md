@@ -1507,6 +1507,30 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 ---
 
+**进度（2026-07-13 §E `<turn_meta>` for compaction re-inject 落地，富化宿主侧 compaction 附件重注入消息，`feat/pluggable-framework-core`）：**
+
+§E 的第二十四个切片落地——将 slice 22 建立的 `<turn_meta>` 富化 seam 扩展到 compaction 附件重注入消息。宿主侧 `Engine::reinject_compaction_attachments`（`agent-runtime/src/engine/mod.rs`）在 host-triggered compaction（manual `mod.rs:1361` / capacity `capacity_flow.rs:514,541`）后推送 plan/todos/subagents/read_files 恢复消息，此前仅以 `<system-reminder>` 包裹——**无 `<turn_meta>`**。compaction 卷起 transcript 后，model 直到下一 user message 才重新获得 current-state 信号（working-set summary / conditional skills / date / model route）。本轮为每个重注入候选前置 `<turn_meta>` block，使 model 在 compaction 后立即获得 orientation，与 user/steer/LSP 消息的 `[turn_meta, content]` shape 一致。本轮纯增量（`agent-runtime/src/engine/mod.rs` + `engine/turn_meta.rs` 文档 + `tui/src/core/engine/tests.rs` 测试），enrich-only（无 observe——匹配 slice 22 LSP-flush 先例：重注入消息是合成 system-reminder、非 user intent）；零既有调用点行为改动；3 个既有 reinject 测试不变即通过。
+
+- **helper 提取（dedup）**：`turn_metadata_content_block_for_route(&self, routed_model, auto_model, reasoning_effort, reasoning_effort_auto) -> ContentBlock`——lock `working_set` + 调 `turn_meta::turn_metadata_block`，单一 block 源。refactor `user_text_message_with_turn_metadata_for_route`（`mod.rs:910`）用它建 block（原 block 构造 bury 在 free fn `user_text_message_with_turn_metadata` 内）。新增 `enrich_reinject_message(&self, mut msg) -> Message`——前置 `turn_metadata_content_block_for_route(...)`（用 session 当前 model route），返 enriched msg。镜像 slice 22/23 `push_steer_message` enrich-then-push 模式。
+- **`reinject_compaction_attachments` 接线**：在 `for candidate in candidates` 循环顶部 `let candidate = self.enrich_reinject_message(candidate);`——单一接线点，enrich 所有候选（plan/todos/subagents/read_files），使 dedup 检查、budget trial、push 均见 enriched 候选。
+- **dedup 安全性（验证）**：`<turn_meta>` block 字节稳定（`summary_block` 字节稳定；date + model route 在 session 内稳定；enrich-only 故两次连续调用间 working_set 不变）→ `message == &candidate` dedup 仍匹配 → 第二次 reinject 注入 0（既有 dedup 测试 `tests.rs:1483-1485` 不变通过；新增 `dedup_still_works_with_enrichment` 回归守卫）。
+- **budget 安全性（验证）**：enrichment 使候选更大 → budget trial `Some(before.saturating_sub(1))` 仍超预算 → 仍跳过 → 既有 budget 测试 `tests.rs:1546` 不变通过。
+- **module 文档**：`turn_meta.rs` line 3-4 列表加 "compaction attachment re-inject"；`reinject_compaction_attachments` 新增 doc 注释（enrich-only / `[turn_meta, content]` shape / LSP-flush 先例 / dedup + budget 行为）。
+- **3 个新测试**（`tui/src/core/engine/tests.rs`，扩 reinject 组）：`reinject_compaction_attachments_prepends_turn_meta_block`（plan+todos+read_files → 3 消息各 ≥2-block：首 `<turn_meta>`、次 `<system-reminder>`）、`reinject_compaction_attachments_turn_meta_reflects_working_set`（tempdir + `observe_user_message("src/lib.rs")` → reinject 的 turn_meta block 含 `## Repo Working Set` marker，证明 working-set snapshot 在 enrich-time 重读）、`reinject_compaction_attachments_dedup_still_works_with_enrichment`（两次连续 reinject → 第二次 0、`messages.len()` 不变）。共 6 个 reinject 测试通过（3 既有 + 3 新）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零 warning；`cargo +1.90.0 build -p codesmith-tui` 143 既有 warning、零新；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui reinject_compaction_attachments` 6 通过（3 既有 + 3 新）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1070 通过 + 1 flaky `mcp::legacy_sse_closed_stream_reconnects_and_retries_tool_call`（隔离重跑通过，既有偶发，与本轮无关）= 1071 总（不变——host_executor 未触）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui` 2848 全绿；`cargo +1.90.0 build --workspace` 全绿（tui 143 warning 均既有死代码）。
+
+**下一聚焦工作：**
+- **post-compact cleanup**（framework-core compaction closure）：`HostAgentExecutor::run_compaction` / `recover_context_overflow` 的 "summary_prompt discarded" 缺口——需 `ChatHistory` system-prompt seam + 宿主侧 attachment/working-set 可达（summary-prompt merge / attachment reinject / post_compact_cleanup 三项当前在 framework-core 路径全丢弃）。独立大切片，本轮 `<turn_meta>` 富化的宿主侧对应物。
+- **`ToolCallStarted` stream-time + bridge 去重**：`Callback::on_tool_start` 透传 wire id 或 bridge name+input pairing。
+- **per-input-approval 专用 test**：override-downgrade 断言（ExecutesCode 工具 + dispatcher 返 Auto ⇒ 不 approval）。
+- **dead-code deletion 切片**：slice 20 `#[allow(dead_code)]` 17 项中 orphan 的删掉。
+- **observe-and-repopulate-working-set-from-reinject**：本轮 enrich-only（匹配 LSP 先例），read_files 重注入携带真实路径但 working-set 不从中重填——未来可考虑 observe 路径（post-compact cleanup 切片内）。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

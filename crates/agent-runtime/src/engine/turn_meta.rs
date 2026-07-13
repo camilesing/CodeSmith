@@ -1,11 +1,11 @@
 //! `<turn_meta>` block construction — host-agnostic free functions.
 //!
 //! Production wraps mid-turn injected messages (steer input, LSP diagnostics
-//! flush) in a `<turn_meta>` block carrying the current date, the auto-routed
-//! model / reasoning-effort (when auto-routing), the working-set summary, and
-//! the matched conditional-skills block. The block is the first `ContentBlock`
-//! of the `user` message so the model sees the context before the injected
-//! text. Historically these lived as `&self Engine` methods reading
+//! flush, compaction attachment re-inject) in a `<turn_meta>` block carrying
+//! the current date, the auto-routed model / reasoning-effort (when
+//! auto-routing), the working-set summary, and the matched conditional-skills
+//! block. The block is the first `ContentBlock` of the `user` message so the
+//! model sees the context before the injected text. Historically these lived as `&self Engine` methods reading
 //! `self.session.working_set` + `self.config.*`; this module lifts the bodies
 //! into free functions taking explicit parameters so two callers share one
 //! source: the `Engine` wrapper methods (which lock the now-`Arc<Mutex>`
