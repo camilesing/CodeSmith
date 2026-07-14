@@ -2672,6 +2672,84 @@ async fn capacity_disabled_by_default_keeps_messages_intact() {
     assert_eq!(engine.session.messages.len(), before_len);
 }
 
+/// §E slice 3a: `apply_verify_and_replan(skip_transcript = true)` runs only the
+/// state work (canonical persist, system-prompt fold, emit, mark) and does
+/// NOT re-wipe the transcript. The executor already reset the transcript
+/// mid-loop via `ChatHistory` (`reset_history_to_latest_user_and_verified`);
+/// re-running the `clear`+`push(latest_user)`+`push(latest_verified)` post-`run`
+/// would discard the model's post-reset replanning work. This proves the
+/// post-`run` path preserves the grown transcript.
+#[tokio::test]
+async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    // A grown transcript representing the model's post-reset replanning work:
+    // the mid-loop reset left `{latest_user, latest_verified}`, then the model
+    // added an assistant turn + a tool result on top.
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "redo the task".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine.session.messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "here is my replan".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "post_reset_tool".to_string(),
+            content: "post-reset tool output".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+
+    let before_messages = engine.session.messages.clone();
+    let before_len = before_messages.len();
+    let turn = TurnContext::new(10);
+
+    let applied = engine
+        .apply_verify_and_replan(&turn, AppMode::Agent, None, "test skip_transcript", true)
+        .await;
+
+    // State work ran to completion (canonical persist, system-prompt fold,
+    // emit, `mark_intervention_applied`).
+    assert!(applied);
+    // The transcript is untouched — `skip_transcript = true` skipped the
+    // `clear`+`push` reset, so the model's post-reset replanning survives into
+    // the next turn (this is the crux of sub-slice 3a: the post-`run` path must
+    // not wipe the growth the model produced after the mid-loop reset).
+    assert_eq!(engine.session.messages.len(), before_len);
+    assert_eq!(engine.session.messages, before_messages);
+}
+
 #[tokio::test]
 async fn controller_disabled_keeps_behavior_unchanged() {
     let capacity = CapacityControllerConfig {

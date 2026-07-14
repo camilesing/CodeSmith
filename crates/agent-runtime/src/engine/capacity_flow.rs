@@ -9,6 +9,8 @@ use super::*;
 
 use std::path::PathBuf;
 
+use codesmith_agent::memory::ChatHistory;
+
 use crate::error_taxonomy::ErrorCategory;
 use crate::tool_dispatch::ToolDispatcher;
 use crate::working_set::WorkingSet;
@@ -88,6 +90,64 @@ pub(crate) fn recent_unique_reference_count(
     }
     refs.retain(|item| !item.is_empty());
     refs.len()
+}
+
+/// Find the last user message carrying a `Text` block and the last user
+/// message carrying a `[verification replay]` `ToolResult` block.
+///
+/// Extracted as a free function so both the mid-loop executor path
+/// (`reset_history_to_latest_user_and_verified`, via `ChatHistory`) and the
+/// post-`run` `Engine::apply_verify_and_replan` (via `&mut Vec<Message>`)
+/// share one extraction source (§E slice 3a).
+pub(crate) fn latest_user_and_verified(
+    messages: &[Message],
+) -> (Option<Message>, Option<Message>) {
+    let latest_user = messages
+        .iter()
+        .rev()
+        .find(|msg| {
+            msg.role == "user"
+                && msg
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text { .. }))
+        })
+        .cloned();
+    let latest_verified = messages
+        .iter()
+        .rev()
+        .find(|msg| {
+            msg.role == "user"
+                && msg.content.iter().any(|block| match block {
+                    ContentBlock::ToolResult { content, .. } => {
+                        content.contains("[verification replay]")
+                    }
+                    _ => false,
+                })
+        })
+        .cloned();
+    (latest_user, latest_verified)
+}
+
+/// Reset a [`ChatHistory`] to `{latest_user, latest_verified}` — the mid-loop
+/// `VerifyAndReplan` transcript mutation (§E slice 3a).
+///
+/// Mirrors the transcript portion of `Engine::apply_verify_and_replan`
+/// (below) but operates through the framework-core `ChatHistory` trait
+/// (`push`/`clear`) since the executor only holds `&mut dyn ChatHistory`
+/// during `run`, not `&mut Session`. `SessionChatHistory` delegates to
+/// `session.messages`, so this mutates the host's transcript in place; the
+/// model sees the reset on the next request within the same turn (the loop
+/// `continue`s and rebuilds the request from `history.messages()`).
+pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHistory) {
+    let (latest_user, latest_verified) = latest_user_and_verified(history.messages());
+    history.clear();
+    if let Some(msg) = latest_user {
+        history.push(msg);
+    }
+    if let Some(msg) = latest_verified {
+        history.push(msg);
+    }
 }
 
 /// Capacity-controller (Gate A) probe for the executor path (§E slice 33).
@@ -410,7 +470,7 @@ impl Engine {
                 false
             }
             GuardrailAction::VerifyAndReplan => {
-                self.apply_verify_and_replan(turn, mode, snapshot.as_ref(), "high_risk_post_tool")
+                self.apply_verify_and_replan(turn, mode, snapshot.as_ref(), "high_risk_post_tool", false)
                     .await
             }
             GuardrailAction::NoIntervention | GuardrailAction::TargetedContextRefresh => false,
@@ -494,6 +554,7 @@ impl Engine {
                 consecutive_tool_error_steps,
                 category_labels.join(",")
             ),
+            false,
         )
         .await
     }
@@ -1049,6 +1110,7 @@ impl Engine {
         mode: AppMode,
         snapshot: Option<&CapacitySnapshot>,
         reason: &str,
+        skip_transcript: bool,
     ) -> bool {
         let before_tokens = self.estimated_input_tokens();
         let canonical = self.build_canonical_state(turn, Some(reason));
@@ -1065,41 +1127,21 @@ impl Engine {
             .persist_capacity_record(turn, GuardrailAction::VerifyAndReplan, &record)
             .await;
 
-        let latest_user = self
-            .session
-            .messages
-            .iter()
-            .rev()
-            .find(|msg| {
-                msg.role == "user"
-                    && msg
-                        .content
-                        .iter()
-                        .any(|block| matches!(block, ContentBlock::Text { .. }))
-            })
-            .cloned();
-        let latest_verified = self
-            .session
-            .messages
-            .iter()
-            .rev()
-            .find(|msg| {
-                msg.role == "user"
-                    && msg.content.iter().any(|block| match block {
-                        ContentBlock::ToolResult { content, .. } => {
-                            content.contains("[verification replay]")
-                        }
-                        _ => false,
-                    })
-            })
-            .cloned();
-
-        self.session.messages.clear();
-        if let Some(msg) = latest_user {
-            self.session.messages.push(msg);
-        }
-        if let Some(msg) = latest_verified {
-            self.session.messages.push(msg);
+        // Transcript reset to `{latest_user, latest_verified}`. Skipped when the
+        // executor already applied it mid-loop via `ChatHistory` (§E slice 3a)
+        // — re-running it post-`run` would wipe the model's post-reset
+        // replanning work. The state work below (canonical persist, system-prompt
+        // fold, emit, mark) always runs.
+        if !skip_transcript {
+            let (latest_user, latest_verified) =
+                latest_user_and_verified(&self.session.messages);
+            self.session.messages.clear();
+            if let Some(msg) = latest_user {
+                self.session.messages.push(msg);
+            }
+            if let Some(msg) = latest_verified {
+                self.session.messages.push(msg);
+            }
         }
 
         self.merge_compaction_summary(Some(self.canonical_prompt(

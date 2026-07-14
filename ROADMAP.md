@@ -1725,7 +1725,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **下一聚焦工作：**
 - **剩余 dead-code（superseded，低优先）**：`layered_context_checkpoint` / `Engine::recover_context_overflow` / KoD cluster / `rx_user_input` / `tool_exec_lock` / `turn_loop::EarlyToolResult|EarlyToolTask`——均 deferred re-wire 决策点，待各自 re-wire 切片接入时一并删（保 `#[allow(dead_code)]` + doc 留存）。另有 stray `#[cfg(test)] use crate::models::ToolCaller`（`mod.rs:41`，orphan test import，11 既有 warning 之一）可随手清理但本轮未动（超出 named scope）。
-- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：Gate A seam-1+seam-4+error-escalation 已落地（slice 33/34 §E，见下），mid-loop transcript mutations 仍 deferred（sub-slice 3）。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：Gate A seam-1+seam-4+error-escalation 已落地（slice 33/34 §E，见下），mid-loop transcript mutations 部分落地（sub-slice 3a §E `VerifyAndReplan`，见下）；3b（`VerifyWithToolReplay`）/ 3c（`TargetedContextRefresh`）仍 deferred。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
@@ -1778,6 +1778,42 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 - **Reason override**：`decision.reason` overridden 为 escalation format（生产用单独 `apply_verify_and_replan` arg）；流经 slice 33 既有 `&decision.reason` plumbing。
 
 **验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 133 通过（125 既有 + 8 新 error_escalation）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1112 通过 + 2 ignored；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 123 通过（host wire-in 零回归）；`cargo +1.90.0 build --workspace` 全绿。
+
+---
+
+**进度（2026-07-14 §E `VerifyAndReplan` transcript reset mid-loop 落地，CapacityController sub-slice 3a，`feat/pluggable-framework-core`）：**
+
+§E 的第三十五个切片落地——关闭 slice 33/34 反复标记的 "mid-loop transcript mutations（sub-slice 3）" 缺口的第一部分。slice 33/34 把 `CapacityController`（Gate A）的 seam-1/seam-4/error-escalation 接入 `HostAgentExecutor::run_inner`，但干预级联（`apply_*`）在 `run` 返回后由 host 应用——模型同一 turn 看不到干预，只在下一 turn 看到。本切片把 `VerifyAndReplan` 的**transcript 部分**（`clear` + `push(latest_user)` + `push(latest_verified)`）前移到 mid-loop：执行器在决策 fire 时经 `ChatHistory::clear`/`push`（`SessionChatHistory` 委托 `session.messages`，故是原地变更 host 的 transcript）重置 transcript，然后 `step += 1; continue;`，模型在**同一 turn**从干净基线 `{latest_user, latest_verified}` replan。`VerifyAndReplan` 是 sub-slice 3 三个 action 中最自包含的（纯 `ChatHistory` `clear`+`push`，不需 LLM/tool）；`VerifyWithToolReplay`（3b，需 mid-loop 工具重放）与 `TargetedContextRefresh`（3c，需 mid-loop LLM compaction + reinject）仍 deferred。
+
+**关键正确性不变量**：mid-loop 重置后 turn 继续（模型 replan，transcript 增长）。若 post-`run` 的 `apply_verify_and_replan` 再次 `clear`+`push`，会**抹掉模型的 post-reset replanning 成果**（并可能误识 `latest_user`，如 steer 落入）。故 post-`run` 必须**跳过 transcript 重置**但保留**state work**（canonical persist / `merge_compaction_summary` / `refresh_system_prompt` / `emit_session_updated` / `mark_intervention_applied`）。不变量：`pending_capacity_decision == Some(VerifyAndReplan)` ⟹ mid-loop 重置已执行（slot 只由带 `capacity_gate` 的 seam 设置，本切片每个 `VerifyAndReplan` 决策都走 mid-loop 重置）。故 post-`run` VerifyAndReplan 臂传 `skip_transcript = true`。
+
+**落地步骤（3 文件 + 测试）：**
+
+1. **`capacity_flow.rs` — 提取 + 签名扩展**：新 `pub(crate) fn latest_user_and_verified(messages) -> (Option<Message>, Option<Message>)`（factored out 自 `apply_verify_and_replan` 内联的 latest_user/latest_verified 提取——last user `Text` msg + last user msg whose `ToolResult` content 含 `[verification replay]`）；新 `pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHistory)`（调 `latest_user_and_verified` + `history.clear()` + `history.push(...)`——`ChatHistory` 面，执行器 mid-loop 用）。`apply_verify_and_replan` 加 `skip_transcript: bool` 参：用 `latest_user_and_verified` 提取（行为保持 dedup），`skip_transcript == true` 时**跳过** `clear`+`push` 块，state work（canonical/persist/merge/refresh/emit/mark）总跑。两处 dead-code 调用点（`run_capacity_post_tool_checkpoint` / `run_capacity_error_escalation_checkpoint`，tui-test-only）传 `false`（faithful 旧生产路径）。加 `use codesmith_agent::memory::ChatHistory;`。
+2. **`host_executor.rs` — mid-loop 接线**：seam-4（post-tool）`decision.action != NoIntervention` 块——当 `decision.action == VerifyAndReplan`，调 `reset_history_to_latest_user_and_verified(history)` + `step += 1; continue;`（跳过 (4) per-step seam + error-escalation + `on_step`；loop-top cancel gate 下一迭代兜底，cooldown 阻断 error-escalation——镜像生产 `turn_loop.rs:2628` + 既有 steer `step += 1; continue;` 惯用法）；其他 action（`VerifyWithToolReplay`/`TargetedContextRefresh`）保持原行为（set slot + emit_status，fall through——post-`run` 应用）。所有情况下 slot 仍设，post-`run` state work 跑。error-escalation（`decide_error_escalation` 返 `Some`——恒 `VerifyAndReplan`）同样调 `reset_history_to_latest_user_and_verified(history)` + `step += 1; continue;`（镜像 `turn_loop.rs:2658`）。seam-4 / error-escalation 模块注释更新 "post-run application" → "transcript reset mid-loop (slice 3a §E); state work still post-run"。import 加 `reset_history_to_latest_user_and_verified`。
+3. **`mod.rs` — post-`run` 臂**：`VerifyAndReplan` 臂（slice 33 既有 match 块）传 `skip_transcript = true` + 注释不变量。其他臂（`TargetedContextRefresh`/`VerifyWithToolReplay`）不动。
+
+**4 个新测试：**
+- `host_executor.rs` test module（"§E slice 3a — VerifyAndReplan mid-loop transcript reset" 组）+ `has_tool_blocks` / `has_role_text` helpers：
+  - `verify_and_replan_resets_transcript_mid_loop`（headline——两轮 `fail_tool`（ErrorSpec → `ErrorCategory::Tool`）force High+severe → VerifyAndReplan；mid-loop 重置抹掉两轮 tool turns，只剩 `latest_user`("hello") + 模型 post-reset replan("done")；断言无 tool blocks + "hello" 存活 + "done" present + slot=VerifyAndReplan）。
+  - `verify_and_replan_disabled_is_noop`（disabled gate → 无重置，tool blocks 完整 + slot None）。
+  - `verify_and_replan_none_probe_is_noop`（无 `.with_capacity_gate` → 无重置 + slot None）。
+- `crates/tui/src/core/engine/tests.rs`（`build_engine_with_capacity` harness）：
+  - `apply_verify_and_replan_skip_transcript_preserves_messages`（grown transcript 代表模型 post-reset 增长；调 `apply_verify_and_replan(..., skip_transcript=true)`；断言 return `true` + transcript **不变**（len + content）——证明 post-`run` 不抹增长）。
+
+**By-design gaps（deferred，documented）：**
+- **State work 仍 post-`run`**（system_prompt / canonical-state / persistence / emit）——执行器 mid-loop 无 `&mut self.session`；behavior-equivalent 因 system prompt 是 static snapshot（slice 25a/25c/33/34 论证）。
+- **`skip_transcript` 按 action 键控**（非独立 slot）——依赖上述不变量；干净且免新 executor 字段。
+- **canonical state divergence**：post-`run` 从 grown transcript 建 canonical state（生产 mid-loop 从 reset 后 transcript 建）——匹配 slice 34 既有 "Forced snapshot not persisted" gap。
+- **3b/3c deferred**：`VerifyWithToolReplay`（mid-loop 工具重放，需 `tool_dispatcher` + lock/mcp plumbing）与 `TargetedContextRefresh`（mid-loop LLM compaction + reinject）——同 `skip_transcript` 模式延展。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 136 通过（133 既有 + 3 新 slice 3a）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1115 通过 + 2 ignored（1112 + 3）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 124 通过 + 1 ignored（123 + 1 新 skip_transcript，host wire-in 零回归）；`cargo +1.90.0 build --workspace` 全绿（tui bin 143 既有死代码 warning，无新增）。
+
+**下一聚焦工作：**
+- **sub-slice 3b**：`VerifyWithToolReplay` transcript 部分 mid-loop（执行器有 `tool_dispatcher`；需 mid-loop 工具重放 + `[verification replay]` 注入 via `ChatHistory::push`；post-`run` `apply_verify_with_tool_replay` 加 `skip_transcript` 跳过 append）。
+- **sub-slice 3c**：`TargetedContextRefresh` transcript 部分 mid-loop（需 mid-loop `compact_messages_safe` LLM compaction + reinject——最 invasive；executor 有 LLM client）。
+- **3b/3c 落地后**：sub-slice 3 完成，mid-loop transcript mutations 全闭合。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 

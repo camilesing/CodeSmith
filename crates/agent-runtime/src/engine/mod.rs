@@ -1387,12 +1387,22 @@ impl Engine {
                         .await;
                 }
                 GuardrailAction::VerifyAndReplan => {
+                    // §E slice 3a: the executor reset the transcript to
+                    // `{latest_user, latest_verified}` mid-loop via `ChatHistory`
+                    // when this decision fired (every `VerifyAndReplan` in this
+                    // slot came from a seam with a `capacity_gate`, and that path
+                    // applies the mid-loop reset). Pass `skip_transcript = true`
+                    // so the post-`run` call runs only the state work (canonical
+                    // persist, system-prompt fold, emit, mark) and does NOT
+                    // re-wipe the transcript — which would discard the model's
+                    // post-reset replanning work.
                     let _ = self
                         .apply_verify_and_replan(
                             &turn,
                             mode,
                             snapshot.as_ref(),
                             &decision.reason,
+                            true,
                         )
                         .await;
                 }

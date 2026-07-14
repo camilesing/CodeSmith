@@ -639,7 +639,7 @@ use codesmith_agent::models::{
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
-use super::capacity_flow::CapacityGateProbe;
+use super::capacity_flow::{reset_history_to_latest_user_and_verified, CapacityGateProbe};
 use super::context::{
     compact_tool_result_for_context, context_input_budget_for_provider,
     estimate_input_tokens_conservative, is_context_length_error_message,
@@ -3874,6 +3874,17 @@ impl HostAgentExecutor {
             // intervention cascade post-`run` via `take_pending_capacity_decision`.
             // `mark_intervention_applied` from seam 1 (or this seam) prevents
             // double-intervention via the cooldown.
+            //
+            // `VerifyAndReplan` additionally resets the transcript mid-loop
+            // (slice 3a §E): `reset_history_to_latest_user_and_verified` wipes
+            // the transcript to `{latest_user, latest_verified}` via
+            // `ChatHistory` (in-place on `session.messages`), then `continue`s
+            // so the model replans from the clean slate within the same turn.
+            // The slot is still set so the host's post-`run` call runs the
+            // state work (system-prompt fold, canonical persist, emit, mark)
+            // with `skip_transcript = true` (no re-wipe). Other actions
+            // (`VerifyWithToolReplay`, `TargetedContextRefresh`) defer their
+            // transcript mutation to post-`run` (sub-slices 3b/3c).
             if let Some(gate) = &self.capacity_gate {
                 if let Some(snapshot) = gate.observe_post_tool(
                     history.messages(),
@@ -3895,6 +3906,18 @@ impl HostAgentExecutor {
                             decision.reason
                         ))
                         .await;
+                        // §E slice 3a: mid-loop transcript reset for
+                        // `VerifyAndReplan`. Mirror production's
+                        // `turn.next_step(); continue;` (turn_loop.rs:2628) —
+                        // skip the per-step (4) seam + error-escalation +
+                        // `on_step`; the loop-top cancel gate (Checkpoint A)
+                        // catches cancellations next iteration, and the
+                        // cooldown blocks error-escalation anyway.
+                        if decision.action == GuardrailAction::VerifyAndReplan {
+                            reset_history_to_latest_user_and_verified(history);
+                            step += 1;
+                            continue;
+                        }
                     }
                 }
             }
@@ -3933,6 +3956,13 @@ impl HostAgentExecutor {
             // at the cooldown check (capacity.rs:228) before reaching
             // `decide_policy`, mirroring production's "seam 4 fires → `continue`
             // → error-escalation skipped". No explicit seam-4 guard is needed.
+            //
+            // `decide_error_escalation` only ever returns `VerifyAndReplan`;
+            // slice 3a §E resets the transcript mid-loop here (same
+            // `reset_history_to_latest_user_and_verified` + `step += 1; continue;`
+            // as seam 4), mirroring production's `turn.next_step(); continue;`
+            // (turn_loop.rs:2658). The slot stays set so post-`run` state work
+            // runs with `skip_transcript = true`.
             consecutive_tool_error_steps = if step_error_count > 0 {
                 consecutive_tool_error_steps.saturating_add(1)
             } else {
@@ -3960,6 +3990,11 @@ impl HostAgentExecutor {
                         decision.reason
                     ))
                     .await;
+                    // §E slice 3a: mid-loop transcript reset (always
+                    // `VerifyAndReplan` from this checkpoint).
+                    reset_history_to_latest_user_and_verified(history);
+                    step += 1;
+                    continue;
                 }
             }
 
@@ -9687,6 +9722,195 @@ mod tests {
             decision.is_none(),
             "cooldown should block error-escalation, got: {decision:?}"
         );
+    }
+
+    // === §E slice 3a — VerifyAndReplan mid-loop transcript reset ==============
+    //
+    // slice 3a moves the transcript portion of `VerifyAndReplan` from post-`run`
+    // (host applies on `&mut self.session`) to mid-loop (executor applies via
+    // `ChatHistory::clear`/`push`). The model now sees the reset within the
+    // same turn and replans from `{latest_user, latest_verified}`. The host's
+    // post-`run` `apply_verify_and_replan(skip_transcript = true)` then runs
+    // only the state work (system-prompt fold, canonical persist, emit, mark) —
+    // it must NOT re-wipe the transcript, which would discard the model's
+    // post-reset replanning. These tests prove the mid-loop reset fires, the
+    // post-reset growth survives, and disabled/absent probes are no-ops.
+
+    /// True if any message carries a `ToolUse` or `ToolResult` block — used to
+    /// detect whether the mid-loop reset wiped the tool turns.
+    fn has_tool_blocks(messages: &[Message]) -> bool {
+        messages.iter().any(|msg| {
+            msg.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                )
+            })
+        })
+    }
+
+    /// True if any message with `role` carries a `Text` block whose text
+    /// contains `needle`.
+    fn has_role_text(messages: &[Message], role: &str, needle: &str) -> bool {
+        messages.iter().any(|msg| {
+            msg.role == role
+                && msg.content.iter().any(|block| match block {
+                    ContentBlock::Text { text, .. } => text.contains(needle),
+                    _ => false,
+                })
+        })
+    }
+
+    #[tokio::test]
+    async fn verify_and_replan_resets_transcript_mid_loop() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(ErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Round 1 + 2: fail_tool (Err → ErrorCategory::Tool). Round 3: text-only.
+        // Two consecutive Tool errors force High+severe → VerifyAndReplan, which
+        // (slice 3a) resets the transcript mid-loop before round 3.
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "e1", "fail_tool", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "again");
+        call2.extend(tool_use_block(1, "e2", "fail_tool", r#"{}"#));
+        call2.extend(finish("tool_use"));
+        let call3 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2, call3]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe_high_prior(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The mid-loop reset wiped the two fail_tool turns (assistant + tool
+        // results); only `latest_user` ("hello") survived, plus the model's
+        // post-reset replan (round 3 "done"). No tool blocks remain.
+        assert!(
+            !has_tool_blocks(&sess.messages),
+            "mid-loop reset should have wiped tool blocks, got: {:?}",
+            sess.messages
+        );
+        assert!(
+            has_role_text(&sess.messages, "user", "hello"),
+            "latest_user (\"hello\") should survive the reset, got: {:?}",
+            sess.messages
+        );
+        assert!(
+            has_role_text(&sess.messages, "assistant", "done"),
+            "post-reset replan (\"done\") should be present, got: {:?}",
+            sess.messages
+        );
+        // Slot still set so the host runs the post-`run` state work.
+        let decision = executor
+            .take_pending_capacity_decision()
+            .expect("error-escalation decision");
+        assert_eq!(decision.action, GuardrailAction::VerifyAndReplan);
+    }
+
+    #[tokio::test]
+    async fn verify_and_replan_disabled_is_noop() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(ErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "e1", "fail_tool", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "again");
+        call2.extend(tool_use_block(1, "e2", "fail_tool", r#"{}"#));
+        call2.extend(finish("tool_use"));
+        let call3 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2, call3]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_capacity_gate(Some(disabled_capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Disabled controller → no mid-loop reset: tool turns are intact.
+        assert!(
+            has_tool_blocks(&sess.messages),
+            "disabled gate should not reset the transcript, got: {:?}",
+            sess.messages
+        );
+        assert!(executor.take_pending_capacity_decision().is_none());
+    }
+
+    #[tokio::test]
+    async fn verify_and_replan_none_probe_is_noop() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(ErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "e1", "fail_tool", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let call2 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        );
+        // No .with_capacity_gate() → capacity_gate is None → no checkpoint.
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert!(
+            has_tool_blocks(&sess.messages),
+            "absent gate should not reset the transcript, got: {:?}",
+            sess.messages
+        );
+        assert!(executor.take_pending_capacity_decision().is_none());
     }
 
     // === inline stream reduction (§E) =======================================
