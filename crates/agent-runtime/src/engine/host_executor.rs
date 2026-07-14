@@ -143,10 +143,14 @@
 //!    `StopReason::Error`. The probe is stateless — the per-run recovery
 //!    counter is a local `u8` (like the transparent-retry counter), resetting
 //!    to 0 on a healthy stream round. The opt-in `CapacityController` (Gate A,
-//!    off by default since v0.8.11) is deferred. The reactive seam-2 path
-//!    (provider context-length rejection → recovery) is absorbed —
-//!    `stream_with_transparent_retry` classifies a pre-stream `Err` and runs
-//!    the same `recover_context_overflow`. See "Known gaps in capacity" below.
+//!    off by default) is absorbed (slice 33 §E: probe + observe + decide +
+//!    signal at seam-1/seam-4/error-escalation + post-`run` state-work
+//!    application; slices 3a/3b/3c §E: the mid-loop transcript portions for
+//!    `VerifyAndReplan` / `VerifyWithToolReplay` / `TargetedContextRefresh`
+//!    respectively). The reactive seam-2 path (provider context-length
+//!    rejection → recovery) is absorbed — `stream_with_transparent_retry`
+//!    classifies a pre-stream `Err` and runs the same
+//!    `recover_context_overflow`. See "Known gaps in capacity" below.
 //! 8. **early-tool-start** ([`early_start_safe`] + [`EarlyToolTask`]) — the
 //!    **second seam-2 guardrail**. When a tool block reaches
 //!    `ContentBlockStop` mid-stream, [`reduce_stream`] finalizes its input and
@@ -272,9 +276,11 @@
 //!    **LSP post-edit collect** (probe diagnostics after a successful edit);
 //!    parallel dispatch still to come (inside the tool `for` loop).
 //! 4. **per-step post-tool** — ✅ **loop-guard halt short-circuit** (returns
-//!    `StopReason::Error`); capacity post-tool checkpoint (opt-in
-//!    `CapacityController` Gate A + error-escalation) still to come (after the
-//!    tool loop). The hard token-budget preflight (Gate B) is absorbed at seam 1.
+//!    `StopReason::Error`); ✅ capacity post-tool checkpoint (opt-in
+//!    `CapacityController` Gate A absorbed slice 33 §E + error-escalation
+//!    absorbed slice 34 §E, both post-`run` application; the transcript portions
+//!    for `VerifyAndReplan` / `VerifyWithToolReplay` run mid-loop here — slices
+//!    3a/3b §E). The hard token-budget preflight (Gate B) is absorbed at seam 1.
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) now flow through the
 //! framework `Callback::on_stream_delta` seam — the inline stream reducer
@@ -497,12 +503,21 @@
 //!   leaves a short transcript; re-summarizing the single older summary is a
 //!   no-op), so the cap is a safety net the preflight path is more likely to
 //!   reach than this reactive path.
-//! - **opt-in `CapacityController` (Gate A) deferred** — the off-by-default
+//! - **opt-in `CapacityController` (Gate A) absorbed** ✅ — the off-by-default
 //!   soft controller (`run_capacity_pre_request_checkpoint` /
 //!   `run_capacity_post_tool_checkpoint` / `run_capacity_error_escalation_checkpoint`)
-//!   is not absorbed; only the always-on hard preflight (Gate B) is. Gate A
-//!   requires the full `CapacityController` state machine (slack window,
-//!   recent tool/ref counts, model priors) — a separate, opt-in slice.
+//!   is absorbed: slice 33 §E added the probe + observe + decide + signal at
+//!   seam-1 (pre-request) / seam-4 (post-tool) / error-escalation, with the host
+//!   applying the intervention cascade post-`run` (where `&mut self.session` is
+//!   back in host hands); slices 3a/3b/3c §E moved each action's transcript
+//!   portion mid-loop — `VerifyAndReplan` (seam-4 reset to
+//!   `{latest_user, latest_verified}`), `VerifyWithToolReplay` (seam-4 replay +
+//!   `[verification replay]` note), `TargetedContextRefresh` (seam-1 compaction
+//!   + reinject + local-trim fallback) — so the model sees the mutated
+//!   transcript in the same step's request. The post-`run` calls run only the
+//!   state work (canonical persist, system-prompt fold, emit,
+//!   `mark_intervention_applied`) via `skip_transcript = true` + a carried
+//!   outcome. The hard preflight (Gate B) remains always-on (above).
 //! - **same recovery closure as compaction** — `recover_context_overflow`
 //!   shares `run_compaction`'s absorbed post-compact paths: the
 //!   `merge_compaction_summary` slot (slice 25a §E — recorded into
@@ -641,7 +656,7 @@ use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSe
 use super::approval::ApprovalDecision;
 use super::capacity_flow::{
     replay_and_push_verification_note, reset_history_to_latest_user_and_verified,
-    CapacityGateProbe,
+    trim_oldest_messages_to_budget_history, CapacityGateProbe,
 };
 use super::context::{
     compact_tool_result_for_context, context_input_budget_for_provider,
@@ -652,7 +667,7 @@ use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
 use super::turn_loop::subagent_completion_runtime_message;
-use super::{CapacityDecision, GuardrailAction, ReplayOutcome};
+use super::{CapacityDecision, GuardrailAction, ReplayOutcome, TargetedRefreshOutcome};
 use crate::subagent::SubAgentCompletion;
 use tokio_util::sync::CancellationToken;
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
@@ -1533,6 +1548,24 @@ pub struct HostAgentExecutor {
     /// candidate (host then no-ops). Same `std::sync::Mutex` one-shot pattern as
     /// [`HostAgentExecutor::pending_capacity_decision`].
     pending_replay_outcome: std::sync::Mutex<Option<ReplayOutcome>>,
+
+    /// One-shot targeted-refresh-outcome slot (slice 3c §E). Set by the executor
+    /// mid-loop when **seam 1** (pre-request) decides `TargetedContextRefresh`:
+    /// `refresh_targeted_context_mid_loop` runs the transcript portion (LLM
+    /// compaction + reinject + local-trim fallback) via `ChatHistory` and stores
+    /// the resulting `TargetedRefreshOutcome` (`refreshed` + `before_tokens`)
+    /// here, so the host's post-`run`
+    /// `apply_targeted_context_refresh(skip_transcript = true, Some(outcome))`
+    /// can run only the state work (canonical persist, system-prompt fold, emit,
+    /// mark). `TargetedContextRefresh` is a pre-request action (the retired
+    /// `run_capacity_pre_request_checkpoint` applied it; the post-tool checkpoint
+    /// no-op'd it), so only seam 1 sets this slot. A
+    /// `TargetedContextRefresh` that fires at seam 4 (risk grew mid-turn, seam 1
+    /// was low) does **not** set this slot → `None` → the host runs the full
+    /// post-`run` cascade (`skip_transcript = false`), faithful to the pre-3c
+    /// path. Same `std::sync::Mutex` one-shot pattern as
+    /// [`HostAgentExecutor::pending_replay_outcome`].
+    pending_targeted_refresh_outcome: std::sync::Mutex<Option<TargetedRefreshOutcome>>,
 }
 
 impl HostAgentExecutor {
@@ -1587,6 +1620,7 @@ pub fn new(
         capacity_gate: None,
         pending_capacity_decision: std::sync::Mutex::new(None),
         pending_replay_outcome: std::sync::Mutex::new(None),
+        pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
     }
 }
 
@@ -1758,6 +1792,25 @@ pub fn new(
         self.pending_replay_outcome
             .lock()
             .expect("pending_replay_outcome mutex poisoned")
+            .take()
+    }
+
+    /// Read back the targeted-refresh-outcome slot set by seam 1 mid-loop
+    /// (slice 3c §E). The host calls this after `run` returns to run the
+    /// post-`run` state work of
+    /// `apply_targeted_context_refresh(skip_transcript = true, Some(outcome))`
+    /// using the carried `TargetedRefreshOutcome` (`refreshed` + `before_tokens`
+    /// — the latter feeds `emit_capacity_intervention`'s telemetry delta).
+    /// Drains the slot (one-shot). `None` when the decision fired at seam 4
+    /// (no mid-loop compaction) — the host then runs the full post-`run`
+    /// cascade (`skip_transcript = false`). Only seam 1 sets this slot (a
+    /// `TargetedContextRefresh` at seam 1 sets the cooldown so seam 4 returns
+    /// `NoIntervention`).
+    #[must_use]
+    pub fn take_pending_targeted_refresh_outcome(&self) -> Option<TargetedRefreshOutcome> {
+        self.pending_targeted_refresh_outcome
+            .lock()
+            .expect("pending_targeted_refresh_outcome mutex poisoned")
             .take()
     }
 
@@ -2889,6 +2942,165 @@ pub fn new(
         }
     }
 
+    /// Run the **transcript portion** of `TargetedContextRefresh` mid-loop at
+    /// seam 1 (pre-request), §E slice 3c. Mirrors the transcript half of
+    /// [`Engine::apply_targeted_context_refresh`] (capacity_flow.rs: the
+    /// `should_compact` → `compact_messages_safe` → `reinject_compaction_attachments`
+    /// → local-trim fallback cascade) but executed through `ChatHistory` so the
+    /// model sees the compacted transcript in **this step's** request. The
+    /// **state work** (canonical persist / system-prompt fold / emit /
+    /// `mark_intervention_applied`) still runs post-`run` via
+    /// `apply_targeted_context_refresh(skip_transcript = true, Some(outcome))`,
+    /// which reads the `TargetedRefreshOutcome` this returns (carried across
+    /// the [`pending_targeted_refresh_outcome`](Self::take_pending_targeted_refresh_outcome)
+    /// slot).
+    ///
+    /// `TargetedContextRefresh` is a pre-request action — the retired
+    /// `run_capacity_pre_request_checkpoint` applied it (the post-tool
+    /// checkpoint explicitly no-op'd it) — so only seam 1 calls this. A
+    /// `TargetedContextRefresh` that fires at seam 4 (risk grew mid-turn) does
+    /// **not** call this; the host runs the full post-`run` cascade instead
+    /// (`skip_transcript = false`).
+    ///
+    /// Returns `None` when either probe is absent (no `compaction` / no
+    /// `capacity_gate` — embeds/tests that don't opt in), matching the
+    /// absent-probe precedent. Otherwise returns `Some(outcome)` carrying
+    /// `before_tokens` (captured before any mutation, feeds
+    /// `emit_capacity_intervention`'s telemetry delta post-`run`) + `refreshed`
+    /// (whether the transcript was actually reduced — `false` ⇒ the post-run
+    /// cascade returns `false`, no state work, matching
+    /// `apply_targeted_context_refresh`'s `if !refreshed { return false; }`).
+    ///
+    /// `&self` (not a free fn) — needs `self.record_compaction_summary` /
+    /// `self.reinject_compaction_attachments` / `self.emit_status`, mirroring
+    /// the [`run_compaction`](Self::run_compaction) `(&self, client, history)`
+    /// precedent.
+    ///
+    /// **By-design gaps** (documented in the slice-37 plan, same class as
+    /// 3a/3b): `compact_messages_safe` is called with `enhancements = None` —
+    /// `build_compaction_enhancements` needs `&mut self` Engine state
+    /// (`self.host.hooks()` / `self.session_memory_compaction_content()`)
+    /// unreachable mid-loop; the auto-compaction path (`run_compaction`) also
+    /// passes `None`. The `circuit_breaker` is not touched (faithful —
+    /// `apply_targeted_context_refresh` doesn't go through the breaker; the
+    /// `last_refresh_turn` cooldown throttles instead).
+    async fn refresh_targeted_context_mid_loop(
+        &self,
+        client: &LlmClientHandle,
+        history: &mut dyn ChatHistory,
+        system: Option<&SystemPrompt>,
+    ) -> Option<TargetedRefreshOutcome> {
+        // Need both the compaction probe (config + workspace) and the capacity
+        // gate probe (working set — `Arc`-shared with the session's, so reads
+        // here see live state). Absent either ⇒ no-op (embeds/tests that don't
+        // opt in), matching the absent-probe precedent.
+        let (Some(compaction), Some(gate)) = (&self.compaction, &self.capacity_gate) else {
+            return None;
+        };
+
+        let before_tokens = estimate_input_tokens_conservative(history.messages(), system);
+
+        // Working-set pins + paths mirror `Engine::apply_targeted_context_refresh`'s
+        // `self.session.working_set` reads. The working set is `Arc`-shared with
+        // the session's, so pins/paths computed here match the host-side view.
+        // Scoped so the `MutexGuard` drops before the async `compact_messages_safe`
+        // call (no lock held across an await).
+        let (compaction_pins, compaction_paths) = {
+            let ws = gate.working_set().lock().expect("working_set poisoned");
+            (
+                ws.pinned_message_indices(history.messages(), gate.workspace()),
+                ws.top_paths(24),
+            )
+        };
+
+        let mut refreshed = false;
+        let should_run_summary_compaction = compaction.config.enabled
+            && should_compact(
+                history.messages(),
+                &compaction.config,
+                Some(gate.workspace()),
+                Some(&compaction_pins),
+                Some(&compaction_paths),
+            );
+        if should_run_summary_compaction {
+            // Clone the messages out so no `ChatHistory` borrow crosses the
+            // await (the summary call is async — the compacted result is
+            // applied after, mirroring `run_compaction` Phase-2 at 2862-2873).
+            let messages = history.messages().to_vec();
+            // `enhancements = None` — `build_compaction_enhancements` needs
+            // `&mut self` Engine state unreachable mid-loop (same gap class as
+            // `run_compaction`, which also passes `None`).
+            match compact_messages_safe(
+                client.as_ref(),
+                &messages,
+                &compaction.config,
+                Some(gate.workspace()),
+                Some(&compaction_pins),
+                Some(&compaction_paths),
+                None,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if !result.messages.is_empty() || messages.is_empty() {
+                        // `merge_compaction_summary` is absorbed (slice 25a §E):
+                        // record into the `pending_compaction_summary` slot for
+                        // the host to fold into `session.system_prompt` post-`run`
+                        // (the executor's system prompt is a static snapshot, so
+                        // folding mid-run is invisible to this turn's requests).
+                        self.record_compaction_summary(result.summary_prompt.clone());
+                        history.clear();
+                        for m in result.messages {
+                            history.push(m);
+                        }
+                        // `reinject_compaction_attachments` fires DURING `run`
+                        // (slice 25b §E), right after the transcript replace —
+                        // provider budget from `ReinjectProbe::provider_input_budget`
+                        // (slice 31 §E), mirroring `run_compaction` at 2902-2907.
+                        let budget = self
+                            .reinject
+                            .as_ref()
+                            .and_then(|p| p.provider_input_budget());
+                        self.reinject_compaction_attachments(history, budget).await;
+                        refreshed = true;
+                    }
+                }
+                Err(err) => {
+                    self.emit_status(format!(
+                        "Capacity refresh compaction failed: {err}. Falling back to local trim."
+                    ))
+                    .await;
+                }
+            }
+        }
+
+        // Local-trim fallback (mirrors `apply_targeted_context_refresh`
+        // capacity_flow.rs: if the LLM compaction didn't run / didn't reduce
+        // (under threshold or failed) and the transcript is still over the
+        // provider budget, trim oldest messages until it fits).
+        if !refreshed {
+            let target_budget = self
+                .reinject
+                .as_ref()
+                .and_then(|p| p.provider_input_budget())
+                .unwrap_or(compaction.config.token_threshold.max(1));
+            if estimate_input_tokens_conservative(history.messages(), system) > target_budget {
+                let trimmed =
+                    trim_oldest_messages_to_budget_history(history, system, target_budget);
+                refreshed = trimmed > 0;
+                if refreshed {
+                    self.reinject_compaction_attachments(history, Some(target_budget))
+                        .await;
+                }
+            }
+        }
+
+        Some(TargetedRefreshOutcome {
+            refreshed,
+            before_tokens,
+        })
+    }
+
     /// (1) per-step capacity preflight (seam 1) — hard token-budget gate.
     ///
     /// Estimates input tokens and, if the estimate exceeds the provider's
@@ -3400,6 +3612,17 @@ impl HostAgentExecutor {
             // intervention cascade post-`run` via `take_pending_capacity_decision`.
             // `mark_intervention_applied` prevents double-intervention — seam 4's
             // `decide` will see the cooldown and return `NoIntervention`.
+            //
+            // `TargetedContextRefresh` additionally runs its transcript portion
+            // mid-loop (slice 3c §E): `refresh_targeted_context_mid_loop`
+            // compacts + reinjects (+ local-trim fallback) via `ChatHistory` so
+            // the model sees the compacted transcript in THIS step's request
+            // (mirroring the retired `run_capacity_pre_request_checkpoint`, which
+            // applied it pre-request). The `TargetedRefreshOutcome` is stored for
+            // the host's post-`run` state work (canonical persist, system-prompt
+            // fold, emit, mark) which runs with `skip_transcript = true`. The
+            // other actions (`VerifyAndReplan` / `VerifyWithToolReplay`) are
+            // post-tool (seam 4) actions and don't fire here.
             if let Some(gate) = &self.capacity_gate {
                 if let Some(snapshot) = gate.observe_pre_turn(
                     history.messages(),
@@ -3421,6 +3644,33 @@ impl HostAgentExecutor {
                             decision.reason
                         ))
                         .await;
+                        // §E slice 3c: mid-loop transcript refresh for
+                        // `TargetedContextRefresh` — the transcript portion (LLM
+                        // compaction + reinject + local-trim fallback) runs here
+                        // via `ChatHistory` so the model sees the compacted
+                        // transcript in THIS step's request (the retired
+                        // `run_capacity_pre_request_checkpoint` applied it
+                        // pre-request). The `TargetedRefreshOutcome` is stored
+                        // for the host's post-`run` state work (canonical persist,
+                        // system-prompt fold, emit, mark) with
+                        // `skip_transcript = true`. NO `step += 1; continue;` —
+                        // production's pre-request checkpoint fell through to the
+                        // request (the model sees the compacted transcript in the
+                        // same step), and the cooldown set above blocks seam 4.
+                        if decision.action == GuardrailAction::TargetedContextRefresh {
+                            let outcome = self
+                                .refresh_targeted_context_mid_loop(
+                                    &client,
+                                    history,
+                                    system.as_ref(),
+                                )
+                                .await;
+                            *self
+                                .pending_targeted_refresh_outcome
+                                .lock()
+                                .expect("pending_targeted_refresh_outcome mutex poisoned") =
+                                outcome;
+                        }
                     }
                 }
             }
@@ -3919,8 +4169,13 @@ impl HostAgentExecutor {
             // below; its state work still runs post-`run` with
             // `skip_transcript = true` via the carried `ReplayOutcome` (its
             // state work is outcome-dependent, unlike `VerifyAndReplan`'s).
-            // `TargetedContextRefresh` still defers its transcript mutation to
-            // post-`run` (sub-slice 3c).
+            // `TargetedContextRefresh` does NOT fire here — seam 1 (pre-request)
+            // already ran its transcript portion (slice 3c §E) and set the
+            // cooldown, so `decide` returns `NoIntervention` for it at seam 4.
+            // If risk grew mid-turn so that seam 1 was Low but seam 4 is Medium,
+            // `decide` returns `TargetedContextRefresh` here; the slot stays
+            // `None` → the host's post-`run` arm runs the full cascade
+            // (`skip_transcript = false`), faithful to the pre-3c path.
             if let Some(gate) = &self.capacity_gate {
                 if let Some(snapshot) = gate.observe_post_tool(
                     history.messages(),
@@ -9971,6 +10226,320 @@ mod tests {
             decision.is_none(),
             "cooldown should block error-escalation, got: {decision:?}"
         );
+    }
+
+    // === §E slice 3c — TargetedContextRefresh transcript portion mid-loop ========
+    //
+    // slice 3c moves the transcript portion of `TargetedContextRefresh` (LLM
+    // compaction + reinject + local-trim fallback) from post-`run` (host applies
+    // on `&mut self.session`) into `HostAgentExecutor::run_inner` at seam 1
+    // (pre-request), mirroring the retired
+    // `run_capacity_pre_request_checkpoint`. The model now sees the compacted
+    // transcript in THIS step's request. The host's post-`run`
+    // `apply_targeted_context_refresh(skip_transcript = true, Some(outcome))`
+    // then runs only the state work (canonical persist, system-prompt fold,
+    // emit, mark) using the carried `TargetedRefreshOutcome`. The positive
+    // tests drive `refresh_targeted_context_mid_loop` directly (the seam-1
+    // arm's body, `&self` like `run_compaction`); the disabled/None tests are
+    // full-`run` wiring tests proving the seam-1 arm doesn't fire spuriously
+    // (mirroring 3b's `verify_with_tool_replay_disabled/none_probe_is_noop`).
+
+    /// §E slice 3c: `refresh_targeted_context_mid_loop` (the seam-1 arm's body)
+    /// compacts an over-threshold transcript via `ChatHistory` (LLM summary +
+    /// reinject), returning `Some({refreshed: true, before_tokens > 0})` for
+    /// the host's post-`run` state work. Direct-method test (mirror 3b's
+    /// `replay_and_push_verification_note_pushes_note_and_outcome`); the
+    /// disabled/None wiring is covered by the full-`run` tests below.
+    #[tokio::test]
+    async fn targeted_refresh_compacts_transcript_mid_loop() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        // Populate the host state the reinject probe reaches (mirror the 25b
+        // reinject test) so the compacted-out attachments resurface.
+        sess.record_read_file_result(
+            &serde_json::json!({"path": "read_file_path.rs"}),
+            "file contents here",
+        );
+        let working_set = Arc::clone(&sess.working_set);
+        let (_, _, reinject) = populated_reinject_probe(&sess, ApiProvider::Deepseek).await;
+        let mut history = SessionChatHistory::new(&mut sess);
+        let before_len = history.messages().len();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![]).with_compaction_summary("Conversation summary."),
+        );
+        let client: LlmClientHandle = mock.clone();
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )))
+        .with_reinject(Some(reinject));
+
+        let outcome = executor
+            .refresh_targeted_context_mid_loop(&client, &mut history, None)
+            .await;
+        let outcome = outcome.expect("both probes present ⇒ Some outcome");
+        assert!(outcome.refreshed, "compaction should reduce the transcript");
+        assert!(
+            outcome.before_tokens > 0,
+            "before_tokens captured pre-refresh"
+        );
+        assert_eq!(mock.compaction_calls(), 1, "one LLM compaction summary call");
+        assert!(
+            history.messages().len() < before_len,
+            "transcript shrank: {} < {before_len}",
+            history.messages().len()
+        );
+        // Slice 25b §E: the compacted-out attachments resurface as
+        // `<system-reminder>` user messages in the live transcript (reinject
+        // fires DURING the mid-loop refresh, right after the transcript replace).
+        let transcript: String = history
+            .messages()
+            .iter()
+            .flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(transcript.contains("plan-step-one"), "plan candidate re-injected");
+        assert!(
+            transcript.contains("Active todos resumed"),
+            "todo candidate re-injected"
+        );
+        assert!(
+            transcript.contains("read_file_path.rs"),
+            "read_files candidate re-injected"
+        );
+        // Slice 25a §E: the summary_prompt is recorded for the host to fold
+        // post-`run`.
+        let summary = executor
+            .take_pending_compaction_summary()
+            .expect("summary_prompt recorded by the mid-loop refresh");
+        assert!(
+            system_prompt_text(&summary).contains("Conversation summary."),
+            "recorded summary reflects the LLM compaction summary"
+        );
+    }
+
+    /// §E slice 3c: when the LLM compaction summary call errors, the
+    /// local-trim fallback trims oldest messages off the transcript via
+    /// `trim_oldest_messages_to_budget_history` until it fits the budget
+    /// (keeping the `MIN_RECENT_MESSAGES_TO_KEEP` floor), so the model still
+    /// sees a fitting transcript in this step's request.
+    #[tokio::test]
+    async fn targeted_refresh_local_trim_fallback_on_compaction_failure() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let before_len = history.messages().len();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![]).with_compaction_error("mock compaction failure"),
+        );
+        let client: LlmClientHandle = mock.clone();
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+
+        let outcome = executor
+            .refresh_targeted_context_mid_loop(&client, &mut history, None)
+            .await;
+        let outcome = outcome.expect("both probes present ⇒ Some outcome");
+        // Compaction was attempted but failed — the local-trim fallback then
+        // reduced the transcript.
+        assert_eq!(mock.compaction_calls(), 1, "compaction attempted then failed");
+        assert!(outcome.refreshed, "local-trim fallback reduced the transcript");
+        assert!(outcome.before_tokens > 0, "before_tokens captured pre-refresh");
+        // Trim stops at the MIN_RECENT_MESSAGES_TO_KEEP floor (4).
+        assert!(
+            history.messages().len() <= MIN_RECENT_MESSAGES_TO_KEEP,
+            "trim kept the recent floor: {} <= {MIN_RECENT_MESSAGES_TO_KEEP}",
+            history.messages().len()
+        );
+        assert!(
+            history.messages().len() < before_len,
+            "transcript shrank: {} < {before_len}",
+            history.messages().len()
+        );
+    }
+
+    /// §E slice 3c: an under-budget transcript (`should_compact` false + below
+    /// the trim target) yields `Some({refreshed: false})` — the post-`run`
+    /// cascade then returns `false` (no state work), matching
+    /// `apply_targeted_context_refresh`'s `if !refreshed { return false; }`.
+    #[tokio::test]
+    async fn targeted_refresh_no_refresh_when_under_budget() {
+        let mut sess = fresh_session();
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        });
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let before_len = history.messages().len();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]));
+        let client: LlmClientHandle = mock.clone();
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_high_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+
+        let outcome = executor
+            .refresh_targeted_context_mid_loop(&client, &mut history, None)
+            .await;
+        let outcome = outcome.expect("both probes present ⇒ Some outcome");
+        assert!(!outcome.refreshed, "under budget → no refresh");
+        assert_eq!(mock.compaction_calls(), 0, "should_compact false → no call");
+        assert_eq!(
+            history.messages().len(),
+            before_len,
+            "transcript unchanged"
+        );
+    }
+
+    /// §E slice 3c: a disabled `CapacityGateProbe` (`enabled: false`) never
+    /// observes → seam-1 never fires → the targeted-refresh-outcome slot stays
+    /// `None` (no spurious state work post-`run`). Full-`run` wiring test
+    /// mirroring 3b's `verify_with_tool_replay_disabled_is_noop`.
+    #[tokio::test]
+    async fn targeted_refresh_disabled_is_noop() {
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(disabled_capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Disabled gate → observe returns None → seam-1 arm never fires.
+        assert!(executor.take_pending_targeted_refresh_outcome().is_none());
+        assert!(executor.take_pending_capacity_decision().is_none());
+        assert_eq!(
+            mock.compaction_calls(),
+            0,
+            "no compaction (no seam-1 refresh, no auto-compact probe)"
+        );
+    }
+
+    /// §E slice 3c: with no `CapacityGateProbe` wired
+    /// (`.with_capacity_gate` never called → `capacity_gate == None`), seam-1
+    /// is skipped entirely → the targeted-refresh-outcome slot stays `None`.
+    /// Mirrors 3b's `verify_with_tool_replay_none_probe_is_noop`.
+    #[tokio::test]
+    async fn targeted_refresh_none_probe_is_noop() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![end_call()])),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // No capacity gate ⇒ the seam-1 block is skipped entirely.
+        assert!(executor.take_pending_targeted_refresh_outcome().is_none());
     }
 
     // === §E slice 3a — VerifyAndReplan mid-loop transcript reset ==============

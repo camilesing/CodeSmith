@@ -7,7 +7,7 @@
 
 use super::*;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use codesmith_agent::memory::ChatHistory;
 
@@ -148,6 +148,40 @@ pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHi
     if let Some(msg) = latest_verified {
         history.push(msg);
     }
+}
+
+/// Trim oldest messages off the transcript until the estimated input tokens
+/// fit `target` — the `&mut dyn ChatHistory` form of
+/// [`Engine::trim_oldest_messages_to_budget`] (whose body is a pure loop over
+/// `self.session.messages`), so the mid-loop `TargetedContextRefresh` path
+/// (§E slice 3c) can run the local-trim fallback through `ChatHistory` without
+/// `&mut Session`.
+///
+/// Mirrors `run_compaction`'s Phase-1 clone → mutate → clear+repush pattern:
+/// `ChatHistory::messages()` is `&[Message]` (immutable), so the messages are
+/// cloned, the oldest peeled off in a loop (keeping at least
+/// `MIN_RECENT_MESSAGES_TO_KEEP`), then the survivors are cleared+repushed.
+/// Returns the number removed.
+pub(crate) fn trim_oldest_messages_to_budget_history(
+    history: &mut dyn ChatHistory,
+    system: Option<&SystemPrompt>,
+    target_input_budget: usize,
+) -> usize {
+    let mut messages = history.messages().to_vec();
+    let mut removed = 0usize;
+    while messages.len() > MIN_RECENT_MESSAGES_TO_KEEP
+        && estimate_input_tokens_conservative(&messages, system) > target_input_budget
+    {
+        messages.remove(0);
+        removed = removed.saturating_add(1);
+    }
+    if removed > 0 {
+        history.clear();
+        for m in messages {
+            history.push(m);
+        }
+    }
+    removed
 }
 
 /// A replayable tool-use candidate resolved from the transcript (§E slice 3b).
@@ -343,9 +377,10 @@ pub(crate) async fn replay_and_push_verification_note(
 pub struct CapacityGateProbe {
     controller: Arc<std::sync::Mutex<CapacityController>>,
     model: String,
-    /// Stored for future use (error-escalation sub-slice needs workspace for
-    /// canonical-state persistence). Not used in the current observe/decide path.
-    #[allow(dead_code)]
+    /// Workspace root for the mid-loop `TargetedContextRefresh` transcript
+    /// portion (§E slice 3c): `pinned_message_indices(messages, workspace)` +
+    /// `should_compact(.., Some(workspace), ..)`. Mirrors
+    /// `self.session.workspace`.
     workspace: PathBuf,
     working_set: Arc<std::sync::Mutex<WorkingSet>>,
     profile_window: usize,
@@ -374,6 +409,24 @@ impl CapacityGateProbe {
             profile_window,
             turn_index,
         }
+    }
+
+    /// Borrow the shared working set (§E slice 3c). The mid-loop
+    /// `TargetedContextRefresh` transcript portion needs the working set to
+    /// build compaction pins (`pinned_message_indices`) + paths (`top_paths`),
+    /// mirroring `Engine::apply_targeted_context_refresh`'s
+    /// `self.session.working_set` reads. The working set is `Arc`-shared with
+    /// the session's, so reads here see live state.
+    pub(crate) fn working_set(&self) -> &Arc<std::sync::Mutex<WorkingSet>> {
+        &self.working_set
+    }
+
+    /// Borrow the workspace root (§E slice 3c). Used by the mid-loop
+    /// `TargetedContextRefresh` for `pinned_message_indices(messages, workspace)`
+    /// + `should_compact(.., Some(workspace), ..)`, mirroring
+    /// `Engine::apply_targeted_context_refresh`'s `self.session.workspace`.
+    pub(crate) fn workspace(&self) -> &Path {
+        self.workspace.as_path()
     }
 
     /// Build `CapacityObservationInput` from the executor's message view,
@@ -600,7 +653,7 @@ impl Engine {
             return false;
         }
 
-        self.apply_targeted_context_refresh(turn, client, mode, snapshot.as_ref())
+        self.apply_targeted_context_refresh(turn, client, mode, snapshot.as_ref(), false, None)
             .await
     }
 
@@ -999,85 +1052,111 @@ impl Engine {
         .await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply_targeted_context_refresh(
         &mut self,
         turn: &TurnContext,
         client: Option<&dyn crate::llm_client::LlmClient>,
         mode: AppMode,
         snapshot: Option<&CapacitySnapshot>,
+        skip_transcript: bool,
+        outcome: Option<TargetedRefreshOutcome>,
     ) -> bool {
-        let before_tokens = self.estimated_input_tokens();
-        let compaction_pins = self
-            .session
-            .working_set
-            .lock()
-            .expect("working_set poisoned")
-            .pinned_message_indices(&self.session.messages, &self.session.workspace);
-        let compaction_paths = self
-            .session
-            .working_set
-            .lock()
-            .expect("working_set poisoned")
-            .top_paths(24);
+        // §E slice 3c: when the executor already applied the transcript portion
+        // (LLM compaction + reinject + local-trim fallback) mid-loop at seam-1
+        // via `ChatHistory`, `skip_transcript = true` skips re-doing it here —
+        // re-compacting/re-pushing would double-mutate the transcript. The
+        // carried `outcome` supplies `before_tokens` (captured before the
+        // mid-loop refresh) + `refreshed` (whether the transcript was actually
+        // reduced). The host passes `skip_transcript = outcome.is_some()`, so a
+        // mid-loop refresh that ran (seam-1) arrives as `Some(outcome)` and runs
+        // only state work; a `TargetedContextRefresh` that fell through at
+        // seam-4 (no mid-loop compaction) arrives as `outcome == None` with
+        // `skip_transcript = false` and runs the full cascade below. The
+        // `Some(outcome) else { return false }` guard mirrors 3b's defensive
+        // early-return for a `skip_transcript = true, None` mis-call.
+        let (before_tokens, refreshed) = if skip_transcript {
+            let Some(outcome) = outcome else {
+                return false;
+            };
+            (outcome.before_tokens, outcome.refreshed)
+        } else {
+            // === transcript portion (legacy post-`run` path; dead-code / test
+            // callers via `run_capacity_pre_request_checkpoint`) ===
+            let before_tokens = self.estimated_input_tokens();
+            let compaction_pins = self
+                .session
+                .working_set
+                .lock()
+                .expect("working_set poisoned")
+                .pinned_message_indices(&self.session.messages, &self.session.workspace);
+            let compaction_paths = self
+                .session
+                .working_set
+                .lock()
+                .expect("working_set poisoned")
+                .top_paths(24);
 
-        let mut refreshed = false;
-        let should_run_summary_compaction = self.config.compaction.enabled
-            && should_compact(
-                &self.session.messages,
-                &self.config.compaction,
-                Some(&self.session.workspace),
-                Some(&compaction_pins),
-                Some(&compaction_paths),
-            );
-        if should_run_summary_compaction && let Some(client) = client {
-            let enhancements = self.build_compaction_enhancements();
-            match compact_messages_safe(
-                client,
-                &self.session.messages,
-                &self.config.compaction,
-                Some(&self.session.workspace),
-                Some(&compaction_pins),
-                Some(&compaction_paths),
-                enhancements.as_ref(),
-            )
-            .await
-            {
-                Ok(result) => {
-                    if !result.messages.is_empty() || self.session.messages.is_empty() {
-                        self.session.messages = result.messages;
-                        self.merge_compaction_summary(result.summary_prompt);
-                        self.reinject_compaction_attachments(context_input_budget_for_provider(
-                            self.api_provider,
-                            &self.session.model,
-                        ))
-                        .await;
-                        refreshed = true;
+            let mut refreshed = false;
+            let should_run_summary_compaction = self.config.compaction.enabled
+                && should_compact(
+                    &self.session.messages,
+                    &self.config.compaction,
+                    Some(&self.session.workspace),
+                    Some(&compaction_pins),
+                    Some(&compaction_paths),
+                );
+            if should_run_summary_compaction && let Some(client) = client {
+                let enhancements = self.build_compaction_enhancements();
+                match compact_messages_safe(
+                    client,
+                    &self.session.messages,
+                    &self.config.compaction,
+                    Some(&self.session.workspace),
+                    Some(&compaction_pins),
+                    Some(&compaction_paths),
+                    enhancements.as_ref(),
+                )
+                .await
+                {
+                    Ok(result) => {
+                        if !result.messages.is_empty() || self.session.messages.is_empty() {
+                            self.session.messages = result.messages;
+                            self.merge_compaction_summary(result.summary_prompt);
+                            self.reinject_compaction_attachments(context_input_budget_for_provider(
+                                self.api_provider,
+                                &self.session.model,
+                            ))
+                            .await;
+                            refreshed = true;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = self
+                            .tx_event
+                            .send(Event::status(format!(
+                                "Capacity refresh compaction failed: {err}. Falling back to local trim."
+                            )))
+                            .await;
                     }
                 }
-                Err(err) => {
-                    let _ = self
-                        .tx_event
-                        .send(Event::status(format!(
-                            "Capacity refresh compaction failed: {err}. Falling back to local trim."
-                        )))
-                        .await;
-                }
             }
-        }
 
-        if !refreshed {
-            let target_budget =
-                context_input_budget_for_provider(self.api_provider, &self.session.model)
-                    .unwrap_or(self.config.compaction.token_threshold.max(1));
-            if self.estimated_input_tokens() > target_budget {
-                let trimmed = self.trim_oldest_messages_to_budget(target_budget);
-                refreshed = trimmed > 0;
-                if refreshed {
-                    self.reinject_compaction_attachments(Some(target_budget))
-                        .await;
+            if !refreshed {
+                let target_budget =
+                    context_input_budget_for_provider(self.api_provider, &self.session.model)
+                        .unwrap_or(self.config.compaction.token_threshold.max(1));
+                if self.estimated_input_tokens() > target_budget {
+                    let trimmed = self.trim_oldest_messages_to_budget(target_budget);
+                    refreshed = trimmed > 0;
+                    if refreshed {
+                        self.reinject_compaction_attachments(Some(target_budget))
+                            .await;
+                    }
                 }
             }
-        }
+            (before_tokens, refreshed)
+        };
 
         if !refreshed {
             return false;

@@ -49,7 +49,7 @@ use crate::utils::spawn_supervised;
 
 use super::capacity::{
     CapacityController, CapacityDecision, CapacityObservationInput, CapacitySnapshot,
-    GuardrailAction, ReplayOutcome, RiskBand,
+    GuardrailAction, ReplayOutcome, RiskBand, TargetedRefreshOutcome,
 };
 use super::capacity_memory::{
     CanonicalState, CapacityMemoryRecord, ReplayInfo, append_capacity_record,
@@ -1364,6 +1364,20 @@ impl Engine {
             let client_arc = self.llm_client.clone();
             match decision.action {
                 GuardrailAction::TargetedContextRefresh => {
+                    // §E slice 3c: the executor applied the transcript portion
+                    // (LLM compaction + reinject + local-trim fallback) mid-loop
+                    // at seam-1 via `ChatHistory` when this decision fired
+                    // pre-request, storing the `TargetedRefreshOutcome`. Pass
+                    // `skip_transcript = outcome.is_some()` so this runs only the
+                    // state work (canonical persist, system-prompt fold, emit,
+                    // mark) when a mid-loop refresh ran — it must NOT re-compact
+                    // / re-reinject, which would double-mutate the transcript. A
+                    // `TargetedContextRefresh` that fell through at seam-4 (risk
+                    // grew mid-turn, no seam-1 mid-loop compaction) arrives as
+                    // `outcome == None` → `skip_transcript = false` → the full
+                    // cascade below, faithful to the pre-3c post-`run` path.
+                    let outcome = executor.take_pending_targeted_refresh_outcome();
+                    let skip_transcript = outcome.is_some();
                     let client = client_arc.as_deref();
                     let _ = self
                         .apply_targeted_context_refresh(
@@ -1371,6 +1385,8 @@ impl Engine {
                             client,
                             mode,
                             snapshot.as_ref(),
+                            skip_transcript,
+                            outcome,
                         )
                         .await;
                 }

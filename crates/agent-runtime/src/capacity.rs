@@ -162,6 +162,43 @@ pub struct ReplayOutcome {
     pub verification_note: String,
 }
 
+/// Outcome of a mid-loop `TargetedContextRefresh` transcript portion (slice 3c
+/// §E).
+///
+/// `TargetedContextRefresh` (`decide_policy` Medium-risk action) is a
+/// **pre-request** action — the retired `run_capacity_pre_request_checkpoint`
+/// applied it before the LLM request (the post-tool checkpoint explicitly
+/// no-op'd it). Slice 3c moves the **transcript portion** (LLM compaction +
+/// reinject + local-trim fallback) of `apply_targeted_context_refresh` into
+/// `HostAgentExecutor::run_inner` at seam-1 (pre-request), so the model sees
+/// the compacted transcript in the same step's request. The **state work**
+/// (canonical persist / system-prompt fold / emit / `mark_intervention_applied`)
+/// still runs post-`run` via `apply_targeted_context_refresh(skip_transcript =
+/// true, Some(outcome))`.
+///
+/// `before_tokens` is captured at the top of the transcript portion (before any
+/// compaction/trim); the post-run state work reuses it for the
+/// `emit_capacity_intervention` telemetry delta (recomputing `after_tokens`
+/// live). `refreshed` is `false` when neither LLM compaction nor the
+/// local-trim fallback reduced the transcript (under budget / compaction
+/// failure with nothing to trim) — the post-run cascade then returns `false`
+/// (no state work), matching `apply_targeted_context_refresh`'s
+/// `if !refreshed { return false; }`.
+///
+/// Lives in the public `capacity` module (like `ReplayOutcome` and
+/// `CapacityDecision`) because it appears in `pub` signatures
+/// (`apply_targeted_context_refresh`, `take_pending_targeted_refresh_outcome`)
+/// and the tui engine tests construct it directly.
+#[derive(Debug, Clone)]
+pub struct TargetedRefreshOutcome {
+    /// Whether the transcript was actually reduced (LLM compaction or
+    /// local-trim fallback).
+    pub refreshed: bool,
+    /// Estimated input tokens captured before the refresh — the
+    /// `emit_capacity_intervention` `before_tokens` telemetry value.
+    pub before_tokens: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 struct GuardrailRuntimeState {
     last_refresh_turn: Option<u64>,

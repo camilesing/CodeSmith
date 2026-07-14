@@ -1,7 +1,7 @@
 use codesmith_agent_runtime::telemetry::TelemetrySink;
 use crate::core::capacity::{
     CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
-    GuardrailAction, ReplayOutcome, RiskBand,
+    GuardrailAction, ReplayOutcome, RiskBand, TargetedRefreshOutcome,
 };
 use crate::core::capacity_memory::load_last_k_capacity_records;
 use crate::core::turn::{TurnContext, TurnToolCall};
@@ -2860,6 +2860,93 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
         })
         .count();
     assert_eq!(replay_notes, 1, "skip_transcript must not re-push the note");
+}
+
+/// §E slice 3c: `apply_targeted_context_refresh(skip_transcript = true,
+/// Some(outcome))` runs only the state work (canonical persist,
+/// system-prompt fold, emit, mark) using the carried `TargetedRefreshOutcome`,
+/// and does NOT re-compact / re-reinject. The executor already compacted the
+/// transcript mid-loop via `ChatHistory` (`refresh_targeted_context_mid_loop`
+/// at seam-1); re-running the transcript portion post-`run` would
+/// double-mutate it. This proves the post-`run` path preserves the compacted
+/// transcript (mirrors slice 3a's
+/// `apply_verify_and_replan_skip_transcript_preserves_messages` + slice 3b's
+/// `apply_verify_with_tool_replay_skip_transcript_uses_outcome`).
+#[tokio::test]
+async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    // A grown transcript representing the post-refresh state: the executor's
+    // mid-loop compaction already replaced the transcript with the compacted
+    // tail + summary, then the model added an assistant turn on top. Re-running
+    // the transcript portion post-`run` would re-compact + re-reinject,
+    // discarding this growth.
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "compacted tail".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine.session.messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "post-compaction assistant turn".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let before_messages = engine.session.messages.clone();
+    let before_len = before_messages.len();
+    let turn = TurnContext::new(10);
+
+    let outcome = TargetedRefreshOutcome {
+        refreshed: true,
+        before_tokens: 12_345,
+    };
+
+    let applied = engine
+        .apply_targeted_context_refresh(
+            &turn,
+            None,
+            AppMode::Agent,
+            None,
+            true,
+            Some(outcome),
+        )
+        .await;
+
+    // State work ran to completion (canonical persist, system-prompt fold,
+    // emit, `mark_intervention_applied`) using the carried outcome.
+    assert!(applied);
+    // The transcript is untouched — `skip_transcript = true` skipped the
+    // should_compact → compact_messages_safe → reinject + local-trim cascade,
+    // so the compacted tail + the model's post-refresh turn survive (this is
+    // the crux of sub-slice 3c: the post-`run` path must not re-compact the
+    // transcript the executor already compacted mid-loop).
+    assert_eq!(engine.session.messages.len(), before_len);
+    assert_eq!(engine.session.messages, before_messages);
 }
 
 #[tokio::test]
