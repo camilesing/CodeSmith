@@ -409,9 +409,13 @@
 //!     trim on the shared `Arc<VecDeque<RecentReadFile>>`. Mirrors the retired
 //!     `turn_loop.rs:2523-2525`. No-op when `reinject` is `None` (no probe ⇒ no
 //!     `Arc` to write ⇒ the data would never be read by a reinject). The
-//!     `run_compaction` reinject's provider-budget (currently `None`; passing
-//!     `context_input_budget_for_provider` needs threading `api_provider` /
-//!     `model`) remains a refinement.
+//!     `run_compaction` reinject's provider-budget is absorbed ✅ (slice 31 §E)
+//!     — `ReinjectProbe` carries `api_provider` (paired with `model`) and
+//!     `run_compaction`'s Ok arm passes `ReinjectProbe::provider_input_budget()`
+//!     instead of `None`, budget-trialing candidates against the provider's
+//!     input budget so reinject doesn't push back over after auto-compaction
+//!     (mirrors production's `context_input_budget_for_provider` at
+//!     `mod.rs:1465` / `:1620`).
 //! - **post-compact cleanup absorbed ✅ (post-`run`, slice 25c §E)** — production's
 //!   `post_compact_cleanup` force-rebuilds the working set and resets per-file
 //!   cycle state (`micro_compact_state` / `circuit_breaker` /
@@ -881,6 +885,12 @@ pub struct ReinjectProbe {
     /// `recent_read_files`. Mirrors the retired `turn_loop.rs` call
     /// `compact_tool_result_for_context(&self.session.model, …)`.
     model: String,
+    /// Provider kind used with [`model`](Self::model) to compute the
+    /// input-side token budget for the reinject budget trial
+    /// ([`provider_input_budget`]). Mirrors production's
+    /// `context_input_budget_for_provider(self.api_provider, &self.session.model)`
+    /// at `mod.rs:1465` / `:1620`. `ApiProvider` is `Copy`.
+    api_provider: ApiProvider,
 }
 
 impl ReinjectProbe {
@@ -891,18 +901,22 @@ impl ReinjectProbe {
     /// reinject time (plans / todos / subagents change during a turn). `model`
     /// is a point-in-time snapshot of `session.model` (immutable for a turn)
     /// feeding the read_file observe site (slice 25b §E follow-on).
+    /// `api_provider` pairs with `model` to compute the reinject budget trial
+    /// (slice 31 §E).
     #[must_use]
     pub fn new(
         plan_state: crate::tool_state::plan::SharedPlanState,
         todos: crate::tool_state::todo::SharedTodoList,
         recent_read_files: Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
         model: String,
+        api_provider: ApiProvider,
     ) -> Self {
         Self {
             plan_state,
             todos,
             recent_read_files,
             model,
+            api_provider,
         }
     }
 
@@ -910,6 +924,16 @@ impl ReinjectProbe {
     /// [`compact_tool_result_for_context`]).
     pub(crate) fn model(&self) -> &str {
         &self.model
+    }
+
+    /// The input-side token budget for this provider/model pair (slice 31 §E).
+    /// Used by `run_compaction`'s Ok arm to budget-trial reinjected candidates
+    /// on the auto-compact path (previously `None` — dedup + push only).
+    /// Mirrors production's `context_input_budget_for_provider(self.api_provider,
+    /// &self.session.model)` at `mod.rs:1465` / `:1620`. Returns `None` for
+    /// unknown models (no budget trial).
+    pub(crate) fn provider_input_budget(&self) -> Option<usize> {
+        context_input_budget_for_provider(self.api_provider, &self.model)
     }
 
     /// Record a successful `read_file` output into the shared
@@ -2517,10 +2541,15 @@ pub fn new(
     /// ends (NLL) before the mutable `history.push`, and reads see prior
     /// pushes (live) — matching production's `session.messages` semantics.
     ///
-    /// `target_input_budget`: `None` for the auto-compact path (best-effort
-    /// dedup + push — auto-compact isn't at a hard ceiling); `Some(budget)`
+    /// `target_input_budget`: the provider's input-side token budget
+    /// ([`ReinjectProbe::provider_input_budget`]) for the auto-compact path
+    /// (slice 31 §E — was `None` / dedup + push only; now budget-trials so
+    /// reinject doesn't push back over the provider budget after
+    /// auto-compaction, mirroring production's
+    /// `context_input_budget_for_provider` at `mod.rs:1465`); `Some(budget)`
     /// for the context-overflow recovery path (at the hard ceiling, mirror
-    /// production's `Some(target_budget)`). Returns the count pushed.
+    /// production's `Some(target_budget)`). `None` when the model is unknown
+    /// (no budget trial). Returns the count pushed.
     async fn reinject_compaction_attachments(
         &self,
         history: &mut dyn ChatHistory,
@@ -2720,19 +2749,30 @@ pub fn new(
                 // it mid-run — the merge only matters for the next turn's
                 // snapshot). Slice 25b §E: `reinject_compaction_attachments`
                 // now fires DURING `run` (right here, after the transcript
-                // replace) — `None` budget (auto-compact isn't at a hard
-                // ceiling; dedup + push only). Slice 25c §E: this is the *merge*
-                // path, so the cleanup signal is intentionally NOT set here
-                // (full→summary XOR: `post_compact_cleanup` fires only on the
-                // non-merge arms — pre-request micro / recovery micro /
-                // hard-trim). `emit_session_updated` remains deferred until the
-                // host-side post-`run` closure (fires alongside the merge).
+                // replace) — provider budget from
+                // `ReinjectProbe::provider_input_budget()` (slice 31 §E; was
+                // `None` — dedup + push only; now budget-trials candidates so
+                // reinject doesn't push back over the provider's input budget
+                // after auto-compaction, mirroring production's
+                // `context_input_budget_for_provider` at `mod.rs:1465`).
+                // `None` when the model is unknown (no budget trial).
+                // Slice 25c §E: this is the *merge* path, so the cleanup signal
+                // is intentionally NOT set here (full→summary XOR:
+                // `post_compact_cleanup` fires only on the non-merge arms —
+                // pre-request micro / recovery micro / hard-trim).
+                // `emit_session_updated` remains deferred until the host-side
+                // post-`run` closure (fires alongside the merge).
                 self.record_compaction_summary(result.summary_prompt.clone());
                 history.clear();
                 for m in result.messages {
                     history.push(m);
                 }
-                self.reinject_compaction_attachments(history, None).await;
+                let reinject_budget = self
+                    .reinject
+                    .as_ref()
+                    .and_then(|p| p.provider_input_budget());
+                self.reinject_compaction_attachments(history, reinject_budget)
+                    .await;
                 probe
                     .circuit_breaker
                     .lock()
@@ -7403,6 +7443,7 @@ mod tests {
     /// invoking this if they want that candidate.
     async fn populated_reinject_probe(
         sess: &Session,
+        api_provider: ApiProvider,
     ) -> (SharedPlanState, SharedTodoList, ReinjectProbe) {
         let plan_state = new_shared_plan_state();
         plan_state
@@ -7425,6 +7466,7 @@ mod tests {
             Arc::clone(&todos),
             Arc::clone(&sess.recent_read_files),
             sess.model.clone(),
+            api_provider,
         );
         (plan_state, todos, probe)
     }
@@ -7444,7 +7486,7 @@ mod tests {
             &serde_json::json!({"path": "read_file_path.rs"}),
             "file contents here",
         );
-        let (_, _, probe) = populated_reinject_probe(&sess).await;
+        let (_, _, probe) = populated_reinject_probe(&sess, ApiProvider::Deepseek).await;
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(
@@ -7509,7 +7551,7 @@ mod tests {
     #[tokio::test]
     async fn reinject_dedup_skips_already_present() {
         let mut sess = fresh_session();
-        let (plan_state, _todos, probe) = populated_reinject_probe(&sess).await;
+        let (plan_state, _todos, probe) = populated_reinject_probe(&sess, ApiProvider::Deepseek).await;
         // Pre-compute the exact plan candidate the method will build (same
         // snapshot ⇒ same summary ⇒ same `<system-reminder>` message) and
         // pre-push it so dedup must skip it on re-inject.
@@ -7564,7 +7606,7 @@ mod tests {
     #[tokio::test]
     async fn reinject_budget_skips_oversized() {
         let mut sess = fresh_session();
-        let (_, _, probe) = populated_reinject_probe(&sess).await;
+        let (_, _, probe) = populated_reinject_probe(&sess, ApiProvider::Deepseek).await;
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(MockLlm::new(vec![]));
@@ -7604,7 +7646,7 @@ mod tests {
     #[tokio::test]
     async fn reinject_enriches_with_turn_meta() {
         let mut sess = fresh_session();
-        let (_, _, probe) = populated_reinject_probe(&sess).await;
+        let (_, _, probe) = populated_reinject_probe(&sess, ApiProvider::Deepseek).await;
         let turn_meta = turn_meta_probe(&sess);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
@@ -7690,17 +7732,136 @@ mod tests {
         assert_eq!(history.messages().len(), before);
     }
 
+    // === reinject provider-budget (slice 31 §E) ===========================
+
+    /// Slice 31 §E: `ReinjectProbe::provider_input_budget()` returns `Some`
+    /// for a known provider/model pair (Ollama / "llama2" → 3072 tokens).
+    #[test]
+    fn reinject_provider_budget_known_returns_some() {
+        let probe = ReinjectProbe::new(
+            new_shared_plan_state(),
+            new_shared_todo_list(),
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            "llama2".to_string(),
+            ApiProvider::Ollama,
+        );
+        let budget = probe.provider_input_budget();
+        assert!(budget.is_some(), "known model ⇒ Some budget");
+        assert!(budget.unwrap() > 0, "budget must be positive");
+    }
+
+    /// Slice 31 §E: `ReinjectProbe::provider_input_budget()` matches
+    /// `context_input_budget_for_provider(api_provider, &model)` — proving
+    /// the helper wires the probe's fields to the same budget production uses
+    /// (`mod.rs:1465`).
+    #[test]
+    fn reinject_provider_budget_matches_context_input_budget_for_provider() {
+        let model = "llama2".to_string();
+        let provider = ApiProvider::Ollama;
+        let probe = ReinjectProbe::new(
+            new_shared_plan_state(),
+            new_shared_todo_list(),
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            model.clone(),
+            provider,
+        );
+        assert_eq!(
+            probe.provider_input_budget(),
+            context_input_budget_for_provider(provider, &model),
+        );
+    }
+
+    /// Slice 31 §E: `run_compaction`'s Ok arm now passes the provider budget
+    /// (via `ReinjectProbe::provider_input_budget()`) instead of `None`. A
+    /// combined `read_files` candidate (10 entries × 1.2 KB preview each ≈ 12 KB
+    /// ≈ 4.5K conservative tokens) exceeds the Ollama/llama2 budget (3072
+    /// tokens) and is skipped on the auto-compact path — previously it would
+    /// have been pushed unconditionally (`None` budget). The small plan
+    /// candidate (well under budget) is still pushed.
+    #[tokio::test]
+    async fn reinject_auto_compact_respects_provider_budget() {
+        let mut sess = fresh_session();
+        // Known model so `provider_input_budget()` returns `Some(3072)`.
+        sess.model = "llama2".to_string();
+        seed_text_messages(&mut sess, 12);
+        // Seed 10 read_files (each preview capped at 1.2 KB → combined
+        // candidate ≈ 12 KB ≈ 4.5K conservative tokens > 3072 budget).
+        for i in 0..10 {
+            sess.record_read_file_result(
+                &serde_json::json!({"path": format!("big_file_{i}.rs")}),
+                &"x".repeat(1_200),
+            );
+        }
+        let (_, _, probe) = populated_reinject_probe(&sess, ApiProvider::Ollama).await;
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_summary("Conversation summary."),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_reinject(Some(probe));
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            mock.compaction_calls(),
+            1,
+            "Phase-2 auto-compaction fired"
+        );
+        let transcript: String = history
+            .messages()
+            .iter()
+            .flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Plan candidate is small (well under 3072 tokens) → pushed.
+        assert!(
+            transcript.contains("plan-step-one"),
+            "plan candidate reinjected (under provider budget)"
+        );
+        // Combined read_files candidate exceeds 3072 tokens → skipped.
+        assert!(
+            !transcript.contains("big_file_0.rs"),
+            "read_files candidate skipped (exceeds provider budget after auto-compact)"
+        );
+    }
+
     // === read_file observe site (slice 25b §E follow-on) ==================
 
     /// Build a [`ReinjectProbe`] sharing the session's `recent_read_files`
     /// `Arc` (so tests can assert on the live queue after `run`), carrying the
     /// session's model for `compact_tool_result_for_context`.
-    fn read_file_reinject_probe(sess: &Session) -> ReinjectProbe {
+    fn read_file_reinject_probe(sess: &Session, api_provider: ApiProvider) -> ReinjectProbe {
         ReinjectProbe::new(
             new_shared_plan_state(),
             new_shared_todo_list(),
             Arc::clone(&sess.recent_read_files),
             sess.model.clone(),
+            api_provider,
         )
     }
 
@@ -7717,7 +7878,7 @@ mod tests {
     #[tokio::test]
     async fn read_file_observe_populates_recent_read_files() {
         let mut sess = fresh_session();
-        let probe = read_file_reinject_probe(&sess);
+        let probe = read_file_reinject_probe(&sess, ApiProvider::Deepseek);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(MockLlm::new(vec![
@@ -7758,7 +7919,7 @@ mod tests {
     #[tokio::test]
     async fn read_file_observe_skips_non_read_file_tools() {
         let mut sess = fresh_session();
-        let probe = read_file_reinject_probe(&sess);
+        let probe = read_file_reinject_probe(&sess, ApiProvider::Deepseek);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         // Use the echo tool (name "echo") — not "read_file".
@@ -7797,7 +7958,7 @@ mod tests {
     #[tokio::test]
     async fn read_file_observe_skips_failed_read_file() {
         let mut sess = fresh_session();
-        let probe = read_file_reinject_probe(&sess);
+        let probe = read_file_reinject_probe(&sess, ApiProvider::Deepseek);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(MockLlm::new(vec![
@@ -7834,7 +7995,7 @@ mod tests {
     #[tokio::test]
     async fn read_file_observe_dedup_by_path_keeps_latest() {
         let mut sess = fresh_session();
-        let probe = read_file_reinject_probe(&sess);
+        let probe = read_file_reinject_probe(&sess, ApiProvider::Deepseek);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         // Two read_file calls to the same path; the second content wins.
@@ -7884,7 +8045,7 @@ mod tests {
         // char (U+200B) injected into file content must not survive into the
         // retained preview — otherwise it would be re-injected post-compaction.
         let mut sess = fresh_session();
-        let probe = read_file_reinject_probe(&sess);
+        let probe = read_file_reinject_probe(&sess, ApiProvider::Deepseek);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(MockLlm::new(vec![

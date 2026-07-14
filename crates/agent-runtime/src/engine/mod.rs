@@ -1244,6 +1244,7 @@ impl Engine {
             Arc::clone(&self.config.todos),
             Arc::clone(&self.session.recent_read_files),
             self.session.model.clone(),
+            self.api_provider,
         );
         let executor = HostAgentExecutor::new(
             client,
