@@ -1725,8 +1725,37 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **下一聚焦工作：**
 - **剩余 dead-code（superseded，低优先）**：`layered_context_checkpoint` / `Engine::recover_context_overflow` / KoD cluster / `rx_user_input` / `tool_exec_lock` / `turn_loop::EarlyToolResult|EarlyToolTask`——均 deferred re-wire 决策点，待各自 re-wire 切片接入时一并删（保 `#[allow(dead_code)]` + doc 留存）。另有 stray `#[cfg(test)] use crate::models::ToolCaller`（`mod.rs:41`，orphan test import，11 既有 warning 之一）可随手清理但本轮未动（超出 named scope）。
-- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：Gate A seam-1+seam-4 已落地（slice 33 §E，见下），error-escalation 仍 deferred（sub-slice 2）。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
+**进度（2026-07-14 §E opt-in `CapacityController` Gate A 落地，probe + observe + decide + signal（post-run application），slice 33，`feat/pluggable-framework-core`）：**
+
+§E 的第三十三个切片落地——opt-in `CapacityController`（Gate A，off-by-default since v0.8.11）的 seam-1（pre-request）+ seam-4（post-tool）观测/决策/信号路径 + post-run 干预应用。此前 Gate A 的三个 checkpoint 方法（`run_capacity_pre_request_checkpoint` / `run_capacity_post_tool_checkpoint` / `run_capacity_error_escalation_checkpoint`）已在 `capacity_flow.rs` 完整实现（`impl Engine`），但**零生产调用方**（仅 tui `tests.rs` 测试调用）。本切片通过 Arc-share controller + `CapacityGateProbe`（executor-path 探针）+ observe/decide mid-loop + apply post-run 模式，将 Gate A 接入 `HostAgentExecutor::run_inner` 的 seam-1 / seam-4 检查点，并在 `handle_send_message` post-`run` 应用 `impl Engine` 干预级联（`apply_targeted_context_refresh` / `apply_verify_with_tool_replay` / `apply_verify_and_replan`）。**Deferred**：error-escalation（sub-slice 2——需 `step_error_count` / `consecutive_tool_error_steps` / `ErrorCategory` tracking）；mid-loop transcript mutations（sub-slice 3——替换 post-run application 为 mid-loop `ChatHistory` mutations）。
+
+**落地步骤（11 步）：**
+
+1. **Arc-ify `Engine.capacity_controller`**（mirror slice 22 `working_set`）：`mod.rs:170` `CapacityController` → `Arc<std::sync::Mutex<CapacityController>>`；`mod.rs:1010` `mark_turn_start` + `capacity_flow.rs` 12 处 `self.capacity_controller.<method>` → `.lock().expect("poisoned").<method>()`；`tui/engine.rs:463` `CapacityController::new(...)` → `Arc::new(StdMutex::new(...))`。
+2. **Extract observation helpers to `pub(crate)` free functions**（single source）：`recent_tool_call_count(messages, window)` + `recent_unique_reference_count(messages, window, tool_call_ids, working_set)` → `capacity_flow.rs`；Engine's 方法变 thin wrapper。
+3. **`CapacityGateProbe`** struct + methods（mirror `CompactionProbe` / `CapacityProbe` / `TurnMetaProbe`）：`controller: Arc<Mutex<CapacityController>>` + `model` + `workspace` + `working_set` + `profile_window` + `turn_index`；`observe_pre_turn` / `observe_post_tool` / `decide` / `mark_intervention_applied` / `last_snapshot` — 全 lock + deref。
+4. **Executor field + builder + slot**（mirror `take_pending_compaction_summary`）：`capacity_gate: Option<CapacityGateProbe>` + `with_capacity_gate(Option)` + `pending_capacity_decision: Mutex<Option<CapacityDecision>>` + `take_pending_capacity_decision()` one-shot drain。
+5. **Track `tool_call_ids_this_run`** in `run_inner`：`Vec<String>` near `step`；`extend` after `tool_uses` extraction。
+6. **Wire seam 1**（pre-request，after Gate B preflight，before LSP flush）：`observe_pre_turn` → `decide` → if non-`NoIntervention`：`mark_intervention_applied` + set slot + `emit_status`。
+7. **Wire seam 4**（post-tool，after `flush_pending_steers`，before cancel check）：同 seam 1 但 `observe_post_tool`；更新 seam-4 注释 "still to come" → "absorbed ✅ (slice 33 §E, post-run application)"。
+8. **Host post-run application**（`mod.rs`，after `take_pending_compaction_summary` + `take_pending_post_compact_cleanup` block）：`take_pending_capacity_decision()` → match `action` → `apply_targeted_context_refresh` / `apply_verify_with_tool_replay` / `apply_verify_and_replan`（`&mut self.session` back in host hands）。
+9. **Wire-in `CapacityGateProbe` construction**（`mod.rs`，before `.with_tool_dispatcher`）：`CapacityGateProbe::new(Arc::clone(&self.capacity_controller), model, workspace, Arc::clone(&self.session.working_set), profile_window, turn_counter)` → `.with_capacity_gate(Some(probe))`。
+10. **Drive-by**：删 stray `#[cfg(test)] use crate::models::ToolCaller`（`mod.rs:41`，orphan import——slice 32 ROADMAP 提到但未动）。
+11. **6 个新测试**（`host_executor.rs` test module，"§E slice 33 — opt-in CapacityController Gate A" 组）：`gate_a_disabled_is_noop` / `gate_a_pre_request_observes_and_decides` / `gate_a_post_tool_observes_and_decides` / `gate_a_mark_prevents_double_intervention` / `gate_a_none_probe_is_noop` / `gate_a_emits_status_on_decision`。
+
+**Deadlock fix（Step 1 后发现）**：`run_capacity_error_escalation_checkpoint` 的 `last_snapshot().cloned().or_else(|| lock().observe_pre_turn(...))` 模式在 Arc-ify 后变成死锁——第一个 `lock()` 的 guard 在 `or_else` 闭包内第二个 `lock()` 时仍存活（`std::sync::Mutex` 不可重入）。拆为两个 `let` 语句释放第一个 guard 后再 `or_else`。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**（Step 10 删 stray `ToolCaller` import 后 lib 零 warning）；`cargo +1.90.0 build -p codesmith-tui` 零新 warning（143 均既有死代码）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 125 通过（119 既有 + 6 新 gate_a）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1103 通过 + 1 flaky（`mcp::tests::streamable_http_stale_session_reconnects_and_retries_tool_call`，隔离运行通过）+ 2 ignored（合计 1106）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 123 通过（Arc-ify + deadlock fix 后零回归）；`cargo +1.90.0 build --workspace` 全绿。
+
+**Known by-design gaps（deferred）：**
+- **Error escalation**（sub-slice 2）：需 `step_error_count` / `consecutive_tool_error_steps` / `ErrorCategory` tracking in `run_inner`。
+- **Mid-loop transcript mutations**（sub-slice 3）：替换 post-run `apply_*` 为 mid-loop `ChatHistory` mutations（模型在同一 turn 内看到干预）。
+- **Post-run timing**：干预在 `run` 返回后应用，下一 turn 可见（非同 turn）——behavior-equivalent 因 executor's system prompt 是 static snapshot（同 slice 25a/25c 论证）。
 
 ---
 

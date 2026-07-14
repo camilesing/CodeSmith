@@ -2411,10 +2411,13 @@ async fn pre_request_refresh_skips_compaction_below_normal_threshold() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller = CapacityController::new(capacity);
+    engine.capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 5;
     engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .mark_turn_start(engine.turn_counter);
     engine.session.model = "deepseek-v4-pro".to_string();
     engine.config.model = "deepseek-v4-pro".to_string();
@@ -2454,10 +2457,13 @@ async fn pre_request_refresh_invoked_when_medium_risk() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller = CapacityController::new(capacity);
+    engine.capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 5;
     engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .mark_turn_start(engine.turn_counter);
 
     // Pin the model to an explicit 128k-context variant so the pressure ratio stays
@@ -2506,10 +2512,13 @@ async fn post_tool_replay_invoked_when_high_non_severe_risk() {
     engine.session.workspace = tmp.path().to_path_buf();
     engine.config.workspace = tmp.path().to_path_buf();
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller = CapacityController::new(capacity);
+    engine.capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 4;
     engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .mark_turn_start(engine.turn_counter);
 
     let mut turn = TurnContext::new(10);
@@ -2566,10 +2575,13 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller = CapacityController::new(capacity);
+    engine.capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .mark_turn_start(engine.turn_counter);
 
     for i in 0..10 {
@@ -2628,6 +2640,8 @@ async fn capacity_disabled_by_default_keeps_messages_intact() {
     engine.turn_counter = 6;
     engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .mark_turn_start(engine.turn_counter);
 
     for i in 0..10 {
@@ -2667,10 +2681,13 @@ async fn controller_disabled_keeps_behavior_unchanged() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller = CapacityController::new(capacity);
+    engine.capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 3;
     engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .mark_turn_start(engine.turn_counter);
 
     let long = "y".repeat(5_000);
@@ -3816,14 +3833,20 @@ async fn engine_capacity_controller_decides_compaction_for_loaded_session() {
     engine.turn_counter = engine.turn_counter.saturating_add(1);
     engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .mark_turn_start(engine.turn_counter);
 
     let snapshot = engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .observe_pre_turn(engine.capacity_observation(&turn_ctx));
 
     let decision = engine
         .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
         .decide(engine.turn_counter, snapshot.as_ref());
 
     // With a 0.01 low_risk_max and 100 messages, the controller should

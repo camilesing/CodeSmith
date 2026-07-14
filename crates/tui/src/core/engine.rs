@@ -460,7 +460,8 @@ pub fn build_engine(
     if host.runtime_services.shell_manager.is_none() {
         host.runtime_services.shell_manager = Some(wrap_shell_manager(shell_manager.clone()));
     }
-    let capacity_controller = CapacityController::new(config.capacity.clone());
+    let capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(config.capacity.clone())));
 
     // Create Flash seam manager for layered context (#159).
     let seam_manager = llm_client.as_ref().map(|main_client| {

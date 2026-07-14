@@ -7,10 +7,245 @@
 
 use super::*;
 
+use std::path::PathBuf;
+
 use crate::tool_dispatch::ToolDispatcher;
+use crate::working_set::WorkingSet;
 
 use crate::models::context_window_for_model;
 use crate::telemetry::{RedactedAnalyticsMetadata, VerifiedAnalyticsMetadata};
+
+/// Count tool-call blocks (ToolUse + ToolResult) in the most recent
+/// `message_window` messages of the transcript.
+///
+/// Extracted as a free function so the `CapacityGateProbe` (executor path)
+/// can build the same observation the `Engine` builds, without needing `&self`.
+pub(crate) fn recent_tool_call_count(messages: &[Message], message_window: usize) -> usize {
+    messages
+        .iter()
+        .rev()
+        .take(message_window)
+        .map(|msg| {
+            msg.content
+                .iter()
+                .filter(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                    )
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// Count unique reference IDs in the recent transcript window: tool-use IDs,
+/// tool-result IDs, path-like tokens in text blocks, recent tool-call IDs
+/// from the current turn, and working-set top paths.
+///
+/// Extracted as a free function so the `CapacityGateProbe` (executor path)
+/// can build the same observation the `Engine` builds, without needing `&self`.
+pub(crate) fn recent_unique_reference_count(
+    messages: &[Message],
+    message_window: usize,
+    recent_tool_call_ids: &[String],
+    working_set: &WorkingSet,
+) -> usize {
+    let mut refs = std::collections::HashSet::new();
+    for msg in messages.iter().rev().take(message_window) {
+        for block in &msg.content {
+            match block {
+                ContentBlock::ToolUse { id, .. } => {
+                    refs.insert(id.clone());
+                }
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    refs.insert(tool_use_id.clone());
+                }
+                ContentBlock::Text { text, .. } => {
+                    for token in text.split_whitespace() {
+                        if token.contains('/') || token.contains('.') {
+                            refs.insert(
+                                token
+                                    .trim_matches(|c: char| ",.;:()[]{}".contains(c))
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+                ContentBlock::Thinking { .. }
+                | ContentBlock::ServerToolUse { .. }
+                | ContentBlock::ToolSearchToolResult { .. }
+                | ContentBlock::CodeExecutionToolResult { .. } => {}
+            }
+        }
+    }
+    for id in recent_tool_call_ids.iter().rev().take(8) {
+        refs.insert(id.clone());
+    }
+    for path in working_set.top_paths(8) {
+        refs.insert(path);
+    }
+    refs.retain(|item| !item.is_empty());
+    refs.len()
+}
+
+/// Capacity-controller (Gate A) probe for the executor path (§E slice 33).
+///
+/// Mirrors the established `CompactionProbe` / `CapacityProbe` /
+/// `TurnMetaProbe` pattern: an `Option<CapacityGateProbe>` field on the
+/// executor, constructed at executor-build time (before the `&mut self.session`
+/// borrow held by `SessionChatHistory`) and carrying `Arc` clones of the
+/// controller + working set so the executor can observe + decide mid-loop
+/// (at seam 1 pre-request and seam 4 post-tool) without needing `&mut self`
+/// on the `Engine`.
+///
+/// The executor observes + decides mid-loop and signals via a one-shot slot
+/// (`pending_capacity_decision`); the host applies the full `impl Engine`
+/// intervention cascade post-`run` (where `&mut self.session` is back in host
+/// hands). Deferring application to post-`run` is behavior-equivalent because
+/// the executor's system prompt is a static snapshot (`let system =
+/// self.config.system.clone()`), so any system-prompt change is invisible to
+/// the same turn's requests — the intervention takes effect on the next turn.
+pub struct CapacityGateProbe {
+    controller: Arc<std::sync::Mutex<CapacityController>>,
+    model: String,
+    /// Stored for future use (error-escalation sub-slice needs workspace for
+    /// canonical-state persistence). Not used in the current observe/decide path.
+    #[allow(dead_code)]
+    workspace: PathBuf,
+    working_set: Arc<std::sync::Mutex<WorkingSet>>,
+    profile_window: usize,
+    turn_index: u64,
+}
+
+impl CapacityGateProbe {
+    /// Construct from `Arc` clones of the controller + working set, the
+    /// session model / workspace (snapshots, immutable for a turn), the
+    /// capacity profile-window (from `config.capacity.profile_window`), and
+    /// the turn index (from `Engine.turn_counter`, captured at construction).
+    #[must_use]
+    pub fn new(
+        controller: Arc<std::sync::Mutex<CapacityController>>,
+        model: String,
+        workspace: PathBuf,
+        working_set: Arc<std::sync::Mutex<WorkingSet>>,
+        profile_window: usize,
+        turn_index: u64,
+    ) -> Self {
+        Self {
+            controller,
+            model,
+            workspace,
+            working_set,
+            profile_window,
+            turn_index,
+        }
+    }
+
+    /// Build `CapacityObservationInput` from the executor's message view,
+    /// the current step, recent tool-call IDs, and the system prompt snapshot.
+    /// Faithful to `Engine::capacity_observation` — uses the same free functions
+    /// (`recent_tool_call_count`, `recent_unique_reference_count`) and the same
+    /// token-estimation / context-window logic.
+    fn build_observation(
+        &self,
+        messages: &[Message],
+        step: u32,
+        tool_call_ids: &[String],
+        system: Option<&SystemPrompt>,
+    ) -> CapacityObservationInput {
+        let message_window = self.profile_window.max(8) * 3;
+        let action_count_this_turn = usize::try_from(step)
+            .unwrap_or(usize::MAX)
+            .saturating_add(tool_call_ids.len())
+            .saturating_add(1);
+        let tool_calls_recent_window = recent_tool_call_count(messages, message_window);
+        let working_set = self
+            .working_set
+            .lock()
+            .expect("working_set poisoned");
+        let unique_reference_ids_recent_window = recent_unique_reference_count(
+            messages,
+            message_window,
+            tool_call_ids,
+            &working_set,
+        );
+        let context_window = usize::try_from(
+            context_window_for_model(&self.model)
+                .unwrap_or(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS),
+        )
+        .unwrap_or(usize::try_from(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS).unwrap_or(128_000))
+        .max(1);
+        let context_used_ratio =
+            (estimate_input_tokens_conservative(messages, system) as f64) / (context_window as f64);
+
+        CapacityObservationInput {
+            turn_index: self.turn_index,
+            model: self.model.clone(),
+            action_count_this_turn,
+            tool_calls_recent_window,
+            unique_reference_ids_recent_window,
+            context_used_ratio,
+        }
+    }
+
+    /// Observe pre-turn (seam 1). Returns `None` if the controller is disabled
+    /// (the controller's `observe` returns `None` when `config.enabled` is false).
+    pub fn observe_pre_turn(
+        &self,
+        messages: &[Message],
+        step: u32,
+        tool_call_ids: &[String],
+        system: Option<&SystemPrompt>,
+    ) -> Option<CapacitySnapshot> {
+        let input = self.build_observation(messages, step, tool_call_ids, system);
+        self.controller
+            .lock()
+            .expect("capacity_controller poisoned")
+            .observe_pre_turn(input)
+    }
+
+    /// Observe post-tool (seam 4). Returns `None` if the controller is disabled.
+    pub fn observe_post_tool(
+        &self,
+        messages: &[Message],
+        step: u32,
+        tool_call_ids: &[String],
+        system: Option<&SystemPrompt>,
+    ) -> Option<CapacitySnapshot> {
+        let input = self.build_observation(messages, step, tool_call_ids, system);
+        self.controller
+            .lock()
+            .expect("capacity_controller poisoned")
+            .observe_post_tool(input)
+    }
+
+    /// Decide intervention from the latest snapshot, with cooldown and safety gates.
+    pub fn decide(&self, snapshot: Option<&CapacitySnapshot>) -> CapacityDecision {
+        self.controller
+            .lock()
+            .expect("capacity_controller poisoned")
+            .decide(self.turn_index, snapshot)
+    }
+
+    /// Mark an intervention as applied for this turn (prevents double-intervention
+    /// — seam 4's `decide` will see the cooldown and return `NoIntervention`).
+    pub fn mark_intervention_applied(&self, action: GuardrailAction) {
+        self.controller
+            .lock()
+            .expect("capacity_controller poisoned")
+            .mark_intervention_applied(self.turn_index, action);
+    }
+
+    /// Last observed snapshot (clone before releasing lock).
+    pub fn last_snapshot(&self) -> Option<CapacitySnapshot> {
+        self.controller
+            .lock()
+            .expect("capacity_controller poisoned")
+            .last_snapshot()
+            .cloned()
+    }
+}
 
 impl Engine {
     pub async fn run_capacity_pre_request_checkpoint(
@@ -21,9 +256,13 @@ impl Engine {
     ) -> bool {
         let snapshot = self
             .capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .observe_pre_turn(self.capacity_observation(turn));
         let decision = self
             .capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .decide(self.turn_counter, snapshot.as_ref());
         self.emit_capacity_decision(turn, snapshot.as_ref(), &decision)
             .await;
@@ -49,9 +288,13 @@ impl Engine {
     ) -> bool {
         let snapshot = self
             .capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .observe_post_tool(self.capacity_observation(turn));
         let decision = self
             .capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .decide(self.turn_counter, snapshot.as_ref());
         self.emit_capacity_decision(turn, snapshot.as_ref(), &decision)
             .await;
@@ -109,14 +352,18 @@ impl Engine {
             return false;
         }
 
-        let snapshot = self
+        let last = self
             .capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .last_snapshot()
-            .cloned()
-            .or_else(|| {
-                self.capacity_controller
-                    .observe_pre_turn(self.capacity_observation(turn))
-            });
+            .cloned();
+        let snapshot = last.or_else(|| {
+            self.capacity_controller
+                .lock()
+                .expect("capacity_controller poisoned")
+                .observe_pre_turn(self.capacity_observation(turn))
+        });
         let Some(snapshot) = snapshot else {
             return false;
         };
@@ -130,6 +377,8 @@ impl Engine {
 
         let decision = self
             .capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .decide(self.turn_counter, Some(&forced));
         self.emit_capacity_decision(turn, Some(&forced), &decision)
             .await;
@@ -181,23 +430,7 @@ impl Engine {
     }
 
     pub fn recent_tool_call_count(&self, message_window: usize) -> usize {
-        self.session
-            .messages
-            .iter()
-            .rev()
-            .take(message_window)
-            .map(|msg| {
-                msg.content
-                    .iter()
-                    .filter(|block| {
-                        matches!(
-                            block,
-                            ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
-                        )
-                    })
-                    .count()
-            })
-            .sum()
+        recent_tool_call_count(&self.session.messages, message_window)
     }
 
     pub fn recent_unique_reference_count(
@@ -205,48 +438,18 @@ impl Engine {
         message_window: usize,
         turn: &TurnContext,
     ) -> usize {
-        let mut refs = std::collections::HashSet::new();
-        for msg in self.session.messages.iter().rev().take(message_window) {
-            for block in &msg.content {
-                match block {
-                    ContentBlock::ToolUse { id, .. } => {
-                        refs.insert(id.clone());
-                    }
-                    ContentBlock::ToolResult { tool_use_id, .. } => {
-                        refs.insert(tool_use_id.clone());
-                    }
-                    ContentBlock::Text { text, .. } => {
-                        for token in text.split_whitespace() {
-                            if token.contains('/') || token.contains('.') {
-                                refs.insert(
-                                    token
-                                        .trim_matches(|c: char| ",.;:()[]{}".contains(c))
-                                        .to_string(),
-                                );
-                            }
-                        }
-                    }
-                    ContentBlock::Thinking { .. }
-                    | ContentBlock::ServerToolUse { .. }
-                    | ContentBlock::ToolSearchToolResult { .. }
-                    | ContentBlock::CodeExecutionToolResult { .. } => {}
-                }
-            }
-        }
-        for tool_call in turn.tool_calls.iter().rev().take(8) {
-            refs.insert(tool_call.id.clone());
-        }
-        for path in self
+        let working_set = self
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned")
-            .top_paths(8)
-        {
-            refs.insert(path);
-        }
-        refs.retain(|item| !item.is_empty());
-        refs.len()
+            .expect("working_set poisoned");
+        let ids: Vec<String> = turn.tool_calls.iter().map(|t| t.id.clone()).collect();
+        recent_unique_reference_count(
+            &self.session.messages,
+            message_window,
+            &ids,
+            &working_set,
+        )
     }
 
     pub async fn emit_coherence_signal(
@@ -581,6 +784,8 @@ impl Engine {
         )
         .await;
         self.capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .mark_intervention_applied(self.turn_counter, GuardrailAction::TargetedContextRefresh);
         true
     }
@@ -657,6 +862,8 @@ impl Engine {
             }
             Err(err) => {
                 self.capacity_controller
+                    .lock()
+                    .expect("capacity_controller poisoned")
                     .mark_replay_failed(self.turn_counter);
                 (
                     false,
@@ -683,6 +890,8 @@ impl Engine {
 
         if !pass {
             self.capacity_controller
+                .lock()
+                .expect("capacity_controller poisoned")
                 .mark_replay_failed(self.turn_counter);
         }
 
@@ -732,6 +941,8 @@ impl Engine {
         )
         .await;
         self.capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .mark_intervention_applied(self.turn_counter, GuardrailAction::VerifyWithToolReplay);
         true
     }
@@ -823,6 +1034,8 @@ impl Engine {
         )
         .await;
         self.capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
             .mark_intervention_applied(self.turn_counter, GuardrailAction::VerifyAndReplan);
         true
     }

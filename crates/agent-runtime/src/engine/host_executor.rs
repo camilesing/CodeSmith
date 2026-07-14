@@ -639,6 +639,7 @@ use codesmith_agent::models::{
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
+use super::capacity_flow::CapacityGateProbe;
 use super::context::{
     compact_tool_result_for_context, context_input_budget_for_provider,
     estimate_input_tokens_conservative, is_context_length_error_message,
@@ -648,6 +649,7 @@ use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
 use super::turn_loop::subagent_completion_runtime_message;
+use super::{CapacityDecision, GuardrailAction};
 use crate::subagent::SubAgentCompletion;
 use tokio_util::sync::CancellationToken;
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
@@ -1487,6 +1489,33 @@ pub struct HostAgentExecutor {
     /// `micro/partial→cleanup`. `std::sync::Mutex<bool>` (sync, never held
     /// across an `await`; matches `usage` / `pending_compaction_summary`).
     pending_post_compact_cleanup: std::sync::Mutex<bool>,
+
+    /// Optional opt-in `CapacityController` (Gate A) probe (slice 33 §E).
+    /// `None` (default; all embeds/tests) ⇒ no capacity-gate observation or
+    /// decisions during `run` — the hard token-budget preflight (Gate B) still
+    /// runs (absorbed in slice 11). When `Some` (production wire-in), the
+    /// probe — an `Arc` clone of `self.capacity_controller` + working set,
+    /// constructed before the `&mut self.session` borrow held by
+    /// `SessionChatHistory` — observes + decides at seam 1 (pre-request) and
+    /// seam 4 (post-tool) mid-loop, and signals any non-`NoIntervention`
+    /// decision via [`Self::pending_capacity_decision`] for the host to apply
+    /// post-`run` (where `&mut self.session` is back in host hands).
+    capacity_gate: Option<CapacityGateProbe>,
+
+    /// One-shot capacity-decision slot (slice 33 §E). Set by the executor
+    /// mid-loop when the `CapacityGateProbe` decides on a non-`NoIntervention`
+    /// action at seam 1 or seam 4. The host reads it back via
+    /// [`HostAgentExecutor::take_pending_capacity_decision`] after `run`
+    /// returns and applies the full `impl Engine` intervention cascade
+    /// (`apply_targeted_context_refresh` / `apply_verify_with_tool_replay` /
+    /// `apply_verify_and_replan`). `std::sync::Mutex` (not tokio): the slot
+    /// is written synchronously and read once post-`run`; the lock is never
+    /// held across an `await` (matches `pending_compaction_summary` /
+    /// `pending_post_compact_cleanup`). Drains on read (one-shot; executor is
+    /// fresh per turn, so no cross-turn leakage). If seam 1 fires,
+    /// `mark_intervention_applied` sets the cooldown so seam 4's `decide`
+    /// returns `NoIntervention` — the slot retains seam 1's decision.
+    pending_capacity_decision: std::sync::Mutex<Option<CapacityDecision>>,
 }
 
 impl HostAgentExecutor {
@@ -1538,6 +1567,8 @@ pub fn new(
         usage: std::sync::Mutex::new(Usage::default()),
         pending_compaction_summary: std::sync::Mutex::new(None),
         pending_post_compact_cleanup: std::sync::Mutex::new(false),
+        capacity_gate: None,
+        pending_capacity_decision: std::sync::Mutex::new(None),
     }
 }
 
@@ -1582,6 +1613,21 @@ pub fn new(
     #[must_use]
     pub fn with_reinject(mut self, reinject: Option<ReinjectProbe>) -> Self {
         self.reinject = reinject;
+        self
+    }
+
+    /// Opt into the opt-in `CapacityController` (Gate A) probe (slice 33 §E).
+    /// The production wire-in calls this after [`new`] with a
+    /// [`CapacityGateProbe`] built from an `Arc` clone of
+    /// `self.capacity_controller` + `session.working_set` (snapshotted before
+    /// the `&mut self.session` borrow held by `SessionChatHistory`). Embeds /
+    /// tests skip it — the field defaults to `None`, so no capacity-gate
+    /// observation or decisions run during `run` (the pre-slice-33 behavior)
+    /// and all existing tests stay unchanged. Consumes and returns `self`
+    /// (builder).
+    #[must_use]
+    pub fn with_capacity_gate(mut self, gate: Option<CapacityGateProbe>) -> Self {
+        self.capacity_gate = gate;
         self
     }
 
@@ -1665,6 +1711,22 @@ pub fn new(
             .pending_post_compact_cleanup
             .lock()
             .expect("pending_post_compact_cleanup mutex poisoned") = true;
+    }
+
+    /// Read back the capacity-decision slot set by the `CapacityGateProbe`
+    /// mid-loop (slice 33 §E). The host calls this after `run` returns to
+    /// apply the full `impl Engine` intervention cascade
+    /// (`apply_targeted_context_refresh` / `apply_verify_with_tool_replay` /
+    /// `apply_verify_and_replan`). Drains the slot (one-shot); the executor is
+    /// constructed fresh per turn, so no cross-turn leakage. Mirrors the
+    /// [`take_pending_compaction_summary`] / [`take_pending_post_compact_cleanup`]
+    /// read-back pattern.
+    #[must_use]
+    pub fn take_pending_capacity_decision(&self) -> Option<CapacityDecision> {
+        self.pending_capacity_decision
+            .lock()
+            .expect("pending_capacity_decision mutex poisoned")
+            .take()
     }
 
     /// Add one completed stream's usage to the per-turn total (slice 21 §E).
@@ -3213,6 +3275,11 @@ impl HostAgentExecutor {
         // `LoopGuard` per turn, matching `turn_loop`).
         let mut loop_guard = LoopGuard::default();
         let mut step: u32 = 0;
+        // Accumulate tool-call IDs issued this run (slice 33 §E) — feeds the
+        // `CapacityGateProbe`'s `recent_tool_call_ids` observation input at
+        // seam 1 (pre-request) and seam 4 (post-tool). Mirrors the Engine's
+        // `TurnContext.tool_calls` (only `.id` is used by the observation).
+        let mut tool_call_ids_this_run: Vec<String> = Vec::new();
         // Transparent stream-retry counter: re-issue the request when the
         // stream dies mid-flight before any content commits (mirrors
         // `turn_loop.rs:284-292`). Persists across steps within one run;
@@ -3289,6 +3356,37 @@ impl HostAgentExecutor {
                     return Ok(StopReason::Error(msg));
                 }
             }
+
+            // Opt-in CapacityController (Gate A) — seam 1 pre-request checkpoint
+            // (slice 33 §E). Observe + decide + signal; the host applies the
+            // intervention cascade post-`run` via `take_pending_capacity_decision`.
+            // `mark_intervention_applied` prevents double-intervention — seam 4's
+            // `decide` will see the cooldown and return `NoIntervention`.
+            if let Some(gate) = &self.capacity_gate {
+                if let Some(snapshot) = gate.observe_pre_turn(
+                    history.messages(),
+                    step,
+                    &tool_call_ids_this_run,
+                    system.as_ref(),
+                ) {
+                    let decision = gate.decide(Some(&snapshot));
+                    if decision.action != GuardrailAction::NoIntervention {
+                        gate.mark_intervention_applied(decision.action);
+                        *self
+                            .pending_capacity_decision
+                            .lock()
+                            .expect("pending_capacity_decision mutex poisoned") =
+                            Some(decision.clone());
+                        self.emit_status(format!(
+                            "Capacity: {} — {}",
+                            decision.action.as_str(),
+                            decision.reason
+                        ))
+                        .await;
+                    }
+                }
+            }
+
             // LSP flush sits after the max_steps bail so a turn-ending step
             // (e.g. MaxSteps right after an edit) leaves pending diagnostics
             // on the executor for the next turn's first flush — matching the
@@ -3405,6 +3503,10 @@ impl HostAgentExecutor {
                     _ => None,
                 })
                 .collect();
+
+            // Track tool-call IDs for the capacity-gate probe (slice 33 §E).
+            tool_call_ids_this_run
+                .extend(tool_uses.iter().map(|(id, _, _)| id.clone()));
 
             if tool_uses.is_empty() {
                 // Mid-stream steer flush (mirrors `turn_loop.rs:1297-1307`):
@@ -3744,12 +3846,43 @@ impl HostAgentExecutor {
             // stale drain.
             self.flush_pending_steers(&mut pending_steers, history);
 
+            // Opt-in CapacityController (Gate A) — seam 4 post-tool checkpoint
+            // (slice 33 §E). Observe + decide + signal; the host applies the
+            // intervention cascade post-`run` via `take_pending_capacity_decision`.
+            // `mark_intervention_applied` from seam 1 (or this seam) prevents
+            // double-intervention via the cooldown.
+            if let Some(gate) = &self.capacity_gate {
+                if let Some(snapshot) = gate.observe_post_tool(
+                    history.messages(),
+                    step,
+                    &tool_call_ids_this_run,
+                    system.as_ref(),
+                ) {
+                    let decision = gate.decide(Some(&snapshot));
+                    if decision.action != GuardrailAction::NoIntervention {
+                        gate.mark_intervention_applied(decision.action);
+                        *self
+                            .pending_capacity_decision
+                            .lock()
+                            .expect("pending_capacity_decision mutex poisoned") =
+                            Some(decision.clone());
+                        self.emit_status(format!(
+                            "Capacity: {} — {}",
+                            decision.action.as_str(),
+                            decision.reason
+                        ))
+                        .await;
+                    }
+                }
+            }
+
             // (4) per-step post-tool seam — ✅ cancel-token (Checkpoint G:
             // post-loop final gate — cancel takes priority over loop-guard
             // halt, mirroring `turn_loop.rs:2665-2671` where cancel is
-            // checked before `turn_error`); ✅ loop-guard halt; capacity
-            // post-tool checkpoint (opt-in `CapacityController` Gate A +
-            // error-escalation) still to come; cycle (checkpoint-restart) is a
+            // checked before `turn_error`); ✅ loop-guard halt; ✅ capacity
+            // post-tool checkpoint (opt-in `CapacityController` Gate A
+            // absorbed slice 33 §E, post-run application); error-escalation
+            // still to come (sub-slice 2); cycle (checkpoint-restart) is a
             // post-turn concern deferred to the wire-in step. The hard
             // token-budget preflight (Gate B) is absorbed at seam (1).
             if self.is_cancelled() {
@@ -8138,6 +8271,53 @@ mod tests {
         )
     }
 
+    /// Construct an enabled `CapacityGateProbe` (Gate A) with a very low
+    /// model prior (`fallback_default = 0.1`) so any non-trivial observation
+    /// triggers a non-`NoIntervention` decision. Used for seam-1 wiring +
+    /// cooldown tests.
+    fn capacity_gate_probe(
+        model: &str,
+        turn_index: u64,
+        working_set: Arc<Mutex<WorkingSet>>,
+    ) -> CapacityGateProbe {
+        let mut model_priors = HashMap::new();
+        model_priors.insert("fallback_default".to_string(), 0.1);
+        let config = crate::capacity::CapacityControllerConfig {
+            enabled: true,
+            min_turns_before_guardrail: 0,
+            model_priors,
+            ..Default::default()
+        };
+        CapacityGateProbe::new(
+            Arc::new(Mutex::new(crate::capacity::CapacityController::new(
+                config,
+            ))),
+            model.to_string(),
+            PathBuf::from("/tmp/codesmith-test"),
+            working_set,
+            8,
+            turn_index,
+        )
+    }
+
+    /// Construct a disabled `CapacityGateProbe` (`enabled: false` — the default).
+    fn disabled_capacity_gate_probe(
+        model: &str,
+        turn_index: u64,
+        working_set: Arc<Mutex<WorkingSet>>,
+    ) -> CapacityGateProbe {
+        CapacityGateProbe::new(
+            Arc::new(Mutex::new(crate::capacity::CapacityController::new(
+                crate::capacity::CapacityControllerConfig::default(),
+            ))),
+            model.to_string(),
+            PathBuf::from("/tmp/codesmith-test"),
+            working_set,
+            8,
+            turn_index,
+        )
+    }
+
     // === capacity tests ==================================================
 
     #[tokio::test]
@@ -8600,6 +8780,294 @@ mod tests {
         assert!(
             recovery_surfaced,
             "expected a compaction status event, got: {events:?}"
+        );
+    }
+
+    // === §E slice 33 — opt-in CapacityController Gate A: probe + observe + decide + signal ===
+
+    #[tokio::test]
+    async fn gate_a_disabled_is_noop() {
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(disabled_capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Disabled controller → observe returns None → no decision, no slot.
+        assert!(executor.take_pending_capacity_decision().is_none());
+    }
+
+    #[tokio::test]
+    async fn gate_a_pre_request_observes_and_decides() {
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Seam 1 (pre-request) observed + decided a non-NoIntervention action.
+        let decision = executor
+            .take_pending_capacity_decision()
+            .expect("capacity decision");
+        assert_ne!(decision.action, GuardrailAction::NoIntervention);
+        assert!(!decision.reason.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gate_a_post_tool_observes_and_decides() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Round 1: echo tool call. Round 2: text-only → NoToolCalls.
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"hi"}"#));
+        call1.extend(finish("tool_use"));
+        let call2 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        // Use a model prior of 1.0 so seam 1 (pre-request, step 0, no tools
+        // yet) is Low risk → NoIntervention, but seam 4 (post-tool, with
+        // tool_use + tool_result in transcript) is High risk → non-NoIntervention.
+        let mut model_priors = HashMap::new();
+        model_priors.insert("fallback_default".to_string(), 1.0);
+        let config = crate::capacity::CapacityControllerConfig {
+            enabled: true,
+            min_turns_before_guardrail: 0,
+            model_priors,
+            ..Default::default()
+        };
+        let gate = CapacityGateProbe::new(
+            Arc::new(Mutex::new(crate::capacity::CapacityController::new(
+                config,
+            ))),
+            "mock-v0".to_string(),
+            PathBuf::from("/tmp/codesmith-test"),
+            working_set,
+            8,
+            5,
+        );
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(gate));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Seam 4 (post-tool) observed + decided a non-NoIntervention action.
+        let decision = executor
+            .take_pending_capacity_decision()
+            .expect("capacity decision from seam 4");
+        assert_ne!(decision.action, GuardrailAction::NoIntervention);
+    }
+
+    #[tokio::test]
+    async fn gate_a_mark_prevents_double_intervention() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Round 1: echo tool call. Round 2: text-only → NoToolCalls.
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"hi"}"#));
+        call1.extend(finish("tool_use"));
+        let call2 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        // Low model prior (0.1) → seam 1 fires immediately at step 0 and marks
+        // intervention. Seam 4's decide returns NoIntervention (cooldown).
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Slot holds seam 1's decision (seam 4 was blocked by cooldown and
+        // did NOT overwrite the slot).
+        let decision = executor
+            .take_pending_capacity_decision()
+            .expect("capacity decision from seam 1");
+        assert_ne!(decision.action, GuardrailAction::NoIntervention);
+        // Exactly ONE Capacity status event — seam 1 emitted; seam 4 was
+        // blocked by the cooldown and did not emit.
+        let events = drain(&mut rx);
+        let capacity_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:")))
+            .collect();
+        assert_eq!(
+            capacity_events.len(),
+            1,
+            "expected exactly 1 Capacity event (seam 1), got {capacity_events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_a_none_probe_is_noop() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // No .with_capacity_gate() → capacity_gate is None → no observation.
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert!(executor.take_pending_capacity_decision().is_none());
+    }
+
+    #[tokio::test]
+    async fn gate_a_emits_status_on_decision() {
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // The event channel received an Event::Status with "Capacity:" prefix.
+        let events = drain(&mut rx);
+        let has_capacity_status = events.iter().any(|e| {
+            matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:"))
+        });
+        assert!(
+            has_capacity_status,
+            "expected a Capacity status event, got: {events:?}"
         );
     }
 

@@ -37,8 +37,6 @@ use crate::hooks::HookContext;
 use crate::llm_client::LlmClientHandle;
 use crate::mcp::McpPool;
 use crate::mode::AppMode;
-#[cfg(test)]
-use crate::models::ToolCaller;
 use crate::models::{
     ContentBlock, LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, Message, SystemPrompt, Tool, Usage,
 };
@@ -90,6 +88,7 @@ use crate::host_services::{
 use host_executor::{
     CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe, ReinjectProbe, TurnMetaProbe,
 };
+use capacity_flow::CapacityGateProbe;
 use crate::callback_bridge::CallbackBridge;
 use crate::session_history::SessionChatHistory;
 use codesmith_agent::callback::{Callback, StopReason};
@@ -167,7 +166,7 @@ pub struct Engine {
     /// the executor needs cross-turn tool serialization.
     #[allow(dead_code)]
     pub(crate) tool_exec_lock: Arc<RwLock<()>>,
-    pub capacity_controller: CapacityController,
+    pub capacity_controller: Arc<StdMutex<CapacityController>>,
     pub(crate) coherence_state: CoherenceState,
     pub turn_counter: u64,
     /// Diagnostics collected during the current step's tool calls. Drained
@@ -1007,7 +1006,10 @@ impl Engine {
         // Create turn context first so start event includes a stable turn id.
         let mut turn = TurnContext::new(self.config.max_steps);
         self.turn_counter = self.turn_counter.saturating_add(1);
-        self.capacity_controller.mark_turn_start(self.turn_counter);
+        self.capacity_controller
+            .lock()
+            .expect("capacity_controller poisoned")
+            .mark_turn_start(self.turn_counter);
 
         // Emit turn started event IMMEDIATELY so the UI knows the turn is
         // active. The snapshot below can take 30+ seconds on slow filesystems
@@ -1268,6 +1270,22 @@ impl Engine {
             Some(self.cancel_token.clone()),
             Some(self.host.subagents()),
         )
+        // Slice 33 §E: construct the opt-in CapacityController (Gate A) probe
+        // from `Arc` clones of `self.capacity_controller` +
+        // `session.working_set` (snapshotted before the `&mut self.session`
+        // borrow held by `SessionChatHistory`) + the session model / workspace
+        // + the capacity profile-window + the turn index. The probe observes +
+        // decides mid-loop (seam 1 / seam 4) and signals via
+        // `pending_capacity_decision`; the host applies the intervention
+        // cascade post-`run` (Step 8 block above).
+        .with_capacity_gate(Some(CapacityGateProbe::new(
+            Arc::clone(&self.capacity_controller),
+            self.session.model.clone(),
+            self.session.workspace.clone(),
+            Arc::clone(&self.session.working_set),
+            self.config.capacity.profile_window,
+            self.turn_counter,
+        )))
         .with_tool_dispatcher(plan.tool_registry.clone())
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe));
@@ -1324,6 +1342,62 @@ impl Engine {
             );
         }
         if had_summary || needs_cleanup {
+            self.emit_session_updated().await;
+        }
+        // Slice 33 §E: apply the deferred capacity-gate (Gate A) decision. The
+        // executor observed + decided mid-loop (seam 1 / seam 4) and signaled
+        // via `pending_capacity_decision`. The host now has `&mut self.session`
+        // back, so it applies the full `impl Engine` intervention cascade
+        // (canonical-state persistence, system-prompt fold, transcript mutation,
+        // event emission). The `apply_*` methods call `mark_intervention_applied`
+        // again — idempotent (the executor already marked via the probe).
+        if let Some(decision) = executor.take_pending_capacity_decision() {
+            let snapshot = self
+                .capacity_controller
+                .lock()
+                .expect("capacity_controller poisoned")
+                .last_snapshot()
+                .cloned();
+            // Clone the client Arc before the `&mut self` borrow in the
+            // `apply_*` calls — `as_deref()` on `self.llm_client` would hold
+            // an immutable borrow of `self`, conflicting with the mutable one.
+            let client_arc = self.llm_client.clone();
+            match decision.action {
+                GuardrailAction::TargetedContextRefresh => {
+                    let client = client_arc.as_deref();
+                    let _ = self
+                        .apply_targeted_context_refresh(
+                            &turn,
+                            client,
+                            mode,
+                            snapshot.as_ref(),
+                        )
+                        .await;
+                }
+                GuardrailAction::VerifyWithToolReplay => {
+                    let _ = self
+                        .apply_verify_with_tool_replay(
+                            &turn,
+                            mode,
+                            snapshot.as_ref(),
+                            plan.tool_registry.as_deref(),
+                            Arc::clone(&self.tool_exec_lock),
+                            self.mcp_pool.clone(),
+                        )
+                        .await;
+                }
+                GuardrailAction::VerifyAndReplan => {
+                    let _ = self
+                        .apply_verify_and_replan(
+                            &turn,
+                            mode,
+                            snapshot.as_ref(),
+                            &decision.reason,
+                        )
+                        .await;
+                }
+                GuardrailAction::NoIntervention => {}
+            }
             self.emit_session_updated().await;
         }
         let (status, error) = match stop_reason {
@@ -2661,7 +2735,7 @@ impl Engine {
         shared_cancel_token: Arc<StdMutex<CancellationToken>>,
         cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
         tool_exec_lock: Arc<RwLock<()>>,
-        capacity_controller: CapacityController,
+        capacity_controller: Arc<StdMutex<CapacityController>>,
         tx_op: mpsc::Sender<Op>,
         runtime_ui: Arc<dyn crate::runtime_ui::RuntimeUi>,
     ) -> Self {
