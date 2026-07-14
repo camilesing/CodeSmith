@@ -1684,7 +1684,47 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 **验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零 warning；`cargo +1.90.0 build -p codesmith-agent-runtime --tests` 零新 warning（11 均既有——`task_v2.rs`/`purge.rs`/既有 unused imports/deprecated/vars，changed-file 专项 grep 零命中）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 119 通过（116 既有 + 3 新 provider-budget）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1101 通过、1 flaky `mcp::streamable_http_stale_session_reconnects_and_retries_tool_call`（隔离重跑通过，既有偶发 MCP 重连，与本轮无关）、2 ignored（原 1099 + 3 新 = 1102，−1 flaky = 1101 passed）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改——不动核心 trait）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 123 通过（0 失败、1 ignored——host wire-in live 路径零回归）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui reinject_compaction_attachments` 6 通过（slice-24 生产 reinject 零回归）；`cargo +1.90.0 build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
 
 **下一聚焦工作：**
-- **dead-code deletion 切片**：slice 20 `#[allow(dead_code)]` 17 项中 orphan 的删掉（streaming config cluster / `mcp_tool_approval_description` / `emit_tool_audit`），superseded 方法按 re-wire 决策保留或删。
+- ~~**dead-code deletion 切片**~~ → ✅ 已落地（slice 32 §E，见下；orphan 项已删，superseded 方法按 re-wire 决策保留）。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
+**进度（2026-07-14 §E dead-code deletion 落地，orphan 项删除，superseded 方法保留，slice 32，`feat/pluggable-framework-core`）：**
+
+§E 的第三十二个切片落地——关闭 slice 20（wire-in cutover）遗留的 "dead-code deletion 切片" 项。slice 20 退役 `handle_deepseek_turn` 后用 `#[allow(dead_code)]` / `#![allow(dead_code)]` 压制了 17 项孤儿代码。本切片删掉其中**真正 orphan**（零用法、无 deferred re-wire）的三组，**保留** superseded 方法（按 ROADMAP "superseded 方法按 re-wire 决策保留或删" 的判断——每个都持有 deferred re-wire 逻辑或 paired-lifetime，删了会丢参考实现）。本轮纯删除（4 文件），零既有调用点行为改动；生产路径不受影响。
+
+经全量 liveness grep（`rg` 跨 `agent-runtime`/`tui`/`agent`）核实每个 `allow(dead_code)` 项的用法后划定边界：
+- **streaming.rs**：模块文档自己把模块分成 "orphan cluster"（`*_STREAM_CHUNK_TIMEOUT_SECS` / `stream_chunk_timeout_secs` / `ContentBlockKind` / `STREAM_MAX_*`）vs "remain live"（`filter_tool_call_delta` / `should_transparently_retry_stream` / `TOOL_CALL_*_MARKERS` / `ToolUseState`）。删除前核实：保留项全经 `pub use` re-export（`mod.rs:2827-2832`）或被 exported 项内部使用 → 删除 orphan cluster 后**不被 dead-code 标记** → 可安全 drop 模块级 `#![allow(dead_code)]`。`MAX_STREAM_ERRORS_BEFORE_FAIL` / `MAX_TRANSPARENT_STREAM_RETRIES` 归 "retry policy"（非 orphan cluster），保留——前者经 `pub use` re-export + tui regression-pin（`tests.rs:3282`），后者被 live `should_transparently_retry_stream` 使用。
+
+**删除（三组 orphan）：**
+
+- **`streaming.rs` orphan config cluster**（10 项 + 1 test）→ drop 模块级 `#![allow(dead_code)]`：
+  - `ContentBlockKind` enum（零用法）。
+  - `DEFAULT_STREAM_CHUNK_TIMEOUT_SECS` / `MIN_STREAM_CHUNK_TIMEOUT_SECS` / `MAX_STREAM_CHUNK_TIMEOUT_SECS` / `STREAM_IDLE_TIMEOUT_ENV`（仅被下面两 fn 用）。
+  - `stream_chunk_timeout_secs()` / `stream_chunk_timeout_secs_from_env()`（sole consumer 是退役的 `handle_deepseek_turn`）+ 其 test `stream_chunk_timeout_defaults_and_clamps_env_values`（test module 唯一 test → 整个 `#[cfg(test)] mod tests` 移除）。
+  - `STREAM_MAX_CONTENT_BYTES` / `STREAM_MAX_DURATION_SECS`（零用法）。
+  - 模块文档改为 "slice 32 §E deleted that orphan cluster; the scrubbers / retry policy / `ToolUseState` remain live"。
+
+- **`mcp_tool_approval_description`**（`dispatch.rs:397`）：零用法（不 re-export、不调用——`rg` 跨 workspace 零命中）。删 fn + doc + `#[allow(dead_code)]`。re-wire 进 `CallbackBridge` 是后续切片（会写新代码，非复用此 fn）。`mcp_tool_is_read_only`（被此 fn 调用）经 `mod.rs:2823` re-export，不受影响。
+
+- **`emit_tool_audit` + 3 test**（`tool_execution.rs:128`）：production caller 随 `handle_deepseek_turn` 退役；仅其自身 `#[cfg(test)]` 的 3 个 test（`emit_tool_audit_writes_jsonl_line_when_env_var_set` / `_is_noop_when_env_var_unset` / `_creates_parent_directory`）调用。删 fn + doc + `#[allow(dead_code)]` + 3 test + `AUDIT_TEST_GUARD` static / `audit_test_guard()` fn（仅被这 3 test 用 → 同步删）。test module 的 `#![allow(unsafe_code)]`（仅 `set_var` unsafe 用）+ `use serde_json::json` + `use std::{sync::Mutex, ...}` 同步删（terminal-guard 2 test 不用它们）。非-test import `use std::{fs::OpenOptions, io::Write, ...}` → `use std::{sync::Arc, time::Duration}`（`OpenOptions`/`io::Write` 仅 `emit_tool_audit` 用；`Arc`/`Duration` 仍被非-test 代码用，核实 `Arc`@51 / `Duration`@59）。
+
+- **cascade cleanup**：删 `emit_tool_audit` 后 `mod.rs:12` 的 `use std::path::PathBuf` 变 unused（sole transitive consumer 经 `use super::*` 链是 `emit_tool_audit` 的 `PathBuf::from`）→ 同步删（lib build 零 warning 确认无其他消费者）。
+
+**保留（superseded 方法/字段——deferred re-wire / paired-lifetime，`#[allow(dead_code)]` 留存 + 既有 doc 注明）：**
+- `layered_context_checkpoint`（`mod.rs:2102`，#159 nav-aids）——零 caller，但 `seam()` 有其他 live caller（`:2242` briefing / `:2382` reset），删此 fn 不会 cascade；保留因 #159 nav-aids 可能在 wire-in/executor pre-request re-wire 时复用参考。
+- `Engine::recover_context_overflow`（`mod.rs:1833`）——executor 有自己的简化三阶段版，但此方法持有 capacity slice 11 显式 deferred 的 "responsive compact cascade (Phase 1)" 四步级联参考逻辑；`host_executor.rs:2942` 的 cross-ref 注释仍大致准确（引用此 KEPT 方法，注中 `mod.rs:1850` 实指 `:1852` Phase-1 cascade，±2 行可接受）。
+- KoD cluster（`knowledge_prefetch` 字段 + `kod_prefetch_spawn` / `kod_prefetch_collect`）——distinct planned feature（Knowledge on Demand），re-wire 进 executor 是后续切片。
+- `rx_user_input` 字段——paired-lifetime（tui 仍构造 `tx_user_input` sender，consumer `await_user_input` 退役）。
+- `tool_exec_lock` 字段——couples to deferred Gate-A `CapacityController` + parallel-exec（取它为参的 fn 自身 deferred）。
+- `EarlyToolResult` / `EarlyToolTask`（`turn_loop.rs`）——`dispatch.rs:61` 作 type 引用；speculative-dispatch re-wire deferred（turn_loop 模块级 `#![allow(dead_code)]` 保留）。
+- `CancelReason` enum 变体（reserved for #1541，tui `handle.rs` live）/ `ToolExecGuard` RAII 字段（intentional）/ `ToolExecOutcome.index`（diagnostic）/ `Op::*` arms（defensive handlers）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**（drop streaming 模块级 allow 后零新 warning——核实所有保留项经 `pub use` re-export 或被 exported 项用）；`cargo +1.90.0 build -p codesmith-agent-runtime --tests` 零新 warning（11 均既有——`callback_bridge.rs`/`mod.rs:41` cfg(test) `ToolCaller` import/`context.rs`/`task_v2.rs`/`framework_adapter.rs`/`host_executor.rs`/`purge.rs`，changed-file 专项 grep 零命中）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1098 通过（0 失败、2 ignored，原 1102 − 4 删 = 1098；既有 flaky MCP 重连本轮通过）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改——不动核心 trait）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 123 通过（0 失败、1 ignored——streaming re-export `MAX_STREAM_ERRORS_BEFORE_FAIL`/`MAX_TRANSPARENT_STREAM_RETRIES`/`should_transparently_retry_stream`/`ToolUseState` 仍 resolve，零回归）；`cargo +1.90.0 build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
+
+**下一聚焦工作：**
+- **剩余 dead-code（superseded，低优先）**：`layered_context_checkpoint` / `Engine::recover_context_overflow` / KoD cluster / `rx_user_input` / `tool_exec_lock` / `turn_loop::EarlyToolResult|EarlyToolTask`——均 deferred re-wire 决策点，待各自 re-wire 切片接入时一并删（保 `#[allow(dead_code)]` + doc 留存）。另有 stray `#[cfg(test)] use crate::models::ToolCaller`（`mod.rs:41`，orphan test import，11 既有 warning 之一）可随手清理但本轮未动（超出 named scope）。
 - **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：独立 opt-in 切片，仍低优先。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 

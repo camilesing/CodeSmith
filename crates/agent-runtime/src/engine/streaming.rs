@@ -1,28 +1,18 @@
 //! Streaming response state and guardrails.
 //!
 //! This module owns the local state used while decoding one model stream:
-//! content block kind tracking, streamed tool-use buffers, transparent retry
-//! policy, and scrubbers for text that looks like a forged tool-call wrapper.
+//! streamed tool-use buffers, transparent retry policy, and scrubbers for
+//! text that looks like a forged tool-call wrapper.
 //
-// After slice 20 §E the stream-reducer config cluster
-// (`*_STREAM_CHUNK_TIMEOUT_SECS`, `stream_chunk_timeout_secs`,
-// `ContentBlockKind`, `STREAM_MAX_*`) is orphaned: `handle_deepseek_turn`
-// was its sole consumer and `HostAgentExecutor::reduce_stream` carries its
-// own config. The scrubbers / retry policy (`filter_tool_call_delta`,
-// `should_transparently_retry_stream`, `TOOL_CALL_*_MARKERS`) remain live.
-// `#![allow(dead_code)]` silences the orphaned config until a follow-up
-// slice deletes it (kept because the constants document the prior policy).
-
-#![allow(dead_code)]
+// After slice 20 §E (`handle_deepseek_turn` retirement) the stream-reducer
+// config cluster (`*_STREAM_CHUNK_TIMEOUT_SECS`, `stream_chunk_timeout_secs`,
+// `ContentBlockKind`, `STREAM_MAX_*`) was orphaned — `HostAgentExecutor::reduce_stream`
+// carries its own config. Slice 32 §E deleted that orphan cluster; the scrubbers /
+// retry policy (`filter_tool_call_delta`, `should_transparently_retry_stream`,
+// `TOOL_CALL_*_MARKERS`) and `ToolUseState` remain live (re-exported via
+// `engine/mod.rs`).
 
 use crate::models::ToolCaller;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContentBlockKind {
-    Text,
-    Thinking,
-    ToolUse,
-}
 
 #[derive(Debug, Clone)]
 pub struct ToolUseState {
@@ -33,40 +23,6 @@ pub struct ToolUseState {
     pub input_buffer: String,
 }
 
-/// Default maximum time to wait for a single stream chunk before assuming a stall.
-/// **This is the idle timeout** — it resets on every SSE chunk, so long
-/// thinking turns that ARE producing reasoning_content stay alive. Only a
-/// genuine `chunk_timeout` window of silence kills the stream.
-const DEFAULT_STREAM_CHUNK_TIMEOUT_SECS: u64 = 300;
-const MIN_STREAM_CHUNK_TIMEOUT_SECS: u64 = 1;
-const MAX_STREAM_CHUNK_TIMEOUT_SECS: u64 = 3600;
-const STREAM_IDLE_TIMEOUT_ENV: &str = "DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS";
-
-/// Reads the shared stream idle-timeout override used by the SSE client.
-pub fn stream_chunk_timeout_secs() -> u64 {
-    stream_chunk_timeout_secs_from_env(std::env::var(STREAM_IDLE_TIMEOUT_ENV).ok().as_deref())
-}
-
-fn stream_chunk_timeout_secs_from_env(value: Option<&str>) -> u64 {
-    value
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_STREAM_CHUNK_TIMEOUT_SECS)
-        .clamp(MIN_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS)
-}
-/// Maximum total bytes of text/thinking content before aborting the stream.
-pub const STREAM_MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
-/// Sanity backstop for total stream wall-clock duration. **Not** a routine
-/// kill switch — the stream chunk idle timeout is the primary stall
-/// detector. The wall-clock cap is here only to bound pathological cases
-/// (e.g. a server that keeps sending heartbeats forever without progress).
-///
-/// History: this used to be 300s (5 min) which was too aggressive — V4
-/// thinking turns on hard prompts legitimately exceed 5 minutes wall-clock
-/// while still emitting reasoning_content chunks the whole way. Bumped to
-/// 30 min in v0.6.6 to address `TODO_FIXES.md` #1. Codex defaults to a
-/// per-chunk idle of 300s with no wall-clock cap; we keep both layers but
-/// give the wall-clock a generous window so it never fires in practice.
-pub const STREAM_MAX_DURATION_SECS: u64 = 1800; // 30 minutes (was 300s; #103/#1)
 /// Hard cap on consecutive recoverable stream errors before we surface a turn
 /// failure. Bumped 3 → 5 in v0.6.7 along with the HTTP/2 keepalive defaults
 /// (#103) — keepalive should make spurious decode errors rarer, so we can
@@ -160,21 +116,4 @@ pub fn filter_tool_call_delta(delta: &str, in_tool_call: &mut bool) -> String {
     }
 
     output
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stream_chunk_timeout_defaults_and_clamps_env_values() {
-        assert_eq!(stream_chunk_timeout_secs_from_env(None), 300);
-        assert_eq!(
-            stream_chunk_timeout_secs_from_env(Some("not-a-number")),
-            300
-        );
-        assert_eq!(stream_chunk_timeout_secs_from_env(Some("0")), 1);
-        assert_eq!(stream_chunk_timeout_secs_from_env(Some("90")), 90);
-        assert_eq!(stream_chunk_timeout_secs_from_env(Some("99999")), 3600);
-    }
 }
