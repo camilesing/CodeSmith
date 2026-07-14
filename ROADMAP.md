@@ -1725,7 +1725,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **下一聚焦工作：**
 - **剩余 dead-code（superseded，低优先）**：`layered_context_checkpoint` / `Engine::recover_context_overflow` / KoD cluster / `rx_user_input` / `tool_exec_lock` / `turn_loop::EarlyToolResult|EarlyToolTask`——均 deferred re-wire 决策点，待各自 re-wire 切片接入时一并删（保 `#[allow(dead_code)]` + doc 留存）。另有 stray `#[cfg(test)] use crate::models::ToolCaller`（`mod.rs:41`，orphan test import，11 既有 warning 之一）可随手清理但本轮未动（超出 named scope）。
-- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：Gate A seam-1+seam-4 已落地（slice 33 §E，见下），error-escalation 仍 deferred（sub-slice 2）。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：Gate A seam-1+seam-4+error-escalation 已落地（slice 33/34 §E，见下），mid-loop transcript mutations 仍 deferred（sub-slice 3）。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
@@ -1756,6 +1756,28 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 - **Error escalation**（sub-slice 2）：需 `step_error_count` / `consecutive_tool_error_steps` / `ErrorCategory` tracking in `run_inner`。
 - **Mid-loop transcript mutations**（sub-slice 3）：替换 post-run `apply_*` 为 mid-loop `ChatHistory` mutations（模型在同一 turn 内看到干预）。
 - **Post-run timing**：干预在 `run` 返回后应用，下一 turn 可见（非同 turn）——behavior-equivalent 因 executor's system prompt 是 static snapshot（同 slice 25a/25c 论证）。
+
+---
+
+**进度（2026-07-14 §E opt-in `CapacityController` Gate A error-escalation 落地，probe + track + decide + signal（post-run application），slice 34，`feat/pluggable-framework-core`）：**
+
+§E 的第三十四个切片落地——Gate A 的第三个 checkpoint（error-escalation）接入 `HostAgentExecutor::run_inner`。slice 33 落地 seam-1/seam-4 后将 error-escalation 标记为 "sub-slice 2: needs `step_error_count` / `consecutive_tool_error_steps` / `ErrorCategory` tracking in `run_inner`"。本切片闭合该缺口：模式镜像 slice 33（observe+decide+signal；host applies post-`run`）。Mid-loop transcript mutations 仍 deferred（sub-slice 3）。
+
+**关键设计洞察**：controller 的 per-turn cooldown（`intervention_applied_turn`，由 seam 1/4 的 `mark_intervention_applied` 设置）**天然阻断** error-escalation——当更早的 checkpoint 已干预时，`decide` 在 cooldown check（`capacity.rs:228`）返回 `NoIntervention`，先于 `decide_policy`。这镜像生产的 "seam 4 fires → `continue` → error-escalation skipped"。**无需显式 `seam4_intervened` guard**；cooldown 在一个 turn 内强制 mutual exclusion。
+
+**落地步骤（4 步）：**
+
+1. **`capacity_flow.rs` — `CapacityGateProbe::decide_error_escalation`**：新 probe 方法镜像 `Engine::run_capacity_error_escalation_checkpoint` 的 observe/force/decide。签名 `decide_error_escalation(&self, messages, step, tool_call_ids, system, step_error_count, consecutive_tool_error_steps, error_categories) -> Option<CapacityDecision>`。Early-return `None` gating（生产 332–353）；`last_snapshot().or_else(|| observe_pre_turn(...))`（clone+释放锁后再 `or_else`，无 re-entrant deadlock——slice 33 的 deadlock-fix concern 不适用 probe path）；force `RiskBand::High`+`severe=true` when `repeated_failures && !(already High+severe)`；`decide(Some(&forced))`；仅 `VerifyAndReplan` 返回 `Some`；override `decision.reason` 为 `format!("error_escalation: step_errors={}, consecutive_steps={}, categories={}", ...)`（host 的 `apply_verify_and_replan(&turn, ..., &decision.reason)` 记录）。加 `use crate::error_taxonomy::ErrorCategory;`。
+2. **`host_executor.rs` — tracking + wiring**：import `use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};`；`run_inner` 顶部 `consecutive_tool_error_steps: u32`（turn-level）；per-step `step_error_count: usize` + `step_error_categories: Vec<ErrorCategory>`；tool loop `if !blocked` block 加 `Err(e)` arm → `let envelope: ErrorEnvelope = e.clone().into(); step_error_count += 1; step_error_categories.push(envelope.category);`（镜像生产 2575–2576；仅 `Err` counts，非 `Ok(!success)`——faithful）；cancel check + loop-guard halt 之后（`on_step` 之前）更新 `consecutive_tool_error_steps`（生产 2642–2645：`> 0` → `+1` else `0`）→ `gate.decide_error_escalation(...)` → `Some` 则 `mark_intervention_applied` + set `pending_capacity_decision` slot + `emit_status`（镜像 slice 33 seam-1/4 signal block）；更新 seam-4 注释 "error-escalation still to come" → "absorbed ✅ (slice 34 §E)"。
+3. **`mod.rs` — 无改动**：host post-`run` block（slice 33）已 match `decision.action` 全 4 arm 并调用 `apply_verify_and_replan(&turn, mode, snapshot.as_ref(), &decision.reason)`。Error-escalation 只产 `VerifyAndReplan`，流经 unchanged。
+4. **8 个新测试**（`host_executor.rs` test module）：test doubles `ErrorSpec`（`Err(ToolError::execution_failed)` → `ErrorCategory::Tool`）/ `TimeoutErrorSpec`（`Err(ToolError::Timeout)` → `ErrorCategory::Timeout`）/ `InvalidInputErrorSpec`（`Err(ToolError::InvalidInput)` → `ErrorCategory::InvalidInput`）；helper `capacity_gate_probe_high_prior`（`fallback_default = 100.0`，seam 1/4 → `NoIntervention`/Low-risk，让 error-escalation fire）。`error_escalation_disabled_is_noop` / `error_escalation_none_probe_is_noop` / `error_escalation_no_errors_is_noop` / `error_escalation_fires_after_two_consecutive_tool_errors`（headline）/ `error_escalation_skipped_transient_only` / `error_escalation_blocked_by_intervention_cooldown`（proves cooldown mutual-exclusion）/ `error_escalation_context_overflow_category_in_reason` / `decide_error_escalation_skipped_when_cooldown_set`（probe-level unit）。
+
+**By-design gaps（deferred，documented）：**
+- **Post-run timing**（sub-slice 3）：干预在 `run` 返回后应用 → 下一 turn 可见（非同 turn）。Behavior-equivalent 因 executor's system prompt 是 static snapshot（同 slice 25a/25c/33 论证）。
+- **Forced snapshot not persisted**：host post-`run` retrieves `last_snapshot()`（实际 observed，非 forced High+severe）。仅 record-keeping divergence；sub-slice 3（mid-loop）会传 forced snapshot。
+- **Reason override**：`decision.reason` overridden 为 escalation format（生产用单独 `apply_verify_and_replan` arg）；流经 slice 33 既有 `&decision.reason` plumbing。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 133 通过（125 既有 + 8 新 error_escalation）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1112 通过 + 2 ignored；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 123 通过（host wire-in 零回归）；`cargo +1.90.0 build --workspace` 全绿。
 
 ---
 

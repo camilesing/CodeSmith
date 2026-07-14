@@ -658,6 +658,7 @@ use crate::compaction::micro_compact::{
 };
 use crate::compaction::{compact_messages_safe, should_compact, CompactionConfig};
 use crate::config_types::ApiProvider;
+use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock};
@@ -3290,6 +3291,12 @@ impl HostAgentExecutor {
         // emergency compaction; resets to 0 on a healthy stream round
         // (mirrors `turn_loop.rs:292` + the reset at `:617`).
         let mut context_recovery_attempts: u8 = 0;
+        // Error-escalation tracking (slice 34 §E): consecutive error steps
+        // within one run (mirrors `turn_loop.rs:273`). Persists across steps
+        // within the turn; updated post-tool-loop (production `:2642-2645`).
+        // `step_error_count` / `step_error_categories` are per-step (reset each
+        // step) and declared inside the loop.
+        let mut consecutive_tool_error_steps: u32 = 0;
         // NOTE: the steer stale-drain (`drain_stale_steers`) is a host-side
         // concern — production runs it in `handle_send_message` BEFORE
         // `handle_deepseek_turn`. Calling it inside `run_inner` would discard
@@ -3440,6 +3447,13 @@ impl HostAgentExecutor {
             // before any content ⇒ no `try_recv` ran in `reduce_stream` ⇒ the
             // vec is empty, so dropping it leaks nothing.
             let mut pending_steers: Vec<String> = Vec::new();
+            // Error-escalation tracking (slice 34 §E): per-step tool-error
+            // count + categories (mirrors `turn_loop.rs:2472/2477`). Categorized
+            // from `ToolError` via `ErrorEnvelope::from` (production `:2575-2576`).
+            // Only `Err(ToolError)` counts — `Ok(ToolResult { success: false })`
+            // is a failed result, not a dispatch error (faithful to production).
+            let mut step_error_count: usize = 0;
+            let mut step_error_categories: Vec<ErrorCategory> = Vec::new();
             let (content, _stop_reason) = match self
                 .stream_with_transparent_retry(
                     &client,
@@ -3813,6 +3827,15 @@ impl HostAgentExecutor {
                             self.collect_lsp_diagnostics(&name, &input).await;
                             self.record_read_file_result(&name, &input, r);
                         }
+                    } else if let Err(e) = &result {
+                        // Error-escalation tracking (slice 34 §E): categorize a
+                        // dispatch error via the shared taxonomy (production
+                        // `:2575-2576`). Only `Err(ToolError)` counts —
+                        // `Ok(ToolResult { success: false })` is a failed result,
+                        // not a dispatch error (faithful to production).
+                        let envelope: ErrorEnvelope = e.clone().into();
+                        step_error_count += 1;
+                        step_error_categories.push(envelope.category);
                     }
                 }
 
@@ -3881,10 +3904,11 @@ impl HostAgentExecutor {
             // halt, mirroring `turn_loop.rs:2665-2671` where cancel is
             // checked before `turn_error`); ✅ loop-guard halt; ✅ capacity
             // post-tool checkpoint (opt-in `CapacityController` Gate A
-            // absorbed slice 33 §E, post-run application); error-escalation
-            // still to come (sub-slice 2); cycle (checkpoint-restart) is a
-            // post-turn concern deferred to the wire-in step. The hard
-            // token-budget preflight (Gate B) is absorbed at seam (1).
+            // absorbed slice 33 §E, post-run application); ✅ error-escalation
+            // (sub-slice 2 absorbed slice 34 §E, post-run application); cycle
+            // (checkpoint-restart) is a post-turn concern deferred to the
+            // wire-in step. The hard token-budget preflight (Gate B) is
+            // absorbed at seam (1).
             if self.is_cancelled() {
                 self.emit_status("Request cancelled".to_string()).await;
                 callback.on_complete(&StopReason::Interrupted).await;
@@ -3897,6 +3921,46 @@ impl HostAgentExecutor {
                     .on_complete(&StopReason::Error(message.clone()))
                     .await;
                 return Ok(StopReason::Error(message));
+            }
+
+            // Opt-in CapacityController (Gate A) — error-escalation checkpoint
+            // (sub-slice 2, slice 34 §E). Update the turn-level consecutive-error
+            // counter (production `:2642-2645`: a step with errors bumps it, a
+            // clean step resets to 0), then probe + decide + signal. The
+            // controller's per-turn cooldown (set by seam 1/4's
+            // `mark_intervention_applied`) naturally blocks this when an earlier
+            // checkpoint already intervened — `decide` returns `NoIntervention`
+            // at the cooldown check (capacity.rs:228) before reaching
+            // `decide_policy`, mirroring production's "seam 4 fires → `continue`
+            // → error-escalation skipped". No explicit seam-4 guard is needed.
+            consecutive_tool_error_steps = if step_error_count > 0 {
+                consecutive_tool_error_steps.saturating_add(1)
+            } else {
+                0
+            };
+            if let Some(gate) = &self.capacity_gate {
+                if let Some(decision) = gate.decide_error_escalation(
+                    history.messages(),
+                    step,
+                    &tool_call_ids_this_run,
+                    system.as_ref(),
+                    step_error_count,
+                    consecutive_tool_error_steps,
+                    &step_error_categories,
+                ) {
+                    gate.mark_intervention_applied(decision.action);
+                    *self
+                        .pending_capacity_decision
+                        .lock()
+                        .expect("pending_capacity_decision mutex poisoned") =
+                        Some(decision.clone());
+                    self.emit_status(format!(
+                        "Capacity: {} — {}",
+                        decision.action.as_str(),
+                        decision.reason
+                    ))
+                    .await;
+                }
             }
 
             callback.on_step(step).await;
@@ -9068,6 +9132,560 @@ mod tests {
         assert!(
             has_capacity_status,
             "expected a Capacity status event, got: {events:?}"
+        );
+    }
+
+    // === error-escalation (Gate A sub-slice 2, slice 34 §E) =================
+    //
+    // The error-escalation checkpoint fires after ≥2 consecutive tool-dispatch
+    // errors (non-transient). The executor tracks per-step error counts +
+    // categories from `Err(ToolError)` (categorized via `ErrorEnvelope::from`);
+    // the probe forces the snapshot to High+severe and decides — returning
+    // `VerifyAndReplan` only. The controller's per-turn cooldown (set by seam
+    // 1/4's `mark_intervention_applied`) blocks this when an earlier checkpoint
+    // already intervened, mirroring production's "seam 4 fires → continue →
+    // error-escalation skipped". These tests prove: disabled/None is a noop,
+    // no-errors is a noop, the headline 2-consecutive-error escalation fires,
+    // transient-only errors skip, an earlier intervention blocks via cooldown,
+    // and the probe-level cooldown short-circuits directly.
+
+    /// A `ToolSpec` that always fails with `ToolError::execution_failed` →
+    /// `ErrorCategory::Tool` (non-transient → escalates on consecutive
+    /// failures).
+    struct ErrorSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for ErrorSpec {
+        fn name(&self) -> &str {
+            "fail_tool"
+        }
+        fn description(&self) -> &str {
+            "Always returns an execution error."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Err(ToolError::execution_failed("boom"))
+        }
+    }
+
+    /// A `ToolSpec` that fails with `ToolError::Timeout` →
+    /// `ErrorCategory::Timeout` (transient → skips escalation).
+    struct TimeoutErrorSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for TimeoutErrorSpec {
+        fn name(&self) -> &str {
+            "timeout_tool"
+        }
+        fn description(&self) -> &str {
+            "Always times out."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Err(ToolError::Timeout { seconds: 30 })
+        }
+    }
+
+    /// A `ToolSpec` that fails with `ToolError::InvalidInput` →
+    /// `ErrorCategory::InvalidInput` (context-overflow category → escalates
+    /// even on a single failure).
+    struct InvalidInputErrorSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for InvalidInputErrorSpec {
+        fn name(&self) -> &str {
+            "bad_input"
+        }
+        fn description(&self) -> &str {
+            "Always rejects input."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Err(ToolError::invalid_input("context too long"))
+        }
+    }
+
+    /// Construct an enabled `CapacityGateProbe` (Gate A) with a very HIGH model
+    /// prior (`fallback_default = 100.0`) so seam 1 (pre-request) and seam 4
+    /// (post-tool) both observe Low risk → `NoIntervention`, leaving the
+    /// per-turn cooldown unset so the error-escalation checkpoint can fire.
+    fn capacity_gate_probe_high_prior(
+        model: &str,
+        turn_index: u64,
+        working_set: Arc<Mutex<WorkingSet>>,
+    ) -> CapacityGateProbe {
+        let mut model_priors = HashMap::new();
+        model_priors.insert("fallback_default".to_string(), 100.0);
+        let config = crate::capacity::CapacityControllerConfig {
+            enabled: true,
+            min_turns_before_guardrail: 0,
+            model_priors,
+            ..Default::default()
+        };
+        CapacityGateProbe::new(
+            Arc::new(Mutex::new(crate::capacity::CapacityController::new(
+                config,
+            ))),
+            model.to_string(),
+            PathBuf::from("/tmp/codesmith-test"),
+            working_set,
+            8,
+            turn_index,
+        )
+    }
+
+    #[tokio::test]
+    async fn error_escalation_disabled_is_noop() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(ErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Two error steps + a text-only round.
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "e1", "fail_tool", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "again");
+        call2.extend(tool_use_block(1, "e2", "fail_tool", r#"{}"#));
+        call2.extend(finish("tool_use"));
+        let call3 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2, call3]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(disabled_capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Disabled controller → observe returns None → no decision, no slot.
+        assert!(executor.take_pending_capacity_decision().is_none());
+    }
+
+    #[tokio::test]
+    async fn error_escalation_none_probe_is_noop() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(ErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "e1", "fail_tool", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "again");
+        call2.extend(tool_use_block(1, "e2", "fail_tool", r#"{}"#));
+        call2.extend(finish("tool_use"));
+        let call3 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2, call3]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // No .with_capacity_gate() → capacity_gate is None → no checkpoint.
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert!(executor.take_pending_capacity_decision().is_none());
+    }
+
+    #[tokio::test]
+    async fn error_escalation_no_errors_is_noop() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // A successful echo step — no errors → error-escalation early-returns.
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"hi"}"#));
+        call1.extend(finish("tool_use"));
+        let call2 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe_high_prior(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // No errors → error-escalation returns None; seam 1/4 are Low-risk
+        // (high prior) → NoIntervention → no slot.
+        assert!(executor.take_pending_capacity_decision().is_none());
+    }
+
+    #[tokio::test]
+    async fn error_escalation_fires_after_two_consecutive_tool_errors() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(ErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Round 1 + 2: fail_tool (Err → ErrorCategory::Tool). Round 3: text-only.
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "e1", "fail_tool", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "again");
+        call2.extend(tool_use_block(1, "e2", "fail_tool", r#"{}"#));
+        call2.extend(finish("tool_use"));
+        let call3 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2, call3]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe_high_prior(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Two consecutive Tool errors → forced High+severe → VerifyAndReplan.
+        let decision = executor
+            .take_pending_capacity_decision()
+            .expect("error-escalation decision");
+        assert_eq!(decision.action, GuardrailAction::VerifyAndReplan);
+        assert!(
+            decision.reason.contains("error_escalation"),
+            "expected escalation reason, got: {}",
+            decision.reason
+        );
+        assert!(
+            decision.reason.contains("consecutive_steps=2"),
+            "expected consecutive_steps=2, got: {}",
+            decision.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn error_escalation_skipped_transient_only() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(TimeoutErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Two timeout errors (ErrorCategory::Timeout → transient-only).
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "t1", "timeout_tool", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "again");
+        call2.extend(tool_use_block(1, "t2", "timeout_tool", r#"{}"#));
+        call2.extend(finish("tool_use"));
+        let call3 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2, call3]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe_high_prior(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Transient-only (Timeout) without context overflow → early-return None.
+        assert!(executor.take_pending_capacity_decision().is_none());
+    }
+
+    #[tokio::test]
+    async fn error_escalation_blocked_by_intervention_cooldown() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(ErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Low model prior (0.1) → seam 1 fires at step 0 + marks cooldown.
+        // Two error steps then cannot escalate (cooldown → NoIntervention).
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "e1", "fail_tool", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "again");
+        call2.extend(tool_use_block(1, "e2", "fail_tool", r#"{}"#));
+        call2.extend(finish("tool_use"));
+        let call3 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2, call3]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // Slot holds seam 1's decision; error-escalation was cooldown-blocked
+        // and did NOT overwrite the slot with an escalation reason.
+        let decision = executor
+            .take_pending_capacity_decision()
+            .expect("seam 1 capacity decision");
+        assert_ne!(decision.action, GuardrailAction::NoIntervention);
+        assert!(
+            !decision.reason.contains("error_escalation"),
+            "cooldown should have blocked error-escalation, got: {}",
+            decision.reason
+        );
+        // Exactly ONE Capacity status event — seam 1 emitted; error-escalation
+        // was blocked by the cooldown and did not emit a second.
+        let events = drain(&mut rx);
+        let capacity_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:")))
+            .collect();
+        assert_eq!(
+            capacity_events.len(),
+            1,
+            "expected exactly 1 Capacity event (seam 1), got {capacity_events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_escalation_context_overflow_category_in_reason() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(InvalidInputErrorSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Two consecutive InvalidInput errors (ErrorCategory::InvalidInput =
+        // the context-overflow category). `has_context_overflow` bypasses the
+        // transient/consecutive early-returns; consecutive=2 forces
+        // High+severe → VerifyAndReplan. Proves the category label flows into
+        // the overridden reason string.
+        let mut call1 = text_block(0, "go");
+        call1.extend(tool_use_block(1, "b1", "bad_input", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "again");
+        call2.extend(tool_use_block(1, "b2", "bad_input", r#"{}"#));
+        call2.extend(finish("tool_use"));
+        let call3 = end_call();
+        let mock = Arc::new(MockLlm::new(vec![call1, call2, call3]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(capacity_gate_probe_high_prior(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        let decision = executor
+            .take_pending_capacity_decision()
+            .expect("error-escalation decision");
+        assert_eq!(decision.action, GuardrailAction::VerifyAndReplan);
+        assert!(
+            decision.reason.contains("error_escalation"),
+            "expected escalation reason, got: {}",
+            decision.reason
+        );
+        assert!(
+            decision.reason.contains("categories=invalid_input"),
+            "expected invalid_input category label, got: {}",
+            decision.reason
+        );
+    }
+
+    #[test]
+    fn decide_error_escalation_skipped_when_cooldown_set() {
+        // Probe-level unit: a probe whose cooldown is already set (seam 1/4
+        // fired) returns None from decide_error_escalation even with 2
+        // consecutive non-transient errors — the cooldown short-circuits
+        // inside `decide` before reaching `decide_policy`.
+        let working_set = Arc::new(Mutex::new(WorkingSet::default()));
+        let gate = capacity_gate_probe_high_prior("mock-v0", 5, working_set);
+
+        // Simulate seam 1 having intervened this turn.
+        gate.mark_intervention_applied(GuardrailAction::VerifyAndReplan);
+
+        let messages: Vec<codesmith_agent::models::Message> = Vec::new();
+        let decision = gate.decide_error_escalation(
+            &messages,
+            2,
+            &["e1".to_string(), "e2".to_string()],
+            None,
+            2,
+            2,
+            &[crate::error_taxonomy::ErrorCategory::Tool],
+        );
+        assert!(
+            decision.is_none(),
+            "cooldown should block error-escalation, got: {decision:?}"
         );
     }
 

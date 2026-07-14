@@ -9,6 +9,7 @@ use super::*;
 
 use std::path::PathBuf;
 
+use crate::error_taxonomy::ErrorCategory;
 use crate::tool_dispatch::ToolDispatcher;
 use crate::working_set::WorkingSet;
 
@@ -244,6 +245,101 @@ impl CapacityGateProbe {
             .expect("capacity_controller poisoned")
             .last_snapshot()
             .cloned()
+    }
+
+    /// Error-escalation checkpoint (sub-slice 2 of Gate A, slice 34 §E).
+    /// Mirrors `Engine::run_capacity_error_escalation_checkpoint`'s
+    /// observe/force/decide logic. The executor tracks the per-step error
+    /// counts + categories; this method does the capacity-side
+    /// observe/force/decide, returning `Some(decision)` only when the
+    /// controller decides `VerifyAndReplan` (production lines 386–388).
+    ///
+    /// The controller's per-turn cooldown (`intervention_applied_turn`, set
+    /// by seam 1/4's `mark_intervention_applied`) naturally blocks this when
+    /// an earlier checkpoint already intervened — `decide` returns
+    /// `NoIntervention` at the cooldown check (capacity.rs:228) before
+    /// reaching `decide_policy`, mirroring production's "seam 4 fires →
+    /// `continue` → error-escalation skipped". No explicit guard is needed.
+    ///
+    /// The decision reason is overridden with the escalation format
+    /// (production lines 390–401) so the host post-`run`
+    /// `apply_verify_and_replan` records it via slice 33's
+    /// `&decision.reason` plumbing.
+    pub fn decide_error_escalation(
+        &self,
+        messages: &[Message],
+        step: u32,
+        tool_call_ids: &[String],
+        system: Option<&SystemPrompt>,
+        step_error_count: usize,
+        consecutive_tool_error_steps: u32,
+        error_categories: &[ErrorCategory],
+    ) -> Option<CapacityDecision> {
+        // Early-return gating (production lines 332–353): no errors at all;
+        // transient-only without context overflow; non-overflow with fewer
+        // than 2 consecutive error steps.
+        if step_error_count == 0 && consecutive_tool_error_steps < 2 {
+            return None;
+        }
+        // Categorize this step's failures by typed `ErrorCategory` rather than
+        // substring-matching error strings. Context overflow always escalates;
+        // network / rate-limit / timeout are transient and skip escalation;
+        // anything else only escalates with consecutive failures.
+        let has_context_overflow = error_categories.contains(&ErrorCategory::InvalidInput);
+        let only_transient = !error_categories.is_empty()
+            && error_categories.iter().all(|c| {
+                matches!(
+                    c,
+                    ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
+                )
+            });
+        if only_transient && !has_context_overflow {
+            return None;
+        }
+        if !has_context_overflow && consecutive_tool_error_steps < 2 {
+            return None;
+        }
+
+        // Get/observe snapshot (production lines 355–369). `last_snapshot()`
+        // clones + releases the lock before `or_else`, so there is no
+        // re-entrant deadlock (the slice 33 deadlock-fix concern does not
+        // apply to the probe path).
+        let last = self.last_snapshot();
+        let snapshot = last.or_else(|| self.observe_pre_turn(messages, step, tool_call_ids, system));
+        let Some(snapshot) = snapshot else {
+            return None;
+        };
+
+        // Force to High+severe if repeated failures (production lines 371–376).
+        let repeated_failures = step_error_count >= 2 || consecutive_tool_error_steps >= 2;
+        let mut forced = snapshot.clone();
+        if repeated_failures && !(snapshot.risk_band == RiskBand::High && snapshot.severe) {
+            forced.risk_band = RiskBand::High;
+            forced.severe = true;
+        }
+
+        // Decide (production lines 378–382). The controller's per-turn
+        // cooldown (set by seam 1/4) returns `NoIntervention` here if an
+        // earlier checkpoint already intervened.
+        let mut decision = self.decide(Some(&forced));
+
+        // Only act on VerifyAndReplan (production lines 386–388).
+        if decision.action != GuardrailAction::VerifyAndReplan {
+            return None;
+        }
+
+        // Override the reason with the escalation format (production lines
+        // 390–401) so the host post-`run` `apply_verify_and_replan` records
+        // the escalation context (slice 33 passes `&decision.reason`).
+        let category_labels: Vec<String> =
+            error_categories.iter().map(|c| c.to_string()).collect();
+        decision.reason = format!(
+            "error_escalation: step_errors={}, consecutive_steps={}, categories={}",
+            step_error_count,
+            consecutive_tool_error_steps,
+            category_labels.join(",")
+        );
+        Some(decision)
     }
 }
 
