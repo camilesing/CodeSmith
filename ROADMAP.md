@@ -1725,7 +1725,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **下一聚焦工作：**
 - **剩余 dead-code（superseded，低优先）**：`layered_context_checkpoint` / `Engine::recover_context_overflow` / KoD cluster / `rx_user_input` / `tool_exec_lock` / `turn_loop::EarlyToolResult|EarlyToolTask`——均 deferred re-wire 决策点，待各自 re-wire 切片接入时一并删（保 `#[allow(dead_code)]` + doc 留存）。另有 stray `#[cfg(test)] use crate::models::ToolCaller`（`mod.rs:41`，orphan test import，11 既有 warning 之一）可随手清理但本轮未动（超出 named scope）。
-- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：Gate A seam-1+seam-4+error-escalation 已落地（slice 33/34 §E，见下），mid-loop transcript mutations 部分落地（sub-slice 3a §E `VerifyAndReplan`，见下）；3b（`VerifyWithToolReplay`）/ 3c（`TargetedContextRefresh`）仍 deferred。
+- **opt-in `CapacityController`**（Gate A + seam-4 post-tool + error-escalation）：Gate A seam-1+seam-4+error-escalation 已落地（slice 33/34 §E，见下），mid-loop transcript mutations 部分落地（sub-slice 3a §E `VerifyAndReplan` + sub-slice 3b §E `VerifyWithToolReplay`，见下）；3c（`TargetedContextRefresh`）仍 deferred。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
@@ -1810,10 +1810,48 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 **验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 136 通过（133 既有 + 3 新 slice 3a）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1115 通过 + 2 ignored（1112 + 3）；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（未改）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 124 通过 + 1 ignored（123 + 1 新 skip_transcript，host wire-in 零回归）；`cargo +1.90.0 build --workspace` 全绿（tui bin 143 既有死代码 warning，无新增）。
 
 **下一聚焦工作：**
-- **sub-slice 3b**：`VerifyWithToolReplay` transcript 部分 mid-loop（执行器有 `tool_dispatcher`；需 mid-loop 工具重放 + `[verification replay]` 注入 via `ChatHistory::push`；post-`run` `apply_verify_with_tool_replay` 加 `skip_transcript` 跳过 append）。
-- **sub-slice 3c**：`TargetedContextRefresh` transcript 部分 mid-loop（需 mid-loop `compact_messages_safe` LLM compaction + reinject——最 invasive；executor 有 LLM client）。
-- **3b/3c 落地后**：sub-slice 3 完成，mid-loop transcript mutations 全闭合。
+- **sub-slice 3c**：`TargetedContextRefresh` transcript 部分 mid-loop（需 mid-loop `compact_messages_safe` LLM compaction + reinject——最 invasive；executor 有 LLM client）。sub-slice 3 的最后一部分。
+- **3c 落地后**：sub-slice 3 完成，mid-loop transcript mutations 全闭合。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
+
+---
+
+**进度（2026-07-14 §E `VerifyWithToolReplay` transcript portion mid-loop 落地，CapacityController sub-slice 3b，`feat/pluggable-framework-core`）：**
+
+§E 的第三十六个切片落地——关闭 slice 33/34 反复标记的 "mid-loop transcript mutations（sub-slice 3）" 缺口的第二部分（slice 35 / 3a 落地了 `VerifyAndReplan`）。`VerifyWithToolReplay` 此前把整个级联（candidate select → 工具重放 → `[verification replay]` note 构建 → push → state work）defer 到 post-`run`——模型同一 turn 看不到 note，只在下一 turn 看到。本切片把 `VerifyWithToolReplay` 的**transcript 部分**（select candidate → re-execute tool → build `[verification replay]` note → push via `ChatHistory`）前移到 mid-loop；**state work**（canonical persist / system-prompt fold / emit / `mark_intervention_applied` / `mark_replay_failed`）仍 post-`run`，用新 `skip_transcript` flag + carried `ReplayOutcome`——同 3a 的 split philosophy。
+
+**关键不对称（vs 3a，决定设计）：**
+- **生产镜像**（`Engine::run_capacity_post_tool_checkpoint`）：`VerifyWithToolReplay` 调全 `apply_verify_with_tool_replay` mid-loop 后返 **`false`** → 外层 loop **不** `next_step(); continue;`，fall through 到正常 step advance（contrast `VerifyAndReplan` 返 `true` → `next_step(); continue;`）。故执行器 3b 臂**不** `step += 1; continue;`——这是与 3a 臂的关键差异。
+- **state work 依赖 replay outcome**：3a 的 state work outcome-independent（不需 reset 的输出）；3b 的 state work（canonical note "passed/failed"、`ReplayInfo{tool_id,tool_name,pass,diff_summary}`、`verification_note`、emit label）**需要** transcript 部分产的 `{pass, diff_summary, candidate.id, candidate.name, verification_note}`。故 outcome 须从 mid-loop（执行器）handoff 到 post-`run`（host）→ 新 executor slot `pending_replay_outcome`。
+
+**重放路径（唯一 fork）：** mid-loop replay 经 **`tool_dispatcher.execute(name, input, None)`** 重放 candidate——执行器 `tool_dispatcher: Option<Arc<dyn ToolDispatcher>>` 字段（host `mod.rs:1289 .with_tool_dispatcher(plan.tool_registry.clone())` 接入）。这是 legacy `apply_verify_with_tool_replay` 在 `execute_tool_with_lock` 的 `ToolDispatcher::execute` 分支内用的**同一 dispatch 面**，减去 `ToolExecGuard` lock + `mcp_pool`。匹配 ROADMAP 提示（"执行器有 `tool_dispatcher`"）。无新 executor 字段接 lock/mcp。
+
+**落地步骤（3 文件 + 测试）：**
+
+1. **`capacity_flow.rs` — 新类型 + free fns + 签名扩展**：新 `pub struct ReplayOutcome { tool_id, tool_name, pass, replay_outcome, diff_summary, verification_note }`（`#[derive(Clone, Debug)]`，live in public `capacity` module——出现在 `pub` 签名 `apply_verify_with_tool_replay` / `take_pending_replay_outcome` 且 tui engine 测试直接构造）。新 `pub(crate) struct ReplayCandidate { id, name, input, original_result }`。新 `pub(crate) fn is_replayable_read_only(tool_name, tool_registry) -> bool`（factored 自 `Engine::tool_is_replayable_read_only`，body 不读 `self`；method 改为 delegate，行为保持）。新 `pub(crate) fn select_replay_candidate_from_messages(messages, tool_registry) -> Option<ReplayCandidate>`（`&[Message]` 版 `Engine::select_replay_candidate`——后者需 `turn: &TurnContext` 执行器不持有；逆序扫 assistant `ToolUse{id,name,input}` whose matching user `ToolResult{tool_use_id==id}` 有 `is_error != Some(true)` AND `is_replayable_read_only`）。新 `pub(crate) async fn replay_and_push_verification_note(history: &mut dyn ChatHistory, tool_registry) -> Option<ReplayOutcome>`（mid-loop transcript mutation，镜像 3a 的 `reset_history_to_latest_user_and_verified`：select → `tool_registry.execute` → 算 `(pass, replay_outcome, diff_summary)`（pure，复用 `summarize_text`）→ 构建 `verification_note` → `history.push(ToolResult{tool_use_id, content: verification_note, is_error: None})` → 返 `Some(ReplayOutcome{...})`；**不**调 `mark_replay_failed`——state work，post-`run`）。`apply_verify_with_tool_replay` 加尾参 `skip_transcript: bool, outcome: Option<ReplayOutcome>`：`skip_transcript==true` 时若 `outcome.is_none()` 返 `false`（no-op），else **跳过** candidate select / MCP/parallel/interactive flags / re-execute / pass-fail / note push，用 `outcome` 跑 state work（canonical note from `outcome.pass`、`ReplayInfo` from outcome、`verification_note` from outcome、`replay_outcome` label for emit）；`!pass` 时仍 `mark_replay_failed`（state）。dead-code 调用点 `run_capacity_post_tool_checkpoint` 的 `VerifyWithToolReplay` 臂传 `false, None`（faithful 旧路径）。不变量注释（镜像 3a 的 `VerifyAndReplan` 注释）。
+2. **`host_executor.rs` — slot + accessor + seam-4 臂**：新字段 `pending_replay_outcome: std::sync::Mutex<Option<ReplayOutcome>>`（init `Mutex::new(None)`，镜像 `pending_capacity_decision`）。新 `#[must_use] pub fn take_pending_replay_outcome(&self) -> Option<ReplayOutcome>`（镜像 `take_pending_capacity_decision`）。seam-4（`run_inner`，`decision.action != NoIntervention` 块）在既有 `if VerifyAndReplan {...; step += 1; continue;}` 后加 `else if VerifyWithToolReplay { let outcome = replay_and_push_verification_note(history, self.tool_dispatcher.as_deref()).await; *self.pending_replay_outcome.lock()... = outcome; }`——**无** `step += 1; continue;`（生产返 `false`，fall through）；slot 仍设，post-`run` state work 跑 `skip_transcript = true`。import 加 `replay_and_push_verification_note` + `ReplayOutcome`。seam-4 注释更新 "VerifyWithToolReplay deferred" → "transcript portion mid-loop (slice 3b §E)"。
+3. **`mod.rs` — post-`run` 臂**：`VerifyWithToolReplay` 臂（slice 33 既有 match 块）传 `skip_transcript = true` + `let outcome = executor.take_pending_replay_outcome();` + 注释不变量（mid-loop 重放+push 已执行，post-`run` 只跑 state work，**不** re-execute+re-push 否则 double-inject note）。
+
+**4 个新测试：**
+- `host_executor.rs` test module（"§E slice 3b — VerifyWithToolReplay mid-loop" 组）：
+  - `replay_and_push_verification_note_pushes_note_and_outcome`（headline——**直接测 free fn**（seam-4 臂的 body）；`EchoSpec`（read-only，deterministic）注册为 `ToolRegistry`，既作 `tool_dispatcher` 又经 `as_ref()` 传给 free fn；seed transcript 含 echo tool_use + matching 成功 tool_result（content = `{workspace}|hi`，匹配 EchoSpec 重放输出 → `pass=true`）；断言 note pushed（`[verification replay]` + `tool=echo` + `pass=true`、`tool_use_id == "e1"`、`is_error == None`）+ `ReplayOutcome{tool_id:"e1", tool_name:"echo", pass:true, replay_outcome:"pass", diff_summary:"output_match", verification_note==note}`）。**为何不测 executor full-run**：seam-1（pre-turn）与 seam-4（post-tool）共享同一 `turn_index` + 同一 `decide` cooldown——任何 yield `VerifyWithToolReplay` 的 config 下 pre-turn seam-1 先 fire 设 cooldown → seam-4 返 `NoIntervention`（无 candidate → 无 note）。full-run 正测**结构性阻断**（非仅数值 fragile）；free fn 是 seam-4 臂的 body，直接测覆盖同一逻辑。
+  - `verify_with_tool_replay_disabled_is_noop`（disabled probe → 无 note + `take_pending_replay_outcome() == None`）。
+  - `verify_with_tool_replay_none_probe_is_noop`（无 `.with_capacity_gate` → slot `None`；镜像 `gate_a_none_probe_is_noop` for replay-outcome slot）。
+- `crates/tui/src/core/engine/tests.rs`（`build_engine_with_capacity` harness）：
+  - `apply_verify_with_tool_replay_skip_transcript_uses_outcome`（grown transcript 含既有 `[verification replay]` ToolResult（模拟 executor mid-loop push）+ 模型 post-replay assistant turn；构造 `ReplayOutcome{pass:true,...}`；调 `apply_verify_with_tool_replay(..., skip_transcript=true, Some(outcome))`；断言 return `true`（state work 跑）+ transcript **不变**（len + content）+ 恰好 1 个 replay note（无 double-push）——证明 `skip_transcript=true` 不 re-wipe/re-push 同时 state work 仍跑；镜像 3a 的 `apply_verify_and_replan_skip_transcript_preserves_messages`）。
+
+**By-design gaps（deferred，documented）：**
+- **State work 仍 post-`run`**（executor 无 `&mut self.session` for canonical persist / system-prompt fold）——同 3a。
+- **Outcome handoff 经新 `pending_replay_outcome` slot**——3a state work outcome-independent；3b 不是，故 replay outcome carried 到 post-`run`。
+- **MCP replay candidates degrade**：`tool_dispatcher.execute` 不处理 MCP 工具（mid-loop 无 `mcp_pool`）→ `NotAvailable` → `replay_error` → `pass=false`。legacy 经 `mcp_pool` 处理 MCP。（lock/mcp plumbing deferred，匹配 3a 模式。）
+- **mid-loop 无 `ToolExecGuard` 序列化**——一致于执行器 normal tool loop（用 `Tool::run` 不上 lock）；replay 用 `tool_dispatcher.execute` 直接。
+- **`mark_replay_failed` 仍 post-`run`**——`CapacityGateProbe` 不暴露它；state work 本来就是。
+- **`before/after_tokens` emit delta 不反映 replay 的 token 影响**（replay 已 mid-loop 应用）——minor divergence，匹配 3a 的 "canonical state divergence" gap。
+- **`mark_intervention_applied` 在 mid-loop replay 前 fire**（既有 seam-4 order）——若 replay 找无 candidate（outcome `None`），cooldown 仍设；acceptable（本 turn 阻断 re-intervention）。documented。
+- **executor full-run 正测结构性阻断**（见上）——seam-1 先 fire 阻 seam-4；free fn 直测覆盖 logic，disabled/None 测覆盖 wiring。
+- **3c（`TargetedContextRefresh`）仍 deferred**——需 mid-loop LLM compaction + reinject。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 139 通过（136 + 3 新 slice 3b）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1117 通过 + 1 flaky（`mcp::tests::streamable_http_stale_session_reconnects_and_retries_tool_call`——网络时序，隔离重跑通过，与本切片无关）+ 2 ignored（1115 + 3 新，host wire-in 零回归）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 125 通过 + 1 ignored（124 + 1 新 skip_transcript）；`cargo +1.90.0 build --workspace` 全绿（tui bin 143 既有死代码 warning，无新增）。
 
 ---
 

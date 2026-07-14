@@ -138,6 +138,30 @@ pub struct CapacityDecision {
     pub cooldown_blocked: bool,
 }
 
+/// Mid-loop replay outcome handed from the executor to the host's post-`run`
+/// `Engine::apply_verify_with_tool_replay(skip_transcript = true)` (§E slice 3b).
+///
+/// `VerifyWithToolReplay`'s transcript portion (select candidate → re-execute →
+/// build `[verification replay]` note → push via `ChatHistory`) runs mid-loop in
+/// the executor, but its state work (canonical persist, system-prompt fold,
+/// emit, mark) is outcome-dependent (canonical note, `ReplayInfo`, emit label),
+/// unlike `VerifyAndReplan`'s (slice 3a) — so the outcome is carried across via
+/// the executor's `pending_replay_outcome` slot. Lives in the public `capacity`
+/// module (like `CapacityDecision`) because it appears in `pub` signatures
+/// (`apply_verify_with_tool_replay`, `take_pending_replay_outcome`) and the tui
+/// engine tests construct it directly.
+#[derive(Debug, Clone)]
+pub struct ReplayOutcome {
+    pub tool_id: String,
+    pub tool_name: String,
+    pub pass: bool,
+    /// `"pass"` / `"conflict"` / `"error"` — the `emit_capacity_intervention`
+    /// outcome label (legacy `replay_outcome`).
+    pub replay_outcome: String,
+    pub diff_summary: String,
+    pub verification_note: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct GuardrailRuntimeState {
     last_refresh_turn: Option<u64>,

@@ -49,7 +49,7 @@ use crate::utils::spawn_supervised;
 
 use super::capacity::{
     CapacityController, CapacityDecision, CapacityObservationInput, CapacitySnapshot,
-    GuardrailAction, RiskBand,
+    GuardrailAction, ReplayOutcome, RiskBand,
 };
 use super::capacity_memory::{
     CanonicalState, CapacityMemoryRecord, ReplayInfo, append_capacity_record,
@@ -1375,6 +1375,17 @@ impl Engine {
                         .await;
                 }
                 GuardrailAction::VerifyWithToolReplay => {
+                    // §E slice 3b: the executor re-executed the replay candidate
+                    // + pushed the `[verification replay]` note mid-loop via
+                    // `ChatHistory` (`replay_and_push_verification_note`), storing
+                    // the `ReplayOutcome`. Pass `skip_transcript = true` so this
+                    // runs only the state work (canonical persist, system-prompt
+                    // fold, emit, mark) using the carried outcome — it must NOT
+                    // re-execute + re-push, which would double-inject the note.
+                    // The state work here is outcome-dependent (canonical note,
+                    // `ReplayInfo`, emit label), unlike `VerifyAndReplan`'s
+                    // (slice 3a), which is why the outcome is handed across.
+                    let outcome = executor.take_pending_replay_outcome();
                     let _ = self
                         .apply_verify_with_tool_replay(
                             &turn,
@@ -1383,6 +1394,8 @@ impl Engine {
                             plan.tool_registry.as_deref(),
                             Arc::clone(&self.tool_exec_lock),
                             self.mcp_pool.clone(),
+                            true,
+                            outcome,
                         )
                         .await;
                 }

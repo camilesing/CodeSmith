@@ -639,7 +639,10 @@ use codesmith_agent::models::{
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
-use super::capacity_flow::{reset_history_to_latest_user_and_verified, CapacityGateProbe};
+use super::capacity_flow::{
+    replay_and_push_verification_note, reset_history_to_latest_user_and_verified,
+    CapacityGateProbe,
+};
 use super::context::{
     compact_tool_result_for_context, context_input_budget_for_provider,
     estimate_input_tokens_conservative, is_context_length_error_message,
@@ -649,7 +652,7 @@ use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
 use super::turn_loop::subagent_completion_runtime_message;
-use super::{CapacityDecision, GuardrailAction};
+use super::{CapacityDecision, GuardrailAction, ReplayOutcome};
 use crate::subagent::SubAgentCompletion;
 use tokio_util::sync::CancellationToken;
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
@@ -1517,6 +1520,19 @@ pub struct HostAgentExecutor {
     /// `mark_intervention_applied` sets the cooldown so seam 4's `decide`
     /// returns `NoIntervention` — the slot retains seam 1's decision.
     pending_capacity_decision: std::sync::Mutex<Option<CapacityDecision>>,
+
+    /// One-shot replay-outcome slot (slice 3b §E). Set by the executor mid-loop
+    /// when seam 4 decides `VerifyWithToolReplay`: `replay_and_push_verification_note`
+    /// re-executes the candidate + pushes the `[verification replay]` note via
+    /// `ChatHistory` mid-loop, and the resulting `ReplayOutcome` (pass/fail +
+    /// diff + note + candidate id/name) is stored here so the host's post-`run`
+    /// `apply_verify_with_tool_replay(skip_transcript = true)` can run only the
+    /// state work (canonical persist, system-prompt fold, emit, mark) using the
+    /// carried outcome — its state work is outcome-dependent, unlike
+    /// `VerifyAndReplan`'s (slice 3a). `None` when the mid-loop replay found no
+    /// candidate (host then no-ops). Same `std::sync::Mutex` one-shot pattern as
+    /// [`HostAgentExecutor::pending_capacity_decision`].
+    pending_replay_outcome: std::sync::Mutex<Option<ReplayOutcome>>,
 }
 
 impl HostAgentExecutor {
@@ -1570,6 +1586,7 @@ pub fn new(
         pending_post_compact_cleanup: std::sync::Mutex::new(false),
         capacity_gate: None,
         pending_capacity_decision: std::sync::Mutex::new(None),
+        pending_replay_outcome: std::sync::Mutex::new(None),
     }
 }
 
@@ -1727,6 +1744,20 @@ pub fn new(
         self.pending_capacity_decision
             .lock()
             .expect("pending_capacity_decision mutex poisoned")
+            .take()
+    }
+
+    /// Read back the replay-outcome slot set by seam 4 mid-loop (slice 3b §E).
+    /// The host calls this after `run` returns to run the post-`run` state work
+    /// of `apply_verify_with_tool_replay(skip_transcript = true)` using the
+    /// carried `ReplayOutcome` (its state work is outcome-dependent: canonical
+    /// note, `ReplayInfo`, emit label). Drains the slot (one-shot). `None` when
+    /// the mid-loop replay found no candidate — the host then no-ops.
+    #[must_use]
+    pub fn take_pending_replay_outcome(&self) -> Option<ReplayOutcome> {
+        self.pending_replay_outcome
+            .lock()
+            .expect("pending_replay_outcome mutex poisoned")
             .take()
     }
 
@@ -3882,9 +3913,14 @@ impl HostAgentExecutor {
             // so the model replans from the clean slate within the same turn.
             // The slot is still set so the host's post-`run` call runs the
             // state work (system-prompt fold, canonical persist, emit, mark)
-            // with `skip_transcript = true` (no re-wipe). Other actions
-            // (`VerifyWithToolReplay`, `TargetedContextRefresh`) defer their
-            // transcript mutation to post-`run` (sub-slices 3b/3c).
+            // with `skip_transcript = true` (no re-wipe). `VerifyWithToolReplay`
+            // additionally re-executes its replay candidate + pushes the
+            // `[verification replay]` note mid-loop (slice 3b §E) — see the arm
+            // below; its state work still runs post-`run` with
+            // `skip_transcript = true` via the carried `ReplayOutcome` (its
+            // state work is outcome-dependent, unlike `VerifyAndReplan`'s).
+            // `TargetedContextRefresh` still defers its transcript mutation to
+            // post-`run` (sub-slice 3c).
             if let Some(gate) = &self.capacity_gate {
                 if let Some(snapshot) = gate.observe_post_tool(
                     history.messages(),
@@ -3917,6 +3953,34 @@ impl HostAgentExecutor {
                             reset_history_to_latest_user_and_verified(history);
                             step += 1;
                             continue;
+                        } else if decision.action == GuardrailAction::VerifyWithToolReplay {
+                            // §E slice 3b: mid-loop replay + `[verification
+                            // replay]` note injection. Re-execute the most
+                            // recent successful read-only tool-use via
+                            // `tool_dispatcher.execute` (the legacy dispatch
+                            // surface, minus the `ToolExecGuard` lock + mcp_pool)
+                            // and push the `[verification replay]` `ToolResult`
+                            // onto the transcript via `ChatHistory` so the model
+                            // sees it within the same turn. The outcome is stored
+                            // for the host's post-`run` state work (canonical
+                            // persist, system-prompt fold, emit, mark) which runs
+                            // with `skip_transcript = true`.
+                            //
+                            // NO `step += 1; continue;` — production's
+                            // `run_capacity_post_tool_checkpoint` returns `false`
+                            // for `VerifyWithToolReplay` (it falls through to the
+                            // normal step advance + (4) seam), unlike
+                            // `VerifyAndReplan` (which returns `true` →
+                            // `next_step(); continue;`).
+                            let outcome = replay_and_push_verification_note(
+                                history,
+                                self.tool_dispatcher.as_deref(),
+                            )
+                            .await;
+                            *self
+                                .pending_replay_outcome
+                                .lock()
+                                .expect("pending_replay_outcome mutex poisoned") = outcome;
                         }
                     }
                 }
@@ -9168,6 +9232,191 @@ mod tests {
             has_capacity_status,
             "expected a Capacity status event, got: {events:?}"
         );
+    }
+
+    // === VerifyWithToolReplay mid-loop (Gate A sub-slice 3b, slice 36 §E) =====
+    //
+    // `VerifyWithToolReplay`'s transcript portion (select candidate → re-execute
+    // → build `[verification replay]` note → push via `ChatHistory`) runs
+    // mid-loop in the executor's seam-4 arm, which calls the free fn
+    // `replay_and_push_verification_note`. An executor full-run positive test
+    // is structurally blocked: seam-1 (pre-turn) and seam-4 (post-tool) share
+    // the same `turn_index` + the same `decide` cooldown, so under any config
+    // that yields `VerifyWithToolReplay` the pre-turn seam-1 fires first and
+    // sets the cooldown → seam-4 returns `NoIntervention` (no candidate → no
+    // note). The free fn *is* the seam-4 arm's body, so testing it directly
+    // covers the same logic; the disabled/None tests below cover the wiring
+    // (no spurious replay-outcome slot).
+
+    /// §E slice 3b: `replay_and_push_verification_note` (the seam-4 arm's body)
+    /// re-executes the most recent successful read-only tool-use via
+    /// `ToolDispatcher::execute` and pushes the `[verification replay]`
+    /// `ToolResult` onto the transcript via `ChatHistory`, returning a
+    /// `ReplayOutcome` for the host's post-`run` state work. With a
+    /// deterministic read-only tool (`EchoSpec`) the replay output matches the
+    /// original → `pass=true`.
+    #[tokio::test]
+    async fn replay_and_push_verification_note_pushes_note_and_outcome() {
+        let tmp = tempdir().expect("tempdir");
+        let workspace_stamp = tmp.path().display().to_string();
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let dispatcher: Arc<dyn ToolDispatcher> = Arc::new(registry);
+
+        let mut sess = fresh_session();
+        // Seed: user "hello" → assistant echo tool_use → user echo tool_result
+        // (success). The original result content matches what `EchoSpec`
+        // re-execution produces (`{workspace}|hi`) so the replay compares equal
+        // → `pass=true`.
+        sess.messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        });
+        sess.messages.push(Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "let me echo".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "e1".to_string(),
+                    name: "echo".to_string(),
+                    input: serde_json::json!({"text":"hi"}),
+                    caller: None,
+                },
+            ],
+        });
+        sess.messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "e1".to_string(),
+                content: format!("{workspace_stamp}|hi"),
+                is_error: Some(false),
+                content_blocks: None,
+            }],
+        });
+
+        let mut history = SessionChatHistory::new(&mut sess);
+        let before_len = history.messages().len();
+        let outcome = replay_and_push_verification_note(&mut history, Some(dispatcher.as_ref()))
+            .await
+            .expect("replay found a candidate");
+
+        // The `[verification replay]` note was pushed onto the transcript
+        // mid-loop via `ChatHistory` (in-place on `session.messages`).
+        assert_eq!(history.messages().len(), before_len + 1);
+        let note = history.messages().last().expect("note pushed");
+        assert_eq!(note.role, "user");
+        let block = note.content.last().expect("note has a block");
+        let note_content = match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                content_blocks,
+            } => {
+                assert_eq!(tool_use_id, "e1");
+                assert!(content.contains("[verification replay]"));
+                assert!(content.contains("tool=echo"));
+                assert!(content.contains("pass=true"));
+                assert_eq!(*is_error, None);
+                assert!(content_blocks.is_none());
+                content.clone()
+            }
+            other => panic!("expected ToolResult note, got {other:?}"),
+        };
+
+        // The outcome carries the values the host's post-`run` state work needs
+        // (canonical note, `ReplayInfo`, emit label).
+        assert_eq!(outcome.tool_id, "e1");
+        assert_eq!(outcome.tool_name, "echo");
+        assert!(outcome.pass);
+        assert_eq!(outcome.replay_outcome, "pass");
+        assert_eq!(outcome.diff_summary, "output_match");
+        assert_eq!(outcome.verification_note, note_content);
+    }
+
+    /// §E slice 3b: a disabled `CapacityGateProbe` (`enabled: false`) never
+    /// observes → seam-4 never fires → no `[verification replay]` note and the
+    /// replay-outcome slot stays `None` (no spurious state work post-`run`).
+    #[tokio::test]
+    async fn verify_with_tool_replay_disabled_is_noop() {
+        let mut sess = fresh_session();
+        let working_set = Arc::clone(&sess.working_set);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![end_call()])),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_capacity_gate(Some(disabled_capacity_gate_probe(
+            "mock-v0",
+            5,
+            working_set,
+        )));
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert!(executor.take_pending_replay_outcome().is_none());
+        let has_note = history.messages().iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolResult { content, .. }
+                        if content.contains("[verification replay]")
+                )
+            })
+        });
+        assert!(!has_note, "disabled probe must not push a replay note");
+    }
+
+    /// §E slice 3b: with no `CapacityGateProbe` wired (`.with_capacity_gate`
+    /// never called → `capacity_gate == None`), seam-4 is skipped entirely →
+    /// the replay-outcome slot stays `None`. Mirrors `gate_a_none_probe_is_noop`
+    /// for the replay-outcome slot.
+    #[tokio::test]
+    async fn verify_with_tool_replay_none_probe_is_noop() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![end_call()])),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert!(executor.take_pending_replay_outcome().is_none());
     }
 
     // === error-escalation (Gate A sub-slice 2, slice 34 §E) =================

@@ -1,7 +1,7 @@
 use codesmith_agent_runtime::telemetry::TelemetrySink;
 use crate::core::capacity::{
     CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
-    GuardrailAction, RiskBand,
+    GuardrailAction, ReplayOutcome, RiskBand,
 };
 use crate::core::capacity_memory::load_last_k_capacity_records;
 use crate::core::turn::{TurnContext, TurnToolCall};
@@ -2748,6 +2748,118 @@ async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
     // not wipe the growth the model produced after the mid-loop reset).
     assert_eq!(engine.session.messages.len(), before_len);
     assert_eq!(engine.session.messages, before_messages);
+}
+
+/// §E slice 3b: `apply_verify_with_tool_replay(skip_transcript = true)` runs
+/// only the state work (canonical persist, system-prompt fold, emit, mark)
+/// using the carried `ReplayOutcome`, and does NOT re-execute the replay
+/// candidate or re-push the `[verification replay]` note. The executor already
+/// pushed the note mid-loop via `ChatHistory`; re-running the transcript
+/// portion would double-inject the note. This proves the post-`run` path
+/// preserves the grown transcript + the existing note (mirrors slice 3a's
+/// `apply_verify_and_replan_skip_transcript_preserves_messages`).
+#[tokio::test]
+async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller =
+        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    // A grown transcript representing the post-replay state: the executor's
+    // mid-loop replay already pushed the `[verification replay]` note (the
+    // existing ToolResult below), then the model added an assistant turn on
+    // top. Re-running the transcript portion post-`run` would wipe this growth
+    // and double-inject the note.
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "replay_tool".to_string(),
+            content: "[verification replay] tool=read_file pass=true details=output_match"
+                .to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+    engine.session.messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "replay passed; continuing".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let before_messages = engine.session.messages.clone();
+    let before_len = before_messages.len();
+    let turn = TurnContext::new(10);
+
+    let outcome = ReplayOutcome {
+        tool_id: "replay_tool".to_string(),
+        tool_name: "read_file".to_string(),
+        pass: true,
+        replay_outcome: "pass".to_string(),
+        diff_summary: "output_match".to_string(),
+        verification_note:
+            "[verification replay] tool=read_file pass=true details=output_match".to_string(),
+    };
+
+    let applied = engine
+        .apply_verify_with_tool_replay(
+            &turn,
+            AppMode::Agent,
+            None,
+            None,
+            Arc::new(RwLock::new(())),
+            None,
+            true,
+            Some(outcome),
+        )
+        .await;
+
+    // State work ran to completion (canonical persist, system-prompt fold,
+    // emit, `mark_intervention_applied`).
+    assert!(applied);
+    // The transcript is untouched — `skip_transcript = true` skipped the
+    // candidate select + re-execute + note push, so the existing
+    // `[verification replay]` note + the model's post-replay turn survive
+    // (this is the crux of sub-slice 3b: the post-`run` path must not
+    // double-inject the note the executor already pushed mid-loop).
+    assert_eq!(engine.session.messages.len(), before_len);
+    assert_eq!(engine.session.messages, before_messages);
+    // Exactly one `[verification replay]` note (the seeded one) — no
+    // double-push from the `skip_transcript` path.
+    let replay_notes = engine
+        .session
+        .messages
+        .iter()
+        .filter(|m| {
+            m.content.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolResult { content, .. }
+                        if content.contains("[verification replay]")
+                )
+            })
+        })
+        .count();
+    assert_eq!(replay_notes, 1, "skip_transcript must not re-push the note");
 }
 
 #[tokio::test]

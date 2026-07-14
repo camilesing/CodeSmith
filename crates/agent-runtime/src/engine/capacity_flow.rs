@@ -150,6 +150,179 @@ pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHi
     }
 }
 
+/// A replayable tool-use candidate resolved from the transcript (§E slice 3b).
+///
+/// The `&[Message]` analog of a `TurnToolCall`: the executor holds `&mut dyn
+/// ChatHistory` during `run` (not a `TurnContext`), so the mid-loop replay
+/// selects its candidate by scanning the transcript rather than
+/// `turn.tool_calls`.
+pub(crate) struct ReplayCandidate {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) input: serde_json::Value,
+    /// The original `ToolResult.content` for this `tool_use_id` — what the
+    /// replay output is compared against.
+    pub(crate) original_result: String,
+}
+
+/// Whether `tool_name` is a read-only, replayable tool — the free-fn form of
+/// [`Engine::tool_is_replayable_read_only`] (whose body reads no `self`
+/// state), so the mid-loop executor path can call it without `&Engine`
+/// (§E slice 3b).
+pub(crate) fn is_replayable_read_only(
+    tool_name: &str,
+    tool_registry: Option<&dyn ToolDispatcher>,
+) -> bool {
+    if tool_name == MULTI_TOOL_PARALLEL_NAME || tool_name == REQUEST_USER_INPUT_NAME {
+        return false;
+    }
+    if McpPool::is_mcp_tool(tool_name) {
+        return mcp_tool_is_read_only(tool_name);
+    }
+    tool_registry
+        .and_then(|registry| registry.metadata(tool_name))
+        .is_some_and(|metadata| metadata.is_read_only)
+}
+
+/// Select the most recent successful, read-only, replayable tool-use from the
+/// transcript — the `&[Message]` analog of [`Engine::select_replay_candidate`]
+/// (which scans `turn.tool_calls`) (§E slice 3b).
+///
+/// A "candidate" is an assistant `ToolUse` whose matching user `ToolResult`
+/// (by `tool_use_id`) is non-error (`is_error != Some(true)`) and whose tool
+/// `is_replayable_read_only`. By-design divergence from the legacy
+/// `TurnToolCall`-based selection (which keys on `error.is_none() &&
+/// result.is_some()`): the transcript only exposes `is_error`, which is
+/// `Some(true)` for both dispatch-`Err` and `Ok(ToolResult { success: false })`,
+/// so this path selects only fully-successful tools — replaying a successful
+/// tool to verify idempotency is the replay's intent anyway.
+pub(crate) fn select_replay_candidate_from_messages(
+    messages: &[Message],
+    tool_registry: Option<&dyn ToolDispatcher>,
+) -> Option<ReplayCandidate> {
+    // Map every `ToolResult` by `tool_use_id` → (content, is_error).
+    use std::collections::HashMap;
+    let mut results: HashMap<&str, (&str, Option<bool>)> = HashMap::new();
+    for msg in messages {
+        for block in &msg.content {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } = block
+            {
+                results.insert(tool_use_id.as_str(), (content.as_str(), *is_error));
+            }
+        }
+    }
+    // Most-recent successful replayable `ToolUse`.
+    for msg in messages.iter().rev() {
+        if msg.role != "assistant" {
+            continue;
+        }
+        for block in msg.content.iter().rev() {
+            if let ContentBlock::ToolUse { id, name, input, .. } = block {
+                if let Some((content, is_error)) = results.get(id.as_str()) {
+                    if *is_error != Some(true)
+                        && is_replayable_read_only(name, tool_registry)
+                    {
+                        return Some(ReplayCandidate {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                            original_result: (*content).to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Re-execute the most recent successful read-only tool-use and push the
+/// `[verification replay]` `ToolResult` note onto the transcript via
+/// `ChatHistory` — the mid-loop `VerifyWithToolReplay` transcript mutation
+/// (§E slice 3b).
+///
+/// Mirrors the transcript portion of [`Engine::apply_verify_with_tool_replay`]
+/// (candidate select → re-execute → pass/fail → build note → push) but operates
+/// through the framework-core `ChatHistory` trait (`push`) since the executor
+/// only holds `&mut dyn ChatHistory` during `run`, not `&mut Session`. The
+/// re-execution uses `tool_registry.execute` (the same dispatch surface the
+/// legacy path uses inside `execute_tool_with_lock`, minus the `ToolExecGuard`
+/// lock + `mcp_pool`). Returns the outcome so the host's post-`run` call can
+/// run the state work (canonical persist, system-prompt fold, emit, mark) with
+/// `skip_transcript = true`. Returns `None` when no candidate is found (the
+/// host then no-ops). Does **not** call `mark_replay_failed` — the
+/// `CapacityGateProbe` doesn't expose it, and it's state work (post-`run`).
+pub(crate) async fn replay_and_push_verification_note(
+    history: &mut dyn ChatHistory,
+    tool_registry: Option<&dyn ToolDispatcher>,
+) -> Option<ReplayOutcome> {
+    let candidate = select_replay_candidate_from_messages(history.messages(), tool_registry)?;
+    let registry = tool_registry?;
+
+    let replay_result = registry
+        .execute(&candidate.name, candidate.input.clone(), None)
+        .await;
+
+    let (pass, replay_outcome, diff_summary) = match replay_result {
+        Ok(output) => {
+            let original = candidate.original_result.as_str();
+            let replay = output.content.as_str();
+            let equal = original.trim() == replay.trim();
+            let diff = if equal {
+                "output_match".to_string()
+            } else {
+                format!(
+                    "output_mismatch: original='{}' replay='{}'",
+                    summarize_text(original, 140),
+                    summarize_text(replay, 140)
+                )
+            };
+            (
+                equal,
+                if equal {
+                    "pass".to_string()
+                } else {
+                    "conflict".to_string()
+                },
+                diff,
+            )
+        }
+        Err(err) => (
+            false,
+            "error".to_string(),
+            format!("replay_error: {}", summarize_text(&err.to_string(), 180)),
+        ),
+    };
+
+    let verification_note = format!(
+        "[verification replay] tool={} pass={} details={}",
+        candidate.name, pass, diff_summary
+    );
+    history.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: candidate.id.clone(),
+            content: verification_note.clone(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+
+    Some(ReplayOutcome {
+        tool_id: candidate.id,
+        tool_name: candidate.name,
+        pass,
+        replay_outcome,
+        diff_summary,
+        verification_note,
+    })
+}
+
 /// Capacity-controller (Gate A) probe for the executor path (§E slice 33).
 ///
 /// Mirrors the established `CompactionProbe` / `CapacityProbe` /
@@ -465,6 +638,8 @@ impl Engine {
                         tool_registry,
                         tool_exec_lock,
                         mcp_pool,
+                        false,
+                        None,
                     )
                     .await;
                 false
@@ -956,95 +1131,130 @@ impl Engine {
         tool_registry: Option<&dyn ToolDispatcher>,
         tool_exec_lock: Arc<RwLock<()>>,
         mut mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+        skip_transcript: bool,
+        outcome: Option<ReplayOutcome>,
     ) -> bool {
         let before_tokens = self.estimated_input_tokens();
-        let Some(candidate) = self.select_replay_candidate(turn, tool_registry) else {
-            return false;
-        };
 
-        if McpPool::is_mcp_tool(&candidate.name) && mcp_pool.is_none() {
-            mcp_pool = self.ensure_mcp_pool().await.ok();
-        }
-
-        let supports_parallel = if McpPool::is_mcp_tool(&candidate.name) {
-            mcp_tool_is_parallel_safe(&candidate.name)
-        } else {
-            tool_registry
-                .and_then(|registry| registry.metadata(&candidate.name))
-                .is_some_and(|metadata| metadata.supports_parallel)
-        };
-        let interactive = if McpPool::is_mcp_tool(&candidate.name) {
-            false
-        } else {
-            tool_registry
-                .is_some_and(|registry| registry.is_interactive(&candidate.name, &candidate.input))
-        };
-
-        let replay_result = Self::execute_tool_with_lock(
-            tool_exec_lock,
-            supports_parallel,
-            interactive,
-            self.tx_event.clone(),
-            candidate.name.clone(),
-            candidate.input.clone(),
-            tool_registry,
-            mcp_pool.clone(),
-            None,
-        )
-        .await;
-
-        let (pass, replay_outcome, diff_summary) = match replay_result {
-            Ok(output) => {
-                let original = candidate.result.as_deref().unwrap_or_default();
-                let replay = output.content.as_str();
-                let equal = original.trim() == replay.trim();
-                let diff = if equal {
-                    "output_match".to_string()
-                } else {
-                    format!(
-                        "output_mismatch: original='{}' replay='{}'",
-                        summarize_text(original, 140),
-                        summarize_text(replay, 140)
-                    )
+        // §E slice 3b: when the executor already applied the transcript portion
+        // (candidate select → re-execute → push `[verification replay]` note)
+        // mid-loop via `ChatHistory`, `skip_transcript = true` skips re-doing it
+        // here — re-executing + pushing again would double-inject the note. The
+        // carried `outcome` supplies the values the state work below needs
+        // (canonical note, `ReplayInfo`, `verification_note`, emit label).
+        // `outcome == None` means the mid-loop replay found no candidate →
+        // no-op (mirrors the legacy `select_replay_candidate` returning `None`).
+        let (candidate_id, candidate_name, pass, replay_outcome, diff_summary, verification_note) =
+            if skip_transcript {
+                let Some(outcome) = outcome else {
+                    return false;
                 };
                 (
-                    equal,
-                    if equal {
-                        "pass".to_string()
-                    } else {
-                        "conflict".to_string()
-                    },
-                    diff,
+                    outcome.tool_id,
+                    outcome.tool_name,
+                    outcome.pass,
+                    outcome.replay_outcome,
+                    outcome.diff_summary,
+                    outcome.verification_note,
                 )
-            }
-            Err(err) => {
-                self.capacity_controller
-                    .lock()
-                    .expect("capacity_controller poisoned")
-                    .mark_replay_failed(self.turn_counter);
-                (
-                    false,
-                    "error".to_string(),
-                    format!("replay_error: {}", summarize_text(&err.to_string(), 180)),
+            } else {
+                // === transcript portion (legacy post-`run` path, dead-code /
+                // test callers) ===
+                let Some(candidate) = self.select_replay_candidate(turn, tool_registry) else {
+                    return false;
+                };
+
+                if McpPool::is_mcp_tool(&candidate.name) && mcp_pool.is_none() {
+                    mcp_pool = self.ensure_mcp_pool().await.ok();
+                }
+
+                let supports_parallel = if McpPool::is_mcp_tool(&candidate.name) {
+                    mcp_tool_is_parallel_safe(&candidate.name)
+                } else {
+                    tool_registry
+                        .and_then(|registry| registry.metadata(&candidate.name))
+                        .is_some_and(|metadata| metadata.supports_parallel)
+                };
+                let interactive = if McpPool::is_mcp_tool(&candidate.name) {
+                    false
+                } else {
+                    tool_registry
+                        .is_some_and(|registry| registry.is_interactive(&candidate.name, &candidate.input))
+                };
+
+                let replay_result = Self::execute_tool_with_lock(
+                    tool_exec_lock,
+                    supports_parallel,
+                    interactive,
+                    self.tx_event.clone(),
+                    candidate.name.clone(),
+                    candidate.input.clone(),
+                    tool_registry,
+                    mcp_pool.clone(),
+                    None,
                 )
-            }
-        };
+                .await;
 
-        let verification_note = format!(
-            "[verification replay] tool={} pass={} details={}",
-            candidate.name, pass, diff_summary
-        );
-        self.add_session_message(Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::ToolResult {
-                tool_use_id: candidate.id.clone(),
-                content: verification_note.clone(),
-                is_error: None,
-                content_blocks: None,
-            }],
-        })
-        .await;
+                let (pass, replay_outcome, diff_summary) = match replay_result {
+                    Ok(output) => {
+                        let original = candidate.result.as_deref().unwrap_or_default();
+                        let replay = output.content.as_str();
+                        let equal = original.trim() == replay.trim();
+                        let diff = if equal {
+                            "output_match".to_string()
+                        } else {
+                            format!(
+                                "output_mismatch: original='{}' replay='{}'",
+                                summarize_text(original, 140),
+                                summarize_text(replay, 140)
+                            )
+                        };
+                        (
+                            equal,
+                            if equal {
+                                "pass".to_string()
+                            } else {
+                                "conflict".to_string()
+                            },
+                            diff,
+                        )
+                    }
+                    Err(err) => {
+                        self.capacity_controller
+                            .lock()
+                            .expect("capacity_controller poisoned")
+                            .mark_replay_failed(self.turn_counter);
+                        (
+                            false,
+                            "error".to_string(),
+                            format!("replay_error: {}", summarize_text(&err.to_string(), 180)),
+                        )
+                    }
+                };
 
+                let verification_note = format!(
+                    "[verification replay] tool={} pass={} details={}",
+                    candidate.name, pass, diff_summary
+                );
+                self.add_session_message(Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: candidate.id.clone(),
+                        content: verification_note.clone(),
+                        is_error: None,
+                        content_blocks: None,
+                    }],
+                })
+                .await;
+
+                (candidate.id, candidate.name, pass, replay_outcome, diff_summary, verification_note)
+            };
+
+        // State work — always runs (canonical persist, system-prompt fold, emit,
+        // mark). `mark_replay_failed` on `!pass` covers both branches (the legacy
+        // transcript path fired it in the `Err` arm above for dispatch errors;
+        // the `skip_transcript` path has no mid-loop `mark_replay_failed` since
+        // `CapacityGateProbe` doesn't expose it).
         if !pass {
             self.capacity_controller
                 .lock()
@@ -1061,8 +1271,8 @@ impl Engine {
             }),
         );
         let replay_info = Some(ReplayInfo {
-            tool_id: candidate.id.clone(),
-            tool_name: candidate.name.clone(),
+            tool_id: candidate_id.clone(),
+            tool_name: candidate_name.clone(),
             pass,
             diff_summary: diff_summary.clone(),
         });
@@ -1199,15 +1409,9 @@ impl Engine {
         tool_name: &str,
         tool_registry: Option<&dyn ToolDispatcher>,
     ) -> bool {
-        if tool_name == MULTI_TOOL_PARALLEL_NAME || tool_name == REQUEST_USER_INPUT_NAME {
-            return false;
-        }
-        if McpPool::is_mcp_tool(tool_name) {
-            return mcp_tool_is_read_only(tool_name);
-        }
-        tool_registry
-            .and_then(|registry| registry.metadata(tool_name))
-            .is_some_and(|metadata| metadata.is_read_only)
+        // Delegates to the free fn (§E slice 3b) so the mid-loop executor path
+        // shares one read-only check source; the method body reads no `self`.
+        is_replayable_read_only(tool_name, tool_registry)
     }
 
     pub fn build_canonical_state(&self, turn: &TurnContext, note: Option<&str>) -> CanonicalState {
