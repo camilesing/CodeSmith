@@ -285,7 +285,14 @@
 //!    ✅ **early-tool-start reuse** (pop a speculatively-started task by id;
 //!    reuse if name+input match, else `Drop`-abort + run fresh) +
 //!    **LSP post-edit collect** (probe diagnostics after a successful edit);
-//!    parallel dispatch still to come (inside the tool `for` loop).
+//!    ✅ **parallel dispatch** (slice 40 §E: `plan_tool_execution_batches`
+//!    batches consecutive read-only, no-approval `tool_uses` into `Parallel`
+//!    batches run concurrently via `FuturesUnordered`; each unsafe tool is its
+//!    own `Serial` batch; outcomes are index-preserving and `record_outcome` /
+//!    LSP / read-file / error-escalation / push `ToolResult` run in a
+//!    sequential post-batch pass; `on_tool_start`/`on_tool_end` fire per-batch
+//!    LIFO. Deferred: `multi_tool_use.parallel` parsing (host concern),
+//!    `tool_exec_lock` (unnecessary for single-loop dispatch)).
 //! 4. **per-step post-tool** — ✅ **loop-guard halt short-circuit** (returns
 //!    `StopReason::Error`); ✅ capacity post-tool checkpoint (opt-in
 //!    `CapacityController` Gate A absorbed slice 33 §E + error-escalation
@@ -696,6 +703,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
+use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
@@ -710,6 +718,9 @@ use codesmith_agent::models::{
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
+use super::dispatch::{
+    plan_tool_execution_batches, ToolExecutionBatch, ToolExecutionPlan,
+};
 use super::capacity_flow::{
     replay_and_push_verification_note, reset_history_to_latest_user_and_verified,
     trim_oldest_messages_to_budget_history, CapacityGateProbe,
@@ -1275,6 +1286,22 @@ impl Drop for EarlyToolTask {
             handle.abort();
         }
     }
+}
+
+/// Per-tool dispatch outcome carried from the batch-dispatch phase to the
+/// sequential post-batch phase (slice 40 §E — seam-3 parallel dispatch).
+/// `blocked` marks loop-guard interventions (a guard-blocked call records no
+/// `record_outcome` / LSP / read-file, mirroring the prior sequential loop's
+/// `!blocked` guard). Local struct instead of `dispatch::ToolExecOutcome` to
+/// avoid that type's unused `started_at` / `context_patch` fields and to carry
+/// the `blocked` flag the post-batch pass needs.
+struct DispatchedTool {
+    index: usize,
+    id: String,
+    name: String,
+    input: serde_json::Value,
+    result: Result<ToolResult, ToolError>,
+    blocked: bool,
 }
 
 /// Finalize an accumulated `BlockBuild` map into assembled `ContentBlock`s.
@@ -4168,117 +4195,318 @@ impl HostAgentExecutor {
                 return Ok(StopReason::NoToolCalls);
             }
 
-            // Execute each tool sequentially and feed the result back as a
+            // Execute the parsed tool calls and feed each result back as a
             // `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
             //
             // (3) per-tool seam — ✅ loop-guard; ✅ approval; ✅ early-tool-start
             // (reuse a speculatively-started task spawned at `ContentBlockStop`
             // during streaming if the args still match; otherwise abort + run
-            // fresh); ✅ LSP post-edit collect. `loop_guard_halt` is per-step: a
-            // halt short-circuits the tool loop and the whole turn at the (4)
-            // seam below. Parallel dispatch lands here later.
+            // fresh); ✅ LSP post-edit collect; ✅ parallel dispatch (slice 40 §E).
+            // `plan_tool_execution_batches` groups consecutive parallel-safe
+            // (read-only, no-approval) tool_uses into a single `Parallel` batch
+            // run concurrently via `FuturesUnordered`; each unsafe tool becomes
+            // its own `Serial` batch (approval / write / blocked). Outcomes are
+            // index-preserving (a pre-allocated array written by `plan.index`),
+            // and `record_outcome` / LSP / read-file / error-escalation / push
+            // `ToolResult` are deferred to a sequential post-batch pass.
+            // `on_tool_start`/`on_tool_end` fire per-batch LIFO (starts in index
+            // order before dispatch, ends in reverse order after) so the
+            // `CallbackBridge`'s pending-stack pairing stays correct. Deferred:
+            // `multi_tool_use.parallel` parsing (host concern — the framework
+            // executor receives flat `tool_uses` from `reduce_stream`) and
+            // `tool_exec_lock` (unnecessary for single-loop dispatch — a
+            // `Parallel` batch drains before the next `Serial` batch starts).
+            // `loop_guard_halt` is per-step: a halt short-circuits the tool loop
+            // and the whole turn at the (4) seam below.
             let mut loop_guard_halt: Option<String> = None;
-            for (id, name, input) in tool_uses {
-                callback.on_tool_start(&id, &name, &input).await;
+            let n = tool_uses.len();
+
+            // --- Phase 1: planning (sequential) — build a `ToolExecutionPlan`
+            // per tool_use, pop speculative `early_tasks`, and run the loop-guard
+            // `record_attempt` (the guard is per-tool, in order, so deferring it
+            // would mis-count identical calls). `early_for_plan` / `tool_for_plan`
+            // are parallel arrays keyed by `plan.index` — the `ToolExecutionPlan`
+            // struct's own `early_result` / `blocked_error` fields are left
+            // `None` (the framework executor's `EarlyToolTask` is a distinct type
+            // from `turn_loop::EarlyToolTask`).
+            let mut plans: Vec<ToolExecutionPlan> = Vec::with_capacity(n);
+            let mut early_for_plan: Vec<Option<EarlyToolTask>> = Vec::with_capacity(n);
+            let mut tool_for_plan: Vec<Option<Arc<dyn Tool>>> = Vec::with_capacity(n);
+            for (i, (id, name, input)) in tool_uses.into_iter().enumerate() {
                 // loop-guard: block the 3rd identical (name+args) call this turn.
-                let (result, blocked) = match loop_guard.record_attempt(&name, &input) {
+                let guard_result = match loop_guard.record_attempt(&name, &input) {
                     AttemptDecision::Block(message) => {
                         // Abort any speculatively-started task — the call
                         // won't execute (Drop aborts the `JoinHandle`).
                         early_tasks.remove(&id);
-                        (Ok(block_tool_result(message)), true)
+                        Some(block_tool_result(message))
                     }
-                    AttemptDecision::Proceed => {
-                        let result = match tools.get(&name) {
-                            // approval gate: a tool that requires approval is
-                            // gated behind the decision channel; denied ⇒ the
-                            // tool never runs and a `permission_denied` error
-                            // is fed back so the model can react (turn
-                            // continues). Order: loop-guard first (matches
-                            // production), then approval, then early-start reuse.
-                            Some(tool) => {
-                                match self
-                                    .request_approval(&id, &name, &input, tool, &intent_summary)
-                                    .await
-                                {
-                                    Ok(()) => {
-                                        // Early-tool-start: reuse a
-                                        // speculatively-started task (spawned
-                                        // at `ContentBlockStop` during
-                                        // streaming) if one exists for this
-                                        // id and the model didn't revise the
-                                        // args after the block closed;
-                                        // otherwise run the tool fresh (mirrors
-                                        // `turn_loop`'s
-                                        // `early_task.filter(|t| t.name == name && t.input == input)`).
-                                        match early_tasks.remove(&id) {
-                                            Some(mut early)
-                                                if early.name == name
-                                                    && early.input == input =>
-                                            {
-                                                // Take the handle out so `Drop`
-                                                // on the `EarlyToolTask`
-                                                // doesn't abort it (the field
-                                                // becomes `None`).
-                                                let handle = early
-                                                    .handle
-                                                    .take()
-                                                    .expect("handle present until consumed");
-                                                match handle.await {
-                                                    Ok(result) => result,
-                                                    Err(join_err) => {
-                                                        Err(ToolError::execution_failed(
-                                                            format!(
-                                                                "Early tool execution task failed: {join_err}"
-                                                            ),
-                                                        ))
+                    AttemptDecision::Proceed => None,
+                };
+                // Pop the speculative early-start task (if any) for reuse / abort
+                // at dispatch time.
+                let early_task = early_tasks.remove(&id);
+                let tool = tools.get(&name).cloned();
+                let caps: Vec<ToolCapability> = tool
+                    .as_ref()
+                    .map(|t| t.capabilities())
+                    .unwrap_or_default();
+                let read_only = caps.iter().any(|c| *c == ToolCapability::ReadOnly);
+                // Per-input approval override (mirrors `request_approval`'s
+                // own logic at :3529-3536): a host dispatcher's
+                // `Required` / `Suggest` downgrades/upgrades the gate per
+                // input; `Auto` or `None` falls back to the static capability gate.
+                let approval_required = match self
+                    .tool_dispatcher
+                    .as_ref()
+                    .and_then(|d| d.approval_requirement_for(&name, &input))
+                {
+                    Some(req) => req != ApprovalRequirement::Auto,
+                    None => requires_approval(&caps),
+                };
+                plans.push(ToolExecutionPlan {
+                    index: i,
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                    caller: None,
+                    interactive: false,
+                    approval_required,
+                    approval_description: String::new(),
+                    // Framework `Tool` doesn't expose `supports_parallel` /
+                    // `interactive` directly; assume `true` / `false` so the
+                    // classifier's predicate reduces to `read_only &&
+                    // !approval_required` — the same gate as `early_start_safe`.
+                    supports_parallel: true,
+                    read_only,
+                    stream_early_start_safe: early_start_safe(&caps),
+                    early_result: None,
+                    blocked_error: None,
+                    guard_result: guard_result.clone(),
+                });
+                early_for_plan.push(early_task);
+                tool_for_plan.push(tool);
+            }
+
+            // --- Phase 2: batch classification (reuses the production classifier).
+            let batches = plan_tool_execution_batches(plans);
+
+            // --- Phase 3: per-batch dispatch. A `Parallel` batch runs its plans
+            // concurrently via `FuturesUnordered` (each future is `'static` — it
+            // owns an `Arc<dyn Tool>` clone, matching the early-start spawn
+            // site's `async move { tool.run(input).await }` pattern); a `Serial`
+            // batch runs one tool with approval gating (borrows `&self`).
+            let mut outcomes: Vec<Option<DispatchedTool>> = (0..n).map(|_| None).collect();
+            for batch in batches {
+                match batch {
+                    ToolExecutionBatch::Parallel(batch_plans) => {
+                        // `on_tool_start` in index order before dispatch (LIFO
+                        // push — `CallbackBridge` stashes each on its pending
+                        // stack).
+                        for plan in &batch_plans {
+                            callback
+                                .on_tool_start(&plan.id, &plan.name, &plan.input)
+                                .await;
+                        }
+                        let mut futs: FuturesUnordered<
+                            Pin<Box<dyn Future<Output = DispatchedTool> + Send>>,
+                        > = FuturesUnordered::new();
+                        for plan in &batch_plans {
+                            let tool = tool_for_plan[plan.index]
+                                .clone()
+                                .expect("parallel-safe plan has a registered read-only tool");
+                            let early = early_for_plan[plan.index].take();
+                            let guard = plan.guard_result.clone();
+                            let id = plan.id.clone();
+                            let name = plan.name.clone();
+                            let input = plan.input.clone();
+                            let index = plan.index;
+                            futs.push(Box::pin(async move {
+                                let blocked = guard.is_some();
+                                let result = if let Some(g) = guard {
+                                    // Loop-guard blocked this call — don't run
+                                    // the tool (the speculative task was already
+                                    // aborted in planning).
+                                    Ok(g)
+                                } else {
+                                    // Early-tool-start reuse: await the
+                                    // speculatively-started task if the model
+                                    // didn't revise the args; otherwise abort
+                                    // (Drop) and run fresh.
+                                    match early {
+                                        Some(mut early)
+                                            if early.name == name
+                                                && early.input == input =>
+                                        {
+                                            let handle = early
+                                                .handle
+                                                .take()
+                                                .expect("handle present until consumed");
+                                            match handle.await {
+                                                Ok(result) => result,
+                                                Err(join_err) => Err(ToolError::execution_failed(
+                                                    format!(
+                                                        "Early tool execution task failed: {join_err}"
+                                                    ),
+                                                )),
+                                            }
+                                        }
+                                        Some(_) => {
+                                            // Args revised after the block closed
+                                            // — the dropped `EarlyToolTask` (Drop
+                                            // aborts) cleans up the orphaned task.
+                                            tool.run(input.clone()).await
+                                        }
+                                        None => tool.run(input.clone()).await,
+                                    }
+                                };
+                                DispatchedTool {
+                                    index,
+                                    id,
+                                    name,
+                                    input,
+                                    result,
+                                    blocked,
+                                }
+                            }));
+                        }
+                        // Index-preserving drain — completion order is
+                        // irrelevant; each outcome is written at its `index`.
+                        while let Some(outcome) = futs.next().await {
+                            let index = outcome.index;
+                            outcomes[index] = Some(outcome);
+                        }
+                        // `on_tool_end` in reverse index order (LIFO pop).
+                        for plan in batch_plans.iter().rev() {
+                            let outcome = outcomes[plan.index]
+                                .as_ref()
+                                .expect("outcome populated by the FuturesUnordered drain");
+                            callback
+                                .on_tool_end(&plan.name, &outcome.result)
+                                .await;
+                        }
+                    }
+                    ToolExecutionBatch::Serial(plan) => {
+                        let idx = plan.index;
+                        callback
+                            .on_tool_start(&plan.id, &plan.name, &plan.input)
+                            .await;
+                        // approval gate: a tool that requires approval is gated
+                        // behind the decision channel; denied ⇒ the tool never
+                        // runs and a `permission_denied` error is fed back so the
+                        // model can react (turn continues). Order: loop-guard
+                        // first (matches production), then approval, then
+                        // early-start reuse.
+                        let (result, blocked) = if let Some(guard) = &plan.guard_result {
+                            (Ok(guard.clone()), true)
+                        } else {
+                            match &tool_for_plan[idx] {
+                                Some(tool) => {
+                                    match self
+                                        .request_approval(
+                                            &plan.id,
+                                            &plan.name,
+                                            &plan.input,
+                                            tool,
+                                            &intent_summary,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            // Early-tool-start reuse (same shape
+                                            // as the parallel arm, but sequential).
+                                            match early_for_plan[idx].take() {
+                                                Some(mut early)
+                                                    if early.name == plan.name
+                                                        && early.input == plan.input =>
+                                                {
+                                                    let handle = early
+                                                        .handle
+                                                        .take()
+                                                        .expect("handle present until consumed");
+                                                    match handle.await {
+                                                        Ok(result) => (result, false),
+                                                        Err(join_err) => (
+                                                            Err(ToolError::execution_failed(
+                                                                format!(
+                                                                    "Early tool execution task failed: {join_err}"
+                                                                ),
+                                                            )),
+                                                            false,
+                                                        ),
                                                     }
                                                 }
+                                                Some(_) => {
+                                                    // Args revised after the block
+                                                    // closed — can't reuse; the
+                                                    // dropped `EarlyToolTask` (Drop
+                                                    // aborts) cleans up the orphaned
+                                                    // speculative task.
+                                                    (tool.run(plan.input.clone()).await, false)
+                                                }
+                                                None => {
+                                                    (tool.run(plan.input.clone()).await, false)
+                                                }
                                             }
-                                            Some(_revised) => {
-                                                // Args revised after the block
-                                                // closed — can't reuse; the
-                                                // dropped `EarlyToolTask`
-                                                // (Drop aborts) cleans up the
-                                                // orphaned speculative task.
-                                                tool.run(input.clone()).await
-                                            }
-                                            None => tool.run(input.clone()).await,
+                                        }
+                                        Err(denial) => {
+                                            // Approval denied — abort any
+                                            // speculative task (defensive:
+                                            // early-start-safe tools don't
+                                            // require approval, so this path has
+                                            // none, but `Drop` is cheap).
+                                            early_for_plan[idx].take();
+                                            (Err(ToolError::permission_denied(denial)), false)
                                         }
                                     }
-                                    Err(denial) => {
-                                        // Approval denied — abort any
-                                        // speculative task (defensive:
-                                        // early-start-safe tools don't
-                                        // require approval, so this path has
-                                        // none, but `Drop` is cheap).
-                                        early_tasks.remove(&id);
-                                        Err(ToolError::permission_denied(denial))
-                                    }
+                                }
+                                None => {
+                                    // No tool registered — abort any speculative
+                                    // task (`reduce_stream` only spawns for
+                                    // registered tools, so this is defensive).
+                                    early_for_plan[idx].take();
+                                    (
+                                        Err(ToolError::NotAvailable {
+                                            message: format!("no tool named '{}'", plan.name),
+                                        }),
+                                        false,
+                                    )
                                 }
                             }
-                            None => {
-                                // No tool registered — abort any speculative
-                                // task (`reduce_stream` only spawns for
-                                // registered tools, so this is defensive).
-                                early_tasks.remove(&id);
-                                Err(ToolError::NotAvailable {
-                                    message: format!("no tool named '{name}'"),
-                                })
-                            }
                         };
-                        (result, false)
+                        callback.on_tool_end(&plan.name, &result).await;
+                        outcomes[idx] = Some(DispatchedTool {
+                            index: idx,
+                            id: plan.id.clone(),
+                            name: plan.name.clone(),
+                            input: plan.input.clone(),
+                            result,
+                            blocked,
+                        });
                     }
-                };
-                callback.on_tool_end(&name, &result).await;
+                }
+            }
 
+            // --- Phase 4: post-batch processing (sequential, index order).
+            // `record_outcome` / LSP collect / read-file observe /
+            // error-escalation / push `ToolResult` are deferred to here so they
+            // run after every concurrent batch has drained — behavior-preserving
+            // w.r.t. the prior sequential loop (the loop-guard's failure halt is
+            // checked at the (4) seam below, after the tool loop, so deferring
+            // `record_outcome` to this pass does not change the halt decision).
+            let ordered: Vec<DispatchedTool> = outcomes
+                .into_iter()
+                .map(|o| o.expect("every plan slot filled by the batch dispatch"))
+                .collect();
+            for o in &ordered {
+                let blocked = o.blocked;
                 // loop-guard: track consecutive failures of this tool (warn at
                 // 3, halt at 8). A guard-blocked call records no outcome — it
                 // is an intervention, not an execution, so it doesn't count
                 // toward the failure halt.
                 if !blocked {
-                    let success = result.as_ref().map(|r| r.success).unwrap_or(false);
-                    match loop_guard.record_outcome(&name, success) {
+                    let success = o.result.as_ref().map(|r| r.success).unwrap_or(false);
+                    match loop_guard.record_outcome(&o.name, success) {
                         OutcomeDecision::Continue => {}
                         OutcomeDecision::Warn(message) => {
                             tracing::warn!("{}", message);
@@ -4294,15 +4522,15 @@ impl HostAgentExecutor {
                 // collect (only on a successful, non-blocked edit — mirrors
                 // production `output.success && tool_was_executed`); ✅ read_file
                 // observe (records the compacted/sanitized output into
-                // `recent_read_files` for post-compaction reinject); approval /
-                // early-tool-start / parallel land here later.
+                // `recent_read_files` for post-compaction reinject); ✅ parallel
+                // dispatch (slice 40 §E — post-batch).
                 if !blocked {
-                    if let Ok(r) = &result {
+                    if let Ok(r) = &o.result {
                         if r.success {
-                            self.collect_lsp_diagnostics(&name, &input).await;
-                            self.record_read_file_result(&name, &input, r);
+                            self.collect_lsp_diagnostics(&o.name, &o.input).await;
+                            self.record_read_file_result(&o.name, &o.input, r);
                         }
-                    } else if let Err(e) = &result {
+                    } else if let Err(e) = &o.result {
                         // Error-escalation tracking (slice 34 §E): categorize a
                         // dispatch error via the shared taxonomy (production
                         // `:2575-2576`). Only `Err(ToolError)` counts —
@@ -4314,14 +4542,14 @@ impl HostAgentExecutor {
                     }
                 }
 
-                let (content_str, is_error) = match &result {
+                let (content_str, is_error) = match &o.result {
                     Ok(r) => (r.content.clone(), !r.success),
                     Err(e) => (format!("Error: {e}"), true),
                 };
                 history.push(Message {
                     role: "user".to_string(),
                     content: vec![ContentBlock::ToolResult {
-                        tool_use_id: id,
+                        tool_use_id: o.id.clone(),
                         content: content_str,
                         is_error: Some(is_error),
                         content_blocks: None,
@@ -12801,6 +13029,594 @@ mod tests {
                 metadata: None,
             })
         }
+    }
+
+    // === slice 40 §E — seam-3 parallel dispatch =================================
+
+    /// A [`Callback`] that records every `on_tool_start` / `on_tool_end` as an
+    /// ordered string (`"start:{name}"` / `"end:{name}"`) so a test can assert
+    /// the per-batch LIFO nesting introduced by the `FuturesUnordered` dispatch.
+    struct ToolEventRecorder {
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl ToolEventRecorder {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+        fn events(&self) -> Vec<String> {
+            self.events.lock().expect("events mutex").clone()
+        }
+    }
+
+    impl Callback for ToolEventRecorder {
+        fn on_tool_start<'a>(
+            &'a self,
+            _id: &'a str,
+            name: &'a str,
+            _input: &'a serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            let events = self.events.clone();
+            Box::pin(async move {
+                events
+                    .lock()
+                    .expect("events mutex")
+                    .push(format!("start:{name}"));
+            })
+        }
+        fn on_tool_end<'a>(
+            &'a self,
+            name: &'a str,
+            _result: &'a Result<ToolResult, ToolError>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            let events = self.events.clone();
+            Box::pin(async move {
+                events
+                    .lock()
+                    .expect("events mutex")
+                    .push(format!("end:{name}"));
+            })
+        }
+    }
+
+    /// A read-only `ToolSpec` that awaits a [`tokio::sync::Barrier`] at the
+    /// start of `execute`. Used to prove two read-only tools run concurrently
+    /// in a `Parallel` batch — if the dispatch were sequential, only one tool
+    /// would reach the barrier and the test's `barrier.wait()` would time out.
+    struct BarrierSpec {
+        tool_name: &'static str,
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for BarrierSpec {
+        fn name(&self) -> &str {
+            self.tool_name
+        }
+        fn description(&self) -> &str {
+            "Barrier-gated read-only tool."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let _ = self.barrier.wait().await;
+            Ok(ToolResult {
+                content: format!("{}-done", self.tool_name),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// A read-only `ToolSpec` that sleeps for a fixed duration before
+    /// returning — used to vary completion order within a `Parallel` batch and
+    /// prove outcomes are index-preserving (the slow tool's `ToolResult`
+    /// appears first even though the fast tool completes first).
+    struct DelaySpec {
+        tool_name: &'static str,
+        delay_ms: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for DelaySpec {
+        fn name(&self) -> &str {
+            self.tool_name
+        }
+        fn description(&self) -> &str {
+            "Delay read-only tool."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            Ok(ToolResult {
+                content: format!("{}-done", self.tool_name),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// A read-only `ToolSpec` that counts `execute` calls via a shared
+    /// [`AtomicU32`], parameterised by name — used to prove early-tool-start
+    /// reuse in a multi-tool `Parallel` batch (each tool runs once in the
+    /// speculative task and is reused, not re-run at dispatch time).
+    struct NamedCountSpec {
+        tool_name: &'static str,
+        count: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for NamedCountSpec {
+        fn name(&self) -> &str {
+            self.tool_name
+        }
+        fn description(&self) -> &str {
+            "Counts how many times it runs."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolResult {
+                content: "counted".to_string(),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// Build an executor with all optional collaborators unset — the test
+    /// boilerplate for slice 40 §E dispatch tests (no approval channel, no
+    /// subagent API, no capacity probe, …).
+    fn build_test_executor(
+        tools: Arc<ToolSet>,
+        callback: Arc<dyn Callback>,
+        calls: Vec<Vec<StreamEvent>>,
+    ) -> HostAgentExecutor {
+        HostAgentExecutor::new(
+            Arc::new(MockLlm::new(calls)),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Two read-only tools run concurrently: both must reach a shared
+    /// `Barrier` for it to release. A sequential dispatch would deadlock (the
+    /// first tool blocks on the barrier, the second never starts) — the 3 s
+    /// timeout turns that into a test failure instead of a hang.
+    #[tokio::test]
+    async fn parallel_readonly_tools_run_concurrently() {
+        let tmp = tempdir().expect("tempdir");
+        // 3 waiters: tool_a, tool_b, and the test itself.
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(BarrierSpec {
+            tool_name: "tool_a",
+            barrier: barrier.clone(),
+        }));
+        registry.register(Arc::new(BarrierSpec {
+            tool_name: "tool_b",
+            barrier: barrier.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "running both");
+        call1.extend(tool_use_block(1, "t1", "tool_a", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "tool_b", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+
+        let handle = tokio::spawn(async move {
+            let mut history = SessionChatHistory::new(&mut sess);
+            executor
+                .run(&mut history, "run both".to_string())
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), barrier.wait())
+            .await
+            .expect("both read-only tools reached the barrier concurrently");
+
+        let reason = handle
+            .await
+            .expect("executor task panicked")
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+    }
+
+    /// Index-preserving outcomes: the slow tool (80 ms, index 1) is listed
+    /// first in the transcript even though the fast tool (5 ms, index 2)
+    /// completes first. The `FuturesUnordered` drain writes by `plan.index`,
+    /// and the post-batch push iterates in index order.
+    #[tokio::test]
+    async fn parallel_batch_outcomes_index_preserved() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(DelaySpec {
+            tool_name: "slow",
+            delay_ms: 80,
+        }));
+        registry.register(Arc::new(DelaySpec {
+            tool_name: "fast",
+            delay_ms: 5,
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "running both");
+        call1.extend(tool_use_block(1, "t1", "slow", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "fast", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+        let reason = executor
+            .run(&mut history, "run both".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Each `ToolResult` is pushed as its own `role:"user"` message (one
+        // per tool), so collect across all messages and assert the ids are in
+        // tool_use (index) order — not completion order (fast t2 finishes
+        // first, but the index-preserving post-batch push keeps t1 before t2).
+        let tool_result_ids: Vec<String> = sess
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tool_result_ids,
+            vec!["t1".to_string(), "t2".to_string()],
+            "ToolResults must be in tool_use (index) order, not completion order"
+        );
+    }
+
+    /// Per-batch LIFO callbacks: a `Parallel` batch of {alpha, beta} fires
+    /// `on_tool_start` for both (index order) before any `on_tool_end`, and
+    /// `on_tool_end` in reverse (beta, then alpha) — mirroring the
+    /// `CallbackBridge` pending-stack push/pop.
+    #[tokio::test]
+    async fn parallel_batch_lifo_callbacks() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(DelaySpec {
+            tool_name: "alpha",
+            delay_ms: 5,
+        }));
+        registry.register(Arc::new(DelaySpec {
+            tool_name: "beta",
+            delay_ms: 5,
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let recorder = Arc::new(ToolEventRecorder::new());
+        let callback: Arc<dyn Callback> = recorder.clone();
+
+        let mut call1 = text_block(0, "running both");
+        call1.extend(tool_use_block(1, "t1", "alpha", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "beta", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+        let reason = executor
+            .run(&mut history, "run both".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert_eq!(
+            recorder.events(),
+            vec![
+                "start:alpha".to_string(),
+                "start:beta".to_string(),
+                "end:beta".to_string(),
+                "end:alpha".to_string(),
+            ],
+            "LIFO: both starts before any end, ends in reverse index order"
+        );
+    }
+
+    /// Mixed batches: {alpha, beta} (read-only) → `Parallel`; `write_file`
+    /// (write) → `Serial`; `gamma` (read-only) → `Parallel`. The write tool
+    /// breaks the parallel chunk so the read-only tools on either side land in
+    /// separate `Parallel` batches. The LIFO event sequence proves the split.
+    #[tokio::test]
+    async fn mixed_batch_parallel_serial_parallel() {
+        let tmp = tempdir().expect("tempdir");
+        let write_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(DelaySpec {
+            tool_name: "alpha",
+            delay_ms: 5,
+        }));
+        registry.register(Arc::new(DelaySpec {
+            tool_name: "beta",
+            delay_ms: 5,
+        }));
+        registry.register(Arc::new(CountingWriteSpec {
+            count: write_count.clone(),
+        }));
+        registry.register(Arc::new(DelaySpec {
+            tool_name: "gamma",
+            delay_ms: 5,
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let recorder = Arc::new(ToolEventRecorder::new());
+        let callback: Arc<dyn Callback> = recorder.clone();
+
+        let mut call1 = text_block(0, "mixed batch");
+        call1.extend(tool_use_block(1, "t1", "alpha", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "beta", r#"{}"#));
+        call1.extend(tool_use_block(3, "t3", "write_file", r#"{"path":"a"}"#));
+        call1.extend(tool_use_block(4, "t4", "gamma", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+        let reason = executor
+            .run(&mut history, "mixed".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // No approval channel ⇒ write tool proceeds (runs once, not blocked).
+        assert_eq!(
+            write_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "write tool ran once"
+        );
+        // LIFO per batch: {alpha,beta} batch (start both, end reversed),
+        // then {write_file} (start, end), then {gamma} (start, end).
+        assert_eq!(
+            recorder.events(),
+            vec![
+                "start:alpha".to_string(),
+                "start:beta".to_string(),
+                "end:beta".to_string(),
+                "end:alpha".to_string(),
+                "start:write_file".to_string(),
+                "end:write_file".to_string(),
+                "start:gamma".to_string(),
+                "end:gamma".to_string(),
+            ],
+            "three batches: Parallel(alpha,beta) → Serial(write_file) → Parallel(gamma)"
+        );
+    }
+
+    /// Early-tool-start reuse in a multi-tool `Parallel` batch: two read-only
+    /// counting tools are speculatively started during streaming and reused at
+    /// dispatch time. Each runs once (the early task's result is reused), not
+    /// twice.
+    #[tokio::test]
+    async fn parallel_batch_early_task_reuse() {
+        let tmp = tempdir().expect("tempdir");
+        let count_a = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let count_b = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(NamedCountSpec {
+            tool_name: "count_a",
+            count: count_a.clone(),
+        }));
+        registry.register(Arc::new(NamedCountSpec {
+            tool_name: "count_b",
+            count: count_b.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mut call1 = text_block(0, "count both");
+        call1.extend(tool_use_block(1, "c1", "count_a", r#"{}"#));
+        call1.extend(tool_use_block(2, "c2", "count_b", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+        let reason = executor
+            .run(&mut history, "count both".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert_eq!(
+            count_a.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "count_a ran once (early-started + reused, not re-run)"
+        );
+        assert_eq!(
+            count_b.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "count_b ran once (early-started + reused, not re-run)"
+        );
+    }
+
+    /// A loop-guard-blocked read-only tool in a `Parallel` batch: the 3rd
+    /// identical call is blocked, produces a `block_tool_result` (is_error),
+    /// and the tool does NOT run for it. The first two calls run normally.
+    #[tokio::test]
+    async fn parallel_batch_blocked_tool_produces_block_result() {
+        let tmp = tempdir().expect("tempdir");
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(NamedCountSpec {
+            tool_name: "block_me",
+            count: count.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Three identical calls → the 3rd is blocked by the loop-guard
+        // (threshold = 3 identical name+args calls per turn).
+        let mut call1 = text_block(0, "repeat");
+        call1.extend(tool_use_block(1, "t1", "block_me", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "block_me", r#"{}"#));
+        call1.extend(tool_use_block(3, "t3", "block_me", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+        let reason = executor
+            .run(&mut history, "repeat".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The tool ran twice (t1, t2); the 3rd was blocked (no run).
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "tool ran twice; the 3rd identical call was loop-guard blocked"
+        );
+        // Each `ToolResult` is pushed as its own `role:"user"` message, so
+        // collect across all messages. The 3rd (blocked) result is an error.
+        let tool_results: Vec<&ContentBlock> = sess
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            .collect();
+        assert_eq!(
+            tool_results.len(),
+            3,
+            "three ToolResults (t1, t2, t3-blocked)"
+        );
+        match tool_results[2] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } => {
+                assert_eq!(*tool_use_id, "t3");
+                assert_eq!(*is_error, Some(true), "blocked call is an error result");
+            }
+            other => panic!("expected ToolResult for t3, got {other:?}"),
+        }
+    }
+
+    /// Regression guard: all-serial tools (every tool declares `WritesFiles`)
+    /// each become their own `Serial` batch — the per-batch sequential walk
+    /// reproduces the prior loop's behavior (tools run in order, results
+    /// pushed in order, no concurrency).
+    #[tokio::test]
+    async fn all_serial_tools_match_sequential_behavior() {
+        let tmp = tempdir().expect("tempdir");
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(CountingWriteSpec {
+            count: count.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Three write calls with distinct args (no loop-guard block). No
+        // approval channel ⇒ each proceeds immediately.
+        let mut call1 = text_block(0, "write three");
+        call1.extend(tool_use_block(1, "w1", "write_file", r#"{"path":"a"}"#));
+        call1.extend(tool_use_block(2, "w2", "write_file", r#"{"path":"b"}"#));
+        call1.extend(tool_use_block(3, "w3", "write_file", r#"{"path":"c"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+        let reason = executor
+            .run(&mut history, "write three".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // All three ran, in order.
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "all three write tools ran"
+        );
+        // Each `ToolResult` is pushed as its own `role:"user"` message, so
+        // collect across all messages and assert tool_use order.
+        let ids: Vec<String> = sess
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["w1".to_string(), "w2".to_string(), "w3".to_string()],
+            "ToolResults in tool_use order"
+        );
     }
 
     // === subagent post-stream completion drain =================================

@@ -1947,6 +1947,42 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 ---
 
+**进度（2026-07-15 §E seam-3 parallel dispatch 落地，tool-dispatch 循环吸收 `plan_tool_execution_batches` + `FuturesUnordered`，slice 40，`feat/pluggable-framework-core`）：**
+
+§E 的第四十个切片落地——关闭 seam-3 "parallel dispatch（tool `for` 循环内）still to come" 缺口（`host_executor.rs:271-273` 模块文档，slice 39 遗留的唯一 "still to come" 项）。执行器此前把 `tool_uses`（`reduce_stream` 抽出）逐条**严格顺序** dispatch（`for (i, (id, name, input)) in tool_uses.into_iter().enumerate()`，~`:4180-4330`）——即使连续多个 read-only 工具也串行。生产侧（`tool_execution.rs:157`）早已用 `FuturesUnordered` 并发跑 batched read-only 工具，复用既有 batch 分类器（`dispatch.rs` 的 `plan_tool_execution_batches` / `ToolExecutionPlan` / `ToolExecutionBatch`，§E 早先切片落地）。本切片把分类器接进执行器的 dispatch 循环：连续 read-only、非 approval 的 `tool_uses` 分类进 `Parallel` batch、`FuturesUnordered` 并发跑；serial 工具（approval-required / 非 parallel）各成独立 `Serial` batch、顺序跑。outcomes index-preserving、`on_tool_start`/`on_tool_end` 每 batch LIFO、`record_outcome` / LSP collect / read-file observe / error-escalation / push `ToolResult` 延后到 sequential post-batch pass。
+
+**关键设计决策：**
+- **`DispatchedTool` local struct（非复用 `dispatch::ToolExecOutcome`）**：后者带 `started_at` / `context_patch` 字段（生产侧 post-batch 用），执行器 post-batch phase 不需要；`DispatchedTool` 只带 `{ index, id, name, input, result, blocked }`——`blocked` flag 让 post-batch 跳过 `record_outcome` / LSP / read-file for loop-guard 拦截的调用（与原 inline loop 一致：`if !blocked { record_outcome / LSP / read-file }`）。
+- **index-preserving outcomes**：`outcomes: Vec<Option<DispatchedTool>>`（n×None 预分配），`FuturesUnordered` drain 时 `outcomes[o.index] = Some(o)`——按 tool_use index 写，不按完成顺序。post-batch phase 按 index 顺序遍历 `ordered`，保证 `record_outcome` / push `ToolResult` 的顺序与 `tool_uses` 原序一致（slow tool 先 dispatch 但后完成，ToolResult 仍排在前——faithful 于生产 index-preserving 语义）。
+- **per-batch LIFO callbacks**：每个 `Parallel` batch 在 dispatch 前 fire 全部 `on_tool_start`（index order）、drain 后 fire 全部 `on_tool_end`（reverse index order，LIFO）——栈式嵌套不跨 batch 边界（batch1 的 start/end 栈在 batch2 开始前清空）。`Serial` batch 单工具平凡 LIFO（start → end）。faithful 于生产 `tool_execution.rs` 的 per-batch start/end 模式。
+- **`tool_exec_lock` 不引入**：单循环 dispatch 下，`Parallel` batch（read-only）在下一个 `Serial` batch（write/approval）开始前**完全 drain**——同 turn 无 read/write 并发冲突，锁是多余复杂度。`multi_tool_use.parallel` 合成 fanout 是 host/production 侧 concern（`tool_execution.rs` / TUI `registry.rs`），执行器从 `reduce_stream` 收到的是 flat `tool_uses`——deferred。
+- **all-serial 行为等价**：若每个工具都是 serial（write/approval/blocked），各自成独立 `Serial` batch——per-batch sequential walk 复刻原 inline loop（start → guard → approval → early/run → end → post-process in order），零回归。
+
+**落地步骤（4 步）：**
+
+1. **imports**：`use futures_util::stream::FuturesUnordered;`（`StreamExt` 既有 :699）；`use super::dispatch::{ToolExecutionBatch, ToolExecutionPlan, plan_tool_execution_batches};`（`engine/mod.rs:2930-2932` re-export，`super::` 从 `host_executor` 解析）。
+2. **`DispatchedTool` local struct**（置 `EarlyToolTask` 后）：`{ index: usize, id: String, name: String, input: serde_json::Value, result: Result<ToolResult, ToolError>, blocked: bool }`。doc 注明 per-tool dispatch outcome 从 batch-dispatch phase 携到 sequential post-batch phase，`blocked` 标 loop-guard 拦截。
+3. **替换 sequential `for` loop（4 phases）**：
+   - **Phase 1 — Planning**（sequential）：预分配 `outcomes: Vec<Option<DispatchedTool>>`（n×None）+ `early_for_plan` / `tool_for_plan` / `plans`。对每个 `(i, (id, name, input))`：loop-guard `record_attempt` → `Block(msg)` 标 `blocked_flags[i]=true` + `guard_result=Some(block_tool_result(msg))`；`Proceed` → `false`/`None`。pop `early_tasks.remove(&id)`；resolve `tool = tools.get(&name).cloned()`；算 `read_only` / `approval_required`（dispatcher override `approval_requirement_for` → `Some(req) => req != Auto`，否则 static `requires_approval(&caps)`——镜像 `request_approval` 的 :3529-3536）；构造 `ToolExecutionPlan`（`supports_parallel=true`、`stream_early_start_safe=early_start_safe(&caps)`、`interactive=false`）。
+   - **Phase 2 — Batch classification**：`let batches = plan_tool_execution_batches(plans);`（连续 parallel-safe plan 进 `Parallel`、unsafe 各成 `Serial`）。
+   - **Phase 3 — Per-batch dispatch**（`for batch in batches`）：`Parallel` → fire `on_tool_start`（index order）→ `FuturesUnordered<Pin<Box<dyn Future<Output=DispatchedTool> + Send>>>`（每 plan 一个 `Box::pin(async move {...})` `'static` future——owns `Arc<dyn Tool>`，early-start spawn site :2268 已证此 pattern `'static`）→ body：`guard_result.is_some()` → `Ok(guard)`（blocked，不 run）；else early reuse（`early.name==name && early.input==input` → `handle.take().expect().await` → `Ok`/`Err(execution_failed)`；`Some(_revised)` → Drop aborts + `tool.run`；`None` → `tool.run`）→ 返回 `DispatchedTool { blocked: guard_result.is_some() }`。index-preserving drain `while let Some(o) = futs.next().await { outcomes[o.index] = Some(o); }`。fire `on_tool_end`（reverse index order，LIFO）。`Serial(plan)` → start → guard/approval/early/run → end → `outcomes[idx] = Some(...)`（原 inline loop 逐字搬入 batch match arm）。
+   - **Phase 4 — Post-batch processing**（sequential, index order）：`ordered: Vec<DispatchedTool> = outcomes.into_iter().map(|o| o.expect("all slots filled")).collect()`。`for o in &ordered`：`if !o.blocked { record_outcome → Continue/Warn/Halt }`；`if !o.blocked { Ok&&success → collect_lsp_diagnostics + record_read_file_result; Err → step_error_count+=1, step_error_categories.push }`；push `Message { role:"user", content:[ToolResult {...}] }`。保留 `early_tasks.clear()`（defensive，orphan 清理）。
+4. **模块文档**：seam-3 行 "parallel dispatch still to come" → "✅ parallel dispatch（slice 40 §E：`plan_tool_execution_batches` 批连续 read-only 工具进 `Parallel` batch；`FuturesUnordered` 并发跑、index-preserving outcomes；`record_outcome` / LSP / read-file / error-escalation / push 延后到 sequential post-batch pass；`on_tool_start`/`on_tool_end` per-batch LIFO。Deferred：`multi_tool_use.parallel` 解析（host concern）、`tool_exec_lock`（单循环不必要））"。模块文档 "still to come" 至此**全清**。
+
+**By-design gaps（deferred，documented）：**
+- **`multi_tool_use.parallel` 合成 fanout deferred**：host/production concern——`tool_execution.rs` / TUI `registry.rs` 负责把模型产的单个 `multi_tool_use.parallel` 合成调用展开成多个 flat tool_uses，执行器从 `reduce_stream` 收到的已是 flat 列表。本切片不动 host 侧展开逻辑。
+- **`tool_exec_lock` 不引入**：单循环 dispatch 下 `Parallel` batch（read-only）在 `Serial` batch（write/approval）前全 drain，同 turn 无 read/write 并发冲突。生产侧 `tool_exec_lock` 是为跨 turn / 跨 dispatch-loop 的并发保护（如 subagent children 与 parent 共享 workspace），执行器单循环不需要。
+
+**测试（7 新，"§E slice 40 — parallel dispatch" 组）：**`parallel_readonly_tools_run_concurrently`（两 read-only 工具 oneshot "started" 后等 release——测试收两信号后才 release 任一，证明真并发，确定性无 timing）；`parallel_batch_outcomes_index_preserved`（slow 80ms + fast 5ms，collect 所有 message 的 ToolResult——各 ToolResult 各成独立 user message，flat-map 收——断 index 序非完成序）；`parallel_batch_lifo_callbacks`（recording callback 断 `["start:A","start:B","end:B","end:A"]` LIFO）；`mixed_batch_parallel_serial_parallel`（read-only + write(approval) + read-only → 三 batch，全跑对、ToolResult 序对）；`parallel_batch_early_task_reuse`（read-only + early-start speculatively spawned → tool run-counter=1 非 2，speculative task 复用）；`parallel_batch_blocked_tool_produces_block_result`（3 次同调用，3rd loop-guard block → run-counter=2、3rd ToolResult is_error=true）；`all_serial_tools_match_sequential_behavior`（全 write 工具 → 全 `Serial` batch → 行为匹配原顺序 loop，回归守卫）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**；`cargo +1.90.0 build -p codesmith-agent-runtime --tests` 10 均既有 warning（零新增）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 162 通过（155 slice 39 + 7 新 slice 40）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1139 通过 + 2 ignored（零失败，2 个 `mcp::tests` flaky SSE/HTTP reconnect 重跑通过——与本切片无关）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 126 通过 + 1 ignored（host wire-in 零回归）；`cargo +1.90.0 build --workspace` 全绿（tui bin 143 warning 均既有死代码，无新增）。
+
+**下一聚焦工作：**
+- seam-3 至此全闭合（parallel dispatch）。模块文档 "still to come" 至此**全清**——§E（host executor parity）的四条 seam（inline stream reduction / transparent-retry / early-tool-start / subagent post-stream drain + blocking hold / thinking-only handling / **parallel dispatch**）全部落地。§E 主体完成，余 §A（provider extraction）/ §D2 deferred 项 / B3（`ApiProvider`→`ProviderKind`）等独立工作线。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先；DeepSeek `client.rs`/`chat.rs` 残件删除（blocked on cache-warmup/debug-inspect 迁出 tui）维持。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
