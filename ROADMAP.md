@@ -1892,6 +1892,33 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 ---
 
+**进度（2026-07-15 §E mid-loop system-prompt refresh（seam 1）落地，折叠 compaction summary 进 per-step 快照，slice 38，`feat/pluggable-framework-core`）：**
+
+§E 的第三十八个切片落地——关闭 seam-1 "system-prompt refresh still to come（top of the `loop`）" 缺口（`host_executor.rs:252` 模块文档）。生产退役的 `turn_loop.rs:320` 在每步循环顶部调 `self.refresh_system_prompt(mode)`（"Ensure system prompt is up to date with latest session states"），把 `session.compaction_summary_prompt` 折进重组的 base。执行器此前在 `run_inner` 循环前**一次性**快照 `let system = self.config.system.clone();`（`:3506`）且循环内不刷新——故 mid-turn 产出的 compaction summary 只在 `run` 返回后由 host 折进 `session.system_prompt`（`mod.rs:1333` → `merge_compaction_summary`），模型**下一 turn** 才看到，非同 turn。本切片把折叠加到循环顶部（mid-loop），模型在**同一 turn 的下一步**即看到 compaction summary，闭合 slice 25a 的 "post-`run` timing" 系统提示词半。
+
+**关键设计洞察（窄而忠实的范围）**：完整的 `Engine::refresh_system_prompt`（`mod.rs:2521`）是 `&mut self` on `Engine`，重组 base 依赖 `self.config` + `crate::memory`/`skills`/`slop_ledger`——mid-`run` 不可达（执行器是 `&self`；`&mut Engine` 被借去构造+驱动）。但 base 在**一 turn 内稳定**（host 每 turn pre-`run` 在 `mod.rs:1127` 重组一次；config/memory/skills mid-turn 不变），故 mid-turn 唯一变化的输入是累积的 compaction summary。执行器侧 analog：把自己的 `pending_compaction_summary` slot（本 turn 至今的 compaction）折进 per-step 快照。**无新字段、无新 probe、无 host 改动**——纯执行器内部，复用 slice 25a 的 `pending_compaction_summary` slot + `crate::compaction::merge_system_prompts`。
+
+**无双重折叠不变量**：`base` 是循环内每步的 fresh 稳定 local（从不 mutate），slot 只累积 summary（`record_compaction_summary` 的 `merge`），故每步 `merge(base, peek(cumulative))` 重算 `base + cumulative`，永不 `base + cumulative + cumulative`。peek **非排空**（`clone` 不 `take`），故 host post-`run` 的 `take_pending_compaction_summary` + `merge_compaction_summary`（`mod.rs:1333-1338`）不变。
+
+**落地步骤（4 步）：**
+
+1. **`host_executor.rs` — `peek_pending_compaction_summary`**：新私有方法镜像 `take_pending_compaction_summary`（`:1708`）但 `clone()`（非排空）。doc 注明背书 mid-loop refresh 且 post-`run` `take` 排空不变。
+2. **`host_executor.rs` — `refresh_system_prompt_snapshot`**：新私有方法 `fn refresh_system_prompt_snapshot(&self, base: Option<&SystemPrompt>) -> Option<SystemPrompt>` → `merge_system_prompts(base, self.peek_pending_compaction_summary())`。doc 关联生产 `turn_loop.rs:320` + 稳定-base 论证 + "下一步看到 summary" 序。
+3. **`host_executor.rs` — 接 seam-1（`run_inner`）**：`let system = self.config.system.clone();`（`:3506`，循环前）→ `let base = self.config.system.clone();`（turn 稳定 base）；循环内 `drain_steers`（`:3580`）之后、`run_compaction`（`:3585`）之前加 `let system = self.refresh_system_prompt_snapshot(base.as_ref());`——镜像生产 steer→refresh→compaction 序，故 step N 的 request 用 step N-1 的 compaction summary（refresh-before-compaction：模型在 summary 产出的**下一步**看到，非同步）。下游 `run_capacity_preflight` / `gate.observe_pre_turn` / request（`:3597`/`:3631`/`:3685`）均读该 per-step `system`。`continue` 路径（`CapacityPreflight::RetryStep`、reactive `recover_context_overflow` 重启）自然重跑 refresh；reactive summary 落 slot 后在重启时折入。slice 3c 的 `refresh_targeted_context_mid_loop` 不动——若其记 summary，下一迭代 refresh 折入。
+4. **模块文档 + MockLlm test infra + 6 测试**：seam-1 行 "system-prompt refresh still to come（top of the `loop`）" → "✅ system-prompt refresh（折累积 compaction summary 进 per-step 快照，镜像生产 per-step `Engine::refresh_system_prompt` 折 `session.compaction_summary_prompt`——slice 38 §E）"；新增 "Known gaps in the system-prompt refresh (by design)" 小节（base 重组 host-side、mid-turn slop-ledger/memory/skills 落盘变化不反映）。`MockLlm` 加 `systems: Mutex<Vec<Option<SystemPrompt>>>` + `systems()` accessor（镜像既有 `requests`/`requests()`），`create_message_stream` push `request.system.clone()`。6 测试（"§E slice 38 — mid-loop system-prompt refresh" 组）：`system_prompt_refresh_folds_compaction_summary_next_step`（headline：step 0 compact → step 1 的 request system 含 summary、step 0 不含；refresh-before-compaction 序）、`system_prompt_refresh_no_summary_is_base_snapshot`（无 compaction → 各步 system == base）、`system_prompt_refresh_peek_does_not_drain_slot`（mid-loop peek 后 `take_pending_compaction_summary()` 仍 `Some`——host fold 不饿死）、`system_prompt_refresh_accumulates_multiple_summaries`（两条 summary 都折入，非 last-wins）、`system_prompt_refresh_first_step_uses_construction_snapshot`（step 0 system == 构造快照）、`system_prompt_refresh_no_double_fold`（连续两次 refresh 同一 cumulative，summary 恰好出现一次——守 fresh-base-per-step 不变量）。
+
+**By-design gaps（deferred，documented）：**
+- **base 重组是 host-side**：完整 `Engine::refresh_system_prompt` 重组 base（含 SlopLedger completion-gate 块）是 `&mut Engine`，mid-`run` 不可达。本切片只折 compaction summary（mid-turn 唯一变化输入），收窄 slice 25a 的静态快照论证为"base 静态；summary mid-loop 折入"，闭合 same-turn 可见性缺口。
+- **mid-turn slop-ledger / memory / skills 落盘变化不反映**：mid-turn 写 slop ledger 的工具不会在本 turn 浮现其 completion-gate 块（base 是 per-turn 快照），下次 pre-`run` 重组才看到。niche 且一致于稳定-base 假设；未来可用 resolver-closure probe（类 `TurnMetaProbe`）重新调 `Engine::refresh_system_prompt`。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**；`cargo +1.90.0 build -p codesmith-agent-runtime --tests` 11 均既有 warning（零新增——本切片初稿 4 个 `unused history` 经删除未用 sess/history 消除）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` 150 通过（144 slice 3c + 6 新 slice 38）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1128 通过 + 1 flaky（`mcp::tests::streamable_http_stale_session_reconnects_and_retries_tool_call`——网络时序，隔离重跑通过，与本切片无关）+ 2 ignored；`cargo +1.90.0 test -p codesmith-agent --lib` 79 通过（core trait 未触）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui engine::` 126 通过 + 1 ignored（host wire-in 零回归）；`cargo +1.90.0 build --workspace` 全绿（tui bin 143 warning 均既有死代码，无新增）。
+
+**下一聚焦工作：**
+- seam-1 至此全闭合（steer / compaction / capacity preflight / LSP flush / system-prompt refresh）。seam-2 剩 **thinking-only handling**（stream 解析后、tool 抽取/turn 结束前）、seam-3 剩 **parallel dispatch**（tool `for` 循环内）——二者是模块文档 "still to come" 的余项。
+- E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先；DeepSeek `client.rs`/`chat.rs` 残件删除（blocked on cache-warmup/debug-inspect 迁出 tui）维持。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

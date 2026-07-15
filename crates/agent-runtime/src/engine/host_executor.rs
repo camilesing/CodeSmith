@@ -245,12 +245,16 @@
 //! The loop has four seams where guardrails are absorbed incrementally:
 //!
 //! 1. **per-step pre-request** — ✅ **steer drain** (queued user inputs injected
-//!    before the request snapshot) + ✅ **compaction** (micro-compact stale
-//!    tool results, then auto-compact via an LLM summary when over threshold)
-//!    + ✅ **capacity preflight** (hard token-budget gate + emergency recovery
-//!    via forced compaction / hard trim) + ✅ **LSP flush** (drain pending
-//!    diagnostics into a synthetic `user` message); system-prompt refresh still
-//!    to come (top of the `loop`).
+//!    before the request snapshot) + ✅ **system-prompt refresh** (fold the
+//!    accumulated compaction summary into the per-step snapshot at the top of
+//!    the loop, mirroring production's per-step `Engine::refresh_system_prompt`
+//!    at retired `turn_loop.rs:320` which folds `session.compaction_summary_prompt`
+//!    — slice 38 §E; the model thus sees a just-produced compaction summary on
+//!    the next step's request within the same turn) + ✅ **compaction**
+//!    (micro-compact stale tool results, then auto-compact via an LLM summary
+//!    when over threshold) + ✅ **capacity preflight** (hard token-budget gate
+//!    + emergency recovery via forced compaction / hard trim) + ✅ **LSP flush**
+//!    (drain pending diagnostics into a synthetic `user` message).
 //! 2. **per-step post-stream** — ✅ **inline stream reduction** (the
 //!    `reduce_stream` reducer replaced `accumulate_stream`; it emits text /
 //!    thinking deltas to `Callback::on_stream_delta` in real time and tracks
@@ -319,6 +323,28 @@
 //! - **no `emit_session_updated`** for the synthetic push — the executor's other
 //!   message pushes (assistant / tool result) likewise don't emit it via the
 //!   `ChatHistory` path; UI surfacing is deferred to the wire-in step.
+//!
+//! ## Known gaps in the system-prompt refresh (by design)
+//!
+//! - **base re-assembly is host-side** — production's `Engine::refresh_system_prompt`
+//!   (`mod.rs:2521`) re-assembles the base from `self.config` +
+//!   `crate::memory`/`skills`/`slop_ledger` (incl. the SlopLedger completion-gate
+//!   block) and is `&mut self` on `Engine`. The executor is `&self` during `run`
+//!   (`&mut Engine` is borrowed to construct + drive it), so it cannot re-run the
+//!   full re-assembly mid-loop. But the base is **stable during a turn** (the host
+//!   re-assembles it once per turn pre-`run` at `mod.rs:1127`; config/memory/skills
+//!   don't change mid-turn), so the executor folds *only* the accumulated
+//!   compaction summary (the sole mid-turn-changing input) via
+//!   [`refresh_system_prompt_snapshot`]. This narrows the slice-25a static-snapshot
+//!   rationale ("base static; summary folded mid-loop"), closing the same-turn
+//!   visibility gap: a compaction summary produced this turn now reaches the model
+//!   on the next step's request, not next turn's.
+//! - **mid-turn slop-ledger / memory / skills on-disk changes not reflected** —
+//!   a tool that writes the slop ledger mid-turn won't surface its completion-gate
+//!   block until the host's next pre-`run` re-assembly (the base is the per-turn
+//!   snapshot). Niche (the slop ledger is rarely written mid-turn) and consistent
+//!   with the stable-base assumption above; a future resolver-closure probe (like
+//!   `TurnMetaProbe`) could re-invoke `Engine::refresh_system_prompt` if needed.
 //!
 //! ## Known gaps in transparent-retry (by design)
 //!
@@ -1728,6 +1754,54 @@ pub fn new(
             .expect("pending_compaction_summary mutex poisoned");
         let current = guard.take();
         *guard = crate::compaction::merge_system_prompts(current.as_ref(), summary);
+    }
+
+    /// Non-draining peek of the accumulated compaction `summary_prompt`
+    /// (slice 38 §E). Mirrors [`take_pending_compaction_summary`] but `clone()`s
+    /// the slot instead of draining it — the post-`run` host fold
+    /// ([`take_pending_compaction_summary`] → `Engine::merge_compaction_summary`,
+    /// `mod.rs`) still drains the full accumulated summary. Backs the mid-loop
+    /// system-prompt refresh ([`Self::refresh_system_prompt_snapshot`]) so a
+    /// just-produced compaction summary reaches the model on the next step's
+    /// request within the same turn (mirrors production's per-step
+    /// `Engine::refresh_system_prompt` at the retired `turn_loop.rs:320`,
+    /// which folds `session.compaction_summary_prompt`).
+    fn peek_pending_compaction_summary(&self) -> Option<SystemPrompt> {
+        self.pending_compaction_summary
+            .lock()
+            .expect("pending_compaction_summary mutex poisoned")
+            .clone()
+    }
+
+    /// Fold the accumulated compaction summary into the per-step system-prompt
+    /// snapshot (slice 38 §E). Called at the top of the `run_inner` loop
+    /// (seam 1, after `drain_steers` and before `run_compaction`) so the model
+    /// sees a compaction summary produced on a prior step's request within the
+    /// same turn — matching production's per-step `Engine::refresh_system_prompt`
+    /// (retired `turn_loop.rs:320`, "Ensure system prompt is up to date with
+    /// latest session states"), which folds `session.compaction_summary_prompt`
+    /// into the re-assembled base.
+    ///
+    /// **Scope (by design):** the full `Engine::refresh_system_prompt`
+    /// (`mod.rs:2521`) is `&mut self` on `Engine` and re-assembles the base from
+    /// `self.config` + `crate::memory`/`skills`/`slop_ledger` — none available
+    /// mid-`run` (the executor is `&self`; `&mut Engine` is borrowed to
+    /// construct + drive it). But the base is **stable during a turn** (the host
+    /// re-assembles it once per turn pre-`run` at `mod.rs:1127`; config/memory/
+    /// skills don't change mid-turn), so the only mid-turn-changing input is the
+    /// accumulated compaction summary. This method folds *only* that summary
+    /// (via [`crate::compaction::merge_system_prompts`], peeked non-draining so
+    /// the host post-`run` fold still drains the slot).
+    ///
+    /// **No double-fold invariant:** `base` is a fresh stable local each loop
+    /// iteration (never mutated), and the slot accumulates *only* summaries, so
+    /// `merge(base, peek(cumulative))` recomputes `base + cumulative` each step
+    /// — never `base + cumulative + cumulative`.
+    fn refresh_system_prompt_snapshot(
+        &self,
+        base: Option<&SystemPrompt>,
+    ) -> Option<SystemPrompt> {
+        crate::compaction::merge_system_prompts(base, self.peek_pending_compaction_summary())
     }
 
     /// Read back whether a *non-merge* compaction changed the transcript
@@ -3503,7 +3577,12 @@ impl HostAgentExecutor {
         let callback = self.callback.clone();
         let max_steps = self.config.max_steps;
         let max_tokens = self.config.max_tokens;
-        let system = self.config.system.clone();
+        // Stable base for the turn (the host re-assembles it once per turn
+        // pre-`run` at `mod.rs:1127`; config/memory/skills don't change
+        // mid-turn). The per-step `system` — which folds in any compaction
+        // summary produced so far this turn — is recomputed at the top of the
+        // loop via `refresh_system_prompt_snapshot` (slice 38 §E).
+        let base = self.config.system.clone();
         let temperature = self.config.temperature;
 
         // Seed the transcript with the user turn.
@@ -3578,6 +3657,21 @@ impl HostAgentExecutor {
             // step's request. Drains only what's already queued (`try_recv` is
             // non-blocking); never waits for input.
             self.drain_steers(history).await;
+            // ✅ system-prompt refresh (slice 38 §E) — fold the accumulated
+            // compaction summary into the per-step snapshot so the model sees a
+            // just-produced compaction summary on THIS step's request (mirrors
+            // production's per-step `Engine::refresh_system_prompt` at retired
+            // `turn_loop.rs:320`, "Ensure system prompt is up to date with
+            // latest session states", which folds
+            // `session.compaction_summary_prompt`). Sits after the steer drain
+            // and before `run_compaction` — matching production's
+            // steer → refresh → compaction order — so step N's request uses
+            // the summary from step N-1's compaction (refresh-before-compaction:
+            // the model sees a summary the step after it is produced, not the
+            // same step). `base` is the stable per-turn snapshot; the fold is
+            // non-draining (`peek`), so the post-`run` host fold still drains
+            // the slot.
+            let system = self.refresh_system_prompt_snapshot(base.as_ref());
             // Auto-compaction mirrors `turn_loop.rs:341-454` (steer →
             // compaction → … → LSP flush → request). Runs before the LSP
             // flush so a freshly-collected diagnostic message (pushed by the
@@ -4645,6 +4739,10 @@ mod tests {
     struct MockLlm {
         rounds: Mutex<VecDeque<MockRound>>,
         requests: Mutex<Vec<Vec<Message>>>,
+        /// The `system` prompt of each `create_message_stream` call, in call
+        /// order (slice 38 §E) — lets tests prove the model saw a folded
+        /// compaction summary on a given step's request. Mirrors `requests`.
+        systems: Mutex<Vec<Option<SystemPrompt>>>,
         /// Canned reply for a non-streaming `create_message` call (used by the
         /// compaction summary path). `None` ⇒ `create_message` bails (the
         /// pre-compaction default, so non-compaction tests are unaffected).
@@ -4685,6 +4783,7 @@ mod tests {
             Self {
                 rounds: Mutex::new(rounds.into_iter().collect()),
                 requests: Mutex::new(Vec::new()),
+                systems: Mutex::new(Vec::new()),
                 compaction_reply: Mutex::new(None),
                 compaction_error: Mutex::new(None),
                 compaction_calls: Mutex::new(0),
@@ -4697,6 +4796,14 @@ mod tests {
         /// order.
         fn requests(&self) -> Vec<Vec<Message>> {
             self.requests.lock().unwrap().clone()
+        }
+
+        /// The `system` prompt of each `create_message_stream` call, in call
+        /// order (slice 38 §E) — proves which system-prompt snapshot a given
+        /// step's request carried (e.g. whether a compaction summary had been
+        /// folded in yet).
+        fn systems(&self) -> Vec<Option<SystemPrompt>> {
+            self.systems.lock().unwrap().clone()
         }
 
         /// Make `create_message` (the compaction summary call) return a canned
@@ -4785,6 +4892,10 @@ mod tests {
             request: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
             self.requests.lock().unwrap().push(request.messages.clone());
+            self.systems
+                .lock()
+                .unwrap()
+                .push(request.system.clone());
             let next = self.rounds.lock().unwrap().pop_front();
             // §E cancel-token test hook: take the token (if set) here so the
             // lock doesn't cross an await, but cancel it INSIDE the async
@@ -6571,6 +6682,15 @@ mod tests {
         call
     }
 
+    /// A round that calls the `echo` tool (`call_1`) so the loop continues to a
+    /// next step — used by multi-step system-prompt-refresh tests (slice 38 §E).
+    fn echo_call() -> Vec<StreamEvent> {
+        let mut call = text_block(0, "ok");
+        call.extend(tool_use_block(1, "call_1", "echo", r#"{"text":"hi"}"#));
+        call.extend(finish("tool_use"));
+        call
+    }
+
     #[tokio::test]
     async fn approval_approved_runs_tool() {
         let mut sess = fresh_session();
@@ -7674,6 +7794,346 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
         assert_eq!(mock.compaction_calls(), 0);
         assert!(executor.take_pending_compaction_summary().is_none());
+    }
+
+    // === mid-loop system-prompt refresh (slice 38 §E) ===================
+
+    /// §E slice 38 — **headline**: a compaction summary produced on step 0
+    /// reaches the model on step 1's request within the **same turn**, folded
+    /// into the per-step system-prompt snapshot at the top of the loop. Step 0's
+    /// request still carries the base snapshot (the refresh sits before
+    /// `run_compaction`, so the summary produced during step 0 isn't folded
+    /// until step 1) — matching production's per-step `Engine::refresh_system_prompt`
+    /// (retired `turn_loop.rs:320`, refresh-before-compaction ⇒ the model sees a
+    /// summary the step *after* it is produced, not the same step).
+    #[tokio::test]
+    async fn system_prompt_refresh_folds_compaction_summary_next_step() {
+        let mut sess = fresh_session();
+        // 12 messages ≫ the 100-token low threshold ⇒ step-0 auto-compact.
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![echo_call(), end_call()]).with_compaction_summary("CONVO SUMMARY"),
+        );
+        // Register `echo` so the step-0 tool call runs cleanly and the loop
+        // continues to step 1, where the folded summary is observed.
+        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
+        registry.register(Arc::new(EchoSpec));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(registry.to_framework_tool_set()),
+            callback,
+            AgentExecutorConfig {
+                system: Some(SystemPrompt::Text("BASE PROMPT".to_string())),
+                ..AgentExecutorConfig::default()
+            },
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            mock.compaction_calls(),
+            1,
+            "exactly one auto-compact (on step 0)"
+        );
+        let systems = mock.systems();
+        assert_eq!(
+            systems.len(),
+            2,
+            "two create_message_stream calls (step 0 + step 1)"
+        );
+        // Step 0: refresh ran before the compaction ⇒ base snapshot, no summary.
+        let step0 = system_prompt_text(systems[0].as_ref().expect("step 0 system"));
+        assert!(step0.contains("BASE PROMPT"), "step 0 carries the base: {step0}");
+        assert!(
+            !step0.contains("CONVO SUMMARY"),
+            "step 0 must not yet see the summary (refresh is before compaction): {step0}"
+        );
+        // Step 1: the top-of-loop refresh folded step 0's summary into the base.
+        let step1 = system_prompt_text(systems[1].as_ref().expect("step 1 system"));
+        assert!(step1.contains("BASE PROMPT"), "step 1 still carries the base: {step1}");
+        assert!(
+            step1.contains("CONVO SUMMARY"),
+            "step 1 sees the folded compaction summary (same turn): {step1}"
+        );
+    }
+
+    /// §E slice 38 — with no compaction, every step's request carries the base
+    /// construction snapshot unchanged (the top-of-loop refresh is a no-op fold
+    /// when the pending-summary slot is empty).
+    #[tokio::test]
+    async fn system_prompt_refresh_no_summary_is_base_snapshot() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![echo_call(), end_call()]));
+        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
+        registry.register(Arc::new(EchoSpec));
+        let base = SystemPrompt::Text("BASE PROMPT".to_string());
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(registry.to_framework_tool_set()),
+            callback,
+            AgentExecutorConfig {
+                system: Some(base.clone()),
+                ..AgentExecutorConfig::default()
+            },
+            None,
+            None,
+            None,
+            None,
+            None, // no CompactionProbe ⇒ run_compaction is a no-op
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 0);
+        let systems = mock.systems();
+        assert_eq!(systems.len(), 2);
+        // Both steps carry the base snapshot unchanged (nothing to fold).
+        for (i, sys) in systems.iter().enumerate() {
+            let text = system_prompt_text(sys.as_ref().expect("system present"));
+            assert_eq!(
+                text, "BASE PROMPT",
+                "step {i} carries the unmodified base snapshot: {text}"
+            );
+        }
+    }
+
+    /// §E slice 38 — the mid-loop refresh peeks (non-draining) the
+    /// compaction-summary slot, so the host's post-`run` fold still drains the
+    /// full summary. Guards against the refresh accidentally `take`-ing the
+    /// slot (which would starve the host fold at `mod.rs:1333`).
+    #[tokio::test]
+    async fn system_prompt_refresh_peek_does_not_drain_slot() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![echo_call(), end_call()]).with_compaction_summary("CONVO SUMMARY"),
+        );
+        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
+        registry.register(Arc::new(EchoSpec));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(registry.to_framework_tool_set()),
+            callback,
+            AgentExecutorConfig {
+                system: Some(SystemPrompt::Text("BASE PROMPT".to_string())),
+                ..AgentExecutorConfig::default()
+            },
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 1);
+        // The slot still drains post-`run` (the mid-loop peek didn't take it).
+        let summary = executor
+            .take_pending_compaction_summary()
+            .expect("slot survived the mid-loop peek");
+        assert!(
+            system_prompt_text(&summary).contains("CONVO SUMMARY"),
+            "host fold still receives the full summary: drained = {:?}",
+            system_prompt_text(&summary)
+        );
+        // One-shot drain (mirrors slice 25a): a second read yields `None`.
+        assert!(executor.take_pending_compaction_summary().is_none());
+    }
+
+    /// §E slice 38 — two summaries recorded this turn both fold into the
+    /// per-step snapshot (not last-wins). Guards accumulation via
+    /// `merge_system_prompts` (mirrors slice 25a's
+    /// `multiple_compactions_accumulate_summary` for the fold side).
+    #[tokio::test]
+    async fn system_prompt_refresh_accumulates_multiple_summaries() {
+        // Unit-level: drives `record_compaction_summary` + the fold directly
+        // (no `.run()`), so no session/history is needed.
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let base = SystemPrompt::Text("BASE PROMPT".to_string());
+        let summary_a = SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "first compaction summary".to_string(),
+            cache_control: None,
+        }]);
+        let summary_b = SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "second compaction summary".to_string(),
+            cache_control: None,
+        }]);
+        executor.record_compaction_summary(Some(summary_a));
+        executor.record_compaction_summary(Some(summary_b));
+        let folded = executor
+            .refresh_system_prompt_snapshot(Some(&base))
+            .expect("folded snapshot present");
+        let text = system_prompt_text(&folded);
+        assert!(
+            text.contains("BASE PROMPT"),
+            "base preserved by the fold: {text}"
+        );
+        assert!(
+            text.contains("first compaction summary"),
+            "first summary folded in (not last-wins): {text}"
+        );
+        assert!(
+            text.contains("second compaction summary"),
+            "second summary folded in: {text}"
+        );
+    }
+
+    /// §E slice 38 — the first step's request carries the construction
+    /// snapshot (base, no fold), since the refresh runs before any compaction
+    /// has produced a summary this turn. A focused 1-step version of the
+    /// headline's step-0 assertion.
+    #[tokio::test]
+    async fn system_prompt_refresh_first_step_uses_construction_snapshot() {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        // Single round (end) — the loop runs exactly one step.
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_summary("CONVO SUMMARY"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig {
+                system: Some(SystemPrompt::Text("BASE PROMPT".to_string())),
+                ..AgentExecutorConfig::default()
+            },
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.compaction_calls(), 1, "step 0 did auto-compact");
+        let systems = mock.systems();
+        assert_eq!(systems.len(), 1, "one create_message_stream call (step 0)");
+        // Step 0: the compaction fired *after* the refresh (refresh-before-
+        // compaction), so the request still carried the base construction
+        // snapshot — the model has not yet seen the summary.
+        let step0 = system_prompt_text(systems[0].as_ref().expect("step 0 system"));
+        assert_eq!(
+            step0, "BASE PROMPT",
+            "step 0 carries the construction snapshot, not the folded summary: {step0}"
+        );
+    }
+
+    /// §E slice 38 — no double-fold: calling the refresh across consecutive
+    /// steps (the same accumulated summary) folds it exactly once each step.
+    /// Guards the fresh-`base`-per-step invariant — if `base` were mutated to
+    /// the prior fold's result, the second step would fold the summary twice.
+    #[tokio::test]
+    async fn system_prompt_refresh_no_double_fold() {
+        // Unit-level: drives `record_compaction_summary` + two consecutive
+        // refreshes directly (no `.run()`), so no session/history is needed.
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let base = SystemPrompt::Text("BASE".to_string());
+        executor.record_compaction_summary(Some(SystemPrompt::Text("MARKER".to_string())));
+        // Two consecutive per-step refreshes (simulating step 1 and step 2 of a
+        // run where step 0 compacted once; the slot is unchanged across them).
+        let step1 = executor
+            .refresh_system_prompt_snapshot(Some(&base))
+            .expect("step 1 folded");
+        let step2 = executor
+            .refresh_system_prompt_snapshot(Some(&base))
+            .expect("step 2 folded");
+        // `base` is a fresh stable input each call (never mutated), so each
+        // fold is `merge(base, cumulative)` = base + MARKER once — not twice.
+        assert_eq!(
+            system_prompt_text(&step1).matches("MARKER").count(),
+            1,
+            "step 1 folds the summary once: {:?}",
+            system_prompt_text(&step1)
+        );
+        assert_eq!(
+            system_prompt_text(&step2).matches("MARKER").count(),
+            1,
+            "step 2 does not double-fold (base is fresh each step): {:?}",
+            system_prompt_text(&step2)
+        );
     }
 
     // === post-compact cleanup signal (slice 25c §E) =====================
