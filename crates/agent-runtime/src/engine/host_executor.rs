@@ -182,7 +182,8 @@
 //!    (the sentinel contract in `prompts/base.md`), then the turn resumes —
 //!    mirroring `handle_deepseek_turn`'s non-blocking completion drain
 //!    (`turn_loop.rs:1317-1397` + the late drain at `1501-1532`). The executor
-//!    has no thinking-only / goal-continuation / REPL branches, so this single
+//!    has no goal-continuation / REPL resume branches (thinking-only is now
+//!    handled as a terminal status — slice 39 §E — not a resume), so this single
 //!    drain site (the `tool_uses.is_empty()` arm) covers both production drains.
 //!    The receiver is
 //!    `Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>` —
@@ -268,9 +269,15 @@
 //!    sentinel `user` message, and resume the turn) + ✅ **subagent blocking
 //!    hold** (when the non-blocking drain found nothing but children are still
 //!    running, block on a `biased select!` over cancel / completion `recv().await`
-//!    / steer `recv().await`, emitting "Waiting on N sub-agent(s)"); thinking-only
-//!    handling still to come (after the stream resolves, before tool extraction /
-//!    turn end).
+//!    / steer `recv().await`, emitting "Waiting on N sub-agent(s)") + ✅
+//!    **thinking-only handling** (issue #1727: when the stream yields only a
+//!    `Thinking` block — no `Text`, no `ToolUse` — do not persist the
+//!    thinking-only assistant message, since DeepSeek's chat API rejects
+//!    assistant messages containing only a thinking block, and emit a single
+//!    status at the clean no-tool-calls tail via
+//!    [`should_emit_thinking_only_status`], the decision deferred past the steer
+//!    flush / sub-agent drain resume branches so a resume never shows a
+//!    spurious "turn ended" notice — slice 39 §E).
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
 //!    call) + **`record_outcome`** (warn at 3 / halt at 8 consecutive failures) +
 //!    ✅ **approval** (emit `ApprovalRequired` + block on the decision channel
@@ -345,6 +352,29 @@
 //!   snapshot). Niche (the slop ledger is rarely written mid-turn) and consistent
 //!   with the stable-base assumption above; a future resolver-closure probe (like
 //!   `TurnMetaProbe`) could re-invoke `Engine::refresh_system_prompt` if needed.
+//!
+//! ## Known gaps in thinking-only handling (by design)
+//!
+//! - **goal-continuation / inline REPL resume branches deferred** — production's
+//!   `tool_uses.is_empty()` tail (`turn_loop.rs:~1400-1540`) also ran two
+//!   *resume* branches before the thinking-only status: **goal-continuation**
+//!   (`goal_continuation_message_if_needed` — inject a continuation prompt and
+//!   resume while an `update_goal` is active, capped at
+//!   `MAX_GOAL_CONTINUATIONS_PER_TURN=3`) and **inline REPL** (```repl fenced
+//!   blocks executed via `PythonRuntime`, fed back as `<turn_meta>`). The
+//!   executor has neither: the infra is still live (`tool_state/goal.rs`,
+//!   `repl/sandbox.rs` + `repl/runtime.rs`) but unwired, so a thinking-only
+//!   response whose turn *would* have resumed for one of those now ends on
+//!   `NoToolCalls` + the status. They are larger, less self-contained slices
+//!   (each needs mid-loop host state / a runtime) and remain deferred.
+//! - **placeholder thinking for tool-call turns not injected** — the *inverse*
+//!   gap: when the model made tool calls but streamed no reasoning, production
+//!   injected a `"(reasoning omitted)"` placeholder `Thinking` block because
+//!   DeepSeek's thinking-mode API requires `reasoning_content` on every
+//!   tool-call assistant message (`turn_loop.rs:1202-1212`). The executor
+//!   persists the finalized blocks verbatim (`finalize_blocks`), so it omits
+//!   the placeholder. A separate gap, not part of thinking-only *handling*
+//!   (which is about a thinking-*only* response), and not addressed here.
 //!
 //! ## Known gaps in transparent-retry (by design)
 //!
@@ -805,6 +835,30 @@ fn should_hold_turn_for_subagents(
     running_children: usize,
 ) -> bool {
     queued_completions > 0 || running_children > 0
+}
+
+/// Decide whether to surface the "thinking-only" status at the clean
+/// no-tool-calls tail (issue #1727). Mirrors the retired
+/// `turn_loop.rs:2893-2901` pure helper exactly: emit only on a *clean* end —
+/// tool uses empty, no turn error already surfaced, not cancelled, no pending
+/// steers (the turn is about to resume), not holding for sub-agents (the turn
+/// is held open). Any of those suppresses the notice so a resume path or an
+/// already-surfaced error/cancel is never followed by a spurious "turn ended"
+/// status. The flag itself is captured earlier (at the persist site) but the
+/// emit is deferred to the tail — see [`HostAgentExecutor::run_inner`]
+/// (slice 39 §E).
+fn should_emit_thinking_only_status(
+    tool_uses_empty: bool,
+    turn_error_is_none: bool,
+    cancelled: bool,
+    steers_pending: bool,
+    holding_for_subagents: bool,
+) -> bool {
+    tool_uses_empty
+        && turn_error_is_none
+        && !cancelled
+        && !steers_pending
+        && !holding_for_subagents
 }
 
 /// Bundles the LSP collaborators the executor needs for the post-edit collect /
@@ -3873,11 +3927,30 @@ impl HostAgentExecutor {
             };
             callback.on_llm_end(&content).await;
 
-            // Persist the assistant turn.
-            history.push(Message {
-                role: "assistant".to_string(),
-                content: content.clone(),
-            });
+            // Issue #1727: did this turn produce ONLY a reasoning/thinking
+            // block — empty sendable content, no tool calls (e.g. gpt-oss via
+            // ollama's harmony→OpenAI shim mapping to `reasoning_content`)? We
+            // capture the fact here (at the persist site) but defer the
+            // status decision to the `tool_uses.is_empty()` tail below —
+            // after the steer flush / sub-agent drain resume branches — so a
+            // resume never shows a spurious "turn ended" notice (mirrors the
+            // retired `turn_loop.rs:1267-1283` deferred-decide). Keep thinking
+            // for the UI stream events (already emitted during the stream),
+            // but persist only sendable assistant turns — DeepSeek chat API
+            // rejects assistant messages that contain only a thinking block
+            // (`turn_loop.rs:1286-1293`). slice 39 §E.
+            let has_sendable_assistant_content = content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }));
+            let thinking_only = !has_sendable_assistant_content;
+
+            // Persist the assistant turn (only when sendable — see above).
+            if has_sendable_assistant_content {
+                history.push(Message {
+                    role: "assistant".to_string(),
+                    content: content.clone(),
+                });
+            }
 
             // The model's preceding text this step — the "intent summary" the
             // approval view shows for write tools (extracted before `content`
@@ -3916,8 +3989,9 @@ impl HostAgentExecutor {
                 // kind="subagent_completion">` user messages and resume the turn
                 // instead of ending it — fulfilling the sentinel contract the
                 // model was promised in `prompts/base.md`. The executor has no
-                // thinking-only / goal-continuation / REPL branches, so this single
-                // drain covers both production drain sites. The **blocking hold**
+                // goal-continuation / REPL resume branches (thinking-only is now
+                // handled as a terminal status — slice 39 §E — not a resume), so
+                // this single drain covers both production drain sites. The **blocking hold**
                 // for still-running children (`should_hold_turn_for_subagents` +
                 // a `biased select!` over cancel / completion `recv().await` /
                 // steer `recv().await`) is absorbed ✅ — it fires when the
@@ -4063,6 +4137,32 @@ impl HostAgentExecutor {
                         step += 1;
                         continue;
                     }
+                }
+                // Thinking-only tail (issue #1727, slice 39 §E): the stream
+                // produced only a `Thinking` block (no sendable content), the
+                // steer flush / sub-agent drain resume branches did not fire,
+                // and the turn is finishing on `NoToolCalls`. Surface a single
+                // status — but only on a *clean* end. The four trivially-true
+                // args reflect reaching this tail (steers just flushed by
+                // `flush_pending_steers` → empty; no sub-agent hold → we didn't
+                // `continue`/`return`); the one live check is cancellation (the
+                // cancel status already covers it). Mirrors the retired
+                // `turn_loop.rs:1549-1567`.
+                if thinking_only
+                    && should_emit_thinking_only_status(
+                        true,
+                        true,
+                        self.is_cancelled(),
+                        !pending_steers.is_empty(),
+                        false,
+                    )
+                {
+                    self.emit_status(
+                        "Model returned reasoning but no answer or tool call; \
+                         turn ended without output. Send a follow-up to retry."
+                            .to_string(),
+                    )
+                    .await;
                 }
                 callback.on_complete(&StopReason::NoToolCalls).await;
                 return Ok(StopReason::NoToolCalls);
@@ -6189,7 +6289,22 @@ mod tests {
 
         // Exactly one request — no retry on a clean (error-free) empty stream.
         assert_eq!(mock.requests().len(), 1, "clean empty stream must not retry");
-        assert!(statuses(&drain(&mut rx)).is_empty(), "no retry status");
+        // An empty stream is `!has_sendable` → the thinking-only guardrail
+        // (issue #1727, slice 39 §E) emits its status at the clean tail
+        // (faithful to production's `thinking_only_no_sendable =
+        // !has_sendable_assistant_content`, whose comment explicitly covers
+        // "empty content, no tool calls"). No *retry* status is emitted —
+        // the single status is the thinking-only one.
+        let status_msgs = statuses(&drain(&mut rx));
+        assert_eq!(
+            status_msgs.len(),
+            1,
+            "one thinking-only status (no retry status): {status_msgs:?}"
+        );
+        assert!(
+            status_msgs[0].contains("reasoning but no answer"),
+            "the status is the thinking-only one: {status_msgs:?}"
+        );
     }
 
     // === steer (seam 1) ==================================================
@@ -8133,6 +8248,297 @@ mod tests {
             1,
             "step 2 does not double-fold (base is fresh each step): {:?}",
             system_prompt_text(&step2)
+        );
+    }
+
+    // === thinking-only handling (slice 39 §E) ==========================
+
+    /// Slice 39 §E: the pure decision helper emits the "thinking-only"
+    /// status only on a genuinely clean end — mirroring the retired
+    /// `turn_loop.rs:3121-3184` (issue #1727). Each suppression condition
+    /// (tool uses pending, turn error already shown, cancelled, steer
+    /// pending, sub-agents running) flips the result to `false`. Production
+    /// pinned exactly these six cases at the helper level (it had no
+    /// end-to-end test for the tail); this keeps that contract.
+    #[test]
+    fn should_emit_thinking_only_status_only_on_clean_end() {
+        // Thinking-only response, turn genuinely ending → surface a status.
+        assert!(should_emit_thinking_only_status(
+            true, true, false, false, false
+        ));
+        // Tool uses still pending → no thinking-only status.
+        assert!(!should_emit_thinking_only_status(
+            false, true, false, false, false
+        ));
+        // A turn_error was already surfaced → don't double-report.
+        assert!(!should_emit_thinking_only_status(
+            true, false, false, false, false
+        ));
+        // Request was cancelled → cancellation status already covers it.
+        assert!(!should_emit_thinking_only_status(
+            true, true, true, false, false
+        ));
+        // A steer is pending → the turn will resume; emitting now is spurious.
+        assert!(!should_emit_thinking_only_status(
+            true, true, false, true, false
+        ));
+        // Sub-agents still running → the turn is held open; do not claim it ended.
+        assert!(!should_emit_thinking_only_status(
+            true, true, false, false, true
+        ));
+    }
+
+    /// Slice 39 §E (issue #1727): a stream that produces ONLY a `Thinking`
+    /// block (no `Text`, no `ToolUse`) is a "thinking-only" turn. The
+    /// assistant message is NOT persisted (DeepSeek's chat API rejects
+    /// assistant messages containing only a thinking block), and a single
+    /// status is emitted at the clean no-tool-calls tail. Here the turn
+    /// ends on `NoToolCalls`, history carries only the seeded user turn
+    /// (no assistant), and the `Event::Status` carries the thinking-only
+    /// message.
+    #[tokio::test]
+    async fn thinking_only_turn_not_persisted_and_emits_status() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx.clone()), None, HookContext::new()));
+
+        // A thinking block only — no text, no tool calls.
+        let mut call = thinking_block(0, "pondering the request");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock,
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The thinking-only assistant turn is NOT persisted — only the
+        // seeded user message remains (mirrors `turn_loop.rs:1286-1293`).
+        assert_eq!(
+            history.len(),
+            1,
+            "thinking-only assistant must not be persisted: {:?}",
+            sess.messages
+        );
+
+        // A single thinking-only status reached the event channel.
+        let events = drain(&mut rx);
+        let thinking_status = events.iter().find_map(|e| match e {
+            Event::Status { message } if message.contains("reasoning but no answer") => {
+                Some(message.clone())
+            }
+            _ => None,
+        });
+        assert!(
+            thinking_status.is_some(),
+            "expected a thinking-only status, got: {events:?}"
+        );
+        assert!(thinking_status.unwrap().contains("Send a follow-up to retry"));
+    }
+
+    /// Slice 39 §E: a plain text turn (no thinking) is unaffected by the
+    /// guard — the assistant is persisted and no thinking-only status is
+    /// emitted. Regression guard that the persist guard targets thinking-ONLY
+    /// turns, not all no-tool-calls turns.
+    #[tokio::test]
+    async fn text_only_turn_persisted_no_thinking_status() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx.clone()), None, HookContext::new()));
+
+        let mut call = text_block(0, "all done");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock,
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The text assistant turn IS persisted: [user, assistant].
+        assert_eq!(history.len(), 2);
+
+        // No thinking-only status (has_sendable was true via the Text block).
+        let events = drain(&mut rx);
+        let has_thinking_status = events.iter().any(|e| matches!(e,
+            Event::Status { message } if message.contains("reasoning but no answer")));
+        assert!(
+            !has_thinking_status,
+            "text-only turn must not emit a thinking-only status: {events:?}"
+        );
+    }
+
+    /// Slice 39 §E: a turn with a `Thinking` block ALONGSIDE sendable `Text`
+    /// is NOT thinking-only (`has_sendable_assistant_content` is true) — the
+    /// assistant is persisted (both blocks) and no thinking-only status is
+    /// emitted. Guards that the flag is `!has_sendable`, not "has thinking".
+    #[tokio::test]
+    async fn thinking_plus_text_turn_persisted_no_thinking_status() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx.clone()), None, HookContext::new()));
+
+        // A thinking block followed by a text block — has_sendable is true.
+        let mut call = thinking_block(0, "reasoning first");
+        call.extend(text_block(1, "here is the answer"));
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock,
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The assistant turn (thinking + text) IS persisted: [user, assistant].
+        assert_eq!(history.len(), 2);
+        // The persisted assistant carries BOTH a Thinking and a Text block.
+        let assistant = &sess.messages[1];
+        assert_eq!(assistant.role, "assistant");
+        let has_thinking = assistant
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Thinking { .. }));
+        let has_text = assistant
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { .. }));
+        assert!(has_thinking, "persisted assistant keeps the thinking block");
+        assert!(has_text, "persisted assistant keeps the text block");
+
+        // No thinking-only status.
+        let events = drain(&mut rx);
+        let has_thinking_status = events.iter().any(|e| matches!(e,
+            Event::Status { message } if message.contains("reasoning but no answer")));
+        assert!(
+            !has_thinking_status,
+            "thinking+text turn must not emit a thinking-only status: {events:?}"
+        );
+    }
+
+    /// Slice 39 §E (deferred-decide): when a thinking-only turn ALSO has a
+    /// steer buffered mid-stream (`reduce_stream`'s `try_recv` catches it
+    /// after the pre-request drain ran), the post-stream steer flush RESUMES
+    /// the turn — so the thinking-only status is never emitted (the tail is
+    /// not reached). This is the spurious-"turn ended"-before-resume guard
+    /// the deferred-decide exists for. `with_steer_on_stream` injects the
+    /// steer after the pre-request drain so `reduce_stream` catches it.
+    #[tokio::test]
+    async fn thinking_only_with_mid_stream_steer_resumes_no_status() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx.clone()), None, HookContext::new()));
+        let (steer_tx, steer_rx) = steer_channel();
+
+        // Round 1: thinking-only — the mid-stream steer is caught + flushed,
+        // resuming the turn (the tail / thinking-only status is NOT reached).
+        let mut round1 = thinking_block(0, "pondering");
+        round1.extend(finish("end_turn"));
+        // Round 2: a text turn that ends the turn cleanly on NoToolCalls.
+        let mut round2 = text_block(0, "done");
+        round2.extend(finish("end_turn"));
+        let mock = Arc::new(
+            MockLlm::new(vec![round1, round2])
+                .with_steer_on_stream(steer_tx, "follow up".to_string()),
+        );
+
+        let executor = HostAgentExecutor::new(
+            mock,
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            Some(steer_rx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Round 1's thinking-only assistant was not persisted; the steer was
+        // flushed as a user message; round 2's text assistant persisted.
+        // [user("go"), user(steer), assistant(text)].
+        assert_eq!(history.len(), 3);
+
+        // No thinking-only status ever reached the channel — the resume
+        // branch fired before the tail.
+        let events = drain(&mut rx);
+        let has_thinking_status = events.iter().any(|e| matches!(e,
+            Event::Status { message } if message.contains("reasoning but no answer")));
+        assert!(
+            !has_thinking_status,
+            "thinking-only turn that resumed for a steer must not emit the status: {events:?}"
         );
     }
 
