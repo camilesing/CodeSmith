@@ -37,7 +37,7 @@ use crate::audit::log_sensitive_event;
 use crate::automation_manager::{
     AutomationManager, AutomationSchedulerConfig, spawn_scheduler, wrap_automation_manager,
 };
-use crate::client::{
+use codesmith_agent_runtime::prompt_inspect::{
     CacheWarmupKey, PromptInspection, build_cache_warmup_request, inspect_prompt_for_request,
 };
 use crate::commands;

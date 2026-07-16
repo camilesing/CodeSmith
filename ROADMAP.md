@@ -1983,6 +1983,41 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 ---
 
+**进度（2026-07-16 §A slice 41 inspect/warmup 集群迁出 tui → `codesmith-agent-runtime`，关闭 §A "blocked on cache-warmup/debug-inspect 迁出 tui" 缺口，`feat/pluggable-framework-core`）：**
+
+§E 主体（host executor parity）闭合后转回 §A。slice 40 遗留的 "DeepSeek `client.rs`/`chat.rs` 残件删除（blocked on cache-warmup/debug-inspect 迁出 tui）" 本切片落地——把 tui 仅存的 LLM-邻接代码（prompt inspection + cache-warmup，`client.rs` 329 行 + `client/chat.rs` 1427 行 = 1756 行）整体迁入 `codesmith-agent-runtime` 新模块 `prompt_inspect`，rewire 4 个 consumer，删除 tui 文件 + 顺带清掉因此致死的 `prompt_runtime` re-export shim。行为保持（纯搬迁，无新逻辑；既有测试随代码搬迁作安全网）。
+
+**关键设计决策：**
+- **搬迁而非重写**：`cp chat.rs → prompt_inspect.rs` 逐字保留 1427 行，再施加 3 处定点替换（见下），避免 1400 行手工转录的抄写错误。bulk 内容由 `cp` 精确保留，风险集中在替换处。
+- **低摩擦根因**：chat.rs 的 4 条 `crate::` 耦合里有 **3 条在 agent-runtime 内已同 crate 解析**，搬迁后零改动——`crate::prompt_runtime`（agent-runtime 自有）、`crate::tools::truncate`（agent-runtime 自有）、`crate::models`（经 `lib.rs` `pub use codesmith_agent::models` 解析）。唯二真正改动：`crate::logging::warn`（5 处）→ `tracing::warn!`（agent-runtime 全栈用 `tracing`）；`use super::{system_to_instructions, to_api_tool_name}` → 搬入模块作本地 private `fn`（二者仅 chat.rs 用，外部零引用已核实）。外部 deps（`sha2`/`serde`/`serde_json`/`tracing`）agent-runtime Cargo.toml 已有。
+- **visibility `pub(crate)`→`pub`**：tui 是**不同 crate**，`pub(crate)` 在 agent-runtime 内不可达；host-facing 面（2 entry fn + 6 inspection 类型 + 其字段 + `CacheWarmupKey::{from_inspection,hash_short}` + `PromptLayerStability::label`）一律 `pub(crate)`→`pub`。内部 helper（`inspect_wire_request`/`build_chat_messages_with_reasoning`/`stable_system_prompt`/`sha256_hex` 等）保持 private `fn`；`CACHE_WARMUP_USER_TAIL` 保 `pub(crate)`；`build_chat_messages_for_request` / `tool_to_chat` 由 `pub(super) fn`→private `fn`（仅模块内用）。
+- **`sha256_hex` 保本地副本**：agent-runtime 已有 4 份私有 `sha256_hex`（`prefix_cache.rs`/`prompt_zones.rs`/`tools/handle.rs`/`rlm/session.rs`）；搬入模块作第 5 份本地副本，与既有模式一致——去重为单独 follow-up（不属本切片）。
+- **单切片（无 throwaway re-export shim）**：搬 + rewire + 删一次做完，而非 "搬+shim" → "删 shim" 两步。shim 是一次性 throwaway，搬迁低风险（同 crate 引用居多），全量 build+test 覆盖正确性。
+- **顺带清死 shim**：tui 的 `prompt_runtime.rs`（`pub use codesmith_agent_runtime::prompt_runtime::*`，文档自述 "until later steps rewire them onto the runtime crate directly"）的唯一 consumer 就是刚搬走的 chat.rs——搬迁后该 shim 致死（新增 `unused import` warning）。本切片一并删除 `prompt_runtime.rs` + `mod prompt_runtime;`，消除该 warning，tui warning 数回到 baseline 143（零新增）。注：`prompt_zones.rs` 同型死 shim 但为**既有** warning（非本切片致死），超出范围，留 follow-up。
+
+**落地步骤（5 步）：**
+1. **新模块 `crates/agent-runtime/src/prompt_inspect.rs`**（1734 行）：`cp` chat.rs 逐字拷贝；顶部 module doc + imports 块替换（新 doc + 去 `use crate::logging;` + 去 `use super::{...}` + 内联 `to_api_tool_name`/`system_to_instructions` 两 helper）；`replace_all pub(crate)→pub`；`replace_all pub(super) fn→fn`；5 处 `logging::warn(...)`→`tracing::warn!(...)`（`format!(...)` 包装去掉，tracing 宏直收 format args）；末尾追加 `inspect_entry_tests` 模块（4 测试从 client.rs 搬入，`use crate::client::chat::build_chat_messages_for_request` → `use super::*`）。
+2. **wire**：`crates/agent-runtime/src/lib.rs` 加 `pub mod prompt_inspect;`（字母序 `project_context`/`prompt_runtime` 之间）。
+3. **rewire 4 consumer**（import 行换，零逻辑改动）：`tui/ui.rs`、`tui/app.rs`、`commands/debug.rs`、`commands/core.rs` 的 `use crate::client::{...}` → `use codesmith_agent_runtime::prompt_inspect::{...}`。`debug.rs` 经 `PromptInspection.layers` 字段访问 `PromptLayerInspection`/`PromptLayerStability`（无需 type-name import，字段 `pub` 即可达）。
+4. **删 tui 残件**：`rm crates/tui/src/client.rs`（329）+ `crates/tui/src/client/chat.rs`（1427）+ 空 `client/` 目录；`main.rs` 去 `mod client;`。`rm crates/tui/src/prompt_runtime.rs`（7）+ `main.rs` 去 `mod prompt_runtime;`（清死 shim）。
+5. **核实零 `crate::client` 残留**：`grep crate::client crates/tui/src/` 唯一命中在 client.rs 自身（随删消失）；其余 `client::` 命中均为 `llm_client`（无关模块）。
+
+**测试（11 测试随代码搬迁 tui → agent-runtime，组成 `prompt_inspect` 三 test mod）：**`inspect_entry_tests`（4，原 client.rs：stable layers/dynamic user task、static base hash 跨 user task、tool catalog 入 static prefix hash、cache warmup 复用 stable prefix + 固定 user tail）；`stream_decoder_tests`（2，原 chat.rs：turn-meta dedup 元数据、tool-result budget 元数据）；`alias_thinking_detection_tests`（5，原 chat.rs：DeepSeek alias reasoning_content 检测 + effort off override）。11 测试零修改随代码迁入，作行为保持安全网。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime`（lib）**零 warning**；`cargo +1.90.0 test -p codesmith-agent-runtime --lib prompt_inspect` 11 通过（`inspect_entry_tests` 4 + `stream_decoder_tests` 2 + `alias_thinking_detection_tests` 5）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1152 通过 + 2 ignored（零失败，含迁入的 11 prompt_inspect，`prompt_inspect.rs` 自身零 warning）；`cargo +1.90.0 build -p codesmith-agent-runtime --tests` 10 均既有 warning（零新增）；`cargo +1.90.0 build -p codesmith-tui` tui bin **143 warning**（baseline，零新增——baseline diff 核实唯一新增 `unused import: codesmith_agent_runtime::prompt_runtime::*` 经删 prompt_runtime shim 消除）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui` 2840 通过 + 2 ignored（零失败，consumer 测试全绿：`debug::cache_inspect_*` 7、`debug::warmup_status_*` 3、`commands::cache_inspect/warmup_dispatches` 2、`context_inspector` 等——exercises `inspect_prompt_for_request`/`CacheWarmupKey::from_inspection`/`format_verbose_diff`/`changed_static_layers` 自新路径）；`cargo +1.90.0 build --workspace` 全绿。
+
+**By-design gaps（deferred，documented）：**
+- **`sha256_hex` 去重 deferred**：agent-runtime 现有 5 份私有 `sha256_hex` 副本（含本切片搬入的）；promote 一份到共享 util 是单独 follow-up，不属本切片范围。
+- **reasoning predicates 去重 deferred**：`requires_reasoning_content`/`should_replay_reasoning_content`/`has_deepseek_r_series_marker` 现在 agent-runtime（`prompt_inspect`，供 inspect/warmup 路径）与 providers crate（`rig_adapter/reasoning.rs`，供 rig adapter）各一份——搬迁不使重复恶化（搬迁前是 tui + providers 两份，现 agent-runtime + providers 两份，同数）。lift 到 `codesmith-agent` core 使两侧共享一份（providers `reasoning.rs:11-18` 已 flag）是单独 follow-up。
+- **`prompt_zones.rs` 死 shim 未清**：tui 的 `prompt_zones.rs`（`pub use codesmith_agent_runtime::prompt_zones::*`）是**既有** unused warning（非本切片致死），超出范围，留 follow-up。
+
+**下一聚焦工作：**
+- §A 主体（provider extraction）至此**基本闭合**——tui 不再持任何 LLM 邻接代码（client.rs/chat.rs/prompt_runtime.rs 全删），inspect/warmup 落 agent-runtime。余 §A 残件为上述两个去重 follow-up（`sha256_hex`、reasoning predicates）。
+- B3（`ApiProvider`→`ProviderKind`）：provider seam 已经 `&str` 解耦（providers crate 零 `ApiProvider` 依赖），残件是 agent-runtime 的 budget/capability 路径（`context.rs` 的 `context_input_budget_for_provider(provider: ApiProvider, …)`）+ ~20 tui config 站点——仍低优先。
+- §D2（custom provider config 逃逸口）、E4（声明式 `providers.toml` + lazy）维持。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

@@ -10,7 +10,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::artifacts::ArtifactRecord;
-use crate::client::{CacheWarmupKey, PromptInspection};
+use codesmith_agent_runtime::prompt_inspect::{CacheWarmupKey, PromptInspection};
 use crate::compaction::CompactionConfig;
 use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,

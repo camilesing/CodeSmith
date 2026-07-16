@@ -1,11 +1,11 @@
-//! Chat-completions prompt-construction and cache-inspection helpers.
+//! Prompt-construction and cache-inspection helpers for the OpenAI-compatible
+//! chat-completions surface.
 //!
-//! DeepSeek traffic now routes through the rig-based provider adapter; this
-//! submodule retains only the prompt-building primitives (`PromptBuilder`,
-//! `build_chat_messages_with_reasoning`), the cache-inspection surface
-//! (`inspect_prompt_for_request`, `build_cache_warmup_request`,
-//! `inspect_wire_request` and their supporting types), and the tool-result /
-//! turn-meta wire-compaction helpers those roots depend on.
+//! Originally tui-local (`crates/tui/src/client/chat.rs`); migrated into
+//! `codesmith-agent-runtime` so the cache-warmup / debug-inspect path is
+//! reusable by any host, not just the `codesmith-tui` binary (ROADMAP §A —
+//! slice 41). The two pure helpers below (`to_api_tool_name`,
+//! `system_to_instructions`) moved in from the former parent `client` module.
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,23 +13,55 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::logging;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use crate::prompt_runtime::{
     PromptCachePolicy, PromptSectionStability, parse_rendered_sections, system_prompt_to_text,
 };
 
-use super::{system_to_instructions, to_api_tool_name};
+fn to_api_tool_name(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else if ch == '-' {
+            out.push_str("--");
+        } else {
+            out.push_str("-x");
+            out.push_str(&format!("{:06X}", ch as u32));
+            out.push('-');
+        }
+    }
+    out
+}
+
+fn system_to_instructions(system: Option<SystemPrompt>) -> Option<String> {
+    match system {
+        Some(SystemPrompt::Text(text)) => Some(text),
+        Some(SystemPrompt::Blocks(blocks)) => {
+            let joined = blocks
+                .into_iter()
+                .map(|b| b.text)
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
+            if joined.trim().is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
+        }
+        None => None,
+    }
+}
 
 #[cfg(test)]
-pub(super) fn build_chat_messages_for_request(request: &MessageRequest) -> Vec<Value> {
+fn build_chat_messages_for_request(request: &MessageRequest) -> Vec<Value> {
     PromptBuilder::for_request(request).build()
 }
-pub(crate) fn inspect_prompt_for_request(request: &MessageRequest) -> PromptInspection {
+pub fn inspect_prompt_for_request(request: &MessageRequest) -> PromptInspection {
     PromptBuilder::for_request(request).inspect()
 }
 
-pub(crate) fn build_cache_warmup_request(request: &MessageRequest) -> MessageRequest {
+pub fn build_cache_warmup_request(request: &MessageRequest) -> MessageRequest {
     PromptBuilder::for_request(request).build_cache_warmup_request()
 }
 
@@ -107,7 +139,7 @@ impl<'a> PromptBuilder<'a> {
     }
 }
 
-pub(crate) const CACHE_WARMUP_USER_TAIL: &str = "请只回复 OK";
+pub const CACHE_WARMUP_USER_TAIL: &str = "请只回复 OK";
 const TOOL_RESULT_SENT_CHAR_BUDGET: usize = 12_000;
 const TOOL_RESULT_HEAD_CHARS: usize = 4_000;
 const TOOL_RESULT_TAIL_CHARS: usize = 4_000;
@@ -123,7 +155,7 @@ const TOOL_RESULT_DEDUP_MIN_CHARS: usize = 1_024;
 const TOOL_RESULT_SHA_PERSIST_MIN_CHARS: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PromptInspection {
+pub struct PromptInspection {
     pub base_static_prefix_hash: String,
     pub full_request_prefix_hash: String,
     /// Hash of the rendered tool catalog JSON, or empty when no tools were supplied.
@@ -133,7 +165,7 @@ pub(crate) struct PromptInspection {
 
 /// Identifies the stable prefix that a cache warmup primes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CacheWarmupKey {
+pub struct CacheWarmupKey {
     pub provider: String,
     pub model: String,
     pub base_url: String,
@@ -144,7 +176,7 @@ pub(crate) struct CacheWarmupKey {
 }
 
 impl CacheWarmupKey {
-    pub(crate) fn from_inspection(
+    pub fn from_inspection(
         provider: &str,
         model: &str,
         base_url: &str,
@@ -161,7 +193,7 @@ impl CacheWarmupKey {
         }
     }
 
-    pub(crate) fn hash_short(&self) -> String {
+    pub fn hash_short(&self) -> String {
         let json = serde_json::to_string(self).unwrap_or_default();
         let hash = sha256_hex(json.as_bytes());
         hash[..hash.len().min(12)].to_string()
@@ -178,7 +210,7 @@ fn layer_hash(inspection: &PromptInspection, name: &str) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PromptLayerInspection {
+pub struct PromptLayerInspection {
     pub name: String,
     pub stability: PromptLayerStability,
     pub char_len: usize,
@@ -191,7 +223,7 @@ pub(crate) struct PromptLayerInspection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ToolResultInspection {
+pub struct ToolResultInspection {
     pub original_chars: usize,
     pub sent_chars: usize,
     pub truncated: bool,
@@ -199,7 +231,7 @@ pub(crate) struct ToolResultInspection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TurnMetaInspection {
+pub struct TurnMetaInspection {
     pub original_chars: usize,
     pub sent_chars: usize,
     pub deduplicated: bool,
@@ -207,14 +239,14 @@ pub(crate) struct TurnMetaInspection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum PromptLayerStability {
+pub enum PromptLayerStability {
     Static,
     History,
     Dynamic,
 }
 
 impl PromptLayerStability {
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Static => "static",
             Self::History => "history",
@@ -545,9 +577,9 @@ fn persist_tool_result_for_sha(sha: &str, content: &str) -> bool {
     match crate::tools::truncate::write_sha_spillover(sha, content) {
         Ok(_) => true,
         Err(err) => {
-            logging::warn(format!(
+            tracing::warn!(
                 "tool-result SHA spillover write failed for sha={sha}: {err} — dedup skipped"
-            ));
+            );
             false
         }
     }
@@ -922,8 +954,8 @@ fn build_chat_messages_with_reasoning(
             // simply omit the field when there's nothing to replay.
             let mut has_reasoning = include_reasoning && !reasoning_content.trim().is_empty();
             if include_reasoning && has_tool_calls && !has_reasoning {
-                logging::warn(
-                    "Substituting placeholder reasoning_content for DeepSeek tool-call assistant message",
+                tracing::warn!(
+                    "Substituting placeholder reasoning_content for DeepSeek tool-call assistant message"
                 );
                 reasoning_content = String::from("(reasoning omitted)");
                 has_reasoning = true;
@@ -986,7 +1018,7 @@ fn build_chat_messages_with_reasoning(
 
         if !tool_results.is_empty() {
             if pending_tool_calls.is_empty() {
-                logging::warn("Dropping tool results without matching tool_calls");
+                tracing::warn!("Dropping tool results without matching tool_calls");
             } else {
                 for (tool_id, content, message_label) in tool_results {
                     if let Some(tool_info) = pending_tool_calls.remove(&tool_id) {
@@ -1012,9 +1044,7 @@ fn build_chat_messages_with_reasoning(
                         }
                         out.push(tool_msg);
                     } else {
-                        logging::warn(format!(
-                            "Dropping tool result for unknown tool_call_id: {tool_id}"
-                        ));
+                        tracing::warn!("Dropping tool result for unknown tool_call_id: {tool_id}");
                     }
                 }
             }
@@ -1079,13 +1109,13 @@ fn build_chat_messages_with_reasoning(
 
             if !expected_ids.is_subset(&found_ids) {
                 let missing: Vec<_> = expected_ids.difference(&found_ids).collect();
-                logging::warn(format!(
+                tracing::warn!(
                     "Stripping orphaned tool_calls from assistant message \
                      (expected {} tool results, found {}, missing: {:?})",
                     expected_ids.len(),
                     found_ids.len(),
                     missing
-                ));
+                );
                 if let Some(obj) = out[i].as_object_mut() {
                     obj.remove("tool_calls");
                 }
@@ -1134,7 +1164,7 @@ fn build_chat_messages_with_reasoning(
     out
 }
 
-pub(super) fn tool_to_chat(tool: &Tool) -> Value {
+fn tool_to_chat(tool: &Tool) -> Value {
     let mut value = json!({
         "type": "function",
         "function": {
@@ -1424,4 +1454,281 @@ mod alias_thinking_detection_tests {
         ));
     }
 
+}
+
+#[cfg(test)]
+mod inspect_entry_tests {
+    //! Coverage for the high-level entry points (`inspect_prompt_for_request`,
+    //! `build_cache_warmup_request`) — stable-prefix hashing, layer
+    //! classification, and the cache-warmup request shape. Migrated from the
+    //! former tui `client` module (ROADMAP §A slice 41).
+    use super::*;
+    use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
+    use serde_json::{json, Value};
+
+    fn test_tool(name: &str) -> Tool {
+        Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: format!("{name} test tool"),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+            }),
+            output_schema: None,
+            allowed_callers: None,
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        }
+    }
+
+    #[test]
+    fn prompt_inspect_reports_stable_layers_and_dynamic_user_task() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Prior answer".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Current task".to_string(),
+                        cache_control: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text(
+                "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nRules\n</project_instructions>\n\n## Project Context Pack\n\n<project_context_pack>\n{}\n</project_context_pack>\n\n## Environment\n\n- lang: en"
+                    .to_string(),
+            )),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let inspection = inspect_prompt_for_request(&request);
+
+        assert_eq!(inspection.base_static_prefix_hash.len(), 64);
+        assert_eq!(inspection.full_request_prefix_hash.len(), 64);
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Global system prefix"
+                && layer.stability.label() == "static"
+                && layer.char_len == "Base policy".chars().count()
+                && layer.sha256.len() == 64
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Project context" && layer.stability.label() == "static"
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Project context pack" && layer.stability.label() == "static"
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Message #1 assistant" && layer.stability.label() == "history"
+        }));
+        assert!(
+            inspection.layers.last().is_some_and(
+                |layer| layer.name == "User task" && layer.stability.label() == "dynamic"
+            )
+        );
+    }
+
+    #[test]
+    fn prompt_inspect_keeps_static_base_hash_across_different_user_tasks() {
+        fn request_with_user_task(task: &str) -> MessageRequest {
+            MessageRequest {
+                model: "deepseek-v4-pro".to_string(),
+                messages: vec![
+                    Message {
+                        role: "assistant".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: "Prior answer".to_string(),
+                            cache_control: None,
+                        }],
+                    },
+                    Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: task.to_string(),
+                            cache_control: None,
+                        }],
+                    },
+                ],
+                max_tokens: 1024,
+                system: Some(SystemPrompt::Text(
+                    "Base policy\n\n## Environment\n\n- shell: powershell\n\n## Skills\n\n- rust\n\n## Context Management\n\nKeep concise\n\n## Compact\n\nTemplate"
+                        .to_string(),
+                )),
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: Some("max".to_string()),
+                stream: None,
+                temperature: None,
+                top_p: None,
+            }
+        }
+
+        let first = inspect_prompt_for_request(&request_with_user_task("First task"));
+        let second = inspect_prompt_for_request(&request_with_user_task("Second task"));
+        let mut changed_history_request = request_with_user_task("Second task");
+        changed_history_request.messages[0] = Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Different prior answer".to_string(),
+                cache_control: None,
+            }],
+        };
+        let changed_history = inspect_prompt_for_request(&changed_history_request);
+
+        assert_eq!(
+            first.base_static_prefix_hash,
+            second.base_static_prefix_hash
+        );
+        assert_eq!(
+            first.full_request_prefix_hash, second.full_request_prefix_hash,
+            "full request prefix excludes the final dynamic user task"
+        );
+        assert_ne!(
+            second.full_request_prefix_hash, changed_history.full_request_prefix_hash,
+            "full request prefix can change when session history changes"
+        );
+        assert!(
+            second.layers.last().is_some_and(
+                |layer| layer.name == "User task" && layer.stability.label() == "dynamic"
+            ),
+            "current user task must remain the final layer"
+        );
+        assert!(second.layers.iter().any(|layer| {
+            layer.name == "Message #1 assistant" && layer.stability.label() == "history"
+        }));
+        assert!(!second.layers.iter().any(
+            |layer| layer.name.starts_with("Message #") && layer.stability.label() == "static"
+        ));
+    }
+
+    #[test]
+    fn prompt_inspect_tracks_tool_catalog_in_static_prefix_hash() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Current task".to_string(),
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text("Base policy".to_string())),
+            tools: Some(vec![test_tool("read_file")]),
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let first = inspect_prompt_for_request(&request);
+        let mut changed_tools = request.clone();
+        changed_tools.tools = Some(vec![test_tool("read_file"), test_tool("grep_files")]);
+        let second = inspect_prompt_for_request(&changed_tools);
+
+        assert!(
+            first.layers.iter().any(|layer| {
+                layer.name == "Tool catalog" && layer.stability.label() == "static"
+            })
+        );
+        assert_ne!(
+            first.base_static_prefix_hash, second.base_static_prefix_hash,
+            "tool schema changes must be visible to cache-inspect base prefix diagnostics"
+        );
+        assert_ne!(
+            first.full_request_prefix_hash, second.full_request_prefix_hash,
+            "tool schema changes must be visible to full reusable-prefix diagnostics"
+        );
+    }
+
+    #[test]
+    fn cache_warmup_request_reuses_stable_prefix_and_fixed_user_tail() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Stable prior answer".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Dynamic latest user task".to_string(),
+                        cache_control: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text(
+                "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nStable project rules\n</project_instructions>\n\n## Previous Session Relay\n\nDynamic relay"
+                    .to_string(),
+            )),
+            tools: Some(vec![test_tool("read_file")]),
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: Some(true),
+            temperature: Some(0.7),
+            top_p: None,
+        };
+
+        let warmup = build_cache_warmup_request(&request);
+
+        assert_eq!(warmup.max_tokens, 8);
+        assert_eq!(warmup.temperature, Some(0.0));
+        assert_eq!(warmup.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(warmup.tools.as_ref().map(Vec::len), Some(1));
+        assert_eq!(warmup.tool_choice, Some(json!("none")));
+        assert_eq!(warmup.messages.len(), 2);
+        assert_eq!(warmup.messages[0].role, "assistant");
+        assert_eq!(warmup.messages[1].role, "user");
+        assert_eq!(
+            warmup.messages[1].content,
+            vec![ContentBlock::Text {
+                text: "请只回复 OK".to_string(),
+                cache_control: None,
+            }]
+        );
+
+        let wire = build_chat_messages_for_request(&warmup);
+        let system = wire
+            .first()
+            .and_then(|value| value.get("content"))
+            .and_then(Value::as_str)
+            .expect("warmup system prompt");
+        assert!(system.contains("Stable project rules"));
+        assert!(!system.contains("Dynamic relay"));
+        assert!(
+            !wire
+                .iter()
+                .any(|value| value.to_string().contains("Dynamic latest user task")),
+            "warmup must not include the dynamic latest user task"
+        );
+    }
 }
