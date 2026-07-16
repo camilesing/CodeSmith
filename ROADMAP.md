@@ -2083,6 +2083,38 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - §E4 slice 44：registry 接线（`default_registry` 读 `providers_manifest()` 按 `FactoryBackend` 注册 factory）+ lazy cache 半（`default_registry()` 背 `OnceLock`）+ ship 实际 `providers.toml`（外置 `COMPAT_KINDS`）。本 slice 的 schema/loader 为其前置。
 - §B3（`ApiProvider`→`ProviderKind`，cosmetic `DeepseekCN` 折叠）、§D2 残件 polish（CLI flag / per-entry `config set` / bare `provider=` 形）维持低优先。
 
+**进度（2026-07-16 §E4 slice 44 registry 接线 + lazy cache 半（`default_registry` 读 manifest 按 `FactoryBackend` 注册 + `OnceLock` + ship 实际 `providers.toml`），`feat/pluggable-framework-core`）：**
+
+接 slice 43（schema/loader 落 `codesmith-config`，`:2050`）。本 slice 把 manifest 接进 providers 层：`default_registry()` 由"每请求手注册 4 dedicated + `openai_compat::register` 13 compat"改为 manifest 驱动 + `OnceLock` 缓存。slice 43 的 `providers_manifest()`（env override 通道，env unset → 空）此前零行为变更；本 slice 使之成 override 通道（非空 override **替换** bundled 清单，失败回退 bundled）。
+
+**关键设计决策：**
+- **bundled `providers.toml` ship 在 providers crate**（`include_str!("../providers.toml")`），17 条目（4 dedicated `mock`/`openai`/`anthropic`/`deepseek` + 13 `openai-compat`，verbatim 取自原 `COMPAT_KINDS` `openai_compat.rs:63-77`）。catalog（哪些 id→哪个 backend）是 providers-crate 知识（镜像其 Cargo feature）；`FactoryBackend` closed enum 仍在 `codesmith-config`（最低层）——config 不依赖 providers，无环。
+- **`default_registry() -> &'static ProviderRegistry`**（`OnceLock`，"registry built once"半；manifest "read once"半 = slice 43 的 `providers_manifest()`）。sole production caller `engine.rs:324` `default_registry().build(&cfg)` 无改动（`build(&self)`）。
+- **`ProviderRegistry` 加 `Clone`**（`#[derive(Clone, Default)]`，`Arc` 值浅拷贝）：cached `&'static` 不可变，host 定制走 `default_registry().clone()` + `register(&mut self)`，保住 pi-mono "freely replace" seam（production caller 不 mutate，故 derive 安全、向后兼容）。
+- **feature 编译期校验 = 诊断 stub**：manifest 条目 `backend` 对应 Cargo feature 未编译进 → 注册 `UncompiledBackendFactory` stub，其 `build()` `bail!` 清晰报错（指明 id + 缺失 feature + `--features <backend>` 修复），而非泛 "not registered"。不在 manifest 的 id（如 `acme-llm`）仍走既有 "no provider factory registered for '<id>'" 路径（不变）。statement-cfg（非 `match`）保任意 feature 子集编译、无 `unreachable_patterns` warning。
+- **env override 语义 = replace**：`CODESMITH_PROVIDERS_MANIFEST` 非空 → 替换 bundled catalog（ship 自定义 provider 集免重编译）；加载失败 `tracing::warn!` + 回空 → 回退 bundled（优雅降级）。
+
+**落地步骤：**
+1. `crates/providers/Cargo.toml` 加 `codesmith-config` 直 dep（已 transitively 在图里经 agent→config；直声明以直接 `use FactoryBackend`/`ProvidersManifest`/`providers_manifest()`；无环）。
+2. `crates/providers/providers.toml`（新，17 条目，id+backend only）。
+3. `crates/agent/src/provider/mod.rs`：`ProviderRegistry` 加 `Clone`（doc 注 cached-seam 用法）。
+4. `crates/providers/src/lib.rs`：`default_registry()` 重写（`&'static` + `OnceLock` + `active_manifest()`/`bundled_manifest()`/`build_registry_from()` + `leak_str()`（`openai-compat` gated，bounded leak 喂 `GenericShaper::new` 的 `&'static name`）+ `UncompiledBackendFactory` stub）；crate-doc "Registering" 示例改 `.clone()` 形；删 `#[cfg_attr(...allow(unused_mut))]`（stub register 无条件 → `registry` 总被 mutate，无 unused_mut）。
+5. `crates/providers/src/openai_compat.rs`：删 `COMPAT_KINDS` + `pub fn register()`（外置到 manifest，唯一 caller 已删）；加 `impl OpenAiCompatFactory { pub(crate) fn new(id, name) }`（lib.rs 不同 module，碰不到私有 field）；import 去 `ProviderRegistry`；module doc 更新。
+6. `ARCHITECTURE.md`：§E4 状态行（:255）"deferred"→"landed (slice 43/44)"；providers 行（:276）注 manifest-driven + 加 `providers.toml` 路径；§D2 行（:282）stale "⏳ deferred"→"✅ done (9d47942c)"（doc-debt，slice 43 标记）；"host seeds" snippet（:309）`default_registry()`→`default_registry().clone()`。
+
+**测试：** `manifest_tests`（新 `#[cfg(test)]` module，不 gate rig——stub 路径不建 rig client，每个 feature config 都跑）：`bundled_manifest_has_full_catalog`（17 条目 + 4 dedicated/2 compat id 抽检 + `validate().is_ok()`）、`default_registry_is_cached`（`std::ptr::eq`）、`uncompiled_backend_factory_errors_clearly`（stub 直测，任意 config）、`uncompiled_backend_resolves_to_stub`（`#[cfg(not(feature="deepseek"))]` 端到端：deepseek off → bundled deepseek 条目落 stub → resolve 报 `--features deepseek`）。既有 `rig_registry_tests`（`let registry = default_registry()` 作为 `&'static` 仍 work）+ mock tests 全保留。
+
+**验证：** `cargo +1.90.0 build -p codesmith-providers`（default mock / `--no-default-features` 17 stubs / `--no-default-features --features openai-compat` leak 路径 / `--all-features`）**零 warning**；`cargo +1.90.0 test -p codesmith-providers --all-features --lib` 32 通过（含 3 新 manifest_tests，`not(deepseek)`-gated stub 端到端在 all-features 正确 filtered out）；`--lib`（mock-only）9 通过 + `--no-default-features` 4 通过（stub 端到端在两 config 均 fire）；`cargo +1.90.0 build -p codesmith-agent --lib` 零 warning（Clone derive）；`cargo +1.90.0 build -p codesmith-tui` 绿（`engine.rs:324` 对 `&'static` 编译）；`cargo +1.90.0 test -p codesmith-config --lib` 85 通过（未触）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui provider` 153 通过；`cargo +1.90.0 check --workspace --all-features` 零 error（既有 unused-import warning 均在 agent-runtime/executor，与 slice 42 baseline 对齐，零新增命中 providers/agent/config）。
+
+**By-design gaps（deferred，documented）：**
+- **`base_url`/`model` 列 + 消费**：`ProviderDescriptor` 有 optional `base_url`/`model`，但本 slice shipped `providers.toml` 仅 `id`+`backend`（"外置 COMPAT_KINDS" = id+backend 最小集）。factory 当前不消费 manifest 默认（host 经 `ProviderConfig` 传 `base_url`/`default_model`，rig factory 容空 `base_url` 回退 rig 编译期默认；`default_model` 透传不默认）。populate + wire 消费（manifest 作 per-provider 默认源）是后续 behavioral 切片。
+- **env override = replace 语义**（非 augment）：`CODESMITH_PROVIDERS_MANIFEST` 非空整体替换 bundled；augment 若需是后续。
+- **`ARCHITECTURE.md:282` §D2 行 stale**：本 slice 顺带修（doc-debt，slice 43 标记超出其范围）。
+
+**下一聚焦工作：**
+- §E4 残件：`base_url`/`model` 列 populate + factory 消费 manifest 默认（host 空 `base_url`/`default_model` 时回退 manifest）——使 manifest 成完整 per-provider 默认源。
+- §B3（`ApiProvider`→`ProviderKind`，cosmetic `DeepseekCN` 折叠）、§D2 残件 polish（CLI flag / per-entry `config set` / bare `provider=` 形）维持低优先。
+
 ---
 
 ## §A — Provider extraction (bulk migration)

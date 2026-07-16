@@ -9,6 +9,12 @@ description = "Provider implementations for the CodeSmith framework — pluggabl
 
 [dependencies]
 codesmith-agent = { path = "../agent", version = "0.8.48" }
+# codesmith-config holds the declarative providers.toml schema + the
+# `providers_manifest()` env-override accessor (ROADMAP §E4). Already in the
+# build graph transitively via codesmith-agent; declared directly so
+# `default_registry` can name `FactoryBackend` / `ProvidersManifest` /
+# `providers_manifest()`. No cycle — config has no providers/agent edge.
+codesmith-config = { path = "../config", version = "0.8.48" }
 anyhow.workspace = true
 futures-util = "0.3.31"
 serde_json.workspace = true

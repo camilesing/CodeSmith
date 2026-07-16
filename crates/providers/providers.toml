@@ -1,0 +1,90 @@
+# Bundled catalog of built-in providers (ROADMAP §E4).
+#
+# This file is the declarative source of which providers
+# `codesmith_providers::default_registry` registers. It externalizes what used
+# to be hardcoded: the four dedicated factories (`mock` / `openai` / `anthropic`
+# / `deepseek`) wired directly in `default_registry`, plus the
+# `COMPAT_KINDS` table (the 13 OpenAI-compatible ids) that lived in
+# `openai_compat.rs`.
+#
+# Each entry's `backend` names a `FactoryBackend` variant (codesmith-config),
+# which mirrors a `codesmith-providers` Cargo feature. A runtime manifest can
+# only select among factories that are compiled in: an entry whose `backend`
+# feature is not enabled is registered as a diagnostic stub whose `build()`
+# errors clearly (naming the missing feature) instead of silently resolving to
+# a generic "not registered" failure.
+#
+# Secrets (`api_key`) deliberately stay out of this catalog — they remain in
+# `config.toml` or the environment. `base_url` / `model` columns are optional
+# on `ProviderDescriptor` but are intentionally omitted here for now: the host
+# remains the authority for resolved base_url / default_model (passed via
+# `ProviderConfig`), and wiring the manifest as a source of per-provider
+# defaults is a follow-up slice.
+
+[[providers]]
+id = "mock"
+backend = "mock"
+
+[[providers]]
+id = "openai"
+backend = "openai"
+
+[[providers]]
+id = "anthropic"
+backend = "anthropic"
+
+[[providers]]
+id = "deepseek"
+backend = "deepseek"
+
+[[providers]]
+id = "openrouter"
+backend = "openai-compat"
+
+[[providers]]
+id = "nvidia-nim"
+backend = "openai-compat"
+
+[[providers]]
+id = "volcengine"
+backend = "openai-compat"
+
+[[providers]]
+id = "wanjie-ark"
+backend = "openai-compat"
+
+[[providers]]
+id = "atlascloud"
+backend = "openai-compat"
+
+[[providers]]
+id = "xiaomi-mimo"
+backend = "openai-compat"
+
+[[providers]]
+id = "novita"
+backend = "openai-compat"
+
+[[providers]]
+id = "fireworks"
+backend = "openai-compat"
+
+[[providers]]
+id = "siliconflow"
+backend = "openai-compat"
+
+[[providers]]
+id = "moonshot"
+backend = "openai-compat"
+
+[[providers]]
+id = "sglang"
+backend = "openai-compat"
+
+[[providers]]
+id = "vllm"
+backend = "openai-compat"
+
+[[providers]]
+id = "ollama"
+backend = "openai-compat"

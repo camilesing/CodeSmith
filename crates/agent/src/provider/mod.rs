@@ -128,7 +128,12 @@ pub trait ProviderFactory: Send + Sync {
 /// [`build`](Self::build) resolves the factory by `cfg.provider` and
 /// delegates. Last-registered factory for an id wins (upsert), matching
 /// pi-ai's `setProvider`.
-#[derive(Default)]
+///
+/// `Clone` is a shallow Arc-map copy, so a host that wants to customize the
+/// cached [`codesmith_providers::default_registry`](../../codesmith_providers/fn.default_registry.html)
+/// (returned as `&'static`, hence immutable) clones it and then calls
+/// [`register`](Self::register) on its own mutable copy.
+#[derive(Clone, Default)]
 pub struct ProviderRegistry {
     factories: HashMap<ProviderId, Arc<dyn ProviderFactory>>,
 }

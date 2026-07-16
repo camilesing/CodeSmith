@@ -21,16 +21,25 @@
 //!
 //! # Registering providers
 //!
-//! A host seeds a [`ProviderRegistry`] from [`default_registry`] and may then
-//! register its own factories (which upsert, so a host can replace any
-//! default) — the pi-mono-style "freely replace the implementation" seam.
+//! [`default_registry`] returns a process-wide cached `&'static`
+//! [`ProviderRegistry`] (built once from the declarative `providers.toml`
+//! catalog, ROADMAP §E4). The common path never mutates it — a host just
+//! resolves a client:
 //!
 //! ```ignore
 //! use codesmith_agent::provider::ProviderConfig;
-//!
 //! let cfg: ProviderConfig = todo!();
-//! let mut registry = codesmith_providers::default_registry();
-//! // optionally: registry.register(std::sync::Arc::new(my_factory));
+//! let _client = codesmith_providers::default_registry().build(&cfg);
+//! ```
+//!
+//! To replace a default or add your own factory, clone the cached registry
+//! (a shallow `Arc`-map copy) and `register` on your own mutable copy — the
+//! pi-mono-style "freely replace the implementation" seam:
+//!
+//! ```ignore
+//! use std::sync::Arc;
+//! let mut registry = codesmith_providers::default_registry().clone();
+//! registry.register(Arc::new(my_factory)); // upserts, so defaults are replaceable
 //! let _client = registry.build(&cfg);
 //! ```
 
@@ -53,44 +62,161 @@ pub mod deepseek;
 #[cfg(feature = "openai-compat")]
 pub mod openai_compat;
 
-use codesmith_agent::provider::ProviderRegistry;
+use std::sync::{Arc, OnceLock};
 
-/// Build a [`ProviderRegistry`] pre-populated with every provider whose Cargo
-/// feature is enabled.
+use anyhow::{Result, bail};
+use codesmith_agent::llm_client::LlmClientHandle;
+use codesmith_agent::provider::{
+    ProviderConfig, ProviderFactory, ProviderId, ProviderRegistry,
+};
+use codesmith_config::{FactoryBackend, ProvidersManifest};
+
+/// Process-wide cached [`ProviderRegistry`] built from the declarative
+/// `providers.toml` catalog (ROADMAP §E4).
 ///
-/// This is the Lego assembly point: the host gets a registry containing all
-/// compiled-in providers, then optionally registers its own factories (which
-/// upsert, so a host can replace any default). Mirrors pi-ai's `MutableModels`
-/// instance seeded with its built-in providers. With no provider features
-/// enabled, the returned registry is empty.
+/// Built once — the `OnceLock` is the "registry built once" half of E4's lazy
+/// loading (the manifest "read once" half lives in
+/// [`codesmith_config::providers_manifest`]). Iterating the manifest's
+/// `[[providers]]` entries, each entry's `backend` selects the factory whose
+/// Cargo feature matches; this is the Lego assembly point, mirroring pi-ai's
+/// `MutableModels` instance seeded with its built-in providers.
 ///
-/// `#[allow(unused_mut)]` covers the `--no-default-features` Lego build where no
-/// `register` call survives cfg-expansion and `registry` would otherwise read
-/// as never mutated.
+/// The catalog is the [`providers.toml`](crate) bundled with this crate,
+/// unless `CODESMITH_PROVIDERS_MANIFEST` points at an override file — a
+/// non-empty override **replaces** the bundled catalog (ship a custom provider
+/// set without recompiling); a failed override load is logged and falls back to
+/// the bundled catalog.
+///
+/// An entry whose `backend` Cargo feature is not compiled in is registered as
+/// an [`UncompiledBackendFactory`] stub whose `build` errors clearly (naming
+/// the missing feature): a runtime manifest can only select among factories
+/// that are compiled in. With no provider features enabled, every entry is a
+/// stub.
+///
+/// Returns `&'static` so the sole production caller (`resolve_llm_client` in
+/// the tui engine) stops rebuilding the registry per request. To customize,
+/// clone the cached registry and [`ProviderRegistry::register`] on your own
+/// mutable copy.
 #[must_use]
-#[cfg_attr(
-    not(any(
-        feature = "mock",
-        feature = "openai",
-        feature = "anthropic",
-        feature = "deepseek",
-        feature = "openai-compat"
-    )),
-    allow(unused_mut)
-)]
-pub fn default_registry() -> ProviderRegistry {
+pub fn default_registry() -> &'static ProviderRegistry {
+    static REGISTRY: OnceLock<ProviderRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| build_registry_from(active_manifest()))
+}
+
+/// The active manifest: the `CODESMITH_PROVIDERS_MANIFEST` override if it is
+/// non-empty, else the bundled [`providers.toml`](crate). A non-empty override
+/// replaces the bundled catalog.
+fn active_manifest() -> &'static ProvidersManifest {
+    let override_manifest = codesmith_config::providers_manifest();
+    if !override_manifest.providers.is_empty() {
+        override_manifest
+    } else {
+        bundled_manifest()
+    }
+}
+
+/// The shipped `providers.toml`, parsed + validated once and cached for the
+/// process. A parse/validate failure is a build-time bug — the file is
+/// `include_str!`'d and kept in sync with `FactoryBackend` — so it panics
+/// rather than silently yielding a partial registry.
+fn bundled_manifest() -> &'static ProvidersManifest {
+    static BUNDLED: OnceLock<ProvidersManifest> = OnceLock::new();
+    BUNDLED.get_or_init(|| {
+        let manifest = ProvidersManifest::parse(include_str!("../providers.toml"))
+            .expect("bundled providers.toml must parse (kept in sync with FactoryBackend)");
+        manifest
+            .validate()
+            .expect("bundled providers.toml must validate (no empty/duplicate ids)");
+        manifest
+    })
+}
+
+/// Build a fresh registry from a manifest, registering one factory per entry.
+fn build_registry_from(manifest: &ProvidersManifest) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
-    #[cfg(feature = "mock")]
-    registry.register(std::sync::Arc::new(mock::MockProviderFactory::default()));
-    #[cfg(feature = "openai")]
-    registry.register(std::sync::Arc::new(openai::OpenAiFactory));
-    #[cfg(feature = "anthropic")]
-    registry.register(std::sync::Arc::new(anthropic::AnthropicFactory));
-    #[cfg(feature = "deepseek")]
-    registry.register(std::sync::Arc::new(deepseek::DeepSeekFactory));
-    #[cfg(feature = "openai-compat")]
-    openai_compat::register(&mut registry);
+    for desc in &manifest.providers {
+        let id = ProviderId::from(desc.id.as_str());
+        // Each backend's factory is behind its Cargo feature; statement-cfg
+        // (not a `match`) keeps this compiling for any feature subset, with no
+        // `unreachable_patterns` warning when every feature is on.
+        #[cfg(feature = "mock")]
+        if desc.backend == FactoryBackend::Mock {
+            registry.register(Arc::new(mock::MockProviderFactory::default()));
+            continue;
+        }
+        #[cfg(feature = "openai")]
+        if desc.backend == FactoryBackend::Openai {
+            registry.register(Arc::new(openai::OpenAiFactory));
+            continue;
+        }
+        #[cfg(feature = "anthropic")]
+        if desc.backend == FactoryBackend::Anthropic {
+            registry.register(Arc::new(anthropic::AnthropicFactory));
+            continue;
+        }
+        #[cfg(feature = "deepseek")]
+        if desc.backend == FactoryBackend::Deepseek {
+            registry.register(Arc::new(deepseek::DeepSeekFactory));
+            continue;
+        }
+        #[cfg(feature = "openai-compat")]
+        if desc.backend == FactoryBackend::OpenaiCompat {
+            let name = leak_str(&desc.id);
+            registry.register(Arc::new(openai_compat::OpenAiCompatFactory::new(
+                id.clone(),
+                name,
+            )));
+            continue;
+        }
+        // No arm matched: the entry's backend feature isn't compiled in.
+        // Register a diagnostic stub so resolving this id errors clearly
+        // (naming the missing feature) rather than the generic "not registered".
+        registry.register(Arc::new(UncompiledBackendFactory::new(id, desc.backend)));
+    }
     registry
+}
+
+/// Leak a `&str` to `&'static str` for the `GenericShaper`'s `provider_name`.
+/// Bounded: called only inside the registry's `OnceLock` init, once per
+/// `openai-compat` entry. The registry lives for the process, so the leaked
+/// name lives exactly as long.
+#[cfg(feature = "openai-compat")]
+fn leak_str(s: &str) -> &'static str {
+    Box::leak(s.to_owned().into_boxed_str())
+}
+
+/// Diagnostic factory registered for a manifest entry whose `FactoryBackend`
+/// Cargo feature is not compiled in. `build` errors clearly so a resolve
+/// attempt points at the missing feature rather than the generic
+/// "not registered" message.
+struct UncompiledBackendFactory {
+    id: ProviderId,
+    backend: FactoryBackend,
+}
+
+impl UncompiledBackendFactory {
+    fn new(id: ProviderId, backend: FactoryBackend) -> Self {
+        Self { id, backend }
+    }
+}
+
+impl ProviderFactory for UncompiledBackendFactory {
+    fn id(&self) -> ProviderId {
+        self.id.clone()
+    }
+
+    fn build(&self, _cfg: &ProviderConfig) -> Result<LlmClientHandle> {
+        let feature = self.backend.as_str();
+        bail!(
+            "provider '{}' is declared in providers.toml with backend='{}', \
+             but the '{}' Cargo feature of codesmith-providers is not enabled; \
+             rebuild with --features {}",
+            self.id.as_str(),
+            feature,
+            feature,
+            feature
+        )
+    }
 }
 
 #[cfg(all(test, feature = "rig"))]
@@ -174,6 +300,97 @@ mod rig_registry_tests {
         assert!(
             msg.contains("no provider factory registered for 'acme-llm'"),
             "unexpected error: {msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    //! Manifest-driven `default_registry` tests that don't need rig (the stub
+    //! path never builds a rig client), so they run in every feature config —
+    //! including the mock-only Lego build.
+
+    use super::*;
+    use codesmith_agent::llm_client::RetryConfig;
+    use codesmith_agent::provider::{ProviderConfig, ProviderId};
+    use codesmith_config::FactoryBackend;
+    use std::collections::HashMap;
+
+    fn cfg_for(id: ProviderId) -> ProviderConfig {
+        ProviderConfig {
+            provider: id,
+            api_key: String::from("dummy-key"),
+            base_url: String::from("https://example.test/v1"),
+            default_model: String::from("m"),
+            retry: RetryConfig::disabled(),
+            http_headers: HashMap::new(),
+            on_retry: None,
+        }
+    }
+
+    #[test]
+    fn bundled_manifest_has_full_catalog() {
+        let manifest = bundled_manifest();
+        // 4 dedicated factories + 13 openai-compat kinds = 17 entries.
+        assert_eq!(
+            manifest.providers.len(),
+            17,
+            "bundled providers.toml should list 17 entries"
+        );
+        let ids: Vec<&str> = manifest.providers.iter().map(|d| d.id.as_str()).collect();
+        for dedicated in ["mock", "openai", "anthropic", "deepseek"] {
+            assert!(
+                ids.contains(&dedicated),
+                "missing dedicated entry '{dedicated}'"
+            );
+        }
+        for compat in ["openrouter", "ollama"] {
+            assert!(ids.contains(&compat), "missing compat entry '{compat}'");
+        }
+        // `bundled_manifest` already validates; assert again here as a guard.
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn default_registry_is_cached() {
+        // Same `&'static` ref across calls — the OnceLock half of E4 lazy
+        // loading.
+        assert!(std::ptr::eq(default_registry(), default_registry()));
+    }
+
+    #[test]
+    fn uncompiled_backend_factory_errors_clearly() {
+        let factory = UncompiledBackendFactory::new(
+            ProviderId::from("deepseek"),
+            FactoryBackend::Deepseek,
+        );
+        let err = factory
+            .build(&cfg_for(ProviderId::from("deepseek")))
+            .err()
+            .expect("the stub should error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("'deepseek'") && msg.contains("--features deepseek"),
+            "stub error should name the id and the missing feature: {msg}"
+        );
+    }
+
+    // End-to-end: a manifest entry whose backend feature is off is registered
+    // as the stub, so resolving it errors clearly. Only runs when `deepseek`
+    // is not compiled in — the bundled catalog's deepseek entry then misses its
+    // factory arm and falls through to the stub.
+    #[cfg(not(feature = "deepseek"))]
+    #[test]
+    fn uncompiled_backend_resolves_to_stub() {
+        let registry = default_registry();
+        let err = registry
+            .build(&cfg_for(ProviderId::from("deepseek")))
+            .err()
+            .expect("deepseek (backend not compiled in) should resolve to the stub");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--features deepseek"),
+            "stub error should name the missing feature: {msg}"
         );
     }
 }

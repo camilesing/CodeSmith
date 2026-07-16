@@ -252,8 +252,10 @@ short-circuit (production's `should_transparently_retry_stream` checks
 (`MAX_STREAM_RETRIES = 3`) can't loop forever. Streaming deltas
 (`MessageDelta`/`ThinkingDelta`) will keep flowing over the `Event` channel
 directly (no `Callback` method) once an inline stream reducer replaces
-`accumulate_stream`. E4 (declarative `providers.toml` + lazy loading) is also
-deferred. The framework traits are validated
+`accumulate_stream`. E4 (declarative `providers.toml` + lazy loading) has
+landed — slice 43 shipped the schema/loader in `codesmith-config`, slice 44
+wired `default_registry` to the bundled `providers.toml` (externalizing the
+`COMPAT_KINDS` catalog) with a `OnceLock` cache. The framework traits are validated
 against an inline mock LLM + mock tool (see `crates/agent/src/executor/mod.rs`
 tests) — no `codesmith-providers` dependency required, mirroring the provider
 foundation slice's `mock` sample. The `ToolSpec` adapter is additionally
@@ -273,13 +275,13 @@ the executor that lights up both a mock `Event` channel and a mock `HookHost`
 | `DeepSeekClient::from_parts` (neutral 6-field constructor) | ✅ done | `crates/tui/src/client.rs` |
 | `codesmith-providers` crate + `mock` provider + Cargo features | ✅ done | `crates/providers/` |
 | rig adapter `RigLlmClient<C,S>` impls `LlmClient` | ✅ done | `crates/providers/src/rig_adapter/` |
-| Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs` |
+| Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done — catalog now declarative (`providers.toml`, §E4) | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs`, `crates/providers/providers.toml` |
 | `resolve_llm_client` seeds from `default_registry()` for all non-DeepSeek | ✅ done (§D1 partial) | `crates/tui/src/core/engine.rs` |
 | `AnthropicClient` retired — rig `AnthropicFactory` replaces it (§A2) | ✅ done | `crates/tui/src/client/anthropic.rs` deleted |
 | Parity bridge: reasoning heuristics + `shape_messages` / `shape_max_tokens` | ✅ done | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |
 | Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
-| Host selects providers via config (e.g. `provider = "mock"` / custom id) | ⏳ deferred | ROADMAP §D2 |
+| Host selects providers via config (e.g. `provider = "mock"` / custom id) | ✅ done (9d47942c) — `custom_provider` selector + `[[providers.custom]]` table; residual polish (CLI flag / per-entry `config set` / bare `provider=` form) low-priority | ROADMAP §D2 |
 | Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` skeleton + loop-guard + LSP flush + transparent-retry + steer + approval + compaction absorbed (§E, bare loop + 6/10 guardrails via `event_tx`; interior-mutability `Arc<Mutex<…>>` on `LspProbe` + steer receiver + `CompactionProbe` micro-state/breaker, `tokio::sync::Mutex` on approval receiver; transparent-retry at seam-2 post-stream; steer + compaction at seam-1 pre-request; approval at seam-3 per-tool); production `Engine` migration in progress | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
 
 ## Registering a provider (developer guide)
@@ -306,7 +308,9 @@ impl ProviderFactory for AcmeFactory {
 A host seeds the registry and may override any default:
 
 ```rust
-let mut registry = codesmith_providers::default_registry(); // compiled-in providers
+// default_registry() returns a cached &'static ProviderRegistry (built once
+// from providers.toml); clone to mutate.
+let mut registry = codesmith_providers::default_registry().clone();
 registry.register(Arc::new(AcmeFactory));                   // add/replace
 let client = registry.build(&cfg)?;                          // never names a concrete type
 ```
