@@ -281,6 +281,135 @@ impl ProvidersToml {
     }
 }
 
+/// The backing factory kind a built-in provider maps onto (ROADMAP §E4).
+///
+/// `providers.toml` declares a catalog of built-in providers; each entry's
+/// `backend` names which compiled-in factory constructs its client. The set
+/// mirrors the Cargo features of `codesmith-providers` (`mock`, `openai`,
+/// `anthropic`, `deepseek`, `openai-compat`): a runtime manifest can only
+/// select among factories that are compiled in, so a descriptor whose backend
+/// isn't compiled in fails at registry-build time (slice 44 wires that check).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum FactoryBackend {
+    Mock,
+    Openai,
+    Anthropic,
+    Deepseek,
+    OpenaiCompat,
+}
+
+impl FactoryBackend {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Deepseek => "deepseek",
+            Self::OpenaiCompat => "openai-compat",
+        }
+    }
+}
+
+/// One entry in the declarative `providers.toml` catalog (ROADMAP §E4).
+///
+/// Unlike `[[providers.custom]]` (§D2's user escape hatch in `config.toml`),
+/// a descriptor declares a *built-in* provider: its registry id, the backing
+/// factory kind, and optional default base URL / model. Secrets (`api_key`)
+/// stay out of the manifest — they remain in `config.toml` or the environment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderDescriptor {
+    /// Registry id. May equal a builtin `ProviderKind::as_str` (the manifest
+    /// describes how builtins map to backends); duplicates are rejected.
+    pub id: String,
+    pub backend: FactoryBackend,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+}
+
+/// Declarative catalog of built-in providers (ROADMAP §E4), consumed by
+/// `codesmith-providers::default_registry` (wiring lands in slice 44).
+///
+/// ```toml
+/// # providers.toml — bundled catalog of built-in providers.
+/// [[providers]]
+/// id = "deepseek"
+/// backend = "deepseek"
+///
+/// [[providers]]
+/// id = "openrouter"
+/// backend = "openai-compat"
+/// base_url = "https://openrouter.ai/api/v1"
+/// model = "deepseek/deepseek-v4-pro"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProvidersManifest {
+    #[serde(default)]
+    pub providers: Vec<ProviderDescriptor>,
+}
+
+impl ProvidersManifest {
+    /// Parse a `providers.toml` document into a manifest (unvalidated).
+    pub fn parse(toml_str: &str) -> Result<Self> {
+        toml::from_str(toml_str).context("parsing providers.toml manifest")
+    }
+
+    /// Validate the manifest: reject empty/whitespace ids and duplicate ids.
+    /// `backend` is already constrained to [`FactoryBackend`] at parse time.
+    pub fn validate(&self) -> Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        for d in &self.providers {
+            if d.id.trim().is_empty() {
+                bail!("providers.toml entry has an empty id");
+            }
+            if !seen.insert(d.id.trim()) {
+                bail!("providers.toml has a duplicate id: {}", d.id);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Load and validate a `providers.toml` manifest from `path`.
+pub fn load_providers_manifest_from(path: &Path) -> Result<ProvidersManifest> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("reading providers.toml at {}", path.display()))?;
+    let manifest = ProvidersManifest::parse(&text)?;
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+/// Env var overriding the bundled `providers.toml` location (ROADMAP §E4).
+pub const PROVIDERS_MANIFEST_ENV: &str = "CODESMITH_PROVIDERS_MANIFEST";
+
+/// Resolve the manifest path from [`PROVIDERS_MANIFEST_ENV`], if set.
+fn resolve_manifest_path() -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var(PROVIDERS_MANIFEST_ENV).ok()?);
+    (path.as_os_str() != "").then_some(path)
+}
+
+/// Cached accessor for the process-wide providers manifest (ROADMAP §E4).
+///
+/// Resolves the manifest path from [`PROVIDERS_MANIFEST_ENV`] on first access
+/// and reads it once — the "read-once" half of E4's lazy loading. The
+/// `default_registry` cache (the other half) lands in slice 44. When the env
+/// var is unset or the path is absent, returns an empty manifest, so this is
+/// a no-op until slice 44 wires `default_registry` to consume it.
+pub fn providers_manifest() -> &'static ProvidersManifest {
+    static MANIFEST: OnceLock<ProvidersManifest> = OnceLock::new();
+    MANIFEST.get_or_init(|| match resolve_manifest_path() {
+        Some(path) => match load_providers_manifest_from(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("providers.toml manifest load failed; falling back to empty: {e}");
+                ProvidersManifest::default()
+            }
+        },
+        None => ProvidersManifest::default(),
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
     /// TUI-compatible DeepSeek API key. Kept at the root so both `deepseek`
@@ -4526,5 +4655,159 @@ model = "b-1"
         assert_eq!(user.custom_provider.as_deref(), Some("acme"));
         assert_eq!(user.providers.custom.len(), 1);
         assert_eq!(user.providers.custom[0].id, "acme");
+    }
+
+    // ----- ROADMAP §E4 (slice 43): declarative providers.toml manifest -----
+
+    const SAMPLE_MANIFEST: &str = r#"
+[[providers]]
+id = "deepseek"
+backend = "deepseek"
+
+[[providers]]
+id = "openrouter"
+backend = "openai-compat"
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-v4-pro"
+"#;
+
+    #[test]
+    fn manifest_round_trip() {
+        let manifest = ProvidersManifest::parse(SAMPLE_MANIFEST).expect("parse sample");
+        assert_eq!(manifest.providers.len(), 2);
+        assert_eq!(
+            manifest.providers[0],
+            ProviderDescriptor {
+                id: "deepseek".to_string(),
+                backend: FactoryBackend::Deepseek,
+                base_url: None,
+                model: None,
+            }
+        );
+        assert_eq!(manifest.providers[1].backend, FactoryBackend::OpenaiCompat);
+        assert_eq!(
+            manifest.providers[1].base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(
+            manifest.providers[1].model.as_deref(),
+            Some("deepseek/deepseek-v4-pro")
+        );
+        // Serialize + re-parse stays equal.
+        let again = ProvidersManifest::parse(&toml::to_string(&manifest).expect("serialize"))
+            .expect("reparse");
+        assert_eq!(manifest, again);
+    }
+
+    #[test]
+    fn manifest_rejects_unknown_backend() {
+        let bad = r#"
+[[providers]]
+id = "acme"
+backend = "openai-compt"
+"#;
+        let err = ProvidersManifest::parse(bad).unwrap_err();
+        // The serde/toml cause names the unknown variant; anyhow's Debug shows
+        // the full chain, so the typo surfaces there.
+        let chain = err.chain().map(|e| e.to_string()).collect::<String>();
+        assert!(
+            chain.contains("openai-compt"),
+            "expected the unknown variant in the error chain: {chain}"
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_duplicate_ids() {
+        let dup = r#"
+[[providers]]
+id = "openrouter"
+backend = "openai-compat"
+[[providers]]
+id = "openrouter"
+backend = "openai-compat"
+"#;
+        let manifest = ProvidersManifest::parse(dup).expect("parse");
+        let err = manifest.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate id"),
+            "expected duplicate-id error: {err}"
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_empty_id() {
+        let empty = r#"
+[[providers]]
+id = "   "
+backend = "openai"
+"#;
+        let manifest = ProvidersManifest::parse(empty).expect("parse");
+        let err = manifest.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("empty id"),
+            "expected empty-id error: {err}"
+        );
+    }
+
+    #[test]
+    fn manifest_minimal_entry_ok() {
+        let minimal = r#"
+[[providers]]
+id = "ollama"
+backend = "openai-compat"
+"#;
+        let manifest = ProvidersManifest::parse(minimal).expect("parse");
+        manifest.validate().expect("valid");
+        assert_eq!(manifest.providers.len(), 1);
+        assert!(manifest.providers[0].base_url.is_none());
+        assert!(manifest.providers[0].model.is_none());
+    }
+
+    #[test]
+    fn resolve_manifest_path_reads_env() {
+        let _guard = env_lock();
+        unsafe {
+            env::remove_var(PROVIDERS_MANIFEST_ENV);
+        }
+        assert!(resolve_manifest_path().is_none());
+        unsafe {
+            env::set_var(PROVIDERS_MANIFEST_ENV, "/some/path/to/providers.toml");
+        }
+        assert_eq!(
+            resolve_manifest_path().as_deref(),
+            Some(std::path::Path::new("/some/path/to/providers.toml"))
+        );
+        unsafe {
+            env::remove_var(PROVIDERS_MANIFEST_ENV);
+        }
+    }
+
+    #[test]
+    fn load_providers_manifest_from_reads_file() {
+        let path = std::env::temp_dir().join(format!(
+            "codesmith-manifest-test-{}-load.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, SAMPLE_MANIFEST).expect("write fixture");
+        let manifest = load_providers_manifest_from(&path).expect("load");
+        assert_eq!(manifest.providers.len(), 2);
+        assert_eq!(manifest.providers[0].backend, FactoryBackend::Deepseek);
+        assert_eq!(manifest.providers[1].backend, FactoryBackend::OpenaiCompat);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn providers_manifest_is_cached() {
+        // Reference stability holds regardless of init order: two calls
+        // return the same &'static ref. No env is set, so the manifest is
+        // the empty default. This is the "read-once" half of E4 lazy loading.
+        let _guard = env_lock();
+        unsafe {
+            env::remove_var(PROVIDERS_MANIFEST_ENV);
+        }
+        let a = providers_manifest();
+        let b = providers_manifest();
+        assert!(std::ptr::eq(a, b));
+        assert!(a.providers.is_empty());
     }
 }

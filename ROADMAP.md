@@ -2047,6 +2047,42 @@ slice 41 的 "下一聚焦工作" 列出两个 §A 残件去重 follow-up（`sha
 - §A 残件去重（`sha256_hex`、reasoning predicates）本切片穷尽——§A 主体（provider extraction + 残件去重）至此**闭合**。tui 不持 LLM 邻接代码、inspect/warmup 落 agent-runtime、3 reasoning predicate 单源在 core、`sha256_hex` 单源在 agent-runtime `utils`。
 - B3（`ApiProvider`→`ProviderKind`）、§D2（custom provider config 逃逸口）、E4（声明式 `providers.toml` + lazy）维持。
 
+**进度（2026-07-16 §E4 slice 43 declarative `providers.toml` manifest（schema + loader in `codesmith-config`，E4 第一子切片），`feat/pluggable-framework-core`）：**
+
+slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸口）**已落地**于 commit `9d47942c`（`custom_provider` selector + `[[providers.custom]]` 表，本文件 `:138-194`；`ARCHITECTURE.md:282` 行 stale 仍标 "⏳ deferred"——doc-debt follow-up）；§B3（`ApiProvider`→`ProviderKind`）已降级低优先（本文件 `:21,133` + `ARCHITECTURE.md:281`：rig adapter 按 `&'static str` provider name 分支，`codesmith-providers` 零 `ApiProvider` 依赖、零 `codesmith-agent-runtime` dep edge，B3 仅剩 cosmetic 的 `DeepseekCN`→`Deepseek` 折叠，边际价值极低）。故本切片转开 **§E4**（声明式 `providers.toml` + lazy）——E4 主体 greenfield 但 plumbing 已就绪（`ProviderRegistry`/`ProviderFactory`/`ProviderId`/`ProviderConfig` seam 闭合并经生产路径 `engine.rs:324` 验证；`codesmith-config` 既有 `[[providers.custom]]` 表为先例 shape）。
+
+按本仓小切片惯例，E4 切两子切片：**slice 43 = schema + loader（config 层，不接 registry）**；slice 44 = registry 接线 + lazy cache 半。
+
+**关键设计决策：**
+- **manifest 是"内建目录"声明式清单，与既有两概念正交**：`config.toml` 的 `[providers]` 表（每 provider 运行时 override：api_key/base_url/model）+ `[[providers.custom]]`（§D2 用户逃生口）**不变**；新 `providers.toml` 把当前硬编码在 `default_registry`（`register(mock…)`/`register(openai…)`/`openai_compat::register`）+ `COMPAT_KINDS`（`openai_compat.rs:63-77`，13 个 openai-compat id）的 provider 目录外置成数据文件。secrets（`api_key`）**不进**清单——留 `config.toml`/env。
+- **`backend` 用 closed `FactoryBackend` enum（5 变体：`Mock`/`Openai`/`Anthropic`/`Deepseek`/`OpenaiCompat`，kebab-case serde）**，非自由 string：parse 期即拒 typo（serde unknown-variant），镜像 `ProviderKind` 的 closed-enum 做法。语义：runtime manifest 只能"在已编译进 factory 中选择"（Cargo feature 是编译期）；`backend="openai-compat"` 但 `openai-compat` feature 未编译 → resolve 期报错（providers 层，slice 44）。
+- **校验最小集**：slice 43 只做 `validate` 的 dup-id 拒绝 + 空/whitespace id 拒绝；`backend` 已由 serde parse 期约束。builtin-id 关系（manifest id 可等于 `ProviderKind::as_str`——它描述 builtin→backend 映射，与 §D2 `[[providers.custom]]` 的"不得撞 builtin"规则相反、各自正确）留 registry 接线切片处理。
+- **loader 三层分离以可测**：`ProvidersManifest::parse(toml_str)`（pure）+ `load_providers_manifest_from(path)`（读文件 + parse + validate，pure，tempfile-free 用 `std::env::temp_dir` 测）+ `resolve_manifest_path()`（读 `CODESMITH_PROVIDERS_MANIFEST` env，pure，每次 fresh 读无 init 问题）+ `providers_manifest()`（`OnceLock` 缓存全局，"读一次"半——env unset/路径缺省 → 空 manifest，零行为变更直到 slice 44 接线）。全局 accessor 的可测属性 = 引用稳定（两次调用同 `&'static` ref，`std::ptr::eq` 钉），不依赖 init 顺序；content/parse/file-reading 由 pure fn 各自测。
+- **layering**：`FactoryBackend` 定义在 `codesmith-config`（最低层；`codesmith-providers`→`codesmith-agent`→`codesmith-config`），config 不依赖 providers——`backend` 是 config 层的 closed string 集，非 providers 类型引用。**by-design gap**：加新 backend factory 需同时加 config 变体 + providers factory（镜像既有 `ProviderKind`↔factory 耦合）。
+
+**落地步骤（6 步，纯 config 层）：**
+1. `crates/config/src/lib.rs` 于 `impl ProvidersToml`（line 282）后、`ConfigToml` 前插 manifest 集群：`FactoryBackend` enum + `as_str`、`ProviderDescriptor`（id/backend/base_url/model）、`ProvidersManifest`（`Vec<ProviderDescriptor>`，`#[serde(default)]`，derive `Default` 空 manifest）+ doc 含 toml 示例。
+2. `impl ProvidersManifest`：`parse(toml_str) -> Result<Self>`（`toml::from_str` + `.context("parsing providers.toml manifest")`）、`validate(&self) -> Result<()>`（`HashSet` 检 dup-id + 空 id，`bail!`）。
+3. `fn load_providers_manifest_from(path: &Path) -> Result<ProvidersManifest>`（`fs::read_to_string` + parse + validate）。
+4. `const PROVIDERS_MANIFEST_ENV: &str = "CODESMITH_PROVIDERS_MANIFEST"` + `fn resolve_manifest_path() -> Option<PathBuf>`（读 env，非空则 `Some`）。
+5. `pub fn providers_manifest() -> &'static ProvidersManifest`（`static MANIFEST: OnceLock<ProvidersManifest>`，`get_or_init`：`resolve_manifest_path()` → `load` → 成功入、失败 `tracing::warn!` 后 `default()`；None → `default()`）。
+6. `mod tests` 尾加 8 测试（见下）。`env::set_var`/`remove_var` 在 edition-2024 unsafe，按既有 pattern（`lib.rs:2779`）包 `unsafe { }` + `env_lock()` 串行。
+
+**测试：** `manifest_round_trip`（parse sample → 字段断言 → serialize → re-parse 等价）、`manifest_rejects_unknown_backend`（typo `openai-compt` → parse 期 serde 拒，`chain()` 含 typo）、`manifest_rejects_duplicate_ids`（dup `openrouter` → validate 拒 "duplicate id"）、`manifest_rejects_empty_id`（`"   "` → validate 拒 "empty id"）、`manifest_minimal_entry_ok`（仅 id+backend，base_url/model optional）、`resolve_manifest_path_reads_env`（env unset → None / set → Some(path)）、`load_providers_manifest_from_reads_file`（`temp_dir` 写 fixture → load → 2 条目 + backend 断言）、`providers_manifest_is_cached`（两次调用 `std::ptr::eq` + empty default）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-config`（lib）**零 warning**；`cargo +1.90.0 test -p codesmith-config --lib` 85 通过（含 8 新 manifest 测试，77 既有回归）；`cargo +1.90.0 test -p codesmith-config --lib manifest` 8 通过；`cargo +1.90.0 build --workspace` 全绿（tui bin 143 + tool-impls 15 warning 均**既有死代码**，与 slice 42 baseline 逐一对齐，零新增——grep 核实零 warning 命中 `codesmith-config` 或新代码）。
+
+**By-design gaps（deferred，documented）：**
+- **registry 接线（slice 44）**：`default_registry` 读 `providers_manifest()` 按 `FactoryBackend` 注册 factory；`FactoryBackend`→factory 映射落 providers；实际 `providers.toml` 文件 ship（providers crate `include_str!`，外置 `COMPAT_KINDS` + 4 dedicated factory）。
+- **lazy cache 另半（slice 44）**：`default_registry()` 背 `OnceLock`（消除 `engine.rs:324` 每请求重建）——本 slice 只交付"manifest 读一次"半。
+- **feature 编译期校验（slice 44）**：`backend` 未编译进 → resolve 期报错。
+- **manifest 错误处理**：当前 `providers_manifest()` 加载失败 `tracing::warn!` 后回空 manifest（infallible `&'static`，无 consumer 前可接受）；slice 44 接线时按 registry 语义重审（空 manifest = 不额外注册 vs fallback Rust 注册）。
+- **`ARCHITECTURE.md:282` §D2 行 stale**（标 "⏳ deferred" 实已落地于 `9d47942c`）：doc-debt follow-up，超出本 E4 slice 范围。
+
+**下一聚焦工作：**
+- §E4 slice 44：registry 接线（`default_registry` 读 `providers_manifest()` 按 `FactoryBackend` 注册 factory）+ lazy cache 半（`default_registry()` 背 `OnceLock`）+ ship 实际 `providers.toml`（外置 `COMPAT_KINDS`）。本 slice 的 schema/loader 为其前置。
+- §B3（`ApiProvider`→`ProviderKind`，cosmetic `DeepseekCN` 折叠）、§D2 残件 polish（CLI flag / per-entry `config set` / bare `provider=` 形）维持低优先。
+
 ---
 
 ## §A — Provider extraction (bulk migration)
