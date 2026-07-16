@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::models::{ContentBlock, Message, SystemPrompt};
 use crate::repl::PythonRuntime;
+use crate::utils::sha256_hex;
 
 pub type SharedRlmSessionStore = Arc<Mutex<HashMap<String, Arc<Mutex<RlmSession>>>>>;
 
@@ -447,12 +447,6 @@ pub fn derive_session_name(source_hint: Option<&str>) -> String {
     } else {
         out.to_string()
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]

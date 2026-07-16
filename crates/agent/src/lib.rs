@@ -19,6 +19,10 @@
 //! - [`models`] — request/response wire types shared across providers.
 //! - [`retry`] — [`retry::RetryPolicy`], the host-facing retry policy that
 //!   round-trips to [`RetryConfig`].
+//! - [`reasoning`] — [`reasoning`] model-name heuristics for the DeepSeek
+//!   thinking-mode family (`requires_reasoning_content` /
+//!   `should_replay_reasoning_content`), shared by the rig adapter and the
+//!   inspect/warmup path (§A).
 //! - [`ModelRegistry`] — the model catalog (id/alias resolution), separate
 //!   from the provider registry.
 //! - [`tools`] — the framework-core [`tools::Tool`] trait (LangChain `BaseTool`
@@ -60,6 +64,7 @@ pub mod llm_client;
 pub mod memory;
 pub mod models;
 pub mod provider;
+pub mod reasoning;
 pub mod retry;
 pub mod tools;
 

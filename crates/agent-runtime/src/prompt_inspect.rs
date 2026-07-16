@@ -9,14 +9,15 @@
 
 use std::collections::{HashMap, HashSet};
 
+use codesmith_agent::reasoning::should_replay_reasoning_content;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use crate::prompt_runtime::{
     PromptCachePolicy, PromptSectionStability, parse_rendered_sections, system_prompt_to_text,
 };
+use crate::utils::sha256_hex;
 
 fn to_api_tool_name(name: &str) -> String {
     let mut out = String::new();
@@ -549,12 +550,6 @@ fn prompt_layer(
         tool_result: None,
         turn_meta: None,
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
 }
 
 /// Persist a SHA-addressed copy of `content` to
@@ -1180,48 +1175,6 @@ fn tool_to_chat(tool: &Tool) -> Value {
     }
     value
 }
-fn requires_reasoning_content(model: &str) -> bool {
-    let lower = model.to_lowercase();
-    // V4-family direct model IDs.
-    lower.contains("deepseek-v4")
-        // Public DeepSeek API aliases routed server-side to the V4 family.
-        // `deepseek-chat` resolves to `deepseek-v4-flash` and `deepseek-reasoner`
-        // resolves to `deepseek-v4-pro`; both have thinking mode enabled by
-        // default, so any assistant message carrying tool_calls must replay
-        // `reasoning_content` on subsequent turns or the API returns 400.
-        || lower.starts_with("deepseek-chat")
-        || lower.starts_with("deepseek-reasoner")
-        // Generic reasoning markers used by custom/proxied deployments.
-        || lower.contains("reasoner")
-        || lower.contains("-reasoning")
-        || lower.contains("-thinking")
-        || has_deepseek_r_series_marker(&lower)
-}
-
-fn should_replay_reasoning_content(model: &str, effort: Option<&str>) -> bool {
-    if effort
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "off" | "disabled" | "none" | "false"
-            )
-        })
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    requires_reasoning_content(model)
-}
-fn has_deepseek_r_series_marker(model_lower: &str) -> bool {
-    const PREFIX: &str = "deepseek-r";
-    model_lower.match_indices(PREFIX).any(|(idx, _)| {
-        model_lower[idx + PREFIX.len()..]
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_digit())
-    })
-}
 #[cfg(test)]
 mod stream_decoder_tests {
     //! Cache-inspection coverage for turn-meta deduplication and tool-result
@@ -1381,81 +1334,6 @@ mod stream_decoder_tests {
         });
     }
 }
-#[cfg(test)]
-mod alias_thinking_detection_tests {
-    //! Regression coverage for the DeepSeek public model aliases.
-    //!
-    //! `deepseek-chat` and `deepseek-reasoner` are the canonical alias names
-    //! published in DeepSeek's API docs. Server-side they resolve to V4-flash
-    //! and V4-pro respectively, both of which have thinking mode enabled by
-    //! default. The prompt builder must classify those aliases as reasoning
-    //! models so `reasoning_content` is replayed on tool-call assistant
-    //! messages (otherwise DeepSeek's thinking-mode API returns a 400 on the
-    //! second turn). See upstream API docs:
-    //! https://api-docs.deepseek.com/guides/thinking_mode
-    use super::{requires_reasoning_content, should_replay_reasoning_content};
-
-    #[test]
-    fn aliases_routed_to_v4_require_reasoning_content() {
-        // Documented public aliases.
-        assert!(requires_reasoning_content("deepseek-chat"));
-        assert!(requires_reasoning_content("deepseek-reasoner"));
-        // Case-insensitive: users sometimes copy/paste with capitalisation.
-        assert!(requires_reasoning_content("DeepSeek-Chat"));
-        assert!(requires_reasoning_content("DEEPSEEK-REASONER"));
-    }
-
-    #[test]
-    fn explicit_v4_ids_still_require_reasoning_content() {
-        // Direct V4 IDs continue to match (regression guard for the existing
-        // `lower.contains("deepseek-v4")` branch).
-        assert!(requires_reasoning_content("deepseek-v4-flash"));
-        assert!(requires_reasoning_content("deepseek-v4-pro"));
-    }
-
-    #[test]
-    fn non_thinking_aliases_remain_excluded() {
-        // Legacy non-thinking IDs and unrelated provider models must not be
-        // misclassified, otherwise we would force a placeholder
-        // `reasoning_content` on providers that reject the field.
-        assert!(!requires_reasoning_content("deepseek-v3"));
-        assert!(!requires_reasoning_content("deepseek-coder"));
-        assert!(!requires_reasoning_content("qwen3-coder"));
-        assert!(!requires_reasoning_content("claude-sonnet-4-6"));
-    }
-
-    #[test]
-    fn alias_prefix_handles_suffixed_variants() {
-        // OpenRouter / proxy deployments occasionally suffix the canonical
-        // alias (e.g. `deepseek-chat:free`). Those routes still hit V4
-        // server-side, so they must continue to require reasoning_content.
-        assert!(requires_reasoning_content("deepseek-chat:free"));
-        assert!(requires_reasoning_content("deepseek-reasoner-2025-05"));
-    }
-
-    #[test]
-    fn explicit_reasoning_off_overrides_alias_detection() {
-        // `reasoning_effort = "off"` is the documented escape hatch: even when
-        // the model is in the thinking family, the user can opt out and the
-        // sanitizer must respect that choice.
-        assert!(!should_replay_reasoning_content(
-            "deepseek-chat",
-            Some("off")
-        ));
-        assert!(!should_replay_reasoning_content(
-            "deepseek-reasoner",
-            Some("disabled")
-        ));
-        // Without an explicit override, alias models still trigger replay.
-        assert!(should_replay_reasoning_content("deepseek-chat", None));
-        assert!(should_replay_reasoning_content(
-            "deepseek-reasoner",
-            Some("medium")
-        ));
-    }
-
-}
-
 #[cfg(test)]
 mod inspect_entry_tests {
     //! Coverage for the high-level entry points (`inspect_prompt_for_request`,

@@ -17,8 +17,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
+
+use crate::utils::sha256_hex;
 
 /// Preview length (in chars) stored on every [`VarHandle`] so consumers can
 /// show a snippet without touching the backing payload.
@@ -184,11 +185,4 @@ pub fn truncate_chars(text: &str, max_chars: usize) -> String {
         out.push(ch);
     }
     out
-}
-
-#[allow(dead_code)] // Used when producer tools register handle payloads.
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
 }

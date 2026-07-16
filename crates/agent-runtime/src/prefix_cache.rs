@@ -30,9 +30,9 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::models::{SystemPrompt, Tool};
+use crate::utils::sha256_hex;
 
 /// A snapshot of the immutable prefix's fingerprint.
 ///
@@ -303,13 +303,6 @@ impl PrefixStabilityManager {
             changes = self.change_count,
         )
     }
-}
-
-/// Compute the SHA-256 hex digest of a byte slice.
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
 }
 
 /// Extract the system prompt text from an optional SystemPrompt,

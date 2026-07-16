@@ -1,58 +1,25 @@
-//! DeepSeek thinking-mode reasoning protocol quirks, ported from the
-//! hand-written TUI client (`crates/tui/src/client/chat.rs` +
-//! `client.rs::apply_reasoning_effort`) so the rig-backed OpenAI / openai-compat
-//! factories reach behavioural parity without the host's concrete client.
+//! DeepSeek thinking-mode reasoning protocol quirks for the rig-backed
+//! OpenAI / openai-compat factories — the provider-aware wrapper and the
+//! per-provider `reasoning_effort` translation, ported from the hand-written
+//! TUI client so the rig adapter reaches behavioural parity without the
+//! host's concrete client.
+//!
+//! The base model-name predicates (`requires_reasoning_content`,
+//! `should_replay_reasoning_content`, `has_deepseek_r_series_marker`) were
+//! lifted to `codesmith_agent::reasoning` (ROADMAP §A slice 42) — this module
+//! imports them from there. What stays here is provider-shaping: the
+//! provider-name allowlist (`provider_accepts_reasoning_content`), the
+//! load-bearing `should_replay_reasoning_content_for_provider` wrapper, and
+//! `apply_reasoning_effort` (the `serde_json` `Map` translation rig has no
+//! first-class slot for).
 //!
 //! These functions are keyed on a provider-name `&str` (e.g. `"openrouter"`,
 //! `"deepseek"`) — the same string `GenericShaper::new(name)` holds and
 //! `ApiProvider::as_str()` yields — rather than the TUI's `ApiProvider` enum,
 //! so this crate stays off the `codesmith-agent-runtime` dep edge (ROADMAP §C6).
-//!
-//! When DeepSeek switched to the rig adapter (ROADMAP §A1 / §D1), the TUI's
-//! `is_reasoning_model_for_stream` (streaming-only) duplicate was deleted.
-//! `requires_reasoning_content` / `should_replay_reasoning_content` /
-//! `has_deepseek_r_series_marker` are **still duplicated** in
-//! `crates/tui/src/client/chat.rs` — they remain deps of the TUI-local
-//! inspect/warmup logic (`build_chat_messages_with_reasoning`, called by
-//! `inspect_prompt_for_request`). Follow-up: extract the shared predicates
-//! into `codesmith-agent` so this module is the single source of truth.
 
+use codesmith_agent::reasoning::{requires_reasoning_content, should_replay_reasoning_content};
 use serde_json::{Map, Value, json};
-
-/// Model-name heuristic: does this model id belong to the DeepSeek thinking-mode
-/// family (and thus require `reasoning_content` replay on tool-call turns, or the
-/// API returns 400 — #1739 / #1694)?
-///
-/// Matches (case-insensitive): `deepseek-v4`, `deepseek-chat*`, `deepseek-reasoner*`,
-/// `*reasoner*`, `*-reasoning`, `*-thinking`, and `deepseek-r<digit>` (r1, r1-distill,
-/// …). Does **not** match `deepseek-v3` / plain `deepseek` — those are non-reasoning.
-pub(crate) fn requires_reasoning_content(model: &str) -> bool {
-    let lower = model.to_lowercase();
-    // V4-family direct model IDs.
-    lower.contains("deepseek-v4")
-        // Public DeepSeek API aliases routed server-side to the V4 family.
-        // `deepseek-chat` resolves to `deepseek-v4-flash` and `deepseek-reasoner`
-        // resolves to `deepseek-v4-pro`; both have thinking mode enabled by
-        // default, so any assistant message carrying tool_calls must replay
-        // `reasoning_content` on subsequent turns or the API returns 400.
-        || lower.starts_with("deepseek-chat")
-        || lower.starts_with("deepseek-reasoner")
-        // Generic reasoning markers used by custom/proxied deployments.
-        || lower.contains("reasoner")
-        || lower.contains("-reasoning")
-        || lower.contains("-thinking")
-        || has_deepseek_r_series_marker(&lower)
-}
-
-fn has_deepseek_r_series_marker(model_lower: &str) -> bool {
-    const PREFIX: &str = "deepseek-r";
-    model_lower.match_indices(PREFIX).any(|(idx, _)| {
-        model_lower[idx + PREFIX.len()..]
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_digit())
-    })
-}
 
 /// The 9 providers whose API tolerates a `reasoning_content` field on assistant
 /// messages even for generic (non-DeepSeek) models. Keyed on `ApiProvider::as_str()`
@@ -73,25 +40,6 @@ pub(crate) fn provider_accepts_reasoning_content(name: &str) -> bool {
             | "siliconflow"
             | "sglang"
     )
-}
-
-/// Should the outgoing request re-attach `reasoning_content` to assistant
-/// tool-call turns for this model + effort? Honours the `off`/`disabled`/
-/// `none`/`false` effort override. Model-only (ignores provider).
-pub(crate) fn should_replay_reasoning_content(model: &str, effort: Option<&str>) -> bool {
-    if effort
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "off" | "disabled" | "none" | "false"
-            )
-        })
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    requires_reasoning_content(model)
 }
 
 /// Provider-aware replay gate — the load-bearing predicate for both the
@@ -269,43 +217,6 @@ pub(crate) fn apply_reasoning_effort(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- requires_reasoning_content -----------------------------------------
-
-    #[test]
-    fn requires_reasoning_content_matches_deepseek_family() {
-        assert!(requires_reasoning_content("deepseek-v4-flash"));
-        assert!(requires_reasoning_content("deepseek-v4-pro"));
-        assert!(requires_reasoning_content("deepseek-chat"));
-        assert!(requires_reasoning_content("DeepSeek-Chat"));
-        assert!(requires_reasoning_content("deepseek-reasoner"));
-        assert!(requires_reasoning_content("deepseek-r1"));
-        assert!(requires_reasoning_content("deepseek-r1-distill-qwen-32b"));
-        assert!(requires_reasoning_content("qwen3-reasoner"));
-        assert!(requires_reasoning_content("gpt-5-reasoning"));
-        assert!(requires_reasoning_content("kimi-thinking"));
-    }
-
-    #[test]
-    fn requires_reasoning_content_rejects_non_reasoning() {
-        assert!(!requires_reasoning_content("deepseek-v3"));
-        assert!(!requires_reasoning_content("deepseek-v3.1"));
-        assert!(!requires_reasoning_content("deepseek"));
-        assert!(!requires_reasoning_content("qwen3-235b"));
-        assert!(!requires_reasoning_content("gpt-4o"));
-        // `deepseek-reasoner-v2` still matches (starts_with "deepseek-reasoner")
-        // — it's a reasoning model. Documented here to pin the heuristic.
-        assert!(requires_reasoning_content("deepseek-reasoner-v2"));
-    }
-
-    #[test]
-    fn r_series_marker_requires_trailing_digit() {
-        // `deepseek-r` alone (no digit) must not match — it's a prefix of
-        // `deepseek-reasoner`, already caught by the starts_with arm.
-        assert!(!has_deepseek_r_series_marker("deepseek-r"));
-        assert!(has_deepseek_r_series_marker("deepseek-r1"));
-        assert!(has_deepseek_r_series_marker("deepseek-r1-distill"));
-    }
 
     // --- should_replay_reasoning_content_for_provider ------------------------
 
