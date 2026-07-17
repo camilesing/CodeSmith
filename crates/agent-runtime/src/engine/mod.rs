@@ -193,6 +193,20 @@ pub struct Engine {
 // === Internal tool helpers ===
 
 impl Engine {
+    /// Return the session transcript verbatim for a request snapshot.
+    ///
+    /// `<turn_meta>` is stored on user-text messages when the message is
+    /// appended. Do not rewrite historical messages at request time: doing
+    /// so makes the API prefix differ from the bytes sent in earlier turns
+    /// and destroys DeepSeek's KV prefix cache reuse.
+    ///
+    /// Relocated from `turn_loop.rs` in slice 49 §E (module convergence —
+    /// that file was the retired `handle_deepseek_turn` home and is now
+    /// deleted; this accessor is test-referenced from tui).
+    pub fn messages_with_turn_metadata(&self) -> Vec<Message> {
+        self.session.messages.clone()
+    }
+
     pub fn reset_cancel_token(&mut self) {
         let token = CancellationToken::new();
         self.cancel_token = token.clone();
@@ -2913,7 +2927,6 @@ mod streaming;
 mod team_inbox;
 mod tool_catalog;
 mod tool_execution;
-mod turn_loop;
 mod turn_meta;
 
 pub mod host_executor;

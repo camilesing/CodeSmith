@@ -2248,7 +2248,38 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 **下一聚焦工作：**
 - §A（provider extraction + 残件去重）+ §E（framework core traits + HostAgentExecutor cutover + 10 guardrails + §E4 manifest）主体至此**闭合并经文档核实**。pluggable framework core 迁移实质完成。
-- 残项均为低优先 / by-design / 按需：§B3（cosmetic `DeepseekCN`→`Deepseek` 折叠，mitigated）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需）、`turn_loop` 模块仅余 2 live helper 的进一步收敛（可考虑并入 host_executor 或保留——非阻塞）。
+- 残项均为低优先 / by-design / 按需：§B3（cosmetic `DeepseekCN`→`Deepseek` 折叠，mitigated）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需）、~~`turn_loop` 模块仅余 2 live helper 的进一步收敛（可考虑并入 host_executor 或保留——非阻塞）~~ → slice 49 完成：`turn_loop.rs` 删除、2 live helper 并入 `host_executor`/`mod.rs`（模块收敛闭合，retired 代码原宿主文件不复存在）。
+
+**进度（2026-07-17 §E slice 49 `turn_loop` 模块收敛——删 `turn_loop.rs` + 2 live helper（`messages_with_turn_metadata` / `subagent_completion_runtime_message`）并入 `mod.rs`/`host_executor.rs`，`feat/pluggable-framework-core`）：**
+
+接 slice 48（§A1/§E1 doc-debt cleanup，`:2219`）。slice 48 的 "下一聚焦工作" 把 `turn_loop` 模块的进一步收敛列为非阻塞残项（"仅余 2 live helper，可考虑并入 host_executor 或保留"）。本切片执行该收敛——`turn_loop.rs` 是 retired `handle_deepseek_turn`（~2.4k 行，slice 20 §E cutover 删除）的原宿主文件，cutover 后仅余 2 live helper（80 行）。删该文件、把 2 helper 并入各自消费方模块，是 §E1 迁移的结构性收尾——retired 代码的原宿主文件不复存在。纯结构重构（文件内搬运 + 删除），零行为改动（匹配 slice 32/42/47/48 的 cleanup-slice 惯例）。
+
+**关键设计决策：**
+- **逐 helper 选定并入目标、非整体并入 host_executor**：`messages_with_turn_metadata` 是 `impl Engine` 的 session 访问器、6 处调用点全在 tui 测试（跨 crate 的 `Engine` 方法调用），并入 `engine/mod.rs` 主 `impl Engine` 块——路径无关的方法调用使 6 调用点零改动；`subagent_completion_runtime_message` 是 free fn、唯一生产调用点在 `host_executor.rs:4146`，并入 `host_executor.rs` 作 module-private `fn`（drop `pub(crate)`——同模块内单一消费者，surface 收缩）。两 helper 各自并入 "最近消费方" 而非整体并入 host_executor，匹配 Rust "就近定义" 惯例。
+- **test 随 fn 走、保 1:1 搬运**：`subagent_completion_handoff_is_internal_user_message` 测试随 `subagent_completion_runtime_message` 搬入 `host_executor.rs` 的 `#[cfg(test)] mod tests`（"subagent post-stream completion drain" 节首，带 `// §E slice 49 — relocated from turn_loop.rs` 头注）。`messages_with_turn_metadata` 无专属单测（其 6 调用点本身就是 tui 测试的断言 fixture）。零测试逻辑改动。
+- **~104 历史 provenance 引用保留不重写**：`host_executor.rs` / `engine/mod.rs` / `crates/tui/src/tools/subagent/mod.rs:29` / `crates/tool-impls/src/tools/plan_mode.rs:132` 等共约 104 处 `turn_loop.rs:NNN` / `turn_loop::item` 注释引用（"mirroring turn_loop.rs:NNN" 之类），均指向已删 `handle_deepseek_turn` 代码、属 slice 48 已建档 doc-debt（provenance value 高于 line 准确性）。删 `turn_loop.rs` 使 `turn_loop.rs:` 前缀指向不存在的文件，但注释仍传达 "镜像 retired handle_deepseek_turn 的 X 行为" 的 provenance；重写 ~104 条注释属超范围 churn，未来 doc-debt 切片可另做（未来读者可经 `git show <pre-retire-commit>:crates/agent-runtime/src/engine/turn_loop.rs` 查历史代码）。
+- **ARCHITECTURE.md:189 仅 1-line 可读性修**：该段 broader prose（"What is not here yet: absorbing guardrails"）是 pre-slice-11 framing 的 stale doc-debt（guardrails 已吸收），但全段重写超范围；本切片仅把 "`Engine`/`turn_loop.rs` guardrails" → "`Engine` guardrails (formerly in the now-deleted `turn_loop.rs`)" 保可读，status table（行 277/278/282/285/288，slice 48 更新）仍为 authoritative current-status doc。
+
+**落地步骤：**
+1. `crates/agent-runtime/src/engine/host_executor.rs`：删 `:736` `use super::turn_loop::subagent_completion_runtime_message;`；在 `should_emit_thinking_only_status` 之后的 free-fn helper 簇插入 `fn subagent_completion_runtime_message(payload: &str) -> Message`（module-private，drop `pub(crate)`），doc comment 逐字保留 + 追加 relocation 注；`#[cfg(test)] mod tests` 的 "subagent post-stream completion drain" 节首插入 `subagent_completion_handoff_is_internal_user_message` 测试（带 `// §E slice 49 — relocated from turn_loop.rs` 头注）。调用点 `:4146` 字节不变、现解析为局部 fn。
+2. `crates/agent-runtime/src/engine/mod.rs`：主 `impl Engine` 块（`:195`）首部插入 `pub fn messages_with_turn_metadata(&self) -> Vec<Message>`（保 `pub fn`——tui 跨 crate 调用），doc comment 逐字保留 + 追加 relocation 注；删 `:2930` `mod turn_loop;` 声明。
+3. 删 `crates/agent-runtime/src/engine/turn_loop.rs`（整 80 行：17 行模块 doc + 2 live helper + 1 测试）。
+4. `ARCHITECTURE.md:190`："`Engine`/`turn_loop.rs` guardrails" → "`Engine` guardrails (formerly in the now-deleted `turn_loop.rs`)"（1-line 可读性修，broader 段不重写）。
+5. `ROADMAP.md`：slice 48 "下一聚焦工作"（`:2251`）的 `turn_loop` 残项 strikethrough-correct（`~~…~~ → slice 49 完成：…`，镜像 `:128` / slice 48 的既有 pattern）；§E1 section（`:2472`）Status 段已准确（不提 `turn_loop` 残项）、无需改；追加本 slice 49 进度条目。
+
+**测试：** 零测试逻辑改动——1 测试随 fn 模块间搬运（`turn_loop::tests` → `host_executor::tests`），6 处 `messages_with_turn_metadata` 调用点零改动（`Engine` 方法、路径无关）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` **零 warning**（删文件 + crate 内搬运，无新 surface）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` **163 通过**（relocated 测试现归 host_executor；pre-relocation 162 + 1 搬入）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` **1149 通过 + 2 ignored，0 failed**（测试模块间搬移、非删除，总数 1151 不变）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui core::engine::tests` **126 通过 + 1 ignored**（6 `messages_with_turn_metadata` 调用点不变）；`cargo +1.90.0 build --workspace` 全绿（`codesmith-tui` 142 warning 为 slice 47 baseline、非本切片新增）；grep 核实 `mod turn_loop` / `use ...turn_loop` **零命中**（仅余 1 处 `//!` doc comment provenance 引用 `turn_loop::early_tool_start_safe`，属 slice 48 已建档 doc-debt）。
+
+**By-design gaps（deferred，documented）：**
+- **~104 历史 provenance 引用保留**：见上 "关键设计决策"。删 `turn_loop.rs` 扩展 staleness 但 slice 48 policy 覆盖（provenance > line 准确性）。未来 dedicated doc-debt 切片可重写这 ~104 条注释 + ARCHITECTURE.md:189 broader 段——非阻塞。
+- **ARCHITECTURE.md:189 broader 段**：本切片仅修 `turn_loop.rs` mention 保可读，全段（pre-slice-11 "not here yet" framing）重写为单独 doc-debt。
+- **§B3 / §E4 follow-up 不变**：仍低优先 / 按需另开切片（slice 48 framing 不变）。
+
+**下一聚焦工作：**
+- §A + §E 全部闭合并**结构性收敛**——`turn_loop` 残件清零、retired `handle_deepseek_turn` 原宿主文件已删，pluggable framework core 迁移的最后一个结构 loose end 收口。
+- 残项仅余低优先 / by-design / 按需二项：§B3（cosmetic `DeepseekCN`→`Deepseek` 折叠，mitigated）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需）。
+- 未来可选 dedicated doc-debt 切片：重写 ~104 `turn_loop.rs:NNN` provenance 注释 + ARCHITECTURE.md:189 broader 段——非阻塞。
 
 ---
 

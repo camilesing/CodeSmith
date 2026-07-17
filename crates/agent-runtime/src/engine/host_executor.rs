@@ -733,7 +733,6 @@ use super::context::{
 use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
-use super::turn_loop::subagent_completion_runtime_message;
 use super::{CapacityDecision, GuardrailAction, ReplayOutcome, TargetedRefreshOutcome};
 use crate::subagent::SubAgentCompletion;
 use tokio_util::sync::CancellationToken;
@@ -870,6 +869,40 @@ fn should_emit_thinking_only_status(
         && !cancelled
         && !steers_pending
         && !holding_for_subagents
+}
+
+/// Build the `<codesmith:runtime_event kind="subagent_completion">` sentinel
+/// user message injected into the transcript when a sub-agent completes (§E
+/// slice 16/18, mirroring the retired `handle_deepseek_turn`'s drain path).
+///
+/// Role is `"user"`, not `"system"`: some OpenAI-compatible backends apply a
+/// strict chat template (e.g. vLLM serving Qwen3) that requires any system
+/// message to be messages[0]. A system message appended mid-conversation
+/// makes the template raise "System message must be at the beginning",
+/// which surfaces as a 400 BadRequest and breaks the whole sub-agent
+/// hand-off in the parent turn. The `visibility="internal"` tag already
+/// tells the model this is a runtime event rather than user input, so the
+/// role carries no semantic weight here — only template-compatibility cost.
+///
+/// Relocated from `turn_loop.rs` in slice 49 §E (module convergence — that
+/// file was the retired `handle_deepseek_turn` home and is now deleted; this
+/// is the sole production caller's module).
+fn subagent_completion_runtime_message(payload: &str) -> Message {
+    Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: format!(
+                "<codesmith:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
+This is an internal runtime event, not user input. Use the sub-agent completion \
+data below to continue coordinating the current task. Do not tell the user they \
+pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
+XML unless the user explicitly asks to debug sub-agent internals.\n\n\
+{payload}\n\
+</codesmith:runtime_event>"
+            ),
+            cache_control: None,
+        }],
+    }
 }
 
 /// Bundles the LSP collaborators the executor needs for the post-edit collect /
@@ -13619,6 +13652,30 @@ mod tests {
     }
 
     // === subagent post-stream completion drain =================================
+
+    // §E slice 49 — relocated from turn_loop.rs (module convergence). Pure-fn
+    // unit test for the sentinel-message format the rest of this section
+    // exercises end-to-end via the executor.
+    #[test]
+    fn subagent_completion_handoff_is_internal_user_message() {
+        let message = subagent_completion_runtime_message(
+            "Build passed\n<codesmith:subagent.done>{\"agent_id\":\"agent_a\"}</codesmith:subagent.done>",
+        );
+
+        // Must be "user", not "system": a system message appended mid-stream
+        // trips strict chat templates (vLLM/Qwen3) into a 400 BadRequest
+        // ("System message must be at the beginning"). The internal-event
+        // framing lives in the text + visibility tag, not the role.
+        assert_eq!(message.role, "user");
+        let text = match &message.content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.contains("internal runtime event, not user input"));
+        assert!(text.contains("Do not tell the user they pasted sentinels"));
+        assert!(text.contains("<codesmith:subagent.done>"));
+        assert!(text.contains("Build passed"));
+    }
 
     #[tokio::test]
     async fn subagent_none_is_noop() {

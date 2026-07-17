@@ -187,7 +187,7 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   `StopReason` (`NoToolCalls` / `MaxSteps` / `Error`) is the terminal outcome.
 
 What is **not** here yet (later §E slices): absorbing the production
-`Engine`/`turn_loop.rs` guardrails into `HostAgentExecutor` — the three
+`Engine` guardrails (formerly in the now-deleted `turn_loop.rs`) into `HostAgentExecutor` — the three
 host→framework bridges are all landed (`ToolSpecAdapter`, `CallbackBridge`,
 `SessionChatHistory`), and the host-side `HostAgentExecutor` runs the bare
 LLM↔tool loop over them with **six guardrails absorbed**: **loop-guard** at
