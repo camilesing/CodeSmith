@@ -5,29 +5,17 @@
 //! event handling, tool planning/execution, LSP post-edit hooks, capacity
 //! checkpoints, and loop termination.
 //!
-//! After slice 20 §E (`handle_deepseek_turn` retirement) this module is a
-//! residual: `EarlyToolResult` / `EarlyToolTask` are retained only for the
-//! type references in `dispatch.rs`, and `messages_with_turn_metadata` /
-//! `subagent_completion_runtime_message` remain live. The retained structs'
-//! fields are unread until a follow-up slice re-wires speculative dispatch;
-//! `#![allow(dead_code)]` silences those until then.
-
-#![allow(dead_code)]
+//! After slice 20 §E (`handle_deepseek_turn` retirement) this module shrank
+//! to two live helpers: `messages_with_turn_metadata` (test-referenced) and
+//! `subagent_completion_runtime_message` (consumed by `HostAgentExecutor`).
+//! The `EarlyToolResult` / `EarlyToolTask` structs that used to live here
+//! were deleted once speculative dispatch was re-wired into the framework
+//! executor (slice 15 §E early-tool-start + slice 40 §E parallel dispatch),
+//! which carries its own distinct `EarlyToolTask` type; the dead
+//! `ToolExecutionPlan.early_result` field that referenced this type went with
+//! them.
 
 use super::*;
-
-#[derive(Debug)]
-struct EarlyToolResult {
-    result: Result<ToolResult, ToolError>,
-    elapsed: Duration,
-}
-
-#[derive(Debug)]
-pub struct EarlyToolTask {
-    name: String,
-    input: serde_json::Value,
-    handle: tokio::task::JoinHandle<EarlyToolResult>,
-}
 
 impl Engine {
     pub fn messages_with_turn_metadata(&self) -> Vec<Message> {

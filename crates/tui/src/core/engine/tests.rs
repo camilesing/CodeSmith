@@ -379,7 +379,6 @@ fn make_plan_at(
         supports_parallel,
         read_only,
         stream_early_start_safe: false,
-        early_result: None,
         blocked_error: None,
         guard_result: None,
     }

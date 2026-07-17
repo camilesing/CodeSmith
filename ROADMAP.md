@@ -2186,6 +2186,36 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 ---
 
+**进度（2026-07-17 §E slice 47 residual dead-code deletion——`turn_loop::EarlyToolResult`/`EarlyToolTask` 死结构 + `ToolExecutionPlan.early_result` 死字段 + tui `prompt_zones` 死 shim，`feat/pluggable-framework-core`）：**
+
+接 slice 46（§D2 残件 polish 收口，`:2157`）。§E 主线（slice 43-45 §E4 providers.toml + slice 40 §E parallel dispatch）已闭合，本切片清 §E 框架核心迁移遗留的纯死代码——`turn_loop` 模块在 slice 20 §E（`handle_deepseek_turn` retirement）后已缩为两个 live helper（`messages_with_turn_metadata` + `subagent_completion_runtime_message`），但 `EarlyToolResult`/`EarlyToolTask` 两结构因 `dispatch.rs::ToolExecutionPlan.early_result` 字段的类型引用而保留、并加 `#![allow(dead_code)]` 静音。slice 15 §E early-tool-start + slice 40 §E parallel dispatch 把 speculative dispatch 重接到框架执行器（`HostAgentExecutor` 自带 distinct `EarlyToolTask` 类型 + `early_tasks` map），`turn_loop` 那份纯成死重。纯删除（2 结构 + 1 字段 + 1 shim + `#![allow(dead_code)]`），零既有调用点行为改动。
+
+**关键设计决策：**
+- **两个 distinct `EarlyToolTask` 类型**：框架执行器的（`host_executor.rs:1272`，`Drop` abort `JoinHandle` 防 orphan 任务泄漏 + `handle: Option<..>` 包裹使 reuse 路径可 `Option::take` 出来 `.await`）vs 删除的 `turn_loop::EarlyToolTask`（plain struct，字段从未被读，仅被死字段 `early_result` 引用占位）。删 turn_loop 份安全——框架执行器从不查 `plan.early_result`，它在自己的 `early_tasks: HashMap<String, EarlyToolTask>` side map（keyed by tool-call id）+ `early_for_plan` parallel array 里维护 speculative 任务。
+- **`early_result` 字段为何 vestigial**：speculative early-start 原计划经 plan struct 串接 early task（turn_loop 设计），但 slice 15/40 的重接改用 side map + parallel array，struct 字段成残肢（两构造点恒 `None`：`host_executor.rs:4283` + tui `tests.rs:382`）。框架执行器自己另有 distinct `EarlyToolTask`（host_executor.rs:1272），不靠此字段。
+- **prompt_zones shim 是过渡件**：Phase 6 §6b-2 加 `pub use codesmith_agent_runtime::prompt_zones::*;` glob 把 runtime 模块 public 项展平到 `crate::prompt_zones::` 路径，migration 期保 TUI 旧路径存活；后续步骤把 TUI 路径直接接到 runtime crate，shim 成死（grep 零 `crate::prompt_zones::` 引用 + build 确认）。
+
+**落地步骤：**
+1. `crates/agent-runtime/src/engine/turn_loop.rs`：删 `EarlyToolResult`（`{ result, elapsed }`）+ `pub struct EarlyToolTask`（`{ name, input, handle }`）两结构（11 行）；重写模块 doc（residual→两 live helper + 删除理由，注明结构经 slice 15/40 重接后删、字段随之）；drop `#![allow(dead_code)]`（模块现仅两 live helper，无需静音）。
+2. `crates/agent-runtime/src/engine/dispatch.rs`：`ToolExecutionPlan` 删 `pub early_result: Option<super::turn_loop::EarlyToolTask>` 字段。
+3. `crates/agent-runtime/src/engine/host_executor.rs`：plan 构造点（`:4283`）删 `early_result: None,`；`:4226` 注释更新（原 "struct's own `early_result` / `blocked_error` fields are left `None`" → "struct's own `blocked_error` field is left `None` + 框架执行器在自己 distinct `EarlyToolTask` 类型 + `early_tasks` map 维护 speculative early-start 任务，非在 plan 上"）。
+4. `crates/tui/src/core/engine/tests.rs`：`make_plan_at` helper 删 `early_result: None,`（`:382`）。
+5. `crates/tui/src/main.rs`：删 `mod prompt_zones;`（`:59`）；删 `crates/tui/src/prompt_zones.rs` shim（7 行）。
+
+**测试：** 零测试改动——删的符号均死代码（字段恒 `None` 从未被读），无测试覆盖；`make_plan_at` helper 机械删字段（构造点对齐）。162 host_executor 测试 + 1 turn_loop 测试 + 126 tui engine 测试全过不改。
+
+**验证：** `cargo build -p codesmith-agent-runtime` **零 warning**；`cargo test -p codesmith-agent-runtime --lib host_executor` **162 通过**；`cargo test -p codesmith-agent-runtime --lib turn_loop` **1 通过**；`cargo build -p codesmith-tui` 绿（**142 warning**，baseline 143，-1 自 prompt_zones shim 删除）；`cargo test -p codesmith-tui --bin codesmith-tui core::engine::tests` **126 通过 + 1 ignored**；`cargo build --workspace` 全绿。stash-pop baseline 对照（HEAD slice 46 不含本改动）：总测试数 **1151**（1148+1 flaky MCP+2 ignored）两侧一致——零测试被删；flaky MCP 测试既有文档化、隔离跑过。
+
+**By-design gaps（deferred，documented）：**
+- **`turn_loop` 模块仍非 §E1 `AgentExecutor` 抽取**：模块现仅两 live helper（`messages_with_turn_metadata` test-referenced + `subagent_completion_runtime_message` consumed by `HostAgentExecutor`），production `Engine`/`turn_loop` 迁移仍 deferred（§E1 "接真引擎"步）。本切片只删死结构，不动 live 代码。
+- **tui 142 既有 warning 均死代码**：与 baseline 对齐（仅 -1 自本切片删的 shim），零新增命中 agent-runtime/dispatch/tui main。
+
+**下一聚焦工作：**
+- §E 死代码清完（`turn_loop` 死结构 + `early_result` 死字段 + `prompt_zones` 死 shim 全删）。§E1 production `Engine`/`turn_loop`→`AgentExecutor` 迁移仍 deferred（需 replay bridge）。
+- §B3（cosmetic `DeepseekCN` 折叠）、§A1（DeepSeekClient 抽取）仍低优先/deferred。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

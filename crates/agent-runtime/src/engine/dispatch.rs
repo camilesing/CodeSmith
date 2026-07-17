@@ -58,7 +58,6 @@ pub struct ToolExecutionPlan {
     pub supports_parallel: bool,
     pub read_only: bool,
     pub stream_early_start_safe: bool,
-    pub early_result: Option<super::turn_loop::EarlyToolTask>,
     pub blocked_error: Option<ToolError>,
     pub guard_result: Option<ToolResult>,
 }

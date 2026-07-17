@@ -4226,9 +4226,9 @@ impl HostAgentExecutor {
             // `record_attempt` (the guard is per-tool, in order, so deferring it
             // would mis-count identical calls). `early_for_plan` / `tool_for_plan`
             // are parallel arrays keyed by `plan.index` — the `ToolExecutionPlan`
-            // struct's own `early_result` / `blocked_error` fields are left
-            // `None` (the framework executor's `EarlyToolTask` is a distinct type
-            // from `turn_loop::EarlyToolTask`).
+            // struct's own `blocked_error` field is left `None` (the framework
+            // executor tracks speculative early-start tasks in its own distinct
+            // `EarlyToolTask` type + `early_tasks` map, not on the plan).
             let mut plans: Vec<ToolExecutionPlan> = Vec::with_capacity(n);
             let mut early_for_plan: Vec<Option<EarlyToolTask>> = Vec::with_capacity(n);
             let mut tool_for_plan: Vec<Option<Arc<dyn Tool>>> = Vec::with_capacity(n);
@@ -4280,7 +4280,6 @@ impl HostAgentExecutor {
                     supports_parallel: true,
                     read_only,
                     stream_early_start_safe: early_start_safe(&caps),
-                    early_result: None,
                     blocked_error: None,
                     guard_result: guard_result.clone(),
                 });
