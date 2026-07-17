@@ -24,8 +24,22 @@ use rig_core::providers::deepseek;
 
 use crate::rig_adapter::{GenericShaper, RigLlmClient, build_header_map};
 
-/// Factory for the DeepSeek provider.
-pub struct DeepSeekFactory;
+/// Factory for the DeepSeek provider. Carries the manifest-sourced `base_url`
+/// / `model` defaults it falls back to when the host passes an empty
+/// `ProviderConfig` value.
+pub struct DeepSeekFactory {
+    base_url: Option<String>,
+    model: Option<String>,
+}
+
+impl DeepSeekFactory {
+    /// Construct the factory with the manifest defaults for `base_url` /
+    /// `model`. Called by `default_registry` from the `deepseek` entry in
+    /// `providers.toml`.
+    pub(crate) fn new(base_url: Option<String>, model: Option<String>) -> Self {
+        Self { base_url, model }
+    }
+}
 
 impl ProviderFactory for DeepSeekFactory {
     fn id(&self) -> ProviderId {
@@ -33,9 +47,15 @@ impl ProviderFactory for DeepSeekFactory {
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
+        // Host value wins; empty falls back to the manifest default; both empty
+        // keeps the rig compile-time default.
+        let base_url =
+            crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref());
+        let default_model =
+            crate::resolve_with_manifest_default(&cfg.default_model, self.model.as_deref());
         let mut builder = deepseek::Client::builder().api_key(cfg.api_key.clone());
-        if !cfg.base_url.is_empty() {
-            builder = builder.base_url(&cfg.base_url);
+        if !base_url.is_empty() {
+            builder = builder.base_url(&base_url);
         }
         builder = builder.http_headers(build_header_map(&cfg.http_headers));
         let client = builder
@@ -50,14 +70,15 @@ impl ProviderFactory for DeepSeekFactory {
             .build()
             .context("failed to build deepseek FIM/translate http client")?;
 
-        // Defense-in-depth: the host normally resolves an empty base_url to
-        // DeepSeek's default, but if it doesn't, the FIM/translate shim would
-        // POST to a relative URL. `resolve_base_url` falls back to the default
-        // so the shim always has an absolute base.
-        let resolved_base_url = crate::rig_adapter::resolve_base_url(&cfg.base_url).to_string();
+        // Defense-in-depth for the FIM/translate shim: the manifest now fills
+        // the deepseek base_url, but if both the host and manifest are empty,
+        // `resolve_base_url` still falls back to DeepSeek's built-in default so
+        // the shim always has an absolute base.
+        let resolved_base_url =
+            crate::rig_adapter::resolve_base_url(&base_url).to_string();
         let adapter = RigLlmClient::new(
             client,
-            cfg.default_model.clone(),
+            default_model,
             GenericShaper::new("deepseek"),
             resolved_base_url,
             Some(cfg.api_key.clone()),

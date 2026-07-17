@@ -2117,6 +2117,43 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 ---
 
+**进度（2026-07-16 §E4 slice 45 `providers.toml` `base_url`/`model` 列 populate + factory 消费 manifest 默认，闭合 slice 44 "下一聚焦工作" 的 §E4 残件，`feat/pluggable-framework-core`）：**
+
+接 slice 44（registry 接线 + lazy cache 半，`:2086`）。slice 44 shipped `providers.toml` 仅 `id`+`backend`（"外置 COMPAT_KINDS" 最小集），factory 不消费 manifest 默认——host 经 `ProviderConfig` 传 `base_url`/`default_model`，rig factory 容空 `base_url` 回退 rig 编译期默认，`default_model` 透传不默认。本 slice 使 manifest 成完整 per-provider 默认源：populate `base_url`/`model`（16 非慢条目，mock 不加），4 类 factory 在 host 传空时回退 manifest 默认。纯增量、零既有调用点行为改动（builtin host 路径仍由 config 常量解析非空 `base_url`，manifest 回退不触发；受益者是 custom-provider 空路径 + 直接 factory 调用）。
+
+**关键设计决策：**
+- **populate 取值 verbatim 自 `codesmith-config` `DEFAULT_*` 常量**（`lib.rs:17-69`）：16 非 mock 条目加 `base_url`+`model`，值逐字取自 `DEFAULT_*_BASE_URL`/`DEFAULT_*_MODEL`。manifest 是 providers 层声明 config 层常量的并行同值副本——layering 决定 config 不能依赖 providers 的 bundled manifest，故两份并行（dedup 需 config 读 manifest，跨层不可达，留 follow-up）。
+- **共享 helper（dedup）**：lib.rs 新增 `#[cfg(feature="rig")] pub(crate) fn resolve_with_manifest_default(cfg_val: &str, manifest: Option<&str>) -> String`（非空 cfg→cfg；空→manifest；都空→`String::new()`），4 factory 共用。gate `rig`（4 provider feature 的 aggregate）避免 mock-only build 的 dead_code。
+- **构造期注入**（镜像既有 `name` 注入）：`build_registry_from`（`lib.rs:135`）读 `desc.base_url`/`desc.model`，clone 传入 4 类 factory 构造器。factory 存 `Option<String>`（owned；registry OnceLock 构造一次，clone 16 字符串可忽略）。`name` 仍 `&'static str`（`leak_str`，`GenericShaper::new` 要求）。
+- **factory build 回退**：每 `build()` 先解析 `base_url`/`default_model`（helper），再喂 builder guard + `RigLlmClient::new`。host 非空→host 值（无行为变化）；host 空→manifest；都无→空（rig 编译期默认，现状）。
+- **deepseek × `resolve_base_url`**：先 `base_url = resolve_with_manifest_default(...)`（builder guard 用之），再 `resolved_base_url = resolve_base_url(&base_url)` 喂 RigLlmClient（FIM/translate shim 用）。manifest 填了 deepseek URL → `resolve_base_url` 见非空原样返回；manifest 空 → 仍回 `DEFAULT_DEEPSEEK_BASE_URL`（defense-in-depth 保留）。顺带修 latent 不一致：原 builder guard 用 raw `cfg.base_url`（空→rig api.openai.com 误用于 deepseek chat 路径），现统一用 manifest-resolved 值。
+
+**落地步骤：**
+1. `crates/providers/providers.toml`：16 非 mock 条目加 `base_url`+`model`（verbatim 取自 config `DEFAULT_*` 常量）；header 注释改"intentionally omitted"→"consumed as fallback"。
+2. `crates/providers/src/lib.rs`：新增 `resolve_with_manifest_default`（`#[cfg(feature="rig")] pub(crate)`）；`build_registry_from` 4 处 register 改 `XFactory::new(base_url, model)`（compat 传 4 参：id/name/base_url/model）。
+3. `crates/providers/src/openai_compat.rs`：`OpenAiCompatFactory` 加 `base_url`+`model: Option<String>` 字段；`new` 扩 4 参；`build()` 用 helper。
+4. `crates/providers/src/openai.rs`：`OpenAiFactory` unit→struct 持两字段 + `new(base_url, model)`；`build()` 用 helper。
+5. `crates/providers/src/anthropic.rs`：同 openai。
+6. `crates/providers/src/deepseek.rs`：同理 + `resolve_base_url` 交互（喂 resolved 值）。
+7. `crates/agent/src/provider/mod.rs`：无改动（`ProviderConfig`/`Factory` trait 不变）。
+8. `ARCHITECTURE.md`：§E4 状态段（:255）补 slice 45（base_url/model populated + consumed）；providers 行（:278）补 manifest 作默认源。
+
+**测试：**（1）`manifest_tests::bundled_manifest_populates_base_url_and_model`（无 rig，每 feature config 跑）：mock 的 base_url/model 为 None；openrouter/ollama/openai/anthropic/deepseek 抽检非空且匹配 `DEFAULT_*` 常量值。（2）helper 单元测试（`manifest_default_tests`，`#[cfg(all(test, feature="rig"))]`）：`resolve_prefers_non_empty_host_value`、`resolve_falls_back_to_manifest_default_when_host_empty`、`resolve_yields_empty_when_both_empty`（含 `Some("")` 当作无默认）。（3）rig-gated factory 测试（同 module，`#[cfg(feature="openai-compat")]`）：`factory_falls_back_to_manifest_default_when_host_empty`（empty cfg + manifest default → `handle.base_url()`/`model()`==manifest）、`factory_host_value_overrides_manifest_default`（非空 cfg→host 值）、`factory_empty_cfg_and_no_manifest_default_falls_through`（都空→`handle.base_url()==""`，rig 编译期默认由 builder 保留）。既有 32 测试全保留。
+
+**验证：** `cargo +1.90.0 build -p codesmith-providers`（default / `--no-default-features` / `--no-default-features --features openai-compat` / `--all-features`）**零 warning**；`cargo +1.90.0 test -p codesmith-providers --all-features --lib` **39 通过**（slice 44 的 32 + 7 新：1 manifest populate + 3 helper unit + 3 compat factory fallback）；`cargo +1.90.0 test -p codesmith-config --lib` 85 通过（未触）；`cargo +1.90.0 build -p codesmith-tui` 绿（`resolve_llm_client` 零回归）；`cargo +1.90.0 build --workspace` 全绿（tui bin 143 warning 均既有死代码，与 baseline 对齐，零新增命中 providers/agent/config）。
+
+**By-design gaps（deferred，documented）：**
+- **config.rs `DEFAULT_*` 常量保留**：host builtin 路径仍用（layering：config 不能依赖 providers 的 bundled manifest）。manifest 与 config 常量并行同值；dedup 需 config 读 manifest 但跨层不可达，留 follow-up。
+- **moonshot kimi-code 变体**（`auth_mode` 条件 URL/model）留 host concern；manifest 只放 primary（`https://api.moonshot.ai/v1` + `kimi-k2.6`）。
+- **flash 模型变体**（`DEFAULT_*_FLASH_MODEL`）留 host 选择；manifest 只放 primary model。
+- **`CODESMITH_PROVIDERS_MANIFEST` env override**：若填 base_url/model，factory 同样消费（override replace 语义不变，slice 44）。
+
+**下一聚焦工作：**
+- §E4 主线闭合（slice 43 schema/loader + slice 44 registry 接线 + slice 45 默认源消费——manifest 现为完整 per-provider 默认源）。后续若有 env override augment 语义或 flash/kimi-code 变体下沉，另开切片。
+- §B3（`ApiProvider`→`ProviderKind`，cosmetic `DeepseekCN` 折叠）、§D2 残件 polish（CLI flag / per-entry `config set` / bare `provider=` 形）维持低优先。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into

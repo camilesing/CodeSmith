@@ -146,17 +146,26 @@ fn build_registry_from(manifest: &ProvidersManifest) -> ProviderRegistry {
         }
         #[cfg(feature = "openai")]
         if desc.backend == FactoryBackend::Openai {
-            registry.register(Arc::new(openai::OpenAiFactory));
+            registry.register(Arc::new(openai::OpenAiFactory::new(
+                desc.base_url.clone(),
+                desc.model.clone(),
+            )));
             continue;
         }
         #[cfg(feature = "anthropic")]
         if desc.backend == FactoryBackend::Anthropic {
-            registry.register(Arc::new(anthropic::AnthropicFactory));
+            registry.register(Arc::new(anthropic::AnthropicFactory::new(
+                desc.base_url.clone(),
+                desc.model.clone(),
+            )));
             continue;
         }
         #[cfg(feature = "deepseek")]
         if desc.backend == FactoryBackend::Deepseek {
-            registry.register(Arc::new(deepseek::DeepSeekFactory));
+            registry.register(Arc::new(deepseek::DeepSeekFactory::new(
+                desc.base_url.clone(),
+                desc.model.clone(),
+            )));
             continue;
         }
         #[cfg(feature = "openai-compat")]
@@ -165,6 +174,8 @@ fn build_registry_from(manifest: &ProvidersManifest) -> ProviderRegistry {
             registry.register(Arc::new(openai_compat::OpenAiCompatFactory::new(
                 id.clone(),
                 name,
+                desc.base_url.clone(),
+                desc.model.clone(),
             )));
             continue;
         }
@@ -183,6 +194,26 @@ fn build_registry_from(manifest: &ProvidersManifest) -> ProviderRegistry {
 #[cfg(feature = "openai-compat")]
 fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_owned().into_boxed_str())
+}
+
+/// Resolve a `ProviderConfig` string field against the manifest default: a
+/// non-empty host value wins; an empty host value falls back to the manifest
+/// default the entry declares (if any); both empty yields an empty string,
+/// letting the rig builder keep its compile-time default. Shared by every
+/// rig-backed factory so the fallback rule lives in one place (ROADMAP §E4 —
+/// the manifest as a source of per-provider `base_url`/`model` defaults).
+#[cfg(feature = "rig")]
+pub(crate) fn resolve_with_manifest_default(
+    cfg_val: &str,
+    manifest: Option<&str>,
+) -> String {
+    if !cfg_val.is_empty() {
+        cfg_val.to_string()
+    } else if let Some(m) = manifest {
+        m.to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Diagnostic factory registered for a manifest entry whose `FactoryBackend`
@@ -352,6 +383,44 @@ mod manifest_tests {
     }
 
     #[test]
+    fn bundled_manifest_populates_base_url_and_model() {
+        // ROADMAP §E4: every non-mock entry declares the per-provider
+        // `base_url` / `model` defaults (mirroring codesmith-config's
+        // `DEFAULT_*` constants), which the factories now consume as a fallback
+        // when the host passes an empty `ProviderConfig` value.
+        let manifest = bundled_manifest();
+
+        // `mock` carries neither — it needs no endpoint.
+        let mock = manifest
+            .providers
+            .iter()
+            .find(|d| d.id == "mock")
+            .expect("mock entry");
+        assert!(mock.base_url.is_none(), "mock should not declare a base_url");
+        assert!(mock.model.is_none(), "mock should not declare a model");
+
+        // Spot-check across backends: the dedicated factories plus the head and
+        // tail of the openai-compat family.
+        #[allow(clippy::type_complexity)]
+        let cases: &[(&str, &str, &str)] = &[
+            ("openai", "https://api.openai.com/v1", "deepseek-v4-pro"),
+            ("anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-5"),
+            ("deepseek", "https://api.deepseek.com/beta", "deepseek-v4-pro"),
+            ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4-pro"),
+            ("ollama", "http://localhost:11434/v1", "deepseek-coder:1.3b"),
+        ];
+        for &(id, expected_base_url, expected_model) in cases {
+            let desc = manifest
+                .providers
+                .iter()
+                .find(|d| d.id.as_str() == id)
+                .unwrap_or_else(|| panic!("missing entry '{id}'"));
+            assert_eq!(desc.base_url.as_deref(), Some(expected_base_url), "{id} base_url");
+            assert_eq!(desc.model.as_deref(), Some(expected_model), "{id} model");
+        }
+    }
+
+    #[test]
     fn default_registry_is_cached() {
         // Same `&'static` ref across calls — the OnceLock half of E4 lazy
         // loading.
@@ -392,5 +461,115 @@ mod manifest_tests {
             msg.contains("--features deepseek"),
             "stub error should name the missing feature: {msg}"
         );
+    }
+}
+
+#[cfg(all(test, feature = "rig"))]
+mod manifest_default_tests {
+    //! Tests for the manifest-as-default-source wiring (ROADMAP §E4): the
+    //! [`resolve_with_manifest_default`] fallback rule, and that a factory's
+    //! `build()` consumes the manifest default when the host passes an empty
+    //! `ProviderConfig` value.
+
+    use super::*;
+    use codesmith_agent::llm_client::RetryConfig;
+    use codesmith_agent::provider::{ProviderConfig, ProviderId};
+    use std::collections::HashMap;
+
+    fn empty_cfg(id: ProviderId) -> ProviderConfig {
+        ProviderConfig {
+            provider: id,
+            api_key: String::from("dummy-key"),
+            base_url: String::new(),
+            default_model: String::new(),
+            retry: RetryConfig::disabled(),
+            http_headers: HashMap::new(),
+            on_retry: None,
+        }
+    }
+
+    // === resolve_with_manifest_default unit tests ===
+
+    #[test]
+    fn resolve_prefers_non_empty_host_value() {
+        assert_eq!(
+            resolve_with_manifest_default("https://host.example/v1", Some("https://manifest/v1")),
+            "https://host.example/v1"
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_manifest_default_when_host_empty() {
+        assert_eq!(
+            resolve_with_manifest_default("", Some("https://manifest/v1")),
+            "https://manifest/v1"
+        );
+    }
+
+    #[test]
+    fn resolve_yields_empty_when_both_empty() {
+        assert_eq!(resolve_with_manifest_default("", None), "");
+        // An empty manifest default (`Some("")`) is treated as no default.
+        assert_eq!(resolve_with_manifest_default("", Some("")), "");
+    }
+
+    // === factory build() integration (openai-compat family) ===
+
+    #[cfg(feature = "openai-compat")]
+    fn openrouter_factory() -> openai_compat::OpenAiCompatFactory {
+        openai_compat::OpenAiCompatFactory::new(
+            ProviderId::from("openrouter"),
+            "openrouter",
+            Some(String::from("https://openrouter.ai/api/v1")),
+            Some(String::from("deepseek/deepseek-v4-pro")),
+        )
+    }
+
+    #[cfg(feature = "openai-compat")]
+    #[test]
+    fn factory_falls_back_to_manifest_default_when_host_empty() {
+        let factory = openrouter_factory();
+        let handle = factory
+            .build(&empty_cfg(ProviderId::from("openrouter")))
+            .expect("build should succeed (rig constructs the client with no network)");
+        assert_eq!(handle.base_url(), "https://openrouter.ai/api/v1");
+        assert_eq!(handle.model(), "deepseek/deepseek-v4-pro");
+    }
+
+    #[cfg(feature = "openai-compat")]
+    #[test]
+    fn factory_host_value_overrides_manifest_default() {
+        let factory = openrouter_factory();
+        let cfg = ProviderConfig {
+            provider: ProviderId::from("openrouter"),
+            api_key: String::from("dummy-key"),
+            base_url: String::from("https://custom.example/v1"),
+            default_model: String::from("custom-model"),
+            retry: RetryConfig::disabled(),
+            http_headers: HashMap::new(),
+            on_retry: None,
+        };
+        let handle = factory.build(&cfg).expect("build should succeed");
+        assert_eq!(handle.base_url(), "https://custom.example/v1");
+        assert_eq!(handle.model(), "custom-model");
+    }
+
+    #[cfg(feature = "openai-compat")]
+    #[test]
+    fn factory_empty_cfg_and_no_manifest_default_falls_through() {
+        // No manifest default + empty host → the resolved value stays empty,
+        // so the rig builder keeps its compile-time default. The adapter still
+        // surfaces the (empty) resolved value as before.
+        let factory = openai_compat::OpenAiCompatFactory::new(
+            ProviderId::from("acme-llm"),
+            "acme-llm",
+            None,
+            None,
+        );
+        let handle = factory
+            .build(&empty_cfg(ProviderId::from("acme-llm")))
+            .expect("build should succeed");
+        assert_eq!(handle.base_url(), "");
+        assert_eq!(handle.model(), "");
     }
 }

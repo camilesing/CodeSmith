@@ -15,8 +15,22 @@ use rig_core::providers::anthropic;
 
 use crate::rig_adapter::{AnthropicShaper, RigLlmClient, build_header_map};
 
-/// Factory for the Anthropic (Claude) provider.
-pub struct AnthropicFactory;
+/// Factory for the Anthropic (Claude) provider. Carries the manifest-sourced
+/// `base_url` / `model` defaults it falls back to when the host passes an empty
+/// `ProviderConfig` value.
+pub struct AnthropicFactory {
+    base_url: Option<String>,
+    model: Option<String>,
+}
+
+impl AnthropicFactory {
+    /// Construct the factory with the manifest defaults for `base_url` /
+    /// `model`. Called by `default_registry` from the `anthropic` entry in
+    /// `providers.toml`.
+    pub(crate) fn new(base_url: Option<String>, model: Option<String>) -> Self {
+        Self { base_url, model }
+    }
+}
 
 impl ProviderFactory for AnthropicFactory {
     fn id(&self) -> ProviderId {
@@ -24,12 +38,18 @@ impl ProviderFactory for AnthropicFactory {
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
+        // Host value wins; empty falls back to the manifest default; both empty
+        // keeps the rig compile-time default.
+        let base_url =
+            crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref());
+        let default_model =
+            crate::resolve_with_manifest_default(&cfg.default_model, self.model.as_deref());
         // rig's AnthropicBuilder defaults to `ANTHROPIC_VERSION_LATEST` and
         // normalises the base_url (strips trailing `/v1`/`/messages`), so we
         // only need to set key + base_url + extra headers.
         let mut builder = anthropic::Client::builder().api_key(cfg.api_key.clone());
-        if !cfg.base_url.is_empty() {
-            builder = builder.base_url(&cfg.base_url);
+        if !base_url.is_empty() {
+            builder = builder.base_url(&base_url);
         }
         builder = builder.http_headers(build_header_map(&cfg.http_headers));
         let client = builder
@@ -38,9 +58,9 @@ impl ProviderFactory for AnthropicFactory {
 
         let adapter = RigLlmClient::new(
             client,
-            cfg.default_model.clone(),
+            default_model,
             AnthropicShaper,
-            cfg.base_url.clone(),
+            base_url,
             Some(cfg.api_key.clone()),
             // Anthropic has no FIM/translate endpoints behind LlmClient.
             None,

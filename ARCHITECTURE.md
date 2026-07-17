@@ -255,7 +255,10 @@ directly (no `Callback` method) once an inline stream reducer replaces
 `accumulate_stream`. E4 (declarative `providers.toml` + lazy loading) has
 landed — slice 43 shipped the schema/loader in `codesmith-config`, slice 44
 wired `default_registry` to the bundled `providers.toml` (externalizing the
-`COMPAT_KINDS` catalog) with a `OnceLock` cache. The framework traits are validated
+`COMPAT_KINDS` catalog) with a `OnceLock` cache, and slice 45 populated the
+`base_url`/`model` columns and made the factories consume them as a fallback
+when the host passes an empty `ProviderConfig` value (so the manifest is a
+complete per-provider default source). The framework traits are validated
 against an inline mock LLM + mock tool (see `crates/agent/src/executor/mod.rs`
 tests) — no `codesmith-providers` dependency required, mirroring the provider
 foundation slice's `mock` sample. The `ToolSpec` adapter is additionally
@@ -275,7 +278,7 @@ the executor that lights up both a mock `Event` channel and a mock `HookHost`
 | `DeepSeekClient::from_parts` (neutral 6-field constructor) | ✅ done | `crates/tui/src/client.rs` |
 | `codesmith-providers` crate + `mock` provider + Cargo features | ✅ done | `crates/providers/` |
 | rig adapter `RigLlmClient<C,S>` impls `LlmClient` | ✅ done | `crates/providers/src/rig_adapter/` |
-| Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done — catalog now declarative (`providers.toml`, §E4) | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs`, `crates/providers/providers.toml` |
+| Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done — catalog now declarative (`providers.toml`, §E4); `base_url`/`model` populated + consumed as manifest-default fallback (§E4 slice 45) | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs`, `crates/providers/providers.toml` |
 | `resolve_llm_client` seeds from `default_registry()` for all non-DeepSeek | ✅ done (§D1 partial) | `crates/tui/src/core/engine.rs` |
 | `AnthropicClient` retired — rig `AnthropicFactory` replaces it (§A2) | ✅ done | `crates/tui/src/client/anthropic.rs` deleted |
 | Parity bridge: reasoning heuristics + `shape_messages` / `shape_max_tokens` | ✅ done | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |

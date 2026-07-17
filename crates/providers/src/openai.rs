@@ -16,8 +16,22 @@ use rig_core::providers::openai;
 
 use crate::rig_adapter::{GenericShaper, RigLlmClient, build_header_map};
 
-/// Factory for the official OpenAI provider (Chat Completions API).
-pub struct OpenAiFactory;
+/// Factory for the official OpenAI provider (Chat Completions API). Carries
+/// the manifest-sourced `base_url` / `model` defaults it falls back to when the
+/// host passes an empty `ProviderConfig` value.
+pub struct OpenAiFactory {
+    base_url: Option<String>,
+    model: Option<String>,
+}
+
+impl OpenAiFactory {
+    /// Construct the factory with the manifest defaults for `base_url` /
+    /// `model`. Called by `default_registry` from the `openai` entry in
+    /// `providers.toml`.
+    pub(crate) fn new(base_url: Option<String>, model: Option<String>) -> Self {
+        Self { base_url, model }
+    }
+}
 
 impl ProviderFactory for OpenAiFactory {
     fn id(&self) -> ProviderId {
@@ -29,12 +43,17 @@ impl ProviderFactory for OpenAiFactory {
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
+        // Host value wins; empty falls back to the manifest default; both empty
+        // keeps the rig compile-time default (api.openai.com/v1).
+        let base_url =
+            crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref());
+        let default_model =
+            crate::resolve_with_manifest_default(&cfg.default_model, self.model.as_deref());
         let mut builder = openai::CompletionsClient::builder().api_key(cfg.api_key.clone());
-        // Only override the rig default (api.openai.com/v1) when the host
-        // resolved a non-empty base_url — an empty string would otherwise
-        // clobber it.
-        if !cfg.base_url.is_empty() {
-            builder = builder.base_url(&cfg.base_url);
+        // Only override the rig default (api.openai.com/v1) when resolved to a
+        // non-empty base_url — an empty string would otherwise clobber it.
+        if !base_url.is_empty() {
+            builder = builder.base_url(&base_url);
         }
         builder = builder.http_headers(build_header_map(&cfg.http_headers));
         let client = builder
@@ -43,9 +62,9 @@ impl ProviderFactory for OpenAiFactory {
 
         let adapter = RigLlmClient::new(
             client,
-            cfg.default_model.clone(),
+            default_model,
             GenericShaper::new("openai"),
-            cfg.base_url.clone(),
+            base_url,
             Some(cfg.api_key.clone()),
             // OpenAI has no FIM/translate endpoints behind LlmClient.
             None,

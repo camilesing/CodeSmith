@@ -15,11 +15,13 @@
 # a generic "not registered" failure.
 #
 # Secrets (`api_key`) deliberately stay out of this catalog — they remain in
-# `config.toml` or the environment. `base_url` / `model` columns are optional
-# on `ProviderDescriptor` but are intentionally omitted here for now: the host
-# remains the authority for resolved base_url / default_model (passed via
-# `ProviderConfig`), and wiring the manifest as a source of per-provider
-# defaults is a follow-up slice.
+# `config.toml` or the environment. `base_url` / `model` are the per-provider
+# defaults the host used to resolve itself (mirroring the `DEFAULT_*` constants
+# in `codesmith-config`); a factory now consumes them as a fallback when the
+# host passes an empty `ProviderConfig.base_url` / `default_model` (custom
+# providers, or a future host that trusts the manifest). A non-empty host value
+# always wins; both empty falls through to the rig compile-time default. `mock`
+# carries neither — it needs no endpoint.
 
 [[providers]]
 id = "mock"
@@ -28,63 +30,95 @@ backend = "mock"
 [[providers]]
 id = "openai"
 backend = "openai"
+base_url = "https://api.openai.com/v1"
+model = "deepseek-v4-pro"
 
 [[providers]]
 id = "anthropic"
 backend = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+model = "claude-sonnet-4-5"
 
 [[providers]]
 id = "deepseek"
 backend = "deepseek"
+base_url = "https://api.deepseek.com/beta"
+model = "deepseek-v4-pro"
 
 [[providers]]
 id = "openrouter"
 backend = "openai-compat"
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-v4-pro"
 
 [[providers]]
 id = "nvidia-nim"
 backend = "openai-compat"
+base_url = "https://integrate.api.nvidia.com/v1"
+model = "deepseek-ai/deepseek-v4-pro"
 
 [[providers]]
 id = "volcengine"
 backend = "openai-compat"
+base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
+model = "DeepSeek-V4-Pro"
 
 [[providers]]
 id = "wanjie-ark"
 backend = "openai-compat"
+base_url = "https://maas-openapi.wanjiedata.com/api/v1"
+model = "deepseek-reasoner"
 
 [[providers]]
 id = "atlascloud"
 backend = "openai-compat"
+base_url = "https://api.atlascloud.ai/v1"
+model = "deepseek-ai/deepseek-v4-flash"
 
 [[providers]]
 id = "xiaomi-mimo"
 backend = "openai-compat"
+base_url = "https://api.xiaomimimo.com/v1"
+model = "mimo-v2.5-pro"
 
 [[providers]]
 id = "novita"
 backend = "openai-compat"
+base_url = "https://api.novita.ai/v1"
+model = "deepseek/deepseek-v4-pro"
 
 [[providers]]
 id = "fireworks"
 backend = "openai-compat"
+base_url = "https://api.fireworks.ai/inference/v1"
+model = "accounts/fireworks/models/deepseek-v4-pro"
 
 [[providers]]
 id = "siliconflow"
 backend = "openai-compat"
+base_url = "https://api.siliconflow.com/v1"
+model = "deepseek-ai/DeepSeek-V4-Pro"
 
 [[providers]]
 id = "moonshot"
 backend = "openai-compat"
+base_url = "https://api.moonshot.ai/v1"
+model = "kimi-k2.6"
 
 [[providers]]
 id = "sglang"
 backend = "openai-compat"
+base_url = "http://localhost:30000/v1"
+model = "deepseek-ai/DeepSeek-V4-Pro"
 
 [[providers]]
 id = "vllm"
 backend = "openai-compat"
+base_url = "http://localhost:8000/v1"
+model = "deepseek-ai/DeepSeek-V4-Pro"
 
 [[providers]]
 id = "ollama"
 backend = "openai-compat"
+base_url = "http://localhost:11434/v1"
+model = "deepseek-coder:1.3b"

@@ -24,22 +24,36 @@ use rig_core::providers::openai;
 use crate::rig_adapter::{GenericShaper, RigLlmClient, build_header_map};
 
 /// Factory for a single OpenAI-compatible builtin provider kind. Identical
-/// construction for every kind; only the `id` (for registry resolution) and
-/// `name` (for `provider_name`) differ — both sourced from the provider's
-/// `providers.toml` entry.
+/// construction for every kind; only the `id` (for registry resolution),
+/// `name` (for `provider_name`), and the manifest-sourced `base_url` / `model`
+/// defaults differ — all sourced from the provider's `providers.toml` entry.
 pub struct OpenAiCompatFactory {
     id: ProviderId,
     name: &'static str,
+    base_url: Option<String>,
+    model: Option<String>,
 }
 
 impl OpenAiCompatFactory {
     /// Construct the factory for a single OpenAI-compatible kind. `id` is the
     /// registry key (parsed via `ProviderId::from`, resolving to the matching
     /// `Builtin(ProviderKind)`); `name` is surfaced through
-    /// `LlmClient::provider_name`. Called by `default_registry` once per
+    /// `LlmClient::provider_name`. `base_url` / `model` are the manifest
+    /// defaults the factory falls back to when the host passes an empty
+    /// `ProviderConfig` value. Called by `default_registry` once per
     /// `openai-compat` entry in `providers.toml`.
-    pub(crate) fn new(id: ProviderId, name: &'static str) -> Self {
-        Self { id, name }
+    pub(crate) fn new(
+        id: ProviderId,
+        name: &'static str,
+        base_url: Option<String>,
+        model: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            base_url,
+            model,
+        }
     }
 }
 
@@ -49,9 +63,15 @@ impl ProviderFactory for OpenAiCompatFactory {
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
+        // Host value wins; empty falls back to the manifest default; both empty
+        // keeps the rig compile-time default (api.openai.com/v1).
+        let base_url =
+            crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref());
+        let default_model =
+            crate::resolve_with_manifest_default(&cfg.default_model, self.model.as_deref());
         let mut builder = openai::CompletionsClient::builder().api_key(cfg.api_key.clone());
-        if !cfg.base_url.is_empty() {
-            builder = builder.base_url(&cfg.base_url);
+        if !base_url.is_empty() {
+            builder = builder.base_url(&base_url);
         }
         builder = builder.http_headers(build_header_map(&cfg.http_headers));
         let client = builder
@@ -60,9 +80,9 @@ impl ProviderFactory for OpenAiCompatFactory {
 
         let adapter = RigLlmClient::new(
             client,
-            cfg.default_model.clone(),
+            default_model,
             GenericShaper::new(self.name),
-            cfg.base_url.clone(),
+            base_url,
             Some(cfg.api_key.clone()),
             None,
         );
