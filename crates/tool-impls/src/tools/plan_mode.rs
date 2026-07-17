@@ -129,7 +129,7 @@ impl ToolSpec for EnterPlanModeTool {
         })?;
 
         // Save the current mode and activate plan mode
-        // The caller (turn_loop) should set pre_plan_mode to the current AppMode name
+        // The caller (the turn loop, in host_executor) should set pre_plan_mode to the current AppMode name
         // before calling this tool, or we capture it here as "Agent" (default).
         if state.pre_plan_mode.is_none() {
             state.pre_plan_mode = Some("Agent".to_string());

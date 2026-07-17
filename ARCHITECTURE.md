@@ -186,8 +186,9 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   over the host's `Event` channel (`event_tx`), not the `Callback`.
   `StopReason` (`NoToolCalls` / `MaxSteps` / `Error`) is the terminal outcome.
 
-What is **not** here yet (later §E slices): absorbing the production
-`Engine` guardrails (formerly in the now-deleted `turn_loop.rs`) into `HostAgentExecutor` — the three
+What is here (§E cutover done): the production `Engine` guardrails (formerly
+in the now-deleted `turn_loop.rs`, retired `handle_deepseek_turn`) absorbed
+into `HostAgentExecutor` — the three
 host→framework bridges are all landed (`ToolSpecAdapter`, `CallbackBridge`,
 `SessionChatHistory`), and the host-side `HostAgentExecutor` runs the bare
 LLM↔tool loop over them with **six guardrails absorbed**: **loop-guard** at
@@ -219,9 +220,9 @@ cache trigger without an LLM call, then auto-compact via an LLM summary when
 breaker that persist across `run` calls; summary-prompt merge, attachment
 reinject, post-compact cleanup, enhancements, working-set pins deferred to
 wire-in). Its four seams (per-step
-pre-request / post-stream / per-tool / post-tool) grow the remaining four
-guardrails (capacity / subagent / early-tool-start / cycle) slice by slice,
-after which `handle_deepseek_turn` retires.
+pre-request / post-stream / per-tool / post-tool) have since grown the
+remaining guardrails too (see the `host_executor.rs` module doc for the full
+set), and `handle_deepseek_turn` retired in the slice 20 §E cutover.
 loop-guard proved `&self` + local state suffices for self-contained
 guardrails; LSP flush proves the `Arc<Mutex<…>>` shape for guardrails needing
 shared mutable state (steer follows the same pattern);
@@ -233,8 +234,7 @@ seam-1 pre-request wholesale-replace shape (clone-then-`compact_messages_safe`,
 the LSP flush (by design):**
 `apply_patch` path derivation is deferred (needs
 `HostServices::preflight_apply_patch_paths`, unreachable from `agent-runtime`
-without the heavy host trait; the live `handle_deepseek_turn` still covers
-it); the synthetic flush message carries no `<turn_meta>` enrichment (the
+without the heavy host trait); the synthetic flush message carries no `<turn_meta>` enrichment (the
 framework path has no turn_meta anywhere yet — cross-cutting host-side
 concern, deferred to its own slice); no `emit_session_updated` for the push
 (consistent with the executor's other message pushes; UI surfacing deferred

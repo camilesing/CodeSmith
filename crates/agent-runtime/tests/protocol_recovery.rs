@@ -32,7 +32,7 @@ use std::fs;
 const ENGINE_SOURCES: &[&str] = &[
     include_str!("../src/engine/mod.rs"),
     include_str!("../src/engine/streaming.rs"),
-    include_str!("../src/engine/turn_loop.rs"),
+    include_str!("../src/engine/host_executor.rs"),
     include_str!("../src/engine/dispatch.rs"),
     include_str!("../src/engine/loop_guard.rs"),
     include_str!("../src/engine/lsp_hooks.rs"),

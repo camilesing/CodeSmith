@@ -252,7 +252,7 @@ impl Session {
     /// (slice 25b §E follow-on) so the executor's tool-result path can populate
     /// the same `Arc<VecDeque>` *during* `run` (while `&mut self.session` is
     /// borrowed by `SessionChatHistory`), mirroring the retired
-    /// `turn_loop.rs:2523-2525` observe site.
+    /// `handle_deepseek_turn` observe site.
     pub fn record_read_file_result(&mut self, input: &Value, output_for_context: &str) {
         record_read_file_result_into(&self.recent_read_files, input, output_for_context);
     }

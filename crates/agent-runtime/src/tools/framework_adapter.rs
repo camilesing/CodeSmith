@@ -9,8 +9,8 @@
 //! `ToolContext` (shared via `Arc`) at construction and exposes the spec as a
 //! framework `Tool`, forwarding metadata and delegating `run` to `execute`.
 //!
-//! This is the "land the bridge" step of ROADMAP §E — the production
-//! `Engine`/`turn_loop` migration onto `AgentExecutor` is a later slice. The
+//! This is the "land the bridge" step of ROADMAP §E — the production `Engine`
+//! migration onto `AgentExecutor` is done (slice 20 §E cutover). The
 //! adapter is purely the executor's `run` path; the richer approval /
 //! parallelism / destructive / defer-loading metadata on `ToolSpec` has no
 //! counterpart in the framework `Tool` (`capabilities` is advisory-only) and

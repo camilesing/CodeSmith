@@ -22,7 +22,7 @@
 //! ## Live callers
 //!
 //! * [`apply_spillover`] — invoked from the engine's tool-execution
-//!   path (`turn_loop.rs`) so any successful tool result over
+//!   path (`host_executor.rs`) so any successful tool result over
 //!   [`SPILLOVER_THRESHOLD_BYTES`] spills to disk and the model
 //!   receives a [`SPILLOVER_HEAD_BYTES`] head plus a pointer footer.
 //! * Boot prune in `main.rs` deletes files older than

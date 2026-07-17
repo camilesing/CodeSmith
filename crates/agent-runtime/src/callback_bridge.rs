@@ -66,9 +66,10 @@
 //! but the production `execute_post_tool_hook` needs `tool_args`, so the pending
 //! stack bridges that too.
 //!
-//! This is the "land the bridge" step of ROADMAP §E — the production
-//! `Engine`/`turn_loop` migration onto `AgentExecutor` (which would construct
-//! this bridge per turn and hand it to the executor) is a later slice. Leaf
+//! This is the "land the bridge" step of ROADMAP §E — the production `Engine`
+//! migration onto `AgentExecutor` is done (slice 20 §E cutover):
+//! `Engine::handle_send_message` constructs this bridge per turn and hands it
+//! to `HostAgentExecutor`. Leaf
 //! types (`ToolResult` / `ToolError`) are already shared via `codesmith-tools`,
 //! so `Event::ToolCallComplete { result }` type-checks with no translation.
 //!

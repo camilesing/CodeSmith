@@ -2,7 +2,10 @@
 //! (ROADMAP §E "接真引擎"). It replaced the retired `handle_deepseek_turn`
 //! (~2.4k lines) in the slice 20 §E cutover — `Engine::handle_send_message`
 //! now routes through [`HostAgentExecutor`], and `handle_deepseek_turn` is
-//! deleted.
+//! deleted. Provenance comments below that attribute behavior to
+//! `handle_deepseek_turn` mirror the retired fn; its full ~2.4k-line body is
+//! viewable via `git show ab4f4fc5:crates/agent-runtime/src/engine/turn_loop.rs`
+//! (the file itself was deleted in slice 49).
 //!
 //! The framework-core [`DefaultAgentExecutor`](codesmith_agent::executor::DefaultAgentExecutor)
 //! is the minimal, host-agnostic reference loop. [`HostAgentExecutor`] is the
@@ -29,7 +32,7 @@
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
 //!    consecutive failures of the same tool warn / halt the turn. The guard state
 //!    is a local `LoopGuard` that persists across steps within one `run` (matching
-//!    `turn_loop`). This was the proof that local-state guardrails need no
+//!    `handle_deepseek_turn`). This was the proof that local-state guardrails need no
 //!    interior mutability: `&self` suffices, `LoopGuard` is local, and
 //!    `mpsc::Sender::send` takes `&self`.
 //! 2. **LSP flush** ([`LspProbe`]) — the **first guardrail needing interior
@@ -52,7 +55,7 @@
 //!    executor silently re-issues the SAME request up to
 //!    `MAX_STREAM_RETRIES` (3) times before propagating the failure, mirroring
 //!    `handle_deepseek_turn`'s outer "stream died with nothing" retry
-//!    (`turn_loop.rs:1152-1190`). A stream that dies *after* content was
+//!    (`handle_deepseek_turn`). A stream that dies *after* content was
 //!    received returns `Partial` — the partial content is surfaced (not
 //!    retried), mirroring production's `any_content_received` guard. A healthy
 //!    round resets the budget. The retry counter is a local `u32` that
@@ -65,7 +68,7 @@
 //!    each step (before the LLM request), queued steers are drained via
 //!    `try_recv` and each becomes a `user` message in the transcript so the
 //!    model re-reads them on this step's request — mirroring
-//!    `handle_deepseek_turn`'s top-of-loop drain (`turn_loop.rs:300-317`).
+//!    `handle_deepseek_turn`'s top-of-loop drain.
 //!    The receiver is `Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>`
 //!    — interior-mutable because [`AgentExecutor::run`] is `&self` while
 //!    `try_recv` takes `&mut self` (same pattern as the LSP flush's `pending`
@@ -85,7 +88,7 @@
 //!    blocks on the approval-decision channel, matching by wire tool id (stale
 //!    decisions for other ids are dropped) — mirroring
 //!    `handle_deepseek_turn`'s per-tool approval flow
-//!    (`turn_loop.rs:2283-2371`). A denied call never runs the tool and feeds
+//!    (`handle_deepseek_turn`). A denied call never runs the tool and feeds
 //!    back a `permission_denied` error so the model can react (the turn
 //!    continues). The receiver is
 //!    `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>` —
@@ -102,7 +105,7 @@
 //!    keeps the transcript within the model's context window. At the top of
 //!    each step (after steer drain, before the LSP flush), the executor runs a
 //!    two-stage shrink mirroring `handle_deepseek_turn`'s pre-request
-//!    compaction (`turn_loop.rs:378-440`): (a) **micro-compaction** — if the
+//!    compaction (`handle_deepseek_turn`): (a) **micro-compaction** — if the
 //!    accumulated tool-result bytes breach the `32KB` cache trigger,
 //!    [`micro_compact_messages`] rewrites stale tool results to the cleared
 //!    placeholder (no LLM call); then (b) **auto-compaction** — if
@@ -132,7 +135,7 @@
 //!    [`estimate_input_tokens_conservative`] and, if the estimate exceeds the
 //!    provider's input budget ([`context_input_budget_for_provider`]),
 //!    attempts emergency recovery via [`recover_context_overflow`]
-//!    (mirrors `turn_loop.rs:463-489`). The recovery cascade runs
+//!    (mirrors `handle_deepseek_turn`). The recovery cascade runs
 //!    micro-compaction (best-effort, fresh state) → forced full LLM compaction
 //!    (`compact_messages_safe` with `enabled = true`, lowered
 //!    `token_threshold`, zeroed `auto_floor_tokens` — bypassing the
@@ -158,7 +161,7 @@
 //!    code-exec / file-write) — `tokio::spawn`s the tool immediately so its
 //!    result is ready by the time the executor reaches the tool loop, mirroring
 //!    `handle_deepseek_turn`'s `early_tool_start_safe` + `early_tool_tasks`
-//!    map (`turn_loop.rs:975-1135` spawn, `1598-1803` reuse). The tool loop
+//!    map. The tool loop
 //!    pops the task by wire `id`, re-verifies name + input (the model could in
 //!    principle revise args after the block closed), and awaits the
 //!    `JoinHandle` to reuse the result instead of re-running the tool; an
@@ -180,8 +183,8 @@
 //!    turns) are drained via `try_recv` and injected as
 //!    `<codesmith:runtime_event kind="subagent_completion">` user messages
 //!    (the sentinel contract in `prompts/base.md`), then the turn resumes —
-//!    mirroring `handle_deepseek_turn`'s non-blocking completion drain
-//!    (`turn_loop.rs:1317-1397` + the late drain at `1501-1532`). The executor
+//!    mirroring `handle_deepseek_turn`'s non-blocking completion drain.
+//!    The executor
 //!    has no goal-continuation / REPL resume branches (thinking-only is now
 //!    handled as a terminal status — slice 39 §E — not a resume), so this single
 //!    drain site (the `tool_uses.is_empty()` arm) covers both production drains.
@@ -249,7 +252,7 @@
 //!    before the request snapshot) + ✅ **system-prompt refresh** (fold the
 //!    accumulated compaction summary into the per-step snapshot at the top of
 //!    the loop, mirroring production's per-step `Engine::refresh_system_prompt`
-//!    at retired `turn_loop.rs:320` which folds `session.compaction_summary_prompt`
+//!    at retired `handle_deepseek_turn` which folds `session.compaction_summary_prompt`
 //!    — slice 38 §E; the model thus sees a just-produced compaction summary on
 //!    the next step's request within the same turn) + ✅ **compaction**
 //!    (micro-compact stale tool results, then auto-compact via an LLM summary
@@ -363,7 +366,7 @@
 //! ## Known gaps in thinking-only handling (by design)
 //!
 //! - **goal-continuation / inline REPL resume branches deferred** — production's
-//!   `tool_uses.is_empty()` tail (`turn_loop.rs:~1400-1540`) also ran two
+//!   `tool_uses.is_empty()` tail (`handle_deepseek_turn`) also ran two
 //!   *resume* branches before the thinking-only status: **goal-continuation**
 //!   (`goal_continuation_message_if_needed` — inject a continuation prompt and
 //!   resume while an `update_goal` is active, capped at
@@ -378,7 +381,7 @@
 //!   gap: when the model made tool calls but streamed no reasoning, production
 //!   injected a `"(reasoning omitted)"` placeholder `Thinking` block because
 //!   DeepSeek's thinking-mode API requires `reasoning_content` on every
-//!   tool-call assistant message (`turn_loop.rs:1202-1212`). The executor
+//!   tool-call assistant message (`handle_deepseek_turn`). The executor
 //!   persists the finalized blocks verbatim (`finalize_blocks`), so it omits
 //!   the placeholder. A separate gap, not part of thinking-only *handling*
 //!   (which is about a thinking-*only* response), and not addressed here.
@@ -401,7 +404,7 @@
 //!   rejection triggers `try_recover_context_overflow` (emergency compaction);
 //!   on success the step restarts so the request snapshot picks up the
 //!   compacted transcript, and on failure (or a non-context-length error) the
-//!   turn hard-fails (mirrors `turn_loop.rs:620-633`). Only mid-flight stream
+//!   turn hard-fails (mirrors `handle_deepseek_turn`). Only mid-flight stream
 //!   errors (from `reduce_stream`) retry transparently; pre-stream errors are
 //!   either recovered or hard-failed.
 //! - **cancel-token short-circuit** ✅ — production's
@@ -476,7 +479,7 @@
 //!     `partially_sanitize_unicode`, HackerOne #3086545) into
 //!     [`ReinjectProbe::record_read_file_result`], which dedup-by-path + push +
 //!     trim on the shared `Arc<VecDeque<RecentReadFile>>`. Mirrors the retired
-//!     `turn_loop.rs:2523-2525`. No-op when `reinject` is `None` (no probe ⇒ no
+//!     `handle_deepseek_turn`. No-op when `reinject` is `None` (no probe ⇒ no
 //!     `Arc` to write ⇒ the data would never be read by a reinject). The
 //!     `run_compaction` reinject's provider-budget is absorbed ✅ (slice 31 §E)
 //!     — `ReinjectProbe` carries `api_provider` (paired with `model`) and
@@ -555,12 +558,12 @@
 //!   `Session`-internal).
 //! - **reactive seam-2 path absorbed** ✅ — production also triggers
 //!   `recover_context_overflow` when the provider rejects the request with a
-//!   context-length error (`turn_loop.rs:620-633`). This executor now does the
+//!   context-length error (`handle_deepseek_turn`). This executor now does the
 //!   same: `stream_with_transparent_retry` classifies a pre-stream `Err` via
 //!   `is_context_length_error_message` and, on a context-length rejection with
 //!   recovery budget remaining, runs `recover_context_overflow` and signals
 //!   the caller to restart the step. A successful stream open resets the
-//!   recovery budget (mirrors `turn_loop.rs:617`). The budget is bounded by
+//!   recovery budget (mirrors `handle_deepseek_turn`). The budget is bounded by
 //!   `MAX_CONTEXT_RECOVERY_ATTEMPTS` (2) — in practice a second reactive
 //!   recovery in the same turn almost always fails (the first compaction
 //!   leaves a short transcript; re-summarizing the single older summary is a
@@ -613,7 +616,7 @@
 //! - **static-only safety gate** — [`early_start_safe`] checks
 //!   [`Tool::capabilities`] (`ReadOnly` present AND none of
 //!   `{RequiresApproval, ExecutesCode, WritesFiles}`), mirroring the final
-//!   composite clause of `turn_loop::early_tool_start_safe`. Production
+//!   composite clause of `handle_deepseek_turn`'s `early_tool_start_safe`. Production
 //!   additionally checks `metadata.is_read_only &&
 //!   metadata.supports_parallel && !is_interactive && validate_input().is_ok()
 //!   && approval_requirement_for(...) == Auto` plus a tool-catalog allowlist
@@ -656,7 +659,7 @@
 //! - **blocking hold absorbed ✅** — production, when the model returns no
 //!   tool calls *and* no completion is queued *but* children are still running
 //!   (`should_hold_turn_for_subagents(0, running)`), blocks on a `biased
-//!   select!` (`turn_loop.rs:1330-1368`) over cancel / completion `recv().await`
+//!   select!` (`handle_deepseek_turn`) over cancel / completion `recv().await`
 //!   / steer `recv().await`, emitting "Waiting on N sub-agent(s)". This executor
 //!   now mirrors that: the `subagent_api` field supplies `running_count().await`,
 //!   and the steer + subagent receivers are `tokio::sync::Mutex` (matching
@@ -665,11 +668,11 @@
 //!   steer arm resumes mid-turn with the steered text (closing the steer
 //!   post-stream resume gap). Batched completions behind the first `recv()` are
 //!   drained by a `try_recv` loop after the `select!` (mirrors
-//!   `turn_loop.rs:1342-1345`).
+//!   `handle_deepseek_turn`).
 //! - **`ContextPatch` apply deferred** — production drains each completion's
 //!   `context_patch` and applies them **tighten-only** (`auto_approve` /
 //!   `trust_mode` → `false`; loosen attempts rejected) to `Session` +
-//!   `config.trust_mode` (`turn_loop.rs:1373-1388`). `ChatHistory` exposes no
+//!   `config.trust_mode` (`handle_deepseek_turn`). `ChatHistory` exposes no
 //!   `auto_approve` / `trust_mode` setter (host-coupled, same gap class as
 //!   compaction's working-set / cycle-state reinject), so the patches are
 //!   dropped. Production hardcodes `context_patch: None` at every
@@ -683,7 +686,7 @@
 //!   `<turn_meta>`. (The steer / LSP-flush pushes are now enriched ✅ when a
 //!   [`TurnMetaProbe`] is present; the sentinel is deliberately not.)
 //! - **steer mid-stream buffer + post-stream resume absorbed ✅** — production
-//!   declares `pending_steers` before the stream loop (`turn_loop.rs:683`),
+//!   declares `pending_steers` before the stream loop (`handle_deepseek_turn`),
 //!   `try_recv`s into it after every polled event (`:721-731`, emitting "Steer
 //!   input queued"), then flushes at two points: post-stream no-tools (`:1297-
 //!   1307`, flush + resume) and post-tool (`:2632-2637`, flush + fall through).
@@ -752,7 +755,7 @@ use crate::tools::spec::ApprovalRequirement;
 use crate::working_set::WorkingSet;
 
 /// The `ToolResult` fed back when the loop-guard blocks an identical repeat
-/// call (mirrors `turn_loop::loop_guard_block_tool_result`). Duplicated here
+/// call (mirrors `handle_deepseek_turn`'s `loop_guard_block_tool_result`). Duplicated here
 /// rather than imported to keep this slice additive — zero production call-site
 /// changes; a later cleanup can lift it into `loop_guard` proper as the single
 /// source of truth.
@@ -790,7 +793,7 @@ fn requires_approval(caps: &[ToolCapability]) -> bool {
 /// Whether a tool is a safe candidate for **early speculative dispatch**
 /// (early-tool-start, §E): the read-only, parallel-safe, no-approval, no-side-
 /// effect tools whose results can be pre-computed during streaming and reused
-/// at execute time (mirrors `turn_loop::early_tool_start_safe`'s final composite
+/// at execute time (mirrors `handle_deepseek_turn`'s `early_tool_start_safe` final composite
 /// gate). The framework `Tool` trait exposes only `capabilities()`, so this is a
 /// **static approximation**: `ReadOnly` present AND none of `{RequiresApproval,
 /// ExecutesCode, WritesFiles}`. Production additionally checks
@@ -806,16 +809,17 @@ fn early_start_safe(caps: &[ToolCapability]) -> bool {
     read_only && !requires_approval(caps)
 }
 
-/// Cap on the approval intent-summary length (mirrors
-/// `turn_loop::MAX_APPROVAL_INTENT_SUMMARY_CHARS`).
+/// Cap on the approval intent-summary length. (Relocated from the retired
+/// `handle_deepseek_turn`'s `MAX_APPROVAL_INTENT_SUMMARY_CHARS` in the slice
+/// 20 §E cutover; the `turn_loop::` original was deleted in slice 49.)
 const APPROVAL_INTENT_SUMMARY_MAX_CHARS: usize = 2_000;
 
 /// Extract the model's preceding text this step as an approval "intent summary"
 /// — the *why* shown in the approval view before the *what*. Joins the step's
-/// `Text` blocks and caps the length. Mirrors `turn_loop::approval_intent_summary`
-/// (which takes an already-extracted `&str`); duplicated here to keep this slice
-/// additive (a later cleanup can lift the turn-loop helper to `pub(super)` as the
-/// single source, same as the `block_tool_result` dedup note above).
+/// `Text` blocks and caps the length. (Relocated from the retired
+/// `handle_deepseek_turn`'s `approval_intent_summary` in the slice 20 §E cutover;
+/// the `turn_loop::` original was deleted in slice 49 — this is now the single
+/// source.)
 fn approval_intent_summary(content: &[ContentBlock]) -> Option<String> {
     let mut text = String::new();
     for block in content {
@@ -837,7 +841,7 @@ fn approval_intent_summary(content: &[ContentBlock]) -> Option<String> {
 
 /// Decide whether the turn should hold (block) for still-running sub-agents
 /// when the non-blocking completion drain found nothing (mirrors
-/// `turn_loop.rs:2846-2848`). Hold fires when there are already-queued
+/// `handle_deepseek_turn`). Hold fires when there are already-queued
 /// completions OR children still running — so the turn waits for a child to
 /// finish rather than ending prematurely.
 fn should_hold_turn_for_subagents(
@@ -849,7 +853,7 @@ fn should_hold_turn_for_subagents(
 
 /// Decide whether to surface the "thinking-only" status at the clean
 /// no-tool-calls tail (issue #1727). Mirrors the retired
-/// `turn_loop.rs:2893-2901` pure helper exactly: emit only on a *clean* end —
+/// `handle_deepseek_turn` pure helper exactly: emit only on a *clean* end —
 /// tool uses empty, no turn error already surfaced, not cancelled, no pending
 /// steers (the turn is about to resume), not holding for sub-agents (the turn
 /// is held open). Any of those suppresses the notice so a resume path or an
@@ -946,7 +950,7 @@ impl LspProbe {
 /// Bundles the compaction collaborators the executor needs for the per-step
 /// auto-compaction guardrail (§E, mirroring `Engine`'s seam-1 micro-compact +
 /// `compact_messages_safe` auto-compaction at the top of
-/// `handle_deepseek_turn`'s loop — `turn_loop.rs:341-454`).
+/// `handle_deepseek_turn`'s loop).
 ///
 /// Carries two **interior-mutable** state slots —
 /// `micro_state` and `circuit_breaker`, both `Arc<std::sync::Mutex<…>>` —
@@ -1027,7 +1031,7 @@ pub struct ReinjectProbe {
     recent_read_files: Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
     /// Model id used by [`compact_tool_result_for_context`] (model-dependent
     /// context limits) when observing a `read_file` result into
-    /// `recent_read_files`. Mirrors the retired `turn_loop.rs` call
+    /// `recent_read_files`. Mirrors the retired `handle_deepseek_turn`'s call
     /// `compact_tool_result_for_context(&self.session.model, …)`.
     model: String,
     /// Provider kind used with [`model`](Self::model) to compute the
@@ -1098,7 +1102,7 @@ impl ReinjectProbe {
 ///
 /// The probe itself is stateless — the per-run recovery counter
 /// (`context_recovery_attempts`) lives as a local in [`HostAgentExecutor::run_inner`],
-/// matching the production per-turn counter (`turn_loop.rs:292`). The forced
+/// matching the production per-turn counter (`handle_deepseek_turn`). The forced
 /// compaction inside [`HostAgentExecutor::recover_context_overflow`] uses a
 /// local [`MicroCompactState`] (best-effort pass; the persistent micro-compact
 /// state lives on [`CompactionProbe`] if present).
@@ -1242,10 +1246,10 @@ enum CapacityPreflight {
     Proceed,
     /// Over budget, emergency recovery succeeded — restart the step so the
     /// request snapshot picks up the compacted transcript (mirrors
-    /// `turn_loop.rs:484` `continue`).
+    /// `handle_deepseek_turn` `continue`).
     RetryStep,
     /// Over budget, recovery budget exhausted — hard-fail the turn (mirrors
-    /// `turn_loop.rs:466-470`).
+    /// `handle_deepseek_turn`).
     Fail(String),
 }
 
@@ -1292,7 +1296,7 @@ fn finalize_tool_input(input_buf: &str, start_input: &serde_json::Value) -> serd
 /// execute time the executor pops the task by wire `id`, re-verifies the
 /// name + input (the model could in principle revise args after the block
 /// closed), and awaits the `JoinHandle` to reuse the result instead of
-/// re-running the tool (mirrors `turn_loop`'s `early_tool_tasks` map +
+/// re-running the tool (mirrors `handle_deepseek_turn`'s `early_tool_tasks` map +
 /// `EarlyToolTask`).
 ///
 /// `Drop` aborts the spawned task so an unreused / orphaned task (e.g. a
@@ -1398,15 +1402,14 @@ enum StreamReduceOutcome {
         /// Token usage captured for this stream (slice 21 §E):
         /// `MessageStart` sets input tokens, `MessageDelta` overwrites with
         /// the latest cumulative usage (replace-within-stream — mirrors the
-        /// retired `turn_loop.rs:838` / `:1137-1141`). The caller adds it to
-        /// the per-turn total (mirrors `turn_loop.rs:1193`
-        /// `turn.add_usage`).
+        /// retired `handle_deepseek_turn`). The caller adds it to the per-turn
+        /// total (mirrors `handle_deepseek_turn`'s `turn.add_usage`).
         usage: Usage,
     },
     /// The stream produced content (text/thinking/tool deltas arrived) and
     /// then died mid-flight. The partial content assembled so far is available
     /// — the caller should surface it (not retry), matching production's
-    /// `any_content_received` guard (`turn_loop.rs:764-834`: once the user has
+    /// `any_content_received` guard (`handle_deepseek_turn`: once the user has
     /// seen output, retrying double-bills and loses the partial turn).
     Partial {
         content: Vec<ContentBlock>,
@@ -1443,14 +1446,13 @@ enum StreamRoundOutcome {
     /// A pre-stream context-length rejection was classified (via
     /// [`is_context_length_error_message`]) and emergency compaction succeeded
     /// — the caller should `continue` the step loop so the request snapshot
-    /// picks up the compacted transcript (mirrors `turn_loop.rs:631-632`).
+    /// picks up the compacted transcript (mirrors `handle_deepseek_turn`).
     RecoveredContextOverflow,
     /// The turn was cancelled during the stream phase (Checkpoint B race at
     /// stream-open, Checkpoint C guard in the transparent-retry `Empty` arm,
     /// or Checkpoint D post-stream gate). The caller should surface
     /// [`StopReason::Interrupted`] — mirroring production's
-    /// `TurnOutcomeStatus::Interrupted` (`turn_loop.rs:294-298`, `:607-614`,
-    /// `:1147-1150`).
+    /// `TurnOutcomeStatus::Interrupted` (`handle_deepseek_turn`).
     Interrupted,
 }
 
@@ -1528,7 +1530,7 @@ pub struct HostAgentExecutor {
     /// `<codesmith:runtime_event kind="subagent_completion">` user messages
     /// (the sentinel contract documented in `prompts/base.md`), then the turn
     /// resumes — mirroring `handle_deepseek_turn`'s non-blocking completion
-    /// drain (`turn_loop.rs:1317-1397`). The **blocking hold** for
+    /// drain (`handle_deepseek_turn`). The **blocking hold** for
     /// still-running children (`should_hold_turn_for_subagents` + a `biased
     /// select!` over cancel / completion `recv().await` / steer `recv().await`)
     /// is absorbed ✅ — it needs [`SubAgentApi::running_count`] (the
@@ -1571,8 +1573,8 @@ pub struct HostAgentExecutor {
     /// falls back to the static [`requires_approval`] capability gate. When
     /// `Some` (production wire-in), consults
     /// [`ToolDispatcher::approval_requirement_for`] first — mirroring
-    /// production's `registry.approval_requirement_for(..)` (turn_loop.rs
-    /// ~1700). A `Some(Auto)` answer downgrades an `ExecutesCode` tool to
+    /// production's `registry.approval_requirement_for(..)` (`handle_deepseek_turn`).
+    /// A `Some(Auto)` answer downgrades an `ExecutesCode` tool to
     /// no-approval for a specific safe input.
     tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
     /// Optional `<turn_meta>` enrichment probe (slice 22 §E). `None` (default;
@@ -1601,9 +1603,9 @@ pub struct HostAgentExecutor {
     /// Per-turn token usage accumulated across streams (slice 21 §E). The
     /// inline stream reducer ([`reduce_stream`]) captures `MessageStart` +
     /// `MessageDelta` usage (replace-within-stream — the latest cumulative
-    /// value wins, mirroring the retired `turn_loop.rs:838` /
-    /// `:1137-1141`); `run_inner` adds each completed stream's usage here
-    /// (mirrors `turn_loop.rs:1193` `turn.add_usage(&usage)`). The host
+    /// value wins, mirroring the retired `handle_deepseek_turn`);
+    /// `run_inner` adds each completed stream's usage here (mirrors
+    /// `handle_deepseek_turn`'s `turn.add_usage(&usage)`). The host
     /// reads it back via [`HostAgentExecutor::take_usage`] after `run`
     /// returns — the executor is constructed fresh per turn, so there is
     /// no cross-turn leakage. `std::sync::Mutex` (not tokio): accumulation
@@ -1826,7 +1828,7 @@ pub fn new(
     /// Read back the per-turn token usage accumulated by the inline stream
     /// reducer (slice 21 §E). The host calls this after `run` returns to
     /// populate `turn.usage` — the end-of-turn handoff the retired
-    /// `turn_loop.rs:1193` (`turn.add_usage(&usage)`) used to do inline. The
+    /// `handle_deepseek_turn` (`turn.add_usage(&usage)`) used to do inline. The
     /// executor is constructed fresh each turn, so this starts at zero and
     /// reflects only the current turn's streams. Clones under the lock (cheap;
     /// read once).
@@ -1878,7 +1880,7 @@ pub fn new(
     /// system-prompt refresh ([`Self::refresh_system_prompt_snapshot`]) so a
     /// just-produced compaction summary reaches the model on the next step's
     /// request within the same turn (mirrors production's per-step
-    /// `Engine::refresh_system_prompt` at the retired `turn_loop.rs:320`,
+    /// `Engine::refresh_system_prompt` at the retired `handle_deepseek_turn`,
     /// which folds `session.compaction_summary_prompt`).
     fn peek_pending_compaction_summary(&self) -> Option<SystemPrompt> {
         self.pending_compaction_summary
@@ -1892,7 +1894,7 @@ pub fn new(
     /// (seam 1, after `drain_steers` and before `run_compaction`) so the model
     /// sees a compaction summary produced on a prior step's request within the
     /// same turn — matching production's per-step `Engine::refresh_system_prompt`
-    /// (retired `turn_loop.rs:320`, "Ensure system prompt is up to date with
+    /// (retired `handle_deepseek_turn`, "Ensure system prompt is up to date with
     /// latest session states"), which folds `session.compaction_summary_prompt`
     /// into the re-assembled base.
     ///
@@ -2074,7 +2076,7 @@ pub fn new(
     /// `MessageComplete`) **are** synthesized here, at `ContentBlockStart` /
     /// `ContentBlockStop` for text/thinking blocks — letting the host's UI frame
     /// a block before its first delta and mark it done when its last delta
-    /// lands (matching production's `turn_loop.rs:864/874/985/1254`).
+    /// lands (matching production's `handle_deepseek_turn`).
     ///
     /// **Early speculative dispatch (early-tool-start):** when a tool block
     /// reaches `ContentBlockStop`, its input is finalized and — if the tool is
@@ -2082,7 +2084,7 @@ pub fn new(
     /// result is ready by the time the executor reaches the tool loop. The
     /// `JoinHandle` is stored in `early_tasks` keyed by the wire tool id; the
     /// tool loop pops it by id, re-verifies name + input, and awaits it to
-    /// reuse the result (mirrors `turn_loop`'s `early_tool_tasks` map +
+    /// reuse the result (mirrors `handle_deepseek_turn`'s `early_tool_tasks` map +
     /// `early_tool_start_safe`). `Event::ToolCallStarted` is also fired on
     /// `ContentBlockStop` for tool blocks via `StreamDelta::ToolCallStarted`
     /// (carrying the wire id) — the `CallbackBridge` deduplicates this
@@ -2098,9 +2100,9 @@ pub fn new(
         let mut any_content_received = false;
         // Per-stream usage (slice 21 §E): `MessageStart` sets input tokens,
         // `MessageDelta` overwrites with the latest cumulative usage
-        // (replace-within-stream — mirrors the retired `turn_loop.rs:838` /
-        // `:1137-1141`). Returned on `Complete`/`Partial` so the caller adds
-        // it to the per-turn total (mirrors `turn_loop.rs:1193`). `Empty`
+        // (replace-within-stream — mirrors the retired `handle_deepseek_turn`).
+        // Returned on `Complete`/`Partial` so the caller adds it to the
+        // per-turn total (mirrors `handle_deepseek_turn`). `Empty`
         // carries none — a retried stream's partial usage is dropped, matching
         // production's `continue` before `turn.add_usage`.
         let mut usage = Usage {
@@ -2131,12 +2133,12 @@ pub fn new(
 
             // Flip on the first non-MessageStart event — that's the moment we
             // cross from "stream not yet productive" into "the model has billed
-            // for output" (mirrors `turn_loop.rs:770-772`).
+            // for output" (mirrors `handle_deepseek_turn`).
             if !any_content_received && !matches!(event, StreamEvent::MessageStart { .. }) {
                 any_content_received = true;
             }
 
-            // Mid-stream steer buffer (mirrors `turn_loop.rs:721-731`): drain
+            // Mid-stream steer buffer (mirrors `handle_deepseek_turn`): drain
             // any steers that arrived while the stream was producing. These are
             // buffered (not injected mid-stream) and flushed by `run_inner`
             // post-stream / post-tool — without this, steers arriving during the
@@ -2170,7 +2172,7 @@ pub fn new(
                 StreamEvent::MessageStart { message } => {
                     // Replace the running usage with the message's usage
                     // (input tokens + cache tokens arrive here for Anthropic
-                    // / OpenAI). Mirrors the retired `turn_loop.rs:838`
+                    // / OpenAI). Mirrors the retired `handle_deepseek_turn`
                     // `usage = message.usage;`.
                     usage = message.usage;
                 }
@@ -2315,7 +2317,7 @@ pub fn new(
                                 // Early speculative dispatch: if the tool is
                                 // early-start-safe (read-only, no approval),
                                 // spawn it now so its result is ready by the
-                                // tool loop (mirrors `turn_loop`'s
+                                // tool loop (mirrors `handle_deepseek_turn`'s
                                 // `early_tool_start_safe` + spawn at
                                 // `ContentBlockStop`). `tokio::spawn` returns
                                 // immediately (non-blocking); the stream keeps
@@ -2348,7 +2350,7 @@ pub fn new(
                 } => {
                     if let Some(u) = delta_usage {
                         // Replace — the latest cumulative usage wins (mirrors
-                        // the retired `turn_loop.rs:1137-1141`
+                        // the retired `handle_deepseek_turn`
                         // `if let Some(u) = delta_usage { usage = u; }`).
                         usage = u;
                     }
@@ -2384,8 +2386,8 @@ pub fn new(
     ///
     /// Re-issue the SAME request up to [`MAX_STREAM_RETRIES`] (3) times before
     /// propagating the failure. This mirrors `handle_deepseek_turn`'s outer
-    /// "stream died with nothing" retry (`turn_loop.rs:1152-1190`). A healthy
-    /// round resets the budget (`turn_loop.rs:1186`), so a bad prior step
+    /// "stream died with nothing" retry (`handle_deepseek_turn`). A healthy
+    /// round resets the budget (`handle_deepseek_turn`), so a bad prior step
     /// doesn't carry over.
     ///
     /// **Reactive context-length recovery (seam 2):** a pre-stream error
@@ -2395,10 +2397,10 @@ pub fn new(
     /// emergency compaction succeeds, the round returns
     /// [`StreamRoundOutcome::RecoveredContextOverflow`] so the caller restarts
     /// the step (the request snapshot picks up the compacted transcript),
-    /// mirroring `turn_loop.rs:620-633`. Other pre-stream errors (connection /
+    /// mirroring `handle_deepseek_turn`. Other pre-stream errors (connection /
     /// auth / timeout) and budget-exhausted / failed-recovery context-length
     /// errors propagate as a hard fail. A successful stream open resets the
-    /// reactive recovery budget (mirrors `turn_loop.rs:617`). The retry and
+    /// reactive recovery budget (mirrors `handle_deepseek_turn`). The retry and
     /// recovery are transparent to the [`Callback`]: `on_llm_start` /
     /// `on_llm_end` fire once per step, and a `Status` event is the only
     /// surfacing (matching production's silent re-issue / recovery).
@@ -2414,7 +2416,7 @@ pub fn new(
     /// (Checkpoint A in `run_inner`) bounds the capacity/reactive `continue`
     /// loops on a cancelled turn. Production's inner mid-flight retry (resetting
     /// the stream *inside* the event loop when no content was received yet,
-    /// `turn_loop.rs:775-834`) is not replicated here; this executor uses the
+    /// `handle_deepseek_turn`) is not replicated here; this executor uses the
     /// simpler outer retry (re-call `create_message_stream`). The two are
     /// functionally equivalent for the retry decision; the inner retry's
     /// advantage is avoiding a redundant `MessageStart` round-trip, which
@@ -2430,7 +2432,7 @@ pub fn new(
         early_tasks: &mut HashMap<String, EarlyToolTask>,
         pending_steers: &mut Vec<String>,
     ) -> Result<StreamRoundOutcome> {
-        /// Cap on transparent stream retries — matches `turn_loop`'s
+        /// Cap on transparent stream retries — matches `handle_deepseek_turn`'s
         /// `MAX_STREAM_RETRIES` (3). One initial attempt + 3 retries = 4 total
         /// `create_message_stream` calls before the failure surfaces.
         const MAX_STREAM_RETRIES: u32 = 3;
@@ -2441,7 +2443,7 @@ pub fn new(
         let cancel_token = self.cancel_token.clone();
         loop {
             // Checkpoint B — stream-open cancel race (mirrors
-            // `turn_loop.rs:607-614`): race the cancel token against
+            // `handle_deepseek_turn`): race the cancel token against
             // `create_message_stream` so a cancelled turn aborts before the
             // stream even opens. `biased` so cancel wins if both are ready.
             // A pre-stream error may be a context-length rejection — classify
@@ -2464,7 +2466,7 @@ pub fn new(
                     Ok(s) => {
                         // The provider accepted the request — the context was
                         // fine. Reset the reactive recovery budget (mirrors
-                        // `turn_loop.rs:617`).
+                        // `handle_deepseek_turn`).
                         *context_recovery_attempts = 0;
                         s
                     }
@@ -2482,7 +2484,7 @@ pub fn new(
                         {
                             // Recovery succeeded — signal the caller to restart
                             // the step so the request snapshot picks up the
-                            // compacted transcript (mirrors `turn_loop.rs:631-632`).
+                            // compacted transcript (mirrors `handle_deepseek_turn`).
                             // Reset the stream-retry budget too (fresh step).
                             *stream_retry_attempts = 0;
                             return Ok(StreamRoundOutcome::RecoveredContextOverflow);
@@ -2500,14 +2502,14 @@ pub fn new(
                     usage,
                 } => {
                     // Checkpoint D — post-stream cancel gate (mirrors
-                    // `turn_loop.rs:1147-1150`): even a cleanly-completed
+                    // `handle_deepseek_turn`): even a cleanly-completed
                     // stream is discarded if the turn was cancelled mid-stream.
                     if self.is_cancelled() {
                         self.emit_status("Request cancelled".to_string()).await;
                         return Ok(StreamRoundOutcome::Interrupted);
                     }
                     // Healthy round → reset the retry budget so a bad prior
-                    // step doesn't carry over (mirrors `turn_loop.rs:1186`).
+                    // step doesn't carry over (mirrors `handle_deepseek_turn`).
                     *stream_retry_attempts = 0;
                     return Ok(StreamRoundOutcome::Content { content, stop_reason, usage });
                 }
@@ -2528,7 +2530,7 @@ pub fn new(
                     // partial content, don't retry (the model has billed for
                     // output; retrying would double-bill and lose the partial
                     // turn). Reset the budget so a bad prior step doesn't
-                    // carry over (mirrors `turn_loop.rs:1186`).
+                    // carry over (mirrors `handle_deepseek_turn`).
                     *stream_retry_attempts = 0;
                     self.emit_status(format!(
                         "Stream interrupted after partial content; surfacing what was received: {error}"
@@ -2567,7 +2569,7 @@ pub fn new(
     /// request with a context-length error (classified via
     /// [`is_context_length_error_message`]), run emergency compaction via
     /// [`recover_context_overflow`] and signal the caller to restart the step
-    /// — mirrors `turn_loop.rs:622-632`. Returns `true` only when **all** of:
+    /// — mirrors `handle_deepseek_turn`. Returns `true` only when **all** of:
     /// a [`CapacityProbe`] is present, the error is a context-length
     /// rejection, the recovery budget (`*context_recovery_attempts` bounded by
     /// [`MAX_CONTEXT_RECOVERY_ATTEMPTS`]) allows, the model's budget is known,
@@ -2577,9 +2579,9 @@ pub fn new(
     /// the turn: a non-context-length error (connection / auth / timeout), a
     /// missing probe (capacity disabled), an unknown model (no budget to judge
     /// recovery against), or budget exhaustion all propagate as a hard fail.
-    /// On success the budget is incremented (mirrors `turn_loop.rs:631`); the
+    /// On success the budget is incremented (mirrors `handle_deepseek_turn`); the
     /// reset lives in [`stream_with_transparent_retry`] on a successful stream
-    /// open (`turn_loop.rs:617`).
+    /// open (`handle_deepseek_turn`).
     ///
     /// In practice a second reactive recovery in the same turn almost always
     /// fails: the first compaction leaves a short transcript (summary + recent
@@ -2672,7 +2674,7 @@ pub fn new(
 
     /// (3) per-tool observe seam — record a successful `read_file` output into
     /// the shared `recent_read_files` queue so a later compaction can re-inject
-    /// a concise reminder. Mirrors the retired `turn_loop.rs:2523-2525`:
+    /// a concise reminder. Mirrors the retired `handle_deepseek_turn`:
     ///
     /// ```text
     /// let output_for_context = compact_tool_result_for_context(&model, name, &output);
@@ -2741,7 +2743,7 @@ pub fn new(
     /// (1) per-step pre-request seam — drain queued steer inputs into the
     /// transcript as `user` messages so the model sees them before its next
     /// request. Mirrors `handle_deepseek_turn`'s top-of-loop steer drain
-    /// (`turn_loop.rs:300-317`): `try_recv` loop → trim → skip-empty → push a
+    /// (`handle_deepseek_turn`): `try_recv` loop → trim → skip-empty → push a
     /// `user` message → emit status. `try_recv` is non-blocking — this only
     /// drains what's already queued; it never waits for new input.
     ///
@@ -2785,7 +2787,7 @@ pub fn new(
     /// push). No status — "Steer input queued" was already emitted during
     /// buffering in [`reduce_stream`](Self::reduce_stream). Returns the count
     /// flushed so callers can decide whether to resume the turn. Mirrors
-    /// production's `pending_steers.drain(..)` at `turn_loop.rs:1297-1307`
+    /// production's `pending_steers.drain(..)` at `handle_deepseek_turn`
     /// (post-stream no-tools — caller resumes on a fresh step) and
     /// `:2632-2637` (post-tool — caller falls through to the next step).
     fn flush_pending_steers(
@@ -2973,7 +2975,7 @@ pub fn new(
     }
 
     /// `handle_deepseek_turn`'s top-of-loop compaction
-    /// (`turn_loop.rs:341-454`): a cheap no-API micro-compact pass (clear old
+    /// (`handle_deepseek_turn`): a cheap no-API micro-compact pass (clear old
     /// tool-result bytes) followed, when the token budget is exceeded, by an
     /// LLM summary compaction that replaces the transcript with the pinned
     /// recent tail + summary. Placed after the steer drain and before the LSP
@@ -3012,7 +3014,7 @@ pub fn new(
         }
         // Circuit breaker: a tripped breaker (too many compaction failures)
         // throttles auto-compaction until the recovery timeout elapses. Mirrors
-        // `turn_loop.rs:371` (`session.circuit_breaker.should_attempt()`).
+        // `handle_deepseek_turn` (`session.circuit_breaker.should_attempt()`).
         {
             let mut breaker = probe.circuit_breaker.lock().expect("poisoned");
             if !breaker.should_attempt() {
@@ -3022,7 +3024,7 @@ pub fn new(
 
         // Phase 1 — micro-compaction (no API call): clear content from old
         // tool results (file reads, shell output, …) when a time/byte trigger
-        // fires. Mirrors `turn_loop.rs:341-359`. `ChatHistory::messages()` is
+        // fires. Mirrors `handle_deepseek_turn`. `ChatHistory::messages()` is
         // `&[Message]` (immutable), so clone → mutate → clear+repush.
         {
             let mut state = probe.micro_state.lock().expect("poisoned");
@@ -3050,7 +3052,7 @@ pub fn new(
         }
 
         // Phase 2 — auto-compaction (LLM summary). Gate on `should_compact`
-        // (mirrors `turn_loop.rs:380`) BEFORE calling `compact_messages_safe`:
+        // (mirrors `handle_deepseek_turn`) BEFORE calling `compact_messages_safe`:
         // the safe wrapper does NOT early-return when under threshold, so
         // without this gate it would summarize an in-budget transcript.
         if !should_compact(
@@ -3294,7 +3296,7 @@ pub fn new(
     /// Estimates input tokens and, if the estimate exceeds the provider's
     /// input budget, attempts emergency recovery (forced compaction + hard
     /// trim). Mirrors `handle_deepseek_turn`'s Gate B
-    /// (`turn_loop.rs:463-489`) — the always-on hard token-budget preflight,
+    /// (`handle_deepseek_turn`) — the always-on hard token-budget preflight,
     /// **not** the opt-in `CapacityController` (Gate A, off by default since
     /// v0.8.11 — deferred).
     ///
@@ -3318,7 +3320,7 @@ pub fn new(
             context_input_budget_for_provider(probe.api_provider, &probe.model)
         else {
             // Unknown model ⇒ no budget ⇒ preflight silently disabled
-            // (mirrors `turn_loop.rs:465` — `None` budget skips the gate).
+            // (mirrors `handle_deepseek_turn` — `None` budget skips the gate).
             return CapacityPreflight::Proceed;
         };
         let estimated = estimate_input_tokens_conservative(history.messages(), system);
@@ -3560,7 +3562,7 @@ pub fn new(
     /// supplied, or the user approved) or `Err(denial_message)` to skip the
     /// tool and feed back a `permission_denied` error so the model can react
     /// (mirrors `handle_deepseek_turn`'s per-tool approval flow,
-    /// `turn_loop.rs:2283-2371`).
+    /// `handle_deepseek_turn`).
     ///
     /// The approval requirement is derived statically from [`Tool::capabilities`]
     /// (see [`requires_approval`]); the dynamic per-input override is a by-design
@@ -3583,7 +3585,7 @@ pub fn new(
         // Per-input approval override (slice 20 §E): when a host dispatcher is
         // attached, consult its `approval_requirement_for` first — a `Some`
         // answer downgrades/upgrades the gate per input (mirrors production's
-        // `registry.approval_requirement_for(..)` at turn_loop.rs:1700). `None`
+        // `registry.approval_requirement_for(..)` at handle_deepseek_turn). `None`
         // (no dispatcher, or dispatcher has no opinion) falls back to the
         // static capability gate.
         let approval_required = match self
@@ -3709,7 +3711,7 @@ impl HostAgentExecutor {
         });
 
         // Loop-guard state persists across steps within this run (one
-        // `LoopGuard` per turn, matching `turn_loop`).
+        // `LoopGuard` per turn, matching `handle_deepseek_turn`).
         let mut loop_guard = LoopGuard::default();
         let mut step: u32 = 0;
         // Accumulate tool-call IDs issued this run (slice 33 §E) — feeds the
@@ -3719,16 +3721,16 @@ impl HostAgentExecutor {
         let mut tool_call_ids_this_run: Vec<String> = Vec::new();
         // Transparent stream-retry counter: re-issue the request when the
         // stream dies mid-flight before any content commits (mirrors
-        // `turn_loop.rs:284-292`). Persists across steps within one run;
+        // `handle_deepseek_turn`). Persists across steps within one run;
         // resets to 0 on a healthy round.
         let mut stream_retry_attempts: u32 = 0;
         // Capacity recovery counter: per-turn, bounded by
         // `MAX_CONTEXT_RECOVERY_ATTEMPTS` (2). Increments on each successful
         // emergency compaction; resets to 0 on a healthy stream round
-        // (mirrors `turn_loop.rs:292` + the reset at `:617`).
+        // (mirrors `handle_deepseek_turn`).
         let mut context_recovery_attempts: u8 = 0;
         // Error-escalation tracking (slice 34 §E): consecutive error steps
-        // within one run (mirrors `turn_loop.rs:273`). Persists across steps
+        // within one run (mirrors `handle_deepseek_turn`). Persists across steps
         // within the turn; updated post-tool-loop (production `:2642-2645`).
         // `step_error_count` / `step_error_categories` are per-step (reset each
         // step) and declared inside the loop.
@@ -3740,7 +3742,7 @@ impl HostAgentExecutor {
         // `pub` method the host calls before `run` at the wire-in step.
         loop {
             // Checkpoint A — loop-top cancel gate (mirrors
-            // `turn_loop.rs:294-298`). First thing every iteration: if the
+            // `handle_deepseek_turn`). First thing every iteration: if the
             // turn was cancelled, surface `Interrupted` and bail. This also
             // bounds all `continue` loops (capacity `RetryStep`, reactive
             // `RecoveredContextOverflow`, subagent resume) — a cancel that
@@ -3766,7 +3768,7 @@ impl HostAgentExecutor {
                 return Ok(StopReason::MaxSteps);
             }
             // Steer drain sits at the very top of the loop (mirrors
-            // `turn_loop.rs:300`) — before compaction, the LSP flush, and the
+            // `handle_deepseek_turn`) — before compaction, the LSP flush, and the
             // request snapshot, so steered text reaches the model on this
             // step's request. Drains only what's already queued (`try_recv` is
             // non-blocking); never waits for input.
@@ -3775,7 +3777,7 @@ impl HostAgentExecutor {
             // compaction summary into the per-step snapshot so the model sees a
             // just-produced compaction summary on THIS step's request (mirrors
             // production's per-step `Engine::refresh_system_prompt` at retired
-            // `turn_loop.rs:320`, "Ensure system prompt is up to date with
+            // `handle_deepseek_turn`, "Ensure system prompt is up to date with
             // latest session states", which folds
             // `session.compaction_summary_prompt`). Sits after the steer drain
             // and before `run_compaction` — matching production's
@@ -3786,13 +3788,13 @@ impl HostAgentExecutor {
             // non-draining (`peek`), so the post-`run` host fold still drains
             // the slot.
             let system = self.refresh_system_prompt_snapshot(base.as_ref());
-            // Auto-compaction mirrors `turn_loop.rs:341-454` (steer →
+            // Auto-compaction mirrors `handle_deepseek_turn` (steer →
             // compaction → … → LSP flush → request). Runs before the LSP
             // flush so a freshly-collected diagnostic message (pushed by the
             // flush below) is not summarized away.
             self.run_compaction(&client, history).await;
             // Capacity preflight (Gate B — always-on hard token-budget check).
-            // Mirrors `turn_loop.rs:463-489`. Runs after compaction so the
+            // Mirrors `handle_deepseek_turn`. Runs after compaction so the
             // estimate reflects the just-compacted transcript; before the LSP
             // flush (matching production order: compaction → capacity → LSP
             // flush → request). If recovery succeeds, `continue` restarts the
@@ -3929,7 +3931,7 @@ impl HostAgentExecutor {
             // dropping it leaks nothing.
             let mut early_tasks: HashMap<String, EarlyToolTask> = HashMap::new();
             // `pending_steers` is per-step: the inline reducer buffers steers
-            // that arrive during streaming (mirrors `turn_loop.rs:683` declaring
+            // that arrive during streaming (mirrors `handle_deepseek_turn` declaring
             // `pending_steers` before the stream loop). Flushed post-stream /
             // post-tool below. On a `continue` (capacity `RetryStep` / reactive
             // `RecoveredContextOverflow`) the stream either never opened or died
@@ -3937,8 +3939,8 @@ impl HostAgentExecutor {
             // vec is empty, so dropping it leaks nothing.
             let mut pending_steers: Vec<String> = Vec::new();
             // Error-escalation tracking (slice 34 §E): per-step tool-error
-            // count + categories (mirrors `turn_loop.rs:2472/2477`). Categorized
-            // from `ToolError` via `ErrorEnvelope::from` (production `:2575-2576`).
+            // count + categories (mirrors `handle_deepseek_turn`). Categorized
+            // from `ToolError` via `ErrorEnvelope::from`.
             // Only `Err(ToolError)` counts — `Ok(ToolResult { success: false })`
             // is a failed result, not a dispatch error (faithful to production).
             let mut step_error_count: usize = 0;
@@ -3958,20 +3960,20 @@ impl HostAgentExecutor {
             {
                 Ok(StreamRoundOutcome::Content { content, stop_reason, usage }) => {
                     // Add this stream's usage to the per-turn total — the
-                    // end-of-stream handoff the retired `turn_loop.rs:1193`
+                    // end-of-stream handoff the retired `handle_deepseek_turn`
                     // (`turn.add_usage(&usage)`) used to do inline; the host
                     // now reads it back via `take_usage` after `run` returns.
                     self.accumulate_usage(&usage);
                     // The reactive recovery budget is reset on a successful
                     // stream open inside `stream_with_transparent_retry`
-                    // (mirrors `turn_loop.rs:617`).
+                    // (mirrors `handle_deepseek_turn`).
                     (content, stop_reason)
                 }
                 Ok(StreamRoundOutcome::RecoveredContextOverflow) => {
                     // Emergency compaction succeeded on a context-length
                     // rejection — restart the step so the request snapshot
                     // picks up the compacted transcript (mirrors
-                    // `turn_loop.rs:631-632`).
+                    // `handle_deepseek_turn`).
                     continue;
                 }
                 Ok(StreamRoundOutcome::Interrupted) => {
@@ -3994,11 +3996,11 @@ impl HostAgentExecutor {
             // status decision to the `tool_uses.is_empty()` tail below —
             // after the steer flush / sub-agent drain resume branches — so a
             // resume never shows a spurious "turn ended" notice (mirrors the
-            // retired `turn_loop.rs:1267-1283` deferred-decide). Keep thinking
+            // retired `handle_deepseek_turn` deferred-decide). Keep thinking
             // for the UI stream events (already emitted during the stream),
             // but persist only sendable assistant turns — DeepSeek chat API
             // rejects assistant messages that contain only a thinking block
-            // (`turn_loop.rs:1286-1293`). slice 39 §E.
+            // (`handle_deepseek_turn`). slice 39 §E.
             let has_sendable_assistant_content = content
                 .iter()
                 .any(|block| matches!(block, ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }));
@@ -4031,7 +4033,7 @@ impl HostAgentExecutor {
                 .extend(tool_uses.iter().map(|(id, _, _)| id.clone()));
 
             if tool_uses.is_empty() {
-                // Mid-stream steer flush (mirrors `turn_loop.rs:1297-1307`):
+                // Mid-stream steer flush (mirrors `handle_deepseek_turn`):
                 // if steers arrived during streaming, flush them and resume the
                 // turn on a fresh step BEFORE checking for sub-agent
                 // completions — production checks `pending_steers` first.
@@ -4042,7 +4044,7 @@ impl HostAgentExecutor {
                 }
                 // Sub-agent completion handoff (seam 2 post-stream resume).
                 // Mirrors `handle_deepseek_turn`'s non-blocking completion drain
-                // (`turn_loop.rs:1317-1397` + the late drain at `1501-1532`):
+                // (main + late drain sites):
                 // when the model finishes a step with no tool calls, surface any
                 // child completions that arrived (queued during inference or
                 // between turns) as `<codesmith:runtime_event
@@ -4071,7 +4073,7 @@ impl HostAgentExecutor {
                             completions.push(c);
                         }
                     }
-                    // Blocking hold (mirrors `turn_loop.rs:1321-1397`): when
+                    // Blocking hold (mirrors `handle_deepseek_turn`): when
                     // the non-blocking drain found nothing but children are
                     // still running, block on a `biased select!` over cancel
                     // / completion `recv().await` / steer `recv().await` until
@@ -4099,7 +4101,7 @@ impl HostAgentExecutor {
                             let mut sub_guard = sub_arc.lock().await;
                             let cancel_token = self.cancel_token.clone();
                             // Checkpoint E — sub-agent blocking-hold cancel
-                            // race (mirrors `turn_loop.rs:1330-1339`).
+                            // race (mirrors `handle_deepseek_turn`).
                             // `biased` so cancel wins if both are ready. The
                             // cancel arm `return`s, the steer arm `continue`s
                             // — only the completion arm falls through to the
@@ -4135,9 +4137,8 @@ impl HostAgentExecutor {
                                 } => {
                                     // Steer arm: inject the steered text as a
                                     // user message and resume the turn on a
-                                    // fresh step (mirrors
-                                    // `turn_loop.rs:1352-1368` + the
-                                    // post-stream resume at `1297-1307`).
+                                    // fresh step (mirrors the retired
+                                    // `handle_deepseek_turn`).
                                     // Closes the "steer post-stream resume"
                                     // gap — steers that arrive during the
                                     // hold are now surfaced immediately
@@ -4167,7 +4168,7 @@ impl HostAgentExecutor {
                             // future was consumed, releasing the borrow on
                             // `sub_guard` — drain any completions batched
                             // behind the first (mirrors
-                            // `turn_loop.rs:1342-1345`).
+                            // `handle_deepseek_turn`).
                             while let Ok(extra) = sub_guard.try_recv() {
                                 completions.push(extra);
                             }
@@ -4207,7 +4208,7 @@ impl HostAgentExecutor {
                 // `flush_pending_steers` → empty; no sub-agent hold → we didn't
                 // `continue`/`return`); the one live check is cancellation (the
                 // cancel status already covers it). Mirrors the retired
-                // `turn_loop.rs:1549-1567`.
+                // `handle_deepseek_turn`.
                 if thinking_only
                     && should_emit_thinking_only_status(
                         true,
@@ -4564,8 +4565,8 @@ impl HostAgentExecutor {
                         }
                     } else if let Err(e) = &o.result {
                         // Error-escalation tracking (slice 34 §E): categorize a
-                        // dispatch error via the shared taxonomy (production
-                        // `:2575-2576`). Only `Err(ToolError)` counts —
+                        // dispatch error via the shared taxonomy (the retired
+                        // `handle_deepseek_turn`). Only `Err(ToolError)` counts —
                         // `Ok(ToolResult { success: false })` is a failed result,
                         // not a dispatch error (faithful to production).
                         let envelope: ErrorEnvelope = e.clone().into();
@@ -4597,7 +4598,7 @@ impl HostAgentExecutor {
             // is consumed or aborted within the loop, so this is defensive.
             early_tasks.clear();
 
-            // Mid-stream steer flush (mirrors `turn_loop.rs:2632-2637`): push
+            // Mid-stream steer flush (mirrors `handle_deepseek_turn`): push
             // any steers that arrived during streaming into the transcript
             // before the next step. Steers that arrive during the last step
             // before `MaxSteps` would otherwise be discarded by the next turn's
@@ -4653,7 +4654,7 @@ impl HostAgentExecutor {
                         .await;
                         // §E slice 3a: mid-loop transcript reset for
                         // `VerifyAndReplan`. Mirror production's
-                        // `turn.next_step(); continue;` (turn_loop.rs:2628) —
+                        // `turn.next_step(); continue;` (handle_deepseek_turn) —
                         // skip the per-step (4) seam + error-escalation +
                         // `on_step`; the loop-top cancel gate (Checkpoint A)
                         // catches cancellations next iteration, and the
@@ -4697,7 +4698,7 @@ impl HostAgentExecutor {
 
             // (4) per-step post-tool seam — ✅ cancel-token (Checkpoint G:
             // post-loop final gate — cancel takes priority over loop-guard
-            // halt, mirroring `turn_loop.rs:2665-2671` where cancel is
+            // halt, mirroring `handle_deepseek_turn` where cancel is
             // checked before `turn_error`); ✅ loop-guard halt; ✅ capacity
             // post-tool checkpoint (opt-in `CapacityController` Gate A
             // absorbed slice 33 §E, post-run application); ✅ error-escalation
@@ -4734,7 +4735,7 @@ impl HostAgentExecutor {
             // slice 3a §E resets the transcript mid-loop here (same
             // `reset_history_to_latest_user_and_verified` + `step += 1; continue;`
             // as seam 4), mirroring production's `turn.next_step(); continue;`
-            // (turn_loop.rs:2658). The slot stays set so post-`run` state work
+            // (handle_deepseek_turn). The slot stays set so post-`run` state work
             // runs with `skip_transcript = true`.
             consecutive_tool_error_steps = if step_error_count > 0 {
                 consecutive_tool_error_steps.saturating_add(1)
@@ -6325,8 +6326,8 @@ mod tests {
     //
     // The production `handle_deepseek_turn` silently re-issues a request when
     // the chunked-transfer stream dies mid-flight before any content was
-    // committed (the #103 "stream died with nothing" retry, `turn_loop.rs`
-    // :1152). `HostAgentExecutor` absorbs that at the (2) post-stream seam:
+    // committed (the #103 "stream died with nothing" retry).
+    // `HostAgentExecutor` absorbs that at the (2) post-stream seam:
     // `accumulate_stream` returns `Err` on the first erroring stream item
     // (dropping any partial blocks — so an `Err` means "no actionable content
     // committed"), and the executor re-sends the same request up to
@@ -6570,7 +6571,7 @@ mod tests {
     // === steer (seam 1) ==================================================
     //
     // The production `handle_deepseek_turn` drains queued steer inputs at the
-    // very top of each step (`turn_loop.rs:300-317`) — before the LLM request
+    // very top of each step (`handle_deepseek_turn`) — before the LLM request
     // snapshot — so the user's in-flight text reaches the model this step.
     // `HostAgentExecutor` absorbs that at the (1) pre-request seam:
     // `drain_steers` does a non-blocking `try_recv` loop, trimming and pushing
@@ -8179,7 +8180,7 @@ mod tests {
     /// request still carries the base snapshot (the refresh sits before
     /// `run_compaction`, so the summary produced during step 0 isn't folded
     /// until step 1) — matching production's per-step `Engine::refresh_system_prompt`
-    /// (retired `turn_loop.rs:320`, refresh-before-compaction ⇒ the model sees a
+    /// (retired `handle_deepseek_turn`, refresh-before-compaction ⇒ the model sees a
     /// summary the step *after* it is produced, not the same step).
     #[tokio::test]
     async fn system_prompt_refresh_folds_compaction_summary_next_step() {
@@ -8515,7 +8516,7 @@ mod tests {
 
     /// Slice 39 §E: the pure decision helper emits the "thinking-only"
     /// status only on a genuinely clean end — mirroring the retired
-    /// `turn_loop.rs:3121-3184` (issue #1727). Each suppression condition
+    /// `handle_deepseek_turn` (issue #1727). Each suppression condition
     /// (tool uses pending, turn error already shown, cancelled, steer
     /// pending, sub-agents running) flips the result to `false`. Production
     /// pinned exactly these six cases at the helper level (it had no
@@ -8593,7 +8594,7 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
 
         // The thinking-only assistant turn is NOT persisted — only the
-        // seeded user message remains (mirrors `turn_loop.rs:1286-1293`).
+        // seeded user message remains (mirrors `handle_deepseek_turn`).
         assert_eq!(
             history.len(),
             1,
@@ -10099,7 +10100,7 @@ mod tests {
     // the stream opens, the executor classifies it (`is_context_length_error_message`)
     // and triggers `recover_context_overflow`, then restarts the step so the
     // request snapshot picks up the compacted transcript (mirrors
-    // `turn_loop.rs:620-633`). `MockRound::StreamOpenErr` makes
+    // `handle_deepseek_turn`). `MockRound::StreamOpenErr` makes
     // `create_message_stream` itself return `Err` (a pre-stream rejection),
     // distinct from `StreamErr` (mid-flight death → transparent retry).
 
@@ -14206,7 +14207,7 @@ mod tests {
     }
 
     /// Multiple completions batched behind the first are drained by the
-    /// `try_recv` loop after `recv()` returns (mirrors `turn_loop.rs:1342-1345`).
+    /// `try_recv` loop after `recv()` returns (mirrors `handle_deepseek_turn`).
     /// All three are injected as sentinel messages.
     #[tokio::test]
     async fn subagent_hold_drains_batched_completions() {

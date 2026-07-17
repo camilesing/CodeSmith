@@ -13,9 +13,9 @@
 //!
 //! This is the third and last host→framework bridge (after `ToolSpecAdapter`
 //! and `CallbackBridge`) — the "land the bridge" step of ROADMAP §E. The
-//! production `Engine`/`turn_loop` migration onto `AgentExecutor` (which would
-//! construct this adapter per turn and pass it to the executor) is a later
-//! slice.
+//! production `Engine` migration onto `AgentExecutor` is done (slice 20 §E
+//! cutover): `Engine::handle_send_message` constructs this adapter per turn
+//! and passes it to `HostAgentExecutor`.
 //!
 //! ## Scope
 //!

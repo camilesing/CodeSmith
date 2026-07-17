@@ -26,7 +26,7 @@
 //! tighten the parent's copy. For those, [`SubAgentCompletion::context_patch`]
 //! carries an optional [`crate::subagent::ContextPatch`] that the parent turn
 //! loop drains and applies **tighten-only** after each completion batch
-//! (`engine::turn_loop`). A child may tighten (`auto_approve = Some(false)`);
+//! (`host_executor`). A child may tighten (`auto_approve = Some(false)`);
 //! an attempt to loosen (`Some(true)`) is rejected and warn-logged.
 #![allow(dead_code)]
 

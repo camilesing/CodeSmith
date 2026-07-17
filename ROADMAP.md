@@ -2272,14 +2272,42 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` **零 warning**（删文件 + crate 内搬运，无新 surface）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` **163 通过**（relocated 测试现归 host_executor；pre-relocation 162 + 1 搬入）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` **1149 通过 + 2 ignored，0 failed**（测试模块间搬移、非删除，总数 1151 不变）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui core::engine::tests` **126 通过 + 1 ignored**（6 `messages_with_turn_metadata` 调用点不变）；`cargo +1.90.0 build --workspace` 全绿（`codesmith-tui` 142 warning 为 slice 47 baseline、非本切片新增）；grep 核实 `mod turn_loop` / `use ...turn_loop` **零命中**（仅余 1 处 `//!` doc comment provenance 引用 `turn_loop::early_tool_start_safe`，属 slice 48 已建档 doc-debt）。
 
 **By-design gaps（deferred，documented）：**
-- **~104 历史 provenance 引用保留**：见上 "关键设计决策"。删 `turn_loop.rs` 扩展 staleness 但 slice 48 policy 覆盖（provenance > line 准确性）。未来 dedicated doc-debt 切片可重写这 ~104 条注释 + ARCHITECTURE.md:189 broader 段——非阻塞。
-- **ARCHITECTURE.md:189 broader 段**：本切片仅修 `turn_loop.rs` mention 保可读，全段（pre-slice-11 "not here yet" framing）重写为单独 doc-debt。
+- **~104 历史 provenance 引用保留**：见上 "关键设计决策"。删 `turn_loop.rs` 扩展 staleness 但 slice 48 policy 覆盖（provenance > line 准确性）。~~未来 dedicated doc-debt 切片可重写这 ~104 条注释 + ARCHITECTURE.md:189 broader 段——非阻塞。~~ → slice 50 完成：~106 `turn_loop.rs:NNN`/`turn_loop::item` provenance 注释全部重写为 durable `handle_deepseek_turn` fn-name + one-time `git show ab4f4fc5` pointer，ARCHITECTURE.md:189 broader 段 reframed 为 "What is here (§E cutover done)"。
+- **ARCHITECTURE.md:189 broader 段**：本切片仅修 `turn_loop.rs` mention 保可读，~~全段（pre-slice-11 "not here yet" framing）重写为单独 doc-debt。~~ → slice 50 完成：全段 reframed 为 "What is here (§E cutover done)"，header + L221-224 "remaining four guardrails... after which handle_deepseek_turn retires" + L236 "live handle_deepseek_turn still covers it" 三处 stale 一并修正。
 - **§B3 / §E4 follow-up 不变**：仍低优先 / 按需另开切片（slice 48 framing 不变）。
 
 **下一聚焦工作：**
 - §A + §E 全部闭合并**结构性收敛**——`turn_loop` 残件清零、retired `handle_deepseek_turn` 原宿主文件已删，pluggable framework core 迁移的最后一个结构 loose end 收口。
 - 残项仅余低优先 / by-design / 按需二项：§B3（cosmetic `DeepseekCN`→`Deepseek` 折叠，mitigated）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需）。
-- 未来可选 dedicated doc-debt 切片：重写 ~104 `turn_loop.rs:NNN` provenance 注释 + ARCHITECTURE.md:189 broader 段——非阻塞。
+- ~~未来可选 dedicated doc-debt 切片：重写 ~104 `turn_loop.rs:NNN` provenance 注释 + ARCHITECTURE.md:189 broader 段——非阻塞。~~ → slice 50 完成：~106 provenance 注释 → durable `handle_deepseek_turn` fn-name + ARCHITECTURE.md reframed + latent `protocol_recovery.rs` compile-break 修复（slice 49 漏过——验证跑 `--lib` 非 `--test`）。
+
+**进度（2026-07-17 §E slice 50 `turn_loop` 删除 doc-debt cleanup——重写 ~106 `turn_loop.rs:NNN`/`turn_loop::item` provenance 引用 → durable `handle_deepseek_turn` fn-name + 修 latent `protocol_recovery.rs` compile-break，`feat/pluggable-framework-core`）：**
+
+接 slice 49（`turn_loop.rs` 删除 + 2 live helper 模块收敛，`:2253`）。slice 49 删 `turn_loop.rs` 后遗留 ~106 处 `turn_loop.rs:NNN`/`turn_loop::item` provenance 注释指向已删文件、ARCHITECTURE.md:189 stale "What is not here yet" 段、3 "is a later slice" framing 注释、3 stale path/caller refs，以及 1 处 latent compile-break（`protocol_recovery.rs:35` ungated `include_str!` of deleted `turn_loop.rs`——slice 49 验证跑 `--lib` 非 `--test protocol_recovery`，漏过）。本切片是 slice 49 "未来可选 dedicated doc-debt 切片" 预期的 cleanup 切片——重写全部 provenance 引用为 durable fn-name、修 compile-break、reframe stale doc。纯 doc + 1 test-source 行，零行为改动。
+
+**关键设计决策：**
+- **drop line numbers, use durable fn-name**：`turn_loop.rs:NNNN-NNNN` → `handle_deepseek_turn`；保 semantic label（spawn/reuse）若 present；drop redundant line-ref 当 `handle_deepseek_turn` 已在同注释内；simplify "retired"-qualified ref。
+- **one-time `git show` pointer**：host_executor.rs module doc 加 `git show ab4f4fc5:crates/agent-runtime/src/engine/turn_loop.rs` pointer（verified ancestor of HEAD，3373-line full retired body）——给 provenance 指向已删代码一个 durable lookup 路径，免逐条注释加。
+- **relocated-single-source framing**：`turn_loop::MAX_APPROVAL_INTENT_SUMMARY_CHARS`/`turn_loop::approval_intent_summary` 的 "mirrors/duplicated/later cleanup can lift" framing → "the `turn_loop::` original was deleted in slice 49 — this is now the single source"（host_executor.rs:814/821）。
+- **ARCHITECTURE.md:189 broader 段 reframe**：header "not here yet: absorbing" → "What is here (§E cutover done): absorbed"；L221-224 "remaining four growing... after which handle_deepseek_turn retires" → "have since grown... retired in slice 20"；L236 "the live handle_deepseek_turn still covers it" → dropped（HostAgentExecutor 经 host_executor.rs:2658 明确 defer apply_patch path derivation，"still covers it" reassurance 不可验证/stale，drop 而非 over-claim "HostAgentExecutor covers it"）。status table（行 287）slice 48 已 authoritative-current，不动。
+
+**Landing steps：**
+1. `crates/agent-runtime/tests/protocol_recovery.rs:35`：删 `include_str!("../src/engine/turn_loop.rs")`（deleted file），替换为 `include_str!("../src/engine/host_executor.rs")`（restore coverage intent；经 `engine_source_file_still_exists_and_is_non_trivial` + `engine_marker_counts_stay_paired` 测试确认 marker pairing 仍 green）。
+2. `crates/agent-runtime/src/engine/host_executor.rs`：module doc 加 one-time `git show` pointer；perl pass 重写 99 `turn_loop.rs:NNN` → `handle_deepseek_turn`；targeted Edits 修 5 `turn_loop::item` refs + 2 split refs 的 "mirroring the retired handle_deepseek_turn" 冗余（L1575/L6329）+ L1030。
+3. `session.rs:255` + `engine/mod.rs:1187` + `session_history.rs:14-18` + `callback_bridge.rs:69-71` + `tools/framework_adapter.rs:12-13` + `tools/truncate.rs:25` + `tui/src/tools/subagent/mod.rs:29` + `tool-impls/src/tools/plan_mode.rs:132`：各 stale ref 重写（3 "is a later slice" framing → "done (slice 20 §E cutover)"；3 path/caller ref）。
+4. `ARCHITECTURE.md:189-268`：header reframe + L221-224 + L236 stale refs 修正。
+5. `ROADMAP.md`：slice 49 "未来可选 dedicated doc-debt 切片" note（`:2275`/`:2276`/`:2282`）strikethrough-correct；追加本 slice 50 进度条目。
+
+**验证：** `cargo +1.90.0 build --workspace` 全绿（1m01s；`codesmith-tui` 142 warning 为 slice 47 baseline、非本切片新增）；`cargo +1.90.0 test -p codesmith-agent-runtime --test protocol_recovery --no-run` **编译通过**（11.97s——slice 49 漏过的 latent compile-break 已修，本切片关键验证）；`cargo +1.90.0 test -p codesmith-agent-runtime --test protocol_recovery` **9 通过、0 failed**（`engine_source_file_still_exists_and_is_non_trivial` + `engine_marker_counts_stay_paired` 确认 host_executor.rs swap 保 coverage intent）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` **1149 通过 + 2 ignored，0 failed**（13.90s，匹配 slice 49 baseline）；grep 核实 `turn_loop.rs:` **零命中**、`turn_loop::` 仅余 host_executor.rs:814/821 两处 intentional relocated-single-source framing（"the `turn_loop::` original was deleted in slice 49"），其余 `turn_loop` mention 均为 intentional（L7 git-show pointer + L891/L13657/mod.rs:203 slice-49 relocation notes + `integration_mock_llm.rs:152` test fn name `full_turn_loop_streams_text_chunks`）。
+
+**By-design gaps（out of scope）：**
+- **4 pure-provenance item name 不 rename**：`early_tool_start_safe`/`loop_guard_block_tool_result`/`MAX_APPROVAL_INTENT_SUMMARY_CHARS`/`approval_intent_summary`——前 3 删 `turn_loop.rs` 时被删、行为在 host_executor.rs 下 possibly-different name duplicate（`APPROVAL_INTENT_SUMMARY_MAX_CHARS` 等）。本切片仅重写 provenance doc、不 rename host_executor.rs items（renaming 是 behavior change 非 doc-debt）。`approval_intent_summary` 保名（已 1:1 搬运）。
+- **§B3 / §E4 follow-up 不变**：仍低优先 / 按需另开切片。
+- **ROADMAP.md 历史 slice 条目的 `turn_loop.rs:NNN` ref 不动**：slice 11-40 进度条目引用 `turn_loop.rs:NNN` 是历史记录（当时 live 文件的 provenance），非 stale pointer；本切片 grep 0-hit 验证仅 scope `*.rs`（不含 `.md` 历史条目，matching slice 48 policy）。
+
+**下一聚焦工作：**
+- §A + §E 全部闭合、**结构性收敛 + doc-debt 清零**——`turn_loop` provenance 引用全重写为 durable fn-name、retired 代码原宿主文件的所有 doc 残留收口。pluggable framework core 迁移的结构 + doc 双线收尾完成。
+- 残项仅余低优先 / by-design / 按需二项：§B3（cosmetic `DeepseekCN`→`Deepseek` 折叠，mitigated）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需）。
 
 ---
 

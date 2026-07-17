@@ -1184,7 +1184,7 @@ impl Engine {
         // working_set observe), so the executor is invoked with empty
         // `user_text` (its seed push is guarded with `if !user_text.is_empty()`).
         // `handle_deepseek_turn` is retired (deleted with its 3373-line body +
-        // private helpers in turn_loop.rs).
+        // private helpers, formerly in the now-deleted turn_loop.rs).
         let client = self
             .llm_client
             .clone()
@@ -1318,7 +1318,7 @@ impl Engine {
         // Harvest per-turn token usage from the executor (slice 21 §E). The
         // inline stream reducer captured `MessageStart`/`MessageDelta` usage
         // and accumulated it across the turn's streams; this replaces the
-        // end-of-turn handoff the retired `turn_loop.rs:1193`
+        // end-of-turn handoff the retired `handle_deepseek_turn`
         // (`turn.add_usage(&usage)`) used to do inline. Flows into
         // `total_usage.add` below and `Event::TurnComplete.usage`. The
         // executor is constructed fresh each turn, so this starts at zero.
