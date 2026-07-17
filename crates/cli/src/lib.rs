@@ -82,6 +82,18 @@ struct Cli {
         help = "Advanced provider selector for non-TUI registry/config commands"
     )]
     provider: Option<ProviderArg>,
+    /// Select a `[[providers.custom]]` entry by id (ROADMAP §D2). Overrides the
+    /// config-file `custom_provider` selector for this run. The id must match
+    /// a `[[providers.custom]]` entry declared in config.toml; it must not
+    /// collide with a builtin `--provider` value (use `--provider` for those).
+    /// Mutually exclusive with `--provider`.
+    #[arg(
+        long = "custom-provider",
+        value_name = "ID",
+        conflicts_with = "provider",
+        help = "Select a [[providers.custom]] entry by id (overrides config-file custom_provider)"
+    )]
+    custom_provider: Option<String>,
     #[arg(long)]
     model: Option<String>,
     #[arg(long = "output-mode")]
@@ -1535,6 +1547,25 @@ fn build_tui_command(
         let provider: ProviderKind = provider.into();
         cmd.env("DEEPSEEK_PROVIDER", provider.as_str());
     }
+    // §D2 slice 46 — `--custom-provider <id>` selects a `[[providers.custom]]`
+    // entry. A builtin name is rejected here (use `--provider` for builtins);
+    // the id is forwarded to the TUI via env so the runtime config layer
+    // resolves it. Entry-existence is validated by the TUI (matching
+    // `--provider`'s deferred validation).
+    if let Some(id) = cli
+        .custom_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if ProviderKind::parse(id).is_some() {
+            bail!(
+                "--custom-provider '{id}' collides with a builtin provider; \
+                 use `--provider {id}` instead"
+            );
+        }
+        cmd.env("CODESMITH_CUSTOM_PROVIDER", id);
+    }
     if matches!(
         resolved_runtime.api_key_source,
         Some(RuntimeApiKeySource::Keyring)
@@ -2788,6 +2819,86 @@ mod tests {
             "expected workspace forwarding in args: {args:?}"
         );
     }
+
+    // §D2 slice 46 — `--custom-provider <id>` env forwarding + guards.
+
+    fn tui_bin_fixture() -> (tempfile::TempDir, ScopedEnvVar) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let custom = dir
+            .path()
+            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&custom, b"").unwrap();
+        let scoped = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom.to_string_lossy());
+        (dir, scoped)
+    }
+
+    #[test]
+    fn build_tui_command_forwards_custom_provider_env() {
+        let _lock = env_lock();
+        let _bin = tui_bin_fixture();
+        let cli = parse_ok(&["deepseek", "--custom-provider", "acme"]);
+        let resolved = ResolvedRuntimeOptions {
+            provider: ProviderKind::Deepseek,
+            model: String::new(),
+            api_key: None,
+            api_key_source: None,
+            base_url: String::new(),
+            auth_mode: None,
+            output_mode: None,
+            log_level: None,
+            telemetry: false,
+            approval_policy: None,
+            sandbox_mode: None,
+            yolo: None,
+            http_headers: std::collections::BTreeMap::new(),
+        };
+
+        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
+        assert_eq!(
+            command_env(&cmd, "CODESMITH_CUSTOM_PROVIDER").as_deref(),
+            Some("acme"),
+            "--custom-provider should forward to the TUI via env",
+        );
+        // `--provider` was not given, so the builtin selector env stays unset.
+        assert_eq!(command_env(&cmd, "DEEPSEEK_PROVIDER"), None);
+    }
+
+    #[test]
+    fn build_tui_command_custom_provider_builtin_collision_bails() {
+        let _lock = env_lock();
+        let _bin = tui_bin_fixture();
+        let cli = parse_ok(&["deepseek", "--custom-provider", "deepseek"]);
+        let resolved = ResolvedRuntimeOptions {
+            provider: ProviderKind::Deepseek,
+            model: String::new(),
+            api_key: None,
+            api_key_source: None,
+            base_url: String::new(),
+            auth_mode: None,
+            output_mode: None,
+            log_level: None,
+            telemetry: false,
+            approval_policy: None,
+            sandbox_mode: None,
+            yolo: None,
+            http_headers: std::collections::BTreeMap::new(),
+        };
+
+        let err = build_tui_command(&cli, &resolved, Vec::new())
+            .expect_err("builtin id must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("collides with a builtin"), "unexpected: {msg}");
+        assert!(msg.contains("--provider deepseek"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn custom_provider_conflicts_with_provider_flag() {
+        // clap `conflicts_with = "provider"` rejects the combination at parse.
+        let err = Cli::try_parse_from(["deepseek", "--provider", "openai", "--custom-provider", "acme"])
+            .expect_err("conflicting flags must be rejected");
+        assert!(err.to_string().contains("cannot be used with"), "unexpected: {err}");
+    }
+
 
     #[test]
     fn build_tui_command_does_not_export_default_runtime_overrides_for_profiles() {

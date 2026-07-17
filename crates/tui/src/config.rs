@@ -2872,6 +2872,17 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = codesmith_env_var("CODESMITH_PROVIDER", "DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
     }
+    // §D2 slice 46 — `--custom-provider <id>` (forwarded by the cli dispatcher
+    // as `CODESMITH_CUSTOM_PROVIDER`) selects a `[[providers.custom]]` entry,
+    // overriding the config-file `custom_provider` selector. An empty value is
+    // a no-op; builtin-collision and entry-existence are validated downstream
+    // (`Config::validate`), matching `--provider`'s deferred validation.
+    if let Ok(value) = codesmith_env_var("CODESMITH_CUSTOM_PROVIDER", "DEEPSEEK_CUSTOM_PROVIDER") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            config.custom_provider = Some(trimmed.to_string());
+        }
+    }
     if let Ok(value) = codesmith_env_var("CODESMITH_BASE_URL", "DEEPSEEK_BASE_URL") {
         match config.api_provider() {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
@@ -5090,6 +5101,58 @@ mod tests {
             Some("search-env-key".to_string())
         );
     }
+
+    // §D2 slice 46 — `--custom-provider <id>` reaches the TUI via env.
+
+    #[test]
+    fn apply_env_overrides_sets_custom_provider() {
+        let _guard = lock_test_env();
+        let prev = env::var_os("CODESMITH_CUSTOM_PROVIDER");
+        unsafe { env::set_var("CODESMITH_CUSTOM_PROVIDER", "acme") };
+        let mut config = Config::default();
+        assert!(config.custom_provider.is_none(), "default has no custom provider");
+
+        apply_env_overrides(&mut config);
+
+        unsafe { EnvGuard::restore_var("CODESMITH_CUSTOM_PROVIDER", prev) };
+        assert_eq!(config.custom_provider.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn apply_env_overrides_custom_provider_env_overrides_file_value() {
+        let _guard = lock_test_env();
+        let prev = env::var_os("CODESMITH_CUSTOM_PROVIDER");
+        unsafe { env::set_var("CODESMITH_CUSTOM_PROVIDER", "  from-cli  ") };
+        // config-file value already set — env (CLI-sourced) must win.
+        let mut config = Config {
+            custom_provider: Some("from-file".to_string()),
+            ..Config::default()
+        };
+
+        apply_env_overrides(&mut config);
+
+        unsafe { EnvGuard::restore_var("CODESMITH_CUSTOM_PROVIDER", prev) };
+        // trimmed; env wins over the file selector.
+        assert_eq!(config.custom_provider.as_deref(), Some("from-cli"));
+    }
+
+    #[test]
+    fn apply_env_overrides_custom_provider_empty_is_noop() {
+        let _guard = lock_test_env();
+        let prev = env::var_os("CODESMITH_CUSTOM_PROVIDER");
+        unsafe { env::set_var("CODESMITH_CUSTOM_PROVIDER", "   ") };
+        let mut config = Config {
+            custom_provider: Some("from-file".to_string()),
+            ..Config::default()
+        };
+
+        apply_env_overrides(&mut config);
+
+        unsafe { EnvGuard::restore_var("CODESMITH_CUSTOM_PROVIDER", prev) };
+        // empty env value does not clobber the config-file selector.
+        assert_eq!(config.custom_provider.as_deref(), Some("from-file"));
+    }
+
 
     #[test]
     fn search_provider_resolution_ignores_invalid_env_override() {

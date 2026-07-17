@@ -2154,6 +2154,38 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 ---
 
+**进度（2026-07-17 §D2 slice 46 custom provider 残件 polish——`--custom-provider` CLI flag + per-entry `config set/get/unset` + bare `provider=` form by-design 拒绝收口，`feat/pluggable-framework-core`）：**
+
+接 slice 45（§E4 主线闭合，`:2120`）。slice 45 的 "下一聚焦工作" 列 §D2 残件 polish（CLI flag / per-entry `config set` / bare `provider=` 形）维持低优先；本切片闭合其中两项、第三项按设计拒绝收口。§D2（`9d47942c`）落了 `custom_provider` selector + `[[providers.custom]]` 表，`ARCHITECTURE.md:287` 标三残件 polish；本切片使 custom provider 可经 CLI flag 选 + 经 `config set` 管理单条目。纯增量（config 层 get/set/unset + masking + cli flag + tui env 消费），零既有调用点行为改动（builtin host 路径仍由 config 常量解析，custom 路径不变）。
+
+**关键设计决策：**
+- **CLI flag = 独立 `--custom-provider <id>`**（非扩展 `--provider`）：镜像 §D2 自己的 "dedicated `custom_provider` selector over bare `provider=`" 选择。保 `--provider ProviderArg` value_enum 校验完整（零回归）；`conflicts_with = "provider"`（builtin 与 custom 互斥）。经 env `CODESMITH_CUSTOM_PROVIDER`（legacy `DEEPSEEK_CUSTOM_PROVIDER` 经 `codesmith_env_var`）转发至 TUI，并行 `--provider` → `DEEPSEEK_PROVIDER`。builtin-id 碰撞在 cli parse 期拒（`ProviderKind::parse(id).is_some()` → bail 指 `--provider`）；entry-existence 延后至 TUI `validate`（镜像 `--provider` 的延后校验）。
+- **per-entry `config set` = find-or-create by id**：键形 `providers.custom.<id>.<field>`。`split_custom_provider_key` 按**最后** `.` 切——尾段 ∈ {api_key/base_url/model/auth_mode/http_headers/id} 视为字段、其余为 id（dotted id 如 `my.co` 正确切：字段恒为末段）。set find-or-create 条目（缺则 push `CustomProviderToml{id, ..Default}`）置字段；`.id` 拒（id 是 key 非 value）；whole-array/whole-entry bail 指 hand-edit。unset 清字段 / 删条目（`retain`）/ 清全表；`.id` unset bail。get 返单条目（serialize）/ 单字段。镜像既有 per-builtin `providers.anthropic.<field>` 形。
+- **masking**：`is_sensitive_config_key` 扩——whole array（既有）+ whole entry（新，因 serialize 含 api_key）+ per-entry `.api_key`（既有 `.ends_with(".api_key")` 规则覆盖）；non-secret 字段（base_url/model/auth_mode/http_headers/id）不 mask（per-field get 可见，whole entry 则整体 redact 作 blob）。
+- **bare `provider=` form = by-design 拒绝收口**：`9d47942c` 已明确拒绝（closed `ProviderKind` enum 经 ConfigToml/Overrides/Env + 每 match 臂级联，破 layering）。`ARCHITECTURE.md:287` 原列其为 "deferred polish" 实为 stale；本切片改标 "by-design rejected (see 9d47942c)" 收 doc-debt，不实现。
+
+**落地步骤：**
+1. `crates/config/src/lib.rs`：新增 `CUSTOM_PROVIDER_FIELDS` const + `split_custom_provider_key` helper（`fn(&str) -> (&str, Option<&str>)`，`rsplit_once('.')` + 字段集 contains）；`get_value` 的 `providers.custom` 精确臂改 guard 臂（`key == "providers.custom" || starts_with`），内分 whole-array / whole-entry（`toml::to_string(entry)`）/ per-field；`set_value` 同 guard 臂替换原 bail——find-or-create + 置字段（http_headers 走 `parse_http_headers`）+ `.id` 拒 + whole bail；`unset_value` 的 `providers.custom` 臂改 guard 臂——clear field / retain-remove entry / `.id` bail / clear all；`is_sensitive_config_key` 扩 whole-entry + 保留 non-secret 字段可见。
+2. `crates/cli/src/lib.rs`：`Cli` 加 `custom_provider: Option<String>`（`--custom-provider`/`value_name="ID"`/`conflicts_with="provider"`）；`build_tui_command` 在 `cli.provider` env 块后加 custom-provider 块——builtin 碰撞 guard（`ProviderKind::parse`）+ `cmd.env("CODESMITH_CUSTOM_PROVIDER", id)`。
+3. `crates/tui/src/config.rs`：`apply_env_overrides` 在 `CODESMITH_PROVIDER` 块后加 `CODESMITH_CUSTOM_PROVIDER`（legacy `DEEPSEEK_CUSTOM_PROVIDER`）读取 → trim → 非空置 `config.custom_provider`（env 胜 file，镜像 `DEEPSEEK_PROVIDER` > file `provider`）；既有 `validate`（`:1578`）已拒 builtin 碰撞 + 缺 entry，故 env 消费端保持简。
+4. `ARCHITECTURE.md` + ROADMAP §D2：状态行更新（bare form by-design rejected + slice 46 closed CLI flag/per-entry set）。
+
+**测试：** config **10 新**（per-entry set 更新既有/创建缺失、`.id` 拒、whole-entry bail、http_headers 字段、get entry+field、unset field/entry/`.id` bail、is_sensitive masking per-entry api_key + whole-entry redacted + non-secret 字段可见）+ **1 既有改**（`..._is_readonly_and_secret` → `..._get_unset_and_secret`：whole-array set 仍 bail，per-entry set 不再拒——headline 反转）。cli **3 新**（`build_tui_command_forwards_custom_provider_env`、`build_tui_command_custom_provider_builtin_collision_bails`、`custom_provider_conflicts_with_provider_flag` clap conflict）。tui **3 新**（`apply_env_overrides_sets_custom_provider`、`apply_env_overrides_custom_provider_env_overrides_file_value` trim + env 胜 file、`apply_env_overrides_custom_provider_empty_is_noop` 空 env 不 clobber file）。
+
+**验证：** `cargo +1.90.0 build -p codesmith-config` 零 warning；`cargo +1.90.0 test -p codesmith-config --lib` **95 通过**（85 既有 + 10 新）；`cargo +1.90.0 build -p codesmith-cli` 零新 warning；`cargo +1.90.0 test -p codesmith-cli --lib` **86 通过**（83 既有 + 3 新）；`cargo +1.90.0 build -p codesmith-tui` 绿（143 既有 warning，零新增）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui custom_provider` **12 通过**（9 既有 + 3 新）。
+
+**By-design gaps（deferred，documented）：**
+- **id 含与字段同名尾段**（如 id "model"）歧义：`providers.custom.model.base_url` 切为 (id="model", field="base_url") 而非 whole-entry for id="model.base_url"；文档建议避开。
+- **`--custom-provider` 不在 cli parse 期校验 entry-existence**：延后至 TUI `validate`（镜像 `--provider` 延后校验）。
+- **`CODESMITH_CUSTOM_PROVIDER` env 优先级** = CLI-sourced env 胜 file `custom_provider`（镜像 `DEEPSEEK_PROVIDER` > file `provider`）。
+- §B3（`ApiProvider`→`ProviderKind`）、§A1（DeepSeekClient 抽取）不变——仍低优先/deferred。
+
+**下一聚焦工作：**
+- §D2 残件 polish 全部收口（CLI flag + per-entry config set 落地，bare form by-design 拒绝收 doc-debt）。§D 主线闭合。
+- §B3（cosmetic `DeepseekCN` 折叠）、§A1（DeepSeekClient 抽取，需 replay bridge）仍低优先/deferred。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
+
+---
+
 ## §A — Provider extraction (bulk migration)
 
 Move the production LLM clients out of the `codesmith-tui` binary into
@@ -2301,6 +2333,16 @@ deps still wired, then these substitutions remove the wires).
   `provider = "custom:<id>"` form, or a `[[providers.custom]]` table) that
   maps to `ProviderId::Custom`, so a user can select any registered provider —
   the pi-mono "freely replace" UX.
+- **Status (9d47942c + slice 46):** landed as a dedicated `custom_provider`
+  selector + `[[providers.custom]]` table (the bare `provider = "<id>"` form is
+  **by-design rejected** — it cascades the closed `ProviderKind` enum through
+  `ConfigToml`/overrides/env + every `match` arm; see the 9d47942c commit
+  message). Slice 46 closed the residual polish: `--custom-provider <id>` CLI
+  flag (env-forwarded to the TUI as `CODESMITH_CUSTOM_PROVIDER`, mutually
+  exclusive with `--provider`, builtin-id collision rejected at parse) +
+  per-entry `config set/get/unset providers.custom.<id>.<field>` (find-or-create
+  by id; `id` field rejected as it is the key). See the slice-46 progress entry
+  below.
 
 ---
 

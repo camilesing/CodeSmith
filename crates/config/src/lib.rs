@@ -834,19 +834,37 @@ impl ConfigToml {
             "providers.anthropic.http_headers" => {
                 serialize_http_headers(&self.providers.anthropic.http_headers)
             }
-            // The `[[providers.custom]]` array table is read as a whole: there
-            // is no stable per-entry key (ids are user-chosen), so `get` returns
-            // the serialized array and per-entry edits are hand-edits. The array
-            // is wrapped under a `custom` key because a root-level bare array
-            // of tables is not valid TOML (`[[...]]` requires a key).
-            "providers.custom" => {
-                if self.providers.custom.is_empty() {
-                    None
+            // The `[[providers.custom]]` array table (ROADMAP §D2). The whole
+            // array is read as a blob, wrapped under a `custom` key because a
+            // root-level bare array of tables is not valid TOML (`[[...]]`
+            // requires a key). Per-entry / per-field reads are supported
+            // (§D2 slice 46): `providers.custom.<id>` returns one entry;
+            // `providers.custom.<id>.<field>` returns the field value.
+            key if key == "providers.custom" || key.starts_with("providers.custom.") => {
+                if key == "providers.custom" {
+                    if self.providers.custom.is_empty() {
+                        None
+                    } else {
+                        let mut wrapper = toml::Table::new();
+                        let arr = toml::Value::try_from(&self.providers.custom).ok()?;
+                        wrapper.insert(String::from("custom"), arr);
+                        toml::to_string(&wrapper).ok()
+                    }
                 } else {
-                    let mut wrapper = toml::Table::new();
-                    let arr = toml::Value::try_from(&self.providers.custom).ok()?;
-                    wrapper.insert(String::from("custom"), arr);
-                    toml::to_string(&wrapper).ok()
+                    let rest = &key["providers.custom.".len()..];
+                    let (id, field) = split_custom_provider_key(rest);
+                    let entry = self.providers.custom.iter().find(|e| e.id == id)?;
+                    match field {
+                        None => toml::to_string(entry).ok(),
+                        Some("id") => Some(entry.id.clone()),
+                        Some("api_key") => entry.api_key.clone(),
+                        Some("base_url") => entry.base_url.clone(),
+                        Some("model") => entry.model.clone(),
+                        Some("auth_mode") => entry.auth_mode.clone(),
+                        Some("http_headers") => serialize_http_headers(&entry.http_headers),
+                        // split_custom_provider_key only yields known fields.
+                        _ => None,
+                    }
                 }
             }
             _ => self.extras.get(key).map(toml::Value::to_string),
@@ -1099,15 +1117,57 @@ impl ConfigToml {
             "providers.anthropic.http_headers" => {
                 self.providers.anthropic.http_headers = parse_http_headers(value)?;
             }
-            // The `[[providers.custom]]` array table is not writable via
-            // `config set`: ids are user-chosen so there is no stable per-entry
-            // key. Point users at hand-editing the file.
+            // `[[providers.custom]]` per-entry writes (ROADMAP §D2 slice 46).
+            // Form: `providers.custom.<id>.<field>` finds (or creates) the entry
+            // by id and sets the field. The `id` field is rejected — it is the
+            // entry key, not a value (rename via unset + set). Whole-array /
+            // whole-entry forms bail with a hand-edit pointer: a single string
+            // can't populate a table.
             key if key == "providers.custom" || key.starts_with("providers.custom.") => {
-                anyhow::bail!(
-                    "'{key}' is a [[providers.custom]] array table and can't be set via \
-                     `config set`; edit config.toml directly to add a [[providers.custom]] \
-                     block (id, base_url, model) and select it with `custom_provider`"
-                );
+                let rest = key.strip_prefix("providers.custom.").unwrap_or("");
+                if rest.is_empty() {
+                    anyhow::bail!(
+                        "'providers.custom' is a [[providers.custom]] array table and can't \
+                         be set as a single value; edit config.toml directly to add \
+                         [[providers.custom]] blocks (id, base_url, model, api_key) and \
+                         select one with `custom_provider`"
+                    );
+                }
+                let (id, field) = split_custom_provider_key(rest);
+                let Some(field) = field else {
+                    anyhow::bail!(
+                        "can't set whole [[providers.custom]] entry '{id}' from one value; \
+                         set individual fields as `providers.custom.{id}.<field>` (base_url, \
+                         model, api_key, auth_mode, http_headers)"
+                    );
+                };
+                if field == "id" {
+                    anyhow::bail!(
+                        "`providers.custom.{id}.id` can't be set — the id is the entry key; \
+                         to rename, `config unset providers.custom.{id}` then add the new entry"
+                    );
+                }
+                let entry = self.providers.custom.iter_mut().find(|e| e.id == id);
+                let entry = match entry {
+                    Some(e) => e,
+                    None => {
+                        self.providers.custom.push(CustomProviderToml {
+                            id: id.to_string(),
+                            ..Default::default()
+                        });
+                        self.providers.custom.last_mut().expect("just pushed")
+                    }
+                };
+                match field {
+                    "api_key" => entry.api_key = Some(value.to_string()),
+                    "base_url" => entry.base_url = Some(value.to_string()),
+                    "model" => entry.model = Some(value.to_string()),
+                    "auth_mode" => entry.auth_mode = Some(value.to_string()),
+                    "http_headers" => entry.http_headers = parse_http_headers(value)?,
+                    // `id` rejected above; split_custom_provider_key only
+                    // yields known fields.
+                    _ => unreachable!("split_custom_provider_key guards the field set"),
+                }
             }
             _ => {
                 self.extras
@@ -1219,7 +1279,60 @@ impl ConfigToml {
             "providers.anthropic.base_url" => self.providers.anthropic.base_url = None,
             "providers.anthropic.model" => self.providers.anthropic.model = None,
             "providers.anthropic.http_headers" => self.providers.anthropic.http_headers.clear(),
-            "providers.custom" => self.providers.custom.clear(),
+            // `[[providers.custom]]` per-entry unsets (ROADMAP §D2 slice 46):
+            // `providers.custom.<id>` removes the entry; `providers.custom.<id>.<field>`
+            // clears one field (the `id` field can't be unset — it is the key;
+            // use the whole-entry form to remove it).
+            key if key == "providers.custom" || key.starts_with("providers.custom.") => {
+                if key == "providers.custom" {
+                    self.providers.custom.clear();
+                } else {
+                    let rest = &key["providers.custom.".len()..];
+                    let (id, field) = split_custom_provider_key(rest);
+                    match field {
+                        None => self.providers.custom.retain(|e| e.id != id),
+                        Some("id") => {
+                            anyhow::bail!(
+                                "can't unset `providers.custom.{id}.id` — the id is the \
+                                 entry key; use `config unset providers.custom.{id}` to \
+                                 remove the entry"
+                            );
+                        }
+                        Some("api_key") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
+                            {
+                                e.api_key = None;
+                            }
+                        }
+                        Some("base_url") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
+                            {
+                                e.base_url = None;
+                            }
+                        }
+                        Some("model") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
+                            {
+                                e.model = None;
+                            }
+                        }
+                        Some("auth_mode") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
+                            {
+                                e.auth_mode = None;
+                            }
+                        }
+                        Some("http_headers") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
+                            {
+                                e.http_headers.clear();
+                            }
+                        }
+                        // split_custom_provider_key only yields known fields.
+                        _ => {}
+                    }
+                }
+            }
             _ => {
                 self.extras.remove(key);
             }
@@ -2421,14 +2534,51 @@ fn redact_secret(secret: &str) -> String {
     format!("{prefix}***{suffix}")
 }
 
+/// The per-entry fields of a `[[providers.custom]]` entry, recognized by
+/// [`split_custom_provider_key`] when splitting a `providers.custom.<...>`
+/// key. `id` is included so the splitter recognizes it (it is then rejected
+/// as settable / unsettable — the id is the key, not a value).
+const CUSTOM_PROVIDER_FIELDS: &[&str] = &[
+    "id",
+    "api_key",
+    "base_url",
+    "model",
+    "auth_mode",
+    "http_headers",
+];
+
+/// Split the `<rest>` of a `providers.custom.<rest>` key into `(id, field)`.
+///
+/// `<rest>` is split on the LAST `.`: if the trailing segment is a known
+/// per-entry field (`api_key`/`base_url`/`model`/`auth_mode`/`http_headers`,
+/// or `id`), the remainder is the entry id and the field is returned;
+/// otherwise the whole `<rest>` is the id (a whole-entry op, valid only for
+/// `get` / `unset`). This makes dotted ids like `"my.co"` work: the field
+/// segment is always the final one. The one ambiguity — an id whose final
+/// `.`-segment coincides with a field name — is documented as by-design.
+fn split_custom_provider_key(rest: &str) -> (&str, Option<&str>) {
+    match rest.rsplit_once('.') {
+        Some((id, field)) if CUSTOM_PROVIDER_FIELDS.contains(&field) => (id, Some(field)),
+        _ => (rest, None),
+    }
+}
+
 #[must_use]
 pub fn is_sensitive_config_key(key: &str) -> bool {
     key == "api_key"
         || key.ends_with(".api_key")
-        // The `[[providers.custom]]` array serializes whole, including any
-        // per-entry `api_key` fields, so the entire blob is treated as secret
-        // for display (ROADMAP §D2).
+        // The `[[providers.custom]]` array and a single whole entry both
+        // serialize their `api_key` fields, so the whole blob is treated as
+        // secret for display (ROADMAP §D2). Non-secret per-entry fields
+        // (`base_url`/`model`/`auth_mode`/`http_headers`/`id`) are shown as-is;
+        // per-entry `api_key` is masked by the `.api_key` rule above.
         || key == "providers.custom"
+        || (key.starts_with("providers.custom.")
+            && !key.ends_with(".base_url")
+            && !key.ends_with(".model")
+            && !key.ends_with(".auth_mode")
+            && !key.ends_with(".http_headers")
+            && !key.ends_with(".id"))
 }
 
 fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
@@ -4580,7 +4730,7 @@ model = "b-1"
     }
 
     #[test]
-    fn custom_provider_array_table_is_readonly_and_secret() {
+    fn custom_provider_array_table_get_unset_and_secret() {
         let mut config = ConfigToml {
             custom_provider: Some("acme".to_string()),
             ..ConfigToml::default()
@@ -4608,10 +4758,12 @@ model = "b-1"
             .expect("display value");
         assert!(!display.contains("sk-acme"), "api_key leaked in display: {display}");
 
-        // per-key set is rejected with a helpful pointer to hand-editing
+        // whole-array set still bails with a hand-edit pointer (a single
+        // string can't populate a table); per-entry sets are covered by the
+        // slice-46 per-entry tests below.
         let err = config
-            .set_value("providers.custom.acme.base_url", "https://x")
-            .expect_err("per-entry set rejected");
+            .set_value("providers.custom", "https://x")
+            .expect_err("whole-array set rejected");
         assert!(err.to_string().contains("array table"));
         assert!(err.to_string().contains("edit config.toml directly"));
 
@@ -4620,6 +4772,191 @@ model = "b-1"
         assert!(config.providers.custom.is_empty());
         assert!(config.get_value("providers.custom").is_none());
     }
+
+    // §D2 slice 46 — per-entry `config set` / `get` / `unset` for
+    // `[[providers.custom]]` entries, keyed by id.
+
+    fn custom_acme_entry() -> ConfigToml {
+        let mut config = ConfigToml::default();
+        config.providers.custom.push(CustomProviderToml {
+            id: "acme".to_string(),
+            api_key: Some("sk-acme".to_string()),
+            base_url: Some("https://api.acme.dev/v1".to_string()),
+            model: Some("acme-pro".to_string()),
+            auth_mode: None,
+            http_headers: BTreeMap::new(),
+        });
+        config
+    }
+
+    #[test]
+    fn set_providers_custom_field_updates_existing_entry() {
+        let mut config = custom_acme_entry();
+        config
+            .set_value("providers.custom.acme.base_url", "https://new.acme.dev/v1")
+            .expect("per-entry set");
+        assert_eq!(
+            config.providers.custom[0].base_url.as_deref(),
+            Some("https://new.acme.dev/v1"),
+        );
+        // untouched fields stay
+        assert_eq!(config.providers.custom[0].api_key.as_deref(), Some("sk-acme"));
+        assert_eq!(config.providers.custom[0].model.as_deref(), Some("acme-pro"));
+    }
+
+    #[test]
+    fn set_providers_custom_field_creates_missing_entry() {
+        let mut config = ConfigToml::default();
+        assert!(config.providers.custom.is_empty());
+        config
+            .set_value("providers.custom.beta.base_url", "https://api.beta.dev/v1")
+            .expect("per-entry set creates entry");
+        assert_eq!(config.providers.custom.len(), 1);
+        let entry = &config.providers.custom[0];
+        assert_eq!(entry.id, "beta");
+        assert_eq!(entry.base_url.as_deref(), Some("https://api.beta.dev/v1"));
+        assert!(entry.api_key.is_none(), "unset fields default to None");
+        assert!(entry.model.is_none());
+    }
+
+    #[test]
+    fn set_providers_custom_field_rejects_id_field() {
+        let mut config = custom_acme_entry();
+        let err = config
+            .set_value("providers.custom.acme.id", "renamed")
+            .expect_err("setting id field rejected");
+        assert!(
+            err.to_string().contains("the id is the entry key"),
+            "unexpected message: {err}",
+        );
+        // entry id unchanged
+        assert_eq!(config.providers.custom[0].id, "acme");
+    }
+
+    #[test]
+    fn set_providers_custom_whole_entry_bails() {
+        let mut config = custom_acme_entry();
+        let err = config
+            .set_value("providers.custom.acme", "ignored")
+            .expect_err("whole-entry set rejected");
+        assert!(
+            err.to_string().contains("can't set whole [[providers.custom]] entry"),
+            "unexpected message: {err}",
+        );
+    }
+
+    #[test]
+    fn set_providers_custom_http_headers_field() {
+        let mut config = ConfigToml::default();
+        config
+            .set_value("providers.custom.gamma.http_headers", "X-A=1,X-B=2")
+            .expect("http_headers set creates entry");
+        let entry = &config.providers.custom[0];
+        assert_eq!(entry.id, "gamma");
+        assert_eq!(entry.http_headers.get("X-A").map(String::as_str), Some("1"));
+        assert_eq!(entry.http_headers.get("X-B").map(String::as_str), Some("2"));
+    }
+
+    #[test]
+    fn get_providers_custom_entry_and_field() {
+        let config = custom_acme_entry();
+        // whole entry
+        let entry = config
+            .get_value("providers.custom.acme")
+            .expect("entry is readable");
+        assert!(entry.contains("acme"));
+        assert!(entry.contains("https://api.acme.dev/v1"));
+        // per-field
+        assert_eq!(
+            config.get_value("providers.custom.acme.base_url").as_deref(),
+            Some("https://api.acme.dev/v1"),
+        );
+        assert_eq!(
+            config.get_value("providers.custom.acme.model").as_deref(),
+            Some("acme-pro"),
+        );
+        assert_eq!(
+            config.get_value("providers.custom.acme.id").as_deref(),
+            Some("acme"),
+        );
+        // missing entry / missing field
+        assert!(config.get_value("providers.custom.no-such").is_none());
+        // missing field on an existing entry resolves to None
+        assert!(config.get_value("providers.custom.acme.auth_mode").is_none());
+    }
+
+    #[test]
+    fn unset_providers_custom_field_clears() {
+        let mut config = custom_acme_entry();
+        config
+            .unset_value("providers.custom.acme.api_key")
+            .expect("per-field unset");
+        assert!(config.providers.custom[0].api_key.is_none());
+        // entry still present, other fields intact
+        assert_eq!(config.providers.custom.len(), 1);
+        assert_eq!(
+            config.providers.custom[0].base_url.as_deref(),
+            Some("https://api.acme.dev/v1"),
+        );
+    }
+
+    #[test]
+    fn unset_providers_custom_entry_removes() {
+        let mut config = custom_acme_entry();
+        config
+            .unset_value("providers.custom.acme")
+            .expect("whole-entry unset removes entry");
+        assert!(config.providers.custom.is_empty());
+    }
+
+    #[test]
+    fn unset_providers_custom_id_field_bails() {
+        let mut config = custom_acme_entry();
+        let err = config
+            .unset_value("providers.custom.acme.id")
+            .expect_err("unsetting id field rejected");
+        assert!(
+            err.to_string().contains("the id is the entry key"),
+            "unexpected message: {err}",
+        );
+        // entry still present
+        assert_eq!(config.providers.custom.len(), 1);
+    }
+
+    #[test]
+    fn is_sensitive_masks_custom_api_key_and_whole_entry() {
+        // per-entry api_key is masked
+        assert!(is_sensitive_config_key("providers.custom.acme.api_key"));
+        // a whole custom entry serializes api_key, so it is masked
+        assert!(is_sensitive_config_key("providers.custom.acme"));
+        // non-secret per-entry fields are shown as-is
+        assert!(!is_sensitive_config_key("providers.custom.acme.base_url"));
+        assert!(!is_sensitive_config_key("providers.custom.acme.model"));
+        assert!(!is_sensitive_config_key("providers.custom.acme.auth_mode"));
+        assert!(!is_sensitive_config_key("providers.custom.acme.http_headers"));
+        assert!(!is_sensitive_config_key("providers.custom.acme.id"));
+        // display path: a whole custom entry serializes api_key, so it is
+        // redacted as a blob (neither api_key nor base_url leaks). Non-secret
+        // per-entry fields are visible via the per-field get (not masked).
+        let config = custom_acme_entry();
+        let display = config
+            .get_display_value("providers.custom.acme")
+            .expect("whole-entry display value");
+        assert!(!display.contains("sk-acme"), "api_key leaked: {display}");
+        assert!(
+            !display.contains("https://api.acme.dev/v1"),
+            "whole-entry display should be redacted as a blob, got: {display}",
+        );
+        let base_url_display = config
+            .get_display_value("providers.custom.acme.base_url")
+            .expect("base_url display value");
+        assert_eq!(base_url_display, "https://api.acme.dev/v1");
+        let api_key_display = config
+            .get_display_value("providers.custom.acme.api_key")
+            .expect("api_key display value");
+        assert!(!api_key_display.contains("sk-acme"), "api_key leaked: {api_key_display}");
+    }
+
 
     #[test]
     fn merge_project_overrides_ignores_custom_provider() {
