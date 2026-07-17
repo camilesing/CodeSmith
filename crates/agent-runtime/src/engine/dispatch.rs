@@ -1,7 +1,8 @@
 //! Tool dispatch — plan/execute helpers for the per-turn tool batch.
 //!
-//! Extracted from `core/engine.rs` (P1.3). The high-level ordering still
-//! lives in `Engine::handle_deepseek_turn`; this module owns:
+//! Extracted from `core/engine.rs` (P1.3). The high-level ordering now
+//! lives in `HostAgentExecutor` (slice 20 §E cutover — `handle_deepseek_turn`
+//! is retired/deleted); this module owns:
 //!
 //! * Streaming-buffer parsing into a finalized `serde_json::Value` tool input
 //!   (`final_tool_input`, `parse_tool_input`, fenced/JSON segment helpers).

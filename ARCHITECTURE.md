@@ -50,7 +50,6 @@ For the backlog of work that extends this slice, see [`ROADMAP.md`](./ROADMAP.md
 ┌──────────────────────────────────────────────────────────┐ │
 │ codesmith-tui  (HOST / binary)                            │─┘ (optional)
 │  • build_engine → resolve_llm_client → registry.build     │
-│  • tui-local DeepSeekProviderFactory (wraps DeepSeekClient)│
 │  • Config, logging, retry_status (UI globals)             │
 └───────────────────────────────────────────────────────────┘
 ```
@@ -74,7 +73,7 @@ A client is built without the host naming a concrete type:
                ProviderRegistry::build(&cfg)
                  │ resolves factory by cfg.provider
                  ▼
-               ProviderFactory::build(&cfg) ───────▶ MockClient / RigLlmClient / DeepSeekClient / ...
+               ProviderFactory::build(&cfg) ───────▶ MockClient / RigLlmClient / ...
                  │
                  ▼
                LlmClientHandle (Arc<dyn LlmClient>)
@@ -274,18 +273,18 @@ the executor that lights up both a mock `Event` channel and a mock `HookHost`
 |---|---|---|
 | Core abstractions (`LlmClient`, `ProviderFactory`, `ProviderRegistry`) | ✅ done | `crates/agent/src/{llm_client,provider}/` |
 | Registry in the real engine loop | ✅ done | `crates/tui/src/core/engine.rs` `resolve_llm_client` |
-| TUI-local `DeepSeekProviderFactory` (wraps `DeepSeekClient`) | ✅ done — DeepSeek family only | `crates/tui/src/core/engine.rs` |
-| `DeepSeekClient::from_parts` (neutral 6-field constructor) | ✅ done | `crates/tui/src/client.rs` |
+| TUI-local `DeepSeekProviderFactory` retired — rig `DeepSeekFactory` (via `default_registry()`) replaces it (§A1) | ✅ done — tui holds no provider factory | deleted from `crates/tui/src/core/engine.rs` |
+| `DeepSeekClient` retired — rig `RigLlmClient` replaces it (§A1); `from_parts` deleted with the client | ✅ done | `crates/tui/src/client.rs` deleted (slice 41) |
 | `codesmith-providers` crate + `mock` provider + Cargo features | ✅ done | `crates/providers/` |
 | rig adapter `RigLlmClient<C,S>` impls `LlmClient` | ✅ done | `crates/providers/src/rig_adapter/` |
 | Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done — catalog now declarative (`providers.toml`, §E4); `base_url`/`model` populated + consumed as manifest-default fallback (§E4 slice 45) | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs`, `crates/providers/providers.toml` |
-| `resolve_llm_client` seeds from `default_registry()` for all non-DeepSeek | ✅ done (§D1 partial) | `crates/tui/src/core/engine.rs` |
+| `resolve_llm_client` seeds from `default_registry()` for all providers | ✅ done (§D1 partial → §A1 full cutover — DeepSeek moved off the tui-local factory onto rig) | `crates/tui/src/core/engine.rs` |
 | `AnthropicClient` retired — rig `AnthropicFactory` replaces it (§A2) | ✅ done | `crates/tui/src/client/anthropic.rs` deleted |
 | Parity bridge: reasoning heuristics + `shape_messages` / `shape_max_tokens` | ✅ done | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |
-| Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ⏳ deferred — needs DeepSeek replay bridge | ROADMAP §A1 |
+| Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ✅ done (superseded — retired, not extracted) — `DeepSeekClient` retired via the rig adapter; the replay-bridge blocker was found unnecessary (rig's compat layer natively serializes `AssistantContent::Reasoning` as `reasoning_content`); tui `client.rs`/`chat.rs` deleted (slice 41), inspect/warmup migrated to `codesmith-agent-runtime` `prompt_inspect`, reasoning predicates + `sha256_hex` deduped (slice 42) | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ⏳ deferred — mitigated: reasoning is `&str`-keyed | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ✅ done (9d47942c) — `custom_provider` selector + `[[providers.custom]]` table; §D2 slice 46 closed the residual polish — `--custom-provider <id>` CLI flag (env-forwarded to the TUI) + per-entry `config set/get/unset providers.custom.<id>.<field>` (find-or-create by id); the bare `provider = "<id>"` form stays **by-design rejected** (see 9d47942c — cascades the closed `ProviderKind` enum through config + overrides + env + every match arm) | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` skeleton + loop-guard + LSP flush + transparent-retry + steer + approval + compaction absorbed (§E, bare loop + 6/10 guardrails via `event_tx`; interior-mutability `Arc<Mutex<…>>` on `LspProbe` + steer receiver + `CompactionProbe` micro-state/breaker, `tokio::sync::Mutex` on approval receiver; transparent-retry at seam-2 post-stream; steer + compaction at seam-1 pre-request; approval at seam-3 per-tool); production `Engine` migration in progress | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
+| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` is the live production path (slice 20 cutover — `handle_send_message` routes through it, `handle_deepseek_turn` deleted); all guardrails absorbed across slices 11–40 (loop-guard + LSP flush + transparent-retry + steer + approval + compaction + capacity + subagent + early-tool-start/parallel-dispatch + thinking-only) via `event_tx`; interior-mutability `Arc<Mutex<…>>` on `LspProbe` + steer receiver + `CompactionProbe` micro-state/breaker, `tokio::sync::Mutex` on approval receiver; transparent-retry at seam-2 post-stream; steer + compaction at seam-1 pre-request; approval at seam-3 per-tool; production `Engine` migration done | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
 
 ## Registering a provider (developer guide)
 

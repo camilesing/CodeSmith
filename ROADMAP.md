@@ -2178,11 +2178,11 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - **id 含与字段同名尾段**（如 id "model"）歧义：`providers.custom.model.base_url` 切为 (id="model", field="base_url") 而非 whole-entry for id="model.base_url"；文档建议避开。
 - **`--custom-provider` 不在 cli parse 期校验 entry-existence**：延后至 TUI `validate`（镜像 `--provider` 延后校验）。
 - **`CODESMITH_CUSTOM_PROVIDER` env 优先级** = CLI-sourced env 胜 file `custom_provider`（镜像 `DEEPSEEK_PROVIDER` > file `provider`）。
-- §B3（`ApiProvider`→`ProviderKind`）、§A1（DeepSeekClient 抽取）不变——仍低优先/deferred。
+- §B3（`ApiProvider`→`ProviderKind`）不变——仍低优先。~~§A1（DeepSeekClient 抽取）不变——仍低优先/deferred~~ → slice 48 复核 stale：§A1 已 retirement+rig 完成（见 2026-07-07 §A1 checkpoint + slice 41/42）。
 
 **下一聚焦工作：**
 - §D2 残件 polish 全部收口（CLI flag + per-entry config set 落地，bare form by-design 拒绝收 doc-debt）。§D 主线闭合。
-- §B3（cosmetic `DeepseekCN` 折叠）、§A1（DeepSeekClient 抽取，需 replay bridge）仍低优先/deferred。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
+- §B3（cosmetic `DeepseekCN` 折叠）仍低优先。~~§A1（DeepSeekClient 抽取，需 replay bridge）仍低优先/deferred~~ → slice 48 复核 stale：§A1 已 retirement+rig 完成（replay bridge 不必要）。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
 
 ---
 
@@ -2207,12 +2207,48 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **验证：** `cargo build -p codesmith-agent-runtime` **零 warning**；`cargo test -p codesmith-agent-runtime --lib host_executor` **162 通过**；`cargo test -p codesmith-agent-runtime --lib turn_loop` **1 通过**；`cargo build -p codesmith-tui` 绿（**142 warning**，baseline 143，-1 自 prompt_zones shim 删除）；`cargo test -p codesmith-tui --bin codesmith-tui core::engine::tests` **126 通过 + 1 ignored**；`cargo build --workspace` 全绿。stash-pop baseline 对照（HEAD slice 46 不含本改动）：总测试数 **1151**（1148+1 flaky MCP+2 ignored）两侧一致——零测试被删；flaky MCP 测试既有文档化、隔离跑过。
 
 **By-design gaps（deferred，documented）：**
-- **`turn_loop` 模块仍非 §E1 `AgentExecutor` 抽取**：模块现仅两 live helper（`messages_with_turn_metadata` test-referenced + `subagent_completion_runtime_message` consumed by `HostAgentExecutor`），production `Engine`/`turn_loop` 迁移仍 deferred（§E1 "接真引擎"步）。本切片只删死结构，不动 live 代码。
+- **`turn_loop` 模块仍非 §E1 `AgentExecutor` 抽取**：模块现仅两 live helper（`messages_with_turn_metadata` test-referenced + `subagent_completion_runtime_message` consumed by `HostAgentExecutor`），~~production `Engine`/`turn_loop` 迁移仍 deferred（§E1 "接真引擎"步）~~ → slice 48 复核 stale：§E1 production 迁移经 slice 20 cutover 完成（`HostAgentExecutor` 为 live production path、`handle_deepseek_turn` 已删），`turn_loop` 仅余 2 live helper 是迁移后残件、非 pending。本切片只删死结构，不动 live 代码。
 - **tui 142 既有 warning 均死代码**：与 baseline 对齐（仅 -1 自本切片删的 shim），零新增命中 agent-runtime/dispatch/tui main。
 
 **下一聚焦工作：**
-- §E 死代码清完（`turn_loop` 死结构 + `early_result` 死字段 + `prompt_zones` 死 shim 全删）。§E1 production `Engine`/`turn_loop`→`AgentExecutor` 迁移仍 deferred（需 replay bridge）。
-- §B3（cosmetic `DeepseekCN` 折叠）、§A1（DeepSeekClient 抽取）仍低优先/deferred。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
+- §E 死代码清完（`turn_loop` 死结构 + `early_result` 死字段 + `prompt_zones` 死 shim 全删）。~~§E1 production `Engine`/`turn_loop`→`AgentExecutor` 迁移仍 deferred（需 replay bridge）~~ → slice 48 复核 stale：§E1 production 迁移经 slice 20 cutover 完成（`HostAgentExecutor` 为 live production path、`handle_deepseek_turn` 已删）；"replay bridge" 实为 §A1 阻塞且已解除（rig compat 层原生序列化 `reasoning_content`），非 §E1 阻塞。
+- §B3（cosmetic `DeepseekCN` 折叠）仍低优先。~~§A1（DeepSeekClient 抽取）仍低优先/deferred~~ → slice 48 复核 stale：§A1 经 retirement+rig 完成（非抽取；replay bridge 不必要），tui `client.rs`/`chat.rs` 已删（slice 41）。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
+
+---
+
+**进度（2026-07-17 §A1/§E1 doc-debt cleanup slice 48——修正 "replay bridge deferred" stale 状态标记 + `handle_deepseek_turn remains live` / `DeepSeekClient` 死引用文档，`feat/pluggable-framework-core`）：**
+
+接 slice 47（§E 死代码清完，`:2189`）。复查 slice 47 的 "下一聚焦工作" 列发现其依据已 stale：该列把 §A1（DeepSeekClient 抽取）与 §E1（production `Engine`/`turn_loop`→`AgentExecutor` 迁移）均标 "deferred（需 replay bridge）"，但经代码核实两者实际均已完成——"replay bridge" 阻塞属 §A1 且已解除（rig compat 层原生序列化 `reasoning_content`，2026-07-07 §A1 checkpoint 对照 rig-core 0.39.0 源码核实），§E1 production 迁移经 slice 20 §E cutover 完成（`HostAgentExecutor` 为 `handle_send_message` 的 live production path、`handle_deepseek_turn` 已删、`fn handle_deepseek_turn` 定义不存在）。本切片修正全部 stale 标记，纯文档、零行为改动（匹配 slice 32/42/47 的 cleanup-slice 惯例）。
+
+**关键设计决策：**
+- **strawman "replay bridge" 是 §A1 阻塞、非 §E1 阻塞**：slice 47 的 "下一聚焦工作" 把 "需 replay bridge" 括注附在 §E1 行后（`:2214`），但 replay bridge 从来是 §A1（DeepSeek `reasoning_content` 回放协议搬迁）的阻塞。2026-07-07 §A1 checkpoint 核实 rig 的 compat 层原生把 `AssistantContent::Reasoning` 序列化为 `reasoning_content`，故回放桥接在 adapter 层即完成——阻塞解除，§A1 改走 retirement（DeepSeek 切 rig + 删 `DeepSeekClient`）而非抽取。§E1（production Engine→AgentExecutor 迁移）从未依赖 replay bridge；它依赖 guardrail 逐步吸收，slice 11–19 全部吸收、slice 20 cutover 上线。
+- **strkethrough-correct 而非改写历史条目**：slice 47 的 "下一聚焦工作" 与 "By-design gaps" 中 stale 的 §A1/§E1 断言用 `~~…~~ → slice 48 复核 stale：…` 收口（镜像 `:128` 的 `~~LlmClient trait 文档…~~ → §D2 已清理` 既有 pattern）。保历史记录（slice 47 当时认为 deferred）的同时就地标记纠正，避免下一读者被 "deferred — needs replay bridge" 误导。
+- **§A/§E1 section 用 Status 追加、非改写原计划**：§A1（`:2226`）与 §E1（`:2398`）的 deferred-work catalog 描述 "搬运/抽取/接真引擎" 原计划，实际经 retirement/cutover 完成（路径不同）。镜像 §D2 的 `**Status (9d47942c + slice 46):**` 追加 pattern——原计划文本作历史记录保留，追加 Status 段说明实际完成路径。
+- **ARCHITECTURE.md status table 是 current-status doc，直接改**：表行 277/278（tui-local `DeepSeekProviderFactory`/`DeepSeekClient::from_parts` 标 "✅ done"）描述 §D1 partial 期状态、§A1 后已退役；行 282（"seeds from default_registry for all non-DeepSeek"）描述 §D1 partial；行 285/288 标 deferred/in-progress。这些是 current-status 断言（非历史记录），直接改：retired 行改 "retired"（镜像行 283 `AnthropicClient retired` 的 template）、282 改 "all providers"、285/288 改 "done"。ASCII diagram（`:53`/`:77`）同步删 `DeepSeekProviderFactory`/`DeepSeekClient`。
+- **代码 doc comment assert current state，直接改**：`host_executor.rs` 模块 doc（"carries the real turn loop (handle_deepseek_turn)…will absorb…eventually replacing"）+ `:238` "not yet wired into handle_send_message; handle_deepseek_turn remains the live path" + `dispatch.rs:4` "high-level ordering still lives in Engine::handle_deepseek_turn" + `mod.rs:2757` "TUI-concrete types (… DeepSeekClient …)" + `tui/tests/README.md:28` "refactored to take Arc<dyn LlmClient> instead of Option<DeepSeekClient>" 均断言已不成立的状态，直接改 past-tense / 删死引用。`handle_deepseek_turn` 的**历史 provenance 引用**（guardrail doc 中 "mirroring handle_deepseek_turn's X"）保留——它们说明迁移出处、不断言当前 live。
+- **`tui/tests/README.md` 对齐 in-file comment**：`integration_mock_llm.rs:25-29` 的 in-file doc 已准确（engine holds `Option<LlmClientHandle>` = `Option<Arc<dyn LlmClient>>` since v0.8.48；tests remain ignored pending `EngineConfig`/`Config` harness），但 README 仍 stale（"unblock when Engine refactored to take Arc<dyn LlmClient> instead of Option<DeepSeekClient>"）。本切片把 README 改为对齐 in-file doc 的准确 framing——refactor 已落地、tests 仍 ignored 因 test-harness 缺口。
+
+**落地步骤：**
+1. `ARCHITECTURE.md` ASCII diagram：`:53` 删 "tui-local DeepSeekProviderFactory (wraps DeepSeekClient)" 行（status table 行 277/282 已显式说明 tui 不持 provider factory，diagram 无需重复）；`:77` "MockClient / RigLlmClient / DeepSeekClient / ..." → "MockClient / RigLlmClient / ..."。
+2. `ARCHITECTURE.md` status table：行 277/278 改 retired（"TUI-local DeepSeekProviderFactory retired — rig DeepSeekFactory replaces it (§A1)" / "DeepSeekClient retired — rig RigLlmClient replaces it (§A1); from_parts deleted"，where 列指向 deleted 文件）；行 282 改 "seeds from default_registry for all providers (§D1 partial → §A1 full cutover)"；行 285 改 "✅ done (superseded — retired, not extracted; replay bridge found unnecessary...)"；行 288 改 "HostAgentExecutor is the live production path (slice 20 cutover)... production Engine migration done"。
+3. `crates/agent-runtime/src/engine/host_executor.rs`：模块 doc（`:1-12`）改 past-tense（"replaced the retired handle_deepseek_turn in slice 20 cutover... handle_deepseek_turn is deleted"、"absorbed the production guardrails slice by slice"）；`:238-242` 改 "wired into handle_send_message (slice 20 §E cutover) and is the live production turn path; handle_deepseek_turn is deleted"。
+4. `crates/agent-runtime/src/engine/dispatch.rs:4`："high-level ordering still lives in Engine::handle_deepseek_turn" → "now lives in HostAgentExecutor (slice 20 §E cutover — handle_deepseek_turn retired/deleted)"。
+5. `crates/agent-runtime/src/engine/mod.rs:2757`："TUI-concrete types (Config, EngineHost, DeepSeekClient, …)" → "(Config, EngineHost, …)"。
+6. `crates/tui/tests/README.md:26-29`：改对齐 in-file doc（refactor 已落地 v0.8.48、tests 仍 ignored pending `EngineConfig`/`Config` harness）。
+7. `ROADMAP.md`：slice 46 "下一聚焦工作"（`:2181`/`:2185`）+ slice 47 "By-design gaps" `:2210` + "下一聚焦工作" `:2214`/`:2215` 共五处 stale §A1/§E1 "deferred" 断言 strkethrough-correct（`~~…~~ → slice 48 复核 stale：…`）；§A1 section + §E1 section 各追加 `**Status:**` 段说明实际完成路径。
+
+**测试：** 零测试改动——纯文档（doc comment + markdown），无代码逻辑变更。doc comment 改动经 `cargo build` 核实仍编译。
+
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning（doc comment 改动不触 warning）；`cargo +1.90.0 build -p codesmith-tui` 绿（README/dispatch/host_executor/mod 改动均为 doc，零代码影响）；`cargo +1.90.0 build --workspace` 全绿；grep 核实 `replay bridge` 命中仅剩 slice 48 entry + §A1 Status 段（说明已解除）+ slice 46/47 strikethrough 纠正注（历史），零 current-status 断言；`handle_deepseek_turn remains the live path` / `not yet wired into handle_send_message` 零命中；`DeepSeekClient` 命中仅剩 §A1 历史进度条目（2026-07-07 checkpoint，记录 retirement 史）+ §A1 Status 段（说明 retired）+ §A deferred-work catalog（原计划记录）。
+
+**By-design gaps（deferred，documented）：**
+- **§A/§E deferred-work catalog 原计划文本保留**：§A1-A4 / §E1-E4 的 deferred-work catalog 描述原 "extract" / "接真引擎" 计划，实际经 retirement/cutover 完成（路径不同）。原文本作历史记录保留，仅追加 Status 段——不改写原计划（保 "考虑过的方案" 记录）。§A2-A4（AnthropicClient / 共享 helper / per-client helper 去重）原计划亦经 retirement（AnthropicClient 删、slice 42 dedup）完成，Status 段仅在 §A1（retirement 起点）+ §E1（迁移起点）追加——§A2-A4 不逐条追加（§A1 Status 段已涵盖 "retirement 而非 extraction" 全局路径，§A2 同型）。
+- **`handle_deepseek_turn` 历史 provenance 引用保留**：host_executor.rs 的 guardrail doc 中 "mirroring handle_deepseek_turn's X (turn_loop.rs:NNN)" 引用说明 guardrail 的迁移出处，不断言当前 live，保留（line refs 指向已删代码属已知 doc-debt，但 provenance value 高于 line 准确性）。
+- **§B3 / §E4 follow-up 不变**：仍低优先 / 按需另开切片（slice 47 framing 不变，仅 §A1/§E1 从该列移除）。
+
+**下一聚焦工作：**
+- §A（provider extraction + 残件去重）+ §E（framework core traits + HostAgentExecutor cutover + 10 guardrails + §E4 manifest）主体至此**闭合并经文档核实**。pluggable framework core 迁移实质完成。
+- 残项均为低优先 / by-design / 按需：§B3（cosmetic `DeepseekCN`→`Deepseek` 折叠，mitigated）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需）、`turn_loop` 模块仅余 2 live helper 的进一步收敛（可考虑并入 host_executor 或保留——非阻塞）。
 
 ---
 
@@ -2235,6 +2271,20 @@ is carved out of `main.rs`).
   `from_parts(...)`. `from_parts` already exists (Step 2).
 - Re-export the moved type from tui (`pub use codesmith_providers::...`) only
   if a shim is needed; prefer routing through the registry.
+
+**Status (2026-07-07 §A1 + slice 41/42):** superseded — `DeepSeekClient` was
+**retired, not extracted.** The "needs DeepSeek replay bridge" blocker was
+found unnecessary: rig's OpenAI/DeepSeek compat layer natively serializes
+`AssistantContent::Reasoning` as the `reasoning_content` wire field (verified
+against rig-core 0.39.0, see the 2026-07-07 §A1 checkpoint). DeepSeek was
+switched onto the rig `DeepSeekFactory` via `default_registry()` and the
+tui-local `DeepSeekProviderFactory` + `DeepSeekClient` were deleted. Slice 41
+then migrated the residual inspect/warmup cluster (`client.rs`/`chat.rs`) to
+`codesmith-agent-runtime` `prompt_inspect` and deleted those tui files; slice
+42 deduped the reasoning predicates (→ `codesmith-agent` core) and
+`sha256_hex` (→ agent-runtime `utils`). The "extract into
+`codesmith-providers`" path above is the abandoned original plan, kept as a
+record of the approach considered.
 
 ### A2 — Extract the Anthropic client
 - Move `crates/tui/src/client/anthropic.rs` (`AnthropicClient`, ~940 lines)
@@ -2387,6 +2437,16 @@ a fuller agent framework.
   step/max-iteration caps. Today this lives tangled in `codesmith-agent-runtime`
   `Engine`; extract a reusable `AgentExecutor` trait + default impl in
   `codesmith-agent`.
+
+**Status (framework-core traits + slices 11–20 §E):** done. The `AgentExecutor`
+trait + the host-agnostic `DefaultAgentExecutor` reference impl landed in
+`codesmith-agent` (`crates/agent/src/executor/mod.rs`). The host-side
+`HostAgentExecutor` (`crates/agent-runtime/src/engine/host_executor.rs`)
+absorbed the production guardrails across slices 11–40 and became the live
+production path in the slice 20 §E cutover — `Engine::handle_send_message`
+constructs a `HostAgentExecutor` and calls `executor.run(...)`; the tangled
+`handle_deepseek_turn` (~2.4k lines) is deleted. The "Today this lives tangled
+in Engine" framing above is the pre-migration state, kept as a record.
 
 ### E2 — Tool / message abstractions in core
 - Promote the tool-call protocol (`Tool`, `ToolUse`, `ToolResult` shapes in

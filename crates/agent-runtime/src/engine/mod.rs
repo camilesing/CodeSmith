@@ -2754,7 +2754,7 @@ impl Engine {
     /// side (`build_engine` in `codesmith-tui`), which calls into here once
     /// the portable fields are ready. Keeping `Engine` construction split this
     /// way lets the runtime body live in `codesmith-agent-runtime` free of
-    /// TUI-concrete types (`Config`, `EngineHost`, `DeepSeekClient`, …).
+    /// TUI-concrete types (`Config`, `EngineHost`, …).
     pub fn new_runtime(
         config: EngineConfig,
         host: Arc<dyn HostServices>,

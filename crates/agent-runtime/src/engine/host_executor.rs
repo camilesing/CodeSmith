@@ -1,15 +1,15 @@
-//! Host-side [`AgentExecutor`] — the designated home for the production turn
-//! loop migration (ROADMAP §E "接真引擎").
+//! Host-side [`AgentExecutor`] — the home of the production turn loop
+//! (ROADMAP §E "接真引擎"). It replaced the retired `handle_deepseek_turn`
+//! (~2.4k lines) in the slice 20 §E cutover — `Engine::handle_send_message`
+//! now routes through [`HostAgentExecutor`], and `handle_deepseek_turn` is
+//! deleted.
 //!
 //! The framework-core [`DefaultAgentExecutor`](codesmith_agent::executor::DefaultAgentExecutor)
-//! is the minimal, host-agnostic reference loop. The production `Engine` in
-//! this crate carries the real turn loop (`handle_deepseek_turn`, ~2.4k lines)
-//! with ten guardrails (compaction / capacity / approval / steer /
+//! is the minimal, host-agnostic reference loop. [`HostAgentExecutor`] is the
+//! host-side [`AgentExecutor`] impl that absorbed the production guardrails
+//! slice by slice (compaction / capacity / approval / steer /
 //! transparent-retry / early-tool-start / subagent / LSP / loop-guard / cycle).
-//! [`HostAgentExecutor`] is the host-side [`AgentExecutor`] impl that will
-//! absorb those guardrails slice by slice, eventually replacing
-//! `handle_deepseek_turn`. The three host→framework bridges are already in
-//! place to compose it:
+//! The three host→framework bridges compose it:
 //!
 //! - [`ToolSpecAdapter`](crate::tools::framework_adapter::ToolSpecAdapter) —
 //!   production `ToolSpec`+`ToolContext` → framework `Tool` (the `run` path).
@@ -235,11 +235,11 @@
 //! (`event_tx`) — **not** via the framework `Callback`: guardrails are
 //! host-side concerns and the `Callback` trait stays untouched per ROADMAP §E.
 //!
-//! It is **not yet wired into `handle_send_message`**; the production
-//! `handle_deepseek_turn` remains the live path — the value of landing it now is
-//! the composition proof (the three bridges light up end-to-end inside a real
+//! It is **wired into `handle_send_message`** (slice 20 §E cutover) and is
+//! the live production turn path; `handle_deepseek_turn` is deleted. The
+//! composition proof (the three bridges light up end-to-end inside a real
 //! `AgentExecutor::run` driving a real `ToolSpec` over a real `Session`; see the
-//! headline test) plus eight guardrails absorbed at the seams below.
+//! headline test) plus the guardrails absorbed at the seams below hold.
 //!
 //! ## Guardrail insertion points
 //!
