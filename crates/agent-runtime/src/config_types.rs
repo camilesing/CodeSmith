@@ -198,8 +198,17 @@ pub const DEFAULT_SUBAGENT_API_TIMEOUT_SECS: u64 = 120;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiProvider {
+    // §B3 slice 52 — `DeepseekCN` folded onto `Deepseek`; the `deepseek-cn` family
+    // (incl. the old `deepseek_cn` snake_case rename of the deleted variant) now
+    // collapses here, mirroring `codesmith_config::ProviderKind`.
+    #[serde(
+        alias = "deepseek-cn",
+        alias = "deepseek_china",
+        alias = "deepseekcn",
+        alias = "deepseek-china",
+        alias = "deepseek_cn"
+    )]
     Deepseek,
-    DeepseekCN,
     NvidiaNim,
     Openai,
     Atlascloud,
@@ -221,10 +230,8 @@ impl ApiProvider {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "deepseek" | "deep-seek" => Some(Self::Deepseek),
-            "deepseek-cn" | "deepseek_china" | "deepseekcn" | "deepseek-china" => {
-                Some(Self::DeepseekCN)
-            }
+            "deepseek" | "deep-seek" | "deepseek-cn" | "deepseek_china" | "deepseekcn"
+            | "deepseek-china" | "deepseek_cn" => Some(Self::Deepseek),
             "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
             "openai" | "open-ai" => Some(Self::Openai),
             "atlascloud" | "atlas-cloud" | "atlas_cloud" | "atlas" => Some(Self::Atlascloud),
@@ -252,7 +259,6 @@ impl ApiProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Deepseek => "deepseek",
-            Self::DeepseekCN => "deepseek-cn",
             Self::NvidiaNim => "nvidia-nim",
             Self::Openai => "openai",
             Self::Atlascloud => "atlascloud",
@@ -276,7 +282,6 @@ impl ApiProvider {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Deepseek => "DeepSeek",
-            Self::DeepseekCN => "DeepSeek (legacy alias)",
             Self::NvidiaNim => "NVIDIA NIM",
             Self::Openai => "OpenAI-compatible",
             Self::Atlascloud => "AtlasCloud",
@@ -449,7 +454,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
     }
 
     let model_lower = resolved_model.to_ascii_lowercase();
-    let alias_deprecation = if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+    let alias_deprecation = if matches!(provider, ApiProvider::Deepseek) {
         deepseek_alias_deprecation(&model_lower)
     } else {
         None
@@ -489,10 +494,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
     // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
     let cache_telemetry_supported = matches!(
         provider,
-        ApiProvider::Deepseek
-            | ApiProvider::DeepseekCN
-            | ApiProvider::NvidiaNim
-            | ApiProvider::Volcengine
+        ApiProvider::Deepseek | ApiProvider::NvidiaNim | ApiProvider::Volcengine
     );
 
     // Request payload mode: all current providers use chat completions.

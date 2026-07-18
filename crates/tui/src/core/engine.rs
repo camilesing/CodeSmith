@@ -250,7 +250,7 @@ fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
 
     let provider = api_config.api_provider();
     let env_var = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
+        ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
         ApiProvider::NvidiaNim => "NVIDIA_API_KEY/NVIDIA_NIM_API_KEY",
         ApiProvider::Openai => "OPENAI_API_KEY",
         ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",

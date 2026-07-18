@@ -6721,7 +6721,7 @@ fn should_fetch_deepseek_balance_requires_deepseek_provider() {
     app.api_provider = ApiProvider::Openrouter;
     assert!(!should_fetch_deepseek_balance(&app));
 
-    app.api_provider = ApiProvider::DeepseekCN;
+    app.api_provider = ApiProvider::Deepseek;
     assert!(should_fetch_deepseek_balance(&app));
 }
 

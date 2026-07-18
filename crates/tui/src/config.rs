@@ -111,9 +111,6 @@ pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 ///
 /// DeepSeek's official API host is the same worldwide. Keep this alias for
 /// old configs, but route it through the normal beta-enabled DeepSeek default.
-/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL
-/// heuristics for backward compatibility.
-pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = DEFAULT_DEEPSEEK_BASE_URL;
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
@@ -282,7 +279,7 @@ pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> 
     }
 
     let normalized = normalize_model_name(model)?;
-    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+    if matches!(provider, ApiProvider::Deepseek)
         && let Some(canonical) = canonical_official_deepseek_model_id(&normalized)
     {
         // When the user's input already matches a known model id
@@ -310,7 +307,7 @@ pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> 
 #[must_use]
 pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'static str> {
     match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => OFFICIAL_DEEPSEEK_MODELS.to_vec(),
+        ApiProvider::Deepseek => OFFICIAL_DEEPSEEK_MODELS.to_vec(),
         ApiProvider::NvidiaNim => vec![DEFAULT_NVIDIA_NIM_MODEL, DEFAULT_NVIDIA_NIM_FLASH_MODEL],
         ApiProvider::Openrouter => {
             let mut models = vec![DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_FLASH_MODEL];
@@ -868,7 +865,7 @@ impl StatusItem {
     pub fn is_available_for(self, provider: ApiProvider) -> bool {
         match self {
             StatusItem::Balance => {
-                matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+                matches!(provider, ApiProvider::Deepseek)
             }
             _ => true,
         }
@@ -1364,6 +1361,11 @@ pub struct CustomProviderConfig {
 pub struct ProvidersConfig {
     #[serde(default)]
     pub deepseek: ProviderConfig,
+    // §B3 slice 52 — `DeepseekCN` folded onto `Deepseek`; this field is now a
+    // deprecated read-only legacy sink. `[providers.deepseek_cn]` tables from
+    // hand-edited configs are still deserialized (no silent drop) and surfaced
+    // via `Config::legacy_deepseek_cn_api_key()` as a fallback for the active
+    // `Deepseek` provider's api_key. No code path writes this field.
     #[serde(default)]
     pub deepseek_cn: ProviderConfig,
     #[serde(default)]
@@ -1530,7 +1532,7 @@ impl Config {
             return;
         }
         let provider = self.api_provider();
-        if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+        if matches!(provider, ApiProvider::Deepseek) {
             return;
         }
         if matches!(provider, ApiProvider::NvidiaNim)
@@ -1564,7 +1566,7 @@ impl Config {
             ApiProvider::Volcengine => "providers.volcengine",
             ApiProvider::NvidiaNim => "providers.nvidia_nim",
             ApiProvider::Anthropic => "providers.anthropic",
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => return,
+            ApiProvider::Deepseek => return,
         };
         tracing::warn!(
             "Top-level `base_url = \"{root_base}\"` is ignored for the {provider:?} provider. \
@@ -1701,13 +1703,7 @@ impl Config {
                     .as_deref()
                     .filter(|base| base.contains("integrate.api.nvidia.com"))
                     .map(|_| ApiProvider::NvidiaNim)
-                    .or_else(|| {
-                        self.base_url
-                            .as_deref()
-                            .filter(|base| base.contains("api.deepseeki.com"))
-                            .map(|_| ApiProvider::DeepseekCN)
-                    })
-                    .unwrap_or(ApiProvider::Deepseek)
+                        .unwrap_or(ApiProvider::Deepseek)
             })
     }
 
@@ -1735,7 +1731,6 @@ impl Config {
         let providers = self.providers.as_ref()?;
         Some(match provider {
             ApiProvider::Deepseek => &providers.deepseek,
-            ApiProvider::DeepseekCN => &providers.deepseek_cn,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openai => &providers.openai,
             ApiProvider::Atlascloud => &providers.atlascloud,
@@ -1756,6 +1751,16 @@ impl Config {
 
     pub(crate) fn provider_config(&self) -> Option<&ProviderConfig> {
         self.provider_config_for(self.api_provider())
+    }
+
+    /// §B3 slice 52 — read-side fallback for hand-edited `[providers.deepseek_cn]`
+    /// configs. Returns the legacy table's `api_key` (unvalidated) so callers
+    /// apply the same non-empty / non-sentinel check as `provider_config_for`.
+    /// Only the `api_key` field is surfaced; base_url/model defaults already
+    /// match `Deepseek` (the redundant `DEFAULT_DEEPSEEKCN_BASE_URL` was deleted).
+    #[must_use]
+    pub(crate) fn legacy_deepseek_cn_api_key(&self) -> Option<&str> {
+        self.providers.as_ref()?.deepseek_cn.api_key.as_deref()
     }
 
     #[must_use]
@@ -1815,7 +1820,7 @@ impl Config {
             // provider (e.g. `MiniMax-M2.7` on an OpenAI-compatible endpoint).
             // It must pass through verbatim rather than fall back to a
             // DeepSeek/provider default (issue #1714).
-            if !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+            if !matches!(provider, ApiProvider::Deepseek) {
                 let trimmed = model.trim();
                 if !trimmed.is_empty() {
                     return trimmed.to_string();
@@ -1853,7 +1858,7 @@ impl Config {
         }
 
         match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => DEFAULT_TEXT_MODEL,
+            ApiProvider::Deepseek => DEFAULT_TEXT_MODEL,
             ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
             ApiProvider::Openai => DEFAULT_OPENAI_MODEL,
             ApiProvider::Atlascloud => DEFAULT_ATLASCLOUD_MODEL,
@@ -1904,7 +1909,7 @@ impl Config {
         // were added in v0.6.7 and require explicit `[providers.<name>]`
         // entries or the corresponding `*_BASE_URL` env var.
         let root_base = match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => self.base_url.clone(),
+            ApiProvider::Deepseek => self.base_url.clone(),
             ApiProvider::NvidiaNim => self
                 .base_url
                 .as_ref()
@@ -1928,7 +1933,6 @@ impl Config {
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
                 ApiProvider::Deepseek => DEFAULT_DEEPSEEK_BASE_URL,
-                ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
                 ApiProvider::Openai => DEFAULT_OPENAI_BASE_URL,
                 ApiProvider::Atlascloud => DEFAULT_ATLASCLOUD_BASE_URL,
@@ -2009,7 +2013,7 @@ impl Config {
         }
         let provider = self.api_provider();
         let slot = match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => "deepseek",
+            ApiProvider::Deepseek => "deepseek",
             ApiProvider::NvidiaNim => "nvidia-nim",
             ApiProvider::Openai => "openai",
             ApiProvider::Atlascloud => "atlascloud",
@@ -2030,7 +2034,7 @@ impl Config {
         // 0. DeepSeek compatibility slot. The legacy top-level `api_key`
         // belongs to DeepSeek only; provider-specific keys below must win for
         // NIM/OpenRouter/etc. so a stale DeepSeek key is not sent elsewhere.
-        if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+        if matches!(provider, ApiProvider::Deepseek)
             && let Some(configured) = self.api_key.as_ref()
             && !configured.trim().is_empty()
             && configured != API_KEYRING_SENTINEL
@@ -2069,7 +2073,7 @@ impl Config {
         }
 
         match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => anyhow::bail!(
+            ApiProvider::Deepseek => anyhow::bail!(
                 "DeepSeek API key not found.\n\
                  \n\
                  1. Get a key:  https://platform.deepseek.com/api_keys\n\
@@ -2885,7 +2889,7 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(value) = codesmith_env_var("CODESMITH_BASE_URL", "DEEPSEEK_BASE_URL") {
         match config.api_provider() {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+            ApiProvider::Deepseek => {
                 config.base_url = Some(value);
             }
             ApiProvider::NvidiaNim => {
@@ -3137,7 +3141,6 @@ fn apply_env_overrides(config: &mut Config) {
             .get_or_insert_with(ProvidersConfig::default);
         let entry = match provider {
             ApiProvider::Deepseek => &mut providers.deepseek,
-            ApiProvider::DeepseekCN => &mut providers.deepseek_cn,
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openai => &mut providers.openai,
             ApiProvider::Atlascloud => &mut providers.atlascloud,
@@ -3266,14 +3269,14 @@ fn apply_env_overrides(config: &mut Config) {
         // (issue #1714). Mirror the OPENAI_MODEL branch above for every
         // non-DeepSeek provider.
         let provider = config.api_provider();
-        if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+        if matches!(provider, ApiProvider::Deepseek) {
             config.default_text_model = Some(value);
         } else {
             let providers = config
                 .providers
                 .get_or_insert_with(ProvidersConfig::default);
             let entry = match provider {
-                ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(
+                ApiProvider::Deepseek => unreachable!(
                     "DeepSeek providers are handled in the if branch above (issue #1714)"
                 ),
                 ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
@@ -3534,12 +3537,6 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.deepseek.model = Some(normalized);
         }
-        if let Some(model) = providers.deepseek_cn.model.as_deref()
-            && !provider_entry_uses_custom_base_url(ApiProvider::DeepseekCN, &providers.deepseek_cn)
-            && let Some(normalized) = normalize_model_for_provider(ApiProvider::DeepseekCN, model)
-        {
-            providers.deepseek_cn.model = Some(normalized);
-        }
         if let Some(model) = providers.nvidia_nim.model.as_deref()
             && !provider_entry_uses_custom_base_url(ApiProvider::NvidiaNim, &providers.nvidia_nim)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::NvidiaNim, model)
@@ -3629,7 +3626,6 @@ fn provider_entry_uses_custom_base_url(provider: ApiProvider, entry: &ProviderCo
 fn default_base_url_for_provider(provider: ApiProvider) -> &'static str {
     match provider {
         ApiProvider::Deepseek => DEFAULT_DEEPSEEK_BASE_URL,
-        ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
         ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
         ApiProvider::Openai => DEFAULT_OPENAI_BASE_URL,
         ApiProvider::Atlascloud => DEFAULT_ATLASCLOUD_BASE_URL,
@@ -4324,7 +4320,17 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
         return true;
     }
 
-    matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+    // §B3 slice 52 — legacy `[providers.deepseek_cn]` api_key fallback for
+    // hand-edited configs (the `deepseek_cn` table is a deprecated read sink).
+    if matches!(provider, ApiProvider::Deepseek)
+        && config
+            .legacy_deepseek_cn_api_key()
+            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+    {
+        return true;
+    }
+
+    matches!(provider, ApiProvider::Deepseek)
         && config
             .api_key
             .as_ref()
@@ -4334,7 +4340,7 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
 #[must_use]
 pub fn active_provider_has_env_api_key(config: &Config) -> bool {
     match config.api_provider() {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+        ApiProvider::Deepseek => {
             std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
         ApiProvider::NvidiaNim => {
@@ -4395,7 +4401,7 @@ pub fn active_provider_uses_env_only_api_key(config: &Config) -> bool {
 #[must_use]
 pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     let env_var = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
+        ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
         ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
         ApiProvider::Openai => "OPENAI_API_KEY",
         ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
@@ -4471,7 +4477,17 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         return true;
     }
 
-    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+    // §B3 slice 52 — legacy `[providers.deepseek_cn]` api_key fallback for
+    // hand-edited configs (the `deepseek_cn` table is a deprecated read sink).
+    if matches!(provider, ApiProvider::Deepseek)
+        && config
+            .legacy_deepseek_cn_api_key()
+            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+    {
+        return true;
+    }
+
+    if matches!(provider, ApiProvider::Deepseek)
         && config
             .api_key
             .as_ref()
@@ -4488,7 +4504,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
 /// `[providers.<name>] api_key = "..."` to `~/.codesmith/config.toml`.
 /// Returns the config file path.
 pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf> {
-    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+    if matches!(provider, ApiProvider::Deepseek) {
         return match save_api_key(api_key)? {
             SavedCredential::KeyringAndConfigFile { path, .. }
             | SavedCredential::ConfigFile(path) => Ok(path),
@@ -4500,7 +4516,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     ensure_parent_dir(&config_path)?;
 
     let table_name = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+        ApiProvider::Deepseek => {
             return Err(anyhow::anyhow!(
                 "save_api_key_for: DeepSeek variants must use the root api_key field, not provider-specific storage"
             ));
@@ -4541,7 +4557,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         .as_table_mut()
         .context("`providers` must be a table.")?;
     let key_inside = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+        ApiProvider::Deepseek => {
             return Err(anyhow::anyhow!(
                 "save_api_key_for: DeepSeek variants must use the root api_key field, not provider-specific storage"
             ));
@@ -4636,7 +4652,7 @@ pub fn save_provider_auth_mode_for(provider: ApiProvider, auth_mode: &str) -> Re
 
 fn provider_config_key(provider: ApiProvider) -> Result<&'static str> {
     match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+        ApiProvider::Deepseek => {
             anyhow::bail!("DeepSeek stores auth at the root config level")
         }
         ApiProvider::NvidiaNim => Ok("nvidia_nim"),
@@ -8416,7 +8432,7 @@ api_key = "moonshot-platform-key"
     }
 
     #[test]
-    fn has_api_key_for_uses_deepseek_cn_provider_table() -> Result<()> {
+    fn has_api_key_for_deepseek_falls_back_to_legacy_deepseek_cn_table() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -8437,7 +8453,10 @@ api_key = "moonshot-platform-key"
             ..Config::default()
         };
 
-        assert!(has_api_key_for(&config, ApiProvider::DeepseekCN));
+        // §B3 slice 52 — `DeepseekCN` folded onto `Deepseek`; the active
+        // provider is `Deepseek`, and the legacy `[providers.deepseek_cn]`
+        // table is surfaced via the read-side fallback in `has_api_key_for`.
+        assert!(has_api_key_for(&config, ApiProvider::Deepseek));
         Ok(())
     }
 
@@ -8449,7 +8468,6 @@ api_key = "moonshot-platform-key"
         };
 
         assert!(has_api_key_for(&config, ApiProvider::Deepseek));
-        assert!(has_api_key_for(&config, ApiProvider::DeepseekCN));
     }
 
     #[test]
@@ -8559,7 +8577,7 @@ api_key = "moonshot-platform-key"
     }
 
     #[test]
-    fn save_api_key_for_deepseek_cn_uses_root_deepseek_storage() -> Result<()> {
+    fn save_api_key_for_deepseek_uses_root_storage() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -8574,7 +8592,7 @@ api_key = "moonshot-platform-key"
         let _guard = EnvGuard::new(&temp_root);
         unsafe { std::env::set_var("DEEPSEEK_SECRET_BACKEND", "local") };
 
-        let path = save_api_key_for(ApiProvider::DeepseekCN, "cn-saved-key")?;
+        let path = save_api_key_for(ApiProvider::Deepseek, "cn-saved-key")?;
         let contents = fs::read_to_string(&path)?;
         let parsed: toml::Value = toml::from_str(&contents)?;
 
@@ -8952,10 +8970,50 @@ model = "deepseek-ai/deepseek-v4-pro"
     }
 
     #[test]
+    fn api_provider_accepts_legacy_deepseek_cn_aliases() {
+        // §B3 slice 52 — `DeepseekCN` folded onto `Deepseek`; all legacy alias
+        // strings (incl. the old `deepseek_cn` snake_case rename of the deleted
+        // variant) collapse to `Deepseek`, mirroring `ProviderKind`
+        // (crates/config/src/lib.rs `provider_kind_accepts_legacy_deepseek_cn_aliases`).
+        // `parse()` is typo-tolerant (also accepts `deep-seek`); serde accepts
+        // the canonical `deepseek` + the documented aliases (not `deep-seek`).
+        for alias in [
+            "deepseek",
+            "deep-seek",
+            "deepseek-cn",
+            "deepseek_china",
+            "deepseekcn",
+            "deepseek-china",
+            "deepseek_cn",
+        ] {
+            assert_eq!(ApiProvider::parse(alias), Some(ApiProvider::Deepseek));
+        }
+        for alias in [
+            "deepseek",
+            "deepseek-cn",
+            "deepseek_china",
+            "deepseekcn",
+            "deepseek-china",
+            "deepseek_cn",
+        ] {
+            let v = serde_json::Value::String(alias.to_string());
+            assert_eq!(
+                serde_json::from_value::<ApiProvider>(v).expect("legacy alias"),
+                ApiProvider::Deepseek
+            );
+        }
+        // Canonical serialization is the bare provider name (not the old
+        // `deepseek-cn` / `deepseek_cn` forms emitted by the deleted variant).
+        assert_eq!(
+            serde_json::to_value(ApiProvider::Deepseek).expect("serialize"),
+            serde_json::Value::String("deepseek".to_string())
+        );
+    }
+
+    #[test]
     fn status_item_balance_available_only_for_deepseek_providers() {
-        // Balance item should only be offered for DeepSeek / DeepSeekCN.
+        // Balance item should only be offered for DeepSeek.
         assert!(StatusItem::Balance.is_available_for(ApiProvider::Deepseek));
-        assert!(StatusItem::Balance.is_available_for(ApiProvider::DeepseekCN));
         // Sanity: all other known providers should hide the Balance toggle.
         assert!(!StatusItem::Balance.is_available_for(ApiProvider::Openrouter));
         assert!(!StatusItem::Balance.is_available_for(ApiProvider::Novita));

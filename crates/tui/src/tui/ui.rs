@@ -1016,7 +1016,7 @@ fn should_fetch_deepseek_balance(app: &App) -> bool {
     app.status_items.contains(&StatusItem::Balance)
         && matches!(
             app.api_provider,
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN
+            ApiProvider::Deepseek
         )
 }
 
@@ -6263,7 +6263,6 @@ fn render(f: &mut Frame, app: &mut App) {
         let effort_label = app.reasoning_effort_display_label();
         let provider_label = match app.api_provider {
             crate::config::ApiProvider::Deepseek => None,
-            crate::config::ApiProvider::DeepseekCN => None,
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
             crate::config::ApiProvider::Openai => Some("OpenAI"),
             crate::config::ApiProvider::Atlascloud => Some("Atlas"),
@@ -7188,14 +7187,14 @@ async fn apply_provider_picker_api_key(
 
     // Mirror the saved key into the in-memory config so the engine sees it
     // immediately without a reload — `save_api_key_for` only touches disk.
-    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+    if matches!(provider, ApiProvider::Deepseek) {
         config.api_key = Some(api_key);
     } else {
         let providers = config
             .providers
             .get_or_insert_with(ProvidersConfig::default);
         let entry: &mut ProviderConfig = match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+            ApiProvider::Deepseek => {
                 // Guarded by the outer `if` above; safety net against refactors.
                 return;
             }
@@ -7254,7 +7253,7 @@ fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, 
         .providers
         .get_or_insert_with(ProvidersConfig::default);
     let entry: &mut ProviderConfig = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => return,
+        ApiProvider::Deepseek => return,
         ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
         ApiProvider::Openai => &mut providers.openai,
         ApiProvider::Atlascloud => &mut providers.atlascloud,

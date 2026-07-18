@@ -2055,7 +2055,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "ANTHROPIC_API_KEY/CLAUDE_API_KEY",
                     "codesmith auth set --provider anthropic --api-key \"...\"",
                 ),
-                crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
+                crate::config::ApiProvider::Deepseek => {
                     ("DEEPSEEK_API_KEY", "codesmith auth set --provider deepseek")
                 }
             };
@@ -2078,8 +2078,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Vllm => "vllm",
                     crate::config::ApiProvider::Ollama => "ollama",
                     crate::config::ApiProvider::Anthropic => "anthropic",
-                    crate::config::ApiProvider::Deepseek
-                    | crate::config::ApiProvider::DeepseekCN => "deepseek",
+                    crate::config::ApiProvider::Deepseek => "deepseek",
                 }
             );
         }
@@ -3529,7 +3528,7 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
                     .to_string(),
             );
         }
-        crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
+        crate::config::ApiProvider::Deepseek => {
             lines.push(
                 "If this is a custom DeepSeek-compatible endpoint, confirm it serves `/v1/models` and `/v1/chat/completions` over HTTPS."
                     .to_string(),
@@ -6420,8 +6419,7 @@ mod doctor_endpoint_tests {
 
         let target = doctor_api_target(&config);
 
-        assert_eq!(target.provider, "deepseek-cn");
-        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
+        assert_eq!(target.provider, "deepseek");
         assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEK_BASE_URL);
         assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
     }

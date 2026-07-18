@@ -96,7 +96,7 @@ impl ProviderPickerView {
 
     fn env_var_for(provider: ApiProvider) -> &'static str {
         match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
+            ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
             ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
             ApiProvider::Openai => "OPENAI_API_KEY",
             ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",

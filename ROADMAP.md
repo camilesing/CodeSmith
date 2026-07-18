@@ -2340,7 +2340,43 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 **下一聚焦工作：**
 - §A + §E 全部闭合、结构性收敛 + doc-debt 清零（slice 50）+ §B3/§E4 catalog Status 段补全（slice 51）——pluggable framework core 迁移的结构 + doc + catalog-status 三线收尾完成。
-- 残项仍为低优先 / by-design / 按需二项：§B3 cosmetic `DeepseekCN`→`Deepseek` 折叠（mitigated，待 future structural slice）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需另开切片）。
+- ~~残项 §B3 cosmetic `DeepseekCN`→`Deepseek` 折叠（mitigated，待 future structural slice）~~ → slice 52 完成：`DeepseekCN` 变体删除 + `deepseek-cn`/`deepseek_cn` 等 alias 折叠到 `Deepseek` + read-side `legacy_deepseek_cn_api_key()` fallback 落地，§B3 闭合。残项仅余 §E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需另开切片）。
+
+**进度（2026-07-18 §B3 slice 52 `ApiProvider::DeepseekCN` cosmetic fold + read-side fallback——变体删除 + alias 折叠 + `[providers.deepseek_cn]` read-only legacy sink，`feat/pluggable-framework-core`）：**
+
+接 slice 51（§B3/§E4 doc-debt cleanup，`:2312`）。slice 51 Status 段明确 §B3 decoupling goal 已完成（`&str`-keyed 非 `ProviderKind` switch）、仅余 `ApiProvider::DeepseekCN` 变体 cosmetic 折叠 deferred（窄 read-path regression：手工编辑 `[providers.deepseek_cn]` 存储 + `display_name` 失 "(legacy alias)" 后缀）。本切片执行该折叠——mirror `ProviderKind`（`crates/config/src/lib.rs:76-79` serde aliases + `:138-139` `parse()` collapse `deepseek-cn` family → `Deepseek`）到 `ApiProvider`，并加 read-side fallback 缓解 documented regression (a)。§B3 闭合，pluggable framework core 迁移结构 + doc + catalog-status + 最后 cosmetic fold 四线全收尾。
+
+**关键设计决策：**
+- **Mirror `ProviderKind` alias pattern on `ApiProvider::Deepseek`**：删 `DeepseekCN` 变体（`config_types.rs:202`），在 `Deepseek` 加 `#[serde(alias = "deepseek-cn", alias = "deepseek_china", alias = "deepseekcn", alias = "deepseek-china", alias = "deepseek_cn")]`（末 alias 覆盖旧 snake_case rename → `ProviderCapability` JSON backward-compat）；`parse()` CN arm 折进 `"deepseek"` arm + 加 `"deepseek_cn"`（关闭 latent gap——serde 接受 `deepseek_cn` 但 `parse()` 之前拒绝）。
+- **Read-side fallback mitigates regression (a)**：`providers.deepseek_cn: ProviderConfig` field 保留为 deprecated read-only legacy sink（serde 仍反序列化 `[providers.deepseek_cn]` table——无 silent drop）；新增 private helper `Config::legacy_deepseek_cn_api_key()`（`config.rs:1762`）返回 `providers.deepseek_cn.api_key`；两 api_key-read predicates（`has_api_key_for` `:4484` + `active_provider_has_config_api_key` `:4327`）在 `Deepseek` branch `providers.deepseek.api_key` miss 后 consult fallback。Surgical——精准覆盖 documented `api_key`-storage regression；`base_url`/`model` default-const arms 已解析到 identical values（`DEFAULT_DEEPSEEKCN_BASE_URL == DEFAULT_DEEPSEEK_BASE_URL`），无需 fallback。
+- **`DEFAULT_DEEPSEEKCN_BASE_URL` const 删除**（`config.rs:116`，`== DEFAULT_DEEPSEEK_BASE_URL`）；2 arms repoint 到 `DEFAULT_DEEPSEEK_BASE_URL`。
+- **Env override repoint**（`:3140`）：`DEEPSEEK_HTTP_HEADERS` 写 `providers.deepseek_cn`（for `DeepseekCN`）→ 折进 `Deepseek => &mut providers.deepseek` arm。此后 `deepseek_cn` field 无任何 code path 写入（pure legacy read sink）——匹配已有 TUI save flow（`save_api_key_for` 对两 DeepSeek variant 均 bail）。
+- **35 grouped match arms mechanical fold**：`Deepseek | DeepseekCN =>` / `matches!(... Deepseek | DeepseekCN)` 跨 `config_types.rs` + `tui/config.rs`（~25 sites）+ `tui/{core/engine.rs, tui/provider_picker.rs, tui/app.rs, tui/ui.rs, main.rs, commands/balance.rs}` + `provider_config_for`（separate CN arm 删除——`Deepseek` 返回 `&providers.deepseek`，fallback 在 key-read path per decision 2）。
+- **`codesmith-providers` `&str`-keyed allowlists `"deepseek-cn"` arms 保留**（`reasoning.rs:34/100/133/180`）：defensive——接受 input strings，保留 alias accepted 正确（其他 path 可能仍传 hyphen string）。Out of scope（matching slice 48/50 provenance-preserves policy）。
+- **`display_name()` 失 "(legacy alias)" 后缀**（`config_types.rs:279` 删 CN arm）：`Deepseek` display 仅 `"DeepSeek"`。documented regression (b)，接受。
+- **`config.example.toml:22,25` 不动**：`deepseek-cn` 仍 parse（to `Deepseek` now），comments 仍准确。
+
+**落地步骤：**
+1. `crates/agent-runtime/src/config_types.rs`：`:202` 删 `DeepseekCN,`；`:201` `Deepseek` 加 serde aliases；`:223-224` fold CN arm 进 `"deepseek"` arm + 加 `deepseek_cn`；`:255` 删 `as_str()` CN arm（仅 emit `"deepseek"`）；`:279` 删 `display_name()` CN arm；`:452`/`:493` grouped arms fold（删 `| ApiProvider::DeepseekCN`）。
+2. `crates/tui/src/config.rs`：`:116` 删 `DEFAULT_DEEPSEEKCN_BASE_URL`；`:1364-1370` 保留 `deepseek_cn` field + deprecation comment；`:1762` 加 `legacy_deepseek_cn_api_key()` helper；`:1708` repoint `api.deepseeki.com` sniff 到 `Deepseek`；`:1738` 删 `provider_config_for` CN arm；`:4323`/`:4480` 加 fallback（comment + call at `:4327`/`:4484`）；`:1931`/`:3632` repoint const；`:3140` repoint env override；~25 grouped arms fold。
+3. 其他 TUI files mechanical fold：`core/engine.rs:253`、`tui/provider_picker.rs:99`、`tui/app.rs:1703`、`tui/ui.rs`（6 sites）、`main.rs`（3 sites）、`commands/balance.rs:17`。
+4. Tests（`crates/tui/`）：rewrite `config.rs:8435` → `has_api_key_for_deepseek_falls_back_to_legacy_deepseek_cn_table`（assert `Deepseek` 经新 fallback 在 `providers.deepseek_cn` 找到 key）；`:8444` 删 `DeepseekCN` assert；`:8561` rename `save_api_key_for_deepseek_cn_uses_root_deepseek_storage` → `…deepseek_uses_root_storage`，`DeepseekCN` → `Deepseek`；`:8954` 删 `DeepseekCN` `is_available_for` assert；`ui/tests.rs:6716` `DeepseekCN` → `Deepseek`；`main.rs:6414` `target.provider` assert `"deepseek-cn"` → `"deepseek"`；新增 `config.rs:8973` `api_provider_accepts_legacy_deepseek_cn_aliases`（mirror `provider_kind_accepts_legacy_deepseek_cn_aliases` `config/lib.rs:3747`——parse() 7 forms incl. `deep-seek` typo-tolerant + serde 6 forms excl. `deep-seek` + canonical serialization `"deepseek"`）。
+5. `ROADMAP.md`：追加本 slice 52 进度条目；§B3 catalog Status 段（`:2448`）augment `**Status (slice 52):**` 段；slice 51 "下一聚焦工作"（`:2343`）strikethrough-correct §B3 residual。
+6. `ARCHITECTURE.md`：§B3 status table 行 289 `⏳ deferred — mitigated: reasoning is &str-keyed` → `✅ done — DeepseekCN folded onto Deepseek (slice 52); &str-keying was the §C6 decoupling path`。
+
+**测试：** `cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui` 2844 passed + 2 ignored（baseline slice 51: 2843 + 1 new test `api_provider_accepts_legacy_deepseek_cn_aliases`，net +1，原 1 failing 已修——parse/serde 容错 form 集差异，split loops）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1149 passed + 2 ignored（config_types tests pass）；`cargo +1.90.0 test -p codesmith-config --lib` 95 passed（`provider_kind_accepts_legacy_deepseek_cn_aliases` mirror regression green）。
+
+**验证：** `cargo +1.90.0 build --workspace` 全绿；grep `DeepseekCN` 跨 `*.rs` → 仅 4 hit（slice-52 provenance comments in `config_types.rs:201`/`config.rs:1364`/`:8456`/`:8974`，documenting the fold——variant 本身已删）；grep `DEFAULT_DEEPSEEKCN_BASE_URL` → 仅 1 hit（`config.rs:1760` doc comment referencing its deletion，const 已删）；grep `deepseek_cn` field on `ProvidersConfig` → present at `:1370` w/ deprecation comment + `legacy_deepseek_cn_api_key()` helper at `:1762` + 2 fallback call sites `:4327`/`:4484`；grep `"deepseek-cn"` arms in `reasoning.rs` → retained at `:34`/`:100`/`:133`/`:180`（defensive，decision 6）。
+
+**By-design gaps（out of scope）：**
+- **`base_url`/`model`/`http_headers` in legacy `[providers.deepseek_cn]` 不被 surgical api_key fallback 覆盖**：`base_url` default == CN default（无 observable diff）；`model` defaults `DEFAULT_TEXT_MODEL`（两者同）；`http_headers` in `deepseek_cn` 是 undocumented 窄 edge。fallback 精准覆盖 documented `api_key`-storage regression。
+- **`codesmith-providers` `"deepseek-cn"` `&str` arms 保留**（decision 6）——defensive，future cleanup slice optional。
+- **`config.example.toml` 不 trim**——`deepseek-cn` 仍 parse accurately。
+- **§E4 两 follow-up 不变**——仍 deferred（env override augment / flash-kimi-code sinking），按需。
+
+**下一聚焦工作：**
+- §B3 闭合。pluggable framework core 迁移的结构（§A/§E）+ doc + catalog-status + 最后 cosmetic fold（§B3 slice 52）四线全收尾完成。
+- 残项仅余 §E4 两 follow-up（env override augment / flash-kimi-code 变体下沉，按需另开切片）——on-demand，非阻塞。
 
 ---
 
@@ -2470,6 +2506,30 @@ onboarding-flow users are unaffected; a future structural slice could mitigate
 via a read-side fallback). The "switch the client + factory to `ProviderKind`"
 path above is the abandoned original plan, kept as a record of the approach
 considered.
+
+**Status (slice 52):** the cosmetic fold landed. `ApiProvider::DeepseekCN` was
+deleted from `crates/agent-runtime/src/config_types.rs:202`; `Deepseek` gained
+the serde aliases `deepseek-cn`/`deepseek_china`/`deepseekcn`/`deepseek-china`/`deepseek_cn`
+(the last covers the old snake_case rename → `ProviderCapability` JSON
+backward-compat), and `parse()` folds the CN family + adds `deepseek_cn` (closing
+a latent gap where serde accepted `deepseek_cn` but `parse()` rejected it) —
+mirroring `ProviderKind` (`crates/config/src/lib.rs:76-79` + `:138-139`).
+`DEFAULT_DEEPSEEKCN_BASE_URL` (== `DEFAULT_DEEPSEEK_BASE_URL`) was deleted; its
+2 arms repointed. 35 grouped `Deepseek | DeepseekCN` match arms across
+`config_types.rs` + `tui/{config.rs, core/engine.rs, tui/*, main.rs,
+commands/balance.rs}` were mechanically folded. The documented `api_key`-storage
+read-path regression (a) is mitigated by a surgical read-side fallback:
+`providers.deepseek_cn: ProviderConfig` is retained as a deprecated read-only
+legacy sink (`crates/tui/src/config.rs:1370`) and `Config::legacy_deepseek_cn_api_key()`
+(`:1762`) is consulted by `has_api_key_for` (`:4484`) +
+`active_provider_has_config_api_key` (`:4327`) when `providers.deepseek.api_key`
+misses for `Deepseek`; the `deepseek_cn` field is never written by any code path
+post-fold (env override repointed to `providers.deepseek`, TUI save flow already
+bailed for both variants). The `display_name` regression (b) — loss of the
+"(legacy alias)" suffix, now just `"DeepSeek"` — is accepted. §B3 closed;
+`&str`-keying (not the `ProviderKind` switch) was the §C6 decoupling path.
+`codesmith-providers` `"deepseek-cn"` `&str` arms (`reasoning.rs:34/100/133/180`)
+were retained as defensive input-accept paths.
 
 ### B4 — `prompt_runtime` location
 - `crate::prompt_runtime` is `pub use codesmith_agent_runtime::prompt_runtime::*`
