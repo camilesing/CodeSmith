@@ -2309,6 +2309,39 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - §A + §E 全部闭合、**结构性收敛 + doc-debt 清零**——`turn_loop` provenance 引用全重写为 durable fn-name、retired 代码原宿主文件的所有 doc 残留收口。pluggable framework core 迁移的结构 + doc 双线收尾完成。
 - 残项仅余低优先 / by-design / 按需二项：§B3（cosmetic `DeepseekCN`→`Deepseek` 折叠，mitigated）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需）。
 
+**进度（2026-07-18 §B3/§E4 doc-debt cleanup slice 51——§B3 stale `chat.rs:80`/`chat.rs:1915` 引用 + §B3/§E4 Status 段补全 + ARCHITECTURE.md §E4 follow-up 显式化，`feat/pluggable-framework-core`）：**
+
+接 slice 50（§E `turn_loop` 删除 doc-debt cleanup，`:2284`）。复查 §B3/§E4 deferred-work catalog 发现两者均缺 Status 段（不像 §A1/§D2/§E1 在 slice 48/50 已补），且 §B3 的 "two places" bullet 引用 `chat.rs:80` `apply_provider_token_limit`（XiaomiMimo）+ `chat.rs:1915` `provider_accepts_reasoning_content`（9-variant allowlist）——slice 41 已删 `crates/tui/src/client.rs` + `crates/tui/src/client/chat.rs`，branching 迁至 `crates/providers/src/rig_adapter/{shaper.rs:219, reasoning.rs:30}` 且 keyed on `&str`（非 `ApiProvider`）；§E4 catalog 描述 manifest 计划但未记 slices 43–45 落地路径 + 两 follow-up（env override augment / flash-kimi-code 变体下沉）当前状态——两 follow-up 仅在 ROADMAP 进度条目提及、源码无 `TODO`/`FIXME`、ARCHITECTURE.md status table 行 280 + narrative 段 254-259 均未提。本切片修正全部 doc-debt：§B3/§E4 各追加 Status 段、ARCHITECTURE.md §E4 行 280 + 段 254-259 显式化 follow-up。纯文档，零 `.rs` 改动，零行为改动（匹配 slice 48/50 的 doc-debt cleanup-slice 惯例）。
+
+**关键设计决策：**
+- **strkethrough-correct 不适用于 §B3 `chat.rs:NNN` 引用**：slice 48 的 `~~…~~ → slice N 复核 stale：…` pattern 应用于 prior slice 的 "下一聚焦工作" / "By-design gaps" 断言（progress 条目内），非 deferred-work catalog 段（§A1-A4 / §E1-E4 的原计划文本）。§B3 catalog 段是 "考虑过的方案" 历史记录，matching slice 48 "§A/§E deferred-work catalog 原计划文本保留" policy——不动原文本，仅追加 Status 段说明 `chat.rs:80`/`chat.rs:1915` stale + 当前实际 branching 路径。
+- **§B3 Status 段不 over-claim "折叠已完成"**：decoupling goal 已完成（`crates/providers` 无 `codesmith-agent-runtime` dep edge + branching keyed on `&str`，非 `ProviderKind` switch——路径不同但 §C6 目标达成，`reasoning.rs:16-19` module doc 显式建档），但 `ApiProvider::DeepseekCN` 变体 cosmetic 折叠未完成——Status 段明确 deferred，scope 精准。
+- **§E4 Status 段两 follow-up 精准定位**：env override augment = resolver chain `ConfigToml::resolve_runtime_options_with_secrets` `crates/config/src/lib.rs:1620-1787` 仍 fallback 硬编码 `DEFAULT_*` 常量（`:1650-1672`/`:1992-2032`）非 manifest + env 路径 `EnvRuntimeOverrides` `:2640-2746` 与 manifest 路径 `resolve_with_manifest_default` `crates/providers/src/lib.rs:206-217` 是两条 disjoint fallback chain + dedup/augment cross-layer-unreachable（§C6 layering）；flash/kimi-code 变体下沉 = 无 `Flash`/`KimiCode` enum variant / 无 manifest 条目 + 变体住 host-side `crates/config/src/lib.rs` 常量 + 选择逻辑（`DEFAULT_*_FLASH_MODEL` + `normalize_model_for_provider` flash-alias arms `:1884-1932` / `DEFAULT_KIMI_CODE_*` `:53-54` + `auth_mode_uses_kimi_oauth` `:2107-2116` / `moonshot_base_url_uses_kimi_code` `:2034-2039` in `Moonshot` arms `:1662-1668`/`:1722-1730`）。两 follow-up 均无 in-source `TODO`/`FIXME`——Status 段首次建档 in-catalog current-state。
+- **ARCHITECTURE.md §E4 行 280 + 段 254-259 augment**：行 280 "done" silent on follow-ups → augment 为 "follow-ups (env override augment + flash/kimi-code variant sinking) deferred — tracked in ROADMAP §E4 (slice 51)"；段 254-259 描述 slices 43–45 落地，末尾追加 "Two follow-ups are deferred ..." 一句。§B3 行 285 "⏳ deferred — mitigated: reasoning is `&str`-keyed" 已准确，不动（matching slice 50 "行 287 authoritative-current 不动" pattern——已准确行不 churn）。
+- **§E2/§E3 Status 段 gap 不补**：§E2（tool abstractions）/§E3（memory/callback abstractions）catalog 段亦缺 Status 段，但 framework-core traits landing 经 ARCHITECTURE.md 行 287（"framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E)"）+ §E1 Status 段已涵盖。matching slice 48 "§A2-A4 不逐条追加" policy——§E1 Status 段为 framework-core traits 全局起点、§E2/§E3 同型、不逐条补。本切片 scope 仅 §B3/§E4（用户选定方向）。
+- **slice 50 "下一聚焦工作" 不 strikethrough-correct**：slice 50 `:2308-2310` 列两残项（§B3 + §E4 follow-up）为 "低优先 / 按需"，slice 51 仅补 Status 段、未闭合两残项，framing 仍准确。无 stale 断言需 strikethrough-correct。
+
+**落地步骤：**
+1. `ROADMAP.md` §B3 catalog（`:2401-2413`）：在 `:2413` 末尾追加 `**Status (slice 51):**` 段（decoupling 已完成 via `&str`-keying 非 `ProviderKind` switch + `chat.rs:80`/`:1915` stale post-slice-41 + 当前 `crates/providers/src/rig_adapter/{shaper.rs:219, reasoning.rs:30}` keyed-on-`&str` 路径 + `ProviderKind` 已折叠 alias + 仅余 `DeepseekCN` 变体 cosmetic 折叠 deferred low-priority/mitigated + 窄 read-path regression 说明）。
+2. `ROADMAP.md` §E4 catalog（`:2520-2524`）：在 `:2524` 末尾追加 `**Status (slices 43–45 + slice 51):**` 段（manifest 计划落地路径 + 两 follow-up 精准定位：env override augment + flash/kimi-code 变体下沉，均无 in-source `TODO`/`FIXME`）。
+3. `ARCHITECTURE.md` status table 行 280：augment §E4 行的 Status 列，末尾追加 "follow-ups (env override augment + flash/kimi-code variant sinking) deferred — tracked in ROADMAP §E4 (slice 51)"。
+4. `ARCHITECTURE.md` §E4 narrative 段（`:254-259`）：在 `:259` 末尾追加一句 "Two follow-ups are deferred (tracked in ROADMAP §E4, slice 51): the resolver chain still falls back to the hardcoded `DEFAULT_*` constants rather than the manifest (env override augment — cross-layer-unreachable per §C6), and flash/kimi-code model variants stay host-side (no manifest entry)."
+5. `ROADMAP.md`：追加本 slice 51 进度条目（位于 slice 50 entry `:2284` 之后、`:2312` `---` separator 之前）。
+
+**测试：** 零测试改动——纯文档（markdown + table），无 `.rs` 代码逻辑变更。
+
+**验证：** `cargo +1.90.0 build --workspace` 全绿（零 `.rs` 改动，匹配 slice 50 baseline）；grep 核实 `chat.rs:80` / `chat.rs:1915` 仍命中 §B3 catalog `:2406-2408`（intentional，历史 "考虑过的方案" 文本，matching slice 48 catalog policy）+ 命中 slice 51 Status 段（说明 stale）；§B3 catalog `:2413` 后现 `**Status (slice 51):**` 段；§E4 catalog `:2524` 后现 `**Status (slices 43–45 + slice 51):**` 段；ARCHITECTURE.md 行 280 Status 列含 "follow-ups ... deferred — tracked in ROADMAP §E4 (slice 51)"；ARCHITECTURE.md 段 254-259 末尾含 "Two follow-ups are deferred ..." 句；§E4 follow-up 在源码仍无 `TODO`/`FIXME`（slice 51 Status 段为首次 in-catalog 建档，non-regression on source）；两 Status 段全部 17 条 file:line 引用逐条对照源码核实（13 条准确，3 条 off-by-N 已修正为 `EnvRuntimeOverrides` `:2640-2746`、flash-alias arms `:1884-1932`、Moonshot arms `:1662-1668`/`:1722-1730`，1 条本已精确），0 条内容失实。
+
+**By-design gaps（out of scope）：**
+- **§B3 cosmetic `DeepseekCN` 折叠本身仍 deferred**：本切片仅补 Status 段、不执行折叠。折叠有窄 read-path regression（手工编辑 `[providers.deepseek_cn]` 存储）+ `display_name` 失 "(legacy alias)" 后缀——future structural slice 可执行（matching slice 47/49 结构切片惯例，需 read-side fallback 缓解）。
+- **§E4 两 follow-up 本身仍 deferred（按需）**：本切片仅补 Status 段、不执行 augment/sinking。env override augment 需 cross-layer refactor（config 读 manifest 或 manifest loader 下沉至 `codesmith-config`）；flash/kimi-code 变体下沉需新 manifest 字段/条目或 host-resolver 重构。两 follow-up 均按需另开切片。
+- **§E2/§E3 Status 段 gap 不补**：见上 "关键设计决策"。future doc-debt 切片可补（非阻塞）。
+- **slice 50 "下一聚焦工作" 不 strikethrough-correct**：见上 "关键设计决策"，framing 仍准确。
+
+**下一聚焦工作：**
+- §A + §E 全部闭合、结构性收敛 + doc-debt 清零（slice 50）+ §B3/§E4 catalog Status 段补全（slice 51）——pluggable framework core 迁移的结构 + doc + catalog-status 三线收尾完成。
+- 残项仍为低优先 / by-design / 按需二项：§B3 cosmetic `DeepseekCN`→`Deepseek` 折叠（mitigated，待 future structural slice）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需另开切片）。
+
 ---
 
 ## §A — Provider extraction (bulk migration)
@@ -2411,6 +2444,32 @@ deps still wired, then these substitutions remove the wires).
   `ProviderKind`), then switch the client + factory to `ProviderKind` so
   `codesmith-providers` doesn't depend on `codesmith-agent-runtime`'s
   `config_types`.
+
+**Status (slice 51):** partially superseded — the decoupling goal is
+already satisfied, but via `&str`-keying rather than the `ProviderKind` switch
+the original plan describes. `crates/providers` has no `codesmith-agent-runtime`
+dep edge (see `crates/providers/Cargo.toml` — declares only `codesmith-agent`
++ `codesmith-config`); provider branching keys on `&str` provider names, not
+`ApiProvider` (the `reasoning.rs:16-19` module doc documents this as the
+deliberate §C6 decoupling path). The `chat.rs:80` `apply_provider_token_limit`
+(XiaomiMimo) and `chat.rs:1915` `provider_accepts_reasoning_content` (9-variant
+allowlist) references above are **stale post-slice-41** — slice 41 deleted
+`crates/tui/src/client.rs` + `crates/tui/src/client/chat.rs`; both functions
+migrated to `crates/providers/src/rig_adapter/{shaper.rs:219 (shape_max_tokens),
+reasoning.rs:30 (provider_accepts_reasoning_content)}` and now key on `&str`.
+`ProviderKind` already folds the alias (`crates/config/src/lib.rs:76-79` serde
+aliases + `:138-139` `parse()` collapse the `deepseek-cn` family onto
+`Deepseek`; `as_str()` returns `"deepseek"`). What remains of §B3 is purely the
+`ApiProvider::DeepseekCN` variant itself
+(`crates/agent-runtime/src/config_types.rs:202`) — folding it would align
+`ApiProvider` with `ProviderKind`. Deferred as low-priority/mitigated: the
+decoupling goal is done, the variant is cosmetic, and the fold has a narrow
+read-path regression (hand-edited configs with `[providers.deepseek_cn]`
+storage; the TUI save flow already routes to root `api_key`, so
+onboarding-flow users are unaffected; a future structural slice could mitigate
+via a read-side fallback). The "switch the client + factory to `ProviderKind`"
+path above is the abandoned original plan, kept as a record of the approach
+considered.
 
 ### B4 — `prompt_runtime` location
 - `crate::prompt_runtime` is `pub use codesmith_agent_runtime::prompt_runtime::*`
@@ -2522,3 +2581,38 @@ in Engine" framing above is the pre-migration state, kept as a record.
   declarative `providers.toml` (id, factory feature, base_url, model) consumed
   by `default_registry`, with lazy construction so an unused provider never
   pays a build cost.
+
+**Status (slices 43–45 + slice 51):** landed. The declarative `providers.toml`
+schema/loader shipped in `codesmith-config` (slice 43: `FactoryBackend` enum +
+`ProviderDescriptor`/`ProvidersManifest` types + `load_providers_manifest_from`
++ the `CODESMITH_PROVIDERS_MANIFEST` env override); `default_registry()` was
+wired to the bundled manifest via a process-wide `OnceLock` (slice 44); the
+`base_url`/`model` columns were populated and the four rig-backed factories
+consume them as a manifest-default fallback via `resolve_with_manifest_default`
+(`crates/providers/src/lib.rs:206-217`, slice 45). Two follow-ups remain,
+tracked only in ROADMAP (no in-source `TODO`/`FIXME` markers, no
+`ARCHITECTURE.md` status-table mention):
+- **env override augment** — the resolver chain
+  (`ConfigToml::resolve_runtime_options_with_secrets` in
+  `crates/config/src/lib.rs:1620-1787`) still falls back to the hardcoded
+  `DEFAULT_*_BASE_URL`/`DEFAULT_*_MODEL` constants (`:1650-1672`/`:1992-2032`),
+  NOT the manifest; the manifest default fires only inside the factory
+  `build()` path for empty-host `ProviderConfig` values. The env path
+  (`EnvRuntimeOverrides`, `:2640-2746`) and the manifest path
+  (`resolve_with_manifest_default`) are two disjoint fallback chains — env does
+  not augment the manifest, and the `DEFAULT_*` constants duplicate the
+  manifest's `base_url`/`model` values. Dedup/augment is deferred as
+  cross-layer-unreachable (`codesmith-config` cannot depend on
+  `codesmith-providers`' bundled manifest — §C6 layering).
+- **flash/kimi-code variant sinking** — no `Flash`/`KimiCode` variant exists
+  in `FactoryBackend`/`ProviderKind`/`ApiProvider`, and no such entry exists in
+  `providers.toml`. The variants live as host-side constants + selection logic
+  in `crates/config/src/lib.rs`: `DEFAULT_*_FLASH_MODEL` constants (`:19`,
+  `:31`, `:47`, `:50`, `:56`, `:64`) selected via `normalize_model_for_provider`
+  flash-alias arms (`:1884-1932`); `DEFAULT_KIMI_CODE_*` (`:53-54`) selected
+  via `auth_mode_uses_kimi_oauth` (`:2107-2116`) and
+  `moonshot_base_url_uses_kimi_code` (`:2034-2039`) inside the `Moonshot` arms
+  of the base_url/model resolvers (`:1662-1668`/`:1722-1730`). "Sinking" these
+  into the manifest would require new manifest fields/entries or a
+  host-resolver refactor — deferred as a host concern (the manifest carries
+  only the primary URL+model).

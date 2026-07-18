@@ -257,7 +257,11 @@ wired `default_registry` to the bundled `providers.toml` (externalizing the
 `COMPAT_KINDS` catalog) with a `OnceLock` cache, and slice 45 populated the
 `base_url`/`model` columns and made the factories consume them as a fallback
 when the host passes an empty `ProviderConfig` value (so the manifest is a
-complete per-provider default source). The framework traits are validated
+complete per-provider default source). Two follow-ups are deferred (tracked in
+ROADMAP §E4, slice 51): the resolver chain still falls back to the hardcoded
+`DEFAULT_*` constants rather than the manifest (env override augment —
+cross-layer-unreachable per §C6), and flash/kimi-code model variants stay
+host-side (no manifest entry). The framework traits are validated
 against an inline mock LLM + mock tool (see `crates/agent/src/executor/mod.rs`
 tests) — no `codesmith-providers` dependency required, mirroring the provider
 foundation slice's `mock` sample. The `ToolSpec` adapter is additionally
@@ -277,7 +281,7 @@ the executor that lights up both a mock `Event` channel and a mock `HookHost`
 | `DeepSeekClient` retired — rig `RigLlmClient` replaces it (§A1); `from_parts` deleted with the client | ✅ done | `crates/tui/src/client.rs` deleted (slice 41) |
 | `codesmith-providers` crate + `mock` provider + Cargo features | ✅ done | `crates/providers/` |
 | rig adapter `RigLlmClient<C,S>` impls `LlmClient` | ✅ done | `crates/providers/src/rig_adapter/` |
-| Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done — catalog now declarative (`providers.toml`, §E4); `base_url`/`model` populated + consumed as manifest-default fallback (§E4 slice 45) | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs`, `crates/providers/providers.toml` |
+| Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done — catalog now declarative (`providers.toml`, §E4); `base_url`/`model` populated + consumed as manifest-default fallback (§E4 slice 45); follow-ups (env override augment + flash/kimi-code variant sinking) deferred — tracked in ROADMAP §E4 (slice 51) | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs`, `crates/providers/providers.toml` |
 | `resolve_llm_client` seeds from `default_registry()` for all providers | ✅ done (§D1 partial → §A1 full cutover — DeepSeek moved off the tui-local factory onto rig) | `crates/tui/src/core/engine.rs` |
 | `AnthropicClient` retired — rig `AnthropicFactory` replaces it (§A2) | ✅ done | `crates/tui/src/client/anthropic.rs` deleted |
 | Parity bridge: reasoning heuristics + `shape_messages` / `shape_max_tokens` | ✅ done | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |
