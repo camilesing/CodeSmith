@@ -2378,6 +2378,35 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - §B3 闭合。pluggable framework core 迁移的结构（§A/§E）+ doc + catalog-status + 最后 cosmetic fold（§B3 slice 52）四线全收尾完成。
 - 残项仅余 §E4 两 follow-up（env override augment / flash-kimi-code 变体下沉，按需另开切片）——on-demand，非阻塞。
 
+**进度（2026-07-18 §E slice 53 stale-absorbed doc-debt cleanup——narrative/inline 仍标 `deferred` 的已 absorbed 项对齐模块文档 + steer mutex std→tokio 同步 + §E Known-gaps 覆盖指针段，`feat/pluggable-framework-core`）：**
+
+接 slice 52（§B3 cosmetic fold，`:2345`）。本会话先做 doc-vs-code gap audit（4 并行审查 agent + 关键发现人工复核），发现 §E narrative + scattered inline 注释存在 stale-absorbed 漂移：slices 25a/25b/25c（compaction）/ slice 33（CapacityController）/ cancel-token Checkpoint B/C/D wiring / steer→`tokio::sync::Mutex` 迁移（为 subagent blocking-hold `biased select!` 跨 `recv().await`）均已落地于 `host_executor.rs` 模块文档（`✅ absorbed`），但 ARCHITECTURE.md 对应 narrative 段 + 5 处 inline 注释仍写 `deferred to wire-in`。本切片纯 doc + 注释对齐模块文档，零行为改动（matching slice 50/51/52 doc-debt cleanup 惯例）。
+
+**关键设计决策：**
+- **Stale-absorbed = 模块文档权威**：`host_executor.rs` 模块文档（`//!` lines `128-130`/`410-416`/`444`/`459`/`491`/`572-586`/`609-615`/`659-671`）是 §E 各 guardrail 吸收状态的权威源（带 `✅ absorbed (slice N §E)` 标注）；narrative + inline 注释滞后于模块文档。本切片对齐 narrative/inline 到模块文档，不动模块文档（已是权威）。
+- **steer `tokio::sync::Mutex` 三处同步 + "first" framing 修正**：`host_executor.rs:1491`/`:1734` steer 字段实为 `tokio::sync::Mutex`（模块文档 `:665-666` + 字段 doc `:1482-1486` 已建档——为 subagent blocking-hold `biased select!` 跨 `recv().await`，与 approval 同理），但 ARCHITECTURE.md 三处（`:167-168` narrative §1 / `:207-208` narrative §2 / `:291` status table）仍写 `std::sync::Mutex`，且 `:174`/`:213` "approval is the **first** `tokio::sync::Mutex`" 框定过时（steer 现亦 tokio）。同步三处 + drop "first" + `:228` "steer follows the same pattern"（imply std）修正。
+- **5 inline 注释对齐模块文档**：`host_executor.rs` 5 处 inline 注释与同文件模块文档自相矛盾（模块文档标 `✅ absorbed`，inline 仍写 `deferred`）：`:3003` `post_compact_cleanup` (25c) 从 "Still deferred" 列表移除（模块文档 `:491` 标 absorbed ✅ slice 25c）；`:2270` ToolCallStarted `deferred` → `absorbed ✅`（模块文档 `:609-615`）；`:13724` blocking hold test comment `deferred` → `absorbed ✅`（模块文档 `:659-671`）；`:6335` cancel-token test comment `deferred` → `absorbed ✅`（模块文档 `:410-416`）；`:3300` CapacityController "off by default since v0.8.11 — deferred" → "absorbed ✅ slice 33 §E, but off by default since v0.8.11"（模块文档 `:572-586`；"deferred" 误导——是 opt-in 非 unimplemented）。另修 `:1498` approval 字段 doc "Unlike the steer/LSP fields (which use `std::sync::Mutex`)" → "Unlike the LSP field (which uses `std::sync::Mutex`)"（steer 现亦 tokio）。
+- **§E Known-gaps 覆盖用指针段而非逐条转录**：模块文档 `:323-698` 自建 9 个 "Known gaps (by design)" 区（LSP flush / system-prompt refresh / thinking-only / transparent-retry / approval / compaction / capacity / early-tool-start / subagent），ARCHITECTURE.md §E narrative 仅 inline 复现 4 个（LSP flush / transparent-retry / approval / compaction），余 5 个无架构级可见性。本切片在 §E narrative 末尾（`:272` callback_bridge tests 句后）加 "Known gaps coverage" 指针段，列出 9 区 + 指明 narrative 详述 4 个、余 5 个见模块文档——避免逐条转录造成新一轮 line-drift（matching slice 51 "Status 段引用源码而非 inline" 策略）。
+- **无 status table 行改动**：status table 行（`:278-291`）描述 wired-today 项（✅ done），本切片修的是 narrative + 模块文档对齐 + inline 注释，非 status 变更——matching slice 50 "行 287 authoritative-current 不动" pattern。仅 `:291` 行内 steer/approval mutex 描述随 E5 同步修正（仍属该行已有内容，非新增 status）。
+- **无 strikethrough-correct**：slice 52 "下一聚焦工作"（`:2377-2379`）仅列 §E4 两 follow-up 为残项；本切片修的是 gap-audit 新发现的 stale-absorbed 漂移，非推翻 prior forward-looking claim，无需 strikethrough-correct。
+
+**落地步骤：**
+1. `ARCHITECTURE.md`：`:167-171` steer narrative §1（std→tokio + LSP/steer 拆分）；`:174` drop "first"；`:207-209` steer narrative §2（std→tokio）；`:213-214` drop "first" + steer note；`:228` "same pattern" 修正；`:220-222` compaction 25a/b/c 三项从 deferred → absorbed ✅；`:249-251` cancel-token deferred → absorbed ✅；`:291` status table steer/approval mutex 描述同步；`:272` 后加 §E Known-gaps coverage 指针段。
+2. `crates/agent-runtime/src/engine/host_executor.rs`：`:1498-1500` approval 字段 doc "steer/LSP fields" → "LSP field"；`:3003-3005` `post_compact_cleanup` (25c) 移出 Still deferred 列表；`:2269-2270` ToolCallStarted deferred→absorbed ✅；`:13723-13725` blocking hold test comment deferred→absorbed ✅；`:6335-6336` cancel-token test comment deferred→absorbed ✅；`:3299-3300` CapacityController "deferred" → "absorbed ✅ slice 33 §E, off by default"。
+3. `ROADMAP.md`：追加本 slice 53 进度条目（slice 52 entry `:2379` 后、`:2381` `---` separator 前）。
+
+**测试：** `cargo +1.90.0 build --workspace` 全绿（零 `.rs` 行为改动——仅注释 + `.md`；`.md` 不影响 build）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 1149 passed + 2 ignored（baseline slice 52；`:13724` & `:6335` 编辑在 `#[tokio::test]` 注释行内，无行为变化）。
+
+**验证：** grep `std::sync::Mutex<mpsc::Receiver<String>>` 跨 `ARCHITECTURE.md` → 零命中（steer 三处已修）；grep `deferred to wire-in` 跨 `ARCHITECTURE.md` → 仅余 2 合法项（`:221` enhancements + working-set pins）；grep `post_compact_cleanup.*Still deferred|Still deferred.*post_compact_cleanup` 跨 `host_executor.rs` → 零命中；grep `ToolCallStarted.*deferred|deferred.*ToolCallStarted` → 零命中；grep `blocking hold.*deferred|deferred.*blocking hold` → 零命中；grep `Cancel-token short-circuit is deferred` → 零命中；grep `Known gaps (by design)` 跨 `host_executor.rs` → 9 section headers（sanity：指针段 "nine areas" 断言核实）；grep `Known gaps coverage` 跨 `ARCHITECTURE.md` → 1 hit（指针段已加）。
+
+**By-design gaps（out of scope）：**
+- **P2 doc drift 推迟 slice 54**：`docs/ARCHITECTURE.md`（pre-refactor 2026-06-21，superseded-pointer 或 full rewrite）、`docs/PROVIDERS.md:241`（删 `client.rs` 引用）、`crates/agent-runtime/src/prompts/modes/coordinator.md:89,95,97,101`（system prompt example 用 `turn_loop.rs`/`handle_turn`——**behavior-adjacent**，单独 scoped slice）、`crates/agent-runtime/assets/skills/v4-best-practices/SKILL.md:46`（example 路径）、`crates/tui/.codesmith/instructions.md:24-25`（auto-regenerate）、`docs/rfcs/claude-code-architecture-parity.md`（borderline RFC）。本切片 scope 仅 P1 stale-absorbed + steer mutex + inline 矛盾 + §E 指针段。
+- **§E4 两 follow-up 不变**——仍 deferred（env override augment / flash-kimi-code sinking），按需。
+
+**下一聚焦工作：**
+- §E stale-absorbed doc-drift 清零（本切片）。pluggable framework core 迁移的结构 + doc + catalog-status + cosmetic fold（slice 52）+ §E stale-absorbed 对齐（slice 53）五线收尾。
+- 残项：P2 doc drift（推迟 slice 54，含 behavior-adjacent `coordinator.md`）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
+
 ---
 
 ## §A — Provider extraction (bulk migration)

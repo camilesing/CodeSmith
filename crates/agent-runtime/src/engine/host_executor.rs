@@ -972,8 +972,7 @@ impl LspProbe {
 /// [`HostAgentExecutor::take_pending_compaction_summary`]) and
 /// `reinject_compaction_attachments` (slice 25b §E — [`ReinjectProbe`]).
 /// Still deferred (see "Known gaps in compaction" in the module docs):
-/// `post_compact_cleanup` (25c), working-set pins/paths,
-/// `CompactionEnhancements`.
+/// working-set pins/paths, `CompactionEnhancements`.
 pub struct CompactionProbe {
     config: CompactionConfig,
     /// Workspace root for `plan_compaction`'s path normalization (mirrors
@@ -1493,10 +1492,10 @@ pub struct HostAgentExecutor {
     /// no-op (all tools run ungated — for embeds/tests that never prompt).
     ///
     /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
-    /// `mpsc::Receiver::recv` takes `&mut self`. Unlike the steer/LSP fields
-    /// (which use `std::sync::Mutex` because their access — `try_recv` / push /
-    /// `mem::take` — is synchronous), approval **blocks** on `recv().await`, so
-    /// the guard must cross an `await` — a `std::sync::Mutex` guard isn't
+    /// `mpsc::Receiver::recv` takes `&mut self`. Unlike the LSP field (which
+    /// uses `std::sync::Mutex` because its access — push / `mem::take` — is
+    /// synchronous), approval **blocks** on `recv().await`, so the guard must
+    /// cross an `await` — a `std::sync::Mutex` guard isn't
     /// `Send` and can't. Hence `tokio::sync::Mutex`, whose guard is `Send` when
     /// the receiver is. The lock is held only by the single consumer (this
     /// executor's approval path); there is no contention. The receiver persists
@@ -2267,7 +2266,7 @@ pub fn new(
                     // Block-lifecycle: mark the block done. Production emits
                     // `ThinkingComplete` / `MessageComplete` here (and
                     // `ToolCallStarted` for tool blocks — the latter is
-                    // deferred, see the `reduce_stream` doc). The block is
+                    // absorbed ✅, see the `reduce_stream` doc / module doc). The block is
                     // looked up (not removed) so it stays available for
                     // `finalize_blocks` at stream end.
                     if let Some(build) = blocks.get(&index) {
@@ -3001,9 +3000,8 @@ pub fn new(
     /// is absorbed (slice 25b §E — fires right after the transcript replace
     /// via [`Self::reinject_compaction_attachments`] with `None` budget; dedup
     /// + push only — auto-compact isn't at a hard ceiling). Still deferred
-    /// (see "Known gaps in compaction" in the module docs):
-    /// `post_compact_cleanup` (25c), working-set `external_pins` /
-    /// `external_working_set_paths`, and `CompactionEnhancements` (PreCompact
+    /// (see "Known gaps in compaction" in the module docs): working-set
+    /// `external_pins` / `external_working_set_paths`, and `CompactionEnhancements` (PreCompact
     /// hooks / session-memory-first).
     async fn run_compaction(&self, client: &LlmClientHandle, history: &mut dyn ChatHistory) {
         let Some(probe) = &self.compaction else {
@@ -3297,8 +3295,8 @@ pub fn new(
     /// input budget, attempts emergency recovery (forced compaction + hard
     /// trim). Mirrors `handle_deepseek_turn`'s Gate B
     /// (`handle_deepseek_turn`) — the always-on hard token-budget preflight,
-    /// **not** the opt-in `CapacityController` (Gate A, off by default since
-    /// v0.8.11 — deferred).
+    /// **not** the opt-in `CapacityController` (Gate A — absorbed ✅ slice 33
+    /// §E, but off by default since v0.8.11).
     ///
     /// Returns [`CapacityPreflight::Proceed`] when within budget or when
     /// recovery failed but the budget isn't exhausted (the request goes out
@@ -3389,7 +3387,7 @@ pub fn new(
     /// `reinject_compaction_attachments` (slice 25b §E — fires right after
     /// the transcript replace with `Some(target_budget)`; dedup + budget
     /// trial + push). Still deferred (same gaps as the compaction slice):
-    /// `post_compact_cleanup` (25c), `CompactionEnhancements`.
+    /// `CompactionEnhancements`.
     async fn recover_context_overflow(
         &self,
         client: &LlmClientHandle,
@@ -6332,8 +6330,9 @@ mod tests {
     // (dropping any partial blocks — so an `Err` means "no actionable content
     // committed"), and the executor re-sends the same request up to
     // `MAX_STREAM_RETRIES` (3) times before propagating the failure. A healthy
-    // round resets the budget. (Cancel-token short-circuit is deferred to the
-    // wire-in slice; the bounded budget can't loop forever.)
+    // round resets the budget. (Cancel-token short-circuit is absorbed ✅ —
+    // Checkpoints B/C/D wired per the module doc; the bounded budget can't
+    // loop forever.)
 
     /// All `Event::Status` messages drained from `rx`, in arrival order.
     fn statuses(events: &[Event]) -> Vec<String> {
@@ -13721,7 +13720,7 @@ mod tests {
     #[tokio::test]
     async fn subagent_empty_queue_returns_no_tool_calls() {
         // A present-but-empty completion queue ⇒ NoToolCalls (the blocking hold
-        // for running children is deferred; with no queued completion and no
+        // for running children is absorbed ✅; with no queued completion and no
         // running-count probe, the turn ends).
         let tools = Arc::new(ToolSet::new());
         let mut sess = fresh_session();

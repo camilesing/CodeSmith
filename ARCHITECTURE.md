@@ -164,14 +164,18 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   its per-step pre-request seam. The LSP accumulator, the steer receiver, the
   approval receiver, and the compaction probe are the
   **interior-mutability slices**: `LspProbe.pending` is
-  `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` and `steer` is
-  `Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>` (because
-  `AgentExecutor::run` is `&self` while the accumulator mutates on
-  collect/flush and `try_recv` takes `&mut self`; locks never held across an
-  `await`, matching `CallbackBridge`), persisting across `run` calls so
+  `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` (LSP: lock never held across an
+  `await`, matching `CallbackBridge`) and `steer` is
+  `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` — `tokio::sync::Mutex`
+  (not `std`) so the guard may cross the blocking `recv().await` in the subagent
+  blocking hold's `biased select!` steer arm (same rationale as `approval`; the
+  pre-request `try_recv` drain is non-blocking and uncontended — single consumer —
+  so the tokio mutex is a no-cost upgrade there); both interior-mutable because
+  `AgentExecutor::run` is `&self` while the accumulator mutates on collect/flush
+  and `try_recv`/`recv` take `&mut self`, persisting across `run` calls so
   diagnostics from an edit on a turn ending via `MaxSteps` surface on the next
   turn's first flush, and a steer queued between turns is picked up on the
-  next turn's first drain. `approval` uses the **first `tokio::sync::Mutex`**
+  next turn's first drain. `approval` uses a `tokio::sync::Mutex`
   (`Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>`,
   because the guard must cross the blocking `recv().await`; a std mutex guard
   isn't `Send`). `compaction` carries
@@ -204,28 +208,33 @@ when the stream dies mid-flight before any content commits, up to 3 times;
 budget resets on a healthy round; transparent to the `Callback`) — and
 **steer** at its per-step pre-request seam (drain queued user inputs as `user`
 messages before the request snapshot), landed as
-`Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>` (interior-mutable
-because `try_recv` takes `&mut self` while `run` is `&self`; same
-`Arc<Mutex<…>>` pattern as `LspProbe`; persists across `run` calls so a steer
+`Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` — `tokio::sync::Mutex`
+(not `std`) so the guard may cross the blocking `recv().await` in the subagent
+blocking hold's `biased select!` steer arm (same rationale as `approval`; the
+pre-request `try_recv` drain is non-blocking and uncontended); persists across
+`run` calls so a steer
 queued between turns is picked up next turn) — **approval** at its per-tool
 seam (gate write/code-exec tools: emit `ApprovalRequired` + block on the
 decision channel by wire tool id; denied ⇒ `permission_denied` error; the
-first `tokio::sync::Mutex` guardrail because the guard must cross
-`recv().await`; static approval derivation from `Tool::capabilities`, per-input
+a `tokio::sync::Mutex` guardrail because the guard must cross `recv().await`
+(steer shares this rationale for its subagent-blocking-hold arm); static approval
+derivation from `Tool::capabilities`, per-input
 override + sandbox elevation deferred to wire-in) — and **compaction** at its
 per-step pre-request seam (micro-compact stale tool results past the 32KB
 cache trigger without an LLM call, then auto-compact via an LLM summary when
 `should_compact` passes; both wholesale-replace the transcript via `clear()`+
 `push()`; `CompactionProbe` carries `std::sync::Mutex` micro-state + circuit
-breaker that persist across `run` calls; summary-prompt merge, attachment
-reinject, post-compact cleanup, enhancements, working-set pins deferred to
-wire-in). Its four seams (per-step
+breaker that persist across `run` calls; summary-prompt merge absorbed ✅
+(slice 25a §E), attachment reinject absorbed ✅ (slice 25b §E), post-compact
+cleanup absorbed ✅ (slice 25c §E) — see the `host_executor.rs` module doc; only
+enhancements + working-set pins remain deferred to wire-in). Its four seams (per-step
 pre-request / post-stream / per-tool / post-tool) have since grown the
 remaining guardrails too (see the `host_executor.rs` module doc for the full
 set), and `handle_deepseek_turn` retired in the slice 20 §E cutover.
 loop-guard proved `&self` + local state suffices for self-contained
 guardrails; LSP flush proves the `Arc<Mutex<…>>` shape for guardrails needing
-shared mutable state (steer follows the same pattern);
+shared mutable state (steer adopts the same shape but `tokio::sync::Mutex`, not
+`std` — see above);
 transparent-retry proves the seam-2 post-stream shape (local counter + the
 `accumulate_stream` `Err` signal); approval proves the seam-3 per-tool shape
 with a blocking `recv().await` (`tokio::sync::Mutex`); compaction proves the
@@ -247,8 +256,8 @@ that replaces `accumulate_stream`) closes the gap; pre-stream connection
 errors (`create_message_stream` `Err`) are not retried (production treats those
 as context-recovery / hard-fail, a separate guardrail); the cancel-token
 short-circuit (production's `should_transparently_retry_stream` checks
-`!cancelled`) is deferred to the wire-in step — the bounded budget
-(`MAX_STREAM_RETRIES = 3`) can't loop forever. Streaming deltas
+`!cancelled`) is absorbed ✅ — Checkpoints B/C/D wired (see the `host_executor.rs`
+module doc); the bounded budget (`MAX_STREAM_RETRIES = 3`) can't loop forever. Streaming deltas
 (`MessageDelta`/`ThinkingDelta`) will keep flowing over the `Event` channel
 directly (no `Callback` method) once an inline stream reducer replaces
 `accumulate_stream`. E4 (declarative `providers.toml` + lazy loading) has
@@ -271,6 +280,15 @@ and the `CallbackBridge` is validated by driving a tool-call roundtrip through
 the executor that lights up both a mock `Event` channel and a mock `HookHost`
 (see `crates/agent-runtime/src/callback_bridge.rs` tests).
 
+The `host_executor.rs` module doc carries the complete set of §E `Known gaps
+(by design)` across nine areas — LSP flush, system-prompt refresh, thinking-only,
+transparent-retry, approval, compaction, capacity, early-tool-start, and
+subagent. This narrative elaborates the four most load-bearing (LSP flush /
+transparent-retry / approval / compaction); for the remaining five
+(system-prompt refresh / thinking-only / capacity / early-tool-start / subagent
+— each with its own deferred-to-wire-in items), see the module doc directly
+rather than transcribing them here (avoids line-drift on each future slice).
+
 ## What is wired today (foundation slice + §D1 parity bridge)
 
 | Concern | Status | Where |
@@ -288,7 +306,7 @@ the executor that lights up both a mock `Event` channel and a mock `HookHost`
 | Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ✅ done (superseded — retired, not extracted) — `DeepSeekClient` retired via the rig adapter; the replay-bridge blocker was found unnecessary (rig's compat layer natively serializes `AssistantContent::Reasoning` as `reasoning_content`); tui `client.rs`/`chat.rs` deleted (slice 41), inspect/warmup migrated to `codesmith-agent-runtime` `prompt_inspect`, reasoning predicates + `sha256_hex` deduped (slice 42) | ROADMAP §A1 |
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ✅ done — `DeepseekCN` folded onto `Deepseek` (slice 52); `&str`-keying was the §C6 decoupling path | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ✅ done (9d47942c) — `custom_provider` selector + `[[providers.custom]]` table; §D2 slice 46 closed the residual polish — `--custom-provider <id>` CLI flag (env-forwarded to the TUI) + per-entry `config set/get/unset providers.custom.<id>.<field>` (find-or-create by id); the bare `provider = "<id>"` form stays **by-design rejected** (see 9d47942c — cascades the closed `ProviderKind` enum through config + overrides + env + every match arm) | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` is the live production path (slice 20 cutover — `handle_send_message` routes through it, `handle_deepseek_turn` deleted); all guardrails absorbed across slices 11–40 (loop-guard + LSP flush + transparent-retry + steer + approval + compaction + capacity + subagent + early-tool-start/parallel-dispatch + thinking-only) via `event_tx`; interior-mutability `Arc<Mutex<…>>` on `LspProbe` + steer receiver + `CompactionProbe` micro-state/breaker, `tokio::sync::Mutex` on approval receiver; transparent-retry at seam-2 post-stream; steer + compaction at seam-1 pre-request; approval at seam-3 per-tool; production `Engine` migration done | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
+| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` is the live production path (slice 20 cutover — `handle_send_message` routes through it, `handle_deepseek_turn` deleted); all guardrails absorbed across slices 11–40 (loop-guard + LSP flush + transparent-retry + steer + approval + compaction + capacity + subagent + early-tool-start/parallel-dispatch + thinking-only) via `event_tx`; interior-mutability `Arc<std::sync::Mutex<…>>` on `LspProbe` + `CompactionProbe` micro-state/breaker, `tokio::sync::Mutex` on steer + approval receivers (both cross `recv().await` in the subagent blocking hold's `biased select!`); transparent-retry at seam-2 post-stream; steer + compaction at seam-1 pre-request; approval at seam-3 per-tool; production `Engine` migration done | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
 
 ## Registering a provider (developer guide)
 
