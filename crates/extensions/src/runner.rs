@@ -6,15 +6,19 @@
 //! `bind_core`), the bound handler list, and the bound `ExtensionContext`
 //! handed to handlers/commands at dispatch time.
 //!
-//! Slice 1: handlers are observers; `emit` fans out best-effort (per §8.3 —
-//! slice 1 awaits each handler directly; §F2 hardens with proper
-//! `catch_unwind` so one panicking handler cannot tear down the agent loop).
+//! Slice 1: handlers are observers; §F2a upgrades `emit` to chain
+//! `HandlerOutcome`s (transform visible to the next handler; `Cancel`/`Block`
+//! short-circuit), filter per-variant via `kind_filter`, and isolate each
+//! handler call behind `catch_unwind` (§8.3 — one panicking handler cannot
+//! tear down the agent loop).
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use codesmith_agent::extension::*;
+use futures_util::FutureExt;
 
 use crate::api::StubExtensionApi;
 
@@ -44,6 +48,24 @@ pub(crate) struct PendingHandler {
 pub(crate) struct RegisteredHandler {
     pub handler: Arc<dyn Handler>,
     pub kind_filter: Option<ExtensionEventKind>,
+}
+
+/// The result of [`ExtensionRunner::emit`]: the final (possibly transformed)
+/// event + the terminal chain outcome. The host inspects `outcome` at each
+/// seam (proceed / cancel / block) and, at transform-capable seams, applies
+/// `event`'s actionable field (§F2b wires the host to honor these; §F2a
+/// returns them + proves the chain in isolation).
+///
+/// NOT `#[must_use]` in §F2a so the mechanical 7-site host_executor update is
+/// just dropping the `&`; §F2b may add `#[must_use]` to force inspection at
+/// transform/block seams.
+#[derive(Debug, Clone)]
+pub struct EmitOutcome {
+    /// The event after all handlers (possibly transformed by `Transform`).
+    pub event: ExtensionEvent,
+    /// Terminal outcome: `Continue` if no handler short-circuited; `Cancel`
+    /// or `Block` if one did. Never `Transform` (folds into `event`).
+    pub outcome: HandlerOutcome,
 }
 
 /// Container for the pre-`bind_core` registration queues. Shared (via
@@ -152,20 +174,76 @@ impl ExtensionRunner {
         }
     }
 
-    /// Emit an event to every bound handler, best-effort. A handler error
-    /// is discarded (§8.3 — one failing handler does not block others).
-    /// No-op if `bind_core` has not run. Slice 1 awaits each handler
-    /// directly; §F2 hardens with `catch_unwind`.
-    pub async fn emit(&self, event: &ExtensionEvent) {
+    /// Emit `event` to every bound handler whose variant filter matches,
+    /// chaining transforms (spec §4: "一个 handler 的修改对下一个可见").
+    /// Returns [`EmitOutcome`] — the final (possibly transformed) event +
+    /// the terminal outcome (`Continue` / `Cancel` / `Block`). Each handler
+    /// call is wrapped in `catch_unwind` (§8.3) so a panicking handler cannot
+    /// tear down the agent loop; its panic is recorded via `tracing` and the
+    /// chain continues. A handler `Err` (non-panic) is likewise recorded +
+    /// the chain continues (best-effort, §8.3). `Cancel` / `Block`
+    /// short-circuit: no further handlers run. `Transform(new)` replaces the
+    /// running event and the chain continues with the next handler.
+    /// No-op (returns the input event + `Continue`) if `bind_core` has not
+    /// run.
+    pub async fn emit(&self, event: ExtensionEvent) -> EmitOutcome {
         let ctx = match self.context.lock().unwrap().clone() {
             Some(ctx) => ctx,
-            None => return,
+            None => return EmitOutcome { event, outcome: HandlerOutcome::Continue },
         };
-        let handlers = self.handlers.lock().unwrap().clone();
-        for h in handlers {
-            // Slice 1: discard errors (best-effort); §F2 adds catch_unwind.
-            let _ = h.handler.handle(event, &*ctx).await;
+        // Snapshot the matching handlers under a short lock; dispatch outside
+        // the lock so a long-running handler doesn't hold it.
+        let kind = event.kind();
+        let matching: Vec<Arc<dyn Handler>> = self
+            .handlers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|rh| rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
+            .map(|rh| Arc::clone(&rh.handler))
+            .collect();
+        let mut event = event;
+        let mut outcome = HandlerOutcome::Continue;
+        for h in matching {
+            // §F2a: catch_unwind so a panicking handler can't tear down the
+            // agent loop (§8.3 error isolation).
+            let result = AssertUnwindSafe(h.handle(&event, &*ctx))
+                .catch_unwind()
+                .await;
+            match result {
+                // Panic → record + continue (one handler can't break the chain).
+                Err(panic) => {
+                    tracing::error!(
+                        target: "codesmith_extensions::runner",
+                        "extension handler panicked: {panic:?}",
+                    );
+                    continue;
+                }
+                // Handler error → record + continue (best-effort, §8.3).
+                Ok(Err(err)) => {
+                    tracing::error!(
+                        target: "codesmith_extensions::runner",
+                        "extension handler error: {err}",
+                    );
+                    continue;
+                }
+                Ok(Ok(HandlerOutcome::Continue)) => continue,
+                Ok(Ok(HandlerOutcome::Transform(new_event))) => {
+                    event = new_event;
+                    continue;
+                }
+                // Cancel / Block short-circuit the chain.
+                Ok(Ok(c @ HandlerOutcome::Cancel { .. })) => {
+                    outcome = c;
+                    break;
+                }
+                Ok(Ok(b @ HandlerOutcome::Block { .. })) => {
+                    outcome = b;
+                    break;
+                }
+            }
         }
+        EmitOutcome { event, outcome }
     }
 
     /// Look up a registered command by name (exact match; `:N` conflict
@@ -208,6 +286,8 @@ impl Default for ExtensionRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codesmith_tools::ToolResult;
+    use serde_json::json;
     use std::path::Path;
     use tokio_util::sync::CancellationToken;
 
@@ -278,9 +358,9 @@ mod tests {
         runner.load(&RecExt { seen: seen.clone() }).await.unwrap();
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
         runner
-            .emit(&ExtensionEvent::TurnStart { turn_id: "t1".into() })
+            .emit(ExtensionEvent::TurnStart { turn_id: "t1".into() })
             .await;
-        runner.emit(&ExtensionEvent::SessionShutdown).await;
+        runner.emit(ExtensionEvent::SessionShutdown).await;
         let s = seen.lock().unwrap();
         assert_eq!(*s, vec!["TurnStart", "SessionShutdown"]);
     }
@@ -291,7 +371,259 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         runner.load(&RecExt { seen: seen.clone() }).await.unwrap();
         // No bind_core — emit must not panic + must not dispatch.
-        runner.emit(&ExtensionEvent::SessionShutdown).await;
+        runner.emit(ExtensionEvent::SessionShutdown).await;
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    // === §F2a emit chaining / per-variant / catch_unwind ====================
+
+    /// An extension that registers two handlers in deterministic order
+    /// (first, then second) so chain ordering is observable.
+    struct TwoHandlerExt {
+        first: Arc<dyn Handler>,
+        second: Arc<dyn Handler>,
+    }
+    #[async_trait::async_trait]
+    impl Extension for TwoHandlerExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("two");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(self.first.clone())?;
+            api.on(self.second.clone())?;
+            Ok(())
+        }
+    }
+
+    /// Transforms a `ToolResult` event's result to a fixed success string.
+    struct TransformResultHandler;
+    #[async_trait::async_trait]
+    impl Handler for TransformResultHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::ToolResult(tr) = event {
+                let mut tr = tr.clone();
+                tr.result = Ok(ToolResult::success("transformed"));
+                Ok(HandlerOutcome::Transform(ExtensionEvent::ToolResult(tr)))
+            } else {
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+    }
+
+    /// Records the `ToolResult` content string it observes.
+    struct ObserveResultHandler {
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    #[async_trait::async_trait]
+    impl Handler for ObserveResultHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::ToolResult(tr) = event {
+                if let Ok(r) = &tr.result {
+                    self.seen.lock().unwrap().push(r.content.clone());
+                }
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn f2a_emit_chains_transform_to_next_handler() {
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let transform: Arc<dyn Handler> = Arc::new(TransformResultHandler);
+        let observer: Arc<dyn Handler> = Arc::new(ObserveResultHandler { seen: seen.clone() });
+        runner
+            .load(&TwoHandlerExt { first: transform, second: observer })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+
+        let original = ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c1".into(),
+            name: "echo".into(),
+            result: Ok(ToolResult::success("original")),
+        });
+        let out = runner.emit(original).await;
+        // Observer saw the TRANSFORMED result (transform visible to next handler).
+        assert_eq!(*seen.lock().unwrap(), vec!["transformed".to_string()]);
+        // Final event carries the transformed result.
+        match out.event {
+            ExtensionEvent::ToolResult(tr) => {
+                let r = tr.result.expect("ok result");
+                assert_eq!(r.content, "transformed");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        // Transform folds in — terminal outcome is Continue.
+        assert!(matches!(out.outcome, HandlerOutcome::Continue));
+    }
+
+    struct CancelOnBeforeCompact;
+    #[async_trait::async_trait]
+    impl Handler for CancelOnBeforeCompact {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if matches!(event, ExtensionEvent::SessionBeforeCompact) {
+                Ok(HandlerOutcome::Cancel { reason: "user aborted".into() })
+            } else {
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn f2a_emit_cancel_short_circuits_chain() {
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        // Cancel first; the second observer must NOT fire (cancel short-circuits).
+        runner
+            .load(&TwoHandlerExt {
+                first: Arc::new(CancelOnBeforeCompact),
+                second: Arc::new(RecHandler { seen: seen.clone() }),
+            })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let out = runner.emit(ExtensionEvent::SessionBeforeCompact).await;
+        assert!(matches!(out.outcome, HandlerOutcome::Cancel { .. }));
+        // The observer after the cancel handler never fired.
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    struct BlockOnToolCall;
+    #[async_trait::async_trait]
+    impl Handler for BlockOnToolCall {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if matches!(event, ExtensionEvent::ToolCall(_)) {
+                Ok(HandlerOutcome::Block { reason: "policy".into() })
+            } else {
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn f2a_emit_block_short_circuits_chain() {
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&TwoHandlerExt {
+                first: Arc::new(BlockOnToolCall),
+                second: Arc::new(RecHandler { seen: seen.clone() }),
+            })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let out = runner
+            .emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "c1".into(),
+                name: "echo".into(),
+                input: json!({}),
+            }))
+            .await;
+        assert!(matches!(out.outcome, HandlerOutcome::Block { .. }));
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    /// An extension that subscribes a handler to ToolCall ONLY (per-variant).
+    struct VariantExt {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+    #[async_trait::async_trait]
+    impl Extension for VariantExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("var");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on_variant(
+                ExtensionEventKind::ToolCall,
+                Arc::new(RecHandler { seen: self.seen.clone() }),
+            )?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn f2a_on_variant_dispatches_only_matching_kind() {
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        runner.load(&VariantExt { seen: seen.clone() }).await.unwrap();
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        // ToolCall fires the per-variant handler (RecHandler pushes "other").
+        runner
+            .emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "c1".into(),
+                name: "echo".into(),
+                input: json!({}),
+            }))
+            .await;
+        // TurnStart does NOT fire the per-variant handler.
+        runner
+            .emit(ExtensionEvent::TurnStart { turn_id: "t1".into() })
+            .await;
+        let s = seen.lock().unwrap();
+        assert_eq!(*s, vec!["other"]);
+    }
+
+    struct PanickingHandler;
+    #[async_trait::async_trait]
+    impl Handler for PanickingHandler {
+        async fn handle(
+            &self,
+            _event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            panic!("boom");
+        }
+    }
+
+    #[test]
+    fn f2a_emit_catch_unwind_isolates_panicking_handler() {
+        // Dedicated multi-thread runtime (NOT #[tokio::test]) to avoid
+        // current-thread panic-abort subtleties + nested-runtime panics
+        // (the same lesson as §F1's configure-runtime discovery).
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime for catch_unwind test");
+        rt.block_on(async {
+            let runner = ExtensionRunner::new();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            // Panicking handler first; the second observer must STILL fire
+            // (catch_unwind isolates the panic).
+            runner
+                .load(&TwoHandlerExt {
+                    first: Arc::new(PanickingHandler),
+                    second: Arc::new(RecHandler { seen: seen.clone() }),
+                })
+                .await
+                .unwrap();
+            runner.bind_core(Arc::new(Ctx { generation: 1 }));
+            let out = runner
+                .emit(ExtensionEvent::TurnStart { turn_id: "t1".into() })
+                .await;
+            // Observer after the panicking handler still fired.
+            assert_eq!(*seen.lock().unwrap(), vec!["TurnStart"]);
+            // Chain continued past the panic → Continue.
+            assert!(matches!(out.outcome, HandlerOutcome::Continue));
+        });
     }
 }

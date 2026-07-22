@@ -3733,7 +3733,7 @@ impl HostAgentExecutor {
         });
         if let Some(runner) = &extension {
             runner
-                .emit(&codesmith_agent::extension::ExtensionEvent::TurnStart {
+                .emit(codesmith_agent::extension::ExtensionEvent::TurnStart {
                     turn_id: turn_id.clone(),
                 })
                 .await;
@@ -3781,7 +3781,7 @@ impl HostAgentExecutor {
                 callback.on_complete(&StopReason::Interrupted).await;
                 if let Some(runner) = &extension {
                     runner
-                        .emit(&codesmith_agent::extension::ExtensionEvent::TurnEnd {
+                        .emit(codesmith_agent::extension::ExtensionEvent::TurnEnd {
                             turn_id: turn_id.clone(),
                             reason: codesmith_agent::extension::TurnEndReason::Interrupted,
                         })
@@ -4265,7 +4265,7 @@ impl HostAgentExecutor {
                 callback.on_complete(&StopReason::NoToolCalls).await;
                 if let Some(runner) = &extension {
                     runner
-                        .emit(&codesmith_agent::extension::ExtensionEvent::TurnEnd {
+                        .emit(codesmith_agent::extension::ExtensionEvent::TurnEnd {
                             turn_id: turn_id.clone(),
                             reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
                         })
@@ -4387,7 +4387,7 @@ impl HostAgentExecutor {
                                 .await;
                             if let Some(runner) = &extension {
                                 runner
-                                    .emit(&codesmith_agent::extension::ExtensionEvent::ToolCall(
+                                    .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
                                         codesmith_agent::extension::ToolCallEvent {
                                             id: plan.id.clone(),
                                             name: plan.name.clone(),
@@ -4475,7 +4475,7 @@ impl HostAgentExecutor {
                                 .await;
                             if let Some(runner) = &extension {
                                 runner
-                                    .emit(&codesmith_agent::extension::ExtensionEvent::ToolResult(
+                                    .emit(codesmith_agent::extension::ExtensionEvent::ToolResult(
                                         codesmith_agent::extension::ToolResultEvent {
                                             id: plan.id.clone(),
                                             name: plan.name.clone(),
@@ -4493,7 +4493,7 @@ impl HostAgentExecutor {
                             .await;
                         if let Some(runner) = &extension {
                             runner
-                                .emit(&codesmith_agent::extension::ExtensionEvent::ToolCall(
+                                .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
                                     codesmith_agent::extension::ToolCallEvent {
                                         id: plan.id.clone(),
                                         name: plan.name.clone(),
@@ -4588,7 +4588,7 @@ impl HostAgentExecutor {
                         callback.on_tool_end(&plan.name, &result).await;
                         if let Some(runner) = &extension {
                             runner
-                                .emit(&codesmith_agent::extension::ExtensionEvent::ToolResult(
+                                .emit(codesmith_agent::extension::ExtensionEvent::ToolResult(
                                     codesmith_agent::extension::ToolResultEvent {
                                         id: plan.id.clone(),
                                         name: plan.name.clone(),

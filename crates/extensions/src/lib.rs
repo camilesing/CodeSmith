@@ -45,7 +45,7 @@ pub use api::{RealExtensionApi, StubExtensionApi};
 pub use bus::EventBus;
 pub use discovery::{discover_static, ExtensionRegistration};
 pub use install_source::{ExtensionBuilder, ExtensionPlacer, ExtensionSource, SourceArtifact};
-pub use runner::ExtensionRunner;
+pub use runner::{EmitOutcome, ExtensionRunner};
 pub use state::HostExtensionContext;
 
 // Re-export the framework contract so extension authors can depend solely on
