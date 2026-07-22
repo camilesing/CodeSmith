@@ -146,6 +146,66 @@ pub struct ToolResultEvent {
     pub result: Result<ToolResult, ToolError>,
 }
 
+// === §F2a additions: reason enums + payload structs ======================
+
+/// Why a project-trust event fires. Mirrors pi-mono `TrustReason`. §F2a
+/// defines the variant + reason enum so handlers can subscribe; the host
+/// emits it in §F2b/§F5 (trust prompt is §F5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustReason {
+    FirstLoad,
+    Trusted,
+    Untrusted,
+}
+
+/// Why a resource-discovery event fires. Mirrors pi-mono `DiscoverReason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoverReason {
+    Startup,
+    Manual,
+    Reload,
+}
+
+/// Payload for [`ExtensionEvent::Input`] — user input that may be intercepted
+/// or transformed. `text` is the actionable field: a handler returning
+/// [`HandlerOutcome::Transform`] with a modified `InputEvent` replaces the
+/// input the host injects into the conversation (§F2b wires the seam).
+#[derive(Debug, Clone)]
+pub struct InputEvent {
+    pub text: String,
+}
+
+/// Payload for [`ExtensionEvent::BeforeAgentStart`]. Both fields are
+/// actionable: a handler returning [`HandlerOutcome::Transform`] may set
+/// `system_prompt` (replace the system prompt) and/or `inject_message`
+/// (prepend a user message before the agent starts). `None` ⇒ no change.
+#[derive(Debug, Clone)]
+pub struct AgentStartEvent {
+    pub system_prompt: Option<String>,
+    pub inject_message: Option<String>,
+}
+
+/// Payload for [`ExtensionEvent::BeforeProviderRequest`]. `messages` is the
+/// actionable field (the provider request body); a handler may transform it.
+#[derive(Debug, Clone)]
+pub struct BeforeProviderRequestEvent {
+    pub messages: Value,
+}
+
+/// Payload for [`ExtensionEvent::AfterProviderResponse`]. Observe-only.
+#[derive(Debug, Clone)]
+pub struct AfterProviderResponseEvent {
+    pub response: Value,
+}
+
+/// Payload for [`ExtensionEvent::ToolExecutionUpdate`]. Observe-only progress.
+#[derive(Debug, Clone)]
+pub struct ToolExecutionUpdateEvent {
+    pub id: String,
+    pub name: String,
+    pub message: String,
+}
+
 /// Lifecycle events. Slice 1 minimal set (spec §10.1):
 /// `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
 /// `SessionShutdown`. `#[non_exhaustive]` so §F2 can add the remaining ~25
@@ -544,5 +604,24 @@ mod tests {
             ExtensionEvent::SessionShutdown => "shutdown",
             _ => "other",
         };
+    }
+
+    #[test]
+    fn f2a_payload_structs_construct_and_debug() {
+        let _ = TrustReason::FirstLoad;
+        let _ = DiscoverReason::Startup;
+        let input = InputEvent { text: "hi".into() };
+        assert_eq!(input.text, "hi");
+        let start = AgentStartEvent { system_prompt: Some("s".into()), inject_message: None };
+        assert!(start.system_prompt.is_some());
+        let req = BeforeProviderRequestEvent { messages: json!({}) };
+        let resp = AfterProviderResponseEvent { response: json!({}) };
+        let upd = ToolExecutionUpdateEvent {
+            id: "c1".into(),
+            name: "echo".into(),
+            message: "ok".into(),
+        };
+        // Debug renders without panic for every new type.
+        let _ = format!("{start:?} {req:?} {resp:?} {upd:?}");
     }
 }
