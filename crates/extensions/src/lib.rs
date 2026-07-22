@@ -37,6 +37,7 @@ pub mod bus;
 pub mod discovery;
 pub mod install_source;
 pub mod manifest;
+pub mod loader;
 pub mod runner;
 pub mod sample_scratchpad;
 pub mod state;
@@ -47,6 +48,7 @@ pub use bus::EventBus;
 pub use discovery::{discover_static, ExtensionRegistration};
 pub use install_source::{ExtensionBuilder, ExtensionPlacer, ExtensionSource, SourceArtifact};
 pub use manifest::ExtensionManifest;
+pub use loader::load_dylib;
 pub use runner::{EmitOutcome, ExtensionRunner};
 pub use state::HostExtensionContext;
 

@@ -16,9 +16,11 @@ use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::path::Path;
 
 use codesmith_agent::extension::*;
 use futures_util::FutureExt;
+use libloading::Library;
 
 use crate::api::StubExtensionApi;
 
@@ -100,6 +102,14 @@ pub struct ExtensionRunner {
     /// filter (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant
     /// via `on_variant`). T8's `emit` filters on this before dispatch.
     handlers: Mutex<Vec<RegisteredHandler>>,
+    /// §F5b — loaded dylib `Library` handles. Pushed by `load_dylib`;
+    /// reload does NOT clear — the Library's code/vtables must outlive any
+    /// registered contributions still in `tools`/`commands`/`handlers`
+    /// (`clear_handlers` drops handler Arcs but `tools`/`commands` are
+    /// append-insert, so a removed dylib's tool Arc may still reference
+    /// its vtable; keeping the Library alive is correctness-preserving,
+    /// a bounded leak for re-discovered same dylibs). §F5b Q1.
+    libraries: Mutex<Vec<Library>>,
 }
 
 impl ExtensionRunner {
@@ -113,6 +123,7 @@ impl ExtensionRunner {
             tools: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
             handlers: Mutex::new(Vec::new()),
+            libraries: Mutex::new(Vec::new()),
         }
     }
 
@@ -155,6 +166,23 @@ impl ExtensionRunner {
     pub async fn load(&self, ext: &dyn Extension) -> Result<(), ExtensionError> {
         let stub = StubExtensionApi::new(self.generation.clone(), self.pending.clone());
         ext.configure(&stub).await
+    }
+
+    /// §F5b — load a dylib extension (spec §F5b / §7.2). Opens the library,
+    /// calls its `codesmith_register_extension`, pushes the `Library` into
+    /// `libraries` (must outlive registered contributions' vtables; reload
+    /// does not clear — Q1), then runs `configure` via [`load`](Self::load).
+    /// The `Extension` Box is dropped after `configure` (registered
+    /// contributions are self-contained owned trait objects; vtables live in
+    /// the kept `Library`). Lockstep (§8.2) assumed. Mirrors the static
+    /// `load` path.
+    pub async fn load_dylib(&self, path: &Path) -> Result<(), ExtensionError> {
+        let (library, extension) = crate::loader::load_dylib(path)?;
+        self.libraries
+            .lock()
+            .expect("libraries lock poisoned")
+            .push(library);
+        self.load(&*extension).await
     }
 
     /// Bind the host context + flush `pending_*` into the live registries.
@@ -308,6 +336,11 @@ impl std::fmt::Debug for ExtensionRunner {
             .lock()
             .expect("handlers mutex poisoned")
             .len();
+        let libraries = self
+            .libraries
+            .lock()
+            .expect("libraries mutex poisoned")
+            .len();
         let bound = self.context.lock().expect("context mutex poisoned").is_some();
         f.debug_struct("ExtensionRunner")
             .field("generation", &self.generation.load(Ordering::Acquire))
@@ -315,6 +348,7 @@ impl std::fmt::Debug for ExtensionRunner {
             .field("tools", &tools)
             .field("commands", &commands)
             .field("handlers", &handlers)
+            .field("libraries", &libraries)
             .finish()
     }
 }
