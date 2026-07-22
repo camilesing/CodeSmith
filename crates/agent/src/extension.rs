@@ -424,6 +424,37 @@ pub trait CommandDefinition: Send + Sync {
     ) -> Result<CommandOutput, ExtensionError>;
 }
 
+// === HandlerOutcome (§F2a) ================================================
+
+/// What a [`Handler`] returns. Drives the cross-handler chain in
+/// [`ExtensionRunner::emit`](codesmith_extensions::ExtensionRunner::emit)
+/// (spec §4: "一个 handler 的修改对下一个可见"):
+///
+/// - `Continue` — no change; proceed to the next handler.
+/// - `Cancel { reason }` — abort the surrounding operation. Only meaningful
+///   for `SessionBefore*` variants (spec §4); ignored (treated as `Continue`)
+///   at non-cancel-capable seams so a stray `Cancel` cannot break unrelated
+///   flows.
+/// - `Block { reason }` — prevent the operation. Only meaningful for
+///   `ToolCall`; ignored at non-block-capable seams.
+/// - `Transform(event)` — replace the running event with `event` for
+///   subsequent handlers AND (at transform-capable seams) apply `event`'s
+///   actionable field to the live operation. Only meaningful for `Input` /
+///   `BeforeAgentStart` / `BeforeProviderRequest` / `ToolResult`; ignored
+///   elsewhere.
+///
+/// The terminal [`codesmith_extensions::EmitOutcome::outcome`] is never
+/// `Transform` — a transform is folded into the running event and the chain
+/// continues; the terminal is `Continue` unless a handler short-circuits
+/// with `Cancel`/`Block`.
+#[derive(Debug, Clone)]
+pub enum HandlerOutcome {
+    Continue,
+    Cancel { reason: String },
+    Block { reason: String },
+    Transform(ExtensionEvent),
+}
+
 // === Handler (observer, slice 1) ==========================================
 
 /// Lifecycle event observer. Slice 1: observer-only — returns `Ok(())` or
@@ -744,5 +775,14 @@ mod tests {
         for (ev, kind) in cases {
             assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
         }
+    }
+
+    #[test]
+    fn f2a_handler_outcome_constructs_each_variant() {
+        let _ = HandlerOutcome::Continue;
+        let c = HandlerOutcome::Cancel { reason: "no".into() };
+        let b = HandlerOutcome::Block { reason: "denied".into() };
+        let t = HandlerOutcome::Transform(ExtensionEvent::SessionShutdown);
+        let _ = format!("{c:?} {b:?} {t:?}");
     }
 }
