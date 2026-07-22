@@ -17050,4 +17050,45 @@ mod tests {
             "second emit must carry Untrusted"
         );
     }
+
+    /// §F5 — `ProjectTrust { reason: FirstLoad }` must dispatch and carry its
+    /// `TrustReason` payload through. The onboarding trust-accept site
+    /// (`tui/ui.rs` `TrustDirectory` y/Y/1 arm) fires `FirstLoad` once per
+    /// session, distinct from the per-turn `Trusted`/`Untrusted` emits of
+    /// §F2c T3. This test is additive to `f2c_project_trust_dispatches_reason`
+    /// (which exercised `Trusted`→`Untrusted` only); it reuses the §F2c
+    /// recorder fixture. The host-wire e2e (the `ui.rs` emit firing through
+    /// `run_tui`) is deferred per the §F2b `SessionBeforeSwitch` precedent — it
+    /// needs an `EngineHost` + `run_tui`/`TrustDirectory` fixture
+    /// (TaskManager-class scaffolding); the emit mirrors the tested §F2c
+    /// per-turn pattern.
+    #[tokio::test]
+    async fn f5_project_trust_first_load_dispatches() {
+        let runner = Arc::new(ExtensionRunner::new());
+        let seen: Arc<Mutex<Vec<TrustReason>>> = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&ProjectTrustRecorderExt { seen: seen.clone() })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            Arc::new(Mutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+
+        let _ = runner
+            .emit(ExtensionEvent::ProjectTrust {
+                reason: TrustReason::FirstLoad,
+            })
+            .await;
+
+        let recorded = seen.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "FirstLoad emit must dispatch");
+        assert_eq!(
+            recorded[0], TrustReason::FirstLoad,
+            "the emit must carry FirstLoad"
+        );
+    }
 }

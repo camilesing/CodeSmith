@@ -2876,6 +2876,23 @@ async fn run_event_loop(
                                 } else {
                                     app.onboarding = OnboardingState::Tips;
                                 }
+                                // §F5 — `ProjectTrust { FirstLoad }`: the onboarding
+                                // trust-accept is the once-per-session site, distinct
+                                // from the per-turn `Trusted`/`Untrusted` emits in
+                                // `build_turn_dispatcher`/`spawn_subagent` (§F2c T3).
+                                // `/trust on`, YOLO entry, and persisted-trust startup
+                                // set `trust_mode = true` outside this prompt and
+                                // surface per-turn as `Trusted`/`Untrusted`, not
+                                // `FirstLoad`. Observe-only (`let _ =`). Mirrors the
+                                // §F2c T3 emit pattern verbatim (`app` in place of
+                                // `self`, `FirstLoad` in place of per-turn reason).
+                                if let Some(runner) = &app.extension_runner {
+                                    let _ = runner
+                                        .emit(codesmith_agent::extension::ExtensionEvent::ProjectTrust {
+                                            reason: codesmith_agent::extension::TrustReason::FirstLoad,
+                                        })
+                                        .await;
+                                }
                                 fire_session_start_hook_if_ready(app);
                             }
                             Err(err) => {
