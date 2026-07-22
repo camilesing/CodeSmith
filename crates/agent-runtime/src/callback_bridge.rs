@@ -28,6 +28,7 @@
 //! | `on_step`             | — (no step event variant)  | —                     |
 //! | `on_complete`         | — (`TurnComplete`³)         | —                     |
 //! | `on_stream_delta`     | `MessageDelta` / `ThinkingDelta` / `MessageStarted` / `ThinkingStarted` / `ThinkingComplete` / `MessageComplete` / `ToolCallStarted` | — |
+//! | `on_tool_progress`    | — (no streaming `Tool` contract⁴) | — |
 //!
 //! ¹ `TurnStarted` only carries a turn id and is emitted by the engine caller,
 //!   not the executor loop. ² `MessageComplete` only carries a block index; the
@@ -35,7 +36,11 @@
 //!   index is owned by the stream-reduction code. ³ `TurnComplete` carries full
 //!   `usage` / `tool_catalog` / `base_url` the `Callback` does not have; the
 //!   engine caller emits it after the executor returns, so the bridge does not
-//!   duplicate it.
+//!   duplicate it. ⁴ §F2c: `on_tool_progress` is the forward-looking API
+//!   surface for `ExtensionEvent::ToolExecutionUpdate`; the host has no
+//!   streaming `Tool` contract yet (`Tool::run` is one-shot), so there is no
+//!   host `Event` variant to bridge it to. A streaming `Tool` variant (§F-later)
+//!   would add one.
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) and block-lifecycle
 //! events (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
@@ -291,11 +296,13 @@ impl Callback for CallbackBridge {
         })
     }
 
-    // `on_llm_start`, `on_llm_end`, `on_step`, `on_complete`: intentionally
-    // un-overridden — see the "Bridged vs. documented gaps" table in the module
-    // docs. The trait's default no-ops apply; the host's `TurnStarted` /
-    // `TurnComplete` events are emitted directly by the engine caller, not
-    // through this bridge.
+    // `on_llm_start`, `on_llm_end`, `on_step`, `on_complete`,
+    // `on_tool_progress`: intentionally un-overridden — see the "Bridged vs.
+    // documented gaps" table in the module docs. The trait's default no-ops
+    // apply; the host's `TurnStarted` / `TurnComplete` events are emitted
+    // directly by the engine caller, not through this bridge.
+    // `on_tool_progress` (§F2c) has no host `Event` variant — a streaming
+    // `Tool` contract would add one (§F-later); until then it stays unbridged.
 }
 
 #[cfg(test)]

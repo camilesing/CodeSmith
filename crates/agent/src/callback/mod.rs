@@ -176,6 +176,24 @@ pub trait Callback: Send + Sync {
         noop()
     }
 
+    /// Fired for mid-execution progress from a streaming tool (§F2c). Default
+    /// no-op. NOTE: the host has no streaming `Tool` contract yet (`Tool::run`
+    /// is one-shot — see `crates/agent/src/tools/mod.rs`), so nothing fires
+    /// this today. It is the forward-looking API surface for
+    /// `ExtensionEvent::ToolExecutionUpdate`; genuine streaming progress
+    /// awaits a streaming `Tool` variant (§F-later). The `id` is the wire
+    /// tool-call id (correlates with [`Callback::on_tool_start`]); `message`
+    /// is a free-form progress string from the tool.
+    fn on_tool_progress<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let _ = (id, name, message);
+        noop()
+    }
+
     /// Fired at the end of each loop step (after tool results are fed back).
     fn on_step<'a>(&'a self, step: u32) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let _ = step;
@@ -290,6 +308,20 @@ impl Callback for CallbackSet {
         })
     }
 
+    fn on_tool_progress<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let cbs = self.callbacks.clone();
+        Box::pin(async move {
+            for cb in &cbs {
+                cb.on_tool_progress(id, name, message).await;
+            }
+        })
+    }
+
     fn on_step<'a>(&'a self, step: u32) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let cbs = self.callbacks.clone();
         Box::pin(async move {
@@ -335,6 +367,7 @@ mod tests {
         cb.on_complete(&StopReason::NoToolCalls).await;
         cb.on_tool_start("t1", "echo", &serde_json::Value::Null)
             .await;
+        cb.on_tool_progress("t1", "echo", "step 1").await;
         cb.on_stream_delta(&StreamDelta::Text {
             index: 0,
             content: "hello".to_string(),
@@ -372,6 +405,43 @@ mod tests {
         set.push(Arc::new(Counter(count.clone())));
         set.push(Arc::new(Counter(count.clone())));
         set.on_step(1).await;
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    /// §F2c — `on_tool_progress` is a defaulted trait method (forward-looking
+    /// API surface for `ExtensionEvent::ToolExecutionUpdate`; nothing fires it
+    /// yet because `Tool::run` is one-shot). This test pins the default no-op +
+    /// `CallbackSet` fan-out so the surface stays wired.
+    #[tokio::test]
+    async fn on_tool_progress_default_is_noop_and_fans_out() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc as StdArc;
+
+        struct ProgressCounter(StdArc<AtomicU32>);
+        impl Callback for ProgressCounter {
+            fn on_tool_progress<'a>(
+                &'a self,
+                _id: &'a str,
+                _name: &'a str,
+                _message: &'a str,
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+                let c = self.0.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                })
+            }
+        }
+
+        // Default no-op: `NoopCallback` doesn't override it.
+        let noop_cb = NoopCallback;
+        noop_cb.on_tool_progress("t1", "echo", "step 1").await;
+
+        // Fan-out: two members each increment once.
+        let count = StdArc::new(AtomicU32::new(0));
+        let mut set = CallbackSet::new();
+        set.push(Arc::new(ProgressCounter(count.clone())));
+        set.push(Arc::new(ProgressCounter(count.clone())));
+        set.on_tool_progress("t1", "echo", "step 1").await;
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 }
