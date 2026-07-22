@@ -53,32 +53,83 @@ fn runner(app: &App) -> Option<&std::sync::Arc<codesmith_extensions::ExtensionRu
     app.extension_runner.as_ref()
 }
 
-fn list(_app: &App) -> CommandResult {
-    // Slice 1: list compiled-in extensions via `discover_static()`.
+fn list(app: &App) -> CommandResult {
+    let mut out = String::new();
+    let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // Compiled-in (phase 1).
     let discovered = codesmith_extensions::discover_static();
-    if discovered.is_empty() {
-        return CommandResult::message("No extensions discovered.");
+    let mut compiled = String::new();
+    for reg in &discovered {
+        ids.insert(reg.metadata.id.to_string());
+        compiled.push_str(&format!(
+            "  {} (v{}) [compiled]\n",
+            reg.metadata.id, reg.metadata.version
+        ));
     }
-    let mut out = String::from("Compiled-in extensions:\n");
-    for reg in discovered {
-        out.push_str(&format!("  {} (v{})\n", reg.metadata.id, reg.metadata.version));
+    if !discovered.is_empty() {
+        out.push_str("Compiled-in extensions:\n");
+        out.push_str(&compiled);
+    }
+
+    // §F5b — dylib-discovered (global + project; configured paths → §F5c).
+    let global_dir = crate::config::effective_home_dir()
+        .map(|home| home.join(".codesmith").join("extensions"));
+    let project_dir = app.workspace.join(".codesmith").join("extensions");
+    let global_roots: Vec<std::path::PathBuf> = global_dir.into_iter().collect();
+    let project_roots = vec![project_dir];
+    let dylibs = codesmith_extensions::discover_dylib(&global_roots, &project_roots);
+    if !dylibs.is_empty() {
+        out.push_str("Dylib extensions:\n");
+        for d in &dylibs {
+            // Skip ids already shown as compiled-in (dedup by id).
+            if ids.insert(d.id.clone()) {
+                out.push_str(&format!(
+                    "  {} (v{}) [dylib, {}]\n",
+                    d.id,
+                    d.version,
+                    if d.global { "global" } else { "project" },
+                ));
+            }
+        }
+    }
+
+    if out.is_empty() {
+        return CommandResult::message("No extensions discovered.");
     }
     CommandResult::message(out)
 }
 
-fn info(_app: &App, arg: &str) -> CommandResult {
+fn info(app: &App, arg: &str) -> CommandResult {
     let id = arg.trim();
     if id.is_empty() {
         return CommandResult::error("Usage: /extension info <id>");
     }
+    // Compiled-in lookup.
     let discovered = codesmith_extensions::discover_static();
-    let Some(reg) = discovered.iter().find(|r| r.metadata.id == id) else {
-        return CommandResult::error(format!("No extension with id '{id}'."));
-    };
-    CommandResult::message(format!(
-        "id: {}\nversion: {}\ncontributions: (slice 1: see /extension status)\n",
-        reg.metadata.id, reg.metadata.version
-    ))
+    if let Some(reg) = discovered.iter().find(|r| r.metadata.id == id) {
+        return CommandResult::message(format!(
+            "id: {}\nversion: {}\nsource: compiled-in\ncontributions: (see /extension status)\n",
+            reg.metadata.id, reg.metadata.version
+        ));
+    }
+    // §F5b — dylib lookup.
+    let global_dir = crate::config::effective_home_dir()
+        .map(|home| home.join(".codesmith").join("extensions"));
+    let project_dir = app.workspace.join(".codesmith").join("extensions");
+    let global_roots: Vec<std::path::PathBuf> = global_dir.into_iter().collect();
+    let project_roots = vec![project_dir];
+    let dylibs = codesmith_extensions::discover_dylib(&global_roots, &project_roots);
+    if let Some(d) = dylibs.into_iter().find(|d| d.id == id) {
+        return CommandResult::message(format!(
+            "id: {}\nversion: {}\nsource: dylib ({})\npath: {}\ncontributions: (see /extension status)\n",
+            d.id,
+            d.version,
+            if d.global { "global" } else { "project" },
+            d.dylib_path.display(),
+        ));
+    }
+    CommandResult::error(format!("No extension with id '{id}'."))
 }
 
 fn enable(app: &mut App, arg: &str) -> CommandResult {
