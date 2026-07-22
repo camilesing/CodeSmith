@@ -9,6 +9,7 @@ description = "Extension runtime: discovery, loading, event dispatch, stale-cont
 [dependencies]
 anyhow.workspace = true
 async-trait = "0.1"
+futures-util = "0.3.31"
 codesmith-agent = { path = "../agent", version = "0.8.48" }
 codesmith-tools = { path = "../tools", version = "0.8.48" }
 inventory = "0.3"
