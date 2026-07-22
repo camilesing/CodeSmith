@@ -3081,6 +3081,19 @@ pub fn new(
         ) {
             return;
         }
+        // §F2b T3 — `SessionBeforeCompact` lets an extension veto
+        // compaction (Cancel → skip the summary call entirely).
+        if let Some(runner) = &self.extension {
+            let out = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeCompact)
+                .await;
+            if matches!(
+                out.outcome,
+                codesmith_agent::extension::HandlerOutcome::Cancel { .. }
+            ) {
+                return;
+            }
+        }
         // Clone the messages out so no `ChatHistory` borrow crosses the await
         // (the summary call is async — the compacted result is applied after).
         let messages = history.messages().to_vec();
@@ -3127,6 +3140,13 @@ pub fn new(
                     .and_then(|p| p.provider_input_budget());
                 self.reinject_compaction_attachments(history, reinject_budget)
                     .await;
+                // §F2b T3 — `SessionCompact` fires after the compacted
+                // transcript (summary + reinjected attachments) is applied.
+                if let Some(runner) = &self.extension {
+                    let _ = runner
+                        .emit(codesmith_agent::extension::ExtensionEvent::SessionCompact)
+                        .await;
+                }
                 probe
                     .circuit_breaker
                     .lock()
@@ -4512,6 +4532,10 @@ impl HostAgentExecutor {
                             // (if a handler blocked this `ToolCall`), cloned
                             // into the `'static` future.
                             let ext_block_reason = ext_blocks.get(&plan.index).cloned();
+                            // §F2b T3 — capture the runner into the `'static`
+                            // future so ToolExecutionStart/End can bracket the
+                            // tool run from inside `async move`.
+                            let ext = extension.clone();
                             let id = plan.id.clone();
                             let name = plan.name.clone();
                             let input = plan.input.clone();
@@ -4535,7 +4559,16 @@ impl HostAgentExecutor {
                                     // speculatively-started task if the model
                                     // didn't revise the args; otherwise abort
                                     // (Drop) and run fresh.
-                                    match early {
+                                    // §F2b T3 — ToolExecutionStart/End bracket
+                                    // the actual tool run (mirrors the serial arm).
+                                    if let Some(runner) = &ext {
+                                        let _ = runner
+                                            .emit(
+                                                codesmith_agent::extension::ExtensionEvent::ToolExecutionStart,
+                                            )
+                                            .await;
+                                    }
+                                    let r = match early {
                                         Some(mut early)
                                             if early.name == name
                                                 && early.input == input =>
@@ -4560,7 +4593,15 @@ impl HostAgentExecutor {
                                             tool.run(input.clone()).await
                                         }
                                         None => tool.run(input.clone()).await,
+                                    };
+                                    if let Some(runner) = &ext {
+                                        let _ = runner
+                                            .emit(
+                                                codesmith_agent::extension::ExtensionEvent::ToolExecutionEnd,
+                                            )
+                                            .await;
                                     }
+                                    r
                                 };
                                 DispatchedTool {
                                     index,
@@ -4664,7 +4705,16 @@ impl HostAgentExecutor {
                             // approval/`tool.run` and feed back a blocked result.
                             (Ok(ToolResult::error(reason)), true)
                         } else {
-                            match &tool_for_plan[idx] {
+                            // §F2b T3 — ToolExecutionStart/End bracket the
+                            // serial dispatch (approval + run).
+                            if let Some(runner) = &extension {
+                                let _ = runner
+                                    .emit(
+                                        codesmith_agent::extension::ExtensionEvent::ToolExecutionStart,
+                                    )
+                                    .await;
+                            }
+                            let r = match &tool_for_plan[idx] {
                                 Some(tool) => {
                                     match self
                                         .request_approval(
@@ -4736,7 +4786,17 @@ impl HostAgentExecutor {
                                         false,
                                     )
                                 }
+                            };
+                            // §F2b T3 — ToolExecutionEnd brackets the
+                            // serial dispatch.
+                            if let Some(runner) = &extension {
+                                let _ = runner
+                                    .emit(
+                                        codesmith_agent::extension::ExtensionEvent::ToolExecutionEnd,
+                                    )
+                                    .await;
                             }
+                            r
                         };
                         // §F2b T1 — honor `Transform` at `ToolResult`: emit
                         // BEFORE `on_tool_end` so the callback + downstream
@@ -16318,6 +16378,309 @@ mod tests {
         assert!(
             !saw_original,
             "original user text must NOT reach the provider when rewritten: {first_req:?}"
+        );
+    }
+
+    // === §F2b T3 — tool-execution + compaction event seams ===============
+    //
+    // Proves `ToolExecutionStart`/`End` bracket `tool.run`, `SessionBeforeCompact`
+    // can veto compaction, and `SessionCompact` fires after the summary applies.
+
+    /// Handler that records `ToolExecutionStart` / `ToolExecutionEnd` labels.
+    struct ToolExecRecorderHandler {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Handler for ToolExecRecorderHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            let label = match event {
+                ExtensionEvent::ToolExecutionStart => "ToolExecutionStart",
+                ExtensionEvent::ToolExecutionEnd => "ToolExecutionEnd",
+                _ => return Ok(HandlerOutcome::Continue),
+            };
+            self.seen.lock().unwrap().push(label);
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`ToolExecRecorderHandler`].
+    struct ToolExecRecorderExt {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Extension for ToolExecRecorderExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("tool-exec-recorder");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(ToolExecRecorderHandler {
+                seen: self.seen.clone(),
+            }))?;
+            Ok(())
+        }
+    }
+
+    /// §F2b T3 — `ToolExecutionStart` / `ToolExecutionEnd` must bracket the
+    /// actual `tool.run` (one echo call ⇒ one Start/End pair, in order).
+    #[tokio::test]
+    async fn f2b_tool_execution_start_end_bracket_tool_run() {
+        let runner = Arc::new(ExtensionRunner::new());
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&ToolExecRecorderExt { seen: seen.clone() })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx),
+            Some(Arc::new(RecordingHookHost::default())),
+            test_template(),
+        ));
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["ToolExecutionStart", "ToolExecutionEnd"],
+            "ToolExecutionStart/End must bracket the single tool run, in order"
+        );
+    }
+
+    /// Handler that returns `Cancel` on `SessionBeforeCompact` (else `Continue`).
+    struct CancelCompactHandler;
+
+    #[async_trait]
+    impl Handler for CancelCompactHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if matches!(event, ExtensionEvent::SessionBeforeCompact) {
+                return Ok(HandlerOutcome::Cancel {
+                    reason: "vetoed by f2b test".to_string(),
+                });
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`CancelCompactHandler`].
+    struct CancelCompactExt;
+
+    #[async_trait]
+    impl Extension for CancelCompactExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("cancel-compact");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(CancelCompactHandler))?;
+            Ok(())
+        }
+    }
+
+    /// §F2b T3 — a handler returning `Cancel` on `SessionBeforeCompact` must
+    /// skip the LLM-summary compaction (no compaction API call, no summary).
+    #[tokio::test]
+    async fn f2b_session_before_compact_cancel_skips_compaction() {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&CancelCompactExt).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_summary("Conversation summary."),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Cancel honored → the compaction LLM call never happens.
+        assert_eq!(
+            mock.compaction_calls(),
+            0,
+            "SessionBeforeCompact cancel must skip the compaction LLM call"
+        );
+        assert!(
+            executor
+                .take_pending_compaction_summary()
+                .is_none(),
+            "no summary_prompt recorded when compaction is vetoed"
+        );
+    }
+
+    /// Handler that records `SessionBeforeCompact` / `SessionCompact` labels.
+    struct CompactRecorderHandler {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Handler for CompactRecorderHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            let label = match event {
+                ExtensionEvent::SessionBeforeCompact => "SessionBeforeCompact",
+                ExtensionEvent::SessionCompact => "SessionCompact",
+                _ => return Ok(HandlerOutcome::Continue),
+            };
+            self.seen.lock().unwrap().push(label);
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`CompactRecorderHandler`].
+    struct CompactRecorderExt {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Extension for CompactRecorderExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("compact-recorder");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(CompactRecorderHandler {
+                seen: self.seen.clone(),
+            }))?;
+            Ok(())
+        }
+    }
+
+    /// §F2b T3 — `SessionBeforeCompact` fires before + `SessionCompact` after
+    /// the LLM-summary compaction runs (proves both seams + their order).
+    #[tokio::test]
+    async fn f2b_session_compact_fires_after_summary() {
+        let runner = Arc::new(ExtensionRunner::new());
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&CompactRecorderExt { seen: seen.clone() })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_summary("Conversation summary."),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config_low_threshold(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert_eq!(
+            mock.compaction_calls(),
+            1,
+            "compaction must run when not vetoed"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["SessionBeforeCompact", "SessionCompact"],
+            "SessionBeforeCompact fires before, SessionCompact after the summary"
         );
     }
 }
