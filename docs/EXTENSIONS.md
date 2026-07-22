@@ -13,10 +13,17 @@ against a stub api, then `bind_core`s the host context — after which the
 runner fans lifecycle events to registered handlers and the agent loop sees
 extension tools as normal `ToolSpec`s.
 
-> **Slice 1 (§F1) scope.** Only compiled-in extensions are supported. Dylib
-> loading, `extension.toml` manifests, install/uninstall, `registerProvider`,
-> renderers, shortcuts, flags, the full ~30-event lifecycle, and the
-> `EventBus` impl are deferred to §F2–§F8. Hot-load is permanently out
+> **Slice status.** §F1 (compiled-in extensions + minimal 6-event contract),
+> §F2a (full 23-variant `ExtensionEvent` set + `HandlerOutcome`
+> cancel/block/transform chain + per-variant subscription + `catch_unwind`
+> isolation), and §F2b (host seam wiring — honor `EmitOutcome` at the 7
+> `host_executor` seams + emit 22/23 events + full e2e round-trip + live
+> reload) are done. Dylib loading, `extension.toml` manifests,
+> install/uninstall, `registerProvider`, renderers, shortcuts, flags, the
+> `EventBus` impl are deferred to §F3–§F8. `ToolExecutionUpdate` (needs a
+> `Callback::on_tool_progress` stream hook) + reload sharing the engine's
+> `cancel_token` + 3 tui-level seams (`ProjectTrust`/`ResourcesDiscover`/
+> `SessionBeforeFork`) are deferred to §F2c. Hot-load is permanently out
 > (spec §2.4) — install + reload only.
 
 ## Bootstrap
@@ -41,7 +48,7 @@ between user-defined commands and the static `match`.
 | `/extension enable <id>` | | ✅ working | Marks the extension enabled in `extensions_state.toml`; takes effect on next `/extension reload` (§F2 wires live re-reconcile). |
 | `/extension disable <id>` | | ✅ working | Marks the extension disabled; same reload caveat. |
 | `/extension status` | | ✅ working | Reports the bound runner's generation + bound command/tool counts. |
-| `/extension reload` | | ✅ working (invalidate-only) | Invalidates the runner's generation (stale-context guard trips for captured `Arc<dyn ExtensionApi>`s). Re-discovery + re-load happens on next engine build; live reload is §F2. |
+| `/extension reload` | | ✅ working (live reload) | Re-populates the **shared runner `Arc`**: `clear_handlers` → `invalidate` (bump generation) → `discover_static` → reconcile against state → `load` each → `bind_core` (fresh `HostExtensionContext`). Both `App.extension_runner` and the Engine's field update live (no `Arc` swap — they share the one the engine built). A handler bound before reload stops observing after (cleared, not duplicated); a newly-compiled-in extension is picked up on the next reload. |
 | `/extension install <source>` | | 🚧 stub "phase 2" | Returns an error pointing to §F5 (dylib loader). |
 | `/extension uninstall <id>` | | 🚧 stub "phase 2" | Returns an error pointing to §F5. |
 
@@ -198,9 +205,52 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 }
 ```
 
-> The host honors `Cancel`/`Block`/`Transform` at each seam in §F2b — §F2a
-> lands the contract + the chain in isolation (the 7 `host_executor` emit
-> sites adopted the new owned-in signature but discard `EmitOutcome`).
+> The host honors `Cancel`/`Block`/`Transform` at each seam (§F2b — see the
+> host-seam mapping below). §F2a landed the contract + the chain in isolation;
+> §F2b added `#[must_use]` on `EmitOutcome` so every emit site must inspect the
+> outcome (observe-only seams use `let _ =`).
+
+## Host seam mapping (§F2b)
+
+§F2b wires each `ExtensionEvent` variant to its host emit site + defines
+which `HandlerOutcome` the host honors at that seam. An out-of-place outcome
+(e.g. `Block` at `TurnEnd`) is ignored — treated as `Continue` — so a handler
+that returns the wrong capability for its variant is a no-op, not an error.
+`EmitOutcome` is `#[must_use]`, so every emit site binds the result (observe-only
+seams use `let _ =`; capability seams inspect `out.outcome` / `out.event`).
+
+| Variant | Emit site | Honored outcome | Effect |
+|---|---|---|---|
+| `SessionStart { reason }` | `engine/mod.rs` pre-op-loop | observe | — |
+| `SessionShutdown` | `engine/mod.rs` post-MCP-shutdown | observe | — |
+| `TurnStart` | `host_executor` turn entry | observe | — |
+| `TurnEnd` | `host_executor` turn exit (interrupted + no-tool-calls) | observe | — |
+| `Input(InputEvent)` | `host_executor::run_inner` (user-turn seed) | **Transform** | rewrites the submitted `text` |
+| `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` top | **Transform** | injects `inject_message` (history push) + overrides `system_prompt` if set |
+| `AgentStart` | `host_executor::run_inner` (observe) | observe | — |
+| `BeforeProviderHeaders` | `host_executor` before `request` build | observe | — |
+| `BeforeProviderRequest(BeforeProviderRequestEvent)` | `host_executor` after `request` built, before stream | **Transform** | rewrites `request.messages` |
+| `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` arm after `accumulate_usage` | observe | — |
+| `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch | **Block** | skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true` |
+| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result |
+| `ToolExecutionStart` | `host_executor` tool closure (before `tool.run`) | observe | — |
+| `ToolExecutionEnd` | `host_executor` tool closure (after `tool.run`) | observe | — |
+| `AgentEnd` | `host_executor::run_inner` each `return Ok(...)` | observe | — |
+| `AgentSettled` | `engine/mod.rs` post-run drain (after capacity apply) | observe | — |
+| `SessionBeforeCompact` | `host_executor::run_compaction` after `should_compact` gate | **Cancel** | skips compaction (`return`) |
+| `SessionCompact` | `host_executor::run_compaction` after summary applied | observe | — |
+| `SessionBeforeSwitch` | `tui/ui.rs` `switch_workspace` entry | **Cancel** | aborts the workspace switch |
+| `ProjectTrust` | — (deferred §F2c) | observe | `build_tool_context_for` is sync, can't `.await` emit |
+| `ResourcesDiscover` | — (deferred §F2c) | observe | MCP runs in a separate process, doesn't share the App runner `Arc` |
+| `SessionBeforeFork` | — (deferred §F2c) | **Cancel** | `fork_at_user_message` is dead code; tui has no `RuntimeThreadManager` ctor |
+| `ToolExecutionUpdate` | — (deferred §F2c) | observe | no `Callback::on_tool_progress` stream hook yet |
+
+> The `Transform` payload's actionable field is applied at the seam AFTER the
+> full handler chain runs (so a `Transform` from handler N is visible to
+> handler N+1 as the running event). `Cancel`/`Block` short-circuit the chain.
+> The terminal `EmitOutcome.outcome` is never `Transform` (folded into
+> `EmitOutcome.event`); capability seams inspect `out.outcome` for
+> `Cancel`/`Block` and `out.event` for the transformed actionable field.
 
 ## Sandbox Stance
 
@@ -225,10 +275,10 @@ first load. Slice 1's compiled-in extensions are trusted by construction
   `HandlerOutcome`; `Continue` means "no change" by design. To
   cancel/block/transform, return the matching variant — and note
   variant-specific semantics (a `Block` at a non-`ToolCall` seam is ignored;
-  §F2b wires the host to honor these at each seam). `emit` isolates each
-  handler call behind `catch_unwind` (§8.3): a panicking handler is logged
-  via `tracing` and skipped — it cannot crash the agent loop — and a handler
-  `Err` is likewise logged + the chain continues.
+  see the host-seam mapping below). `emit` isolates each handler call behind
+  `catch_unwind` (§8.3): a panicking handler is logged via `tracing` and
+  skipped — it cannot crash the agent loop — and a handler `Err` is likewise
+  logged + the chain continues.
 - **`configure` captured an `Arc<dyn ExtensionApi>` that now returns
   `StaleContext`.** The runner was `invalidate()`d (via `/extension reload`
   or a future reload/fork/switch); capture a fresh api or check

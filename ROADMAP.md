@@ -2483,6 +2483,39 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - §F2b：wire 每个新事件到其 `HostAgentExecutor`/app seam + 完整 e2e round-trip test + App 字段 live wiring + `/extension reload` re-discover。
 - 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
 
+**进度（2026-07-22 §F2b host seam wiring——§F2 拆为两子切片的 b 半：honor `EmitOutcome`（Block/Cancel/Transform）at 7 `host_executor` seams + 发射 22/23 事件（`ToolExecutionUpdate` 延后 §F2c）+ 完整 e2e round-trip + App 字段 live wiring + `/extension reload` re-discover，`feat/pluggable-framework-core`）：**
+
+接 §F2a（contract + runtime core 半）。本切片把 §F2a 的 outcome-链 contract wire 进 host：在每个 seam 检查 `out.outcome` 的 seam-capable 能力（Block=`ToolCall`、Cancel=`SessionBefore*`、Transform=`Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult`），out-of-place outcome → `Continue`；并补齐 22 个 not-yet-wired 事件。`ExtensionEvent`/`HandlerOutcome`/`EmitOutcome`/`on_variant`/`catch_unwind` 全部稳定不变（仅 `EmitOutcome` 加 `#[must_use]`，`ExtensionRunner` 加 runtime-lifecycle `clear_handlers`——非 contract 变更）。plan：`docs/superpowers/plans/2026-07-22-codesmith-extension-system-slice-2b.md`。
+
+**关键设计决策：**
+- **seam-capable outcome 映射固定**：Block=`ToolCall`（skip dispatch → permission-denied result）、Cancel=`SessionBefore*`（skip compaction/switch/fork）、Transform=`Input`/`BeforeAgentStart`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult`（rewrite actionable field）；out-of-place（如 Block at `TurnEnd`）→ `Continue`，由 host 的 `match _ => original` fallthrough 强制。
+- **Transform at ToolResult reorder**：emit 移到 `on_tool_end` **之前**，提取 transformed result → `on_tool_end` + downstream `outcomes[idx].result` 都见 transformed（Phase-4 持久化见 transformed）。
+- **22/23 wired，`ToolExecutionUpdate` 延后 §F2c**：`Callback` trait 无 `on_tool_progress` 流式钩子——需 §F2c 扩 trait（spec §F10.2 deferred）。EXTENSIONS.md 记 deferral。
+- **`SessionStart`/`SessionShutdown` 补齐 §F1 gap**：§F1 声明但从未发射；§F2b 在 engine/mod.rs observe-only 发射，闭合 6-live-事件宣称与实际的缺口。
+- **live reload = re-populate shared `Arc`**：App 持 `extension_runner`(Arc)+`extension_state`+`workspace` 但**不**持 `Engine`/`cancel_token`；engine build 时 clone `self.extension_runner`。换 App 的 Arc 无法更新 Engine 字段 → 必须 re-populate 共享 Arc（所有 holder 自动更新）。`bind_core` append 到 `handlers`(Vec) 不清空 → 加 `clear_handlers`。`reload_extension_runtime` = clear → invalidate → discover_static → reconcile → load → bind_core。
+- **reload 用 fresh `CancellationToken`**：当前无 §F2b handler 读 ctx signal；共享 engine 的 token 属 §F2c 增强（避免 App field plumbing + respawn stale-token 复杂度）。
+- **4 事件 tui-level 显式延后**：`ProjectTrust`（`build_tool_context_for` 同步、不能 `.await` emit）、`ResourcesDiscover`（MCP 独立进程不共享 App runner Arc）、`SessionBeforeFork`（dead-code `fork_at_user_message`、tui 无 `RuntimeThreadManager` ctor）—— EXTENSIONS.md 记 deferral；`SessionBeforeSwitch` test 因 TaskManager scaffolding 比例失衡，wire 已落地但测试 deferred。`Input` transform wire 到 `run_inner`（非 `submit_user_input`——后者携 `UserInputResponse` 结构而非 text）。
+
+**落地步骤：**
+1. `crates/extensions/src/runner.rs`：T1 `EmitOutcome` 加 `#[must_use]`（强制 seam 检查）；T7 `clear_handlers()`（runtime lifecycle，clear `handlers` Vec）。
+2. `crates/agent-runtime/src/engine/host_executor.rs`：T1 7 seam honor `EmitOutcome`（observe-only `let _ =`；Block at `ToolCall` parallel+serial skip dispatch → permission-denied；Transform at `ToolResult` parallel+serial reorder emit→extract→`on_tool_end`→propagate）；T2 6 agent-lifecycle/provider 事件（`BeforeAgentStart`[transform inject_message+system_prompt]/`AgentStart`/`BeforeProviderHeaders`/`BeforeProviderRequest`[transform messages]/`AfterProviderResponse`/`AgentEnd`）；T3 4 tool-exec+compaction 事件（`ToolExecutionStart`/`End` bracket `tool.run`；`SessionBeforeCompact`[cancel] gate compaction；`SessionCompact` observe）；T4 完整 e2e round-trip（15-event ordered lifecycle across 2 calls）。
+3. `crates/agent-runtime/src/engine/mod.rs`：T5 3 engine-level 事件（`AgentSettled` post-run drain observe；`SessionStart`[Startup] pre-op-loop observe；`SessionShutdown` post-MCP-shutdown observe）。
+4. `crates/tui/src/tui/ui.rs`：T6 `SessionBeforeSwitch`[cancel] gate at `switch_workspace` entry；`Input`[transform] wire 到 `run_inner`（host_executor.rs，非 tui）。
+5. `crates/tui/src/core/engine.rs`：T7 extract `populate_extension_runtime`（discover→reconcile→load→bind_core body）+ pub `reload_extension_runtime`（clear+invalidate+populate）；`build_extension_runtime` 调 `populate`。
+6. `crates/tui/src/commands/extension_commands.rs`：T7 `reload(app)` rewire 调 `reload_extension_runtime`（re-discovers+re-loads+re-binds on shared Arc）。
+
+**测试/验证：** `cargo +1.90.0 build --workspace` 全绿；`codesmith-extensions --lib` 14（`#[must_use]` 无行为变化）；`codesmith-agent --lib` 97（contract 不变）；`codesmith-agent-runtime --lib` 1152+2 → +11 `f2b_*`（Block at ToolCall skips dispatch / Transform at ToolResult rewrites on_tool_end / BeforeAgentStart transform injects / BeforeProviderRequest transform rewrites messages / ToolExecution Start/End bracket / SessionBeforeCompact cancel skips / SessionCompact fires / full lifecycle ordered 15 events / AgentSettled post-run / Session start-settled-shutdown）；`codesmith-tui --bin codesmith-tui` 2853+2 → 2855+2（+2 `f2b_*`：engine emits session start/settled/shutdown + extension reload clears+rebinds live）；grep `.emit(codesmith_agent::extension::ExtensionEvent` 跨 `host_executor.rs` >7-hit（22 wired）；`.emit(&...` → 0-hit。
+
+**By-design gaps（§F2c，显式 out-of-scope）：**
+- `ToolExecutionUpdate`（无 `Callback::on_tool_progress` 流式钩子——需 §F2c 扩 trait）。
+- `ProjectTrust`/`ResourcesDiscover`/`SessionBeforeFork`（tui-level seam 不可达：sync context / 独立进程 / dead-code fork 路径）。
+- `SessionBeforeSwitch` test（wire 已落地，TaskManager scaffolding 比例失衡）。
+- reload 共享 engine `cancel_token`（当前 fresh token；无 §F2b handler 读 ctx signal）。
+
+**下一聚焦工作：**
+- §F2c（按需）：`ToolExecutionUpdate` 需 `Callback` trait 扩 `on_tool_progress` 流式钩子；reload 共享 engine cancel_token；3 个 tui-level deferred seam。
+- 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
+
 ---
 
 ## §A — Provider extraction (bulk migration)
@@ -2836,3 +2869,31 @@ per-variant dispatch + `catch_unwind` landed. Deferred to §F2b: host seam
 wiring (honor `Cancel`/`Block`/`Transform` at the 7 seams), emit the ~17 new
 events from `host_executor`, full e2e round-trip, App field live wiring,
 `/extension reload` re-discover. Remaining §F3–§F8 unchanged.
+
+### F2b — Slice 2b (host seam wiring)
+
+- `#[must_use]` on `EmitOutcome` (forces seam sites to inspect the outcome).
+- Honor `EmitOutcome` at the 7 `host_executor` seams: observe-only
+  (`let _ =`) for `TurnStart`/`TurnEnd`; `Block` at `ToolCall` (parallel +
+  serial) skips dispatch → permission-denied result; `Transform` at
+  `ToolResult` (parallel + serial) reorders emit→extract→`on_tool_end`→
+  propagate to `outcomes[idx].result`; out-of-place outcomes → `Continue`.
+- Wire 22/23 events from host: T2 `BeforeAgentStart`[transform inject+
+  system_prompt]/`AgentStart`/`BeforeProviderHeaders`/`BeforeProviderRequest`
+  [transform messages]/`AfterProviderResponse`/`AgentEnd`; T3 `ToolExecution
+  Start`/`End` bracket `tool.run` + `SessionBeforeCompact`[cancel] gate +
+  `SessionCompact` observe; T5 `AgentSettled`/`SessionStart`/`SessionShutdown`
+  (engine/mod.rs); T6 `Input`[transform] + `SessionBeforeSwitch`[cancel].
+- Full e2e round-trip test asserting the complete ordered host lifecycle
+  (15 events across 2 calls).
+- Live reload: `ExtensionRunner::clear_handlers` + extracted
+  `reload_extension_runtime` (clear→invalidate→discover→reconcile→load→
+  bind_core) so `/extension reload` re-populates the **shared runner `Arc`**
+  (App.extension_runner + Engine field both live, no Arc swap).
+
+**Status (slice 2b §F2b):** done. 22/23 events wired + `EmitOutcome` honored
+at 7 seams + full e2e + live reload. Deferred to §F2c: `ToolExecutionUpdate`
+(needs `Callback::on_tool_progress` stream hook), reload sharing the engine's
+`cancel_token`, and 3 tui-level seams (`ProjectTrust`/`ResourcesDiscover`/
+`SessionBeforeFork`) that are unreachable from the App runner (`sync context`/
+`separate MCP process`/`dead-code fork path`). Remaining §F3–§F8 unchanged.
