@@ -1,0 +1,15 @@
+[package]
+name = "extensions-fixture-dylib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+async-trait = "0.1"
+codesmith-agent = { path = "../agent", version = "0.8.48" }
+codesmith-tools = { path = "../tools", version = "0.8.48" }
+serde_json.workspace = true

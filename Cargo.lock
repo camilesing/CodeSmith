@@ -970,6 +970,7 @@ dependencies = [
  "async-trait",
  "codesmith-agent",
  "codesmith-tools",
+ "extensions-fixture-dylib",
  "futures-util",
  "inventory",
  "libloading",
@@ -1919,6 +1920,16 @@ dependencies = [
  "futures-core",
  "nom",
  "pin-project-lite",
+]
+
+[[package]]
+name = "extensions-fixture-dylib"
+version = "0.8.48"
+dependencies = [
+ "async-trait",
+ "codesmith-agent",
+ "codesmith-tools",
+ "serde_json",
 ]
 
 [[package]]
