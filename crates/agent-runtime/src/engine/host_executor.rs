@@ -15927,6 +15927,151 @@ mod tests {
         );
     }
 
+    // === §F2b T4 — full e2e round-trip (ordered host lifecycle) ================
+    //
+    // Extends the §F1 minimal-run assertion: a bound `ExtensionRunner` observes
+    // the COMPLETE ordered host_executor lifecycle across a 2-call run (call 1 =
+    // tool_use echo, call 2 = end_turn). `RecHandler` (§F1) records only the 4
+    // original seams; [`FullLifecycleRecHandler`] records every §F2b variant so
+    // the full 15-event sequence can be asserted in order.
+
+    /// Records every host_executor lifecycle variant label (§F2b T4). Unlike
+    /// [`RecHandler`] (§F1, 4 labels), this records all 12 variants that fire
+    /// during a normal run so the full ordered lifecycle can be asserted.
+    struct FullLifecycleRecHandler {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Handler for FullLifecycleRecHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            let label = match event {
+                ExtensionEvent::BeforeAgentStart(_) => "BeforeAgentStart",
+                ExtensionEvent::AgentStart => "AgentStart",
+                ExtensionEvent::TurnStart { .. } => "TurnStart",
+                ExtensionEvent::BeforeProviderHeaders => "BeforeProviderHeaders",
+                ExtensionEvent::BeforeProviderRequest(_) => "BeforeProviderRequest",
+                ExtensionEvent::AfterProviderResponse(_) => "AfterProviderResponse",
+                ExtensionEvent::ToolCall(_) => "ToolCall",
+                ExtensionEvent::ToolExecutionStart => "ToolExecutionStart",
+                ExtensionEvent::ToolExecutionEnd => "ToolExecutionEnd",
+                ExtensionEvent::ToolResult(_) => "ToolResult",
+                ExtensionEvent::TurnEnd { .. } => "TurnEnd",
+                ExtensionEvent::AgentEnd => "AgentEnd",
+                // Engine-level (T5) / tui-level (T6) / compaction / update events
+                // don't fire in this minimal run — record nothing + Continue.
+                _ => return Ok(HandlerOutcome::Continue),
+            };
+            self.seen.lock().unwrap().push(label);
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`FullLifecycleRecHandler`].
+    struct FullLifecycleRecExt {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Extension for FullLifecycleRecExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("full-lifecycle-rec");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(FullLifecycleRecHandler {
+                seen: self.seen.clone(),
+            }))?;
+            Ok(())
+        }
+    }
+
+    /// §F2b T4 — proves the bound `ExtensionRunner` observes the COMPLETE ordered
+    /// host_executor lifecycle across a 2-call run (call 1 = tool_use echo, call
+    /// 2 = end_turn). Scaffolding mirrors `extension_runner_bound_emits_…`
+    /// verbatim; the only difference is [`FullLifecycleRecHandler`] records every
+    /// §F2b variant (the §F1 `RecHandler` records only 4), so the full 15-event
+    /// sequence can be asserted in order:
+    /// `[BeforeAgentStart, AgentStart, TurnStart, BeforeProviderHeaders,
+    ///   BeforeProviderRequest, AfterProviderResponse, ToolCall,
+    ///   ToolExecutionStart, ToolExecutionEnd, ToolResult,
+    ///   BeforeProviderHeaders, BeforeProviderRequest, AfterProviderResponse,
+    ///   TurnEnd, AgentEnd]`.
+    #[tokio::test]
+    async fn f2b_full_lifecycle_ordered_events() {
+        let runner = Arc::new(ExtensionRunner::new());
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&FullLifecycleRecExt { seen: seen.clone() })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        // Mock client: call 1 = text + tool_use(echo), call 2 = text → NoToolCalls.
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let hooks = Arc::new(RecordingHookHost::default());
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx), Some(hooks), test_template()));
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Full ordered host lifecycle across the 2-call run.
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                "BeforeAgentStart",
+                "AgentStart",
+                "TurnStart",
+                "BeforeProviderHeaders",
+                "BeforeProviderRequest",
+                "AfterProviderResponse",
+                "ToolCall",
+                "ToolExecutionStart",
+                "ToolExecutionEnd",
+                "ToolResult",
+                "BeforeProviderHeaders",
+                "BeforeProviderRequest",
+                "AfterProviderResponse",
+                "TurnEnd",
+                "AgentEnd",
+            ],
+            "bound runner must observe the complete ordered host lifecycle"
+        );
+    }
+
     // === §F2b T1 — honor EmitOutcome at the ToolCall/ToolResult seams ========
     //
     // Proves the host honors `Block` at `ToolCall` (skips dispatch, surfaces a
