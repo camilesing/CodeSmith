@@ -3715,13 +3715,44 @@ impl HostAgentExecutor {
         // mid-turn). The per-step `system` — which folds in any compaction
         // summary produced so far this turn — is recomputed at the top of the
         // loop via `refresh_system_prompt_snapshot` (slice 38 §E).
-        let base = self.config.system.clone();
+        let mut base = self.config.system.clone();
         let temperature = self.config.temperature;
         // §F1 — extension runtime probe + per-turn id. `extension` is `None`
         // unless `with_extension_runner` bound it; the seam emits below are
         // no-ops then. `turn_id` is shared by the TurnStart + TurnEnd emits.
         let extension = self.extension.clone();
         let turn_id = uuid::Uuid::new_v4().to_string();
+
+        // §F2b T2 — BeforeAgentStart (transform-capable): a handler may inject
+        // a user message (pushed before the user turn) and/or override the
+        // system prompt. AgentStart (observe) fires right after.
+        if let Some(runner) = &extension {
+            let out = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::BeforeAgentStart(
+                    codesmith_agent::extension::AgentStartEvent {
+                        system_prompt: None,
+                        inject_message: None,
+                    },
+                ))
+                .await;
+            if let codesmith_agent::extension::ExtensionEvent::BeforeAgentStart(e) = out.event {
+                if let Some(msg) = e.inject_message {
+                    history.push(Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: msg,
+                            cache_control: None,
+                        }],
+                    });
+                }
+                if let Some(sp) = e.system_prompt {
+                    base = Some(SystemPrompt::Text(sp));
+                }
+            }
+            let _ = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::AgentStart)
+                .await;
+        }
 
         // Seed the transcript with the user turn.
         history.push(Message {
@@ -3786,6 +3817,10 @@ impl HostAgentExecutor {
                             reason: codesmith_agent::extension::TurnEndReason::Interrupted,
                         })
                         .await;
+                    // §F2b T2 — AgentEnd (observe) brackets the turn.
+                    let _ = runner
+                        .emit(codesmith_agent::extension::ExtensionEvent::AgentEnd)
+                        .await;
                 }
                 return Ok(StopReason::Interrupted);
             }
@@ -3802,6 +3837,11 @@ impl HostAgentExecutor {
             // it lands at the wire-in step, not in this in-loop seam.
             if step >= max_steps {
                 callback.on_complete(&StopReason::MaxSteps).await;
+                if let Some(runner) = &extension {
+                    let _ = runner
+                        .emit(codesmith_agent::extension::ExtensionEvent::AgentEnd)
+                        .await;
+                }
                 return Ok(StopReason::MaxSteps);
             }
             // Steer drain sits at the very top of the loop (mirrors
@@ -3850,6 +3890,11 @@ impl HostAgentExecutor {
                 CapacityPreflight::RetryStep => continue,
                 CapacityPreflight::Fail(msg) => {
                     callback.on_complete(&StopReason::Error(msg.clone())).await;
+                    if let Some(runner) = &extension {
+                        let _ = runner
+                            .emit(codesmith_agent::extension::ExtensionEvent::AgentEnd)
+                            .await;
+                    }
                     return Ok(StopReason::Error(msg));
                 }
             }
@@ -3929,7 +3974,16 @@ impl HostAgentExecutor {
             self.flush_pending_lsp_diagnostics(history);
 
             let api_tools = tools.to_api_tools();
-            let request = MessageRequest {
+            // §F2b T2 — BeforeProviderHeaders (observe) fires before the
+            // request is assembled.
+            if let Some(runner) = &extension {
+                let _ = runner
+                    .emit(
+                        codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders,
+                    )
+                    .await;
+            }
+            let mut request = MessageRequest {
                 model: client.model().to_string(),
                 messages: history.messages().to_vec(),
                 max_tokens,
@@ -3947,6 +4001,28 @@ impl HostAgentExecutor {
                 temperature,
                 top_p: None,
             };
+            // §F2b T2 — BeforeProviderRequest (transform): a handler may
+            // rewrite `request.messages` before the stream call. The host
+            // passes the current messages as JSON; a Transform returns the
+            // rewritten messages, which replace `request.messages`.
+            if let Some(runner) = &extension {
+                let out = runner
+                    .emit(
+                        codesmith_agent::extension::ExtensionEvent::BeforeProviderRequest(
+                            codesmith_agent::extension::BeforeProviderRequestEvent {
+                                messages: serde_json::to_value(&request.messages)
+                                    .unwrap_or(serde_json::Value::Null),
+                            },
+                        ),
+                    )
+                    .await;
+                if let codesmith_agent::extension::ExtensionEvent::BeforeProviderRequest(e) =
+                    out.event {
+                    if let Ok(rewritten) = serde_json::from_value::<Vec<Message>>(e.messages) {
+                        request.messages = rewritten;
+                    }
+                }
+            }
 
             callback.on_llm_start(&request).await;
             // (2) per-step post-stream seam — ✅ transparent-retry (re-issue
@@ -4001,6 +4077,18 @@ impl HostAgentExecutor {
                     // (`turn.add_usage(&usage)`) used to do inline; the host
                     // now reads it back via `take_usage` after `run` returns.
                     self.accumulate_usage(&usage);
+                    // §F2b T2 — AfterProviderResponse (observe).
+                    if let Some(runner) = &extension {
+                        let _ = runner
+                            .emit(
+                                codesmith_agent::extension::ExtensionEvent::AfterProviderResponse(
+                                    codesmith_agent::extension::AfterProviderResponseEvent {
+                                        response: serde_json::Value::Null,
+                                    },
+                                ),
+                            )
+                            .await;
+                    }
                     // The reactive recovery budget is reset on a successful
                     // stream open inside `stream_with_transparent_retry`
                     // (mirrors `handle_deepseek_turn`).
@@ -4269,6 +4357,10 @@ impl HostAgentExecutor {
                             turn_id: turn_id.clone(),
                             reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
                         })
+                        .await;
+                    // §F2b T2 — AgentEnd (observe) brackets the turn.
+                    let _ = runner
+                        .emit(codesmith_agent::extension::ExtensionEvent::AgentEnd)
                         .await;
                 }
                 return Ok(StopReason::NoToolCalls);
@@ -15707,7 +15799,10 @@ mod tests {
                 ExtensionEvent::ToolResult(_) => "ToolResult",
                 ExtensionEvent::TurnEnd { .. } => "TurnEnd",
                 ExtensionEvent::SessionShutdown => "SessionShutdown",
-                _ => "other",
+                // §F2b — unrecognized variants (the §F2b agent/provider
+                // events) are not recorded here so this §F1 assertion stays
+                // stable; T4's full-lifecycle test records all variants.
+                _ => return Ok(HandlerOutcome::Continue),
             });
             Ok(HandlerOutcome::Continue)
         }
@@ -15985,6 +16080,244 @@ mod tests {
         assert!(
             !is_error.unwrap_or(true),
             "transformed tool result must be a success: is_error={is_error:?}"
+        );
+    }
+
+    // === §F2b T2 — agent-lifecycle / provider transform seams =============
+    //
+    // Proves the host honors `Transform` at `BeforeAgentStart` (inject a user
+    // message + override the system prompt) and at `BeforeProviderRequest`
+    // (rewrite the request messages the provider sees). Scaffolding mirrors
+    // the §F1 minimal-run e2e; assertions read `MockLlm::requests()` /
+    // `MockLlm::systems()` — the snapshots the mock client recorded.
+
+    /// Handler that returns `Transform(BeforeAgentStart{ inject_message +
+    /// system_prompt })` on `BeforeAgentStart` (else `Continue`).
+    struct InjectSystemPromptHandler;
+
+    #[async_trait]
+    impl Handler for InjectSystemPromptHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::BeforeAgentStart(_) = event {
+                return Ok(HandlerOutcome::Transform(
+                    ExtensionEvent::BeforeAgentStart(
+                        codesmith_agent::extension::AgentStartEvent {
+                            system_prompt: Some("OVERRIDE".to_string()),
+                            inject_message: Some("INJECTED".to_string()),
+                        },
+                    ),
+                ));
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`InjectSystemPromptHandler`].
+    struct InjectSystemPromptExt;
+
+    #[async_trait]
+    impl Extension for InjectSystemPromptExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("inject-system-prompt");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(InjectSystemPromptHandler))?;
+            Ok(())
+        }
+    }
+
+    /// §F2b T2 — a handler returning `Transform(BeforeAgentStart{ inject_message
+    /// + system_prompt })` must (a) push the injected user message before the
+    /// user turn so the provider sees it, and (b) override the system prompt
+    /// the provider receives.
+    #[tokio::test]
+    async fn f2b_before_agent_start_transform_injects_message_and_system_prompt() {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&InjectSystemPromptExt).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx),
+            Some(Arc::new(RecordingHookHost::default())),
+            test_template(),
+        ));
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let first_req = &mock.requests()[0];
+        // (a) The injected message must precede the user turn in the request.
+        let texts: Vec<&str> = first_req
+            .iter()
+            .flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("INJECTED")),
+            "injected message must reach the provider: {texts:?}"
+        );
+        // (b) The system prompt was overridden to "OVERRIDE".
+        assert_eq!(
+            mock.systems()[0],
+            Some(SystemPrompt::Text("OVERRIDE".to_string())),
+            "system_prompt transform must override the base prompt"
+        );
+    }
+
+    /// Handler that returns `Transform(BeforeProviderRequest{ messages:
+    /// [user "REWRITTEN"] })` on `BeforeProviderRequest` (else `Continue`).
+    struct RewriteProviderRequestHandler;
+
+    #[async_trait]
+    impl Handler for RewriteProviderRequestHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::BeforeProviderRequest(_) = event {
+                let rewritten = vec![Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "REWRITTEN".to_string(),
+                        cache_control: None,
+                    }],
+                }];
+                return Ok(HandlerOutcome::Transform(
+                    ExtensionEvent::BeforeProviderRequest(
+                        codesmith_agent::extension::BeforeProviderRequestEvent {
+                            messages: serde_json::to_value(&rewritten).unwrap(),
+                        },
+                    ),
+                ));
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`RewriteProviderRequestHandler`].
+    struct RewriteProviderRequestExt;
+
+    #[async_trait]
+    impl Extension for RewriteProviderRequestExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("rewrite-provider-request");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(RewriteProviderRequestHandler))?;
+            Ok(())
+        }
+    }
+
+    /// §F2b T2 — a handler returning `Transform(BeforeProviderRequest{
+    /// messages })` must replace the request messages the provider sees: the
+    /// rewritten "REWRITTEN" reaches the mock, the original "echo world" does
+    /// not.
+    #[tokio::test]
+    async fn f2b_before_provider_request_transform_rewrites_messages() {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&RewriteProviderRequestExt).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx),
+            Some(Arc::new(RecordingHookHost::default())),
+            test_template(),
+        ));
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let first_req = &mock.requests()[0];
+        assert!(
+            !first_req.is_empty(),
+            "provider must receive at least one message"
+        );
+        let saw_rewritten = first_req.iter().any(|m| {
+            m.content.iter().any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "REWRITTEN"))
+        });
+        assert!(
+            saw_rewritten,
+            "rewritten message must reach the provider: {first_req:?}"
+        );
+        let saw_original = first_req.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("echo world")))
+        });
+        assert!(
+            !saw_original,
+            "original user text must NOT reach the provider when rewritten: {first_req:?}"
         );
     }
 }
