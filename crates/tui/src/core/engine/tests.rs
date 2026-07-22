@@ -4032,6 +4032,126 @@ async fn engine_tool_call_round_trip_with_mock_client() {
     );
 }
 
+// === §F2b T5 — engine-level lifecycle events ================================
+//
+// Proves `Engine::run()` emits `SessionStart` (at entry, before the op loop),
+// `AgentSettled` (post-turn drain, before `TurnComplete`), and `SessionShutdown`
+// (at exit, after the op loop + MCP shutdown) to a bound `ExtensionRunner`.
+// Mirrors `spawn_engine_with_mock`, but splits build-from-spawn so a recording
+// extension can be loaded onto the shared runner BEFORE `run()` fires
+// `SessionStart` at entry; then drives one turn + `Op::Shutdown`. The handler
+// records only the three engine-level variants (host lifecycle variants are
+// dropped — they're covered by the `agent-runtime` §F2b T4 round-trip test).
+
+struct EngineLifecycleRecHandler {
+    seen: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait::async_trait]
+impl codesmith_agent::extension::Handler for EngineLifecycleRecHandler {
+    async fn handle(
+        &self,
+        event: &codesmith_agent::extension::ExtensionEvent,
+        _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+    ) -> Result<
+        codesmith_agent::extension::HandlerOutcome,
+        codesmith_agent::extension::ExtensionError,
+    > {
+    let label = match event {
+        codesmith_agent::extension::ExtensionEvent::SessionStart { .. } => "SessionStart",
+        codesmith_agent::extension::ExtensionEvent::AgentSettled => "AgentSettled",
+        codesmith_agent::extension::ExtensionEvent::SessionShutdown => "SessionShutdown",
+        _ => return Ok(codesmith_agent::extension::HandlerOutcome::Continue),
+    };
+    self.seen.lock().unwrap().push(label);
+    Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+    }
+}
+
+struct EngineLifecycleRecExt {
+    seen: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait::async_trait]
+impl codesmith_agent::extension::Extension for EngineLifecycleRecExt {
+    fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+        static M: codesmith_agent::extension::ExtensionMetadata =
+            codesmith_agent::extension::ExtensionMetadata::new("engine-lifecycle-rec");
+        &M
+    }
+    async fn configure(
+        &self,
+        api: &dyn codesmith_agent::extension::ExtensionApi,
+    ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+        api.on(Arc::new(EngineLifecycleRecHandler {
+            seen: self.seen.clone(),
+        }))?;
+        Ok(())
+    }
+}
+
+/// §F2b T5 — the bound runner observes the engine-level lifecycle:
+/// `SessionStart` → `AgentSettled` → `SessionShutdown`, in order.
+#[tokio::test]
+async fn f2b_engine_emits_session_start_settled_shutdown() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    let turn = vec![canned::simple_text_turn("Hello from mock!")];
+    let mock = MockLlmClient::new(turn);
+    let config = test_engine_config(tmp.path());
+
+    // Build WITHOUT spawning so the recording extension can be loaded onto the
+    // shared runner before `run()` fires `SessionStart` at entry.
+    let mock_arc = Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+    let (engine, handle) = Engine::new_with_client(config, &Config::default(), client);
+
+    let seen: Arc<std::sync::Mutex<Vec<&'static str>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    if let Some(runner) = &handle.extension_runner {
+        runner
+            .load(&EngineLifecycleRecExt { seen: seen.clone() })
+            .await
+            .expect("load rec ext");
+        // Re-bind to flush the new pending handler into the live registry.
+        // The ctx mirrors `build_extension_runtime` (same generation Arc so
+        // no stale-context rejection).
+        let idle = Arc::new(std::sync::Mutex::new(true));
+        let ctx = Arc::new(codesmith_extensions::HostExtensionContext::new(
+            tmp.path().to_path_buf(),
+            codesmith_agent::extension::ExtensionMode::Tui,
+            idle,
+            tokio_util::sync::CancellationToken::new(),
+            runner.generation_arc(),
+        ));
+        runner.bind_core(ctx);
+    }
+
+    // `SessionStart` fires at `run()` entry, before the op loop.
+    let join = tokio::spawn(async move { engine.run().await });
+
+    // Drive one turn — `AgentSettled` fires in the post-run drain (before
+    // `TurnComplete`, so it's recorded by the time `collect_until_turn_complete`
+    // returns).
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    // `Op::Shutdown` breaks the op loop → MCP shutdown → `SessionShutdown`
+    // fires at `run()` exit. Wait for the task to finish so the emit lands.
+    handle.send(Op::Shutdown).await.expect("send shutdown");
+    tokio::time::timeout(std::time::Duration::from_secs(2), join)
+        .await
+        .expect("engine shutdown timed out")
+        .expect("engine task panicked");
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec!["SessionStart", "AgentSettled", "SessionShutdown"],
+        "engine must emit SessionStart → AgentSettled → SessionShutdown in order"
+    );
+}
+
 // === Test 3: Capacity controller decision ====================================
 //
 // Verify that the capacity controller decides on TargetedContextRefresh

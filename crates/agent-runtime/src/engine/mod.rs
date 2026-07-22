@@ -505,6 +505,15 @@ impl Engine {
             );
         }
 
+        // §F2b T5 — `SessionStart` brackets the session lifecycle (fires
+        // once at engine entry, before the op loop). Observe-only.
+        if let Some(runner) = &self.extension_runner {
+            let _ = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::SessionStart {
+                    reason: codesmith_agent::extension::SessionReason::Startup,
+                })
+                .await;
+        }
         while let Some(op) = self.rx_op.recv().await {
             match op {
                 Op::SendMessage {
@@ -889,6 +898,13 @@ impl Engine {
         if let Some(pool) = self.mcp_pool.as_ref() {
             let mut guard = pool.lock().await;
             guard.shutdown_all().await;
+        }
+        // §F2b T5 — `SessionShutdown` brackets the session lifecycle (fires
+        // once at engine exit, after the op loop + MCP shutdown). Observe-only.
+        if let Some(runner) = &self.extension_runner {
+            let _ = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::SessionShutdown)
+                .await;
         }
     }
 
@@ -1459,6 +1475,14 @@ impl Engine {
                 GuardrailAction::NoIntervention => {}
             }
             self.emit_session_updated().await;
+        }
+        // §F2b T5 — `AgentSettled` fires after the post-run drain (compaction
+        // merge + capacity-decision apply) completes — the engine has settled
+        // the agent's run results. Observe-only.
+        if let Some(runner) = &self.extension_runner {
+            let _ = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::AgentSettled)
+                .await;
         }
         let (status, error) = match stop_reason {
             Ok(StopReason::NoToolCalls) | Ok(StopReason::MaxSteps) => {
