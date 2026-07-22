@@ -4122,7 +4122,7 @@ async fn f2b_engine_emits_session_start_settled_shutdown() {
             tmp.path().to_path_buf(),
             codesmith_agent::extension::ExtensionMode::Tui,
             idle,
-            tokio_util::sync::CancellationToken::new(),
+            Arc::new(std::sync::Mutex::new(tokio_util::sync::CancellationToken::new())),
             runner.generation_arc(),
         ));
         runner.bind_core(ctx);
@@ -4180,7 +4180,7 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         workspace.clone(),
         codesmith_agent::extension::ExtensionMode::Tui,
         Arc::new(std::sync::Mutex::new(true)),
-        tokio_util::sync::CancellationToken::new(),
+        Arc::new(std::sync::Mutex::new(tokio_util::sync::CancellationToken::new())),
         runner.generation_arc(),
     )));
 
@@ -4199,7 +4199,9 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         &runner,
         &workspace,
         &state,
-        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::Mutex::new(
+            tokio_util::sync::CancellationToken::new(),
+        )),
     );
     assert_eq!(runner.generation(), 1, "reload must bump generation");
 

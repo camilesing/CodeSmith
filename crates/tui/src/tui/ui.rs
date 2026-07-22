@@ -559,6 +559,10 @@ pub async fn run_tui(
     // without an engine round-trip. Built inside `build_engine`; cloned cheaply
     // (the same `Arc` is shared with the per-turn `HostAgentExecutor`).
     app.extension_runner = engine_handle.extension_runner.clone();
+    // §F2c — surface the engine's shared cancel-token `Arc` so
+    // `/extension reload` can pass the live engine token (not a fresh one)
+    // into the reloaded context.
+    app.extension_shared_cancel_token = Some(engine_handle.cancel_token.clone());
     // The translation client is optional: it never crashes the TUI on
     // startup, even when the API key is missing, the base URL is malformed,
     // or the network is unavailable.

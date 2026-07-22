@@ -1485,6 +1485,12 @@ pub struct App {
     /// §F1 — bound extension runtime, set by `build_extension_runtime`
     /// (Task 9). `None` until the engine builds (embeds/tests skip).
     pub extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
+    /// §F2c — the engine's **shared** cancel-token `Arc`, set alongside
+    /// `extension_runner` at engine build so `/extension reload` can pass the
+    /// live engine token (not a fresh one) into the reloaded context. `None`
+    /// until the engine builds (mirrors `extension_runner`).
+    pub extension_shared_cancel_token:
+        Option<std::sync::Arc<std::sync::Mutex<tokio_util::sync::CancellationToken>>>,
 }
 
 /// Message queued while the engine is busy.
@@ -2037,6 +2043,7 @@ impl App {
             extension_state: crate::extension_state::ExtensionStateStore::load_default()
                 .unwrap_or_default(),
             extension_runner: None,
+            extension_shared_cancel_token: None,
         }
     }
 

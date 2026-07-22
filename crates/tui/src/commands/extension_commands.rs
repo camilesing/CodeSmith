@@ -128,13 +128,17 @@ fn reload(app: &mut App) -> CommandResult {
     // §F2b T7 — live reload on the SHARED runner Arc: clear → invalidate →
     // re-discover → re-load → re-bind. The Engine's per-turn
     // `HostAgentExecutor` holds the same Arc, so the next turn sees the new
-    // handlers without an engine rebuild. `cancel_token` is fresh (no §F2b
-    // handler reads the ctx signal yet; sharing the engine's token is §F2c).
+    // handlers without an engine rebuild. §F2c Layer 2: pass the engine's
+    // **shared** cancel-token `Arc` (not a fresh token) so a handler's
+    // `ctx.signal()` reflects the engine's per-turn `reset_cancel_token`.
+    let Some(shared_cancel_token) = app.extension_shared_cancel_token.clone() else {
+        return CommandResult::error("Extension runner not bound.");
+    };
     crate::core::engine::reload_extension_runtime(
         &runner,
         &app.workspace,
         &app.extension_state,
-        tokio_util::sync::CancellationToken::new(),
+        shared_cancel_token,
     );
     CommandResult::message(format!(
         "Extension runner reloaded (generation {} → {}). Re-discovered + re-loaded compiled-in extensions on the shared runner (live for the next turn).",

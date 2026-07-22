@@ -121,7 +121,7 @@ mod tests {
             PathBuf::from("."),
             ExtensionMode::Tui,
             Arc::new(std::sync::Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(std::sync::Mutex::new(CancellationToken::new())),
             Arc::new(AtomicU64::new(0)),
         ))
     }

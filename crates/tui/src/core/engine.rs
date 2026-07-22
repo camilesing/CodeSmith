@@ -356,12 +356,12 @@ pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClien
 /// harden to share the host runtime.
 fn build_extension_runtime(
     workspace: &std::path::Path,
-    cancel_token: tokio_util::sync::CancellationToken,
+    shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> Arc<codesmith_extensions::ExtensionRunner> {
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let state = crate::extension_state::ExtensionStateStore::load_default()
         .unwrap_or_default();
-    populate_extension_runtime(&runner, workspace, &state, cancel_token);
+    populate_extension_runtime(&runner, workspace, &state, shared_cancel_token);
     runner
 }
 
@@ -373,7 +373,7 @@ fn populate_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
-    cancel_token: tokio_util::sync::CancellationToken,
+    shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) {
     // 1. Discover compiled-in extensions (inventory).
     let discovered = codesmith_extensions::discover_static();
@@ -412,13 +412,16 @@ fn populate_extension_runtime(
     }
 
     // 4. Build the host context + bind_core. The `idle` flag + the engine's
-    //    `cancel_token` are shared so handlers observe host state + cancel.
+    //    **shared** `cancel_token` `Arc` are handed to the context so handlers
+    //    observe host state + cancel. §F2c Layer 2: the shared `Arc<Mutex<_>>`
+    //    form (not a snapshot) so `ctx.signal()` reflects per-turn
+    //    `reset_cancel_token` swaps.
     let idle = Arc::new(std::sync::Mutex::new(true));
     let ctx = Arc::new(codesmith_extensions::HostExtensionContext::new(
         workspace.to_path_buf(),
         codesmith_agent::extension::ExtensionMode::Tui,
         idle,
-        cancel_token,
+        shared_cancel_token,
         runner.generation_arc(),
     ));
     runner.bind_core(ctx);
@@ -430,18 +433,20 @@ fn populate_extension_runtime(
 /// Clears handlers first so `bind_core`'s append-drain doesn't duplicate, +
 /// bumps generation so any previously-captured `ExtensionApi`/`ExtensionContext`
 /// reads stale (spec §7.3). Called by `/extension reload`
-/// (`extension_commands`). `cancel_token` is the ctx's cancel signal — §F2b
-/// passes a fresh token (no handler reads it yet); sharing the engine's token
-/// is a §F2c enhancement.
+/// (`extension_commands`). `shared_cancel_token` is the engine's shared
+/// cancel-token `Arc` — §F2c Layer 2 passes the **live** engine token (not a
+/// fresh one) so a handler's `ctx.signal()` reflects the engine's per-turn
+/// `reset_cancel_token` (no handler reads it yet; this is forward-looking
+/// infra).
 pub fn reload_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
-    cancel_token: tokio_util::sync::CancellationToken,
+    shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) {
     runner.clear_handlers();
     runner.invalidate();
-    populate_extension_runtime(runner, workspace, state, cancel_token);
+    populate_extension_runtime(runner, workspace, state, shared_cancel_token);
 }
 
 /// Assemble an [`Engine`] from TUI-coupled construction state.
@@ -469,9 +474,11 @@ pub fn build_engine(
     let cancel_reason: Arc<StdMutex<Option<CancelReason>>> = Arc::new(StdMutex::new(None));
     let tool_exec_lock = Arc::new(RwLock::new(()));
 
-    // §F1 — build the extension runtime + bind to the host executor. Shares
-    // the engine's `cancel_token` so handlers observe user-initiated ESC.
-    let extension_runner = build_extension_runtime(&config.workspace, cancel_token.clone());
+    // §F1 — build the extension runtime + bind to the host executor. §F2c
+    // Layer 2: hand the engine's **shared** `cancel_token` `Arc` (not a
+    // snapshot clone) so `ctx.signal()` reflects per-turn resets.
+    let extension_runner =
+        build_extension_runtime(&config.workspace, shared_cancel_token.clone());
 
     if config.features.enabled(Feature::AgentTeams) {
         let team_context = config

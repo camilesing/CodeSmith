@@ -15901,7 +15901,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16030,7 +16030,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16196,7 +16196,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16258,7 +16258,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16365,7 +16365,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16483,7 +16483,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16598,7 +16598,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16717,7 +16717,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16805,7 +16805,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
@@ -16911,7 +16911,7 @@ mod tests {
             PathBuf::from("/tmp/codesmith-test"),
             ExtensionMode::Tui,
             Arc::new(Mutex::new(true)),
-            CancellationToken::new(),
+            Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
         )));
 
