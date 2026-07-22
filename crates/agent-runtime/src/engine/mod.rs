@@ -188,6 +188,12 @@ pub struct Engine {
     /// engine core decoupled from concrete terminal services so it can later
     /// move to `codesmith-agent-runtime`.
     pub runtime_ui: Arc<dyn crate::runtime_ui::RuntimeUi>,
+    /// §F1 — bound extension runner, cloned into each fresh
+    /// `HostAgentExecutor` so the per-turn seam emits (slice 1: TurnStart /
+    /// ToolCall / ToolResult / TurnEnd) fan out to registered handlers.
+    /// `None` when no extension runtime was built (embeds/tests skip via
+    /// `with_extension_runner`'s default `None`); the emits are then no-ops.
+    pub extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 // === Internal tool helpers ===
@@ -1302,7 +1308,8 @@ impl Engine {
         )))
         .with_tool_dispatcher(plan.tool_registry.clone())
         .with_turn_meta(Some(turn_meta_probe))
-        .with_reinject(Some(reinject_probe));
+        .with_reinject(Some(reinject_probe))
+        .with_extension_runner(self.extension_runner.clone());
         let mut history = SessionChatHistory::new_with_event_tx(
             &mut self.session,
             Some(self.tx_event.clone()),
@@ -2791,6 +2798,7 @@ impl Engine {
         capacity_controller: Arc<StdMutex<CapacityController>>,
         tx_op: mpsc::Sender<Op>,
         runtime_ui: Arc<dyn crate::runtime_ui::RuntimeUi>,
+        extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
     ) -> Self {
         // Publish memory excludes so every project-context load site —
         // including the per-turn prompt reloader in `prompts.rs` that has no
@@ -2831,6 +2839,7 @@ impl Engine {
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),
             tx_op,
             runtime_ui,
+            extension_runner,
         };
         engine.rehydrate_latest_canonical_state();
         engine

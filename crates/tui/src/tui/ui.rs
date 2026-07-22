@@ -554,6 +554,11 @@ pub async fn run_tui(
 
     // Spawn the Engine - it will handle all API communication
     let engine_handle = spawn_engine(engine_config, config, build_engine_host(&app));
+    // §F1 — surface the bound extension runner so `/extension status` /
+    // `/extension reload` (in `extension_commands`) can read + invalidate it
+    // without an engine round-trip. Built inside `build_engine`; cloned cheaply
+    // (the same `Arc` is shared with the per-turn `HostAgentExecutor`).
+    app.extension_runner = engine_handle.extension_runner.clone();
     // The translation client is optional: it never crashes the TUI on
     // startup, even when the API key is missing, the base URL is malformed,
     // or the network is unavailable.

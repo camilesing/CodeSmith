@@ -35,6 +35,7 @@ arboard = "3.4"
 codesmith-agent = { path = "../agent", version = "0.8.48" }
 codesmith-agent-runtime = { path = "../agent-runtime", version = "0.8.48" }
 codesmith-config = { path = "../config", version = "0.8.48" }
+codesmith-extensions = { path = "../extensions", version = "0.8.48" }
 codesmith-protocol = { path = "../protocol", version = "0.8.48" }
 # Provider implementations (rig-backed). `default-features = false` keeps the
 # no-network `mock` provider out of the binary; the four rig features select

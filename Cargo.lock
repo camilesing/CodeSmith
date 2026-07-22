@@ -812,13 +812,16 @@ name = "codesmith-agent"
 version = "0.8.48"
 dependencies = [
  "anyhow",
+ "async-trait",
  "codesmith-config",
  "codesmith-tools",
  "futures-util",
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -832,6 +835,7 @@ dependencies = [
  "clap",
  "codesmith-agent",
  "codesmith-config",
+ "codesmith-extensions",
  "codesmith-tools",
  "dirs",
  "fd-lock",
@@ -956,6 +960,24 @@ dependencies = [
  "anyhow",
  "codesmith-protocol",
  "serde",
+]
+
+[[package]]
+name = "codesmith-extensions"
+version = "0.8.48"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "codesmith-agent",
+ "codesmith-tools",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -1105,6 +1127,7 @@ dependencies = [
  "codesmith-agent",
  "codesmith-agent-runtime",
  "codesmith-config",
+ "codesmith-extensions",
  "codesmith-protocol",
  "codesmith-providers",
  "codesmith-release",

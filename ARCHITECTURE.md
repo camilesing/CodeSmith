@@ -289,6 +289,61 @@ transparent-retry / approval / compaction); for the remaining five
 — each with its own deferred-to-wire-in items), see the module doc directly
 rather than transcribing them here (avoids line-drift on each future slice).
 
+## The extension system (§F)
+
+§F builds the extension system on top of the §E framework-core traits. The
+same three-layer split applies:
+
+- **Contract** (`codesmith-agent::extension`): host-agnostic traits an
+  extension author implements — `Extension` (the factory), `ExtensionApi`
+  (the imperative registration surface), `ExtensionContext` /
+  `ExtensionCommandContext` (read-mostly host state + stale-context guard),
+  `ExtensionEvent` (`#[non_exhaustive]` minimal 6-variant set), `Handler`
+  (observer), `ToolDefinition` / `CommandDefinition` (contribution
+  contracts). The extension traits use `#[async_trait]` (unlike §E's manual
+  `Pin<Box<dyn Future>>`) because they face extension authors in external
+  crates where the macro is markedly friendlier.
+- **Runtime** (`codesmith-extensions`): `ExtensionRunner` (event fan-out
+  best-effort per §8.3, `Arc<AtomicU64>` stale-context guard per §7.3,
+  two-phase stub→real `ExtensionApi`), `inventory`-based static discovery
+  (`discover_static`), `EventBus` skeleton (impl is §F3), install-source
+  traits (impls are §F5).
+- **Adapters** (`codesmith-agent-runtime`): `ExtensionToolSpecAdapter`
+  wraps a `Box<dyn ToolDefinition>` into a `ToolSpec` so the agent loop
+  sees a normal tool (mirrors `ToolSpecAdapter`); `HostAgentExecutor` holds
+  an `Option<Arc<ExtensionRunner>>` + emits at four turn seams (TurnStart /
+  ToolCall ×2 / ToolResult ×2 / TurnEnd ×2).
+- **Host wiring** (`codesmith-tui`): `build_extension_runtime()` runs the
+  discover → reconcile → load → `bind_core` sequence once at engine build
+  (shares the engine's `cancel_token` so handlers observe user ESC);
+  `ExtensionStateStore` (mirrors `SkillStateStore`) tracks enabled/disabled
+  per id; `/extension` command group (list/info/enable/disable/status/
+  reload working; install/uninstall stub "phase 2").
+
+The `sample_scratchpad` in-tree extension exercises all three contribution
+points (tool + command + handler) + the full discover → load → configure →
+bind_core → emit path. `/extension list` shows it.
+
+```
+   extension author ──impls──▶ codesmith_agent::extension (contract)
+                                        │ used by
+                                        ▼
+              codesmith_extensions (runtime: Runner + discovery + Bus)
+                                        │ bridged by
+                                        ▼
+              codesmith_agent_runtime (ExtensionToolSpecAdapter + executor seams)
+                                        │ wired by
+                                        ▼
+              codesmith_tui (build_extension_runtime + StateStore + /extension cmd)
+```
+
+Slice 1 (§F1) lands the minimal contract + runtime + adapters + host wiring
++ sample. Deferred to §F2–§F8: the full ~30-event lifecycle +
+cancel/transform/block chains, `EventBus` impl, `registerProvider`,
+`registerShortcut`/`registerFlag`/renderers, dylib loading (phase 2),
+install-source impls, embed API. Hot-load is permanently out (spec §2.4);
+install + reload only.
+
 ## What is wired today (foundation slice + §D1 parity bridge)
 
 | Concern | Status | Where |
@@ -307,6 +362,8 @@ rather than transcribing them here (avoids line-drift on each future slice).
 | Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ✅ done — `DeepseekCN` folded onto `Deepseek` (slice 52); `&str`-keying was the §C6 decoupling path | ROADMAP §B |
 | Host selects providers via config (e.g. `provider = "mock"` / custom id) | ✅ done (9d47942c) — `custom_provider` selector + `[[providers.custom]]` table; §D2 slice 46 closed the residual polish — `--custom-provider <id>` CLI flag (env-forwarded to the TUI) + per-entry `config set/get/unset providers.custom.<id>.<field>` (find-or-create by id); the bare `provider = "<id>"` form stays **by-design rejected** (see 9d47942c — cascades the closed `ProviderKind` enum through config + overrides + env + every match arm) | ROADMAP §D2 |
 | Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` is the live production path (slice 20 cutover — `handle_send_message` routes through it, `handle_deepseek_turn` deleted); all guardrails absorbed across slices 11–40 (loop-guard + LSP flush + transparent-retry + steer + approval + compaction + capacity + subagent + early-tool-start/parallel-dispatch + thinking-only) via `event_tx`; interior-mutability `Arc<std::sync::Mutex<…>>` on `LspProbe` + `CompactionProbe` micro-state/breaker, `tokio::sync::Mutex` on steer + approval receivers (both cross `recv().await` in the subagent blocking hold's `biased select!`); transparent-retry at seam-2 post-stream; steer + compaction at seam-1 pre-request; approval at seam-3 per-tool; production `Engine` migration done | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
+| Extension system (§F1 foundational core) | ✅ done (slice 1 §F1) — minimal 6-event contract (`codesmith-agent::extension`) + runtime (`codesmith-extensions`: `ExtensionRunner` + stub→real `ExtensionApi` + `inventory` discovery + `EventBus` skeleton + install-source traits) + adapter (`ExtensionToolSpecAdapter`) + `HostAgentExecutor` 4-seam emits (TurnStart/ToolCall/ToolResult/TurnEnd) + `build_extension_runtime()` + `ExtensionStateStore` + `/extension` command group (list/info/enable/disable/status/reload working; install/uninstall stub "phase 2") + in-tree `scratchpad` sample; full lifecycle + `EventBus` impl + dylib + install-source impls deferred to §F2–§F8; hot-load permanently out | `crates/agent/src/extension.rs`, `crates/extensions/`, `crates/agent-runtime/src/tools/extension.rs`, `crates/agent-runtime/src/engine/{mod.rs,host_executor.rs}`, `crates/tui/src/{extension_state.rs,commands/extension_commands.rs,core/engine.rs,tui/ui.rs}` |
+| Extension system docs | ✅ done (slice 1 §F1) | `docs/EXTENSIONS.md` |
 
 ## Registering a provider (developer guide)
 

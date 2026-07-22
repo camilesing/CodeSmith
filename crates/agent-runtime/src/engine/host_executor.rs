@@ -1707,6 +1707,11 @@ pub struct HostAgentExecutor {
     /// path. Same `std::sync::Mutex` one-shot pattern as
     /// [`HostAgentExecutor::pending_replay_outcome`].
     pending_targeted_refresh_outcome: std::sync::Mutex<Option<TargetedRefreshOutcome>>,
+    /// §F1 — extension runtime probe. `None` ⇒ extension events are no-ops
+    /// (embeds/tests skip via `with_extension_runner`). When bound, `emit`
+    /// calls fan out best-effort to registered `Handler`s at the lifecycle
+    /// seams inside `run_inner`.
+    extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 impl HostAgentExecutor {
@@ -1762,6 +1767,7 @@ pub fn new(
         pending_capacity_decision: std::sync::Mutex::new(None),
         pending_replay_outcome: std::sync::Mutex::new(None),
         pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
+        extension: None,
     }
 }
 
@@ -1821,6 +1827,19 @@ pub fn new(
     #[must_use]
     pub fn with_capacity_gate(mut self, gate: Option<CapacityGateProbe>) -> Self {
         self.capacity_gate = gate;
+        self
+    }
+
+    /// §F1 — bind the extension runtime. The runner must have had `bind_core`
+    /// called (host context + flushed pending registrations) before the first
+    /// `run_inner` iteration. `None` keeps extension events as no-ops
+    /// (embeds/tests).
+    #[must_use]
+    pub fn with_extension_runner(
+        mut self,
+        runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    ) -> Self {
+        self.extension = runner;
         self
     }
 
@@ -3698,6 +3717,11 @@ impl HostAgentExecutor {
         // loop via `refresh_system_prompt_snapshot` (slice 38 §E).
         let base = self.config.system.clone();
         let temperature = self.config.temperature;
+        // §F1 — extension runtime probe + per-turn id. `extension` is `None`
+        // unless `with_extension_runner` bound it; the seam emits below are
+        // no-ops then. `turn_id` is shared by the TurnStart + TurnEnd emits.
+        let extension = self.extension.clone();
+        let turn_id = uuid::Uuid::new_v4().to_string();
 
         // Seed the transcript with the user turn.
         history.push(Message {
@@ -3707,6 +3731,13 @@ impl HostAgentExecutor {
                 cache_control: None,
             }],
         });
+        if let Some(runner) = &extension {
+            runner
+                .emit(&codesmith_agent::extension::ExtensionEvent::TurnStart {
+                    turn_id: turn_id.clone(),
+                })
+                .await;
+        }
 
         // Loop-guard state persists across steps within this run (one
         // `LoopGuard` per turn, matching `handle_deepseek_turn`).
@@ -3748,6 +3779,14 @@ impl HostAgentExecutor {
             if self.is_cancelled() {
                 self.emit_status("Request cancelled".to_string()).await;
                 callback.on_complete(&StopReason::Interrupted).await;
+                if let Some(runner) = &extension {
+                    runner
+                        .emit(&codesmith_agent::extension::ExtensionEvent::TurnEnd {
+                            turn_id: turn_id.clone(),
+                            reason: codesmith_agent::extension::TurnEndReason::Interrupted,
+                        })
+                        .await;
+                }
                 return Ok(StopReason::Interrupted);
             }
             // (1) per-step pre-request seam — ✅ steer drain (queued user
@@ -4224,6 +4263,14 @@ impl HostAgentExecutor {
                     .await;
                 }
                 callback.on_complete(&StopReason::NoToolCalls).await;
+                if let Some(runner) = &extension {
+                    runner
+                        .emit(&codesmith_agent::extension::ExtensionEvent::TurnEnd {
+                            turn_id: turn_id.clone(),
+                            reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+                        })
+                        .await;
+                }
                 return Ok(StopReason::NoToolCalls);
             }
 
@@ -4338,6 +4385,17 @@ impl HostAgentExecutor {
                             callback
                                 .on_tool_start(&plan.id, &plan.name, &plan.input)
                                 .await;
+                            if let Some(runner) = &extension {
+                                runner
+                                    .emit(&codesmith_agent::extension::ExtensionEvent::ToolCall(
+                                        codesmith_agent::extension::ToolCallEvent {
+                                            id: plan.id.clone(),
+                                            name: plan.name.clone(),
+                                            input: plan.input.clone(),
+                                        },
+                                    ))
+                                    .await;
+                            }
                         }
                         let mut futs: FuturesUnordered<
                             Pin<Box<dyn Future<Output = DispatchedTool> + Send>>,
@@ -4415,6 +4473,17 @@ impl HostAgentExecutor {
                             callback
                                 .on_tool_end(&plan.name, &outcome.result)
                                 .await;
+                            if let Some(runner) = &extension {
+                                runner
+                                    .emit(&codesmith_agent::extension::ExtensionEvent::ToolResult(
+                                        codesmith_agent::extension::ToolResultEvent {
+                                            id: plan.id.clone(),
+                                            name: plan.name.clone(),
+                                            result: outcome.result.clone(),
+                                        },
+                                    ))
+                                    .await;
+                            }
                         }
                     }
                     ToolExecutionBatch::Serial(plan) => {
@@ -4422,6 +4491,17 @@ impl HostAgentExecutor {
                         callback
                             .on_tool_start(&plan.id, &plan.name, &plan.input)
                             .await;
+                        if let Some(runner) = &extension {
+                            runner
+                                .emit(&codesmith_agent::extension::ExtensionEvent::ToolCall(
+                                    codesmith_agent::extension::ToolCallEvent {
+                                        id: plan.id.clone(),
+                                        name: plan.name.clone(),
+                                        input: plan.input.clone(),
+                                    },
+                                ))
+                                .await;
+                        }
                         // approval gate: a tool that requires approval is gated
                         // behind the decision channel; denied ⇒ the tool never
                         // runs and a `permission_denied` error is fed back so the
@@ -4506,6 +4586,17 @@ impl HostAgentExecutor {
                             }
                         };
                         callback.on_tool_end(&plan.name, &result).await;
+                        if let Some(runner) = &extension {
+                            runner
+                                .emit(&codesmith_agent::extension::ExtensionEvent::ToolResult(
+                                    codesmith_agent::extension::ToolResultEvent {
+                                        id: plan.id.clone(),
+                                        name: plan.name.clone(),
+                                        result: result.clone(),
+                                    },
+                                ))
+                                .await;
+                        }
                         outcomes[idx] = Some(DispatchedTool {
                             index: idx,
                             id: plan.id.clone(),
@@ -4805,6 +4896,13 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
+    // §F1 — extension seam test imports.
+    use async_trait::async_trait;
+    use codesmith_agent::extension::{
+        Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
+        ExtensionMetadata, ExtensionMode, Handler,
+    };
+    use codesmith_extensions::{ExtensionRunner, HostExtensionContext};
 
     // === test doubles =======================================================
 
@@ -15491,6 +15589,111 @@ mod tests {
             history.len(),
             2,
             "empty steer must not produce an extra user message"
+        );
+    }
+
+    // === §F1 extension seam wiring ===========================================
+
+    /// A no-op extension that registers a [`RecHandler`] during `configure`.
+    /// Mirrors the `RecExt` in `codesmith_extensions::runner::tests`.
+    struct RecExt {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Extension for RecExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("rec");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(RecHandler {
+                seen: self.seen.clone(),
+            }))?;
+            Ok(())
+        }
+    }
+
+    /// Records the variant label of every event it observes.
+    struct RecHandler {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Handler for RecHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<(), ExtensionError> {
+            self.seen.lock().unwrap().push(match event {
+                ExtensionEvent::TurnStart { .. } => "TurnStart",
+                ExtensionEvent::ToolCall(_) => "ToolCall",
+                ExtensionEvent::ToolResult(_) => "ToolResult",
+                ExtensionEvent::TurnEnd { .. } => "TurnEnd",
+                ExtensionEvent::SessionShutdown => "SessionShutdown",
+                _ => "other",
+            });
+            Ok(())
+        }
+    }
+
+    /// §F1 — proves the `HostAgentExecutor` seam wiring fires the minimal
+    /// lifecycle event set (TurnStart / ToolCall / ToolResult / TurnEnd) to a
+    /// bound `ExtensionRunner` during a real agent run. Mirrors
+    /// `host_executor_drives_full_bridge_trio`'s mock-client + tool
+    /// round-trip, swapping the callback for an extension-runner binding via
+    /// [`HostAgentExecutor::with_extension_runner`]. The handler is the only
+    /// observer — the `extension: None` default (all other tests) emits nothing.
+    #[tokio::test]
+    async fn extension_runner_bound_emits_lifecycle_events_on_minimal_run() {
+        let runner = Arc::new(ExtensionRunner::new());
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        runner.load(&RecExt { seen: seen.clone() }).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        // Mock client: call 1 = text + tool_use(echo), call 2 = text → NoToolCalls.
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let hooks = Arc::new(RecordingHookHost::default());
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx), Some(hooks), test_template()));
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Full minimal-event lifecycle, in order.
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["TurnStart", "ToolCall", "ToolResult", "TurnEnd"],
+            "bound runner must observe the full minimal lifecycle"
         );
     }
 }

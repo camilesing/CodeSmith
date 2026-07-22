@@ -17,4 +17,15 @@ reqwest = { workspace = true }
 serde.workspace = true
 serde_json = { workspace = true }
 tokio = { workspace = true }
+# §F1 — ExtensionContext::signal() returns tokio_util::sync::CancellationToken
+# (the codebase's standard cancel handle; host_executor.rs uses the same).
+# The `sync` module (CancellationToken) is available on default features.
+tokio-util = { version = "0.7.16" }
 uuid.workspace = true
+# §F1 — extension traits are implemented by extension authors in external
+# crates; `#[async_trait]` is markedly friendlier for them than the manual
+# `Pin<Box<dyn Future + Send + '_>>` pattern used by Tool/Callback/AgentExecutor.
+async-trait = "0.1"
+# §F1 — ExtensionError derive (`codesmith-tools` has thiserror too; agent
+# previously had no thiserror dep because its error surface used anyhow).
+thiserror.workspace = true

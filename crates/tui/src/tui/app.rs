@@ -1477,6 +1477,14 @@ pub struct App {
     pub receipt_started_at: Option<Instant>,
     /// Tool evidence collected during the current turn for the receipt.
     pub tool_evidence: Vec<ToolEvidence>,
+    /// §F1 — persistent extension enable/disable state (mirrors `SkillStateStore`
+    /// but held on `App` so `/extension enable|disable` commands reach it).
+    /// Loaded at `App::new`; `build_extension_runtime` (Task 9) reconciles
+    /// discovery against it.
+    pub extension_state: crate::extension_state::ExtensionStateStore,
+    /// §F1 — bound extension runtime, set by `build_extension_runtime`
+    /// (Task 9). `None` until the engine builds (embeds/tests skip).
+    pub extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 /// Message queued while the engine is busy.
@@ -2026,6 +2034,9 @@ impl App {
             receipt_text: None,
             receipt_started_at: None,
             tool_evidence: Vec::new(),
+            extension_state: crate::extension_state::ExtensionStateStore::load_default()
+                .unwrap_or_default(),
+            extension_runner: None,
         }
     }
 

@@ -1,0 +1,23 @@
+[package]
+name = "codesmith-extensions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Extension runtime: discovery, loading, event dispatch, stale-context guard for CodeSmith extensions"
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+codesmith-agent = { path = "../agent", version = "0.8.48" }
+codesmith-tools = { path = "../tools", version = "0.8.48" }
+inventory = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7.16" }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3.16"

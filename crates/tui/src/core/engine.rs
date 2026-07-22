@@ -119,6 +119,12 @@ pub struct EngineHandle {
     pub tx_user_input: mpsc::Sender<UserInputDecision>,
     /// Send steer input for an in-flight turn.
     pub tx_steer: mpsc::Sender<String>,
+    /// §F1 — bound extension runner, surfaced from `build_extension_runtime`
+    /// so `/extension status` / `/extension reload` (in `extension_commands`)
+    /// can read + invalidate it without an engine round-trip. `None` when no
+    /// extensions were built (embed path / pre-engine). Cloning the `Arc` is
+    /// cheap; the runner itself is shared with the per-turn `HostAgentExecutor`.
+    pub extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 // `impl EngineHandle { ... }` lives in `engine/handle.rs`.
@@ -324,6 +330,89 @@ pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClien
     codesmith_providers::default_registry().build(&cfg)
 }
 
+// === §F1 Extension runtime wiring ===
+
+/// Discover compiled-in extensions, reconcile with the on-disk
+/// [`ExtensionStateStore`](crate::extension_state::ExtensionStateStore)
+/// (skip disabled), load + configure each against a stub
+/// [`ExtensionApi`](codesmith_extensions::ExtensionApi), then `bind_core`
+/// the host context. Returns the bound runner — cloned into each fresh
+/// per-turn `HostAgentExecutor` (via `with_extension_runner`) AND surfaced
+/// on [`EngineHandle::extension_runner`] for the `/extension` commands.
+///
+/// Mirrors the spec §6.1 reload sequence (steps 2-5): re-discover →
+/// reconcile → re-load → re-configure → bind_core. Slice 1 does NOT
+/// re-discover on `/extension reload` (§F2 wires live reload); this fn
+/// runs once at engine build.
+///
+/// The async `Extension::configure` calls are driven on a fresh
+/// single-thread runtime spawned on a plain OS thread (see the inline
+/// rationale at step 3) rather than `tokio::task::block_in_place`: the
+/// latter is only valid inside a multi-thread runtime (the TUI's
+/// `#[tokio::main]` is multi-thread so it works in prod, but
+/// `#[tokio::test]` defaults to `current_thread` and would panic), and
+/// creating + dropping a nested runtime from a runtime worker thread
+/// panics on shutdown. The OS-thread approach works in both. §F2 may
+/// harden to share the host runtime.
+fn build_extension_runtime(
+    workspace: &std::path::Path,
+    cancel_token: tokio_util::sync::CancellationToken,
+) -> Arc<codesmith_extensions::ExtensionRunner> {
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let state = crate::extension_state::ExtensionStateStore::load_default()
+        .unwrap_or_default();
+
+    // 1. Discover compiled-in extensions (inventory).
+    let discovered = codesmith_extensions::discover_static();
+
+    // 2. Reconcile with state: skip disabled.
+    let enabled: Vec<_> = discovered
+        .into_iter()
+        .filter(|reg| state.is_enabled(reg.metadata.id))
+        .collect();
+
+    // 3. Load + configure each against the stub api (best-effort; §F2 logs).
+    //    The async `Extension::configure` is driven on a fresh single-thread
+    //    runtime spawned on a plain OS thread: creating + dropping a tokio
+    //    runtime from within another runtime's worker thread panics on
+    //    shutdown (tokio blocking/shutdown.rs); and `tokio::task::block_in_place`
+    //    is only valid inside a multi-thread runtime (the TUI's
+    //    `#[tokio::main]` is multi-thread so it works in prod, but
+    //    `#[tokio::test]` defaults to `current_thread` and would panic). The
+    //    spawned thread owns the runtime's lifetime cleanly; `std::thread::scope`
+    //    blocks until it completes. Skipped entirely when nothing's enabled
+    //    (slice 1 pre-T10: no compiled-in extensions → tests stay fast + panic-free).
+    if !enabled.is_empty() {
+        let runner_for_thread = runner.clone();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                let load_rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("extension load runtime");
+                for reg in enabled {
+                    let ext = (reg.factory)();
+                    let _ = load_rt.block_on(runner_for_thread.load(&*ext));
+                }
+            });
+        });
+    }
+
+    // 4. Build the host context + bind_core. The `idle` flag + the engine's
+    //    `cancel_token` are shared so handlers observe host state + cancel.
+    let idle = Arc::new(std::sync::Mutex::new(true));
+    let ctx = Arc::new(codesmith_extensions::HostExtensionContext::new(
+        workspace.to_path_buf(),
+        codesmith_agent::extension::ExtensionMode::Tui,
+        idle,
+        cancel_token,
+        runner.generation_arc(),
+    ));
+    runner.bind_core(ctx);
+
+    runner
+}
+
 /// Assemble an [`Engine`] from TUI-coupled construction state.
 ///
 /// Creates the op / event / approval / user-input / steer / subagent
@@ -348,6 +437,10 @@ pub fn build_engine(
     let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
     let cancel_reason: Arc<StdMutex<Option<CancelReason>>> = Arc::new(StdMutex::new(None));
     let tool_exec_lock = Arc::new(RwLock::new(()));
+
+    // §F1 — build the extension runtime + bind to the host executor. Shares
+    // the engine's `cancel_token` so handlers observe user-initiated ESC.
+    let extension_runner = build_extension_runtime(&config.workspace, cancel_token.clone());
 
     if config.features.enabled(Feature::AgentTeams) {
         let team_context = config
@@ -569,6 +662,7 @@ pub fn build_engine(
         capacity_controller,
         tx_op.clone(),
         Arc::new(runtime_traits::TuiRuntimeUi),
+        Some(extension_runner.clone()),
     );
 
     let handle = EngineHandle {
@@ -579,6 +673,7 @@ pub fn build_engine(
         tx_approval,
         tx_user_input,
         tx_steer,
+        extension_runner: Some(extension_runner),
     };
 
     (engine, handle)
@@ -768,6 +863,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         tx_approval,
         tx_user_input,
         tx_steer,
+        extension_runner: None,
     };
 
     MockEngineHandle {

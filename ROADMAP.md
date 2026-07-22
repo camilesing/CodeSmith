@@ -2407,6 +2407,51 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - §E stale-absorbed doc-drift 清零（本切片）。pluggable framework core 迁移的结构 + doc + catalog-status + cosmetic fold（slice 52）+ §E stale-absorbed 对齐（slice 53）五线收尾。
 - 残项：P2 doc drift（推迟 slice 54，含 behavior-adjacent `coordinator.md`）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
 
+**进度（2026-07-21 §F slice 1 extension system foundational core——pi-mono Extension 模型 port 的 slice 1：核心 traits + 新 crate codesmith-extensions + agent-runtime adapter + tui host wiring + sample + docs，`feat/pluggable-framework-core`）：**
+
+接 slice 53（§E stale-absorbed doc-debt cleanup）。本切片开新 ROADMAP §F section，落地 pi-mono extension 模型的 found core（phase 1 静态加载）——spec `docs/superpowers/specs/2026-07-21-codesmith-extension-system-design.md` §10.1 scope。镜像 §E 三层模式：traits in codesmith-agent、runtime in codesmith-extensions（新 crate）、adapters in codesmith-agent-runtime、host wiring in codesmith-tui。plan：`docs/superpowers/plans/2026-07-21-codesmith-extension-system-slice-1.md`。
+
+**关键设计决策：**
+- **§11 open questions 本切片定**：(1) sample = `scratchpad`（tool + command + handler，验证三个 contribution point）；(2) `ExtensionCommandContext: ExtensionContext` sub-trait，slice 1 零 session-mutation 方法（split 为 type-safety + §F2 growth）；(3) 单个 `Handler` trait（observer-only，`async fn handle(event, ctx) -> Result<(), ExtensionError>`），per-variant subscription + `HandlerOutcome`（cancel/transform/block）defer §F2；(4) §10.3 vs §10.2 tension → §10.2 authoritative（observer-only；catch_unwind 真实隔离 §F2）。
+- **`#[async_trait]` 引入 codesmith-agent**：既有 Tool/Callback/AgentExecutor 用 manual `Pin<Box<dyn Future>>`；extension traits 面向 extension author（外部 crate），`#[async_trait]` 显著友好，匹配 spec literal + ToolSpec/HookSink 惯例。代价：codesmith-agent +2 deps（async-trait + tokio-util）。
+- **ExtensionToolSpecAdapter 镜像 ToolSpecAdapter**：held `Arc<dyn ToolDefinition>` + `Arc<dyn ExtensionContext>`，`execute` 委托 `ToolDefinition::execute(input, &*ctx)`；`input_schema()` 强制 object-rooted（`build_tool` fail-closed chokepoint 要求）。
+- **HostAgentExecutor seam wiring 四点**（`host_executor.rs` 实测行号）：TurnStart `:3736`（user-msg push 后）、ToolCall `:4390`/`:4496`（on_tool_start 旁）、ToolResult `:4478`/`:4591`（on_tool_end 旁）、TurnEnd `:4268`（NoToolCalls）+ `:3784`（Checkpoint A Interrupted）。其余 terminal sites + step-end 是 §F2 hardening。
+- **`ExtensionStateStore` 镜像 `SkillStateStore` verbatim**：TOML + atomic write + malformed→default + BTreeSet；加 `installed` field（§F5 provenance forward-compat）。
+- **`build_extension_runtime` 四步**：discover_static → reconcile w/ state → load+configure（stub api）→ bind_core（HostExtensionContext）。reload 的 re-discover 是 §F2（slice 1 仅 build-time）。async `Extension::configure` 在 fresh `current_thread` runtime on a plain OS thread 驱动（`std::thread::scope`）——`block_in_place` 仅在 multi-thread runtime 有效（TUI `#[tokio::main]` 满足，但 `#[tokio::test]` 默认 `current_thread` 会 panic），nested runtime drop 也会 panic；OS-thread 方案两场景皆 safe。
+- **`/extension install`/`uninstall` stub "phase 2"**：slice 1 静态无法 runtime install（by definition）；install-source 抽象仅 trait（impl §F5）。
+- **`App` 字段 wiring**：slice 1 用 `app.extension_runner: Option<Arc<ExtensionRunner>>`（build_engine 构造、EngineHandle 回传、ui.rs copy 回 app）+ `app.extension_state: ExtensionStateStore`（App::new load_default）；live `/extension` state on App 直接 wiring 是 §F2（当 live reload 需要）。
+
+**落地步骤：**
+1. `crates/agent/Cargo.toml` + `src/lib.rs` + `src/extension.rs`（NEW）：8 traits + `ExtensionError`/`ExtensionMetadata`/`ExtensionEvent` minimal set + 5 test。
+2. `Cargo.toml`（root workspace.members）+ `crates/extensions/{Cargo.toml,src/lib.rs + 6 sub-mod}`：新 crate。
+3. `crates/extensions/src/{runner,api,bus,state,discovery,install_source}.rs`：runtime + stub/real api + bus skeleton + host context + discovery + install traits。
+4. `crates/agent-runtime/{Cargo.toml,src/tools/mod.rs,src/tools/extension.rs}`（NEW）：adapter + dep + module。
+5. `crates/agent-runtime/src/engine/{mod.rs,host_executor.rs}`：`extension: Option<Arc<ExtensionRunner>>` Engine field + `new_runtime` param + per-turn `.with_extension_runner` chain（`mod.rs:1306`）+ `with_extension_runner` builder（`host_executor.rs:1838`）+ 6 seam emits（`host_executor.rs:3736/3784/4268/4390/4478/4496/4591`）。
+6. `crates/tui/src/extension_state.rs`（NEW）+ `commands/{mod.rs,extension_commands.rs}`（NEW）+ `tui/app.rs`（fields）：state store + command group + execute() tier + App fields。
+7. `crates/tui/src/core/engine.rs`：`build_extension_runtime()` + wire into `build_engine`（Engine 传参 + EngineHandle 回传）+ `crates/tui/src/tui/ui.rs`（copy handle→app）。
+8. `crates/extensions/src/sample_scratchpad.rs`（NEW）：sample + `inventory::submit!`。
+9. `ROADMAP.md` + `ARCHITECTURE.md` + `docs/EXTENSIONS.md`（NEW）：§F section + §F1 entry + dev guide。
+
+**测试：** `cargo +1.90.0 build --workspace` 绿（142 tui warning = slice 47 baseline 非新增）；`cargo +1.90.0 test -p codesmith-extensions --lib` 绿（8 pass，新 crate：6 runner/api/discovery + 2 sample）；`cargo +1.90.0 test -p codesmith-agent --lib` 绿（extension::tests 5 pass）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` 绿（1152 pass + 2 ignored，baseline 1149→1152，+3 adapter/round-trip test）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui` 绿（2853 pass + 2 ignored，baseline 2844→2853，+9 extension_commands tests + smoke test 现 exercise /extension）。
+
+**验证：** grep `pub trait Extension ` 跨 `crates/agent/src/extension.rs` → 1 hit；grep `ExtensionToolSpecAdapter` 跨 `crates/agent-runtime/src/` → def + test refs；grep `with_extension_runner` 跨 `host_executor.rs` → 1 hit；grep `build_extension_runtime` 跨 `crates/tui/src/` → 1 def（engine.rs）+ 1 call（engine.rs build_engine）；grep `discover_static` 跨 `crates/` → 1 def（discovery.rs）+ sample（sample_scratchpad.rs）+ call（engine.rs）；grep `extensions_state.toml` 跨 `crates/tui/src/extension_state.rs` → path hit；`/extension list` 在 tui 运行报 `scratchpad`（sample registered via inventory）。
+
+**By-design gaps（out of scope, §F2–§F8）：**
+- **完整事件集**（~25 更多变体 + cancel/transform/block 链）——§F2。slice 1 Handler observer-only。
+- **catch_unwind 真实隔离**——§F2（slice 1 emit 直接 await；panic 会传播——documented in runner.rs `emit` doc）。
+- **EventBus 完整 impl**——§F3（slice 1 skeleton，subscribe/publish 返回 Unimplemented）。
+- **registerProvider**——§F4。
+- **Dylib 加载 + install/uninstall 真实现 + install-source impl + trust prompt + extension.toml manifest**——§F5。
+- **Renderer / Shortcut / Flag**——§F6/§F7。
+- **嵌入 API**——§F8。
+- **Hot-load**——永不（spec §2.4）。
+- **Host executor 端到端 round-trip test**（mock client + assert seen == [ToolCall, ToolResult, TurnEnd]）——§F2（slice 1 land compile-time seam wiring + isolated round-trip test on the runner itself）。
+
+**下一聚焦工作：**
+- §F2：完整事件集（~25 变体）+ cancel/transform/block 链 + per-variant Handler subscription + catch_unwind 真实隔离 + Host executor 端到端 round-trip test + App 字段 live wiring + reload re-discover。
+- P2 doc drift（推迟 slice 54，含 behavior-adjacent `coordinator.md`）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞，承接自 slice 53 残项。
+- §F3-F8 按需。
+
 ---
 
 ## §A — Provider extraction (bulk migration)
@@ -2705,3 +2750,38 @@ tracked only in ROADMAP (no in-source `TODO`/`FIXME` markers, no
   into the manifest would require new manifest fields/entries or a
   host-resolver refactor — deferred as a host concern (the manifest carries
   only the primary URL+model).
+
+## §F — Extension system (pi-mono parity)
+
+The provider seam (§A) + framework-core traits (§E) are the foundation. §F
+builds the **extension system** on top: a unified `Extension` concept with
+imperative registration, lifecycle events, extension-to-extension bus,
+runtime provider registration, unified discovery/manifest, stale-context
+guard — ported from pi-mono's extension model. Mirrors the §E three-layer
+pattern (traits in `codesmith-agent`, runtime in `codesmith-extensions`,
+adapters in `codesmith-agent-runtime`, host wiring in `codesmith-tui`).
+Delivered in slices; hot-load is permanently out (install + reload only).
+
+### F1 — Slice 1 (foundational core, phase 1 static)
+
+- Core traits in `codesmith-agent::extension` (`Extension` /
+  `ExtensionApi` / `ExtensionContext` / `ExtensionCommandContext` /
+  `ExtensionEvent` / `Handler` / `ToolDefinition` / `CommandDefinition`)
+  with the minimal 6-event set (`#[non_exhaustive]`).
+- New crate `codesmith-extensions`: `ExtensionRunner` (event dispatch +
+  stale-context guard) + `ExtensionApi` stub→real + `inventory`-based static
+  discovery + `EventBus` skeleton + install-source traits (impls §F5).
+- `codesmith-agent-runtime`: `ExtensionToolSpecAdapter` (mirrors
+  `ToolSpecAdapter`) + `HostAgentExecutor` seam wiring (TurnStart/ToolCall/
+  ToolResult/TurnEnd emits).
+- `codesmith-tui`: `build_extension_runtime()` + `ExtensionStateStore`
+  (mirrors `SkillStateStore`) + `/extension` command group (list/info/enable/
+  disable/status/reload working; install/uninstall stub "phase 2").
+- In-tree sample `scratchpad` extension (tool + command + handler).
+- `docs/EXTENSIONS.md` developer guide + sandbox stance.
+
+**Status (slice 1 §F1):** done. Minimal contract + runtime + adapters + host
+wiring + sample + docs landed. Deferred to §F2–§F8: full ~30-event lifecycle,
+cancel/transform/block chains, `EventBus` impl, `registerProvider`,
+`registerShortcut`/`registerFlag`/renderers, dylib loading (phase 2),
+install-source impls, embed API. Hot-load permanently out.

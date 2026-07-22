@@ -38,6 +38,7 @@ mod dependencies;
 mod error_taxonomy;
 mod eval;
 mod execpolicy;
+mod extension_state;
 mod features;
 mod handoff;
 mod hooks;

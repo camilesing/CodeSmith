@@ -11,6 +11,7 @@ mod config;
 mod core;
 mod cycle;
 mod debug;
+mod extension_commands;
 mod feedback;
 mod goal;
 mod hooks;
@@ -559,6 +560,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/slop [query|export]",
         description_id: MessageId::CmdSlopDescription,
     },
+    // Extension system (§F1)
+    CommandInfo {
+        name: "extension",
+        aliases: &["ext"],
+        usage: "/extension <list|info <id>|enable <id>|disable <id>|status|reload|install <src>|uninstall <id>>",
+        description_id: MessageId::CmdHelpDescription, // reuse for now; §F2 adds a dedicated MessageId
+    },
 ];
 
 /// Execute a slash command
@@ -570,6 +578,11 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
     // Check user-defined commands FIRST so they can override built-ins.
     if let Some(result) = user_commands::try_dispatch_user_command(app, cmd.trim()) {
+        return result;
+    }
+
+    // §F1 — extension command lookup (after user-defined, before static match).
+    if let Some(result) = extension_commands::try_dispatch(app, cmd.trim()) {
         return result;
     }
 
@@ -637,6 +650,12 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
         // Slop ledger (#2127)
         "slop" | "canzha" => config::slop(app, arg),
+
+        // Extension system (§F1). Unreachable in practice — the runtime
+        // lookup in `execute()` (above) intercepts `/extension` first. Kept
+        // as a fallback so the COMMANDS→match smoke test finds an arm.
+        "extension" | "ext" => extension_commands::try_dispatch(app, cmd.trim())
+            .unwrap_or_else(|| CommandResult::error("Extension command dispatch failed")),
 
         // ChangeLog command
         "change" => change::change(app, arg),
