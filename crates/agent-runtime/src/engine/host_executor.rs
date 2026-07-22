@@ -3774,6 +3774,23 @@ impl HostAgentExecutor {
                 .await;
         }
 
+        // §F2b T6 — `Input` (transform-capable): a handler may rewrite the
+        // user's submitted text before it seeds the transcript + reaches the
+        // provider. Fires after `AgentStart`, before the user-turn push.
+        let mut user_text = user_text;
+        if let Some(runner) = &extension {
+            let out = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::Input(
+                    codesmith_agent::extension::InputEvent {
+                        text: user_text.clone(),
+                    },
+                ))
+                .await;
+            if let codesmith_agent::extension::ExtensionEvent::Input(e) = out.event {
+                user_text = e.text;
+            }
+        }
+
         // Seed the transcript with the user turn.
         history.push(Message {
             role: "user".to_string(),
@@ -16519,6 +16536,120 @@ mod tests {
             m.content
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("echo world")))
+        });
+        assert!(
+            !saw_original,
+            "original user text must NOT reach the provider when rewritten: {first_req:?}"
+        );
+    }
+
+    // === §F2b T6 — Input transform seam =======================================
+    //
+    // Proves the host honors `Transform` at `Input` (rewrite the user's
+    // submitted text before it seeds the transcript + reaches the provider).
+    // Scaffolding mirrors the §F2b T2 provider-request transform test verbatim.
+
+    /// Handler that returns `Transform(Input{ text: "REWRITTEN-INPUT" })` on
+    /// `Input` (else `Continue`).
+    struct RewriteInputHandler;
+
+    #[async_trait]
+    impl Handler for RewriteInputHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::Input(_) = event {
+                return Ok(HandlerOutcome::Transform(
+                    ExtensionEvent::Input(codesmith_agent::extension::InputEvent {
+                        text: "REWRITTEN-INPUT".to_string(),
+                    }),
+                ));
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`RewriteInputHandler`].
+    struct RewriteInputExt;
+
+    #[async_trait]
+    impl Extension for RewriteInputExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("rewrite-input");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(RewriteInputHandler))?;
+            Ok(())
+        }
+    }
+
+    /// §F2b T6 — a handler returning `Transform(Input{ text })` must replace the
+    /// user's submitted text before it seeds the transcript + reaches the
+    /// provider: the rewritten "REWRITTEN-INPUT" reaches the mock, the original
+    /// "original text" does not.
+    #[tokio::test]
+    async fn f2b_input_transform_rewrites_submitted_text() {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&RewriteInputExt).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx),
+            Some(Arc::new(RecordingHookHost::default())),
+            test_template(),
+        ));
+        let mut call = text_block(0, "done");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "original text".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let first_req = &mock.requests()[0];
+        assert!(
+            !first_req.is_empty(),
+            "provider must receive at least one message"
+        );
+        let saw_rewritten = first_req.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "REWRITTEN-INPUT"))
+        });
+        assert!(
+            saw_rewritten,
+            "rewritten input must reach the provider: {first_req:?}"
+        );
+        let saw_original = first_req.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("original text")))
         });
         assert!(
             !saw_original,

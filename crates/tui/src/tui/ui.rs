@@ -5623,6 +5623,28 @@ async fn switch_workspace(
     config: &Config,
     workspace: PathBuf,
 ) {
+    // §F2b T6 — `SessionBeforeSwitch` (cancel-capable): a handler may veto the
+    // workspace switch (Cancel → abort before any state mutation / re-spawn).
+    // Clone the runner Arc out first so the cancel-branch can mutably borrow
+    // `app` for the status message without aliasing the `&app.extension_runner`
+    // borrow.
+    let f2b_runner = app.extension_runner.clone();
+    if let Some(runner) = &f2b_runner {
+        let out = runner
+            .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeSwitch)
+            .await;
+        if matches!(
+            out.outcome,
+            codesmith_agent::extension::HandlerOutcome::Cancel { .. }
+        ) {
+            app.status_message =
+                Some("Workspace switch cancelled by an extension.".to_string());
+            app.add_message(HistoryCell::System {
+                content: "Workspace switch cancelled by an extension.".to_string(),
+            });
+            return;
+        }
+    }
     if app.is_loading {
         app.status_message =
             Some("Cannot switch workspace while a request is running.".to_string());
