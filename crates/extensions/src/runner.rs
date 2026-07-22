@@ -40,6 +40,7 @@ pub(crate) struct PendingHandler {
 /// A bound handler + its variant filter (None = subscribe-to-all). §F2a T7
 /// makes `ExtensionRunner::handlers` a `Vec<RegisteredHandler>`; `bind_core`
 /// drains `PendingHandler` into this (carrying `kind_filter` through).
+#[derive(Clone)]
 pub(crate) struct RegisteredHandler {
     pub handler: Arc<dyn Handler>,
     pub kind_filter: Option<ExtensionEventKind>,
@@ -72,7 +73,10 @@ pub struct ExtensionRunner {
     /// `ExtensionToolSpecAdapter` to wrap.
     tools: Mutex<HashMap<String, Arc<dyn ToolDefinition>>>,
     commands: Mutex<HashMap<String, Arc<dyn CommandDefinition>>>,
-    handlers: Mutex<Vec<Arc<dyn Handler>>>,
+    /// Bound at `bind_core` — the flushed handlers, each carrying its variant
+    /// filter (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant
+    /// via `on_variant`). T8's `emit` filters on this before dispatch.
+    handlers: Mutex<Vec<RegisteredHandler>>,
 }
 
 impl ExtensionRunner {
@@ -141,7 +145,10 @@ impl ExtensionRunner {
             commands.insert(name, arc);
         }
         for ph in pending.handlers.drain(..) {
-            handlers.push(ph.handler);
+            handlers.push(RegisteredHandler {
+                handler: ph.handler,
+                kind_filter: ph.kind_filter,
+            });
         }
     }
 
@@ -157,7 +164,7 @@ impl ExtensionRunner {
         let handlers = self.handlers.lock().unwrap().clone();
         for h in handlers {
             // Slice 1: discard errors (best-effort); §F2 adds catch_unwind.
-            let _ = h.handle(event, &*ctx).await;
+            let _ = h.handler.handle(event, &*ctx).await;
         }
     }
 
