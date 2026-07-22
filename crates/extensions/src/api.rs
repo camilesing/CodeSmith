@@ -65,7 +65,22 @@ impl ExtensionApi for StubExtensionApi {
     }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending.lock().unwrap().handlers.push(crate::runner::PendingHandler { handler });
+        self.pending.lock().unwrap().handlers.push(crate::runner::PendingHandler {
+            handler,
+            kind_filter: None,
+        });
+        Ok(())
+    }
+    fn on_variant(
+        &self,
+        kind: ExtensionEventKind,
+        handler: Arc<dyn Handler>,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        self.pending.lock().unwrap().handlers.push(crate::runner::PendingHandler {
+            handler,
+            kind_filter: Some(kind),
+        });
         Ok(())
     }
 }
@@ -80,7 +95,7 @@ pub struct RealExtensionApi {
     captured_gen: u64,
     tools: Arc<Mutex<HashMap<String, Arc<dyn ToolDefinition>>>>,
     commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
-    handlers: Arc<Mutex<Vec<Arc<dyn Handler>>>>,
+    handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
 }
 
 #[allow(dead_code)]
@@ -89,7 +104,7 @@ impl RealExtensionApi {
         generation: Arc<AtomicU64>,
         tools: Arc<Mutex<HashMap<String, Arc<dyn ToolDefinition>>>>,
         commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
-        handlers: Arc<Mutex<Vec<Arc<dyn Handler>>>>,
+        handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
     ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
         Self { generation, captured_gen, tools, commands, handlers }
@@ -117,7 +132,22 @@ impl ExtensionApi for RealExtensionApi {
     }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
-        self.handlers.lock().unwrap().push(handler);
+        self.handlers.lock().unwrap().push(crate::runner::RegisteredHandler {
+            handler,
+            kind_filter: None,
+        });
+        Ok(())
+    }
+    fn on_variant(
+        &self,
+        kind: ExtensionEventKind,
+        handler: Arc<dyn Handler>,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        self.handlers.lock().unwrap().push(crate::runner::RegisteredHandler {
+            handler,
+            kind_filter: Some(kind),
+        });
         Ok(())
     }
 }
@@ -146,5 +176,29 @@ mod tests {
         }
         let err = stub.on(Arc::new(Nop)).unwrap_err();
         assert!(matches!(err, ExtensionError::StaleContext));
+    }
+
+    #[tokio::test]
+    async fn f2a_stub_on_variant_queues_with_kind_filter() {
+        use codesmith_agent::extension::ExtensionEventKind;
+        let generation = Arc::new(AtomicU64::new(0));
+        let pending = Arc::new(Mutex::new(Pending::default()));
+        let stub = StubExtensionApi::new(generation.clone(), pending.clone());
+        struct Nop;
+        #[async_trait]
+        impl Handler for Nop {
+            async fn handle(
+                &self,
+                _: &ExtensionEvent,
+                _: &dyn ExtensionContext,
+            ) -> Result<HandlerOutcome, ExtensionError> {
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+        stub.on_variant(ExtensionEventKind::ToolCall, Arc::new(Nop))
+            .unwrap();
+        let p = pending.lock().unwrap();
+        assert_eq!(p.handlers.len(), 1);
+        assert_eq!(p.handlers[0].kind_filter, Some(ExtensionEventKind::ToolCall));
     }
 }

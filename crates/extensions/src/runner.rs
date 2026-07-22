@@ -29,9 +29,20 @@ pub(crate) struct PendingCommand {
     pub command: Box<dyn CommandDefinition>,
 }
 
-/// A handler subscribed during `configure`.
+/// A handler subscribed during `configure`, with its variant filter
+/// (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant via
+/// `on_variant`). §F2a.
 pub(crate) struct PendingHandler {
     pub handler: Arc<dyn Handler>,
+    pub kind_filter: Option<ExtensionEventKind>,
+}
+
+/// A bound handler + its variant filter (None = subscribe-to-all). §F2a T7
+/// makes `ExtensionRunner::handlers` a `Vec<RegisteredHandler>`; `bind_core`
+/// drains `PendingHandler` into this (carrying `kind_filter` through).
+pub(crate) struct RegisteredHandler {
+    pub handler: Arc<dyn Handler>,
+    pub kind_filter: Option<ExtensionEventKind>,
 }
 
 /// Container for the pre-`bind_core` registration queues. Shared (via

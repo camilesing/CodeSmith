@@ -488,7 +488,16 @@ pub trait ExtensionApi: Send + Sync {
 
     fn register_tool(&self, tool: Box<dyn ToolDefinition>) -> Result<(), ExtensionError>;
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError>;
+    /// Subscribe `handler` to ALL events (backward-compat with §F1).
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError>;
+    /// §F2a — subscribe `handler` to a single event variant only. The runner
+    /// dispatches only matching events to this handler (per-variant dispatch,
+    /// spec §F2). Equivalent to [`on`](Self::on) with a `None` filter.
+    fn on_variant(
+        &self,
+        kind: ExtensionEventKind,
+        handler: Arc<dyn Handler>,
+    ) -> Result<(), ExtensionError>;
 }
 
 // === Extension (the factory) ==============================================
