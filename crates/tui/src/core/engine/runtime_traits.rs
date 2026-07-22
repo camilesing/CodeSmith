@@ -164,6 +164,20 @@ impl HostServices for super::EngineHost {
             req.cancel_token.clone(),
             req.runtime_ui,
         );
+        // §F2c — `ProjectTrust` for the sub-agent context (symmetric with the
+        // main turn's `build_turn_dispatcher`; distinct context — no
+        // double-fire). `FirstLoad` → §F5 trust prompt, as above.
+        if let Some(runner) = &self.extension_runner {
+            let _ = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::ProjectTrust {
+                    reason: if req.session.trust_mode {
+                        codesmith_agent::extension::TrustReason::Trusted
+                    } else {
+                        codesmith_agent::extension::TrustReason::Untrusted
+                    },
+                })
+                .await;
+        }
         let mut runtime = SubAgentRuntime::new(
             req.llm_client,
             req.session.model.clone(),
@@ -237,6 +251,21 @@ impl HostServices for super::EngineHost {
             req.cancel_token.clone(),
             req.runtime_ui,
         );
+        // §F2c — `ProjectTrust`: the session's trust decision is known once the
+        // tool context is built. Per-turn observe-only emit. `FirstLoad` (the
+        // §F5 trust-prompt site) is not derivable per-turn; a handler wanting
+        // once-per-session should dedup on the first `Trusted`/`Untrusted`.
+        if let Some(runner) = &self.extension_runner {
+            let _ = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::ProjectTrust {
+                    reason: if session.trust_mode {
+                        codesmith_agent::extension::TrustReason::Trusted
+                    } else {
+                        codesmith_agent::extension::TrustReason::Untrusted
+                    },
+                })
+                .await;
+        }
         let mut builder = build_turn_tool_registry_builder_for(
             session,
             config,

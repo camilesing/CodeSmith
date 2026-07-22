@@ -5144,7 +5144,7 @@ mod tests {
     use async_trait::async_trait;
     use codesmith_agent::extension::{
         Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
-        ExtensionMetadata, ExtensionMode, Handler, HandlerOutcome,
+        ExtensionMetadata, ExtensionMode, Handler, HandlerOutcome, TrustReason,
     };
     use codesmith_extensions::{ExtensionRunner, HostExtensionContext};
 
@@ -16957,6 +16957,97 @@ mod tests {
             *seen.lock().unwrap(),
             vec!["SessionBeforeCompact", "SessionCompact"],
             "SessionBeforeCompact fires before, SessionCompact after the summary"
+        );
+    }
+
+    // === §F2c — ProjectTrust dispatch + reason round-trip ==================
+    //
+    // Proves the `ProjectTrust { reason: TrustReason }` variant dispatches to a
+    // bound handler and the `TrustReason` payload survives the round-trip
+    // (`Trusted` then `Untrusted`). Variant dispatch + payload integrity; the
+    // `kind()` round-trip is already covered by §F2a. The host-wire e2e
+    // (`build_turn_dispatcher` / `spawn_subagent` emit) is deferred per the
+    // §F2b `SessionBeforeSwitch` precedent — it needs an `EngineHost` +
+    // `TurnDispatchRequest` fixture (TaskManager-class scaffolding); the emit
+    // mirrors the tested §F2b `is_loading` guard + `Cancel` proven by §F2a.
+
+    /// Handler that records every `ProjectTrust` event's `TrustReason`.
+    struct ProjectTrustRecorderHandler {
+        seen: Arc<Mutex<Vec<TrustReason>>>,
+    }
+
+    #[async_trait]
+    impl Handler for ProjectTrustRecorderHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::ProjectTrust { reason } = event {
+                // `TrustReason` is `Copy`; deref to record the value.
+                self.seen.lock().unwrap().push(*reason);
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`ProjectTrustRecorderHandler`].
+    struct ProjectTrustRecorderExt {
+        seen: Arc<Mutex<Vec<TrustReason>>>,
+    }
+
+    #[async_trait]
+    impl Extension for ProjectTrustRecorderExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("project-trust-recorder");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(ProjectTrustRecorderHandler {
+                seen: self.seen.clone(),
+            }))?;
+            Ok(())
+        }
+    }
+
+    /// §F2c — `ProjectTrust` must dispatch to a bound handler and carry its
+    /// `TrustReason` payload through (Trusted → Untrusted, in order).
+    #[tokio::test]
+    async fn f2c_project_trust_dispatches_reason() {
+        let runner = Arc::new(ExtensionRunner::new());
+        let seen: Arc<Mutex<Vec<TrustReason>>> = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&ProjectTrustRecorderExt { seen: seen.clone() })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            Arc::new(Mutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+
+        let _ = runner
+            .emit(ExtensionEvent::ProjectTrust {
+                reason: TrustReason::Trusted,
+            })
+            .await;
+        let _ = runner
+            .emit(ExtensionEvent::ProjectTrust {
+                reason: TrustReason::Untrusted,
+            })
+            .await;
+
+        let recorded = seen.lock().unwrap();
+        assert_eq!(recorded.len(), 2, "both ProjectTrust emits must dispatch");
+        assert_eq!(
+            recorded[0], TrustReason::Trusted,
+            "first emit must carry Trusted"
+        );
+        assert_eq!(
+            recorded[1], TrustReason::Untrusted,
+            "second emit must carry Untrusted"
         );
     }
 }

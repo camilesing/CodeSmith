@@ -291,6 +291,34 @@ impl ExtensionRunner {
     }
 }
 
+/// Manual `Debug` (the struct holds `dyn` trait-object fields that don't
+/// implement `Debug`); mirrors the `SandboxBackend: Debug` supertrait pattern
+/// used elsewhere. Shows generation + bound-state counts so `EngineHost`'s
+/// `#[derive(Debug)]` keeps working (§F2c surfaces the runner on `EngineHost`).
+impl std::fmt::Debug for ExtensionRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let tools = self.tools.lock().expect("tools mutex poisoned").len();
+        let commands = self
+            .commands
+            .lock()
+            .expect("commands mutex poisoned")
+            .len();
+        let handlers = self
+            .handlers
+            .lock()
+            .expect("handlers mutex poisoned")
+            .len();
+        let bound = self.context.lock().expect("context mutex poisoned").is_some();
+        f.debug_struct("ExtensionRunner")
+            .field("generation", &self.generation.load(Ordering::Acquire))
+            .field("bound", &bound)
+            .field("tools", &tools)
+            .field("commands", &commands)
+            .field("handlers", &handlers)
+            .finish()
+    }
+}
+
 impl Default for ExtensionRunner {
     fn default() -> Self {
         Self::new()

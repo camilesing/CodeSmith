@@ -164,6 +164,11 @@ pub struct EngineHost {
     >,
     /// External sandbox backend (#516). `None` when no backend is configured.
     pub sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
+    /// §F2c — bound extension runner, set by `build_engine` (alongside the
+    /// `Engine`/`EngineHandle` field) so `HostServices` (`build_turn_dispatcher`
+    /// / `spawn_subagent`) can emit `ProjectTrust` without going through the
+    /// `Engine`. `None` for embeds/tests that skip the extension runtime.
+    pub extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 impl Default for EngineHost {
@@ -184,6 +189,7 @@ impl Default for EngineHost {
             ),
             workshop_vars: None,
             sandbox_backend: None,
+            extension_runner: None,
         }
     }
 }
@@ -479,6 +485,10 @@ pub fn build_engine(
     // snapshot clone) so `ctx.signal()` reflects per-turn resets.
     let extension_runner =
         build_extension_runtime(&config.workspace, shared_cancel_token.clone());
+    // §F2c — surface the runner on `EngineHost` too so `HostServices`
+    // (`build_turn_dispatcher` / `spawn_subagent`) can emit `ProjectTrust`
+    // without going through the `Engine`.
+    host.extension_runner = Some(extension_runner.clone());
 
     if config.features.enabled(Feature::AgentTeams) {
         let team_context = config
