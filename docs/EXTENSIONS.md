@@ -23,7 +23,13 @@ extension tools as normal `ToolSpec`s.
 > `EventBus` impl are deferred to §F3–§F8. §F2c (reload sharing the engine's
 > live `cancel_token`; `on_tool_progress` `Callback` hook as forward-looking
 > API surface for `ToolExecutionUpdate`; `ProjectTrust` per-turn wire) is
-> done. `ToolExecutionUpdate` (needs a streaming `Tool` contract — `Tool::run`
+> done. §F5 slice 1 (`ProjectTrust { FirstLoad }` emit at the onboarding
+> trust-accept site — the once-per-session signal extension handlers observe
+> when the user accepts the workspace trust prompt) is done; the full §F5
+> dylib loader (`libloading`/`abi_stable`, `extension.toml` manifests,
+> project-local discovery trust gate, `/extension install`/`uninstall`)
+> remains §F5 续作 / §F3+ (this slice emits the `FirstLoad` *event* only — no
+> dylib machinery). `ToolExecutionUpdate` (needs a streaming `Tool` contract — `Tool::run`
 > is one-shot), `ResourcesDiscover`, and `SessionBeforeFork` stay deferred
 > with corrected rationale (see the host-seam table). Hot-load is permanently
 > out (spec §2.4) — install + reload only.
@@ -242,7 +248,7 @@ seams use `let _ =`; capability seams inspect `out.outcome` / `out.event`).
 | `SessionBeforeCompact` | `host_executor::run_compaction` after `should_compact` gate | **Cancel** | skips compaction (`return`) |
 | `SessionCompact` | `host_executor::run_compaction` after summary applied | observe | — |
 | `SessionBeforeSwitch` | `tui/ui.rs` `switch_workspace` entry | **Cancel** | aborts the workspace switch |
-| `ProjectTrust` | `HostServices::build_turn_dispatcher` (+ `spawn_subagent`) after `build_tool_context_for` | observe | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` → §F5 trust prompt |
+| `ProjectTrust` | `HostServices::build_turn_dispatcher` (+ `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); onboarding trust-accept `tui/ui.rs` `TrustDirectory` y/Y/1 arm after `app.trust_mode = true` (`FirstLoad`) | observe | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` once per onboarding trust acceptance (`TrustReason::FirstLoad`) — distinct from the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup, which surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
 | `ResourcesDiscover` | — (deferred §F2c) | observe | the only in-process host site is the `list_mcp_resources` pseudo-tool dispatch in `McpPool` (`agent-runtime/src/mcp.rs:3014`), already bracketed by `ToolCall`/`ToolResult` — firing `ResourcesDiscover` there conflates with tool execution and `DiscoverReason` has no clean mapping; no dedicated Startup/Manual/Reload discover seam with the runner `Arc`. The `tui/mcp_server.rs` stdio site is a separate process. (Earlier 'separate process' framing over-stated the blocker.) |
 | `SessionBeforeFork` | — (deferred §F2c) | **Cancel** | the live in-TUI backtrack path (`apply_backtrack`, `tui/ui.rs:6922`) is an in-place **rewind** (`truncate_history_to`/`api_messages.truncate`), not a **fork** (new-thread creation) — mislabeled if wired as `SessionBeforeFork`. Genuine fork primitives are dead (`fork_at_user_message`, `#[allow(dead_code)]`, zero non-test callers) or HTTP-only (`fork_thread`, runtime-api, no `App.extension_runner`). tui **does** construct a `RuntimeThreadManager` via `TaskManager::start` (`ui.rs:507`→`task_manager.rs:465`) — the earlier 'no ctor' claim was wrong. (Spec could redefine the event to cover rewind; flagged to spec owner, not done here.) |
 | `ToolExecutionUpdate` | — (deferred §F2c) | observe | no streaming `Tool` contract — `Tool::run` is one-shot (`agent/src/tools/mod.rs:71`), so there is no mid-execution progress stream to hook. The `on_tool_progress` `Callback` hook is landed (§F2c T1) as forward-looking API surface; the emit site awaits a streaming `Tool` variant (§F-later). (Earlier 'no `on_tool_progress` hook' framing was the surface symptom, not the root cause.) |
@@ -260,7 +266,12 @@ CodeSmith does **not** sandbox extensions (spec §8.1). Extensions run in the
 same process as the agent loop with full host access — **trust the source**.
 For untrusted extensions, containerize the whole CodeSmith process. Project
 local dylib install (phase 2, §F5) will require a trust prompt before the
-first load. Slice 1's compiled-in extensions are trusted by construction
+first load. The `ProjectTrust { FirstLoad }` event (§F5 slice 1) now fires at
+onboarding trust acceptance — it is an *observe-only signal* extension
+handlers can subscribe to, distinct from (and not delivering) the phase-2
+dylib loader that *consumes* project-local trust. The dylib loader,
+`extension.toml`, and project-local discovery trust gate remain §F5 续作 /
+§F3+. Slice 1's compiled-in extensions are trusted by construction
 (they ship in the binary).
 
 ## Troubleshooting

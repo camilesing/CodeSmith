@@ -2546,7 +2546,30 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 **下一聚焦工作：**
 - §F3+：dylib loading / `extension.toml` manifests / install/uninstall / `registerProvider` / renderers / shortcuts / flags / `EventBus` impl（按需）。
-- §F5：trust prompt 站点（`ProjectTrust{FirstLoad}` 真正 emit 处）。
+- §F5 slice 1 已落地（见下 §F5 进度块）：`ProjectTrust{FirstLoad}` onboarding trust-accept emit site。剩余 §F5：dylib loader（`libloading`/`abi_stable`）+ `extension.toml` manifest + 项目本地发现 trust gate + `/extension install`/`uninstall` 真实现（phase 2）。
+- 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
+
+**进度（2026-07-22 §F5 slice 1 ProjectTrust{FirstLoad} trust-prompt emit——§F5 首个子切片：onboarding TrustDirectory 接受站点 emit `ProjectTrust{reason: TrustReason::FirstLoad}` once-per-session，`feat/pluggable-framework-core`）：**
+
+接 §F2c（per-turn `ProjectTrust` wire）。§F2c T3 把 `FirstLoad` 标记为 "→ §F5 trust-prompt site"；本切片落地该 emit。§F5 全量 dylib 机器（loader/manifest/install/项目本地发现 trust gate）仍是 §F5 续作 / §F3+；本切片只 fire 已存在的 `FirstLoad` 变体（§F2a 落地），无 contract 变更。plan：`docs/superpowers/plans/2026-07-22-codesmith-extension-system-slice-5.md`。
+
+**关键设计决策：**
+- **`FirstLoad` = prompt-site only**：仅在 onboarding `TrustDirectory` 接受（`tui/ui.rs` `y/Y/1` 臂）emit 一次；`/trust on`、YOLO entry、已持久化信任的 workspace 启动均不 emit（runtime toggle / 前次会话决定，由 per-turn `Trusted`/`Untrusted` 反映）。无 dedup guard（prompt 每会话只接受一次）。
+- **Approach 1 = inline emit，逐字镜像 §F2c T3**：`if let Some(runner) = &app.extension_runner { let _ = runner.emit(ProjectTrust{reason: TrustReason::FirstLoad}).await; }`，在 `app.trust_mode = true` 之后、`fire_session_start_hook_if_ready(app)` 之前。`app` in place of `self`（§F2c T3 用 `EngineHost`），`FirstLoad` in place of per-turn `Trusted`/`Untrusted`。`app.extension_runner` 由 `spawn_engine`（`ui.rs:556`）+ `:561` clone 在事件循环前设置，故 trust 接受时已 `Some`。
+- **测试 = runner-level dispatch test + defer tui e2e**：`f5_project_trust_first_load_dispatches`（reuse `ProjectTrustRecorderExt`，additive 于 §F2c T3 的 `Trusted`→`Untrusted`）；tui e2e deferred per §F2b `SessionBeforeSwitch` precedent（`run_tui`/`TrustDirectory` fixture scaffolding 比例失衡）。
+
+**落地步骤：**
+1. T1 `crates/tui/src/tui/ui.rs`：`TrustDirectory` 接受臂 insert `FirstLoad` emit before `fire_session_start_hook_if_ready`；`crates/agent-runtime/src/engine/host_executor.rs` test block 加 `f5_project_trust_first_load_dispatches`（reuse §F2c `ProjectTrustRecorderExt`）。
+2. T2 `docs/EXTENSIONS.md`：intro slice-status + host-seam `ProjectTrust` row + Sandbox Stance 澄清（`FirstLoad` emit ≠ 全量 phase-2 dylib）；`ROADMAP.md`：§F2c "下一聚焦工作" §F5 bullet 更新 + §F5 进度块 + `### F5` 子节（scoped 到 FirstLoad emit，全量 dylib 记为 §F5 续作 / §F3+）。
+
+**测试/验证：** `cargo +1.90.0 build --workspace` 全绿；`codesmith-extensions --lib` 15（不变）；`codesmith-agent --lib` 98（不变）；`codesmith-agent-runtime --lib` 1162+2 → 1163+2（+1 `f5_project_trust_first_load_dispatches`；pre-existing flaky `streamable_http_stale_session_reconnects_and_retries_tool_call` 隔离重跑绿，不触 `mcp.rs`）；`codesmith-tui --bin codesmith-tui` 2855+2（不变）；grep `.emit(codesmith_agent::extension::ExtensionEvent` 跨 `host_executor.rs` = 16（不变——新 emit 在 `tui` 非 `host_executor`）；`TrustReason::FirstLoad` 跨 `crates/tui` = 1。
+
+**By-design gaps（显式 out-of-scope）：**
+- §F5 全量 dylib 机器：`libloading`/`abi_stable` loader + `extension.toml` manifest + 项目本地发现 trust gate + `/extension install`/`uninstall` 真实现（phase 2）——本切片只 emit `FirstLoad` 事件，不 consume trust。
+- tui-level e2e（`run_tui` 触发 `FirstLoad` emit）：§F2b `SessionBeforeSwitch` precedent（`EngineHost` + `run_tui`/`TrustDirectory` fixture scaffolding）；emit 镜像已测的 §F2c 模式。
+
+**下一聚焦工作：**
+- §F5 续作 / §F3+：dylib loader / `extension.toml` manifests / install/uninstall / `registerProvider` / renderers / shortcuts / flags / `EventBus` impl（按需）。
 - 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
 
 ---
@@ -2966,3 +2989,30 @@ Still deferred: `ToolExecutionUpdate` (streaming `Tool` contract),
 `ResourcesDiscover` + `SessionBeforeFork` (corrected rationale — no clean
 seam / rewind ≠ fork), `SessionBeforeSwitch` + `ProjectTrust` host-wire e2e
 tests (§F2b TaskManager-scaffolding precedent). Remaining §F3–§F8 unchanged.
+
+### F5 — Slice 5 (ProjectTrust{FirstLoad} trust-prompt emit site)
+
+- `ProjectTrust { FirstLoad }` onboarding trust-accept emit: the `TrustDirectory`
+  `y/Y/1` accept arm in `tui/ui.rs` (`run_tui`) fires
+  `ProjectTrust { reason: TrustReason::FirstLoad }` after `app.trust_mode = true`
+  and before `fire_session_start_hook_if_ready`. Once-per-session (the prompt
+  accepts once); observe-only (`let _ =`). Verbatim mirror of the §F2c T3
+  per-turn emit pattern (`app.extension_runner` in place of
+  `EngineHost.extension_runner`, `FirstLoad` in place of `Trusted`/`Untrusted`).
+  `app.extension_runner` is `Some` at accept time (`spawn_engine` + clone run
+  before the event loop).
+- `FirstLoad` = prompt-site only: `/trust on`, YOLO entry, and persisted-trust
+  workspace startup do NOT emit `FirstLoad` — those set `trust_mode = true`
+  outside the onboarding prompt and surface per-turn as `Trusted`/`Untrusted`
+  (§F2c T3 in `build_turn_dispatcher`/`spawn_subagent`). No dedup guard.
+- Test: `f5_project_trust_first_load_dispatches` (runner-level dispatch,
+  reuses the §F2c `ProjectTrustRecorderExt` fixture; additive to §F2c T3's
+  `Trusted`→`Untrusted`). tui e2e deferred per the §F2b `SessionBeforeSwitch`
+  precedent (`run_tui`/`TrustDirectory` fixture scaffolding).
+
+**Status (slice 5 §F5 slice 1):** done. `FirstLoad` emit wired at the
+onboarding trust-accept site. Still deferred (§F5 续作 / §F3+): the full dylib
+loader (`libloading`/`abi_stable`), `extension.toml` manifests, project-local
+discovery trust gate, and `/extension install`/`uninstall` real impl (phase 2) —
+this slice emits the `FirstLoad` *event* only (no dylib machinery; no contract
+change — `FirstLoad` exists since §F2a). Remaining §F3–§F8 unchanged.
