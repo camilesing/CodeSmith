@@ -20,11 +20,13 @@ extension tools as normal `ToolSpec`s.
 > `host_executor` seams + emit 22/23 events + full e2e round-trip + live
 > reload) are done. Dylib loading, `extension.toml` manifests,
 > install/uninstall, `registerProvider`, renderers, shortcuts, flags, the
-> `EventBus` impl are deferred to §F3–§F8. `ToolExecutionUpdate` (needs a
-> `Callback::on_tool_progress` stream hook) + reload sharing the engine's
-> `cancel_token` + 3 tui-level seams (`ProjectTrust`/`ResourcesDiscover`/
-> `SessionBeforeFork`) are deferred to §F2c. Hot-load is permanently out
-> (spec §2.4) — install + reload only.
+> `EventBus` impl are deferred to §F3–§F8. §F2c (reload sharing the engine's
+> live `cancel_token`; `on_tool_progress` `Callback` hook as forward-looking
+> API surface for `ToolExecutionUpdate`; `ProjectTrust` per-turn wire) is
+> done. `ToolExecutionUpdate` (needs a streaming `Tool` contract — `Tool::run`
+> is one-shot), `ResourcesDiscover`, and `SessionBeforeFork` stay deferred
+> with corrected rationale (see the host-seam table). Hot-load is permanently
+> out (spec §2.4) — install + reload only.
 
 ## Bootstrap
 
@@ -240,10 +242,10 @@ seams use `let _ =`; capability seams inspect `out.outcome` / `out.event`).
 | `SessionBeforeCompact` | `host_executor::run_compaction` after `should_compact` gate | **Cancel** | skips compaction (`return`) |
 | `SessionCompact` | `host_executor::run_compaction` after summary applied | observe | — |
 | `SessionBeforeSwitch` | `tui/ui.rs` `switch_workspace` entry | **Cancel** | aborts the workspace switch |
-| `ProjectTrust` | — (deferred §F2c) | observe | `build_tool_context_for` is sync, can't `.await` emit |
-| `ResourcesDiscover` | — (deferred §F2c) | observe | MCP runs in a separate process, doesn't share the App runner `Arc` |
-| `SessionBeforeFork` | — (deferred §F2c) | **Cancel** | `fork_at_user_message` is dead code; tui has no `RuntimeThreadManager` ctor |
-| `ToolExecutionUpdate` | — (deferred §F2c) | observe | no `Callback::on_tool_progress` stream hook yet |
+| `ProjectTrust` | `HostServices::build_turn_dispatcher` (+ `spawn_subagent`) after `build_tool_context_for` | observe | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` → §F5 trust prompt |
+| `ResourcesDiscover` | — (deferred §F2c) | observe | the only in-process host site is the `list_mcp_resources` pseudo-tool dispatch in `McpPool` (`agent-runtime/src/mcp.rs:3014`), already bracketed by `ToolCall`/`ToolResult` — firing `ResourcesDiscover` there conflates with tool execution and `DiscoverReason` has no clean mapping; no dedicated Startup/Manual/Reload discover seam with the runner `Arc`. The `tui/mcp_server.rs` stdio site is a separate process. (Earlier 'separate process' framing over-stated the blocker.) |
+| `SessionBeforeFork` | — (deferred §F2c) | **Cancel** | the live in-TUI backtrack path (`apply_backtrack`, `tui/ui.rs:6922`) is an in-place **rewind** (`truncate_history_to`/`api_messages.truncate`), not a **fork** (new-thread creation) — mislabeled if wired as `SessionBeforeFork`. Genuine fork primitives are dead (`fork_at_user_message`, `#[allow(dead_code)]`, zero non-test callers) or HTTP-only (`fork_thread`, runtime-api, no `App.extension_runner`). tui **does** construct a `RuntimeThreadManager` via `TaskManager::start` (`ui.rs:507`→`task_manager.rs:465`) — the earlier 'no ctor' claim was wrong. (Spec could redefine the event to cover rewind; flagged to spec owner, not done here.) |
+| `ToolExecutionUpdate` | — (deferred §F2c) | observe | no streaming `Tool` contract — `Tool::run` is one-shot (`agent/src/tools/mod.rs:71`), so there is no mid-execution progress stream to hook. The `on_tool_progress` `Callback` hook is landed (§F2c T1) as forward-looking API surface; the emit site awaits a streaming `Tool` variant (§F-later). (Earlier 'no `on_tool_progress` hook' framing was the surface symptom, not the root cause.) |
 
 > The `Transform` payload's actionable field is applied at the seam AFTER the
 > full handler chain runs (so a `Transform` from handler N is visible to

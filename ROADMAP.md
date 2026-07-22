@@ -2490,11 +2490,11 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **关键设计决策：**
 - **seam-capable outcome 映射固定**：Block=`ToolCall`（skip dispatch → permission-denied result）、Cancel=`SessionBefore*`（skip compaction/switch/fork）、Transform=`Input`/`BeforeAgentStart`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult`（rewrite actionable field）；out-of-place（如 Block at `TurnEnd`）→ `Continue`，由 host 的 `match _ => original` fallthrough 强制。
 - **Transform at ToolResult reorder**：emit 移到 `on_tool_end` **之前**，提取 transformed result → `on_tool_end` + downstream `outcomes[idx].result` 都见 transformed（Phase-4 持久化见 transformed）。
-- **22/23 wired，`ToolExecutionUpdate` 延后 §F2c**：`Callback` trait 无 `on_tool_progress` 流式钩子——需 §F2c 扩 trait（spec §F10.2 deferred）。EXTENSIONS.md 记 deferral。
+- **22/23 wired，`ToolExecutionUpdate` 延后 §F2c**：表面症状是 `Callback` trait 无 `on_tool_progress` 流式钩子；§F2c 调查确认根因是 `Tool::run` 一次性（无 mid-execution 进度流）——钩子已由 §F2c T1 落地为 forward-looking API surface，但事件仍 unwired（待流式 `Tool` 变体，§F-later）。EXTENSIONS.md 记 corrected rationale。
 - **`SessionStart`/`SessionShutdown` 补齐 §F1 gap**：§F1 声明但从未发射；§F2b 在 engine/mod.rs observe-only 发射，闭合 6-live-事件宣称与实际的缺口。
 - **live reload = re-populate shared `Arc`**：App 持 `extension_runner`(Arc)+`extension_state`+`workspace` 但**不**持 `Engine`/`cancel_token`；engine build 时 clone `self.extension_runner`。换 App 的 Arc 无法更新 Engine 字段 → 必须 re-populate 共享 Arc（所有 holder 自动更新）。`bind_core` append 到 `handlers`(Vec) 不清空 → 加 `clear_handlers`。`reload_extension_runtime` = clear → invalidate → discover_static → reconcile → load → bind_core。
-- **reload 用 fresh `CancellationToken`**：当前无 §F2b handler 读 ctx signal；共享 engine 的 token 属 §F2c 增强（避免 App field plumbing + respawn stale-token 复杂度）。
-- **4 事件 tui-level 显式延后**：`ProjectTrust`（`build_tool_context_for` 同步、不能 `.await` emit）、`ResourcesDiscover`（MCP 独立进程不共享 App runner Arc）、`SessionBeforeFork`（dead-code `fork_at_user_message`、tui 无 `RuntimeThreadManager` ctor）—— EXTENSIONS.md 记 deferral；`SessionBeforeSwitch` test 因 TaskManager scaffolding 比例失衡，wire 已落地但测试 deferred。`Input` transform wire 到 `run_inner`（非 `submit_user_input`——后者携 `UserInputResponse` 结构而非 text）。
+- **reload 用 fresh `CancellationToken`（§F2b 时）**：当时无 handler 读 ctx signal；共享 engine 的 live token 属 §F2c Layer 2——已落地（`HostExtensionContext.signal` 改 shared-`Arc<Mutex<CancellationToken>>`，call-time clone 反映 per-turn `reset_cancel_token`）。
+- **3 事件 tui-level 延后（§F2b 时判定，§F2c 已修正）**：§F2b 判 `ProjectTrust`/`ResourcesDiscover`/`SessionBeforeFork` 不可达（sync context / 独立进程 / dead-code fork）——§F2c 调查推翻：`ProjectTrust` 已 per-turn wire（`build_turn_dispatcher`+`spawn_subagent`，`FirstLoad`→§F5）；`ResourcesDiscover` 真因是 in-process discover 站点 conflates 工具 seam（非"独立进程"）；`SessionBeforeFork` 真因是 live backtrack 是 rewind 非 fork（tui **有** `RuntimeThreadManager` ctor，§F2b 判定错）。EXTENSIONS.md 记 corrected rationale；`SessionBeforeSwitch` test 因 TaskManager scaffolding deferred。`Input` transform wire 到 `run_inner`（非 `submit_user_input`——后者携 `UserInputResponse` 结构而非 text）。
 
 **落地步骤：**
 1. `crates/extensions/src/runner.rs`：T1 `EmitOutcome` 加 `#[must_use]`（强制 seam 检查）；T7 `clear_handlers()`（runtime lifecycle，clear `handlers` Vec）。
@@ -2506,14 +2506,47 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 **测试/验证：** `cargo +1.90.0 build --workspace` 全绿；`codesmith-extensions --lib` 14（`#[must_use]` 无行为变化）；`codesmith-agent --lib` 97（contract 不变）；`codesmith-agent-runtime --lib` 1152+2 → +11 `f2b_*`（Block at ToolCall skips dispatch / Transform at ToolResult rewrites on_tool_end / BeforeAgentStart transform injects / BeforeProviderRequest transform rewrites messages / ToolExecution Start/End bracket / SessionBeforeCompact cancel skips / SessionCompact fires / full lifecycle ordered 15 events / AgentSettled post-run / Session start-settled-shutdown）；`codesmith-tui --bin codesmith-tui` 2853+2 → 2855+2（+2 `f2b_*`：engine emits session start/settled/shutdown + extension reload clears+rebinds live）；grep `.emit(codesmith_agent::extension::ExtensionEvent` 跨 `host_executor.rs` >7-hit（22 wired）；`.emit(&...` → 0-hit。
 
-**By-design gaps（§F2c，显式 out-of-scope）：**
-- `ToolExecutionUpdate`（无 `Callback::on_tool_progress` 流式钩子——需 §F2c 扩 trait）。
-- `ProjectTrust`/`ResourcesDiscover`/`SessionBeforeFork`（tui-level seam 不可达：sync context / 独立进程 / dead-code fork 路径）。
-- `SessionBeforeSwitch` test（wire 已落地，TaskManager scaffolding 比例失衡）。
-- reload 共享 engine `cancel_token`（当前 fresh token；无 §F2b handler 读 ctx signal）。
+**By-design gaps（§F2b 时记为 §F2c 项，§F2c 已处理/修正——见下 §F2c 进度块）：**
+- `ToolExecutionUpdate`：§F2c T1 落地 `on_tool_progress` 钩子（forward-looking），事件仍 unwired（待流式 `Tool` 变体）。
+- `ProjectTrust`：§F2c T3 per-turn wire（`FirstLoad`→§F5）。
+- reload 共享 engine `cancel_token`：§F2c T2 Layer 2 落地（shared-Arc，call-time current-token）。
+- `ResourcesDiscover`/`SessionBeforeFork`：§F2c 调查修正 rationale，仍 deferred（见 §F2c 进度块 + EXTENSIONS.md）。
+- `SessionBeforeSwitch` test：仍 deferred（TaskManager scaffolding 比例失衡）。
 
 **下一聚焦工作：**
-- §F2c（按需）：`ToolExecutionUpdate` 需 `Callback` trait 扩 `on_tool_progress` 流式钩子；reload 共享 engine cancel_token；3 个 tui-level deferred seam。
+- §F2c 已落地（见下 §F2c 进度块）；剩余 deferred：`ToolExecutionUpdate` 待流式 `Tool` 变体、`ResourcesDiscover`/`SessionBeforeFork` 修正 rationale 后仍 out-of-scope、`SessionBeforeSwitch` e2e test。
+- 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
+
+**进度（2026-07-22 §F2c extension system close-out——§F2 拆为两子切片的 c 半：`on_tool_progress` `Callback` 钩子（forward-looking API surface）+ reload 共享 engine live `cancel_token`（Layer 2）+ `ProjectTrust` per-turn wire + §F2b deferred rationale 修正，`feat/pluggable-framework-core`）：**
+
+接 §F2b（host seam wiring）。本切片闭合 §F2b 留给 §F2c 的 4 项，并修正 §F2b 对其中 3 项的误判 rationale。§F2b 判 `ProjectTrust`/`ResourcesDiscover`/`SessionBeforeFork` "tui-level 不可达"——§F2c 调查推翻：`Tool::run` 一次性是 `ToolExecutionUpdate` 的真因（非"无 `on_tool_progress` 钩子"，那只是表面症状）；`ProjectTrust` 真因是 `EngineHost` 无 `extension_runner` 字段（非 `build_tool_context_for` 同步）；`ResourcesDiscover` 真因是 in-process discover 站点 conflates 工具 seam（非"MCP 独立进程"）；`SessionBeforeFork` 真因是 live backtrack 是 rewind 非 fork（tui **有** `RuntimeThreadManager` ctor，§F2b 判定错）。plan：`docs/superpowers/plans/2026-07-22-codesmith-extension-system-slice-2c.md`。
+
+**关键设计决策：**
+- **`on_tool_progress` 默认 no-op + `CallbackSet` fan-out**：`ExtensionEvent::ToolExecutionUpdate` 的 API surface；host 无流式 `Tool` contract（`Tool::run` 一次性），故今日无 emit——钩子先 land 待流式 `Tool` 变体（§F-later）。`CallbackBridge` 继承默认 no-op（无对应 host `Event` 变体，unbridged）。
+- **reload 共享 engine live token（Layer 2）**：`HostExtensionContext.signal` 由 `CancellationToken` snapshot 改 shared-`Arc<Mutex<CancellationToken>>`；`signal()` lock+clone 当前 inner，故 per-turn `reset_cancel_token` 在 call-time 可见。trait 返回类型不变（仍 `CancellationToken`）；无 handler 今日消费 `signal()`——forward-looking infra。
+- **`ProjectTrust` per-turn observe-only**：`EngineHost.extension_runner` 字段（`build_engine` 设，mirror `Engine`/`EngineHandle`）让 `HostServices::build_turn_dispatcher`+`spawn_subagent` 在 `build_tool_context_for` 后 emit `ProjectTrust{Trusted/Untrusted}`（from `session.trust_mode`）。`FirstLoad` per-turn 不可派生→§F5 trust prompt（handler 欲 once-per-session 应 dedup 首个 `Trusted`/`Untrusted`）。
+- **`ExtensionRunner` 手写 `Debug`**：struct 持 `dyn` trait-object 字段不可 `#[derive(Debug)]`；mirror `SandboxBackend: Debug` supertrait 模式，手写 impl 示 generation + bound-state counts，使 `EngineHost` 的 `#[derive(Debug)]` 不破。
+- **ResourcesDiscover/SessionBeforeFork 仍 deferred（rationale 修正）**：见 EXTENSIONS.md host-seam 表。spec owner 可重定义 `SessionBeforeFork` 覆盖 rewind——此处未做。
+
+**落地步骤：**
+1. T1 `crates/agent/src/callback/mod.rs`：`on_tool_progress` 加 `Callback` trait（默认 `noop()`）+ `CallbackSet` fan-out；noop/fans_out tests。`callback_bridge.rs` gap-table 记 unbridged。
+2. T2 `crates/extensions/src/state.rs`：`HostExtensionContext.signal` 改 shared-Arc；`tui/core/engine.rs` build/populate/reload 取 shared-Arc，`build_engine` 传 shared；`App.extension_shared_cancel_token` 字段 + `ui.rs:561` 设；reload handler 传 shared token + guard；13 test `HostExtensionContext::new` caller + 1 reload caller 更新；+1 test `host_extension_context_signal_reflects_engine_reset`。
+3. T3 `tui/core/engine.rs`：`EngineHost.extension_runner` 字段 + Default + `build_engine` 设；`runtime_traits.rs` `build_turn_dispatcher`+`spawn_subagent` emit `ProjectTrust`；`extensions/runner.rs` 手写 `Debug`；+1 runner-isolated dispatch test `f2c_project_trust_dispatches_reason`。host-wire e2e deferred（§F2b `SessionBeforeSwitch` precedent）。
+4. T4 EXTENSIONS.md host-seam 表 4 行 rationale 修正 + intro 块；ROADMAP §F2b 进度块修正 + §F2c 进度块 + `### F2c` 子节。
+
+**测试/验证：** `cargo +1.90.0 build --workspace` 全绿；`codesmith-extensions --lib` 14 → 15（+1 signal-reflects-reset）；`codesmith-agent --lib` 97 → 98（+1 on_tool_progress）；`codesmith-agent-runtime --lib` 1161+2 → 1162+2（+1 f2c_project_trust_dispatches_reason）；`codesmith-tui --bin codesmith-tui` 2855+2（2 ctx caller 更新 + EngineHost 字段无回归）；grep `.emit(codesmith_agent::extension::ExtensionEvent` 跨 `host_executor.rs` = 16（不变——`ToolExecutionUpdate` 仍 unwired）；`ProjectTrust` emit 在 `runtime_traits.rs`（2 处：build_turn_dispatcher + spawn_subagent）。
+
+**By-design gaps（显式 out-of-scope，rationale 已修正）：**
+- `ToolExecutionUpdate`：待流式 `Tool` 变体（§F-later）；`on_tool_progress` 钩子已 land 为 forward-looking。
+- `ResourcesDiscover`：in-process discover 站点 conflates 工具 seam，无 clean seam。
+- `SessionBeforeFork`：live backtrack 是 rewind 非 fork；spec 可重定义覆盖 rewind（flagged to spec owner，未做）。
+- `SessionBeforeSwitch` e2e test：TaskManager-class scaffolding 比例失衡（§F2b precedent，wire 已落地）。
+- `ProjectTrust` host-wire e2e test：同 §F2b precedent；emit 镜像已测的 §F2b guard + `Cancel`/dispatch 已由 §F2a/§F2c 证。
+- `ExtensionContext::signal()` 返回类型 → shared-Arc：更深的 contract 变更；Layer 2 使 call-time current-token 充分。
+
+**下一聚焦工作：**
+- §F3+：dylib loading / `extension.toml` manifests / install/uninstall / `registerProvider` / renderers / shortcuts / flags / `EventBus` impl（按需）。
+- §F5：trust prompt 站点（`ProjectTrust{FirstLoad}` 真正 emit 处）。
 - 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
 
 ---
@@ -2892,8 +2925,44 @@ events from `host_executor`, full e2e round-trip, App field live wiring,
   (App.extension_runner + Engine field both live, no Arc swap).
 
 **Status (slice 2b §F2b):** done. 22/23 events wired + `EmitOutcome` honored
-at 7 seams + full e2e + live reload. Deferred to §F2c: `ToolExecutionUpdate`
-(needs `Callback::on_tool_progress` stream hook), reload sharing the engine's
-`cancel_token`, and 3 tui-level seams (`ProjectTrust`/`ResourcesDiscover`/
-`SessionBeforeFork`) that are unreachable from the App runner (`sync context`/
-`separate MCP process`/`dead-code fork path`). Remaining §F3–§F8 unchanged.
+at 7 seams + full e2e + live reload. Deferred to §F2c (now done — see §F2c
+below): `ToolExecutionUpdate`, reload sharing the engine's `cancel_token`,
+and 3 tui-level seams (`ProjectTrust`/`ResourcesDiscover`/`SessionBeforeFork`).
+§F2c corrected the §F2b rationale — the 'sync context'/'separate MCP process'/
+'dead-code fork path' framing was based on misreads (real blockers: one-shot
+`Tool::run`; no `EngineHost.extension_runner`; in-process discover conflates
+the tool seam; live backtrack is a rewind not a fork). Remaining §F3–§F8
+unchanged.
+
+### F2c — Slice 2c (extension system close-out)
+
+- `on_tool_progress` `Callback` hook (default no-op) + `CallbackSet` fan-out —
+  forward-looking API surface for `ExtensionEvent::ToolExecutionUpdate`. No
+  host emit today (`Tool::run` is one-shot); awaits a streaming `Tool` variant
+  (§F-later). `CallbackBridge` inherits the default (unbridged — no host `Event`
+  variant for streaming tool progress).
+- Reload shares the engine's **live** `cancel_token` (Layer 2):
+  `HostExtensionContext.signal` is a shared `Arc<Mutex<CancellationToken>>`
+  (was a snapshot); `signal()` lock+clones the current inner so per-turn
+  `reset_cancel_token` is visible at call time. The
+  `ExtensionContext::signal() -> CancellationToken` trait signature is
+  unchanged; no handler consumes `signal()` yet (forward-looking infra).
+- `ProjectTrust` per-turn wire: `EngineHost.extension_runner` field (set in
+  `build_engine`) lets `HostServices::build_turn_dispatcher` + `spawn_subagent`
+  emit `ProjectTrust { Trusted/Untrusted }` from `session.trust_mode` after
+  `build_tool_context_for`. `FirstLoad` (the §F5 trust-prompt site) is not
+  derivable per-turn. Manual `Debug` for `ExtensionRunner` (mirrors the
+  `SandboxBackend: Debug` supertrait) keeps `EngineHost`'s `#[derive(Debug)]`.
+- Corrected deferral rationale (doc-only): `ResourcesDiscover` (in-process
+  discover site conflates the tool seam) and `SessionBeforeFork` (live backtrack
+  is a rewind, not a fork; tui does construct a `RuntimeThreadManager`) stay
+  deferred with accurate blockers; `ToolExecutionUpdate` rationale corrected
+  to the streaming-`Tool` root cause.
+
+**Status (slice 2c §F2c):** done. `on_tool_progress` hook landed (event
+unwired — awaits streaming `Tool`), reload shares the engine's live
+`cancel_token` (Layer 2), `ProjectTrust` wired per-turn (`FirstLoad`→§F5).
+Still deferred: `ToolExecutionUpdate` (streaming `Tool` contract),
+`ResourcesDiscover` + `SessionBeforeFork` (corrected rationale — no clean
+seam / rewind ≠ fork), `SessionBeforeSwitch` + `ProjectTrust` host-wire e2e
+tests (§F2b TaskManager-scaffolding precedent). Remaining §F3–§F8 unchanged.
