@@ -2452,6 +2452,37 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - P2 doc drift（推迟 slice 54，含 behavior-adjacent `coordinator.md`）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞，承接自 slice 53 残项。
 - §F3-F8 按需。
 
+**进度（2026-07-22 §F2a extension system contract + runtime core——§F2 拆为两子切片的 a 半：完整 23-变体 `ExtensionEvent` 集 + `HandlerOutcome` cancel/transform/block 链 + per-variant `on_variant` subscription + `catch_unwind` 隔离 + 7 处 `host_executor` emit 签名机械更新，`feat/pluggable-framework-core`）：**
+
+接 §F slice 1。本切片落地 §F2 的 contract + runtime core 半（§F2a），把 §F1 的 observer-only `Handler`（`Result<(), _>`）升级为 outcome-链模型（`Result<HandlerOutcome, _>`），并补齐 pi-mono spec §10.2 的完整 23-变体事件集。host seam wiring（§F2b）显式 out-of-scope——让 hard-to-reverse contract 先稳定。plan：`docs/superpowers/plans/2026-07-22-codesmith-extension-system-slice-2a.md`。
+
+**关键设计决策：**
+- **handler trait shape = Approach A**：单个 dyn-safe `Handler`（`Arc<dyn Handler>` 不变），返回 `Result<HandlerOutcome, ExtensionError>`；per-variant 经 `kind_filter` 而非 per-variant trait——最小 delta、匹配 pi-mono single-handler/union-return 模型、保持 object-safe。
+- **`HandlerOutcome` flat enum**：`Continue`/`Cancel { reason }`/`Block { reason }`/`Transform(ExtensionEvent)`；variant-specific 语义由 host 运行时强制（§F2b）而非类型系统；terminal `EmitOutcome.outcome` 永不为 `Transform`（fold 进 `event`）。
+- **`emit` owned-in / `EmitOutcome`-out、链式、registration-order**：`Transform` 对下一 handler 可见，`Cancel`/`Block` short-circuit；§F2a 不 `#[must_use]` `EmitOutcome`（7 处 host_executor 机械更新仅 drop `&`），§F2b 可加 `#[must_use]` 强制 seam 检查。
+- **per-variant = 单一有序 `Vec<RegisteredHandler{handler, kind_filter}>`**：全局注册顺序保留，dispatch 前 filter `kind_filter.is_none() || == event.kind()`。
+- **`catch_unwind` 经 `futures-util`**（匹配 `codesmith-agent-runtime` 版本 `0.3.31`）：panic + handler `Err` 均 `tracing::error!` 记录 + 链继续（§8.3 best-effort）。
+- **§F2a/§F2b 拆分**：contract 先 land + 稳定，再 wire host。
+
+**落地步骤：**
+1. `crates/agent/src/extension.rs`：T1 reason enums（`TrustReason`/`DiscoverReason`）+ 6 payload structs（`InputEvent`/`AgentStartEvent`/`BeforeProviderRequestEvent`/`AfterProviderResponseEvent`/`ToolExecutionUpdateEvent`）；T2 `ExtensionEvent` 6→23 变体 + `ExtensionEventKind` discriminant + `kind()` exhaustive guard；T3 `HandlerOutcome` enum；T4 `Handler::handle` 返回 `Result<HandlerOutcome>` + 5 in-tree handler → `Continue`；T6 `ExtensionApi::on_variant` trait 方法。
+2. `crates/extensions/Cargo.toml`：T5 `futures-util = "0.3.31"` dep。
+3. `crates/extensions/src/runner.rs`：T6 `PendingHandler`/`RegisteredHandler` `kind_filter`；T7 `handlers: Vec<RegisteredHandler>` + `bind_core` drain carry `kind_filter`；T8 `EmitOutcome` struct + `emit` 重写（owned-in、per-variant filter、`catch_unwind`、transform 链、cancel/block short-circuit）+ 5 runner tests。
+4. `crates/extensions/src/api.rs`：T6 `Stub`/`Real` `on`/`on_variant` impl push `kind_filter` + `f2a_stub_on_variant_queues_with_kind_filter` test。
+5. `crates/extensions/src/lib.rs`：T8 re-export `EmitOutcome`。
+6. `crates/agent-runtime/src/engine/host_executor.rs`：T8 7 处 emit 站点机械 drop `&`（`.emit(&codesmith_agent::extension::ExtensionEvent` → `.emit(codesmith_agent::extension::ExtensionEvent`；TurnStart `:3736`/TurnEnd-Interrupted `:3784`/TurnEnd-NoToolCalls `:4268`/ToolCall-parallel `:4390`/ToolResult-parallel `:4478`/ToolCall-serial `:4496`/ToolResult-serial `:4591`；§F2a 丢弃 `EmitOutcome`，§F2b 加 seam 检查）。
+
+**测试/验证：** `cargo +1.90.0 build --workspace` 全绿；`codesmith-extensions --lib` 9→14（+5 `f2a_*`：emit chains transform to next handler / cancel short-circuits / block short-circuits / on_variant dispatches only matching kind / catch_unwind isolates panicking handler）；`codesmith-agent --lib` 93→97（+4 `f2a_*` contract：payload structs construct / event_kind round-trip 23 变体 / handler_outcome constructs each variant / handler_handle returns Continue by default）；`codesmith-agent-runtime --lib` 1152 passed + 2 ignored（7-site 签名变更 behavior-preserving，round-trip `extension_runner_bound_emits_lifecycle_events_on_minimal_run` 仍绿，seen == [TurnStart, ToolCall, ToolResult, TurnEnd]）；grep `.emit(&codesmith_agent::extension::ExtensionEvent` 跨 `host_executor.rs` → 0-hit；grep `.emit(codesmith_agent::extension::ExtensionEvent` → 7-hit。
+
+**By-design gaps（§F2b，显式 out-of-scope）：**
+- host_executor 7 seam 的 cancel/block/transform *handling*（当前丢弃 `EmitOutcome`）。
+- ~17 新事件尚未由 `host_executor` 发射（仅 §F1 的 6 个 live：`SessionStart`/`TurnStart`/`ToolCall`/`ToolResult`/`TurnEnd`/`SessionShutdown`；`ProjectTrust`/`ResourcesDiscover`/`Input`/`BeforeAgentStart`/`AgentStart`/`BeforeProviderHeaders`/`BeforeProviderRequest`/`AfterProviderResponse`/`ToolExecutionStart`/`ToolExecutionUpdate`/`ToolExecutionEnd`/`AgentEnd`/`AgentSettled`/`SessionBeforeSwitch`/`SessionBeforeFork`/`SessionBeforeCompact`/`SessionCompact` 待 §F2b wire）。
+- 完整 e2e round-trip（assert complete ordered event sequence）+ App 字段 live wiring + `/extension reload` re-discover（当前仅 `invalidate()`）。
+
+**下一聚焦工作：**
+- §F2b：wire 每个新事件到其 `HostAgentExecutor`/app seam + 完整 e2e round-trip test + App 字段 live wiring + `/extension reload` re-discover。
+- 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
+
 ---
 
 ## §A — Provider extraction (bulk migration)
@@ -2785,3 +2816,23 @@ wiring + sample + docs landed. Deferred to §F2–§F8: full ~30-event lifecycle
 cancel/transform/block chains, `EventBus` impl, `registerProvider`,
 `registerShortcut`/`registerFlag`/renderers, dylib loading (phase 2),
 install-source impls, embed API. Hot-load permanently out.
+
+### F2a — Slice 2a (contract + runtime core)
+
+- Full 23-variant `ExtensionEvent` set (§F1's 6 + 17 new) + `ExtensionEventKind`
+  discriminant + exhaustive `kind()` guard, all in `codesmith-agent::extension`.
+- `HandlerOutcome` (`Continue`/`Cancel`/`Block`/`Transform`) drives the
+  cross-handler chain; `Handler::handle` returns `Result<HandlerOutcome, _>`.
+- Per-variant subscription via `ExtensionApi::on_variant(kind, handler)` +
+  `RegisteredHandler { handler, kind_filter }`; `on` = subscribe-to-all (`None`).
+- `ExtensionRunner::emit` rewrite: owned-in / `EmitOutcome`-out, chained
+  (registration-order; `Transform` visible to next handler; `Cancel`/`Block`
+  short-circuit), per-variant filter, `catch_unwind` isolation per §8.3.
+- Mechanical 7-site `host_executor` emit-signature update (drops `&`; §F2a
+  discards `EmitOutcome`).
+
+**Status (slice 2a §F2a):** done. Full event set + `HandlerOutcome` chain +
+per-variant dispatch + `catch_unwind` landed. Deferred to §F2b: host seam
+wiring (honor `Cancel`/`Block`/`Transform` at the 7 seams), emit the ~17 new
+events from `host_executor`, full e2e round-trip, App field live wiring,
+`/extension reload` re-discover. Remaining §F3–§F8 unchanged.

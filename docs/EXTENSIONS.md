@@ -115,8 +115,10 @@ so a single crate gives them both the traits and the runtime helpers.
   `async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError>`.
 - **`ExtensionApi`** — the registration surface (two-phase: stub at load,
   real at `bind_core`): `register_tool(Box<dyn ToolDefinition>)` /
-  `register_command(Box<dyn CommandDefinition>)` / `on(Arc<dyn Handler>)` +
-  `generation() -> u64` for the stale-context guard.
+  `register_command(Box<dyn CommandDefinition>)` /
+  `on(Arc<dyn Handler>)` (subscribe to ALL events) /
+  `on_variant(ExtensionEventKind, Arc<dyn Handler>)` (subscribe to ONE
+  variant only — §F2a) + `generation() -> u64` for the stale-context guard.
 - **`ExtensionContext`** — read-mostly host state handed to handlers:
   `cwd() / mode() / is_idle() / signal() / generation()` (real in slice 1);
   `abort() / shutdown() / compact() / get_context_usage()` (stubbed →
@@ -124,15 +126,27 @@ so a single crate gives them both the traits and the runtime helpers.
 - **`ExtensionCommandContext: ExtensionContext`** — strict sub-trait handed
   to command handlers; slice 1 adds zero session-mutation methods (the
   split exists for type-safety + §F2 growth).
-- **`ExtensionEvent`** — `#[non_exhaustive]` minimal 6-variant set:
-  `SessionStart { reason }` / `TurnStart { turn_id }` /
-  `ToolCall(ToolCallEvent)` / `ToolResult(ToolResultEvent)` /
-  `TurnEnd { turn_id, reason }` / `SessionShutdown`. The remaining ~25
-  variants are §F2.
-- **`Handler`** — observer-only in slice 1:
+- **`ExtensionEvent`** — `#[non_exhaustive]`; §F2a landed the full 23-variant
+  set (§F1's 6 + 17 new: `ProjectTrust`/`ResourcesDiscover`/`Input`/
+  `BeforeAgentStart`/`AgentStart`/`BeforeProviderHeaders`/
+  `BeforeProviderRequest`/`AfterProviderResponse`/`ToolExecutionStart`/
+  `ToolExecutionUpdate`/`ToolExecutionEnd`/`AgentEnd`/`AgentSettled`/
+  `SessionBeforeSwitch`/`SessionBeforeFork`/`SessionBeforeCompact`/
+  `SessionCompact`). `ExtensionEvent::kind()` maps each variant to an
+  `ExtensionEventKind` discriminant for per-variant dispatch.
+- **`Handler`** — §F2a outcome-returning (§F1 was observer-only; superseded):
   `async fn handle(&self, event: &ExtensionEvent, ctx: &dyn ExtensionContext)
-  -> Result<(), ExtensionError>`. `HandlerOutcome` (cancel/transform/block)
-  is §F2.
+  -> Result<HandlerOutcome, ExtensionError>`. Returns `Continue` (no change;
+  proceed), `Cancel { reason }` (abort the surrounding operation — only
+  meaningful for `SessionBefore*` variants), `Block { reason }` (prevent the
+  operation — only meaningful for `ToolCall`), or
+  `Transform(ExtensionEvent)` (replace the running event for subsequent
+  handlers AND apply its actionable field at transform-capable seams —
+  `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult`).
+  Variant-specific semantics are enforced by the host at each seam (§F2b); an
+  out-of-place outcome (e.g. `Block` at `TurnEnd`) is ignored (treated as
+  `Continue`). `emit` chains handlers in registration order so a `Transform`
+  is visible to the next handler; `Cancel`/`Block` short-circuit.
 - **`ToolDefinition`** — extension-side tool contract: `name / description /
   input_schema / capabilities / async execute(input, ctx)`. `execute` receives
   an `ExtensionContext` (NOT the host's `ToolContext`) — keeping extensions
@@ -142,6 +156,51 @@ so a single crate gives them both the traits and the runtime helpers.
   by the host's `extension_commands::try_dispatch`.
 - **`ExtensionError`** — `StaleContext` (the guard signal) + `Config` /
   `Tool` / `Command` / `Conflict` / `Install` / `Load` / `Unimplemented`.
+
+## Handlers: outcomes + per-variant subscription (§F2a)
+
+§F1 handlers were observers (`Result<(), _>`). §F2a upgrades them to an
+**outcome chain**: `Handler::handle` returns `HandlerOutcome`, and
+`ExtensionRunner::emit` chains handlers in registration order — a
+`Transform` is visible to the next handler, `Cancel`/`Block` short-circuit.
+Each handler call is isolated behind `catch_unwind` (§8.3): a panicking
+handler is logged via `tracing` and skipped — it cannot crash the agent loop —
+and a handler `Err` is likewise logged + the chain continues (best-effort).
+
+Subscribe to **all** events with `on`, or to **one** variant with
+`on_variant` (the runner filters per-variant handlers by `event.kind()`
+before dispatch, so a per-variant handler never sees a non-matching event):
+
+```rust
+use codesmith_agent::extension::*;
+use async_trait::async_trait;
+
+struct AbortCompaction;
+#[async_trait]
+impl Handler for AbortCompaction {
+    async fn handle(
+        &self,
+        event: &ExtensionEvent,
+        _ctx: &dyn ExtensionContext,
+    ) -> Result<HandlerOutcome, ExtensionError> {
+        // Fires ONLY for SessionBeforeCompact (per-variant subscription).
+        match event {
+            ExtensionEvent::SessionBeforeCompact =>
+                Ok(HandlerOutcome::Cancel { reason: "user aborted".into() }),
+            _ => Ok(HandlerOutcome::Continue),
+        }
+    }
+}
+
+async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+    api.on_variant(ExtensionEventKind::SessionBeforeCompact, Arc::new(AbortCompaction))?;
+    Ok(())
+}
+```
+
+> The host honors `Cancel`/`Block`/`Transform` at each seam in §F2b — §F2a
+> lands the contract + the chain in isolation (the 7 `host_executor` emit
+> sites adopted the new owned-in signature but discard `EmitOutcome`).
 
 ## Sandbox Stance
 
@@ -162,10 +221,14 @@ first load. Slice 1's compiled-in extensions are trusted by construction
 - **`/extension status` says "not bound".** The engine hasn't built yet
   (pre-startup), or `app.extension_runner` wasn't copied from the handle
   (`crates/tui/src/tui/ui.rs` after `spawn_engine`).
-- **Handler silently does nothing.** Slice 1 handlers are observers — they
-  cannot cancel/transform the turn (§F2). `emit` discards handler errors
-  best-effort per §8.3 (one failing handler does not block others); §F2
-  hardens with `catch_unwind`.
+- **Handler returns `Continue` but nothing changes.** §F2a handlers return
+  `HandlerOutcome`; `Continue` means "no change" by design. To
+  cancel/block/transform, return the matching variant — and note
+  variant-specific semantics (a `Block` at a non-`ToolCall` seam is ignored;
+  §F2b wires the host to honor these at each seam). `emit` isolates each
+  handler call behind `catch_unwind` (§8.3): a panicking handler is logged
+  via `tracing` and skipped — it cannot crash the agent loop — and a handler
+  `Err` is likewise logged + the chain continues.
 - **`configure` captured an `Arc<dyn ExtensionApi>` that now returns
   `StaleContext`.** The runner was `invalidate()`d (via `/extension reload`
   or a future reload/fork/switch); capture a fresh api or check
