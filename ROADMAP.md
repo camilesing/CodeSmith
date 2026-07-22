@@ -2546,7 +2546,7 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 **下一聚焦工作：**
 - §F3+：dylib loading / `extension.toml` manifests / install/uninstall / `registerProvider` / renderers / shortcuts / flags / `EventBus` impl（按需）。
-- §F5 slice 1 已落地（见下 §F5 进度块）：`ProjectTrust{FirstLoad}` onboarding trust-accept emit site。剩余 §F5：dylib loader（`libloading`/`abi_stable`）+ `extension.toml` manifest + 项目本地发现 trust gate + `/extension install`/`uninstall` 真实现（phase 2）。
+- §F5b 已落地（见下 §F5b 进度块）：dylib LOAD 侧（`libloading` loader + `extension.toml` manifest + 三形态发现 + 项目本地 trust gate [Model A] + reload wiring）。剩余 §F5：INSTALL 侧（install-source impls + `CargoBuilder`/`Placer` + `/extension install`/`uninstall` 真实现 + `installed[]` provenance 写）→ §F5c。
 - 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
 
 **进度（2026-07-22 §F5 slice 1 ProjectTrust{FirstLoad} trust-prompt emit——§F5 首个子切片：onboarding TrustDirectory 接受站点 emit `ProjectTrust{reason: TrustReason::FirstLoad}` once-per-session，`feat/pluggable-framework-core`）：**
@@ -2571,6 +2571,37 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **下一聚焦工作：**
 - §F5 续作 / §F3+：dylib loader / `extension.toml` manifests / install/uninstall / `registerProvider` / renderers / shortcuts / flags / `EventBus` impl（按需）。
 - 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
+
+**进度（2026-07-22 §F5b dylib LOAD 侧——§F5 续作上半：disk dylib loader + extension.toml manifest + 三形态发现 + 项目本地 trust gate[Model A, consume FirstLoad] + reload wiring，`feat/pluggable-framework-core`）：**
+
+接 §F5 slice 1（`FirstLoad` emit site）。§F5b 是该 emit 的第一个真实 consumer：trust gate 读 `is_workspace_trusted(workspace)`（`FirstLoad` 接受翻转的持久化信任），不信任则跳过项目本地 dylib。LOAD 半落地：loader + manifest + 发现 + trust gate + reload wiring + cdylib fixture。INSTALL 半（fetch/build/place/provenance 写）保持 stub → §F5c。raw `libloading` + lockstep `*mut dyn Extension`（Approach 1，§2.4 无 ABI churn）。spec：`docs/superpowers/specs/2026-07-22-codesmith-extension-system-slice-5b-design.md`；plan：`docs/superpowers/plans/2026-07-22-codesmith-extension-system-slice-5b.md`。
+
+**关键设计决策：**
+- **范围 fork = split LOAD/INSTALL**：本切片 = LOAD；install/uninstall + install-source impls + `installed[]` provenance 写 → §F5c（保持 stub）。
+- **ABI fork = raw libloading + lockstep**：`codesmith_register_extension() -> *mut dyn Extension` → `Box::from_raw` → `runner.load`。无 `abi_stable`（§2.4）。`ExtensionError::Load` 已在契约。
+- **Q1 `ExtensionRunner.libraries`**：`Mutex<Vec<Library>>`，reload 不清——对 append-insert tools / 无 `clear_tools` 的现状是*正确性保底*（移除 dylib 的 tool Arc 仍引用旧 vtable），重发现同 dylib 则*有界泄漏*。
+- **Q2 Model A trust gate**：`apply_trust_gate(sources, trust_untrusted)` 在 `trust_untrusted=true` 时只留 `global` 源；host 以 `!is_workspace_trusted(workspace)` 注入（discovery trust-agnostic）。
+- **Q3 fixture = cdylib dev-dep**：`crate-type=["cdylib","rlib"]` dev-dep → `cargo test --lib` 构建 cdylib；`build.rs` 从 `OUT_DIR` 算路径发 env（无 cargo subprocess/lock）。handler-dispatch 证明用 host-side `HandlerOutcome::Transform(turn_id→"fixture:<id>")` 经 `EmitOutcome` 观察——不用 pub static（cdylib + rlib 是分离镜像，static 地址不同 → 测得 0）。`#[unsafe(no_mangle)]`（edition-2024 unsafe-attribute gate）+ `#[allow(improper_ctypes_definitions)]`（§8.2 lockstep fat-pointer 取舍）。
+- **Q4 `api_version` 可选 warn**：不 refuse（lockstep 由 build 强制）。
+
+**落地步骤：**
+1. T1 `manifest.rs` + `toml` dep + parse 测试。
+2. T2 `loader.rs` + `libloading` + `runner.libraries`/`load_dylib` + 错误测试。
+3. T3 `discover_dylib` + `apply_trust_gate` + 发现/trust-gate 测试。
+4. T4 cdylib fixture crate + `build.rs` + load-contributions 测试。
+5. T5 `populate_extension_runtime` dylib wiring（reload 自动拾取）。
+6. T6 `/extension list`+`info` 显示 dylib ext。
+7. T7 docs（EXTENSIONS + ROADMAP）。
+
+**测试/验证：** `cargo build --workspace` 全绿；`codesmith-extensions --lib` 15→26（3 manifest + 2 loader + 5 discovery/trust-gate + 1 fixture）；`codesmith-agent --lib` 98（不变）；`codesmith-agent-runtime --lib` 1163+2（不变——LOAD 不触 host_executor）；`codesmith-tui --bin codesmith-tui` 2829 pass/26 fail/2 ignored——26 个 fail 全是 `runtime_api::tests` PRE-EXISTING（环境性 HTTP-server 不 bind / connection-refused，无 panic；在 §F5b 前的 base `7a6819a7` 隔离重跑同样 fail，非 §F5b 回归；§F5 commit 的 "tui 2855+2" 是环境相关断言）；tui dylib e2e deferred per §F5 precedent。grep：`libloading` in extensions `Cargo.toml` ≥1、`loader.rs`/`manifest.rs`/`build.rs` 存在、`discover_dylib` in `engine.rs` ≥1、`codesmith_register_extension` in fixture ≥1、host_executor `.emit`=16（不变）、`TrustReason::FirstLoad` in tui=1（不变）。
+
+**By-design gaps（显式 out-of-scope）：**
+- §F5c INSTALL 侧：install-source impls（Git/LocalPath must-have；CratesIo/Prebuilt nice-to-have）+ `CargoBuilder` + `Placer` + `/extension install`/`uninstall` 真实现 + `installed[]` provenance 写。
+- `clear_tools`/`clear_commands` + Library 真卸载（Q1 接受 bounded 留存保底正确性）。
+- tui-level dylib e2e（`run_tui` 触发发现/reload）：§F5 precedent（`EngineHost`+`run_tui`+真信任 fixture 比例失衡）。
+
+**下一聚焦工作：**
+- §F5c INSTALL 侧 + 残项（按需）。
 
 ---
 
@@ -3016,3 +3047,61 @@ loader (`libloading`/`abi_stable`), `extension.toml` manifests, project-local
 discovery trust gate, and `/extension install`/`uninstall` real impl (phase 2) —
 this slice emits the `FirstLoad` *event* only (no dylib machinery; no contract
 change — `FirstLoad` exists since §F2a). Remaining §F3–§F8 unchanged.
+
+### F5b — Dylib LOAD side (loader + manifest + discovery + trust gate + reload wiring)
+
+- `crates/extensions/src/loader.rs` (`async fn load_dylib(&self, path: &Path)
+  -> Result<(), ExtensionError>`): `libloading::Library::new` → symbol
+  `codesmith_register_extension` → `Box::from_raw` → push the `Library` to
+  `ExtensionRunner.libraries: Mutex<Vec<Library>>` (reload does NOT clear — Q1
+  correctness for append-insert tools / no `clear_tools`) then `configure` via
+  `load`. The `Extension` Box drops after `configure` (contributions
+  self-contained; vtables live in the kept `Library`).
+- `crates/extensions/src/manifest.rs` (`ExtensionManifest` serde Deserialize:
+  `id`/`version`/`entry?`/`source?[type,ref?]`/`api_version?`);
+  `from_str`/`parse` → `ExtensionError::Load`. Q4: `api_version` optional,
+  warn-only (lockstep is build-enforced, §8.2).
+- `crates/extensions/src/discovery.rs`
+  `discover_dylib(global_roots: &[PathBuf], project_roots: &[PathBuf])`:
+  one-level scan with three root shapes — container-dir-of-subdirs (each
+  subdir + `extension.toml` → parsed manifest, entry defaults to
+  `<DLL_PREFIX><id>.<DLL_EXTENSION>` when absent) / single-manifest-dir /
+  bare `*.<DLL_EXTENSION>` (stem id = filename minus `DLL_PREFIX`);
+  dedup by canonical dylib path first-wins. Returns flat
+  `DiscoveredSource{id, version, config_path, dylib_path, global: bool}`
+  (`global` tags global vs project — no enum).
+  `apply_trust_gate(sources, trust_untrusted: bool)` keeps only `global`
+  sources when `trust_untrusted` — the host calls it with
+  `!is_workspace_trusted(workspace)` (Model A, the first real consumer of the
+  `FirstLoad`→persisted-trust flip).
+- `crates/tui/src/core/engine.rs` `populate_extension_runtime`: after the
+  static discover/reconcile collect, `discover_dylib(&global_roots,
+  &project_roots)` → `apply_trust_gate(discovered, !project_trusted)` →
+  `state.is_enabled` reconcile → `load_dylib` inside the same spawned OS-thread
+  load closure, after the static load loop (warn+continue on error, §8.3).
+  `reload_extension_runtime` unchanged — `/extension reload` auto-picks-up
+  dylibs.
+- `crates/extensions-fixture-dylib` (workspace member, `crate-type=
+  ["cdylib","rlib"]`): `#[unsafe(no_mangle)] #[allow(improper_ctypes_definitions)]
+  pub extern "C" fn codesmith_register_extension() -> *mut dyn Extension`
+  returns `Box::into_raw(Box::new(FixtureExtension))` registering `fixture_echo`
+  tool + a `TurnStart` handler. The handler-dispatch proof uses
+  `HandlerOutcome::Transform(turn_id → "fixture:<id>")` observed host-side via
+  `EmitOutcome` — NOT a shared `pub static`: a `pub static` in the fixture
+  lives at a different address in the dlopen'd cdylib vs the test binary's rlib
+  copy → would read 0 (cdylib + rlib are separate images). `#[unsafe(no_mangle)]`
+  for the edition-2024 unsafe-attribute gate; `#[allow(improper_ctypes_definitions)]`
+  is the documented §8.2/§2.4 no-`abi_stable` fat-pointer tradeoff. Built as a
+  `codesmith-extensions` **dev-dep** so `cargo test --lib` builds the cdylib;
+  `build.rs` computes its path from `OUT_DIR` (no cargo subprocess/lock).
+  Lockstep by construction (same workspace + toolchain).
+- `/extension list`+`info` surface dylib-discovered ext (deduped by id via
+  `BTreeSet`; `[compiled]`/`[dylib, global|project]` tags; `info` shows source
+  + path).
+
+**Status (slice 5b §F5b):** done. Dylib LOAD side landed. Still deferred
+(§F5c): install-source impls (Git/LocalPath must-have; CratesIo/Prebuilt
+nice-to-have) + `CargoBuilder` + `Placer` + `/extension install`/`uninstall`
+real impl + `installed[]` provenance write; `clear_tools`/`clear_commands` +
+Library unload (Q1 accepts bounded retention). tui dylib e2e deferred per §F5
+precedent. Remaining §F3–§F8 unchanged.
