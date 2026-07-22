@@ -206,20 +206,106 @@ pub struct ToolExecutionUpdateEvent {
     pub message: String,
 }
 
-/// Lifecycle events. Slice 1 minimal set (spec §10.1):
-/// `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
-/// `SessionShutdown`. `#[non_exhaustive]` so §F2 can add the remaining ~25
-/// variants without breaking downstream match arms. Handler dispatch is
-/// open (any `Handler` may subscribe to any variant).
+/// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
+/// §10.2 + §4): 23 variants total. `#[non_exhaustive]` so future slices can
+/// add variants without breaking downstream match arms. Handler dispatch is
+/// open (any `Handler` may subscribe to any variant via `on` /
+/// `on_variant`). Variant-specific outcome semantics (spec §4): `SessionBefore*`
+/// → cancel-capable; `ToolCall` → block-capable; `Input` / `BeforeAgentStart` /
+/// `BeforeProviderRequest` / `ToolResult` → transform-capable; rest observe-only.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ExtensionEvent {
+    // --- §F1 minimal set (unchanged) ---
     SessionStart { reason: SessionReason },
     TurnStart { turn_id: String },
     ToolCall(ToolCallEvent),
     ToolResult(ToolResultEvent),
     TurnEnd { turn_id: String, reason: TurnEndReason },
     SessionShutdown,
+    // --- §F2a additions (spec §10.2 + §4) ---
+    ProjectTrust { reason: TrustReason },
+    ResourcesDiscover { reason: DiscoverReason },
+    Input(InputEvent),
+    BeforeAgentStart(AgentStartEvent),
+    AgentStart,
+    BeforeProviderHeaders,
+    BeforeProviderRequest(BeforeProviderRequestEvent),
+    AfterProviderResponse(AfterProviderResponseEvent),
+    ToolExecutionStart,
+    ToolExecutionUpdate(ToolExecutionUpdateEvent),
+    ToolExecutionEnd,
+    AgentEnd,
+    AgentSettled,
+    SessionBeforeSwitch,
+    SessionBeforeFork,
+    SessionBeforeCompact,
+    SessionCompact,
+}
+
+/// Discriminant of an [`ExtensionEvent`], for per-variant handler subscription
+/// via [`ExtensionApi::on_variant`] (§F2a). One variant per `ExtensionEvent`
+/// variant; `#[non_exhaustive]` to grow with the event enum.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExtensionEventKind {
+    ProjectTrust,
+    SessionStart,
+    ResourcesDiscover,
+    Input,
+    BeforeAgentStart,
+    AgentStart,
+    TurnStart,
+    BeforeProviderHeaders,
+    BeforeProviderRequest,
+    AfterProviderResponse,
+    ToolExecutionStart,
+    ToolCall,
+    ToolExecutionUpdate,
+    ToolResult,
+    ToolExecutionEnd,
+    TurnEnd,
+    AgentEnd,
+    AgentSettled,
+    SessionBeforeSwitch,
+    SessionBeforeFork,
+    SessionShutdown,
+    SessionBeforeCompact,
+    SessionCompact,
+}
+
+impl ExtensionEvent {
+    /// The discriminant of this event, for per-variant dispatch. Exhaustive
+    /// within this crate: adding an `ExtensionEvent` variant without a
+    /// `kind()` arm is a compile error (the future-variant guard).
+    #[must_use]
+    pub fn kind(&self) -> ExtensionEventKind {
+        match self {
+            ExtensionEvent::ProjectTrust { .. } => ExtensionEventKind::ProjectTrust,
+            ExtensionEvent::SessionStart { .. } => ExtensionEventKind::SessionStart,
+            ExtensionEvent::ResourcesDiscover { .. } => ExtensionEventKind::ResourcesDiscover,
+            ExtensionEvent::Input(_) => ExtensionEventKind::Input,
+            ExtensionEvent::BeforeAgentStart(_) => ExtensionEventKind::BeforeAgentStart,
+            ExtensionEvent::AgentStart => ExtensionEventKind::AgentStart,
+            ExtensionEvent::TurnStart { .. } => ExtensionEventKind::TurnStart,
+            ExtensionEvent::BeforeProviderHeaders => ExtensionEventKind::BeforeProviderHeaders,
+            ExtensionEvent::BeforeProviderRequest(_) => ExtensionEventKind::BeforeProviderRequest,
+            ExtensionEvent::AfterProviderResponse(_) => ExtensionEventKind::AfterProviderResponse,
+            ExtensionEvent::ToolExecutionStart => ExtensionEventKind::ToolExecutionStart,
+            ExtensionEvent::ToolCall(_) => ExtensionEventKind::ToolCall,
+            ExtensionEvent::ToolExecutionUpdate(_) => ExtensionEventKind::ToolExecutionUpdate,
+            ExtensionEvent::ToolResult(_) => ExtensionEventKind::ToolResult,
+            ExtensionEvent::ToolExecutionEnd => ExtensionEventKind::ToolExecutionEnd,
+            ExtensionEvent::TurnEnd { .. } => ExtensionEventKind::TurnEnd,
+            ExtensionEvent::AgentEnd => ExtensionEventKind::AgentEnd,
+            ExtensionEvent::AgentSettled => ExtensionEventKind::AgentSettled,
+            ExtensionEvent::SessionBeforeSwitch => ExtensionEventKind::SessionBeforeSwitch,
+            ExtensionEvent::SessionBeforeFork => ExtensionEventKind::SessionBeforeFork,
+            ExtensionEvent::SessionShutdown => ExtensionEventKind::SessionShutdown,
+            ExtensionEvent::SessionBeforeCompact => ExtensionEventKind::SessionBeforeCompact,
+            ExtensionEvent::SessionCompact => ExtensionEventKind::SessionCompact,
+        }
+    }
 }
 
 // === ExtensionContext =====================================================
@@ -468,6 +554,7 @@ mod tests {
                 ExtensionEvent::ToolResult(_) => "ToolResult",
                 ExtensionEvent::TurnEnd { .. } => "TurnEnd",
                 ExtensionEvent::SessionShutdown => "SessionShutdown",
+                _ => "other",
             };
             self.seen.lock().unwrap().push(label);
             Ok(())
@@ -623,5 +710,39 @@ mod tests {
         };
         // Debug renders without panic for every new type.
         let _ = format!("{start:?} {req:?} {resp:?} {upd:?}");
+    }
+
+    #[test]
+    fn f2a_event_kind_round_trips_every_variant() {
+        use ExtensionEventKind as K;
+        let cases: Vec<(ExtensionEvent, ExtensionEventKind)> = vec![
+            (ExtensionEvent::ProjectTrust { reason: TrustReason::Trusted }, K::ProjectTrust),
+            (ExtensionEvent::SessionStart { reason: SessionReason::Startup }, K::SessionStart),
+            (ExtensionEvent::ResourcesDiscover { reason: DiscoverReason::Startup }, K::ResourcesDiscover),
+            (ExtensionEvent::Input(InputEvent { text: "x".into() }), K::Input),
+            (ExtensionEvent::BeforeAgentStart(AgentStartEvent { system_prompt: None, inject_message: None }), K::BeforeAgentStart),
+            (ExtensionEvent::AgentStart, K::AgentStart),
+            (ExtensionEvent::TurnStart { turn_id: "t".into() }, K::TurnStart),
+            (ExtensionEvent::BeforeProviderHeaders, K::BeforeProviderHeaders),
+            (ExtensionEvent::BeforeProviderRequest(BeforeProviderRequestEvent { messages: json!({}) }), K::BeforeProviderRequest),
+            (ExtensionEvent::AfterProviderResponse(AfterProviderResponseEvent { response: json!({}) }), K::AfterProviderResponse),
+            (ExtensionEvent::ToolExecutionStart, K::ToolExecutionStart),
+            (ExtensionEvent::ToolCall(ToolCallEvent { id: "c".into(), name: "n".into(), input: json!({}) }), K::ToolCall),
+            (ExtensionEvent::ToolExecutionUpdate(ToolExecutionUpdateEvent { id: "c".into(), name: "n".into(), message: "m".into() }), K::ToolExecutionUpdate),
+            (ExtensionEvent::ToolResult(ToolResultEvent { id: "c".into(), name: "n".into(), result: Ok(ToolResult::success("ok")) }), K::ToolResult),
+            (ExtensionEvent::ToolExecutionEnd, K::ToolExecutionEnd),
+            (ExtensionEvent::TurnEnd { turn_id: "t".into(), reason: TurnEndReason::NoToolCalls }, K::TurnEnd),
+            (ExtensionEvent::AgentEnd, K::AgentEnd),
+            (ExtensionEvent::AgentSettled, K::AgentSettled),
+            (ExtensionEvent::SessionBeforeSwitch, K::SessionBeforeSwitch),
+            (ExtensionEvent::SessionBeforeFork, K::SessionBeforeFork),
+            (ExtensionEvent::SessionShutdown, K::SessionShutdown),
+            (ExtensionEvent::SessionBeforeCompact, K::SessionBeforeCompact),
+            (ExtensionEvent::SessionCompact, K::SessionCompact),
+        ];
+        assert_eq!(cases.len(), 23, "all variants covered");
+        for (ev, kind) in cases {
+            assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
+        }
     }
 }
