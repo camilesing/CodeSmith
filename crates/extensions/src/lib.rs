@@ -45,7 +45,7 @@ pub mod state;
 // Slice-1 runtime re-exports.
 pub use api::{RealExtensionApi, StubExtensionApi};
 pub use bus::EventBus;
-pub use discovery::{discover_static, ExtensionRegistration};
+pub use discovery::{apply_trust_gate, discover_dylib, discover_static, DiscoveredSource, ExtensionRegistration};
 pub use install_source::{ExtensionBuilder, ExtensionPlacer, ExtensionSource, SourceArtifact};
 pub use manifest::ExtensionManifest;
 pub use loader::load_dylib;
