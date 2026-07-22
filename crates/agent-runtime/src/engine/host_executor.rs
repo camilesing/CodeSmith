@@ -4900,7 +4900,7 @@ mod tests {
     use async_trait::async_trait;
     use codesmith_agent::extension::{
         Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
-        ExtensionMetadata, ExtensionMode, Handler,
+        ExtensionMetadata, ExtensionMode, Handler, HandlerOutcome,
     };
     use codesmith_extensions::{ExtensionRunner, HostExtensionContext};
 
@@ -15625,7 +15625,7 @@ mod tests {
             &self,
             event: &ExtensionEvent,
             _ctx: &dyn ExtensionContext,
-        ) -> Result<(), ExtensionError> {
+        ) -> Result<HandlerOutcome, ExtensionError> {
             self.seen.lock().unwrap().push(match event {
                 ExtensionEvent::TurnStart { .. } => "TurnStart",
                 ExtensionEvent::ToolCall(_) => "ToolCall",
@@ -15634,7 +15634,7 @@ mod tests {
                 ExtensionEvent::SessionShutdown => "SessionShutdown",
                 _ => "other",
             });
-            Ok(())
+            Ok(HandlerOutcome::Continue)
         }
     }
 

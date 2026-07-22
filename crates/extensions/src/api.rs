@@ -140,8 +140,8 @@ mod tests {
                 &self,
                 _: &ExtensionEvent,
                 _: &dyn ExtensionContext,
-            ) -> Result<(), ExtensionError> {
-                Ok(())
+            ) -> Result<HandlerOutcome, ExtensionError> {
+                Ok(HandlerOutcome::Continue)
             }
         }
         let err = stub.on(Arc::new(Nop)).unwrap_err();

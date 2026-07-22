@@ -127,11 +127,11 @@ impl Handler for TurnStartLogger {
         &self,
         event: &ExtensionEvent,
         _ctx: &dyn ExtensionContext,
-    ) -> Result<(), ExtensionError> {
+    ) -> Result<HandlerOutcome, ExtensionError> {
         if let ExtensionEvent::TurnStart { turn_id } = event {
             tracing::debug!("[scratchpad] TurnStart turn_id={turn_id}");
         }
-        Ok(())
+        Ok(HandlerOutcome::Continue)
     }
 }
 

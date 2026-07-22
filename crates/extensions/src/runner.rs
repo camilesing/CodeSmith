@@ -233,13 +233,13 @@ mod tests {
             &self,
             event: &ExtensionEvent,
             _ctx: &dyn ExtensionContext,
-        ) -> Result<(), ExtensionError> {
+        ) -> Result<HandlerOutcome, ExtensionError> {
             self.seen.lock().unwrap().push(match event {
                 ExtensionEvent::TurnStart { .. } => "TurnStart",
                 ExtensionEvent::SessionShutdown => "SessionShutdown",
                 _ => "other",
             });
-            Ok(())
+            Ok(HandlerOutcome::Continue)
         }
     }
 

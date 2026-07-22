@@ -457,18 +457,19 @@ pub enum HandlerOutcome {
 
 // === Handler (observer, slice 1) ==========================================
 
-/// Lifecycle event observer. Slice 1: observer-only — returns `Ok(())` or
-/// an [`ExtensionError`]; the runner fans out best-effort (per §8.3; one
-/// failing handler does not block others — slice 1 awaits directly, §F2
-/// hardens with proper `catch_unwind`). `HandlerOutcome`
-/// (cancel/transform/block) is §F2.
+/// Lifecycle event handler. §F2a: returns [`HandlerOutcome`]
+/// (cancel/transform/block), chained across handlers in
+/// [`ExtensionRunner::emit`](codesmith_extensions::ExtensionRunner::emit).
+/// §F1 was observer-only (`Result<(), _>`); §F2a upgrades to the outcome
+/// chain. `catch_unwind` isolation is in `emit` (§F2a T8), so a panicking
+/// handler cannot tear down the agent loop.
 #[async_trait]
 pub trait Handler: Send + Sync {
     async fn handle(
         &self,
         event: &ExtensionEvent,
         ctx: &dyn ExtensionContext,
-    ) -> Result<(), ExtensionError>;
+    ) -> Result<HandlerOutcome, ExtensionError>;
 }
 
 // === ExtensionApi (registration surface, two-phase) =======================
@@ -577,7 +578,7 @@ mod tests {
             &self,
             event: &ExtensionEvent,
             _ctx: &dyn ExtensionContext,
-        ) -> Result<(), ExtensionError> {
+        ) -> Result<HandlerOutcome, ExtensionError> {
             let label = match event {
                 ExtensionEvent::SessionStart { .. } => "SessionStart",
                 ExtensionEvent::TurnStart { .. } => "TurnStart",
@@ -588,7 +589,7 @@ mod tests {
                 _ => "other",
             };
             self.seen.lock().unwrap().push(label);
-            Ok(())
+            Ok(HandlerOutcome::Continue)
         }
     }
 
@@ -784,5 +785,15 @@ mod tests {
         let b = HandlerOutcome::Block { reason: "denied".into() };
         let t = HandlerOutcome::Transform(ExtensionEvent::SessionShutdown);
         let _ = format!("{c:?} {b:?} {t:?}");
+    }
+
+    #[test]
+    fn f2a_handler_handle_returns_continue_by_default() {
+        let h = RecordingHandler {
+            seen: Mutex::new(Vec::new()),
+        };
+        let ctx = TestContext::new();
+        let out = block_on(h.handle(&ExtensionEvent::SessionShutdown, &ctx)).unwrap();
+        assert!(matches!(out, HandlerOutcome::Continue));
     }
 }
