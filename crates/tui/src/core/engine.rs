@@ -361,7 +361,20 @@ fn build_extension_runtime(
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let state = crate::extension_state::ExtensionStateStore::load_default()
         .unwrap_or_default();
+    populate_extension_runtime(&runner, workspace, &state, cancel_token);
+    runner
+}
 
+/// Shared discover → reconcile → load → `bind_core` for both the initial build
+/// and live reload. Does NOT clear handlers or bump generation — a fresh runner
+/// needs neither, and [`reload_extension_runtime`] does both before calling
+/// this.
+fn populate_extension_runtime(
+    runner: &Arc<codesmith_extensions::ExtensionRunner>,
+    workspace: &std::path::Path,
+    state: &crate::extension_state::ExtensionStateStore,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
     // 1. Discover compiled-in extensions (inventory).
     let discovered = codesmith_extensions::discover_static();
 
@@ -409,8 +422,26 @@ fn build_extension_runtime(
         runner.generation_arc(),
     ));
     runner.bind_core(ctx);
+}
 
-    runner
+/// §F2b T7 — live reload: re-discover + re-load + re-bind on the **shared**
+/// runner `Arc` (every holder — `App.extension_runner` + the Engine's per-turn
+/// `HostAgentExecutor` clone — sees the update, since it's the same `Arc`).
+/// Clears handlers first so `bind_core`'s append-drain doesn't duplicate, +
+/// bumps generation so any previously-captured `ExtensionApi`/`ExtensionContext`
+/// reads stale (spec §7.3). Called by `/extension reload`
+/// (`extension_commands`). `cancel_token` is the ctx's cancel signal — §F2b
+/// passes a fresh token (no handler reads it yet); sharing the engine's token
+/// is a §F2c enhancement.
+pub fn reload_extension_runtime(
+    runner: &Arc<codesmith_extensions::ExtensionRunner>,
+    workspace: &std::path::Path,
+    state: &crate::extension_state::ExtensionStateStore,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
+    runner.clear_handlers();
+    runner.invalidate();
+    populate_extension_runtime(runner, workspace, state, cancel_token);
 }
 
 /// Assemble an [`Engine`] from TUI-coupled construction state.

@@ -4152,6 +4152,68 @@ async fn f2b_engine_emits_session_start_settled_shutdown() {
     );
 }
 
+// === §F2b T7 — live reload ==================================================
+//
+// Proves `/extension reload` (`reload_extension_runtime`) re-discovers +
+// re-loads + re-binds on the SHARED runner `Arc`: a handler bound before reload
+// stops observing after (cleared, not duplicated) + generation bumps so stale
+// captured contexts reject. Reuses the §F2b T5 `EngineLifecycleRecExt`
+// (records `SessionShutdown`) as the observer.
+
+#[tokio::test]
+async fn f2b_extension_reload_clears_and_rebinds_live() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    assert_eq!(runner.generation(), 0, "fresh runner starts at generation 0");
+
+    // Load a recording ext + bind_core so its handler is live.
+    let seen: Arc<std::sync::Mutex<Vec<&'static str>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    runner
+        .load(&EngineLifecycleRecExt { seen: seen.clone() })
+        .await
+        .expect("load rec ext");
+    runner.bind_core(Arc::new(codesmith_extensions::HostExtensionContext::new(
+        workspace.clone(),
+        codesmith_agent::extension::ExtensionMode::Tui,
+        Arc::new(std::sync::Mutex::new(true)),
+        tokio_util::sync::CancellationToken::new(),
+        runner.generation_arc(),
+    )));
+
+    // The handler observes `SessionShutdown` before reload.
+    let _ = runner
+        .emit(codesmith_agent::extension::ExtensionEvent::SessionShutdown)
+        .await;
+    assert_eq!(*seen.lock().unwrap(), vec!["SessionShutdown"]);
+
+    // Reload: clear → invalidate → re-discover (empty) → re-bind. The handler
+    // is cleared (it wasn't discovered via `discover_static`, so it isn't
+    // re-bound); generation bumps.
+    let state = crate::extension_state::ExtensionStateStore::load_default()
+        .unwrap_or_default();
+    super::reload_extension_runtime(
+        &runner,
+        &workspace,
+        &state,
+        tokio_util::sync::CancellationToken::new(),
+    );
+    assert_eq!(runner.generation(), 1, "reload must bump generation");
+
+    // Post-reload emit does NOT reach the cleared handler (no duplication).
+    let _ = runner
+        .emit(codesmith_agent::extension::ExtensionEvent::SessionShutdown)
+        .await;
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec!["SessionShutdown"],
+        "reload must clear the previously-bound handler (no duplication)"
+    );
+}
+
 // === Test 3: Capacity controller decision ====================================
 //
 // Verify that the capacity controller decides on TargetedContextRefresh

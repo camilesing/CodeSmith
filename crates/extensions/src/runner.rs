@@ -136,6 +136,19 @@ impl ExtensionRunner {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
+    /// Clear all bound handlers (§F2b T7 live reload). Called by
+    /// [`reload_extension_runtime`](crate::reload_extension_runtime) BEFORE
+    /// re-discovery so re-binding doesn't duplicate handlers — `bind_core`'s
+    /// drain appends to `handlers`, it doesn't replace. A runtime lifecycle
+    /// method; does NOT change the §F2a contract (`HandlerOutcome`/`EmitOutcome`
+    /// /`on_variant`/`catch_unwind` stay stable).
+    pub fn clear_handlers(&self) {
+        self.handlers
+            .lock()
+            .expect("handlers lock poisoned")
+            .clear();
+    }
+
     /// Load + configure one extension against a **stub** api. Registrations
     /// queue into `pending_*`. Called by `build_extension_runtime` (Task 9)
     /// for each discovered extension, BEFORE `bind_core`.

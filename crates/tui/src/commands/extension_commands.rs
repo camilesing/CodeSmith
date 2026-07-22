@@ -124,9 +124,21 @@ fn reload(app: &mut App) -> CommandResult {
     let Some(runner) = app.extension_runner.clone() else {
         return CommandResult::error("Extension runner not bound.");
     };
-    runner.invalidate();
+    let gen_before = runner.generation();
+    // §F2b T7 — live reload on the SHARED runner Arc: clear → invalidate →
+    // re-discover → re-load → re-bind. The Engine's per-turn
+    // `HostAgentExecutor` holds the same Arc, so the next turn sees the new
+    // handlers without an engine rebuild. `cancel_token` is fresh (no §F2b
+    // handler reads the ctx signal yet; sharing the engine's token is §F2c).
+    crate::core::engine::reload_extension_runtime(
+        &runner,
+        &app.workspace,
+        &app.extension_state,
+        tokio_util::sync::CancellationToken::new(),
+    );
     CommandResult::message(format!(
-        "Extension runner invalidated (generation now {}). Re-discovery + re-load of compiled-in extensions happens on next engine build (§F2 wires live reload).",
+        "Extension runner reloaded (generation {} → {}). Re-discovered + re-loaded compiled-in extensions on the shared runner (live for the next turn).",
+        gen_before,
         runner.generation()
     ))
 }
