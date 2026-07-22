@@ -3732,7 +3732,7 @@ impl HostAgentExecutor {
             }],
         });
         if let Some(runner) = &extension {
-            runner
+            let _ = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::TurnStart {
                     turn_id: turn_id.clone(),
                 })
@@ -3780,7 +3780,7 @@ impl HostAgentExecutor {
                 self.emit_status("Request cancelled".to_string()).await;
                 callback.on_complete(&StopReason::Interrupted).await;
                 if let Some(runner) = &extension {
-                    runner
+                    let _ = runner
                         .emit(codesmith_agent::extension::ExtensionEvent::TurnEnd {
                             turn_id: turn_id.clone(),
                             reason: codesmith_agent::extension::TurnEndReason::Interrupted,
@@ -4264,7 +4264,7 @@ impl HostAgentExecutor {
                 }
                 callback.on_complete(&StopReason::NoToolCalls).await;
                 if let Some(runner) = &extension {
-                    runner
+                    let _ = runner
                         .emit(codesmith_agent::extension::ExtensionEvent::TurnEnd {
                             turn_id: turn_id.clone(),
                             reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
@@ -4381,12 +4381,16 @@ impl HostAgentExecutor {
                         // `on_tool_start` in index order before dispatch (LIFO
                         // push — `CallbackBridge` stashes each on its pending
                         // stack).
+                        // §F2b T1 — honor `Block` at `ToolCall` (parallel arm):
+                        // record per-plan block reasons here, then skip dispatch
+                        // for those indices (mirrors the loop-guard blocked path).
+                        let mut ext_blocks: HashMap<usize, String> = HashMap::new();
                         for plan in &batch_plans {
                             callback
                                 .on_tool_start(&plan.id, &plan.name, &plan.input)
                                 .await;
                             if let Some(runner) = &extension {
-                                runner
+                                let out = runner
                                     .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
                                         codesmith_agent::extension::ToolCallEvent {
                                             id: plan.id.clone(),
@@ -4395,6 +4399,12 @@ impl HostAgentExecutor {
                                         },
                                     ))
                                     .await;
+                                if let codesmith_agent::extension::HandlerOutcome::Block {
+                                    reason,
+                                } = out.outcome
+                                {
+                                    ext_blocks.insert(plan.index, reason);
+                                }
                             }
                         }
                         let mut futs: FuturesUnordered<
@@ -4406,17 +4416,28 @@ impl HostAgentExecutor {
                                 .expect("parallel-safe plan has a registered read-only tool");
                             let early = early_for_plan[plan.index].take();
                             let guard = plan.guard_result.clone();
+                            // §F2b T1 — the per-plan extension Block reason
+                            // (if a handler blocked this `ToolCall`), cloned
+                            // into the `'static` future.
+                            let ext_block_reason = ext_blocks.get(&plan.index).cloned();
                             let id = plan.id.clone();
                             let name = plan.name.clone();
                             let input = plan.input.clone();
                             let index = plan.index;
                             futs.push(Box::pin(async move {
-                                let blocked = guard.is_some();
+                                let blocked = guard.is_some() || ext_block_reason.is_some();
                                 let result = if let Some(g) = guard {
                                     // Loop-guard blocked this call — don't run
                                     // the tool (the speculative task was already
                                     // aborted in planning).
                                     Ok(g)
+                                } else if let Some(reason) = ext_block_reason {
+                                    // §F2b T1 — an extension blocked this
+                                    // `ToolCall`; skip dispatch and feed back a
+                                    // blocked (failed) result (an intervention,
+                                    // not an execution failure — does not count
+                                    // toward the error-escalation halt).
+                                    Ok(ToolResult::error(reason))
                                 } else {
                                     // Early-tool-start reuse: await the
                                     // speculatively-started task if the model
@@ -4466,24 +4487,45 @@ impl HostAgentExecutor {
                             outcomes[index] = Some(outcome);
                         }
                         // `on_tool_end` in reverse index order (LIFO pop).
+                        // §F2b T1 — honor `Transform` at `ToolResult`: emit
+                        // BEFORE `on_tool_end` so the callback + downstream
+                        // transcript see the (possibly transformed) result, and
+                        // write the final result back into `outcomes` so Phase-4
+                        // pushes the transformed (not original) `ToolResult`.
                         for plan in batch_plans.iter().rev() {
-                            let outcome = outcomes[plan.index]
+                            let original_result = outcomes[plan.index]
                                 .as_ref()
-                                .expect("outcome populated by the FuturesUnordered drain");
-                            callback
-                                .on_tool_end(&plan.name, &outcome.result)
-                                .await;
-                            if let Some(runner) = &extension {
-                                runner
+                                .expect("outcome populated by the FuturesUnordered drain")
+                                .result
+                                .clone();
+                            let final_result = if let Some(runner) = &extension {
+                                let out = runner
                                     .emit(codesmith_agent::extension::ExtensionEvent::ToolResult(
                                         codesmith_agent::extension::ToolResultEvent {
                                             id: plan.id.clone(),
                                             name: plan.name.clone(),
-                                            result: outcome.result.clone(),
+                                            result: original_result.clone(),
                                         },
                                     ))
                                     .await;
-                            }
+                                match out.event {
+                                    codesmith_agent::extension::ExtensionEvent::ToolResult(tr) => {
+                                        tr.result
+                                    }
+                                    // Out-of-place transform (the terminal
+                                    // event is not `ToolResult`) → Continue.
+                                    _ => original_result,
+                                }
+                            } else {
+                                original_result
+                            };
+                            callback
+                                .on_tool_end(&plan.name, &final_result)
+                                .await;
+                            outcomes[plan.index]
+                                .as_mut()
+                                .expect("outcome populated by the FuturesUnordered drain")
+                                .result = final_result;
                         }
                     }
                     ToolExecutionBatch::Serial(plan) => {
@@ -4491,17 +4533,32 @@ impl HostAgentExecutor {
                         callback
                             .on_tool_start(&plan.id, &plan.name, &plan.input)
                             .await;
-                        if let Some(runner) = &extension {
-                            runner
-                                .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
-                                    codesmith_agent::extension::ToolCallEvent {
-                                        id: plan.id.clone(),
-                                        name: plan.name.clone(),
-                                        input: plan.input.clone(),
-                                    },
-                                ))
-                                .await;
-                        }
+                        // §F2b T1 — honor `Block` at `ToolCall` (serial arm):
+                        // capture the block reason, then skip approval/`tool.run`
+                        // below (mirrors the loop-guard blocked path — a failed
+                        // result, not an execution error).
+                        let ext_blocked_reason: Option<String> =
+                            if let Some(runner) = &extension {
+                                let out = runner
+                                    .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
+                                        codesmith_agent::extension::ToolCallEvent {
+                                            id: plan.id.clone(),
+                                            name: plan.name.clone(),
+                                            input: plan.input.clone(),
+                                        },
+                                    ))
+                                    .await;
+                                if let codesmith_agent::extension::HandlerOutcome::Block {
+                                    reason,
+                                } = out.outcome
+                                {
+                                    Some(reason)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
                         // approval gate: a tool that requires approval is gated
                         // behind the decision channel; denied ⇒ the tool never
                         // runs and a `permission_denied` error is fed back so the
@@ -4510,6 +4567,10 @@ impl HostAgentExecutor {
                         // early-start reuse.
                         let (result, blocked) = if let Some(guard) = &plan.guard_result {
                             (Ok(guard.clone()), true)
+                        } else if let Some(reason) = ext_blocked_reason {
+                            // §F2b T1 — extension blocked this `ToolCall`; skip
+                            // approval/`tool.run` and feed back a blocked result.
+                            (Ok(ToolResult::error(reason)), true)
                         } else {
                             match &tool_for_plan[idx] {
                                 Some(tool) => {
@@ -4585,9 +4646,13 @@ impl HostAgentExecutor {
                                 }
                             }
                         };
-                        callback.on_tool_end(&plan.name, &result).await;
-                        if let Some(runner) = &extension {
-                            runner
+                        // §F2b T1 — honor `Transform` at `ToolResult`: emit
+                        // BEFORE `on_tool_end` so the callback + downstream
+                        // transcript see the (possibly transformed) result;
+                        // write the final result into `outcomes` so Phase-4
+                        // pushes the transformed `ToolResult`.
+                        let final_result = if let Some(runner) = &extension {
+                            let out = runner
                                 .emit(codesmith_agent::extension::ExtensionEvent::ToolResult(
                                     codesmith_agent::extension::ToolResultEvent {
                                         id: plan.id.clone(),
@@ -4596,13 +4661,23 @@ impl HostAgentExecutor {
                                     },
                                 ))
                                 .await;
-                        }
+                            match out.event {
+                                codesmith_agent::extension::ExtensionEvent::ToolResult(tr) => {
+                                    tr.result
+                                }
+                                // Out-of-place transform → Continue.
+                                _ => result,
+                            }
+                        } else {
+                            result
+                        };
+                        callback.on_tool_end(&plan.name, &final_result).await;
                         outcomes[idx] = Some(DispatchedTool {
                             index: idx,
                             id: plan.id.clone(),
                             name: plan.name.clone(),
                             input: plan.input.clone(),
-                            result,
+                            result: final_result,
                             blocked,
                         });
                     }
@@ -15694,6 +15769,222 @@ mod tests {
             *seen.lock().unwrap(),
             vec!["TurnStart", "ToolCall", "ToolResult", "TurnEnd"],
             "bound runner must observe the full minimal lifecycle"
+        );
+    }
+
+    // === §F2b T1 — honor EmitOutcome at the ToolCall/ToolResult seams ========
+    //
+    // Proves the host honors `Block` at `ToolCall` (skips dispatch, surfaces a
+    // blocked result) and `Transform` at `ToolResult` (rewrites the result the
+    // downstream transcript + `on_tool_end` see). Scaffolding mirrors the §F1
+    // minimal-run e2e verbatim (`extension_runner_bound_emits_lifecycle_…`).
+
+    /// Handler that returns `Block` on `ToolCall` (else `Continue`). Proves the
+    /// host skips tool dispatch when an extension blocks the call.
+    struct BlockToolCallHandler;
+
+    #[async_trait]
+    impl Handler for BlockToolCallHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if matches!(event, ExtensionEvent::ToolCall(_)) {
+                return Ok(HandlerOutcome::Block {
+                    reason: "blocked by f2b test".to_string(),
+                });
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`BlockToolCallHandler`] on all events.
+    struct BlockToolCallExt;
+
+    #[async_trait]
+    impl Extension for BlockToolCallExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("block-toolcall");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(BlockToolCallHandler))?;
+            Ok(())
+        }
+    }
+
+    /// Handler that returns `Transform(ToolResult{ Ok(success("transformed")) })`
+    /// on `ToolResult` (else `Continue`). Proves the host applies the transformed
+    /// result to `on_tool_end` + the downstream transcript.
+    struct TransformToolResultHandler;
+
+    #[async_trait]
+    impl Handler for TransformToolResultHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::ToolResult(tr) = event {
+                let mut tr = tr.clone();
+                tr.result = Ok(ToolResult::success("transformed"));
+                return Ok(HandlerOutcome::Transform(ExtensionEvent::ToolResult(tr)));
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Extension that registers [`TransformToolResultHandler`] on all events.
+    struct TransformToolResultExt;
+
+    #[async_trait]
+    impl Extension for TransformToolResultExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("transform-toolresult");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(TransformToolResultHandler))?;
+            Ok(())
+        }
+    }
+
+    /// Extract the last `ToolResult` block's `(content, is_error)` from a
+    /// transcript — the block the host pushed in Phase-4 after a tool round.
+    fn last_tool_result_block(history: &SessionChatHistory) -> (String, Option<bool>) {
+        history
+            .messages()
+            .iter()
+            .rev()
+            .find_map(|m| {
+                m.content.iter().rev().find_map(|b| match b {
+                    ContentBlock::ToolResult {
+                        content, is_error, ..
+                    } => Some((content.clone(), *is_error)),
+                    _ => None,
+                })
+            })
+            .expect("a ToolResult block was pushed to history")
+    }
+
+    /// §F2b T1 — a handler returning `Block` on `ToolCall` must short-circuit
+    /// dispatch: the echo tool never runs, and the fed-back `ToolResult` is the
+    /// extension's blocked (failed) result, not echo's success.
+    #[tokio::test]
+    async fn f2b_block_at_toolcall_skips_dispatch() {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&BlockToolCallExt).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        // Mock client: call 1 = text + tool_use(echo), call 2 = text → NoToolCalls.
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx),
+            Some(Arc::new(RecordingHookHost::default())),
+            test_template(),
+        ));
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Block honored → the tool never ran; the fed-back ToolResult is the
+        // extension's blocked (failed) result, not echo's "world" success.
+        let (content, is_error) = last_tool_result_block(&history);
+        assert!(
+            is_error.unwrap_or(false),
+            "blocked tool result must be an error: is_error={is_error:?}"
+        );
+        assert!(
+            content.contains("blocked"),
+            "blocked tool result must surface the block reason: {content}"
+        );
+    }
+
+    /// §F2b T1 — a handler returning `Transform(ToolResult{ Ok(success) })` on
+    /// `ToolResult` must rewrite the result the downstream transcript sees: the
+    /// pushed `ToolResult` block carries the transformed content, not echo's
+    /// original "world".
+    #[tokio::test]
+    async fn f2b_transform_at_toolresult_rewrites_on_tool_end() {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&TransformToolResultExt).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Tui,
+            Arc::new(Mutex::new(true)),
+            CancellationToken::new(),
+            runner.generation_arc(),
+        )));
+
+        // Mock client: call 1 = text + tool_use(echo), call 2 = text → NoToolCalls.
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx),
+            Some(Arc::new(RecordingHookHost::default())),
+            test_template(),
+        ));
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None, None, None, None, None, None, None, None, None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Transform honored → the pushed ToolResult block carries the
+        // transformed content "transformed", not echo's original "world".
+        let (content, is_error) = last_tool_result_block(&history);
+        assert_eq!(content, "transformed");
+        assert!(
+            !is_error.unwrap_or(true),
+            "transformed tool result must be a success: is_error={is_error:?}"
         );
     }
 }

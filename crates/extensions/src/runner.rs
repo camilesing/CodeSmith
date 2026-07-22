@@ -56,10 +56,11 @@ pub(crate) struct RegisteredHandler {
 /// `event`'s actionable field (§F2b wires the host to honor these; §F2a
 /// returns them + proves the chain in isolation).
 ///
-/// NOT `#[must_use]` in §F2a so the mechanical 7-site host_executor update is
-/// just dropping the `&`; §F2b may add `#[must_use]` to force inspection at
-/// transform/block seams.
+/// `#[must_use]` (§F2b) so the host can't silently drop an outcome at a
+/// transform/block seam — observe-only sites bind `let _ =`, actionable seams
+/// bind `let out =` and inspect `out.outcome` / `out.event`.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct EmitOutcome {
     /// The event after all handlers (possibly transformed by `Transform`).
     pub event: ExtensionEvent,
@@ -357,10 +358,10 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         runner.load(&RecExt { seen: seen.clone() }).await.unwrap();
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
-        runner
+        let _ = runner
             .emit(ExtensionEvent::TurnStart { turn_id: "t1".into() })
             .await;
-        runner.emit(ExtensionEvent::SessionShutdown).await;
+        let _ = runner.emit(ExtensionEvent::SessionShutdown).await;
         let s = seen.lock().unwrap();
         assert_eq!(*s, vec!["TurnStart", "SessionShutdown"]);
     }
@@ -371,7 +372,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         runner.load(&RecExt { seen: seen.clone() }).await.unwrap();
         // No bind_core — emit must not panic + must not dispatch.
-        runner.emit(ExtensionEvent::SessionShutdown).await;
+        let _ = runner.emit(ExtensionEvent::SessionShutdown).await;
         assert!(seen.lock().unwrap().is_empty());
     }
 
@@ -567,7 +568,7 @@ mod tests {
         runner.load(&VariantExt { seen: seen.clone() }).await.unwrap();
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
         // ToolCall fires the per-variant handler (RecHandler pushes "other").
-        runner
+        let _ = runner
             .emit(ExtensionEvent::ToolCall(ToolCallEvent {
                 id: "c1".into(),
                 name: "echo".into(),
@@ -575,7 +576,7 @@ mod tests {
             }))
             .await;
         // TurnStart does NOT fire the per-variant handler.
-        runner
+        let _ = runner
             .emit(ExtensionEvent::TurnStart { turn_id: "t1".into() })
             .await;
         let s = seen.lock().unwrap();
