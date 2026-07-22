@@ -390,6 +390,29 @@ fn populate_extension_runtime(
         .filter(|reg| state.is_enabled(reg.metadata.id))
         .collect();
 
+    // §F5b — discover dylibs (global + project; configured paths → §F5c
+    // when settings.extensions lands). Global dir = ~/.codesmith/extensions
+    // (effective_home_dir re-exported via crate::config); project dir =
+    // <workspace>/.codesmith/extensions. apply_trust_gate drops project-local
+    // (!global) sources when the workspace is not trusted (Model A — consume
+    // FirstLoad's persisted-trust flip via is_workspace_trusted). Discovery is
+    // trust-agnostic; the gate is the host's concern.
+    let global_dir = crate::config::effective_home_dir()
+        .map(|home| home.join(".codesmith").join("extensions"));
+    let project_dir = workspace.join(".codesmith").join("extensions");
+    let project_trusted = crate::config::is_workspace_trusted(workspace);
+    let global_roots: Vec<std::path::PathBuf> = global_dir.into_iter().collect();
+    let project_roots = vec![project_dir];
+    let discovered_dylib =
+        codesmith_extensions::discover_dylib(&global_roots, &project_roots);
+    let enabled_dylib: Vec<_> = codesmith_extensions::apply_trust_gate(
+        discovered_dylib,
+        !project_trusted,
+    )
+    .into_iter()
+    .filter(|d| state.is_enabled(&d.id))
+    .collect();
+
     // 3. Load + configure each against the stub api (best-effort; §F2 logs).
     //    The async `Extension::configure` is driven on a fresh single-thread
     //    runtime spawned on a plain OS thread: creating + dropping a tokio
@@ -401,7 +424,7 @@ fn populate_extension_runtime(
     //    spawned thread owns the runtime's lifetime cleanly; `std::thread::scope`
     //    blocks until it completes. Skipped entirely when nothing's enabled
     //    (slice 1 pre-T10: no compiled-in extensions → tests stay fast + panic-free).
-    if !enabled.is_empty() {
+    if !enabled.is_empty() || !enabled_dylib.is_empty() {
         let runner_for_thread = runner.clone();
         std::thread::scope(|s| {
             s.spawn(move || {
@@ -412,6 +435,20 @@ fn populate_extension_runtime(
                 for reg in enabled {
                     let ext = (reg.factory)();
                     let _ = load_rt.block_on(runner_for_thread.load(&*ext));
+                }
+                // §F5b — load each discovered dylib on the same load
+                // runtime. Best-effort: a failing dylib is warned + skipped
+                // (§8.3 isolation).
+                for d in enabled_dylib {
+                    if let Err(e) =
+                        load_rt.block_on(runner_for_thread.load_dylib(&d.dylib_path))
+                    {
+                        tracing::warn!(
+                            target: "codesmith_extensions::loader",
+                            "skip dylib {}: {e}",
+                            d.dylib_path.display()
+                        );
+                    }
                 }
             });
         });
