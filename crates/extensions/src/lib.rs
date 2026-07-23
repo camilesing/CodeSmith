@@ -36,6 +36,7 @@ pub mod api;
 pub mod bus;
 pub mod discovery;
 pub mod install_source;
+pub mod installer;
 pub mod manifest;
 pub mod loader;
 pub mod runner;
@@ -46,7 +47,11 @@ pub mod state;
 pub use api::{RealExtensionApi, StubExtensionApi};
 pub use bus::EventBus;
 pub use discovery::{apply_trust_gate, discover_dylib, discover_static, DiscoveredSource, ExtensionRegistration};
-pub use install_source::{ExtensionBuilder, ExtensionPlacer, ExtensionSource, SourceArtifact};
+pub use install_source::{
+    CargoBuilder, ExtensionBuilder, ExtensionPlacer, ExtensionSource, GitSource, InstallScope,
+    LocalPathSource, Placer, SourceArtifact, SourceKind, SourceSpec, UnimplementedSource,
+};
+pub use installer::{InstallReport, Installer, UninstallReport};
 pub use manifest::ExtensionManifest;
 pub use loader::load_dylib;
 pub use runner::{EmitOutcome, ExtensionRunner};
