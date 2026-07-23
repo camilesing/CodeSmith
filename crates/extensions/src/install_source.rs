@@ -5,11 +5,13 @@
 //! and so the ROADMAP §F5 entry has a stable contract to point at.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use codesmith_agent::extension::ExtensionError;
 
 /// A fetched install artifact (path + provenance string for
 /// `ExtensionStateStore.installed`).
+#[derive(Debug)]
 pub struct SourceArtifact {
     pub path: PathBuf,
     pub provenance: String,
@@ -123,6 +125,103 @@ impl SourceSpec {
     }
 }
 
+/// Git install source (§F5c must-have). `git clone --depth 1 [--branch <ref>]`.
+pub struct GitSource {
+    pub url: String,
+    pub ref_: Option<String>,
+}
+
+impl GitSource {
+    pub fn new(url: impl Into<String>, ref_: Option<String>) -> Self {
+        Self {
+            url: url.into(),
+            ref_,
+        }
+    }
+
+    /// Canonical provenance string (`git:<url>` or `git:<url>@<ref>`).
+    pub fn provenance(&self) -> String {
+        match &self.ref_ {
+            Some(r) => format!("git:{}@{}", self.url, r),
+            None => format!("git:{}", self.url),
+        }
+    }
+}
+
+impl ExtensionSource for GitSource {
+    fn fetch(&self, dest: &Path) -> Result<SourceArtifact, ExtensionError> {
+        let mut cmd = Command::new("git");
+        cmd.arg("clone").arg("--depth").arg("1");
+        if let Some(r) = &self.ref_ {
+            cmd.arg("--branch").arg(r);
+        }
+        cmd.arg(&self.url).arg(dest);
+        let out = cmd
+            .output()
+            .map_err(|e| ExtensionError::Install(format!("spawn git (on PATH?): {e}")))?;
+        if !out.status.success() {
+            return Err(ExtensionError::Install(format!(
+                "git clone {} failed: {}",
+                self.url,
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        Ok(SourceArtifact {
+            path: dest.to_path_buf(),
+            provenance: self.provenance(),
+        })
+    }
+}
+
+/// Local-path install source (§F5c must-have). Recursively copies the dir.
+pub struct LocalPathSource {
+    pub dir: PathBuf,
+}
+
+impl LocalPathSource {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+}
+
+impl ExtensionSource for LocalPathSource {
+    fn fetch(&self, dest: &Path) -> Result<SourceArtifact, ExtensionError> {
+        if !self.dir.is_dir() {
+            return Err(ExtensionError::Install(format!(
+                "path source not a dir: {}",
+                self.dir.display()
+            )));
+        }
+        copy_dir_recursive(&self.dir, dest)?;
+        let canon = std::fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        Ok(SourceArtifact {
+            path: dest.to_path_buf(),
+            provenance: format!("path:{}", canon.display()),
+        })
+    }
+}
+
+/// Recursive dir copy (§F5c `LocalPathSource::fetch`). std has no recursive copy.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), ExtensionError> {
+    std::fs::create_dir_all(dst)
+        .map_err(|e| ExtensionError::Install(format!("mkdir {}: {e}", dst.display())))?;
+    for entry in std::fs::read_dir(src)
+        .map_err(|e| ExtensionError::Install(format!("read_dir {}: {e}", src.display())))?
+    {
+        let entry =
+            entry.map_err(|e| ExtensionError::Install(format!("dir entry: {e}")))?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)
+                .map_err(|e| ExtensionError::Install(format!("copy {}: {e}", from.display())))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod source_spec_tests {
     use super::*;
@@ -193,5 +292,75 @@ mod source_spec_tests {
     fn parse_missing_spec_token_is_install_error() {
         let r = SourceSpec::parse("--global");
         assert!(matches!(r, Err(ExtensionError::Install(_))), "got {r:?}");
+    }
+}
+
+#[cfg(test)]
+mod source_impl_tests {
+    use super::*;
+
+    #[test]
+    fn git_source_provenance_with_and_without_ref() {
+        let with = GitSource::new("github.com/foo/bar", Some("v1".into()));
+        assert_eq!(with.provenance(), "git:github.com/foo/bar@v1");
+        let without = GitSource::new("github.com/foo/bar", None);
+        assert_eq!(without.provenance(), "git:github.com/foo/bar");
+    }
+
+    #[test]
+    fn git_source_fetch_invalid_url_is_install_error() {
+        // Best-effort: git clone of an invalid host fails (no network also fails).
+        // Either way → ExtensionError::Install. Skipped if `git` not on PATH.
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("git not on PATH; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let s = GitSource::new("https://install-test-invalid-host.invalid/none.git", None);
+        let r = s.fetch(dir.path());
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "got {r:?}");
+    }
+
+    #[test]
+    fn local_path_source_copies_dir_and_provenance() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(
+            src.path().join("Cargo.toml"),
+            b"[package]\nname=\"x\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.path().join("src")).unwrap();
+        std::fs::write(src.path().join("src/lib.rs"), b"").unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let s = LocalPathSource::new(src.path().to_path_buf());
+        let art = s.fetch(dst.path()).unwrap();
+        assert!(dst.path().join("Cargo.toml").exists(), "Cargo.toml copied");
+        assert!(dst.path().join("src/lib.rs").exists(), "src/lib.rs copied");
+        assert!(art.provenance.starts_with("path:"), "provenance: {}", art.provenance);
+        assert_eq!(art.path, dst.path());
+    }
+
+    #[test]
+    fn local_path_source_missing_dir_is_install_error() {
+        let s = LocalPathSource::new("/nonexistent/ext/dir");
+        let dst = tempfile::tempdir().unwrap();
+        let r = s.fetch(dst.path());
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "got {r:?}");
+    }
+
+    #[test]
+    fn local_path_source_recursive_copy() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("a/b")).unwrap();
+        std::fs::write(src.path().join("a/b/c.txt"), b"deep").unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let s = LocalPathSource::new(src.path().to_path_buf());
+        s.fetch(dst.path()).unwrap();
+        assert!(dst.path().join("a/b/c.txt").is_file());
+        assert_eq!(std::fs::read(dst.path().join("a/b/c.txt")).unwrap(), b"deep");
     }
 }
