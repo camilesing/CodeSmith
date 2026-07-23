@@ -29,10 +29,12 @@ extension tools as normal `ToolSpec`s.
 > LOAD side (`libloading` + `extension.toml` manifests + three-shape
 > discovery + project-local trust gate [Model A — consume
 > `is_workspace_trusted(workspace)`/`FirstLoad`] + reload wiring) landed in
-> §F5b; the INSTALL side (install-source impls + `CargoBuilder`/`Placer` +
-> `/extension install`/`uninstall` real impl + `installed[]` provenance write)
-> remains §F5c — this slice loads dylibs from disk, it does not
-> fetch/build/place them. (§F5 slice 1 emitted the `FirstLoad` *event* only —
+> §F5b; the INSTALL side (Git/LocalPath sources + `CargoBuilder` + `Placer`
+> + `Installer` orchestrator + `/extension install`/`uninstall` real impl +
+> `installed[]` provenance write) landed in §F5c — `crate:`/`prebuilt:` stub
+> to "§F5c-later" and true unload (`clear_tools`/`Library` drop) stay deferred
+> (§F5b Q1 bounded retention keeps tools/commands alive until process
+> restart). (§F5 slice 1 emitted the `FirstLoad` *event* only —
 > no dylib machinery.) `ToolExecutionUpdate` (needs a streaming `Tool` contract — `Tool::run`
 > is one-shot), `ResourcesDiscover`, and `SessionBeforeFork` stay deferred
 > with corrected rationale (see the host-seam table). Hot-load is permanently
@@ -61,8 +63,8 @@ between user-defined commands and the static `match`.
 | `/extension disable <id>` | | ✅ working | Marks the extension disabled; same reload caveat. |
 | `/extension status` | | ✅ working | Reports the bound runner's generation + bound command/tool counts. |
 | `/extension reload` | | ✅ working (live reload) | Re-populates the **shared runner `Arc`**: `clear_handlers` → `invalidate` (bump generation) → `discover_static` → reconcile against state → `load` each → `bind_core` (fresh `HostExtensionContext`). Both `App.extension_runner` and the Engine's field update live (no `Arc` swap — they share the one the engine built). A handler bound before reload stops observing after (cleared, not duplicated); a newly-compiled-in extension is picked up on the next reload. |
-| `/extension install <source>` | | 🚧 stub "phase 2" | Returns an error pointing to §F5 (dylib loader). |
-| `/extension uninstall <id>` | | 🚧 stub "phase 2" | Returns an error pointing to §F5. |
+| `/extension install <source> [--global]` | | ✅ working (§F5c) | Fetches (`git:`/`path:`) → builds (`cargo build`) → places to `<root>/<id>/` + writes `extension.toml` + records `installed[]` provenance; `--global` opt-in (default project). `crate:`/`prebuilt:` return "§F5c-later". Warns if project + untrusted; `/extension reload` to load. |
+| `/extension uninstall <id>` | | ✅ working (§F5c) | Removes `<root>/<id>/` + clears `installed[]` provenance. ⚠ tools/commands remain bound until process restart (bounded retention, §F5b Q1); handlers clear on next `/extension reload`. |
 
 ## Discovery
 
@@ -279,11 +281,18 @@ dylib loader that *consumes* project-local trust. The dylib loader (`libloading`
 discovery trust gate (Model A — `apply_trust_gate` drops project-local
 (`global == false`) dylibs when `is_workspace_trusted(workspace)` is false; the
 `ProjectTrust { FirstLoad }` event flips that trust at onboarding accept) are
-§F5b (done) — but the loader only *loads* dylibs from disk; install
-(fetch/build/place) + `installed[]` provenance remain §F5c. A loaded dylib runs
-in-process with full host access — trust the source; containerize for
-untrusted sources. Slice 1's compiled-in extensions are trusted by construction
-(they ship in the binary).
+§F5b (done). §F5c (done) adds the INSTALL side: `/extension install` fetches
+(`git:`/`path:`) → `cargo build --release --locked` → `Placer` writes
+`<root>/<id>/<default_dylib_filename(id)>` → `extension.toml` → `installed[]`
+provenance. `cargo build` runs the source's `build.rs` — **arbitrary code
+execution, accepted per §8.1 (trust the source)**; containerize for untrusted
+sources. Install is trust-agnostic (it only *reads* trust to warn: a
+project-local install won't load until the workspace is trusted). A loaded
+dylib runs in-process with full host access — trust the source; containerize
+for untrusted sources. `crate:`/`prebuilt:` sources + true unload
+(`clear_tools`/`Library` drop) stay deferred (§F5b Q1 bounded retention keeps
+tools/commands alive until process restart). Slice 1's compiled-in extensions
+are trusted by construction (they ship in the binary).
 
 ## Troubleshooting
 

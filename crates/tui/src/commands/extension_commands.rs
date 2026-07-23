@@ -38,8 +38,8 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
         "disable" => disable(app, arg),
         "status" => status(app),
         "reload" => reload(app),
-        "install" => install_stub(arg),
-        "uninstall" => uninstall_stub(arg),
+        "install" => install(app, arg),
+        "uninstall" => uninstall(app, arg),
         _ => CommandResult::error(format!(
             "Unsupported /extension subcommand: {sub:?}. Try: list, info, enable, disable, status, reload"
         )),
@@ -198,16 +198,130 @@ fn reload(app: &mut App) -> CommandResult {
     ))
 }
 
-fn install_stub(arg: &str) -> CommandResult {
-    CommandResult::error(format!(
-        "/extension install {arg} requires the dylib loader (phase 2, §F5). Slice 1 supports compiled-in extensions only."
+/// Pre-App validation for `/extension install`: parse + crate/prebuilt guard
+/// (§F5c R4). Returns `Some(error)` for bad args / not-yet-implemented kinds;
+/// `None` to proceed with the `App`. No `App` access needed → unit-testable.
+fn install_precheck(arg: &str) -> Option<CommandResult> {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return Some(CommandResult::error(
+            "Usage: /extension install <kind>:<body>[@<ref>] [--global]  (kinds: git, path)",
+        ));
+    }
+    let spec = match codesmith_extensions::SourceSpec::parse(arg) {
+        Ok(s) => s,
+        Err(e) => return Some(CommandResult::error(format!("Invalid source spec: {e}"))),
+    };
+    if matches!(
+        spec.kind,
+        codesmith_extensions::SourceKind::CratesIo | codesmith_extensions::SourceKind::Prebuilt
+    ) {
+        return Some(CommandResult::error(format!(
+            "§F5c-later: {:?} source not yet implemented (this slice supports git/path only)",
+            spec.kind
+        )));
+    }
+    None
+}
+
+/// Extensions root for a scope (§F5c). Global =
+/// `~/.codesmith/extensions` (falls back to project if no home dir); Project
+/// = `<workspace>/.codesmith/extensions`.
+fn extensions_root_for(
+    scope: codesmith_extensions::InstallScope,
+    workspace: &std::path::Path,
+) -> std::path::PathBuf {
+    match scope {
+        codesmith_extensions::InstallScope::Global => crate::config::effective_home_dir()
+            .map(|h| h.join(".codesmith").join("extensions"))
+            .unwrap_or_else(|| workspace.join(".codesmith").join("extensions")),
+        codesmith_extensions::InstallScope::Project => {
+            workspace.join(".codesmith").join("extensions")
+        }
+    }
+}
+
+fn install(app: &mut App, arg: &str) -> CommandResult {
+    if let Some(err) = install_precheck(arg) {
+        return err;
+    }
+    // Precheck passed → spec is valid + git/path.
+    let spec = codesmith_extensions::SourceSpec::parse(arg).expect("precheck validated");
+    let root = extensions_root_for(spec.scope, &app.workspace);
+    let source: Box<dyn codesmith_extensions::ExtensionSource> = match spec.kind {
+        codesmith_extensions::SourceKind::Git => Box::new(
+            codesmith_extensions::GitSource::new(spec.body.clone(), spec.ref_.clone()),
+        ),
+        codesmith_extensions::SourceKind::Path => Box::new(
+            codesmith_extensions::LocalPathSource::new(spec.body.clone()),
+        ),
+        _ => unreachable!("install_precheck rejected crate/prebuilt"),
+    };
+    let build_target = match tempfile::tempdir() {
+        Ok(t) => t,
+        Err(e) => return CommandResult::error(format!("tempdir for build: {e}")),
+    };
+    let builder = codesmith_extensions::CargoBuilder::new(build_target.path().to_path_buf());
+    let installer =
+        codesmith_extensions::Installer::new(source.as_ref(), &builder, root.clone());
+    let report = match installer.install(&spec) {
+        Ok(r) => r,
+        Err(e) => return CommandResult::error(format!("install failed: {e}")),
+    };
+    // Record provenance (tui-side state mutator; R1).
+    if let Err(e) = app.extension_state.add_installed(&report.id, &report.provenance) {
+        return CommandResult::error(format!("installed but state write failed: {e}"));
+    }
+    // Trust-warn (R1: install is trust-agnostic; warn if project + untrusted).
+    let will_load = match spec.scope {
+        codesmith_extensions::InstallScope::Global => true,
+        codesmith_extensions::InstallScope::Project => {
+            crate::config::is_workspace_trusted(&app.workspace)
+        }
+    };
+    let trust_note = if will_load {
+        String::new()
+    } else {
+        "\n⚠ won't load until the workspace is trusted (accept the trust prompt or /trust, then /extension reload)."
+            .to_string()
+    };
+    CommandResult::message(format!(
+        "Installed extension '{}' (v{}) to {}.\nprovenance: {}\nRun /extension reload to load it.{}",
+        report.id,
+        report.version,
+        report.path.display(),
+        report.provenance,
+        trust_note,
     ))
 }
 
-fn uninstall_stub(arg: &str) -> CommandResult {
-    CommandResult::error(format!(
-        "/extension uninstall {arg} requires the dylib loader (phase 2, §F5)."
-    ))
+fn uninstall(app: &mut App, arg: &str) -> CommandResult {
+    let id = arg.trim();
+    if id.is_empty() {
+        return CommandResult::error("Usage: /extension uninstall <id>");
+    }
+    // Search both roots (state doesn't record scope; locate by convention).
+    let project_root = app.workspace.join(".codesmith").join("extensions");
+    let mut roots = vec![project_root];
+    if let Some(h) = crate::config::effective_home_dir() {
+        roots.push(h.join(".codesmith").join("extensions"));
+    }
+    let report = match codesmith_extensions::Installer::uninstall_files(id, &roots) {
+        Ok(r) => r,
+        Err(e) => return CommandResult::error(format!("uninstall failed: {e}")),
+    };
+    if let Err(e) = app.extension_state.remove_installed(id) {
+        return CommandResult::error(format!("files removed but state write failed: {e}"));
+    }
+    if report.removed {
+        CommandResult::message(format!(
+            "Uninstalled extension '{id}'.\n⚠ tools/commands remain bound until process restart (bounded retention, §F5b Q1); handlers clear on next /extension reload."
+        ))
+    } else {
+        CommandResult::message(format!(
+            "No installed extension '{id}' found on disk (state cleared)."
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -229,17 +343,37 @@ mod tests {
     }
 
     #[test]
-    fn install_stub_is_phase_2_message() {
-        let r = install_stub("git:foo/bar");
+    fn install_precheck_missing_arg_is_usage_error() {
+        let r = install_precheck("");
+        assert!(r.is_some());
+        let r = r.unwrap();
         assert!(r.is_error);
-        let msg = r.message.expect("error has a message");
-        assert!(msg.contains("phase 2"), "got: {msg}");
+        assert!(r.message.as_deref().unwrap().contains("Usage"));
     }
 
     #[test]
-    fn uninstall_stub_is_phase_2_message() {
-        let r = uninstall_stub("my-ext");
+    fn install_precheck_crate_kind_is_not_yet_implemented() {
+        let r = install_precheck("crate:my-ext");
+        assert!(r.is_some());
+        let r = r.unwrap();
         assert!(r.is_error);
-        assert!(r.message.unwrap().contains("phase 2"));
+        assert!(
+            r.message.as_deref().unwrap().contains("§F5c-later"),
+            "got: {:?}",
+            r.message
+        );
+    }
+
+    #[test]
+    fn install_precheck_prebuilt_kind_is_not_yet_implemented() {
+        let r = install_precheck("prebuilt:https://x/y.dylib");
+        assert!(r.is_some());
+        assert!(r.unwrap().is_error);
+    }
+
+    #[test]
+    fn install_precheck_git_path_proceeds_none() {
+        assert!(install_precheck("git:github.com/foo/bar").is_none());
+        assert!(install_precheck("path:/abs/dir").is_none());
     }
 }

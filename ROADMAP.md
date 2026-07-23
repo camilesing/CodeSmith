@@ -2546,7 +2546,7 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 **下一聚焦工作：**
 - §F3+：dylib loading / `extension.toml` manifests / install/uninstall / `registerProvider` / renderers / shortcuts / flags / `EventBus` impl（按需）。
-- §F5b 已落地（见下 §F5b 进度块）：dylib LOAD 侧（`libloading` loader + `extension.toml` manifest + 三形态发现 + 项目本地 trust gate [Model A] + reload wiring）。剩余 §F5：INSTALL 侧（install-source impls + `CargoBuilder`/`Placer` + `/extension install`/`uninstall` 真实现 + `installed[]` provenance 写）→ §F5c。
+- §F5b 已落地（见下 §F5b 进度块）：dylib LOAD 侧（`libloading` loader + `extension.toml` manifest + 三形态发现 + 项目本地 trust gate [Model A] + reload wiring）。§F5c 已落地（见下 §F5c 进度块）：INSTALL 侧（install-source impls [Git/LocalPath] + `CargoBuilder`/`Placer` + `/extension install`/`uninstall` 真实现 + `installed[]` provenance 写；`crate:`/`prebuilt:` stub + 真卸载 仍 deferred）。
 - 残项：P2 doc drift（推迟 slice 54）+ §E4 两 follow-up（按需）——均 on-demand / 非阻塞。
 
 **进度（2026-07-22 §F5 slice 1 ProjectTrust{FirstLoad} trust-prompt emit——§F5 首个子切片：onboarding TrustDirectory 接受站点 emit `ProjectTrust{reason: TrustReason::FirstLoad}` once-per-session，`feat/pluggable-framework-core`）：**
@@ -2601,7 +2601,43 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - tui-level dylib e2e（`run_tui` 触发发现/reload）：§F5 precedent（`EngineHost`+`run_tui`+真信任 fixture 比例失衡）。
 
 **下一聚焦工作：**
-- §F5c INSTALL 侧 + 残项（按需）。
+- 残项（按需）；§F5c 已落地（见下 §F5c 进度块）。
+
+---
+
+**进度（2026-07-23 §F5c dylib INSTALL 侧——§F5 续作下半：fetch/build/place/provenance 写 + `/extension install`/`uninstall` 真实现，`feat/pluggable-framework-core`）：**
+
+接 §F5b（LOAD 侧）。§F5c 落地 INSTALL 半：`SourceSpec` 解析（`git:`/`path:`/`crate:`/`prebuilt:` + `--global`）+ `GitSource`/`LocalPathSource`（`ExtensionSource` impls）+ `CargoBuilder`（`cargo build --release --locked`，扫 `target/release/*.<DLL_EXT>` 找 cdylib，无 JSON/serde_json）+ `Placer`（拷 dylib→`<root>/<id>/<default_dylib_filename(id)>`）+ `Installer` orchestrator（fetch→build→D8 temp-load `metadata()` 取 id/version→place→写 `extension.toml`）+ `/extension install`/`uninstall` 真实现 + `installed`→`BTreeMap<id,provenance>` + mutators。`crate:`/`prebuilt:` 早返回 "§F5c-later"。spec：`docs/superpowers/specs/2026-07-23-codesmith-extension-system-slice-5c-design.md`；plan：`docs/superpowers/plans/2026-07-23-codesmith-extension-system-slice-5c.md`。
+
+**关键设计决策：**
+- **R1 Installer 纯化**：Installer（extensions crate）只持 `source+builder+root`；state mutators（`add_installed`/`remove_installed`）+ trust-warn + scope→root 计算在 tui command（extensions crate 不能依赖 tui crate——layering）。spec §4 把 state/scope 放进 Installer 是 layering error。
+- **R2 CargoBuilder glob**：`cargo build` 后扫 `target/release/*.<DLL_EXT>` 找 cdylib（非 `--message-format=json`——`serde_json` 实为已有 dep [extensions `Cargo.toml:17`]，glob 纯为简洁；单 cdylib crate 鲁棒，0 或 >1 → Install error）。
+- **R3 manifest 在 Installer**：Placer 只拷 dylib（trait `place(artifact)` 无 version/source）；manifest 由 Installer 写（有 id/version/source）。
+- **R4 crate/prebuilt short-circuit 在 command**：command `install_precheck` 早返回 Err；Installer 纯。
+- **R5 e2e 不断言 state**：e2e 在 extensions crate（要用 `CODESMITH_FIXTURE_DYLIB` env）；state tui-side 单测覆盖（T2）+ command wiring 由 T7 smoke 覆盖。
+- **R6 tempfile 提升**：extensions 的 `tempfile` 从 dev→真 dep（Installer 运行时用 `tempdir()`；非新外部 dep）。
+- **D8 id/version 从 temp-load metadata**：非 Cargo.toml 解析；temp-load built dylib 的 `metadata()`（`&'static str`→`to_string`），不入册不 configure，读毕即 drop（vtable 在 `Library`，drop 前 alive）。
+- **Q1 bounded 留存保底**：uninstall 删文件 + `remove_installed`，但 tools/commands HashMap 留存（process restart 清）；handlers `clear_handlers` on reload。
+
+**落地步骤：**
+1. T1 `SourceSpec` parser + `InstallScope`/`SourceKind`（`install_source.rs`）。
+2. T2 `extension_state.rs` `installed`→`BTreeMap` + mutators（`add_installed`/`remove_installed`/`provenance_for`/`installed_ids`）。
+3. T3 `GitSource` + `LocalPathSource`（`install_source.rs`）。
+4. T4 `CargoBuilder`（`install_source.rs`）。
+5. T5 `Placer` + `default_dylib_filename pub(crate)` + discovery:181 注释修正（"§F5c refines to keep project-configured"→"§F5c keeps Model A as-is"）。
+6. T6 `Installer` orchestrator + e2e（`installer.rs` NEW）+ `lib.rs` re-export（扩到 `CargoBuilder`/`GitSource`/`InstallScope`/`LocalPathSource`/`Placer`/`SourceKind`/`SourceSpec`/`UnimplementedSource`）+ tempfile 提升。
+7. T7 `/extension install`/`uninstall` 真实现（`extension_commands.rs`：`install_precheck` guard + `extensions_root_for` + `install`/`uninstall` + try_dispatch 改真）+ docs（EXTENSIONS host-seam install/uninstall ✅ + intro §F5c-done + Sandbox Stance cargo-build-trust；ROADMAP §F5c 进度块）。
+
+**测试/验证：** `cargo build --workspace` 全绿；`codesmith-extensions --lib` 26→48（+10 SourceSpec +5 source impl +2 CargoBuilder +3 Placer +2 Installer e2e [含 §F5b fixture 的 full install→discover→load→`fixture_echo` round-trip，证 D8 id+Placer+manifest+discover 一致性，无真 cargo build]）；`codesmith-agent --lib` 98（不变——§F5c 不触 agent）；`codesmith-agent-runtime --lib` 1163+2（不变——§F5c 不触 host_executor，`.emit`=16 不变）；`codesmith-tui --bin codesmith-tui` 2835 pass/26 fail/2 ignored——26 个 fail 全是 `runtime_api::tests` PRE-EXISTING（环境性 HTTP-server 不 bind，无 panic；在 §F5b base `7a6819a7` 同样 fail，非 §F5c 回归；2835 = 2833 [§F5b 2829 + T2 的 4] + T7 的 4 `install_precheck` − 2 移除的 stub 测试）。grep：`GitSource`/`LocalPathSource`/`CargoBuilder`/`Placer`/`Installer`/`SourceSpec` in extensions ≥1 each、`add_installed`/`remove_installed` in `extension_state.rs` ≥1、`installer.rs` 存在、`/extension install` 非 stub、`cargo build` in `CargoBuilder` ≥1；§F5b 不变项（`libloading`/`toml` in extensions `Cargo.toml`、`loader.rs`/`manifest.rs`/`build.rs` 存在、`discover_dylib` in `engine.rs` ≥1、`codesmith_register_extension` in fixture ≥1、host_executor `.emit`=16、`TrustReason::FirstLoad` in tui=1）。
+
+**By-design gaps（显式 out-of-scope）：**
+- `CratesIo`/`Prebuilt` source impls（nice-to-have，command `install_precheck` 早返回 "§F5c-later"）。
+- 真卸载：`clear_tools`/`clear_commands` + `Library` drop（Q1 接受 bounded 留存保底正确性——tools/commands HashMap 留存到 process restart）。
+- tui-level install e2e（`run_tui` 触发 `/extension install`）：§F5 precedent（App fixture 比例失衡）；机制由 T6 extensions-crate e2e 覆盖。
+- `--message-format=json` cdylib 解析（多 cdylib/`lib.name` override 的鲁棒性）：glob 法对单 cdylib 够用，多 cdylib→Install error。
+
+**下一聚焦工作：**
+- 残项（按需）：P2 doc drift + §E4 follow-up + `CratesIo`/`Prebuilt` impl + 真卸载——均 on-demand / 非阻塞。
 
 ---
 
