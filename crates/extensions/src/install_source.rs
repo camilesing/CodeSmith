@@ -222,6 +222,68 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), ExtensionError> {
     Ok(())
 }
 
+/// Build a fetched source into a cdylib via `cargo build` (§F5c).
+/// `cargo build --release --locked --target-dir <temp>`, then scan
+/// `target/release/` for the platform cdylib (`.<DLL_EXTENSION>`). No JSON
+/// parse (R2: avoids a `serde_json` dep). Robust for single-cdylib crates;
+/// errors on 0 or >1 cdylib (ambiguous).
+pub struct CargoBuilder {
+    target_dir: PathBuf,
+}
+
+impl CargoBuilder {
+    pub fn new(target_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            target_dir: target_dir.into(),
+        }
+    }
+}
+
+impl ExtensionBuilder for CargoBuilder {
+    fn build(&self, src_dir: &Path) -> Result<PathBuf, ExtensionError> {
+        let out = Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .arg("--locked")
+            .arg("--target-dir")
+            .arg(&self.target_dir)
+            .current_dir(src_dir)
+            .output()
+            .map_err(|e| ExtensionError::Install(format!("spawn cargo (on PATH?): {e}")))?;
+        if !out.status.success() {
+            return Err(ExtensionError::Install(format!(
+                "cargo build failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        let release_dir = self.target_dir.join("release");
+        let entries = std::fs::read_dir(&release_dir).map_err(|e| {
+            ExtensionError::Install(format!("read release dir {}: {e}", release_dir.display()))
+        })?;
+        let mut found: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && p.extension().and_then(|e| e.to_str())
+                        == Some(std::env::consts::DLL_EXTENSION)
+            })
+            .collect();
+        match found.len() {
+            1 => Ok(found.pop().expect("len==1")),
+            0 => Err(ExtensionError::Install(format!(
+                "no cdylib (.{}) produced in {}",
+                std::env::consts::DLL_EXTENSION,
+                release_dir.display()
+            ))),
+            n => Err(ExtensionError::Install(format!(
+                "{n} cdylibs in {} (ambiguous); §F5c supports single-cdylib crates only",
+                release_dir.display()
+            ))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod source_spec_tests {
     use super::*;
@@ -362,5 +424,62 @@ mod source_impl_tests {
         s.fetch(dst.path()).unwrap();
         assert!(dst.path().join("a/b/c.txt").is_file());
         assert_eq!(std::fs::read(dst.path().join("a/b/c.txt")).unwrap(), b"deep");
+    }
+}
+
+#[cfg(test)]
+mod cargo_builder_tests {
+    use super::*;
+
+    /// Build a tiny standalone cdylib crate in a TempDir + assert CargoBuilder
+    /// produces the cdylib. Skips if `cargo` not on PATH (CI without rust
+    /// toolchain). Uses a temp `--target-dir` (no workspace lock conflict).
+    #[test]
+    fn cargo_builder_builds_tiny_cdylib() {
+        if std::process::Command::new("cargo")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("cargo not on PATH; skipping cargo_builder test");
+            return;
+        }
+        let src = tempfile::tempdir().expect("src tempdir");
+        let pkg = src.path();
+        std::fs::write(
+            pkg.join("Cargo.toml"),
+            "[package]\nname = \"tiny_cdylib_test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(
+            pkg.join("src/lib.rs"),
+            "#![allow(unused)]\n#[unsafe(no_mangle)]\npub extern \"C\" fn codesmith_register_extension() -> *mut () { std::ptr::null_mut() }\n",
+        )
+        .unwrap();
+        // --locked needs a Cargo.lock; generate one (no-dep crate → offline-safe).
+        let _ = std::process::Command::new("cargo")
+            .arg("generate-lockfile")
+            .current_dir(pkg)
+            .output();
+        let target = tempfile::tempdir().expect("target tempdir");
+        let builder = CargoBuilder::new(target.path().to_path_buf());
+        let cdylib = builder.build(pkg).expect("build tiny cdylib");
+        assert_eq!(
+            cdylib.extension().and_then(|e| e.to_str()),
+            Some(std::env::consts::DLL_EXTENSION),
+            "cdylib extension: {cdylib:?}"
+        );
+        assert!(cdylib.is_file(), "cdylib exists: {cdylib:?}");
+    }
+
+    #[test]
+    fn cargo_builder_missing_cargo_manifest_is_install_error() {
+        // Point cargo build at a dir with no Cargo.toml → fails → Install error.
+        let empty = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let builder = CargoBuilder::new(target.path().to_path_buf());
+        let r = builder.build(empty.path());
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "got {r:?}");
     }
 }
