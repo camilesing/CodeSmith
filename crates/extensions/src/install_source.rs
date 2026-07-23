@@ -284,6 +284,42 @@ impl ExtensionBuilder for CargoBuilder {
     }
 }
 
+/// Place a built cdylib into `<root>/<id>/` (§F5c). The dylib is renamed to
+/// `default_dylib_filename(id)` so `discover_dylib` (manifest with no `entry`)
+/// re-finds it as a manifest-subdir source (not bare). The `extension.toml`
+/// is written separately by the `Installer` (it has version/source; the trait
+/// `place(artifact)` does not). R3.
+pub struct Placer {
+    pub id: String,
+    pub root: PathBuf,
+}
+
+impl Placer {
+    pub fn new(id: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+        Self {
+            id: id.into(),
+            root: root.into(),
+        }
+    }
+
+    /// The dest dir `<root>/<id>/` (manifest + dylib live here).
+    pub fn dir(&self) -> PathBuf {
+        self.root.join(&self.id)
+    }
+}
+
+impl ExtensionPlacer for Placer {
+    fn place(&self, artifact: &Path) -> Result<PathBuf, ExtensionError> {
+        let dir = self.dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| ExtensionError::Install(format!("mkdir {}: {e}", dir.display())))?;
+        let dest = dir.join(crate::discovery::default_dylib_filename(&self.id));
+        std::fs::copy(artifact, &dest)
+            .map_err(|e| ExtensionError::Install(format!("copy dylib to {}: {e}", dest.display())))?;
+        Ok(dest)
+    }
+}
+
 #[cfg(test)]
 mod source_spec_tests {
     use super::*;
@@ -481,5 +517,47 @@ mod cargo_builder_tests {
         let builder = CargoBuilder::new(target.path().to_path_buf());
         let r = builder.build(empty.path());
         assert!(matches!(r, Err(ExtensionError::Install(_))), "got {r:?}");
+    }
+}
+
+#[cfg(test)]
+mod placer_tests {
+    use super::*;
+
+    #[test]
+    fn placer_copies_dylib_to_default_filename() {
+        let root = tempfile::tempdir().unwrap();
+        // A fake "built dylib" (any file; Placer doesn't validate it's a real dylib).
+        let src = tempfile::tempdir().unwrap();
+        let artifact = src.path().join("libwhatever.bin");
+        std::fs::write(&artifact, b"binary").unwrap();
+        let placer = Placer::new("my-ext", root.path().to_path_buf());
+        let dest = placer.place(&artifact).unwrap();
+        let expected =
+            root.path()
+                .join("my-ext")
+                .join(crate::discovery::default_dylib_filename("my-ext"));
+        assert_eq!(dest, expected, "placed at default filename");
+        assert!(dest.is_file(), "placed file exists");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"binary", "content copied");
+    }
+
+    #[test]
+    fn placer_creates_id_subdir() {
+        let root = tempfile::tempdir().unwrap();
+        let placer = Placer::new("ext2", root.path().to_path_buf());
+        assert_eq!(placer.dir(), root.path().join("ext2"));
+    }
+
+    #[test]
+    fn placer_place_creates_root_if_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("nested").join("extensions");
+        let placer = Placer::new("ext3", root.clone());
+        let artifact = tmp.path().join("a.bin");
+        std::fs::write(&artifact, b"x").unwrap();
+        let dest = placer.place(&artifact).unwrap();
+        assert!(dest.is_file());
+        assert!(root.join("ext3").is_dir());
     }
 }

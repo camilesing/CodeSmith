@@ -47,7 +47,7 @@ pub struct DiscoveredSource {
 /// `<DLL_PREFIX><id>.<DLL_EXTENSION>` (e.g. `libdemo.dylib` on macOS). Mirrors
 /// std's `env::consts::{DLL_PREFIX, DLL_EXTENSION}`; keep in sync with the
 /// fixture crate's `crate_type = ["cdylib"]` name (§8.2).
-fn default_dylib_filename(id: &str) -> String {
+pub(crate) fn default_dylib_filename(id: &str) -> String {
     let prefix = std::env::consts::DLL_PREFIX;
     let ext = std::env::consts::DLL_EXTENSION;
     if prefix.is_empty() {
@@ -178,8 +178,9 @@ fn dedup_by_dylib_path(out: &mut Vec<DiscoveredSource>) {
 /// true`); global sources are retained regardless (their shared-install
 /// provenance implies prior consent). Mirrors the `Untrusted` arm of §F2c T3's
 /// per-turn `ProjectTrust{Untrusted}` dispatch, applied at discovery time so
-/// an untrusted workspace never loads a local dylib's `Library`. (§F5c refines
-/// this to keep project-*configured* sources even when untrusted.)
+/// an untrusted workspace never loads a local dylib's `Library`. (§F5c keeps
+/// Model A as-is — no configured-path concept; `apply_trust_gate` is final for
+/// the install/load path.)
 pub fn apply_trust_gate(
     sources: Vec<DiscoveredSource>,
     trust_untrusted: bool,
