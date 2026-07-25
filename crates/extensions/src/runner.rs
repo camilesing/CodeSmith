@@ -313,6 +313,19 @@ impl ExtensionRunner {
             .collect()
     }
 
+    /// §F5d — bound `ExtensionContext` for the host's `ExtensionToolSpecAdapter`
+    /// (upcasts the stored `Arc<dyn ExtensionCommandContext>` to
+    /// `Arc<dyn ExtensionContext>` via Rust 1.86+ trait-upcasting). `None`
+    /// before `bind_core`. Used per-turn by `register_extension_tools`.
+    #[must_use]
+    pub fn bound_context(&self) -> Option<Arc<dyn ExtensionContext>> {
+        self.context
+            .lock()
+            .expect("context lock poisoned")
+            .clone()
+            .map(|ctx| -> Arc<dyn ExtensionContext> { ctx })
+    }
+
     /// Names of bound commands (for `/extension list`, Task 8).
     pub fn bound_command_names(&self) -> Vec<String> {
         self.commands.lock().unwrap().keys().cloned().collect()

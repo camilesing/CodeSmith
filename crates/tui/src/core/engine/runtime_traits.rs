@@ -440,6 +440,19 @@ impl HostServices for super::EngineHost {
             plugin_tool_names = configure_plugin_tools(tool_registry, config.tools.as_ref());
         }
 
+        // §F5d T1 — register extension tools (main-turn-only; not inherited
+        // by subagents — §4b: subagents build their own fresh built-in-only
+        // registry). Per-turn rebuild; clearing `runner.tools[id]` before the
+        // next turn suffices.
+        if let Some(ref mut tool_registry) = tool_registry {
+            if let Some(runner) = &self.extension_runner {
+                codesmith_agent_runtime::tools::extension::register_extension_tools(
+                    tool_registry,
+                    runner,
+                );
+            }
+        }
+
         let mcp_tools = req.mcp_tools;
         let tools = tool_registry.as_ref().map(|registry| {
             let mut catalog = build_model_tool_catalog(
