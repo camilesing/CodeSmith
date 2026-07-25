@@ -492,10 +492,14 @@ pub fn reload_extension_runtime(
     // stale bindings (name-keyed maps; safe concurrent w/ in-flight turn).
     runner.clear_tools();
     runner.clear_commands();
-    // §F5d T4 — move live dylib Libraries to pending_drop (UI-thread MOVE,
-    // safe: Library stays alive until the engine drops it at the next op-loop
-    // top). populate_extension_runtime will load fresh dylibs into libraries.
-    // §F5d T4: runner.drain_libraries_to_pending();
+    // §F5d T4 — move the live dylib `Library`s into `pending_drop` (UI-thread
+    // MOVE: `mem::take` under one lock, the `Library` stays alive). The engine
+    // op-loop top then `drop_pending`s them at the one moment the main-thread
+    // `HostAgentExecutor` (the only in-flight dylib `Arc` holder) is already
+    // dropped between turns — see agent-runtime `engine/mod.rs` op-loop +
+    // spec §4a/§4b. `populate_extension_runtime` loads fresh dylibs into
+    // `libraries` below. Idempotent + safe concurrent with an in-flight turn.
+    runner.drain_libraries_to_pending();
     runner.invalidate();
     populate_extension_runtime(runner, workspace, state, shared_cancel_token);
 }

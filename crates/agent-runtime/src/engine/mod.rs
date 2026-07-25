@@ -515,6 +515,17 @@ impl Engine {
                 .await;
         }
         while let Some(op) = self.rx_op.recv().await {
+            // §F5d T4 — drop any `Library`s orphaned by a UI-thread reload.
+            // This is the safe moment: the main-thread `HostAgentExecutor`
+            // from the previous turn was dropped at that turn's return
+            // (constructed fresh each turn), so no in-flight dylib `Arc`
+            // lives on the main thread here. Sub-agents never hold dylib
+            // `Arc`s either (§4b — structural: `SubAgentRuntime` has no
+            // `extension_runner` field). Idempotent (empty pending → no-op).
+            // See spec §4a/§4b.
+            if let Some(runner) = &self.extension_runner {
+                runner.drop_pending();
+            }
             match op {
                 Op::SendMessage {
                     content,

@@ -846,6 +846,159 @@ fn test_review_agent_tools_exclude_agent_spawn() {
     );
 }
 
+// === §F5d T4 §4b — subagent ext-tool exclusion regression =================
+//
+// `codesmith_agent::extension` traits are not in `super::*` (the subagent
+// module doesn't import them); pull in just what the stub needs. `ToolResult`
+// IS already in scope via `super::*` (re-export of `codesmith_tools::ToolResult`).
+use codesmith_agent::extension::{
+    Extension, ExtensionApi, ExtensionCommandContext, ExtensionContext, ExtensionError,
+    ExtensionMetadata, ExtensionMode, ToolDefinition,
+};
+
+/// Stub extension that registers a single tool named `fixture_echo` — the
+/// canonical ext-tool name (same name the fixture cdylib registers; the
+/// cdylib's path is only emitted by `codesmith-extensions/build.rs`, so tui
+/// can't load it directly — this stub is the closest feasible analog for the
+/// §4b regression). Used ONLY to put a concrete ext tool on a parent
+/// `ExtensionRunner` so the §4b test can assert it does NOT transit to a
+/// sub-agent built without that runner.
+struct StubFixtureEchoExt;
+
+#[async_trait]
+impl Extension for StubFixtureEchoExt {
+    fn metadata(&self) -> &ExtensionMetadata {
+        static M: ExtensionMetadata = ExtensionMetadata::new("stub-fixture-echo");
+        &M
+    }
+    async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+        api.register_tool(Box::new(StubFixtureEchoTool))?;
+        Ok(())
+    }
+}
+
+struct StubFixtureEchoTool;
+
+#[async_trait]
+impl ToolDefinition for StubFixtureEchoTool {
+    fn name(&self) -> &str {
+        "fixture_echo"
+    }
+    fn description(&self) -> &str {
+        "Stub fixture echo tool (§4b regression)."
+    }
+    async fn execute(
+        &self,
+        _input: Value,
+        _ctx: &dyn ExtensionContext,
+    ) -> Result<ToolResult, ExtensionError> {
+        Ok(ToolResult::success("stub"))
+    }
+}
+
+/// Minimal `ExtensionContext` + `ExtensionCommandContext` for `bind_core` in
+/// the §4b test (mirrors the `Ctx` in `codesmith-extensions` runner tests).
+/// `ExtensionContext` is `#[async_trait]` (its action methods have defaults
+/// returning `Unimplemented`); only the 5 observation methods are required.
+struct StubExtCtx;
+
+#[async_trait]
+impl ExtensionContext for StubExtCtx {
+    fn cwd(&self) -> &Path {
+        Path::new(".")
+    }
+    fn mode(&self) -> ExtensionMode {
+        ExtensionMode::Tui
+    }
+    fn is_idle(&self) -> bool {
+        true
+    }
+    fn signal(&self) -> CancellationToken {
+        CancellationToken::new()
+    }
+    fn generation(&self) -> u64 {
+        0
+    }
+}
+impl ExtensionCommandContext for StubExtCtx {}
+
+/// §F5d T4 §4b — a sub-agent never holds a dylib `Arc` across a turn boundary
+/// (it holds none at all). The exclusion is STRUCTURAL, not a guard:
+///   1. `SubAgentRuntime` has NO `extension_runner` field (subagent/mod.rs),
+///      so a sub-agent can never receive the parent's runner;
+///   2. `SubAgentToolRegistry::new` rebuilds its OWN fresh built-in
+///      `ToolRegistry` via `with_full_agent_surface` — it neither clones the
+///      parent's `ToolRegistry` `Arc`s nor wires extension-contributed tools
+///      (those are added ONLY in `EngineHost::build_turn_dispatcher`, §F5d T1,
+///      a path the sub-agent never takes).
+/// So an ext tool bound on the parent's `ExtensionRunner` can NEVER reach a
+/// sub-agent's effective tool set, regardless of `inherit_full_registry`.
+///
+/// EXPECTED GREEN. If Red, ext tools are leaking into sub-agents — STOP +
+/// report (do NOT add a provenance marker / force-subset / runtime guard; the
+/// spec's resolution is structural exclusion, not a guard).
+#[test]
+fn subagent_ext_tool_excluded_from_effective_set() {
+    // Parent HAS fixture_echo bound on its ExtensionRunner (stub ext — the
+    // fixture cdylib path isn't available to tui's build.rs, so the stub is
+    // the closest feasible analog to "load fixture dylib").
+    let runner = codesmith_extensions::ExtensionRunner::new();
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    rt.block_on(runner.load(&StubFixtureEchoExt))
+        .expect("load stub ext");
+    runner.bind_core(Arc::new(StubExtCtx));
+    assert!(
+        runner
+            .bound_tools()
+            .iter()
+            .any(|(n, _)| n == "fixture_echo"),
+        "fixture_echo IS bound on the parent runner (precondition): {:?}",
+        runner
+            .bound_tools()
+            .iter()
+            .map(|(n, _)| n)
+            .collect::<Vec<_>>()
+    );
+
+    let tmp = tempdir().expect("tempdir");
+
+    // inherit_full_registry = false (default; restrictToSubset). The sub-agent
+    // is built WITHOUT the runner (SubAgentRuntime has no field for one).
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    let tools = registry.tools_for_model(&SubAgentType::General);
+    assert!(
+        !tools.iter().any(|t| t.name == "fixture_echo"),
+        "fixture_echo must NOT transit to sub-agent (inherit=false): {:?}",
+        tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
+    );
+
+    // inherit_full_registry = true (legacy full inheritance) — the exclusion
+    // is structural, so even full inheritance must not surface ext tools.
+    let mut runtime = stub_runtime().with_inherit_full_registry(true);
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    let tools = registry.tools_for_model(&SubAgentType::General);
+    assert!(
+        !tools.iter().any(|t| t.name == "fixture_echo"),
+        "fixture_echo must NOT transit to sub-agent even with inherit_full_registry=true (structural): {:?}",
+        tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test]
 async fn test_wait_for_result_reports_timeout_when_still_running() {
     let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 2)));

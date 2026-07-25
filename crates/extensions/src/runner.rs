@@ -110,6 +110,17 @@ pub struct ExtensionRunner {
     /// its vtable; keeping the Library alive is correctness-preserving,
     /// a bounded leak for re-discovered same dylibs). §F5b Q1.
     libraries: Mutex<Vec<Library>>,
+    /// §F5d T4 — staging area for `Library`s orphaned by a UI-thread
+    /// `reload_extension_runtime` clear. Populated by
+    /// [`drain_libraries_to_pending`](Self::drain_libraries_to_pending)
+    /// (a safe `Arc`-free MOVE under one lock — the `Library` stays alive)
+    /// and drained+dropped by [`drop_pending`](Self::drop_pending) at the
+    /// engine op-loop top (the one moment the main-thread
+    /// `HostAgentExecutor` — the only in-flight dylib `Arc` holder between
+    /// turns — is already dropped). Never dropped on the UI thread: doing so
+    /// while an in-flight turn holds a dylib `Arc` would be UAF (dangling
+    /// vtable). See spec §4a/§4b.
+    pending_drop: Mutex<Vec<Library>>,
 }
 
 impl ExtensionRunner {
@@ -124,6 +135,7 @@ impl ExtensionRunner {
             commands: Mutex::new(HashMap::new()),
             handlers: Mutex::new(Vec::new()),
             libraries: Mutex::new(Vec::new()),
+            pending_drop: Mutex::new(Vec::new()),
         }
     }
 
@@ -178,6 +190,47 @@ impl ExtensionRunner {
             .lock()
             .expect("commands lock poisoned")
             .clear();
+    }
+
+    /// §F5d T4 — MOVE the live `libraries` into `pending_drop` (UI-thread,
+    /// reload-time). Safe: takes the `libraries` lock once + `std::mem::take`s
+    /// the `Vec` (each `Library` is an owned handle, not a borrowed `Arc`);
+    /// the `Library` stays alive until [`drop_pending`](Self::drop_pending)
+    /// runs. The main-thread executor's per-turn dylib `Arc`s are unaffected
+    /// (they point at the `Arc<Library>` the engine captured this turn; the
+    /// runner's own `Vec` move does not touch them). Called from
+    /// `reload_extension_runtime` before re-populate loads fresh dylibs.
+    /// Idempotent (empty `libraries` → no-op).
+    pub fn drain_libraries_to_pending(&self) {
+        let mut libs = self.libraries.lock().expect("libraries lock poisoned");
+        let drained = std::mem::take(&mut *libs);
+        let mut pending = self
+            .pending_drop
+            .lock()
+            .expect("pending_drop lock poisoned");
+        pending.extend(drained);
+    }
+
+    /// §F5d T4 — DROP the pending `Library`s. Called ONLY from the engine
+    /// op-loop top (agent-runtime `engine/mod.rs`) before `match op`, at the
+    /// one moment the main-thread `HostAgentExecutor` (the only in-flight
+    /// dylib `Arc` holder) is already dropped between turns. Dropping here
+    /// unloads the dylibs safely. Idempotent (empty pending → no-op). NEVER
+    /// call this from the UI thread — see the `pending_drop` field.
+    pub fn drop_pending(&self) {
+        // Release the lock before dropping the `Library`s: `Library::drop`
+        // runs dylib cleanup (`dlclose`/`FreeLibrary`) which may be slow, and
+        // holding the `pending_drop` lock across it would block a concurrent
+        // UI-thread `drain_libraries_to_pending`. The move out of the guard
+        // is all that needs the lock.
+        let drained = {
+            let mut pending = self
+                .pending_drop
+                .lock()
+                .expect("pending_drop lock poisoned");
+            std::mem::take(&mut *pending)
+        };
+        drop(drained); // dylibs unloaded, no lock held
     }
 
     /// Load + configure one extension against a **stub** api. Registrations
@@ -374,6 +427,11 @@ impl std::fmt::Debug for ExtensionRunner {
             .lock()
             .expect("libraries mutex poisoned")
             .len();
+        let pending_drop = self
+            .pending_drop
+            .lock()
+            .expect("pending_drop mutex poisoned")
+            .len();
         let bound = self.context.lock().expect("context mutex poisoned").is_some();
         f.debug_struct("ExtensionRunner")
             .field("generation", &self.generation.load(Ordering::Acquire))
@@ -382,6 +440,7 @@ impl std::fmt::Debug for ExtensionRunner {
             .field("commands", &commands)
             .field("handlers", &handlers)
             .field("libraries", &libraries)
+            .field("pending_drop", &pending_drop)
             .finish()
     }
 }
@@ -780,5 +839,36 @@ mod tests {
             runner.bound_tools().iter().any(|(n, _)| n == "fixture_echo"),
             "fixture_echo re-bound after reload"
         );
+    }
+
+    // === §F5d T4 — two-phase Library drain/drop ===========================
+
+    /// §F5d T4 — the UI-thread MOVE (`drain_libraries_to_pending`) empties
+    /// `libraries` into `pending_drop` (the `Library` stays alive — a safe
+    /// `Arc`-free `mem::take` under one lock; the live dylib handles are
+    /// merely re-homed, not dropped). The engine op-loop-top DROP
+    /// (`drop_pending`) then frees them at the one moment the main-thread
+    /// `HostAgentExecutor` (the only in-flight dylib `Arc` holder) is already
+    /// dropped between turns (spec §4a/§4b). Both ops must be idempotent: a
+    /// second drain on an empty `libraries` + a second drop on an empty
+    /// `pending_drop` are no-ops (must not panic).
+    ///
+    /// `libraries` is `Mutex<Vec<Library>>` with no pub count accessor by
+    /// design (exposing `Library` would leak `libloading` internals), so the
+    /// semantics are proven behaviourally: idempotent + no panic across the
+    /// drain→drain→drop→drop sequence.
+    #[test]
+    fn drain_libraries_to_pending_moves_then_drop_pending_empties() {
+        let runner = runner_with_fixture_dylib();
+
+        // Drain moves the live `libraries` into `pending_drop` (Library stays
+        // alive). A second drain is a no-op (drains an empty Vec).
+        runner.drain_libraries_to_pending();
+        runner.drain_libraries_to_pending();
+
+        // Drop frees the pending Libraries (dylibs unloaded). A second drop
+        // on an empty pending is a no-op (must not panic).
+        runner.drop_pending();
+        runner.drop_pending();
     }
 }

@@ -6093,6 +6093,21 @@ struct SubAgentToolRegistry {
 }
 
 impl SubAgentToolRegistry {
+    /// §F5b/§F5d — build the sub-agent's OWN `ToolRegistry` fresh from the
+    /// built-in agent surface ("the full agent surface — same as the
+    /// parent's Agent mode"). The sub-agent does **not** clone the parent's
+    /// `ToolRegistry` `Arc`s and does **not** bind an `extension_runner`
+    /// (`SubAgentRuntime` has no such field, see [`SubAgentRuntime`]; only
+    /// `HostAgentExecutor` binds one). Consequently extension-contributed
+    /// dylib tools — which are registered only in
+    /// `EngineHost::build_turn_dispatcher` (§F5d T1) — can **never** reach a
+    /// sub-agent's effective tool set, regardless of `inherit_full_registry`.
+    ///
+    /// §4b invariant: a sub-agent never holds a dylib `Arc` across a turn
+    /// boundary (it holds none at all). This needs **no runtime subagent-check
+    /// guard** — the exclusion is the structural precondition, not a guard.
+    /// The regression test `subagent_ext_tool_excluded_from_effective_set`
+    /// locks this.
     fn new(
         mut runtime: SubAgentRuntime,
         agent_type: SubAgentType,
