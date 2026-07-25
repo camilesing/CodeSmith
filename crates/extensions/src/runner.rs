@@ -102,13 +102,16 @@ pub struct ExtensionRunner {
     /// filter (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant
     /// via `on_variant`). T8's `emit` filters on this before dispatch.
     handlers: Mutex<Vec<RegisteredHandler>>,
-    /// §F5b — loaded dylib `Library` handles. Pushed by `load_dylib`;
-    /// reload does NOT clear — the Library's code/vtables must outlive any
-    /// registered contributions still in `tools`/`commands`/`handlers`
-    /// (`clear_handlers` drops handler Arcs but `tools`/`commands` are
-    /// append-insert, so a removed dylib's tool Arc may still reference
-    /// its vtable; keeping the Library alive is correctness-preserving,
-    /// a bounded leak for re-discovered same dylibs). §F5b Q1.
+    /// §F5b — loaded dylib `Library` handles. Pushed by `load_dylib`. On
+    /// reload, [`drain_libraries_to_pending`](Self::drain_libraries_to_pending)
+    /// (§F5d T4) MOVES these to `pending_drop` (the `Library` stays alive —
+    /// its code/vtables must outlive any registered contributions still in
+    /// `tools`/`commands`/`handlers`: `clear_tools`/`clear_commands` drop the
+    /// name-keyed bindings but a removed dylib's tool `Arc` may still
+    /// reference its vtable until the per-turn `ToolRegistry` rebuilds);
+    /// [`drop_pending`](Self::drop_pending) at the engine op-loop turn
+    /// boundary then unloads them safely. Pre-§F5d this was a bounded leak
+    /// (§F5b Q1); §F5d makes it a safe two-phase drop.
     libraries: Mutex<Vec<Library>>,
     /// §F5d T4 — staging area for `Library`s orphaned by a UI-thread
     /// `reload_extension_runtime` clear. Populated by

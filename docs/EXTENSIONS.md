@@ -10,8 +10,14 @@ registers its contributions against an `ExtensionApi`. The host discovers
 compiled-in extensions at startup via `inventory`, reconciles them with the
 on-disk `ExtensionStateStore` (skip disabled), loads + configures each
 against a stub api, then `bind_core`s the host context — after which the
-runner fans lifecycle events to registered handlers and the agent loop sees
-extension tools as normal `ToolSpec`s.
+runner fans lifecycle events to registered handlers. Per §F5d (T1+T2),
+extension-contributed tools + slash commands are wired live into the host
+per-turn: tools are registered into the per-turn `ToolRegistry` via
+`register_extension_tools` in `EngineHost::build_turn_dispatcher`, and
+slash commands dispatch via `try_dispatch_extension_command` in
+`commands::execute` — so the agent loop sees extension tools as normal
+`ToolSpec`s (main-turn only; not inherited by sub-agents — see Sandbox
+Stance).
 
 > **Slice status.** §F1 (compiled-in extensions + minimal 6-event contract),
 > §F2a (full 23-variant `ExtensionEvent` set + `HandlerOutcome`
@@ -32,10 +38,18 @@ extension tools as normal `ToolSpec`s.
 > §F5b; the INSTALL side (Git/LocalPath sources + `CargoBuilder` + `Placer`
 > + `Installer` orchestrator + `/extension install`/`uninstall` real impl +
 > `installed[]` provenance write) landed in §F5c — `crate:`/`prebuilt:` stub
-> to "§F5c-later" and true unload (`clear_tools`/`Library` drop) stay deferred
-> (§F5b Q1 bounded retention keeps tools/commands alive until process
-> restart). (§F5 slice 1 emitted the `FirstLoad` *event* only —
-> no dylib machinery.) `ToolExecutionUpdate` (needs a streaming `Tool` contract — `Tool::run`
+> to "§F5c-later". §F5d (done) wires extension tools + slash commands live
+> into the host per-turn (T1 tools via `register_extension_tools` in
+> `EngineHost::build_turn_dispatcher`; T2 commands via
+> `try_dispatch_extension_command` in `commands::execute`) and adds safe
+> unload: `clear_tools`/`clear_commands` on reload (T3) + a two-phase
+> `Library` drop (`pending_drop` + `drain_libraries_to_pending` on the UI
+> thread + `drop_pending` at the engine op-loop turn boundary, T4) — so an
+> uninstalled extension's live bindings clear on the next `/extension
+> reload` and the dylib unloads safely at the next turn boundary (no UB; ext
+> tools are main-turn-only + never inherited by subagents, §4b structural).
+> (§F5 slice 1 emitted the `FirstLoad` *event* only — no dylib machinery.)
+> `ToolExecutionUpdate` (needs a streaming `Tool` contract — `Tool::run`
 > is one-shot), `ResourcesDiscover`, and `SessionBeforeFork` stay deferred
 > with corrected rationale (see the host-seam table). Hot-load is permanently
 > out (spec §2.4) — install + reload only.
@@ -62,9 +76,9 @@ between user-defined commands and the static `match`.
 | `/extension enable <id>` | | ✅ working | Marks the extension enabled in `extensions_state.toml`; takes effect on next `/extension reload` (§F2 wires live re-reconcile). |
 | `/extension disable <id>` | | ✅ working | Marks the extension disabled; same reload caveat. |
 | `/extension status` | | ✅ working | Reports the bound runner's generation + bound command/tool counts. |
-| `/extension reload` | | ✅ working (live reload) | Re-populates the **shared runner `Arc`**: `clear_handlers` → `invalidate` (bump generation) → `discover_static` → reconcile against state → `load` each → `bind_core` (fresh `HostExtensionContext`). Both `App.extension_runner` and the Engine's field update live (no `Arc` swap — they share the one the engine built). A handler bound before reload stops observing after (cleared, not duplicated); a newly-compiled-in extension is picked up on the next reload. |
+| `/extension reload` | | ✅ working (live reload) | Re-populates the **shared runner `Arc`**: `clear_handlers` → `clear_tools` → `clear_commands` → `drain_libraries_to_pending` (§F5d T3+T4) → `invalidate` (bump generation) → `discover_static` + `discover_dylib` → reconcile against state → `load` each → `bind_core` (fresh `HostExtensionContext`). Both `App.extension_runner` and the Engine's field update live (no `Arc` swap — they share the one the engine built). The drained `Library`s are `drop_pending`'d at the next engine op-loop top (turn boundary, §F5d T4). A handler bound before reload stops observing after (cleared, not duplicated); a newly-compiled-in extension is picked up on the next reload. |
 | `/extension install <source> [--global]` | | ✅ working (§F5c) | Fetches (`git:`/`path:`) → builds (`cargo build`) → places to `<root>/<id>/` + writes `extension.toml` + records `installed[]` provenance; `--global` opt-in (default project). `crate:`/`prebuilt:` return "§F5c-later". Warns if project + untrusted; `/extension reload` to load. |
-| `/extension uninstall <id>` | | ✅ working (§F5c) | Removes `<root>/<id>/` + clears `installed[]` provenance. ⚠ tools/commands remain bound until process restart (bounded retention, §F5b Q1); handlers clear on next `/extension reload`. |
+| `/extension uninstall <id>` | | ✅ working (§F5c) | Removes `<root>/<id>/` + clears `installed[]` provenance. Live tool/command bindings clear on next `/extension reload`; dylib unloads safely at next turn boundary (§F5d two-phase drop). |
 
 ## Discovery
 
@@ -255,7 +269,7 @@ seams use `let _ =`; capability seams inspect `out.outcome` / `out.event`).
 | `SessionCompact` | `host_executor::run_compaction` after summary applied | observe | — |
 | `SessionBeforeSwitch` | `tui/ui.rs` `switch_workspace` entry | **Cancel** | aborts the workspace switch |
 | `ProjectTrust` | `HostServices::build_turn_dispatcher` (+ `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); onboarding trust-accept `tui/ui.rs` `TrustDirectory` y/Y/1 arm after `app.trust_mode = true` (`FirstLoad`) | observe | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` once per onboarding trust acceptance (`TrustReason::FirstLoad`) — distinct from the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup, which surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
-| `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`tui/src/core/engine.rs`) after `discover_static` | n/a (load phase) | §F5b: `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload auto-picks-up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` keeps `Library` handles (reload does not clear — correctness for append-insert tools / no `clear_tools`). Lockstep `*mut dyn Extension` via `codesmith_register_extension` (§8.2). |
+| `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`tui/src/core/engine.rs`) after `discover_static` | n/a (load phase) | §F5b: `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload auto-picks-up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on `/extension reload` they `drain_libraries_to_pending` to `pending_drop` (§F5d T4, alongside `clear_tools`/`clear_commands`) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension` (§8.2). |
 | `ResourcesDiscover` | — (deferred §F2c) | observe | the only in-process host site is the `list_mcp_resources` pseudo-tool dispatch in `McpPool` (`agent-runtime/src/mcp.rs:3014`), already bracketed by `ToolCall`/`ToolResult` — firing `ResourcesDiscover` there conflates with tool execution and `DiscoverReason` has no clean mapping; no dedicated Startup/Manual/Reload discover seam with the runner `Arc`. The `tui/mcp_server.rs` stdio site is a separate process. (Earlier 'separate process' framing over-stated the blocker.) |
 | `SessionBeforeFork` | — (deferred §F2c) | **Cancel** | the live in-TUI backtrack path (`apply_backtrack`, `tui/ui.rs:6922`) is an in-place **rewind** (`truncate_history_to`/`api_messages.truncate`), not a **fork** (new-thread creation) — mislabeled if wired as `SessionBeforeFork`. Genuine fork primitives are dead (`fork_at_user_message`, `#[allow(dead_code)]`, zero non-test callers) or HTTP-only (`fork_thread`, runtime-api, no `App.extension_runner`). tui **does** construct a `RuntimeThreadManager` via `TaskManager::start` (`ui.rs:507`→`task_manager.rs:465`) — the earlier 'no ctor' claim was wrong. (Spec could redefine the event to cover rewind; flagged to spec owner, not done here.) |
 | `ToolExecutionUpdate` | — (deferred §F2c) | observe | no streaming `Tool` contract — `Tool::run` is one-shot (`agent/src/tools/mod.rs:71`), so there is no mid-execution progress stream to hook. The `on_tool_progress` `Callback` hook is landed (§F2c T1) as forward-looking API surface; the emit site awaits a streaming `Tool` variant (§F-later). (Earlier 'no `on_tool_progress` hook' framing was the surface symptom, not the root cause.) |
@@ -289,10 +303,32 @@ execution, accepted per §8.1 (trust the source)**; containerize for untrusted
 sources. Install is trust-agnostic (it only *reads* trust to warn: a
 project-local install won't load until the workspace is trusted). A loaded
 dylib runs in-process with full host access — trust the source; containerize
-for untrusted sources. `crate:`/`prebuilt:` sources + true unload
-(`clear_tools`/`Library` drop) stay deferred (§F5b Q1 bounded retention keeps
-tools/commands alive until process restart). Slice 1's compiled-in extensions
-are trusted by construction (they ship in the binary).
+for untrusted sources. `crate:`/`prebuilt:` sources stay deferred
+(`install_precheck` returns "§F5c-later"). §F5d (done) wires extension tools +
+slash commands live into the host per-turn `ToolRegistry` (main-turn only) +
+adds safe unload:
+
+- **Ext tools are main-turn-only (§4b structural):** extension tools are
+  registered into the host's per-turn `ToolRegistry` (the main agent turn),
+  NOT inherited by sub-agents. This is **structural, not a guard**:
+  `SubAgentRuntime` has no `extension_runner` field +
+  `SubAgentToolRegistry::new` rebuilds its own fresh built-in `ToolRegistry`
+  — so ext tools can never reach a sub-agent's effective set, regardless of
+  `inherit_full_registry`. No provenance marker / force-subset / runtime
+  subagent-check is needed.
+- **Two-phase `Library` drop (§4a):** reload on the UI thread MOVES orphaned
+  `Library`s to `pending_drop` (`drain_libraries_to_pending`); the engine
+  op-loop top DROPs them (`drop_pending`) at the one moment the main-thread
+  `HostAgentExecutor` (the only in-flight dylib `Arc` holder) is already
+  dropped between turns. This makes `/extension reload` + uninstall safe
+  concurrent with in-flight turns.
+- **Miri note:** the two-phase drop's safety is proven by the invariant +
+  single-call-site discipline; dylib+Miri is unreliable (libloading's
+  `Library::drop` runs `dlclose`/`FreeLibrary`, which Miri doesn't model),
+  so the invariant — not a Miri run — is the proof.
+
+Slice 1's compiled-in extensions are trusted by construction (they ship in
+the binary).
 
 ## Troubleshooting
 

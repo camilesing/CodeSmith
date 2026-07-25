@@ -352,7 +352,7 @@ fn uninstall(app: &mut App, arg: &str) -> CommandResult {
     }
     if report.removed {
         CommandResult::message(format!(
-            "Uninstalled extension '{id}'.\n⚠ tools/commands remain bound until process restart (bounded retention, §F5b Q1); handlers clear on next /extension reload."
+            "Uninstalled extension '{id}'.\nLive tool/command bindings clear on the next /extension reload (§F5d); the dylib unloads safely at the next turn boundary (engine op-loop drop_pending)."
         ))
     } else {
         CommandResult::message(format!(
