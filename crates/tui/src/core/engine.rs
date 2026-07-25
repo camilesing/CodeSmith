@@ -488,6 +488,14 @@ pub fn reload_extension_runtime(
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) {
     runner.clear_handlers();
+    // §F5d T3 — also clear tools/commands so the re-populate doesn't leave
+    // stale bindings (name-keyed maps; safe concurrent w/ in-flight turn).
+    runner.clear_tools();
+    runner.clear_commands();
+    // §F5d T4 — move live dylib Libraries to pending_drop (UI-thread MOVE,
+    // safe: Library stays alive until the engine drops it at the next op-loop
+    // top). populate_extension_runtime will load fresh dylibs into libraries.
+    // §F5d T4: runner.drain_libraries_to_pending();
     runner.invalidate();
     populate_extension_runtime(runner, workspace, state, shared_cancel_token);
 }

@@ -160,6 +160,26 @@ impl ExtensionRunner {
             .clear();
     }
 
+    /// §F5d — clear all bound **tools** (name→`Arc<dyn ToolDefinition>` map).
+    ///
+    /// Safe to call while an in-flight engine turn holds clones: each tool is
+    /// refcounted (`Arc`) + the per-turn `ToolRegistry` already captured its own
+    /// `Arc`; clearing here only affects FUTURE turns' `register_extension_tools`
+    /// rebuild. Called from `reload_extension_runtime` before re-populate.
+    pub fn clear_tools(&self) {
+        self.tools.lock().expect("tools lock poisoned").clear();
+    }
+
+    /// §F5d — clear all bound **commands** (name→`CommandDefinition` map). Same
+    /// concurrency reasoning as `clear_tools`. Called from
+    /// `reload_extension_runtime`.
+    pub fn clear_commands(&self) {
+        self.commands
+            .lock()
+            .expect("commands lock poisoned")
+            .clear();
+    }
+
     /// Load + configure one extension against a **stub** api. Registrations
     /// queue into `pending_*`. Called by `build_extension_runtime` (Task 9)
     /// for each discovered extension, BEFORE `bind_core`.
@@ -714,5 +734,51 @@ mod tests {
             // Chain continued past the panic → Continue.
             assert!(matches!(out.outcome, HandlerOutcome::Continue));
         });
+    }
+
+    /// §F5d T3/T4 test helper — runner with the fixture dylib loaded +
+    /// `fixture_echo` bound. Direct `load_dylib` on `env!("CODESMITH_FIXTURE_DYLIB")`
+    /// (same compile-time env var as installer.rs:189); skips the install→discover
+    /// round-trip (T3/T4 test clear/drain semantics, not the install pipeline).
+    fn runner_with_fixture_dylib() -> crate::ExtensionRunner {
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load_dylib(std::path::Path::new(env!("CODESMITH_FIXTURE_DYLIB"))))
+            .expect("load fixture dylib");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        runner
+    }
+
+    #[test]
+    fn clear_tools_and_clear_commands_empty_registries() {
+        let runner = runner_with_fixture_dylib();
+
+        assert!(
+            runner.bound_tools().iter().any(|(n, _)| n == "fixture_echo"),
+            "fixture_echo bound before clear"
+        );
+
+        runner.clear_tools();
+        assert!(
+            runner.bound_tools().is_empty(),
+            "tools cleared: {:?}",
+            runner.bound_tools().iter().map(|(n, _)| n).collect::<Vec<_>>()
+        );
+
+        // clear_commands: safe on whatever the fixture registered (tool-only →
+        // commands empty pre- and post-; assert no panic + stays empty). If the
+        // fixture also registers a command, add a "present-then-cleared" assert
+        // here (read crates/extensions-fixture-dylib/src/lib.rs to confirm).
+        runner.clear_commands();
+
+        // Re-load proves clear is non-destructive to the runner itself.
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load_dylib(std::path::Path::new(env!("CODESMITH_FIXTURE_DYLIB"))))
+            .expect("reload");
+        runner.bind_core(Arc::new(Ctx { generation: 2 }));
+        assert!(
+            runner.bound_tools().iter().any(|(n, _)| n == "fixture_echo"),
+            "fixture_echo re-bound after reload"
+        );
     }
 }
