@@ -586,6 +586,19 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         return result;
     }
 
+    // §F5d T2 — extension-registered slash command (e.g. /mycmd args).
+    // Tier after the /extension meta-commands, before the built-in static
+    // match. `command` + `arg` are parsed above (lowercased, `/`-stripped,
+    // trimmed); extension commands register lowercase names mirroring the
+    // built-in convention, so the lowercase `command` matches. Returns
+    // `None` when no runner is bound or no command matches `name`, so the
+    // static-match tier + built-in commands still run.
+    if let Some(res) =
+        extension_commands::try_dispatch_extension_command(app, command, arg.unwrap_or(""))
+    {
+        return res;
+    }
+
     // Match command or alias
     match command {
         // Core commands

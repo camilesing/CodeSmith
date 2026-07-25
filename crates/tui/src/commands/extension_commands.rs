@@ -10,9 +10,10 @@
 //! are dispatched separately via `ExtensionRunner::try_dispatch_command` —
 //! §F2 wires that tier; slice 1 ships only the `/extension` meta-commands.
 
-use crate::tui::app::App;
+use crate::tui::app::{App, AppAction};
 
 use super::CommandResult;
+use codesmith_agent::extension::CommandOutput;
 
 /// Runtime lookup mirror of `user_commands::try_dispatch_user_command`
 /// (`crates/tui/src/commands/user_commands.rs:193`). Called from `execute()`
@@ -43,6 +44,42 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
         _ => CommandResult::error(format!(
             "Unsupported /extension subcommand: {sub:?}. Try: list, info, enable, disable, status, reload"
         )),
+    })
+}
+
+/// §F5d T2 — dispatch an extension-registered slash command (e.g. `/mycmd
+/// args`) by calling [`ExtensionRunner::try_dispatch_command`].
+///
+/// `try_dispatch_command` is async (`CommandDefinition::run` is async) but
+/// `commands::execute` is sync. Both production call sites of `execute`
+/// (`tui/ui.rs:3763` + `tui/ui.rs:5901`) live inside `async fn`s running on
+/// the TUI's multi-thread `#[tokio::main]` runtime → creating+dropping a
+/// tokio runtime on this thread would panic on shutdown (tokio
+/// blocking/shutdown.rs; the same lesson `populate_extension_runtime`
+/// records at `core/engine.rs:418-426`). Mirror that pattern: spawn a plain
+/// OS thread that owns the current-thread rt's lifetime + block via
+/// `std::thread::scope`.
+///
+/// Returns `None` when no runner is bound or no command matches `name`, so
+/// `execute` falls through to the static-match tier + built-in commands.
+/// `CommandOutput` → `CommandResult`: `Message(s)`→display;
+/// `SendMessage(s)`→agent send (mirrors `user_commands.rs:222`).
+pub fn try_dispatch_extension_command(app: &App, name: &str, args: &str) -> Option<CommandResult> {
+    let runner = app.extension_runner.clone()?;
+    let out = std::thread::scope(|s| {
+        s.spawn(move || -> Option<CommandOutput> {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("extension command dispatch runtime");
+            rt.block_on(runner.try_dispatch_command(name, args))
+        })
+        .join()
+        .expect("extension command dispatch thread panicked")
+    })?;
+    Some(match out {
+        CommandOutput::Message(s) => CommandResult::message(s),
+        CommandOutput::SendMessage(s) => CommandResult::action(AppAction::SendMessage(s)),
     })
 }
 
@@ -375,5 +412,225 @@ mod tests {
     fn install_precheck_git_path_proceeds_none() {
         assert!(install_precheck("git:github.com/foo/bar").is_none());
         assert!(install_precheck("path:/abs/dir").is_none());
+    }
+
+    // === §F5d T2 — extension-registered slash command dispatch ============
+    // The fixture dylib registers only a tool + handler (no command), so the
+    // T2 dispatch test uses an in-process `CmdExt` that registers a static
+    // `EchoCmd` (mirror of the fixture's tool-registration shape, but for
+    // commands). The load+bind round-trip mirrors installer.rs:224-228.
+
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use async_trait::async_trait;
+    use codesmith_agent::extension::{
+        CommandDefinition, CommandOutput, Extension, ExtensionApi, ExtensionCommandContext,
+        ExtensionContext, ExtensionError, ExtensionMetadata, ExtensionMode,
+    };
+    use codesmith_extensions::ExtensionRunner;
+    use tokio_util::sync::CancellationToken;
+    use crate::config::Config;
+    use crate::tui::app::TuiOptions;
+
+    /// Minimal host context (mirrors the `Ctx` in `runner.rs` tests): impls
+    /// `ExtensionContext` + the marker `ExtensionCommandContext` sub-trait so
+    /// `bind_core` accepts it as `Arc<dyn ExtensionCommandContext>`.
+    struct Ctx {
+        generation: u64,
+    }
+    #[async_trait]
+    impl ExtensionContext for Ctx {
+        fn cwd(&self) -> &Path {
+            Path::new(".")
+        }
+        fn mode(&self) -> ExtensionMode {
+            ExtensionMode::Tui
+        }
+        fn is_idle(&self) -> bool {
+            true
+        }
+        fn signal(&self) -> CancellationToken {
+            CancellationToken::new()
+        }
+        fn generation(&self) -> u64 {
+            self.generation
+        }
+    }
+    impl ExtensionCommandContext for Ctx {}
+
+    /// A contributed slash command: echoes its args back as a `Message`.
+    /// Registered under name `fixture_cmd`.
+    struct EchoCmd;
+    #[async_trait]
+    impl CommandDefinition for EchoCmd {
+        fn name(&self) -> &str {
+            "fixture_cmd"
+        }
+        fn description(&self) -> &str {
+            "Echoes args back (T2 dispatch test)."
+        }
+        async fn run(
+            &self,
+            _ctx: &dyn ExtensionCommandContext,
+            args: &str,
+        ) -> Result<CommandOutput, ExtensionError> {
+            Ok(CommandOutput::Message(format!("echo:{args}")))
+        }
+    }
+
+    /// A contributed slash command returning `SendMessage` (the agent-send
+    /// variant) — covers the `CommandOutput::SendMessage →
+    /// CommandResult::action(AppAction::SendMessage)` arm of
+    /// `try_dispatch_extension_command` (the `Message`-arm test below does
+    /// not exercise it). Registered under `send_cmd`.
+    struct SendCmd;
+    #[async_trait]
+    impl CommandDefinition for SendCmd {
+        fn name(&self) -> &str {
+            "send_cmd"
+        }
+        fn description(&self) -> &str {
+            "Returns SendMessage (T2 SendMessage-arm test)."
+        }
+        async fn run(
+            &self,
+            _ctx: &dyn ExtensionCommandContext,
+            args: &str,
+        ) -> Result<CommandOutput, ExtensionError> {
+            Ok(CommandOutput::SendMessage(format!("send:{args}")))
+        }
+    }
+
+    /// Extension factory that registers `EchoCmd` + `SendCmd` via
+    /// `api.register_command`. Mirrors the fixture dylib's `configure` (which
+    /// registers a tool) but contributes commands instead — the symmetric T2
+    /// fixture. `EchoCmd` exercises the `Message` arm; `SendCmd` the
+    /// `SendMessage` arm.
+    struct CmdExt;
+    #[async_trait]
+    impl Extension for CmdExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("cmd-ext");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.register_command(Box::new(EchoCmd))?;
+            api.register_command(Box::new(SendCmd))?;
+            Ok(())
+        }
+    }
+
+    /// Minimal `App` mirroring `create_test_app` (`commands/mod.rs` tests).
+    /// `App::new` leaves `extension_runner = None` — the base for both the
+    /// no-runner fall-through test + `test_app_with_runner`.
+    fn test_app() -> App {
+        let options = TuiOptions {
+            model: "deepseek-v4-pro".to_string(),
+            workspace: PathBuf::from("."),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            use_alt_screen: true,
+            use_mouse_capture: false,
+            use_bracketed_paste: true,
+            max_subagents: 1,
+            skills_dir: PathBuf::from("."),
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        App::new(options, &Config::default())
+    }
+
+    /// `test_app()` with `extension_runner` bound — for dispatch tests that
+    /// need a contributed command loaded. The helper's
+    /// `app.extension_runner.clone()?` resolves only when this is set.
+    fn test_app_with_runner(runner: Arc<ExtensionRunner>) -> App {
+        let mut app = test_app();
+        app.extension_runner = Some(runner);
+        app
+    }
+
+    #[test]
+    fn try_dispatch_extension_command_resolves_contributed_command() {
+        // Load + bind a contributed command (mirror installer.rs:224-228
+        // round-trip). `try_dispatch_command` is async; the dispatch helper
+        // drives it on a spawned current-thread tokio rt (production
+        // `execute()` runs on a tokio worker thread → can't create+drop a
+        // runtime in-place; the helper mirrors `populate_extension_runtime`'s
+        // `thread::scope` form).
+        let runner = Arc::new(ExtensionRunner::new());
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&CmdExt)).expect("load CmdExt");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let app = test_app_with_runner(runner);
+
+        let res = try_dispatch_extension_command(&app, "fixture_cmd", "hello");
+        assert!(res.is_some(), "contributed command dispatched");
+        let res = res.unwrap();
+        assert!(!res.is_error, "command succeeded");
+        assert!(
+            res.message.as_deref().unwrap().contains("echo:hello"),
+            "arg forwarded into command output: {:?}",
+            res.message
+        );
+    }
+
+    #[test]
+    fn try_dispatch_extension_command_returns_none_when_no_runner() {
+        // `App::new` leaves extension_runner = None → the helper's
+        // `app.extension_runner.clone()?` short-circuits to None, so built-in
+        // slash commands still run when no extension runner is bound.
+        let app = test_app();
+        assert!(
+            try_dispatch_extension_command(&app, "fixture_cmd", "").is_none(),
+            "no runner → None (fall through to built-ins)"
+        );
+    }
+
+    #[test]
+    fn try_dispatch_extension_command_returns_none_for_unknown_command() {
+        // A bound runner with no matching command → try_dispatch_command
+        // returns None → helper returns None → built-ins still run. Locks the
+        // fall-through contract every built-in slash command depends on.
+        let runner = Arc::new(ExtensionRunner::new());
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&CmdExt)).expect("load CmdExt");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let app = test_app_with_runner(runner);
+        assert!(
+            try_dispatch_extension_command(&app, "definitely_not_a_command", "").is_none(),
+            "unknown command → None (fall through to built-ins)"
+        );
+    }
+
+    #[test]
+    fn try_dispatch_extension_command_maps_send_message_to_action() {
+        // Covers the `CommandOutput::SendMessage(s) => CommandResult::action(
+        // AppAction::SendMessage(s))` arm (mirrors user_commands.rs:222) —
+        // the Message-arm test above does not exercise this branch.
+        let runner = Arc::new(ExtensionRunner::new());
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&CmdExt)).expect("load CmdExt");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let app = test_app_with_runner(runner);
+
+        let res = try_dispatch_extension_command(&app, "send_cmd", "ping");
+        assert!(res.is_some(), "send_cmd dispatched");
+        let res = res.unwrap();
+        assert!(!res.is_error, "command succeeded");
+        assert!(res.message.is_none(), "SendMessage maps to action, not message");
+        match res.action {
+            Some(AppAction::SendMessage(s)) => {
+                assert_eq!(s.as_str(), "send:ping", "arg forwarded into SendMessage action");
+            }
+            other => panic!("expected AppAction::SendMessage, got {other:?}"),
+        }
     }
 }
