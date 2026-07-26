@@ -102,18 +102,18 @@ pub fn register_extension_tools(registry: &mut ToolRegistry, runner: &ExtensionR
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::registry::ToolRegistry;
     use async_trait::async_trait;
     use codesmith_agent::extension::{
         Extension, ExtensionApi, ExtensionCommandContext, ExtensionContext, ExtensionError,
         ExtensionMetadata, ExtensionMode, ToolDefinition,
     };
     use codesmith_extensions::{ExtensionRunner, HostExtensionContext};
-    use crate::tools::registry::ToolRegistry;
     use codesmith_tools::ToolCapability;
     use serde_json::json;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
     use tokio_util::sync::CancellationToken;
 
     struct EchoTool;

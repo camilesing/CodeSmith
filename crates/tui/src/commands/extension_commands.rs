@@ -420,17 +420,17 @@ mod tests {
     // `EchoCmd` (mirror of the fixture's tool-registration shape, but for
     // commands). The load+bind round-trip mirrors installer.rs:224-228.
 
-    use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use crate::config::Config;
+    use crate::tui::app::TuiOptions;
     use async_trait::async_trait;
     use codesmith_agent::extension::{
         CommandDefinition, CommandOutput, Extension, ExtensionApi, ExtensionCommandContext,
         ExtensionContext, ExtensionError, ExtensionMetadata, ExtensionMode,
     };
     use codesmith_extensions::ExtensionRunner;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
-    use crate::config::Config;
-    use crate::tui::app::TuiOptions;
 
     /// Minimal host context (mirrors the `Ctx` in `runner.rs` tests): impls
     /// `ExtensionContext` + the marker `ExtensionCommandContext` sub-trait so
