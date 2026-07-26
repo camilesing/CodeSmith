@@ -844,6 +844,75 @@ mod tests {
         );
     }
 
+    // === §F5d follow-up — clear_commands present→cleared =================
+    // T3's `clear_tools_and_clear_commands_empty_registries` covers the
+    // tool-only fixture dylib (clear_commands is a safe no-op when no command
+    // is registered — it asserts no-panic + stays empty). This fills the
+    // coverage gap T3's own comment (:830-833) flags: register a command,
+    // assert it is bound (non-empty), then `clear_commands()` empties the
+    // map. Mirrors T3's shape (load→bind→assert-present→clear→assert-empty)
+    // but for commands, via an in-process command-registering extension (the
+    // fixture dylib registers only a tool + handler, so a command-clear test
+    // needs its own command contributor).
+
+    /// A contributed slash command registered in-process. Mirrors `EchoCmd`
+    /// in `extension_commands.rs` (T2 dispatch fixture) — the symmetric
+    /// command-only contributor vs the fixture's tool-only contributor.
+    struct EchoCmd;
+    #[async_trait::async_trait]
+    impl CommandDefinition for EchoCmd {
+        fn name(&self) -> &str {
+            "clear_cmd_test"
+        }
+        fn description(&self) -> &str {
+            "Echoes args (clear_commands coverage test)."
+        }
+        async fn run(
+            &self,
+            _ctx: &dyn ExtensionCommandContext,
+            args: &str,
+        ) -> Result<CommandOutput, ExtensionError> {
+            Ok(CommandOutput::Message(format!("echo:{args}")))
+        }
+    }
+
+    /// In-process extension registering `EchoCmd` via `api.register_command`
+    /// (mirrors `RecExt`'s `api.on` shape, but contributing a command). The
+    /// fixture dylib can't serve here (it registers only a tool + handler).
+    struct CmdExt;
+    #[async_trait::async_trait]
+    impl Extension for CmdExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("cmd-clear-ext");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.register_command(Box::new(EchoCmd))?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn clear_commands_drops_present_command_binding() {
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&CmdExt)).expect("load CmdExt");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+
+        // Command present before clear.
+        let names = runner.bound_command_names();
+        assert!(
+            names.iter().any(|n| n == "clear_cmd_test"),
+            "clear_cmd_test bound before clear: {names:?}"
+        );
+
+        runner.clear_commands();
+
+        // Command gone after clear.
+        let after = runner.bound_command_names();
+        assert!(after.is_empty(), "commands cleared: {after:?}");
+    }
+
     // === §F5d T4 — two-phase Library drain/drop ===========================
 
     /// §F5d T4 — the UI-thread MOVE (`drain_libraries_to_pending`) empties
