@@ -316,6 +316,19 @@ impl ExtensionBuilder for CargoBuilder {
     }
 }
 
+/// No-op `ExtensionBuilder` for the prebuilt path (§F5e Q3). The fetched
+/// artifact IS already a dylib (no build needed); `build(src)` returns `src`
+/// as-is. For prebuilt, `src` is a file path (the downloaded dylib), NOT a
+/// directory as for `CargoBuilder`. `Installer::install` then D8-temp-loads
+/// it (runs `codesmith_register_extension` for id/version) → places → manifest.
+pub struct IdentityBuilder;
+
+impl ExtensionBuilder for IdentityBuilder {
+    fn build(&self, src: &Path) -> Result<PathBuf, ExtensionError> {
+        Ok(src.to_path_buf())
+    }
+}
+
 /// Place a built cdylib into `<root>/<id>/` (§F5c). The dylib is renamed to
 /// `default_dylib_filename(id)` so `discover_dylib` (manifest with no `entry`)
 /// re-finds it as a manifest-subdir source (not bare). The `extension.toml`
@@ -833,5 +846,29 @@ mod http_fetcher_tests {
             "body head: {}",
             &body[..body.len().min(200)]
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_builder_tests {
+    use super::*;
+
+    #[test]
+    fn identity_builder_returns_input_path() {
+        let b = IdentityBuilder;
+        let src = std::env::temp_dir().join("fake.dylib");
+        let out = b.build(&src).expect("identity build");
+        assert_eq!(out, src, "identity builder returns input as-is");
+    }
+
+    #[test]
+    fn identity_builder_accepts_file_path() {
+        // Prebuilt path: build()'s src_dir param receives a FILE (the dylib),
+        // not a dir (as for CargoBuilder). Documented in the impl.
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("x.dylib");
+        std::fs::write(&file, b"binary").unwrap();
+        let out = IdentityBuilder.build(&file).unwrap();
+        assert_eq!(out, file);
     }
 }
