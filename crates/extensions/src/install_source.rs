@@ -320,6 +320,134 @@ impl ExtensionPlacer for Placer {
     }
 }
 
+/// HTTP fetch abstraction (§F5e Q1). Real impl `CurlHttpFetcher` shells out
+/// to `curl`; tests inject `FakeHttpFetcher`. `Send + Sync` so
+/// `Arc<dyn HttpFetcher>` crosses the tui→Installer handoff (install runs on
+/// the UI thread; tests may cross threads).
+pub trait HttpFetcher: Send + Sync {
+    /// Fetch `url` bytes into the file at `dest`. TLS verified (curl default).
+    fn fetch_to(&self, url: &str, dest: &Path) -> Result<(), ExtensionError>;
+    /// Fetch `url` body as text (e.g. the crates.io sparse-index JSON-lines).
+    fn fetch_text(&self, url: &str) -> Result<String, ExtensionError>;
+}
+
+/// curl shell-out `HttpFetcher` (§F5e Q1, 3rd shell-out after git/cargo).
+/// `curl -fsSL -A <ua> <url> [-o <dest>]`. `-f` fails on HTTP errors, `-S`
+/// shows errors, `-L` follows redirects, default cert verification. Assumes
+/// `curl` on PATH (like `git`/`cargo` per §F5c). A `User-Agent` is required
+/// by crates.io (index + static) — without it the registry 4xx's.
+pub struct CurlHttpFetcher {
+    user_agent: String,
+}
+
+impl CurlHttpFetcher {
+    pub fn new() -> Self {
+        Self {
+            user_agent: format!(
+                "codesmith-extensions/{} (install)",
+                env!("CARGO_PKG_VERSION")
+            ),
+        }
+    }
+}
+
+impl Default for CurlHttpFetcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HttpFetcher for CurlHttpFetcher {
+    fn fetch_to(&self, url: &str, dest: &Path) -> Result<(), ExtensionError> {
+        let out = Command::new("curl")
+            .arg("-fsSL")
+            .arg("-A")
+            .arg(&self.user_agent)
+            .arg(url)
+            .arg("-o")
+            .arg(dest)
+            .output()
+            .map_err(|e| ExtensionError::Install(format!("spawn curl (on PATH?): {e}")))?;
+        if !out.status.success() {
+            return Err(ExtensionError::Install(format!(
+                "curl {} failed: {}",
+                url,
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        Ok(())
+    }
+
+    fn fetch_text(&self, url: &str) -> Result<String, ExtensionError> {
+        let out = Command::new("curl")
+            .arg("-fsSL")
+            .arg("-A")
+            .arg(&self.user_agent)
+            .arg(url)
+            .output()
+            .map_err(|e| ExtensionError::Install(format!("spawn curl (on PATH?): {e}")))?;
+        if !out.status.success() {
+            return Err(ExtensionError::Install(format!(
+                "curl {} failed: {}",
+                url,
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+/// Test-only `HttpFetcher` (§F5e). Holds a URL→bytes map; unknown URL →
+/// `ExtensionError::Install`. Lets `CratesIoSource`/`PrebuiltDylibSource`
+/// unit tests run with no network (mirrors §F5c `FakeSource`/`FakeBuilder`).
+#[cfg(test)]
+pub struct FakeHttpFetcher {
+    responses: std::collections::HashMap<String, Vec<u8>>,
+}
+
+#[cfg(test)]
+impl FakeHttpFetcher {
+    pub fn new() -> Self {
+        Self {
+            responses: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register a canned response body for `url`.
+    pub fn with(mut self, url: impl Into<String>, body: impl Into<Vec<u8>>) -> Self {
+        self.responses.insert(url.into(), body.into());
+        self
+    }
+}
+
+#[cfg(test)]
+impl Default for FakeHttpFetcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+impl HttpFetcher for FakeHttpFetcher {
+    fn fetch_to(&self, url: &str, dest: &Path) -> Result<(), ExtensionError> {
+        let body = self
+            .responses
+            .get(url)
+            .ok_or_else(|| ExtensionError::Install(format!("FakeHttp: no canned response for {url}")))?;
+        std::fs::write(dest, body)
+            .map_err(|e| ExtensionError::Install(format!("FakeHttp write {url}: {e}")))?;
+        Ok(())
+    }
+
+    fn fetch_text(&self, url: &str) -> Result<String, ExtensionError> {
+        let body = self
+            .responses
+            .get(url)
+            .ok_or_else(|| ExtensionError::Install(format!("FakeHttp: no canned response for {url}")))?;
+        Ok(String::from_utf8_lossy(body).into_owned())
+    }
+}
+
 #[cfg(test)]
 mod source_spec_tests {
     use super::*;
@@ -559,5 +687,52 @@ mod placer_tests {
         let dest = placer.place(&artifact).unwrap();
         assert!(dest.is_file());
         assert!(root.join("ext3").is_dir());
+    }
+}
+
+#[cfg(test)]
+mod http_fetcher_tests {
+    use super::*;
+
+    #[test]
+    fn fake_http_returns_canned_text() {
+        let h = FakeHttpFetcher::new().with("https://x/i", br#"{"vers":"1.0"}"#.to_vec());
+        let t = h.fetch_text("https://x/i").unwrap();
+        assert!(t.contains("\"vers\":\"1.0\""), "{t}");
+        let r = h.fetch_text("https://x/missing");
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "{r:?}");
+    }
+
+    #[test]
+    fn fake_http_fetch_to_writes_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out.bin");
+        let h = FakeHttpFetcher::new().with("https://x/y", b"dylib-bytes".to_vec());
+        h.fetch_to("https://x/y", &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"dylib-bytes");
+    }
+
+    /// Real curl fetch of the crates.io sparse index. Skip if `curl` not on
+    /// PATH; `#[ignore]` (network) — opt in via `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "network: curls index.crates.io"]
+    fn curl_http_fetch_text_reads_sparse_index() {
+        if std::process::Command::new("curl")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("curl not on PATH; skipping");
+            return;
+        }
+        let h = CurlHttpFetcher::new();
+        let body = h
+            .fetch_text("https://index.crates.io/se/rd/serde")
+            .expect("curl sparse index");
+        assert!(
+            body.contains("\"name\":\"serde\""),
+            "body head: {}",
+            &body[..body.len().min(200)]
+        );
     }
 }
