@@ -6,7 +6,7 @@
 //! after D8 yields the id (id is unknown until the built dylib's `metadata()`
 //! is read).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use codesmith_agent::extension::ExtensionError;
 
@@ -131,6 +131,7 @@ mod e2e_tests {
     use crate::install_source::*;
     use async_trait::async_trait;
     use codesmith_agent::extension::*;
+    use std::path::Path;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
