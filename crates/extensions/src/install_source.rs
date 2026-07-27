@@ -62,42 +62,63 @@ pub enum SourceKind {
     Prebuilt, // §F5c stubbed (nice-to-have)
 }
 
-/// Parsed `/extension install <spec> [--global]` source spec (§F5c).
-/// Grammar: `<kind>:<body>[@<ref>]` where `kind ∈ {git, path, crate, prebuilt}`.
-/// `@<ref>` is split on the LAST `@` (so `git:host/path@v1` → ref `v1`).
+/// Parsed `/extension install <spec> [--global] [--checksum <hex>]` source
+/// spec (§F5c + §F5e). Grammar: `<kind>:<body>[@<ref>]` where
+/// `kind ∈ {git, path, crate, prebuilt}`. `@<ref>` splits ONLY for git + crate
+/// (git ref / crate version); path + prebuilt take the body whole (prebuilt
+/// URLs may contain `@` userinfo — §F5e sub-choice B). `--checksum <sha256>`
+/// applies to prebuilt (kind-agnostic field; git/path/crate ignore it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSpec {
     pub kind: SourceKind,
     pub body: String,
     pub ref_: Option<String>,
     pub scope: InstallScope,
+    pub checksum: Option<String>,
 }
 
 impl SourceSpec {
     /// Parse a `/extension install` arg string. `--global` → `Global` scope
-    /// (default `Project`). The first non-`--` token is the `<kind>:<body>`
-    /// spec; everything else (flags) is ignored.
+    /// (default `Project`); `--checksum <64-hex>` sets the prebuilt checksum.
+    /// The first non-`--` token (not consumed as a flag value) is the
+    /// `<kind>:<body>` spec. Unknown `--` flags → `Install` error (§F5e).
     pub fn parse(arg: &str) -> Result<Self, ExtensionError> {
-        let scope = if arg.split_whitespace().any(|t| t == "--global") {
-            InstallScope::Global
-        } else {
-            InstallScope::Project
-        };
-        let spec_token = arg
-            .split_whitespace()
-            .find(|t| !t.starts_with("--"))
-            .ok_or_else(|| {
-                ExtensionError::Install(
-                    "missing source spec (expected `<kind>:<body>[@<ref>]`)".into(),
-                )
-            })?;
-        let (kind_str, rest) = spec_token
-            .split_once(':')
-            .ok_or_else(|| {
-                ExtensionError::Install(format!(
-                    "source spec must be `<kind>:<body>`; got {spec_token:?}"
-                ))
-            })?;
+        let mut scope = InstallScope::Project;
+        let mut checksum: Option<String> = None;
+        let mut spec_token: Option<&str> = None;
+        let mut tokens = arg.split_whitespace().peekable();
+        while let Some(t) = tokens.next() {
+            match t {
+                "--global" => scope = InstallScope::Global,
+                "--checksum" => {
+                    let val = tokens.next().ok_or_else(|| {
+                        ExtensionError::Install(
+                            "--checksum requires a value (64 lowercase hex chars)".into(),
+                        )
+                    })?;
+                    if !is_valid_sha256_hex(val) {
+                        return Err(ExtensionError::Install(format!(
+                            "invalid --checksum: expected 64 lowercase hex chars, got {val:?}"
+                        )));
+                    }
+                    checksum = Some(val.to_string());
+                }
+                _ if t.starts_with("--") => {
+                    return Err(ExtensionError::Install(format!("unknown flag {t:?}")));
+                }
+                _ => {
+                    if spec_token.is_none() {
+                        spec_token = Some(t);
+                    }
+                }
+            }
+        }
+        let spec_token = spec_token.ok_or_else(|| {
+            ExtensionError::Install("missing source spec (expected `<kind>:<body>[@<ref>]`)".into())
+        })?;
+        let (kind_str, rest) = spec_token.split_once(':').ok_or_else(|| {
+            ExtensionError::Install(format!("source spec must be `<kind>:<body>`; got {spec_token:?}"))
+        })?;
         let kind = match kind_str {
             "git" => SourceKind::Git,
             "path" => SourceKind::Path,
@@ -109,9 +130,14 @@ impl SourceSpec {
                 )))
             }
         };
-        let (body, ref_) = match rest.rsplit_once('@') {
-            Some((b, r)) if !r.is_empty() => (b.to_string(), Some(r.to_string())),
-            _ => (rest.to_string(), None),
+        // §F5e sub-choice B: kind-dependent @-split. git/crate split
+        // (ref / version on ref_); path/prebuilt take body whole.
+        let (body, ref_) = match kind {
+            SourceKind::Git | SourceKind::CratesIo => match rest.rsplit_once('@') {
+                Some((b, r)) if !r.is_empty() => (b.to_string(), Some(r.to_string())),
+                _ => (rest.to_string(), None),
+            },
+            SourceKind::Path | SourceKind::Prebuilt => (rest.to_string(), None),
         };
         if body.is_empty() {
             return Err(ExtensionError::Install("source body is empty".into()));
@@ -121,8 +147,14 @@ impl SourceSpec {
             body,
             ref_,
             scope,
+            checksum,
         })
     }
+}
+
+/// 64 lowercase hex chars (sha256 digest). Used for `--checksum` validation.
+fn is_valid_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
 }
 
 /// Git install source (§F5c must-have). `git clone --depth 1 [--branch <ref>]`.
@@ -518,6 +550,73 @@ mod source_spec_tests {
     fn parse_missing_spec_token_is_install_error() {
         let r = SourceSpec::parse("--global");
         assert!(matches!(r, Err(ExtensionError::Install(_))), "got {r:?}");
+    }
+
+    #[test]
+    fn parse_checksum_flag_sets_checksum_field() {
+        let s = SourceSpec::parse(
+            "prebuilt:https://x/y.dylib --checksum \
+             d1bb2d9926b9bd18e51fc8edd663e311ff3b1fb96c9d4689854f8686f7c6c216",
+        )
+        .unwrap();
+        assert_eq!(s.kind, SourceKind::Prebuilt);
+        assert_eq!(
+            s.checksum.as_deref(),
+            Some("d1bb2d9926b9bd18e51fc8edd663e311ff3b1fb96c9d4689854f8686f7c6c216")
+        );
+    }
+
+    #[test]
+    fn parse_checksum_must_be_64_lowercase_hex() {
+        let r = SourceSpec::parse("prebuilt:x --checksum abc123");
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "{r:?}");
+        let r = SourceSpec::parse(
+            "prebuilt:x --checksum D1BB2D9926B9BD18E51FC8EDD663E311FF3B1FB96C9D4689854F8686F7C6C216",
+        );
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "uppercase rejected: {r:?}");
+    }
+
+    #[test]
+    fn parse_checksum_requires_value() {
+        let r = SourceSpec::parse("prebuilt:x --checksum");
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "{r:?}");
+    }
+
+    #[test]
+    fn parse_prebuilt_url_with_at_not_split() {
+        // URL with @ userinfo must NOT be @-split (would mangle to ref_).
+        let s = SourceSpec::parse("prebuilt:https://u:p@host.example/y.dylib").unwrap();
+        assert_eq!(s.body, "https://u:p@host.example/y.dylib");
+        assert_eq!(s.ref_, None);
+        assert_eq!(s.checksum, None);
+    }
+
+    #[test]
+    fn parse_crate_with_version_splits_at() {
+        let s = SourceSpec::parse("crate:serde@1.0.204").unwrap();
+        assert_eq!(s.kind, SourceKind::CratesIo);
+        assert_eq!(s.body, "serde");
+        assert_eq!(s.ref_.as_deref(), Some("1.0.204"));
+    }
+
+    #[test]
+    fn parse_crate_no_version_has_no_ref() {
+        let s = SourceSpec::parse("crate:serde").unwrap();
+        assert_eq!(s.body, "serde");
+        assert_eq!(s.ref_, None);
+    }
+
+    #[test]
+    fn parse_path_with_at_not_split() {
+        let s = SourceSpec::parse("path:/a@b").unwrap();
+        assert_eq!(s.body, "/a@b");
+        assert_eq!(s.ref_, None);
+    }
+
+    #[test]
+    fn parse_unknown_flag_is_install_error() {
+        let r = SourceSpec::parse("git:foo/bar --bogus");
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "{r:?}");
     }
 }
 
