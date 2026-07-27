@@ -48,9 +48,9 @@ pub use api::{RealExtensionApi, StubExtensionApi};
 pub use bus::EventBus;
 pub use discovery::{apply_trust_gate, discover_dylib, discover_static, DiscoveredSource, ExtensionRegistration};
 pub use install_source::{
-    CargoBuilder, CurlHttpFetcher, ExtensionBuilder, ExtensionPlacer, ExtensionSource, GitSource,
-    HttpFetcher, IdentityBuilder, InstallScope, LocalPathSource, Placer, SourceArtifact,
-    SourceKind, SourceSpec, UnimplementedSource,
+    CargoBuilder, CratesIoSource, CurlHttpFetcher, ExtensionBuilder, ExtensionPlacer,
+    ExtensionSource, GitSource, HttpFetcher, IdentityBuilder, InstallScope, LocalPathSource,
+    Placer, SourceArtifact, SourceKind, SourceSpec, UnimplementedSource,
 };
 pub use installer::{InstallReport, Installer, UninstallReport};
 pub use manifest::ExtensionManifest;

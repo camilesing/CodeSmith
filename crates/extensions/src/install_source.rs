@@ -6,8 +6,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use codesmith_agent::extension::ExtensionError;
+use sha2::{Digest, Sha256};
 
 /// A fetched install artifact (path + provenance string for
 /// `ExtensionStateStore.installed`).
@@ -327,6 +329,147 @@ impl ExtensionBuilder for IdentityBuilder {
     fn build(&self, src: &Path) -> Result<PathBuf, ExtensionError> {
         Ok(src.to_path_buf())
     }
+}
+
+/// Crates.io install source (§F5e). Sparse-index lookup → version selection →
+/// `.crate` download → sha256 verify (registry `cksum`) → `tar -xzf` extract.
+/// Hands the extracted inner dir `<name>-<vers>/` to `CargoBuilder` (§F5c
+/// build path). Holds an `Arc<dyn HttpFetcher>` (real = `CurlHttpFetcher`,
+/// tests = `FakeHttpFetcher`).
+pub struct CratesIoSource {
+    pub name: String,
+    pub version: Option<String>,
+    pub http: Arc<dyn HttpFetcher>,
+}
+
+impl CratesIoSource {
+    pub fn new(
+        name: impl Into<String>,
+        version: Option<String>,
+        http: Arc<dyn HttpFetcher>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            version,
+            http,
+        }
+    }
+
+    /// Sparse-index URL for `self.name` (verified 2026-07-27). 1-3 char names
+    /// use special paths; 4+ chars use `<first2>/<next2>/<name>`. Crate names
+    /// are ASCII (crates.io policy) so byte-slicing `[..2]`/`[2..4]` is safe.
+    fn index_url(&self) -> String {
+        let n = self.name.as_str();
+        let path = match n.len() {
+            1 => format!("1/{n}"),
+            2 => format!("2/{}/{}", &n[..1], n),
+            3 => format!("3/{}/{}", &n[..1], n),
+            // 4+ chars → first2/next2/name (crates.io sparse-index layout;
+            // verified 2026-07-27 via curl on "serde" → se/rd/serde). ASCII
+            // names → byte-slice `[..2]`/`[2..4]` is safe for len ≥ 4.
+            _ => format!("{}/{}/{}", &n[..2], &n[2..4], n),
+        };
+        format!("https://index.crates.io/{path}")
+    }
+
+    /// Test accessor for the index URL (so tests can register the canned
+    /// response keyed by the exact URL). `#[cfg(test)]` only.
+    #[cfg(test)]
+    pub fn index_url_for_test(&self) -> String {
+        self.index_url()
+    }
+}
+
+impl ExtensionSource for CratesIoSource {
+    fn fetch(&self, dest: &Path) -> Result<SourceArtifact, ExtensionError> {
+        // 1. sparse-index lookup
+        let index_json = self.http.fetch_text(&self.index_url())?;
+        // 2. parse JSON-lines → entries (serde ignores unknown fields)
+        let mut entries: Vec<IndexEntry> = index_json
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(serde_json::from_str::<IndexEntry>)
+            .collect::<Result<_, _>>()
+            .map_err(|e| ExtensionError::Install(format!("parse index for {}: {e}", self.name)))?;
+        // index is publish-ordered; sort by pubtime asc for deterministic tie-break
+        entries.sort_by(|a, b| a.pubtime.cmp(&b.pubtime));
+        // 3. select version
+        let entry = match &self.version {
+            Some(v) => entries
+                .iter()
+                .find(|e| e.vers == *v && !e.yanked)
+                .ok_or_else(|| {
+                    ExtensionError::Install(format!("version {v} of {} not found or yanked", self.name))
+                })?,
+            None => entries
+                .iter()
+                .rev()
+                .find(|e| !e.yanked)
+                .ok_or_else(|| {
+                    ExtensionError::Install(format!("no non-yanked version for {}", self.name))
+                })?,
+        }
+        .clone();
+        // 4. download .crate
+        let crate_file =
+            dest.join(format!("{}-{}.crate", self.name, entry.vers));
+        let crate_url = format!(
+            "https://static.crates.io/crates/{}/{}-{}.crate",
+            self.name, self.name, entry.vers
+        );
+        self.http.fetch_to(&crate_url, &crate_file)?;
+        // 5. sha256 verify (registry cksum is mandatory; free integrity)
+        let bytes = std::fs::read(&crate_file)
+            .map_err(|e| ExtensionError::Install(format!("read crate {}: {e}", crate_file.display())))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual = format!("{:x}", hasher.finalize());
+        if actual != entry.cksum {
+            return Err(ExtensionError::Install(format!(
+                "checksum mismatch for {}-{}: expected {}, got {}",
+                self.name, entry.vers, entry.cksum, actual
+            )));
+        }
+        // 6. tar -xzf extract (shell-out, like curl/git/cargo)
+        let out = Command::new("tar")
+            .arg("-xzf")
+            .arg(&crate_file)
+            .arg("-C")
+            .arg(dest)
+            .output()
+            .map_err(|e| ExtensionError::Install(format!("spawn tar (on PATH?): {e}")))?;
+        if !out.status.success() {
+            return Err(ExtensionError::Install(format!(
+                "tar extract {} failed: {}",
+                crate_file.display(),
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        // 7. inner dir <name>-<vers>/ (contains Cargo.toml for CargoBuilder)
+        let inner = dest.join(format!("{}-{}", self.name, entry.vers));
+        if !inner.is_dir() {
+            return Err(ExtensionError::Install(format!(
+                "extracted inner dir missing: {}",
+                inner.display()
+            )));
+        }
+        Ok(SourceArtifact {
+            path: inner,
+            provenance: format!("crate:{}@{}", self.name, entry.vers),
+        })
+    }
+}
+
+/// One published version row from the crates.io sparse index (§F5e). serde
+/// ignores unknown fields (name/deps/features/links). `pubtime` drives the
+/// deterministic latest-non-yanked tie-break.
+#[derive(serde::Deserialize, Clone)]
+struct IndexEntry {
+    vers: String,
+    cksum: String,
+    yanked: bool,
+    #[serde(default)]
+    pubtime: String,
 }
 
 /// Place a built cdylib into `<root>/<id>/` (§F5c). The dylib is renamed to
@@ -870,5 +1013,160 @@ mod identity_builder_tests {
         std::fs::write(&file, b"binary").unwrap();
         let out = IdentityBuilder.build(&file).unwrap();
         assert_eq!(out, file);
+    }
+}
+
+#[cfg(test)]
+mod crates_io_source_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Build a canned `.crate` (gzipped tar) in a temp dir: creates
+    /// `<name>-<vers>/Cargo.toml` then `tar -czf`. Returns `(bytes, sha256_hex)`.
+    /// Returns `None` (skips the test) if `tar` not on PATH.
+    fn make_crate_fixture(name: &str, vers: &str) -> Option<(Vec<u8>, String)> {
+        if std::process::Command::new("tar").arg("--version").output().is_err() {
+            eprintln!("tar not on PATH; skipping");
+            return None;
+        }
+        let work = tempfile::tempdir().ok()?;
+        let inner = work.path().join(format!("{name}-{vers}"));
+        std::fs::create_dir_all(&inner).ok()?;
+        std::fs::write(
+            inner.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"{vers}\"\nedition = \"2021\"\n"),
+        )
+        .ok()?;
+        let crate_file = work.path().join(format!("{name}-{vers}.crate"));
+        let out = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&crate_file)
+            .arg("-C")
+            .arg(work.path())
+            .arg(format!("{name}-{vers}"))
+            .output()
+            .ok()?;
+        assert!(out.status.success(), "tar: {}", String::from_utf8_lossy(&out.stderr));
+        let bytes = std::fs::read(&crate_file).ok()?;
+        let mut h = sha2::Sha256::new();
+        sha2::Digest::update(&mut h, &bytes);
+        let cksum = format!("{:x}", h.finalize());
+        Some((bytes, cksum))
+    }
+
+    /// Throwaway index URL for a name (constructs a source with a no-op
+    /// FakeHttp just to read `index_url_for_test`).
+    fn idx_url_for(name: &str) -> String {
+        CratesIoSource::new(name.to_string(), None, Arc::new(FakeHttpFetcher::new()))
+            .index_url_for_test()
+    }
+
+    #[test]
+    fn crates_io_index_url_path_lengths() {
+        // crates.io sparse-index layout (verified 2026-07-27): 1→1/, 2→2/c1/,
+        // 3→3/c1/, 4+→c1c2/c3c4/. Crate names are ASCII → byte-slice is safe.
+        assert_eq!(idx_url_for("a"), "https://index.crates.io/1/a");
+        assert_eq!(idx_url_for("ab"), "https://index.crates.io/2/a/ab");
+        assert_eq!(idx_url_for("abc"), "https://index.crates.io/3/a/abc");
+        assert_eq!(idx_url_for("abcd"), "https://index.crates.io/ab/cd/abcd");
+        assert_eq!(idx_url_for("serde"), "https://index.crates.io/se/rd/serde");
+        assert_eq!(idx_url_for("abcde"), "https://index.crates.io/ab/cd/abcde");
+    }
+
+    #[test]
+    fn crates_io_fetch_extracts_and_verifies_checksum() {
+        let name = "fixcrate";
+        let vers = "0.2.0";
+        let Some((bytes, cksum)) = make_crate_fixture(name, vers) else {
+            return;
+        };
+        let idx_url = idx_url_for(name);
+        // `cksum` is mandatory on IndexEntry → bake the REAL fixture cksum in.
+        let idx_body = format!(
+            "{{\"name\":\"{name}\",\"vers\":\"{vers}\",\"yanked\":false,\"cksum\":\"{cksum}\",\"pubtime\":\"2024-02-01T00:00:00.000Z\"}}\n"
+        );
+        let crate_url = format!("https://static.crates.io/crates/{name}/{name}-{vers}.crate");
+        let http = FakeHttpFetcher::new()
+            .with(idx_url.as_str(), idx_body.into_bytes())
+            .with(crate_url.as_str(), bytes);
+        let src = CratesIoSource::new(name.to_string(), None, Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let art = src.fetch(dest.path()).expect("fetch");
+        assert_eq!(art.path, dest.path().join(format!("{name}-{vers}")));
+        assert!(art.path.join("Cargo.toml").is_file());
+        assert_eq!(art.provenance, format!("crate:{name}@{vers}"));
+    }
+
+    #[test]
+    fn crates_io_fetch_selects_exact_version() {
+        let name = "fixcrate2";
+        let Some((bytes010, cksum010)) = make_crate_fixture(name, "0.1.0") else {
+            return;
+        };
+        let Some((bytes020, cksum020)) = make_crate_fixture(name, "0.2.0") else {
+            return;
+        };
+        let idx_url = idx_url_for(name);
+        // both non-yanked; sorted by pubtime asc → latest = 0.2.0. Request
+        // exact 0.1.0 → must NOT pick the latest 0.2.0.
+        let idx_body = format!(
+            "{{\"name\":\"{name}\",\"vers\":\"0.1.0\",\"yanked\":false,\"cksum\":\"{cksum010}\",\"pubtime\":\"2024-01-01T00:00:00.000Z\"}}\n\
+             {{\"name\":\"{name}\",\"vers\":\"0.2.0\",\"yanked\":false,\"cksum\":\"{cksum020}\",\"pubtime\":\"2024-02-01T00:00:00.000Z\"}}\n"
+        );
+        let crate_url010 = format!("https://static.crates.io/crates/{name}/{name}-0.1.0.crate");
+        let http = FakeHttpFetcher::new()
+            .with(idx_url.as_str(), idx_body.into_bytes())
+            .with(crate_url010.as_str(), bytes010);
+        let src = CratesIoSource::new(name.to_string(), Some("0.1.0".into()), Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let art = src.fetch(dest.path()).expect("fetch selects exact 0.1.0");
+        assert_eq!(art.provenance, format!("crate:{name}@0.1.0"));
+    }
+
+    #[test]
+    fn crates_io_fetch_latest_skips_yanked() {
+        let name = "fixcrate3";
+        let Some((bytes010, cksum010)) = make_crate_fixture(name, "0.1.0") else {
+            return;
+        };
+        // 0.2.0 yanked, 0.1.0 non-yanked → latest-non-yanked = 0.1.0. The
+        // yanked 0.2.0's cksum is bogus but never fetched (skipped before
+        // download), so its value is irrelevant.
+        let idx_url = idx_url_for(name);
+        let idx_body = format!(
+            "{{\"name\":\"{name}\",\"vers\":\"0.1.0\",\"yanked\":false,\"cksum\":\"{cksum010}\",\"pubtime\":\"2024-01-01T00:00:00.000Z\"}}\n\
+             {{\"name\":\"{name}\",\"vers\":\"0.2.0\",\"yanked\":true,\"cksum\":\"{}\",\"pubtime\":\"2024-02-01T00:00:00.000Z\"}}\n",
+            "0".repeat(64)
+        );
+        let crate_url010 = format!("https://static.crates.io/crates/{name}/{name}-0.1.0.crate");
+        let http = FakeHttpFetcher::new()
+            .with(idx_url.as_str(), idx_body.into_bytes())
+            .with(crate_url010.as_str(), bytes010);
+        let src = CratesIoSource::new(name.to_string(), None, Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let art = src.fetch(dest.path()).expect("fetch picks 0.1.0 (non-yanked)");
+        assert!(art.provenance.ends_with("@0.1.0"));
+    }
+
+    #[test]
+    fn crates_io_fetch_checksum_mismatch_is_install_error() {
+        let name = "fixcrate4";
+        let Some((bytes, _real_cksum)) = make_crate_fixture(name, "0.1.0") else {
+            return;
+        };
+        let idx_url = idx_url_for(name);
+        // index claims a WRONG cksum ("00..00") → sha256 verify fails.
+        let idx_body = format!(
+            "{{\"name\":\"{name}\",\"vers\":\"0.1.0\",\"yanked\":false,\"cksum\":\"{}\",\"pubtime\":\"2024-01-01T00:00:00.000Z\"}}\n",
+            "0".repeat(64)
+        );
+        let crate_url = format!("https://static.crates.io/crates/{name}/{name}-0.1.0.crate");
+        let http = FakeHttpFetcher::new()
+            .with(idx_url.as_str(), idx_body.into_bytes())
+            .with(crate_url.as_str(), bytes);
+        let src = CratesIoSource::new(name.to_string(), None, Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let r = src.fetch(dest.path());
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "{r:?}");
     }
 }
