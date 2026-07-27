@@ -88,10 +88,13 @@ between user-defined commands and the static `match`.
   `discover_static()` collects every `ExtensionRegistration` linked into
   the binary. The in-tree `scratchpad` sample is the reference
   registration.
-- **Phase 2 (§F5, deferred):** dylib loading from an install root +
+- **Phase 2 (§F5, delivered):** dylib loading from an install root +
   `extension.toml` manifest + trust prompt + the `ExtensionSource` /
-  `ExtensionBuilder` / `ExtensionPlacer` trait impls. Slice 1 ships the
-  **traits only** — no impls.
+  `ExtensionBuilder` / `ExtensionPlacer` trait impls (Git / LocalPath /
+  CratesIo / PrebuiltDylib — §F5c wired Git/LocalPath, §F5e wired
+  CratesIo/Prebuilt). Host tools/commands wired live per-turn by §F5d;
+  `/extension install`/`uninstall`/`reload` real (two-phase `Library`
+  drop safe at the turn boundary).
 
 ## Minimal Example
 
