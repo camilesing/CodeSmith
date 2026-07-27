@@ -445,6 +445,8 @@ impl ExtensionSource for CratesIoSource {
                 String::from_utf8_lossy(&out.stderr)
             )));
         }
+        // .crate no longer needed post-extract; tidy the working dir
+        let _ = std::fs::remove_file(&crate_file);
         // 7. inner dir <name>-<vers>/ (contains Cargo.toml for CargoBuilder)
         let inner = dest.join(format!("{}-{}", self.name, entry.vers));
         if !inner.is_dir() {
@@ -467,6 +469,7 @@ impl ExtensionSource for CratesIoSource {
 struct IndexEntry {
     vers: String,
     cksum: String,
+    #[serde(default)]
     yanked: bool,
     #[serde(default)]
     pubtime: String,
@@ -1103,7 +1106,7 @@ mod crates_io_source_tests {
         let Some((bytes010, cksum010)) = make_crate_fixture(name, "0.1.0") else {
             return;
         };
-        let Some((bytes020, cksum020)) = make_crate_fixture(name, "0.2.0") else {
+        let Some((_bytes020, cksum020)) = make_crate_fixture(name, "0.2.0") else {
             return;
         };
         let idx_url = idx_url_for(name);
