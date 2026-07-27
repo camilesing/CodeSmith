@@ -58,8 +58,9 @@ impl<'a> Installer<'a> {
     }
 
     pub fn install(&self, spec: &SourceSpec) -> Result<InstallReport, ExtensionError> {
-        // 3. fetch (source is trust-agnostic; §F5c short-circuits crate/prebuilt
-        //    in the tui command before constructing this — R4).
+        // 3. fetch (source is trust-agnostic; §F5e wired real CratesIoSource/
+        //    PrebuiltDylibSource impls so crate:/prebuilt: flow through here —
+        //    the §F5c tui-layer short-circuit is gone, R4 closed).
         let dest = tempfile::tempdir()
             .map_err(|e| ExtensionError::Install(format!("tempdir for fetch: {e}")))?;
         let art: SourceArtifact = self.source.fetch(dest.path())?;

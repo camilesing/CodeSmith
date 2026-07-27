@@ -60,8 +60,8 @@ pub enum InstallScope {
 pub enum SourceKind {
     Git,
     Path,
-    CratesIo, // §F5c stubbed (nice-to-have)
-    Prebuilt, // §F5c stubbed (nice-to-have)
+    CratesIo, // §F5e: real CratesIoSource impl (was §F5c stub)
+    Prebuilt, // §F5e: real PrebuiltDylibSource impl (was §F5c stub)
 }
 
 /// Parsed `/extension install <spec> [--global] [--checksum <hex>]` source
