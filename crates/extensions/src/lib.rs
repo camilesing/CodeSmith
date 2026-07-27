@@ -50,7 +50,7 @@ pub use discovery::{apply_trust_gate, discover_dylib, discover_static, Discovere
 pub use install_source::{
     CargoBuilder, CratesIoSource, CurlHttpFetcher, ExtensionBuilder, ExtensionPlacer,
     ExtensionSource, GitSource, HttpFetcher, IdentityBuilder, InstallScope, LocalPathSource,
-    Placer, PrebuiltDylibSource, SourceArtifact, SourceKind, SourceSpec, UnimplementedSource,
+    Placer, PrebuiltDylibSource, SourceArtifact, SourceKind, SourceSpec,
 };
 pub use installer::{InstallReport, Installer, UninstallReport};
 pub use manifest::ExtensionManifest;

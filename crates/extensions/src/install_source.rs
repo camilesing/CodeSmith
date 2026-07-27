@@ -35,18 +35,6 @@ pub trait ExtensionPlacer: Send + Sync {
     fn place(&self, artifact: &Path) -> Result<PathBuf, ExtensionError>;
 }
 
-/// §F5 placeholder source — returns [`ExtensionError::Install`] always.
-/// Slice 1's `/extension install` stub (Task 8) uses it to produce the
-/// "requires dylib loader (phase 2)" error without ceremony.
-pub struct UnimplementedSource;
-impl ExtensionSource for UnimplementedSource {
-    fn fetch(&self, _dest: &Path) -> Result<SourceArtifact, ExtensionError> {
-        Err(ExtensionError::Install(
-            "install requires the dylib loader (§F5)".into(),
-        ))
-    }
-}
-
 /// Install placement scope (§F5c). Default `Project` (trust-gated by §F5b
 /// `apply_trust_gate`); `Global` opt-in via `--global` (loads unconditionally).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
