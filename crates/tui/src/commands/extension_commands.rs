@@ -235,28 +235,20 @@ fn reload(app: &mut App) -> CommandResult {
     ))
 }
 
-/// Pre-App validation for `/extension install`: parse + crate/prebuilt guard
-/// (§F5c R4). Returns `Some(error)` for bad args / not-yet-implemented kinds;
-/// `None` to proceed with the `App`. No `App` access needed → unit-testable.
+/// Pre-App validation for `/extension install`: parse + arg check (§F5c R4
+/// + §F5e). Returns `Some(error)` for bad args / invalid spec; `None` to
+/// proceed with the `App`. No `App` access needed → unit-testable. §F5e
+/// dropped the §F5c `crate:`/`prebuilt:` "not-yet-implemented" early-return
+/// (real `CratesIoSource`/`PrebuiltDylibSource` impls now wired in `install`).
 fn install_precheck(arg: &str) -> Option<CommandResult> {
     let arg = arg.trim();
     if arg.is_empty() {
         return Some(CommandResult::error(
-            "Usage: /extension install <kind>:<body>[@<ref>] [--global]  (kinds: git, path)",
+            "Usage: /extension install <kind>:<body>[@<ref>] [--global] [--checksum <sha256>]  (kinds: git, path, crate, prebuilt)",
         ));
     }
-    let spec = match codesmith_extensions::SourceSpec::parse(arg) {
-        Ok(s) => s,
-        Err(e) => return Some(CommandResult::error(format!("Invalid source spec: {e}"))),
-    };
-    if matches!(
-        spec.kind,
-        codesmith_extensions::SourceKind::CratesIo | codesmith_extensions::SourceKind::Prebuilt
-    ) {
-        return Some(CommandResult::error(format!(
-            "§F5c-later: {:?} source not yet implemented (this slice supports git/path only)",
-            spec.kind
-        )));
+    if let Err(e) = codesmith_extensions::SourceSpec::parse(arg) {
+        return Some(CommandResult::error(format!("Invalid source spec: {e}")));
     }
     None
 }
@@ -282,9 +274,12 @@ fn install(app: &mut App, arg: &str) -> CommandResult {
     if let Some(err) = install_precheck(arg) {
         return err;
     }
-    // Precheck passed → spec is valid + git/path.
+    // Precheck passed → spec is valid (one of git/path/crate/prebuilt).
     let spec = codesmith_extensions::SourceSpec::parse(arg).expect("precheck validated");
     let root = extensions_root_for(spec.scope, &app.workspace);
+    // §F5e: HttpFetcher (curl shell-out) injected into crate/prebuilt sources.
+    let http: std::sync::Arc<dyn codesmith_extensions::HttpFetcher> =
+        std::sync::Arc::new(codesmith_extensions::CurlHttpFetcher::new());
     let source: Box<dyn codesmith_extensions::ExtensionSource> = match spec.kind {
         codesmith_extensions::SourceKind::Git => Box::new(
             codesmith_extensions::GitSource::new(spec.body.clone(), spec.ref_.clone()),
@@ -292,15 +287,37 @@ fn install(app: &mut App, arg: &str) -> CommandResult {
         codesmith_extensions::SourceKind::Path => Box::new(
             codesmith_extensions::LocalPathSource::new(spec.body.clone()),
         ),
-        _ => unreachable!("install_precheck rejected crate/prebuilt"),
+        codesmith_extensions::SourceKind::CratesIo => Box::new(
+            codesmith_extensions::CratesIoSource::new(
+                spec.body.clone(),
+                spec.ref_.clone(),
+                http.clone(),
+            ),
+        ),
+        codesmith_extensions::SourceKind::Prebuilt => Box::new(
+            codesmith_extensions::PrebuiltDylibSource::new(
+                spec.body.clone(),
+                spec.checksum.clone(),
+                http.clone(),
+            ),
+        ),
     };
+    // CargoBuilder needs a temp target-dir whose TempDir guard outlives
+    // install() (kept alive to fn end). IdentityBuilder for prebuilt (no build).
     let build_target = match tempfile::tempdir() {
         Ok(t) => t,
         Err(e) => return CommandResult::error(format!("tempdir for build: {e}")),
     };
-    let builder = codesmith_extensions::CargoBuilder::new(build_target.path().to_path_buf());
+    let builder: Box<dyn codesmith_extensions::ExtensionBuilder> = match spec.kind {
+        codesmith_extensions::SourceKind::Prebuilt => {
+            Box::new(codesmith_extensions::IdentityBuilder)
+        }
+        _ => Box::new(codesmith_extensions::CargoBuilder::new(
+            build_target.path().to_path_buf(),
+        )),
+    };
     let installer =
-        codesmith_extensions::Installer::new(source.as_ref(), &builder, root.clone());
+        codesmith_extensions::Installer::new(source.as_ref(), builder.as_ref(), root.clone());
     let report = match installer.install(&spec) {
         Ok(r) => r,
         Err(e) => return CommandResult::error(format!("install failed: {e}")),
@@ -322,13 +339,21 @@ fn install(app: &mut App, arg: &str) -> CommandResult {
         "\n⚠ won't load until the workspace is trusted (accept the trust prompt or /trust, then /extension reload)."
             .to_string()
     };
+    // §F5e: prebuilt checksum-absent warn (integrity unverified).
+    let checksum_note = match spec.kind {
+        codesmith_extensions::SourceKind::Prebuilt if spec.checksum.is_none() => {
+            "\n⚠ no checksum supplied; dylib integrity unverified (pass --checksum <sha256> to verify)."
+        }
+        _ => "",
+    };
     CommandResult::message(format!(
-        "Installed extension '{}' (v{}) to {}.\nprovenance: {}\nRun /extension reload to load it.{}",
+        "Installed extension '{}' (v{}) to {}.\nprovenance: {}\nRun /extension reload to load it.{}{}",
         report.id,
         report.version,
         report.path.display(),
         report.provenance,
         trust_note,
+        checksum_note,
     ))
 }
 
@@ -389,23 +414,37 @@ mod tests {
     }
 
     #[test]
-    fn install_precheck_crate_kind_is_not_yet_implemented() {
-        let r = install_precheck("crate:my-ext");
+    fn install_precheck_crate_kind_proceeds() {
+        // §F5e: crate: now proceeds (real CratesIoSource impl) — no longer
+        // rejected by precheck.
+        assert!(install_precheck("crate:serde").is_none());
+        assert!(install_precheck("crate:serde@1.0.204").is_none());
+    }
+
+    #[test]
+    fn install_precheck_prebuilt_kind_proceeds() {
+        // §F5e: prebuilt: now proceeds (real PrebuiltDylibSource impl).
+        assert!(install_precheck("prebuilt:https://x/y.dylib").is_none());
+        // with --checksum (valid 64-hex) also proceeds
+        assert!(install_precheck(
+            "prebuilt:https://x/y.dylib --checksum \
+             d1bb2d9926b9bd18e51fc8edd663e311ff3b1fb96c9d4689854f8686f7c6c216"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn install_precheck_bad_checksum_is_error() {
+        // invalid --checksum (not 64 lowercase hex) → parse error surfaces
+        let r = install_precheck("prebuilt:https://x/y.dylib --checksum abc");
         assert!(r.is_some());
         let r = r.unwrap();
         assert!(r.is_error);
         assert!(
-            r.message.as_deref().unwrap().contains("§F5c-later"),
+            r.message.as_deref().unwrap().contains("invalid --checksum"),
             "got: {:?}",
             r.message
         );
-    }
-
-    #[test]
-    fn install_precheck_prebuilt_kind_is_not_yet_implemented() {
-        let r = install_precheck("prebuilt:https://x/y.dylib");
-        assert!(r.is_some());
-        assert!(r.unwrap().is_error);
     }
 
     #[test]
