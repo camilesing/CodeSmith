@@ -37,8 +37,9 @@ Stance).
 > `is_workspace_trusted(workspace)`/`FirstLoad`] + reload wiring) landed in
 > §F5b; the INSTALL side (Git/LocalPath sources + `CargoBuilder` + `Placer`
 > + `Installer` orchestrator + `/extension install`/`uninstall` real impl +
-> `installed[]` provenance write) landed in §F5c — `crate:`/`prebuilt:` stub
-> to "§F5c-later". §F5d (done) wires extension tools + slash commands live
+> `installed[]` provenance write) landed in §F5c. §F5e (done) adds the real
+> `crate:`/`prebuilt:` source impls (was §F5c "§F5c-later" stub). §F5d (done)
+> wires extension tools + slash commands live
 > into the host per-turn (T1 tools via `register_extension_tools` in
 > `EngineHost::build_turn_dispatcher`; T2 commands via
 > `try_dispatch_extension_command` in `commands::execute`) and adds safe
@@ -77,7 +78,7 @@ between user-defined commands and the static `match`.
 | `/extension disable <id>` | | ✅ working | Marks the extension disabled; same reload caveat. |
 | `/extension status` | | ✅ working | Reports the bound runner's generation + bound command/tool counts. |
 | `/extension reload` | | ✅ working (live reload) | Re-populates the **shared runner `Arc`**: `clear_handlers` → `clear_tools` → `clear_commands` → `drain_libraries_to_pending` (§F5d T3+T4) → `invalidate` (bump generation) → `discover_static` + `discover_dylib` → reconcile against state → `load` each → `bind_core` (fresh `HostExtensionContext`). Both `App.extension_runner` and the Engine's field update live (no `Arc` swap — they share the one the engine built). The drained `Library`s are `drop_pending`'d at the next engine op-loop top (turn boundary, §F5d T4). A handler bound before reload stops observing after (cleared, not duplicated); a newly-compiled-in extension is picked up on the next reload. |
-| `/extension install <source> [--global]` | | ✅ working (§F5c) | Fetches (`git:`/`path:`) → builds (`cargo build`) → places to `<root>/<id>/` + writes `extension.toml` + records `installed[]` provenance; `--global` opt-in (default project). `crate:`/`prebuilt:` return "§F5c-later". Warns if project + untrusted; `/extension reload` to load. |
+| `/extension install <source> [--global]` | | ✅ working (§F5c) | Fetches (`git:`/`path:`) → builds (`cargo build`) → places to `<root>/<id>/` + writes `extension.toml` + records `installed[]` provenance; `--global` opt-in (default project). `crate:` fetches from crates.io (sparse-index → version → sha256-verified `.crate` → `tar` extract → build); `prebuilt:<https-url>` fetches a prebuilt cdylib (HTTPS-only, optional `--checksum <sha256>`); both warn if project + untrusted; `/extension reload` to load. |
 | `/extension uninstall <id>` | | ✅ working (§F5c) | Removes `<root>/<id>/` + clears `installed[]` provenance. Live tool/command bindings clear on next `/extension reload`; dylib unloads safely at next turn boundary (§F5d two-phase drop). |
 
 ## Discovery
@@ -303,8 +304,9 @@ execution, accepted per §8.1 (trust the source)**; containerize for untrusted
 sources. Install is trust-agnostic (it only *reads* trust to warn: a
 project-local install won't load until the workspace is trusted). A loaded
 dylib runs in-process with full host access — trust the source; containerize
-for untrusted sources. `crate:`/`prebuilt:` sources stay deferred
-(`install_precheck` returns "§F5c-later"). §F5d (done) wires extension tools +
+for untrusted sources. `crate:`/`prebuilt:` sources shipped in §F5e (real
+`CratesIoSource`/`PrebuiltDylibSource` impls; was §F5c "§F5c-later" stub).
+§F5d (done) wires extension tools +
 slash commands live into the host per-turn `ToolRegistry` (main-turn only) +
 adds safe unload:
 

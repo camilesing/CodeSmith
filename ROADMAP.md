@@ -2631,13 +2631,13 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **测试/验证：** `cargo build --workspace` 全绿；`codesmith-extensions --lib` 26→48（+10 SourceSpec +5 source impl +2 CargoBuilder +3 Placer +2 Installer e2e [含 §F5b fixture 的 full install→discover→load→`fixture_echo` round-trip，证 D8 id+Placer+manifest+discover 一致性，无真 cargo build]）；`codesmith-agent --lib` 98（不变——§F5c 不触 agent）；`codesmith-agent-runtime --lib` 1163+2（不变——§F5c 不触 host_executor，`.emit`=16 不变）；`codesmith-tui --bin codesmith-tui` 2835 pass/26 fail/2 ignored——26 个 fail 全是 `runtime_api::tests` PRE-EXISTING（环境性 HTTP-server 不 bind，无 panic；在 §F5b base `7a6819a7` 同样 fail，非 §F5c 回归；2835 = 2833 [§F5b 2829 + T2 的 4] + T7 的 4 `install_precheck` − 2 移除的 stub 测试）。grep：`GitSource`/`LocalPathSource`/`CargoBuilder`/`Placer`/`Installer`/`SourceSpec` in extensions ≥1 each、`add_installed`/`remove_installed` in `extension_state.rs` ≥1、`installer.rs` 存在、`/extension install` 非 stub、`cargo build` in `CargoBuilder` ≥1；§F5b 不变项（`libloading`/`toml` in extensions `Cargo.toml`、`loader.rs`/`manifest.rs`/`build.rs` 存在、`discover_dylib` in `engine.rs` ≥1、`codesmith_register_extension` in fixture ≥1、host_executor `.emit`=16、`TrustReason::FirstLoad` in tui=1）。
 
 **By-design gaps（显式 out-of-scope）：**
-- `CratesIo`/`Prebuilt` source impls（nice-to-have，command `install_precheck` 早返回 "§F5c-later"）。
+- ~~`CratesIo`/`Prebuilt` source impls（nice-to-have，command `install_precheck` 早返回 "§F5c-later"）~~ → §F5e 复核 stale：已落地（见下 §F5e 进度块）。
 - 真卸载：`clear_tools`/`clear_commands` + `Library` drop（Q1 接受 bounded 留存保底正确性——tools/commands HashMap 留存到 process restart）。
 - tui-level install e2e（`run_tui` 触发 `/extension install`）：§F5 precedent（App fixture 比例失衡）；机制由 T6 extensions-crate e2e 覆盖。
 - `--message-format=json` cdylib 解析（多 cdylib/`lib.name` override 的鲁棒性）：glob 法对单 cdylib 够用，多 cdylib→Install error。
 
 **下一聚焦工作：**
-- 残项（按需）：P2 doc drift + §E4 follow-up + `CratesIo`/`Prebuilt` impl + 真卸载——均 on-demand / 非阻塞。
+- 残项（按需）：P2 doc drift + §E4 follow-up——均 on-demand / 非阻塞。（~~`CratesIo`/`Prebuilt` impl~~ → §F5e 已落地；~~真卸载~~ → §F5d 已落地。）
 
 ---
 
@@ -2670,6 +2670,30 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 **下一聚焦工作：**
 - 残项（按需）：P2 doc drift + §E4 follow-up + `CratesIo`/`Prebuilt` impl——均 on-demand / 非阻塞。
+
+---
+
+### F5e — CratesIo + Prebuilt INSTALL source impls (§F5c-deferred 闭合)
+
+**进度（2026-07-27 §F5e CratesIo + Prebuilt INSTALL source impls——§F5c-deferred 残项闭合：`crate:`/`prebuilt:` real source impls + flow through `Installer::install`，`feat/f5e-cratesio-prebuilt`）：**
+
+接 §F5c（INSTALL 侧 stubbed crate/prebuilt）+ §F5d（wiring + 真卸载，留 crate/prebuilt deferred）。§F5e 闭合：`CratesIoSource`（sparse-index → version select → `.crate` download → sha256 verify[registry `cksum`] → `tar -xzf` extract → CargoBuilder）+ `PrebuiltDylibSource`（HTTPS-only → curl download → optional sha256 → IdentityBuilder skip build）+ `IdentityBuilder`（no-op `ExtensionBuilder`）+ `HttpFetcher` trait（`CurlHttpFetcher` curl shell-out / `FakeHttpFetcher` test）+ `SourceSpec`（`checksum` field + `--checksum <hex>` + kind-dependent `@`-split）+ tui `install_precheck` drop "§F5c-later" early-return + `install()` real source+builder per kind + prebuilt checksum-absent warn。curl shell-out（3rd after git/cargo）+ `tar -xzf` + `sha2` workspace dep（zero new external crate）。spec：`docs/superpowers/specs/2026-07-27-codesmith-extension-system-slice-5e-design.md`；plan：`docs/superpowers/plans/2026-07-27-codesmith-extension-system-slice-5e.md`。
+
+**By-design gaps（显式 out-of-scope）：**
+- `--features`/`--offline`/`--target` flags（§F5c YAGNI；default `--release --locked` 不变）。
+- `--message-format=json` multi-cdylib（§F5c R2 dir-scan 不变；CratesIo single-cdylib 假设）。
+- CratesIo alternate registries（private/cargo-registry/git-index）—— `index.crates.io` + `static.crates.io` only。
+- Prebuilt signature verification（sigstore/gpg）—— sha256 = integrity only。
+- tui-level install e2e（§F5 precedent）。
+
+**设计决策（brainstorm Q1-Q3 + sub-choices A/B）：**
+- Q1 HTTP = curl shell-out（§F5c-style 3rd shell-out；zero new external crate；`sha2` workspace dep promoted）。Rejected: reqwest-in-extensions（heavy async-HTTP into pure crate）/ trait-DI-via-tui（wiring asymmetry）。
+- Q2 prebuilt trust = §F5c-consistent（trust-agnostic install warn-only，gate at discovery；HTTPS-only；optional checksum warn-absent/refuse-mismatch；CratesIo checksum auto from registry）。Rejected: require-checksum（inconsistent w/ git/crate）/ interactive prompt（couples install+trust）。
+- Q3 build-skip = `IdentityBuilder` no-op（trait-DI；Installer stays kind-agnostic per R4）。Rejected: separate `install_prebuilt()` / Installer detects kind（couple Installer to SourceKind）。
+- Sub-choice A: CratesIo version = latest-non-yanked default + `@<version>` exact（provenance records resolved vers）。Rejected: require `@<version>` always（over-strict）。
+- Sub-choice B: checksum syntax = `--checksum <hex>` flag + `SourceSpec.checksum` field。Rejected: inline `@sha256:<hex>`（overloads `@`）。
+
+**测试/验证：** `cargo build --workspace` 全绿；`codesmith-extensions --lib` 51→75（+T1 2 http_fetcher +T2 8 source_spec +T3 2 identity +T4 5 crates_io +T5 7 prebuilt incl. 1 trailing-slash review-fix；1 `#[ignore]` network curl）；`codesmith-agent --lib` 98（不变）；`codesmith-agent-runtime --lib` 1165+2（不变；flaky `streamable_http_stale_session...` 本 run 未 fire——0 fail，无需隔离重跑）；`codesmith-tui --bin codesmith-tui` 2866→2867 pass/0 failed/2 ignored（+1 `install_precheck_bad_checksum`；2 rewrite 不增）。(26 runtime_api flaky-tests passed this run; env-dependent — may fail in other envs per §F5d precedent)。grep：`CratesIoSource`/`PrebuiltDylibSource`/`IdentityBuilder`/`HttpFetcher`/`CurlHttpFetcher` in extensions ≥1 each、`sha2` in `crates/extensions/Cargo.toml` ≥1、`--checksum` in `SourceSpec::parse` ≥1、`install_precheck` 无 "§F5c-later"、`extension_commands.rs` 无 `unreachable!("install_precheck rejected crate/prebuilt")`；§F5c/§F5d 不变项（`GitSource`/`LocalPathSource`/`CargoBuilder`/`Placer`/`Installer` ≥1、`libloading`/`toml` in extensions `Cargo.toml`、`loader.rs`/`manifest.rs`/`build.rs` 存在、`discover_dylib` in `engine.rs` ≥1、`codesmith_register_extension` in fixture ≥1、`clear_tools`/`clear_commands`/`drain_libraries_to_pending`/`drop_pending` in `runner.rs` ≥1、`host_executor .emit`=16、`TrustReason::FirstLoad` in tui=1）。
 
 ---
 
