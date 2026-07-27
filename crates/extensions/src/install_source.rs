@@ -525,7 +525,7 @@ impl ExtensionSource for PrebuiltDylibSource {
         //    only on supplied+mismatch)
         if let Some(expected) = &self.checksum {
             let bytes = std::fs::read(&dest_file)
-                .map_err(|e| ExtensionError::Install(format!("read dylib: {e}")))?;
+                .map_err(|e| ExtensionError::Install(format!("read dylib {}: {e}", dest_file.display())))?;
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
             let actual = format!("{:x}", hasher.finalize());
@@ -1327,5 +1327,21 @@ mod prebuilt_source_tests {
         let dest = tempfile::tempdir().unwrap();
         let art = src.fetch(dest.path()).unwrap();
         assert!(art.path.ends_with("myext.dylib"));
+    }
+
+    #[test]
+    fn prebuilt_trailing_slash_url_uses_fallback_filename() {
+        // URL ending in '/' → basename empty → fallback dylib.<DLL_EXT>.
+        // (Placer renames to default_dylib_filename(id) regardless, so the
+        // temp filename shape only affects the pre-rename download.)
+        let url = "https://x.example/path/";
+        let http = FakeHttpFetcher::new().with(url, b"x".to_vec());
+        let src = PrebuiltDylibSource::new(url, None, Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let art = src.fetch(dest.path()).unwrap();
+        assert_eq!(
+            art.path.file_name().unwrap().to_str().unwrap(),
+            format!("dylib.{}", std::env::consts::DLL_EXTENSION)
+        );
     }
 }
