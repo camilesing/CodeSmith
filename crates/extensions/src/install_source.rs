@@ -475,6 +475,79 @@ struct IndexEntry {
     pubtime: String,
 }
 
+/// Prebuilt-cdylib install source (§F5e). HTTPS-only URL fetch → optional
+/// sha256 checksum verify → return the dylib FILE as `art.path` (handed to
+/// `IdentityBuilder`, which skips the build step). Trust model = §F5c-
+/// consistent (install trust-agnostic, warn-only; gate at discovery);
+/// HTTPS-only; checksum optional (warn-absent / refuse-mismatch). D8 temp-
+/// load runs `codesmith_register_extension` on the downloaded dylib —
+/// accepted per §8.1 (same risk profile as git `build.rs`).
+pub struct PrebuiltDylibSource {
+    pub url: String,
+    pub checksum: Option<String>,
+    pub http: Arc<dyn HttpFetcher>,
+}
+
+impl PrebuiltDylibSource {
+    pub fn new(
+        url: impl Into<String>,
+        checksum: Option<String>,
+        http: Arc<dyn HttpFetcher>,
+    ) -> Self {
+        Self {
+            url: url.into(),
+            checksum,
+            http,
+        }
+    }
+}
+
+impl ExtensionSource for PrebuiltDylibSource {
+    fn fetch(&self, dest: &Path) -> Result<SourceArtifact, ExtensionError> {
+        // 1. HTTPS-only (refuse http://)
+        if !self.url.starts_with("https://") {
+            return Err(ExtensionError::Install(format!(
+                "prebuilt source must be HTTPS: {}",
+                self.url
+            )));
+        }
+        // 2. derive filename from URL basename (fallback dylib.<DLL_EXT>)
+        let filename = self
+            .url
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("dylib.{}", std::env::consts::DLL_EXTENSION));
+        let dest_file = dest.join(&filename);
+        self.http.fetch_to(&self.url, &dest_file)?;
+        // 3. optional checksum verify (warn-absent is tui's job; source errors
+        //    only on supplied+mismatch)
+        if let Some(expected) = &self.checksum {
+            let bytes = std::fs::read(&dest_file)
+                .map_err(|e| ExtensionError::Install(format!("read dylib: {e}")))?;
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let actual = format!("{:x}", hasher.finalize());
+            if &actual != expected {
+                return Err(ExtensionError::Install(format!(
+                    "checksum mismatch for {}: expected {}, got {}",
+                    self.url, expected, actual
+                )));
+            }
+        }
+        // 4. provenance: prebuilt:<url> (+ @sha256:<7hex> if checksum)
+        let provenance = match &self.checksum {
+            Some(c) => format!("prebuilt:{}@sha256:{}", self.url, &c[..7]),
+            None => format!("prebuilt:{}", self.url),
+        };
+        Ok(SourceArtifact {
+            path: dest_file,
+            provenance,
+        })
+    }
+}
+
 /// Place a built cdylib into `<root>/<id>/` (§F5c). The dylib is renamed to
 /// `default_dylib_filename(id)` so `discover_dylib` (manifest with no `entry`)
 /// re-finds it as a manifest-subdir source (not bare). The `extension.toml`
@@ -1171,5 +1244,88 @@ mod crates_io_source_tests {
         let dest = tempfile::tempdir().unwrap();
         let r = src.fetch(dest.path());
         assert!(matches!(r, Err(ExtensionError::Install(_))), "{r:?}");
+    }
+}
+
+#[cfg(test)]
+mod prebuilt_source_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn dylib_sha(bytes: &[u8]) -> String {
+        let mut h = sha2::Sha256::new();
+        sha2::Digest::update(&mut h, bytes);
+        format!("{:x}", h.finalize())
+    }
+
+    #[test]
+    fn prebuilt_refuses_http_url() {
+        let src = PrebuiltDylibSource::new(
+            "http://x/y.dylib",
+            None,
+            Arc::new(FakeHttpFetcher::new()),
+        );
+        let dest = tempfile::tempdir().unwrap();
+        let r = src.fetch(dest.path());
+        let Err(ExtensionError::Install(m)) = &r else { panic!("{r:?}") };
+        assert!(m.contains("HTTPS"), "{m}");
+    }
+
+    #[test]
+    fn prebuilt_fetch_downloads_and_provenance() {
+        let url = "https://x.example/y.dylib";
+        let body = b"fake-dylib-bytes".to_vec();
+        let http = FakeHttpFetcher::new().with(url, body.clone());
+        let src = PrebuiltDylibSource::new(url, None, Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let art = src.fetch(dest.path()).expect("fetch");
+        assert!(art.path.is_file());
+        assert_eq!(std::fs::read(&art.path).unwrap(), body);
+        assert_eq!(art.provenance, format!("prebuilt:{url}"));
+    }
+
+    #[test]
+    fn prebuilt_checksum_supplied_verifies() {
+        let url = "https://x.example/y.dylib";
+        let body = b"fake-dylib-bytes".to_vec();
+        let cksum = dylib_sha(&body);
+        let http = FakeHttpFetcher::new().with(url, body);
+        let src = PrebuiltDylibSource::new(url, Some(cksum.clone()), Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let art = src.fetch(dest.path()).expect("fetch verifies");
+        assert!(art.provenance.contains(&format!("@sha256:{}", &cksum[..7])));
+    }
+
+    #[test]
+    fn prebuilt_checksum_mismatch_fails() {
+        let url = "https://x.example/y.dylib";
+        let body = b"fake-dylib-bytes".to_vec();
+        let wrong = "0".repeat(64);
+        let http = FakeHttpFetcher::new().with(url, body);
+        let src = PrebuiltDylibSource::new(url, Some(wrong), Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let r = src.fetch(dest.path());
+        assert!(matches!(r, Err(ExtensionError::Install(_))), "{r:?}");
+    }
+
+    #[test]
+    fn prebuilt_no_checksum_proceeds() {
+        // absent checksum → fetch succeeds (tui warns after; source doesn't error)
+        let url = "https://x.example/y.dylib";
+        let http = FakeHttpFetcher::new().with(url, b"dylib".to_vec());
+        let src = PrebuiltDylibSource::new(url, None, Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let art = src.fetch(dest.path()).expect("proceeds without checksum");
+        assert!(!art.provenance.contains("sha256"));
+    }
+
+    #[test]
+    fn prebuilt_uses_url_basename_filename() {
+        let url = "https://x.example/sub/path/myext.dylib";
+        let http = FakeHttpFetcher::new().with(url, b"x".to_vec());
+        let src = PrebuiltDylibSource::new(url, None, Arc::new(http));
+        let dest = tempfile::tempdir().unwrap();
+        let art = src.fetch(dest.path()).unwrap();
+        assert!(art.path.ends_with("myext.dylib"));
     }
 }
