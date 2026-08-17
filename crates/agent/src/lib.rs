@@ -170,6 +170,13 @@ impl Default for ModelRegistry {
                 supports_reasoning: true,
             },
             ModelInfo {
+                id: "gpt-5".to_string(),
+                provider: ProviderKind::Openai,
+                aliases: vec!["openai-compatible-gpt-5".to_string()],
+                supports_tools: true,
+                supports_reasoning: true,
+            },
+            ModelInfo {
                 id: "deepseek-v4-pro".to_string(),
                 provider: ProviderKind::Openai,
                 aliases: vec!["openai-compatible-deepseek-v4-pro".to_string()],

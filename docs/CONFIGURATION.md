@@ -84,7 +84,10 @@ the resolved key, base URL, provider, and model to the TUI process. Use
 `codesmith auth set --provider siliconflow --api-key "YOUR_SILICONFLOW_API_KEY"`
 to save provider keys through the facade. The generic `openai` provider defaults
 to `https://api.openai.com/v1`, accepts `OPENAI_BASE_URL`, and defaults to
-`deepseek-v4-pro` for OpenAI-compatible gateways. `atlascloud` defaults to
+`gpt-5`. Pointing `OPENAI_BASE_URL` at a third-party gateway requires an
+explicit model (`OPENAI_MODEL`, `--model`, or `[providers.openai].model`);
+without one, startup fails fast instead of sending the provider default to a
+gateway that cannot serve it. `atlascloud` defaults to
 `https://api.atlascloud.ai/v1`, accepts `ATLASCLOUD_BASE_URL`, and uses
 `deepseek-ai/deepseek-v4-flash` as its default model. `wanjie-ark` targets
 Wanjie Ark's OpenAI-compatible endpoint at

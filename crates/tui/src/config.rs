@@ -44,7 +44,7 @@ pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
 pub const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 pub const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
-pub const DEFAULT_OPENAI_MODEL: &str = "deepseek-v4-pro";
+pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_ATLASCLOUD_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 pub const DEFAULT_ATLASCLOUD_BASE_URL: &str = "https://api.atlascloud.ai/v1";
@@ -1691,6 +1691,41 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// Fail fast when the generic `openai` provider points at a custom
+    /// gateway without any explicit model. Third-party gateways do not serve
+    /// the provider default, and their 403 (`model_access_denied`) gives the
+    /// user nothing actionable. `exec_model` carries `codesmith exec --model`,
+    /// which reaches this binary as a passthrough arg (only the top-level
+    /// `--model` is forwarded as `DEEPSEEK_MODEL` by the facade), so it must
+    /// satisfy this check separately. Env sources (`OPENAI_MODEL`,
+    /// `DEEPSEEK_MODEL`) are already folded into the provider slot by
+    /// `apply_env_overrides` before this runs.
+    pub fn require_explicit_model_on_custom_gateway(&self, exec_model: Option<&str>) -> Result<()> {
+        if self.custom_provider().is_some()
+            || self.api_provider() != ApiProvider::Openai
+            || !self.active_provider_preserves_custom_base_url_model()
+        {
+            return Ok(());
+        }
+        let has_explicit_model = exec_model
+            .is_some_and(|model| !model.trim().is_empty())
+            || self
+                .provider_config()
+                .and_then(|config| config.model.as_deref())
+                .is_some_and(|model| !model.trim().is_empty())
+            || self
+                .default_text_model
+                .as_deref()
+                .is_some_and(|model| !model.trim().is_empty());
+        if has_explicit_model {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "provider 'openai' with a custom base_url requires an explicit model: \
+             set OPENAI_MODEL, pass --model, or set model under [providers.openai] in config.toml"
+        );
     }
 
     #[must_use]
@@ -7462,6 +7497,118 @@ model = "glm-5"
             "https://openai-compatible.example/v4"
         );
         assert_eq!(config.default_model(), "glm-5");
+        Ok(())
+    }
+
+    // A custom OpenAI-compatible gateway (OPENAI_BASE_URL pointing at a
+    // third-party endpoint) has no notion of the provider default model and
+    // answers unknown ids with an opaque upstream 403 (model_access_denied).
+    // Config load must fail fast instead — unless an explicit model is set.
+    #[test]
+    fn openai_custom_base_url_without_model_fails_fast() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-openai-custom-base-url-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+
+        // (a) custom gateway, no model anywhere → the dedicated check fails
+        // with an error naming the fixes.
+        {
+            let _guard = EnvGuard::new(&temp_root);
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("OPENAI_API_KEY", "openai-env-key");
+                env::set_var("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/v1");
+            }
+
+            let config = Config::load(None, None)?;
+            let err = config
+                .require_explicit_model_on_custom_gateway(None)
+                .expect_err("custom base_url without an explicit model must fail");
+            assert!(
+                err.to_string().contains("requires an explicit model"),
+                "unexpected error: {err}"
+            );
+            assert!(
+                err.to_string().contains("OPENAI_MODEL"),
+                "error must point at OPENAI_MODEL: {err}"
+            );
+        }
+
+        // (b) official endpoint, no model → the check passes and the provider
+        // default applies.
+        {
+            let _guard = EnvGuard::new(&temp_root);
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("OPENAI_API_KEY", "openai-env-key");
+            }
+
+            let config = Config::load(None, None)?;
+            config.require_explicit_model_on_custom_gateway(None)?;
+            assert_eq!(config.deepseek_base_url(), DEFAULT_OPENAI_BASE_URL);
+            assert_eq!(config.default_model(), DEFAULT_OPENAI_MODEL);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn openai_custom_base_url_with_explicit_model_loads() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-openai-custom-base-url-model-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+
+        // (a) DEEPSEEK_MODEL is how the facade forwards the top-level
+        // `--model`; apply_env_overrides folds it into the provider slot, so
+        // the check passes with no exec-level model.
+        {
+            let _guard = EnvGuard::new(&temp_root);
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("OPENAI_API_KEY", "openai-env-key");
+                env::set_var("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/v1");
+                env::set_var("DEEPSEEK_MODEL", "glm-4.6");
+            }
+
+            let config = Config::load(None, None)?;
+            config.require_explicit_model_on_custom_gateway(None)?;
+            assert_eq!(config.api_provider(), ApiProvider::Openai);
+            assert_eq!(config.default_model(), "glm-4.6");
+        }
+
+        // (b) `exec --model` reaches this binary as a passthrough arg, so it
+        // is passed to the check directly rather than through the env.
+        {
+            let _guard = EnvGuard::new(&temp_root);
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("OPENAI_API_KEY", "openai-env-key");
+                env::set_var("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/v1");
+            }
+
+            let config = Config::load(None, None)?;
+            config.require_explicit_model_on_custom_gateway(Some("glm-5.2"))?;
+        }
+
         Ok(())
     }
 

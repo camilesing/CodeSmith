@@ -403,7 +403,7 @@ mod manifest_tests {
         // tail of the openai-compat family.
         #[allow(clippy::type_complexity)]
         let cases: &[(&str, &str, &str)] = &[
-            ("openai", "https://api.openai.com/v1", "deepseek-v4-pro"),
+            ("openai", "https://api.openai.com/v1", "gpt-5"),
             ("anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-5"),
             ("deepseek", "https://api.deepseek.com/beta", "deepseek-v4-pro"),
             ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4-pro"),

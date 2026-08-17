@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`openai` provider default model is now `gpt-5`.** The generic
+  OpenAI-compatible provider no longer defaults to `deepseek-v4-pro` — an id
+  the official `https://api.openai.com/v1` endpoint never served and
+  third-party gateways typically reject with 403 `model_access_denied`. All
+  three sources of truth are synced (`codesmith-config` and TUI
+  `DEFAULT_OPENAI_MODEL`, the bundled `providers.toml` entry), and the static
+  `ModelRegistry` gains a head `gpt-5` row for `codesmith model resolve`; the
+  `openai-compatible-deepseek-v4-*` registry rows are retained as gateway
+  aliases.
+- **Custom `OPENAI_BASE_URL` without an explicit model now fails fast.**
+  Config validation rejects `provider = "openai"` with a custom gateway URL
+  and no model (`OPENAI_MODEL`, `--model` / `DEEPSEEK_MODEL`,
+  `[providers.openai].model`, or `default_text_model`), printing an
+  actionable error at startup instead of forwarding the provider default and
+  surfacing an opaque upstream 403. The official endpoint keeps the `gpt-5`
+  default.
 - **Sub-agent permission narrowing (`restrictToSubset`).** A sub-agent's tool
   surface is now a subset of its parent's effective tools by default — children
   can never call a tool the parent does not expose, and a narrowed (`custom`)

@@ -948,7 +948,8 @@ async fn main() -> Result<()> {
                 run_models(&config, args).await
             }
             Commands::Exec(args) => {
-                let config = load_config_from_cli(&cli)?;
+                let config =
+                    load_config_from_cli_with_exec_model(&cli, args.model.as_deref())?;
                 let model = args
                     .model
                     .clone()
@@ -3820,11 +3821,16 @@ fn attach_telemetry_if_trusted(sink: &TelemetrySink, boundary: &WorkspaceInitBou
 }
 
 fn load_config_from_cli(cli: &Cli) -> Result<Config> {
+    load_config_from_cli_with_exec_model(cli, None)
+}
+
+fn load_config_from_cli_with_exec_model(cli: &Cli, exec_model: Option<&str>) -> Result<Config> {
     let profile = cli
         .profile
         .clone()
         .or_else(|| std::env::var("DEEPSEEK_PROFILE").ok());
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
+    config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
     Ok(config)
 }

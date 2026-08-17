@@ -31,7 +31,7 @@ backend = "mock"
 id = "openai"
 backend = "openai"
 base_url = "https://api.openai.com/v1"
-model = "deepseek-v4-pro"
+model = "gpt-5"
 
 [[providers]]
 id = "anthropic"
