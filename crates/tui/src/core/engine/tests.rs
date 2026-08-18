@@ -336,6 +336,84 @@ fn resolve_utility_llm_builds_cross_provider_client() {
     assert_eq!(utility.client.provider_name(), "anthropic");
 }
 
+/// Seam resolution keeps the built-in Flash default when neither
+/// `[context] seam_model` nor a utility model is configured.
+#[test]
+fn seam_resolution_defaults_to_flash_without_any_config() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main));
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &utility);
+    assert_eq!(model, crate::seam_manager::DEFAULT_SEAM_MODEL);
+    assert!(std::sync::Arc::ptr_eq(&client, &main));
+}
+
+/// A configured utility model supplies the seam default; same-provider setups
+/// reuse the main client, cross-provider setups switch to the utility client.
+#[test]
+fn seam_resolution_uses_utility_model_default() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main))
+        .expect("cross-provider utility builds");
+
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
+    assert_eq!(model, "claude-haiku-4-5");
+    assert_eq!(client.provider_name(), "anthropic");
+    assert!(
+        std::sync::Arc::ptr_eq(&client, &utility.client),
+        "cross-provider seam must use the utility client"
+    );
+}
+
+/// An explicit `[context] seam_model` always wins and keeps the main client —
+/// even when a cross-provider utility model is configured (the explicit id
+/// belongs to the main provider).
+#[test]
+fn seam_resolution_explicit_model_wins_over_utility() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        context: crate::config::ContextConfig {
+            seam_model: Some("deepseek-v4-flash".to_string()),
+            ..crate::config::ContextConfig::default()
+        },
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main))
+        .expect("cross-provider utility builds");
+
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
+    assert_eq!(model, "deepseek-v4-flash");
+    assert!(
+        std::sync::Arc::ptr_eq(&client, &main),
+        "explicit seam model keeps the main client"
+    );
+}
+
 /// §D2 — `resolve_llm_client` routes a `custom_provider` selection to
 /// `ProviderId::Custom(id)`, which reaches `default_registry().build()`. Since
 /// "acme" is not a registered factory, the build fails with the registry's

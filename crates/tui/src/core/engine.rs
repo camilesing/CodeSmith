@@ -416,6 +416,37 @@ pub(crate) fn resolve_utility_llm(
     }
 }
 
+/// Resolve the seam client + model (#159) honouring, in order:
+/// 1. an explicit `[context] seam_model` — keeps the main client, the id
+///    belongs to the main provider
+/// 2. a configured utility model — same-provider setups reuse the main client
+///    with a per-request model override; cross-provider setups use the
+///    utility client
+/// 3. the built-in Flash default (`DEFAULT_SEAM_MODEL`) on the main client
+pub(crate) fn resolve_seam_model_and_client(
+    api_config: &Config,
+    main_client: &LlmClientHandle,
+    utility_llm: &Option<UtilityLlm>,
+) -> (LlmClientHandle, String) {
+    if let Some(explicit) = api_config.context.seam_model.clone() {
+        return (main_client.clone(), explicit);
+    }
+    match utility_llm.as_ref() {
+        Some(utility) => {
+            let client = if utility.client.provider_name() != main_client.provider_name() {
+                utility.client.clone()
+            } else {
+                main_client.clone()
+            };
+            (client, utility.model.clone())
+        }
+        None => (
+            main_client.clone(),
+            crate::seam_manager::DEFAULT_SEAM_MODEL.to_string(),
+        ),
+    }
+}
+
 // === §F1 Extension runtime wiring ===
 
 /// Discover compiled-in extensions, reconcile with the on-disk
@@ -734,8 +765,18 @@ pub fn build_engine(
     let capacity_controller =
         Arc::new(StdMutex::new(CapacityController::new(config.capacity.clone())));
 
-    // Create Flash seam manager for layered context (#159).
+    // Resolve the optional [utility_model] once. Seam defaults below and the
+    // workshop synthesis handle both consume it.
+    let utility_llm = resolve_utility_llm(api_config, llm_client.as_ref());
+
+    // Create Flash seam manager for layered context (#159). An explicit
+    // `[context] seam_model` always wins (and keeps the main client — the id
+    // belongs to the main provider); otherwise a configured utility model
+    // supplies the seam model, and a cross-provider utility also brings its
+    // own client for seam calls.
     let seam_manager = llm_client.as_ref().map(|main_client| {
+        let (seam_client, seam_model) =
+            resolve_seam_model_and_client(api_config, main_client, &utility_llm);
         let seam_config = SeamConfig {
             enabled: api_config.context.enabled.unwrap_or(false),
             verbatim_window_turns: api_config
@@ -758,13 +799,9 @@ pub fn build_engine(
                 .context
                 .cycle_threshold
                 .unwrap_or(crate::seam_manager::DEFAULT_CYCLE_THRESHOLD),
-            seam_model: api_config
-                .context
-                .seam_model
-                .clone()
-                .unwrap_or_else(|| crate::seam_manager::DEFAULT_SEAM_MODEL.to_string()),
+            seam_model,
         };
-        SeamManager::new(main_client.clone(), seam_config)
+        SeamManager::new(seam_client, seam_config)
     });
     host.seam_manager = seam_manager;
 
@@ -811,7 +848,7 @@ pub fn build_engine(
     host.shell_manager = Some(shell_manager);
     host.subagent_manager = subagent_manager;
     host.workshop_vars = workshop_vars;
-    host.utility_llm = resolve_utility_llm(api_config, llm_client.as_ref());
+    host.utility_llm = utility_llm;
     host.sandbox_backend = sandbox_backend;
 
     let api_provider = api_config.api_provider();
