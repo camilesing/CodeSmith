@@ -17,7 +17,7 @@ use super::{
     TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
     effective_max_output_tokens,
 };
-use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL};
+use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL, UtilityModelConfig};
 use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, ToolCaller};
 use crate::test_support::lock_test_env;
 use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs, new_shared_plan_state};
@@ -261,6 +261,79 @@ async fn resolve_llm_client_routes_anthropic_to_rig_factory() {
         healthy,
         "rig-backed anthropic client must report healthy without a network probe"
     );
+}
+
+/// `resolve_utility_llm` returns `None` when no `[utility_model]` is
+/// configured — every assist then falls back to the main model.
+#[test]
+fn resolve_utility_llm_none_when_unconfigured() {
+    let cfg = Config::default();
+    assert!(super::resolve_utility_llm(&cfg, None).is_none());
+}
+
+/// Same-provider `[utility_model]` (no dedicated base_url/api_key) must reuse
+/// the main client handle and only swap the per-request model id — no second
+/// client is built.
+#[test]
+fn resolve_utility_llm_reuses_main_client_same_provider() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "deepseek-v4-flash".to_string(),
+            provider: None,
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main))
+        .expect("same-provider utility reuses the main client");
+    assert_eq!(utility.model, "deepseek-v4-flash");
+    assert!(
+        std::sync::Arc::ptr_eq(&utility.client, &main),
+        "same-provider utility must share the main client handle"
+    );
+}
+
+/// A same-provider `[utility_model]` with no main client available (registry
+/// failure upstream) yields `None` — there is nothing to reuse.
+#[test]
+fn resolve_utility_llm_same_provider_without_main_client_is_none() {
+    let cfg = Config {
+        utility_model: Some(UtilityModelConfig {
+            model: "deepseek-v4-flash".to_string(),
+            provider: None,
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    assert!(super::resolve_utility_llm(&cfg, None).is_none());
+}
+
+/// A cross-provider `[utility_model]` builds a dedicated second client through
+/// the provider registry (anthropic factory wins the dispatch, proven by
+/// `provider_name` without a network call).
+#[test]
+fn resolve_utility_llm_builds_cross_provider_client() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let utility = super::resolve_utility_llm(&cfg, None)
+        .expect("cross-provider utility builds a dedicated client");
+    assert_eq!(utility.model, "claude-haiku-4-5");
+    assert_eq!(utility.client.provider_name(), "anthropic");
 }
 
 /// §D2 — `resolve_llm_client` routes a `custom_provider` selection to

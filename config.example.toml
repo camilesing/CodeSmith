@@ -497,8 +497,10 @@ exec_policy = true
 #
 # When this table is absent every assist falls back to the main model and
 # behaviour is unchanged. api_key / base_url / provider inherit from the main
-# config when omitted; a different `provider` builds a dedicated second client
-# (e.g. main = anthropic, utility = deepseek).
+# config when omitted (same-provider setups reuse the main client with a
+# per-request model override); a different `provider` builds a dedicated second
+# client (e.g. main = anthropic, utility = deepseek) and then needs its own
+# api_key — one vendor's key is never sent to another.
 # The model id can also be set via CODESMITH_UTILITY_MODEL (legacy alias:
 # DEEPSEEK_UTILITY_MODEL).
 #

@@ -2391,17 +2391,6 @@ impl Config {
         Some(config)
     }
 
-    /// Return the configured utility model, inheriting api_key from the main
-    /// config (mirrors [`Config::vision_model_config`]).
-    #[must_use]
-    pub fn utility_model_config(&self) -> Option<UtilityModelConfig> {
-        let mut config = self.utility_model.clone()?;
-        if config.api_key.is_none() {
-            config.api_key = self.api_key.clone();
-        }
-        Some(config)
-    }
-
     #[must_use]
     pub fn project_context_pack_enabled(&self) -> bool {
         self.context.project_pack.unwrap_or(true)
@@ -4982,7 +4971,7 @@ mod tests {
     #[test]
     fn utility_model_defaults_to_none() {
         let config = Config::default();
-        assert!(config.utility_model_config().is_none());
+        assert!(config.utility_model.is_none());
     }
 
     #[test]
@@ -4998,7 +4987,7 @@ mod tests {
         )
         .expect("utility model config");
 
-        let utility = config.utility_model_config().expect("utility model set");
+        let utility = config.utility_model.as_ref().expect("utility model set");
         assert_eq!(utility.model, "deepseek-v4-flash");
         assert_eq!(utility.provider, Some(ApiProvider::Deepseek));
         assert_eq!(utility.api_key.as_deref(), Some("sk-utility"));
@@ -5006,22 +4995,6 @@ mod tests {
             utility.base_url.as_deref(),
             Some("https://api.deepseek.com/beta")
         );
-    }
-
-    #[test]
-    fn utility_model_inherits_api_key_from_main_config() {
-        let config: Config = toml::from_str(
-            r#"
-            api_key = "sk-main"
-            [utility_model]
-            model = "deepseek-v4-flash"
-            "#,
-        )
-        .expect("utility model config");
-
-        let utility = config.utility_model_config().expect("utility model set");
-        assert_eq!(utility.api_key.as_deref(), Some("sk-main"));
-        assert_eq!(utility.provider, None);
     }
 
     #[test]
@@ -5046,7 +5019,7 @@ mod tests {
         }
 
         let config = Config::load(None, None)?;
-        let utility = config.utility_model_config().expect("utility model set");
+        let utility = config.utility_model.as_ref().expect("utility model set");
         assert_eq!(utility.model, "deepseek-v4-flash");
         Ok(())
     }

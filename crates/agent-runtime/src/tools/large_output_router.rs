@@ -30,6 +30,32 @@ pub const WORKSHOP_LAST_TOOL_RESULT_VAR: &str = "last_tool_result";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
+/// A resolved handle to the configured utility model (`[utility_model]`):
+/// the LLM client plus the model id to send with each assist request.
+///
+/// The engine resolves this once at build time. Same-provider configurations
+/// reuse the main client handle with a per-request model override; a
+/// cross-provider configuration carries a dedicated second client. Consumers
+/// (workshop synthesis, auto-route classification, seams) treat it as an
+/// optional optimisation — when absent they fall back to the main model.
+#[derive(Clone)]
+pub struct UtilityLlm {
+    /// Client handle for the utility model's provider.
+    pub client: crate::llm_client::LlmClientHandle,
+    /// Model id filled into `MessageRequest.model` for assist calls.
+    pub model: String,
+}
+
+impl std::fmt::Debug for UtilityLlm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The trait-object handle has no Debug; the model id is the part that
+        // matters in engine/host debug dumps.
+        f.debug_struct("UtilityLlm")
+            .field("model", &self.model)
+            .finish_non_exhaustive()
+    }
+}
+
 // ── Token estimation ──────────────────────────────────────────────────────────
 
 /// Estimate the number of tokens in `text` using a character-count heuristic.

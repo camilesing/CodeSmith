@@ -83,6 +83,7 @@ use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::plan::SharedPlanState;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
+use crate::tools::large_output_router::UtilityLlm;
 use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentCompletion, new_shared_subagent_manager,
 };
@@ -162,6 +163,11 @@ pub struct EngineHost {
     pub workshop_vars: Option<
         std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
     >,
+    /// Resolved `[utility_model]` handle for background assists (workshop
+    /// synthesis, auto-route classification, seams). `None` when unconfigured
+    /// or when a dedicated client could not be built — assists then use the
+    /// main model.
+    pub utility_llm: Option<crate::tools::large_output_router::UtilityLlm>,
     /// External sandbox backend (#516). `None` when no backend is configured.
     pub sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
     /// §F2c — bound extension runner, set by `build_engine` (alongside the
@@ -188,6 +194,7 @@ impl Default for EngineHost {
                 crate::config::MAX_SUBAGENTS,
             ),
             workshop_vars: None,
+            utility_llm: None,
             sandbox_backend: None,
             extension_runner: None,
         }
@@ -334,6 +341,79 @@ pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClien
         on_retry: None,
     };
     codesmith_providers::default_registry().build(&cfg)
+}
+
+/// Resolve the optional `[utility_model]` into a ready-to-use handle.
+///
+/// Three outcomes:
+/// - table absent → `None`; every assist falls back to the main model
+/// - table present, same provider, no dedicated base_url/api_key → the main
+///   client is reused with a per-request model override (the rig adapter
+///   honours `MessageRequest.model` over the client default)
+/// - table present with a different provider (or dedicated endpoint) → a
+///   second client is built through the provider registry
+///
+/// Building a dedicated client never fails the session: on error the utility
+/// model is dropped with a warning and assists use the main model. Custom
+/// gateway (`custom_provider`) setups inherit the main client via the
+/// same-provider branch — an explicit `provider` cannot name a custom id.
+pub(crate) fn resolve_utility_llm(
+    api_config: &Config,
+    main_client: Option<&LlmClientHandle>,
+) -> Option<UtilityLlm> {
+    // Raw table (not `utility_model_config()`): the api_key inheritance done
+    // by the accessor would turn an unset key into `Some(main_key)` and break
+    // the same-provider reuse check below. Inheritance happens explicitly in
+    // the dedicated-client branch.
+    let utility = api_config.utility_model.clone()?;
+    let main_provider = api_config.api_provider();
+    let provider = utility.provider.unwrap_or(main_provider);
+    let inherits_main = provider == main_provider
+        && utility.base_url.is_none()
+        && utility.api_key.is_none();
+    if inherits_main {
+        let client = main_client?.clone();
+        return Some(UtilityLlm {
+            client,
+            model: utility.model,
+        });
+    }
+
+    // Key resolution: an explicit utility key wins; otherwise the main key is
+    // only valid for the same provider (never leak one vendor's key to
+    // another). A cross-provider table without a key builds an empty key and
+    // lets the factory surface the error, which falls back to the main model.
+    let api_key = if let Some(key) = utility.api_key.clone() {
+        key
+    } else if provider == main_provider {
+        api_config.deepseek_api_key().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let cfg = ProviderConfig {
+        provider: ProviderId::from(provider.as_str()),
+        api_key,
+        base_url: utility
+            .base_url
+            .clone()
+            .unwrap_or_else(|| api_config.deepseek_base_url()),
+        default_model: utility.model.clone(),
+        retry: codesmith_agent::llm_client::RetryConfig::from(api_config.retry_policy()),
+        http_headers: api_config.http_headers(),
+        on_retry: None,
+    };
+    match codesmith_providers::default_registry().build(&cfg) {
+        Ok(client) => Some(UtilityLlm {
+            client,
+            model: utility.model,
+        }),
+        Err(err) => {
+            tracing::warn!(
+                "utility model client unavailable; assists fall back to the main model: {err:#}"
+            );
+            None
+        }
+    }
 }
 
 // === §F1 Extension runtime wiring ===
@@ -731,6 +811,7 @@ pub fn build_engine(
     host.shell_manager = Some(shell_manager);
     host.subagent_manager = subagent_manager;
     host.workshop_vars = workshop_vars;
+    host.utility_llm = resolve_utility_llm(api_config, llm_client.as_ref());
     host.sandbox_backend = sandbox_backend;
 
     let api_provider = api_config.api_provider();
