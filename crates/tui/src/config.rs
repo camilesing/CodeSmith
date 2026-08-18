@@ -876,7 +876,7 @@ impl StatusItem {
 pub use codesmith_agent::retry::RetryPolicy;
 pub use codesmith_agent_runtime::config_types::{
     DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, SearchProvider, ToolOverride,
-    ToolsConfig, VisionModelConfig,
+    ToolsConfig, UtilityModelConfig, VisionModelConfig,
 };
 
 /// Capacity-controller config loaded from config files/environment.
@@ -1179,6 +1179,12 @@ pub struct Config {
     /// Vision model configuration for the `image_analyze` tool.
     #[serde(default)]
     pub vision_model: Option<VisionModelConfig>,
+
+    /// Utility model configuration — a cheap/fast secondary LLM for background
+    /// assists (workshop large-output synthesis, auto-route classification,
+    /// Flash seams). When absent, all assists use the main model.
+    #[serde(default)]
+    pub utility_model: Option<UtilityModelConfig>,
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -2385,6 +2391,17 @@ impl Config {
         Some(config)
     }
 
+    /// Return the configured utility model, inheriting api_key from the main
+    /// config (mirrors [`Config::vision_model_config`]).
+    #[must_use]
+    pub fn utility_model_config(&self) -> Option<UtilityModelConfig> {
+        let mut config = self.utility_model.clone()?;
+        if config.api_key.is_none() {
+            config.api_key = self.api_key.clone();
+        }
+        Some(config)
+    }
+
     #[must_use]
     pub fn project_context_pack_enabled(&self) -> bool {
         self.context.project_pack.unwrap_or(true)
@@ -3285,6 +3302,15 @@ fn apply_env_overrides(config: &mut Config) {
             .siliconflow
             .model = Some(value);
     }
+    if let Ok(value) = codesmith_env_var("CODESMITH_UTILITY_MODEL", "DEEPSEEK_UTILITY_MODEL") {
+        let utility = config.utility_model.get_or_insert_with(|| UtilityModelConfig {
+            model: String::new(),
+            provider: None,
+            api_key: None,
+            base_url: None,
+        });
+        utility.model = value;
+    }
     if let Some(value) = codesmith_env_var("CODESMITH_MODEL", "DEEPSEEK_MODEL")
         .ok()
         .or_else(|| {
@@ -3849,6 +3875,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         notes_path: override_cfg.notes_path.or(base.notes_path),
         memory_path: override_cfg.memory_path.or(base.memory_path),
         vision_model: override_cfg.vision_model.or(base.vision_model),
+        utility_model: override_cfg.utility_model.or(base.utility_model),
         // #454: project's instructions array replaces user's array
         // wholesale. The typical "merge" pattern is for users who want
         // both — they list `~/global.md` inside the project array.
@@ -4950,6 +4977,78 @@ mod tests {
             update.update_uri(),
             Some("https://mirror.example/releases/latest")
         );
+    }
+
+    #[test]
+    fn utility_model_defaults_to_none() {
+        let config = Config::default();
+        assert!(config.utility_model_config().is_none());
+    }
+
+    #[test]
+    fn utility_model_deserializes_full_table() {
+        let config: Config = toml::from_str(
+            r#"
+            [utility_model]
+            model = "deepseek-v4-flash"
+            provider = "deepseek"
+            api_key = "sk-utility"
+            base_url = "https://api.deepseek.com/beta"
+            "#,
+        )
+        .expect("utility model config");
+
+        let utility = config.utility_model_config().expect("utility model set");
+        assert_eq!(utility.model, "deepseek-v4-flash");
+        assert_eq!(utility.provider, Some(ApiProvider::Deepseek));
+        assert_eq!(utility.api_key.as_deref(), Some("sk-utility"));
+        assert_eq!(
+            utility.base_url.as_deref(),
+            Some("https://api.deepseek.com/beta")
+        );
+    }
+
+    #[test]
+    fn utility_model_inherits_api_key_from_main_config() {
+        let config: Config = toml::from_str(
+            r#"
+            api_key = "sk-main"
+            [utility_model]
+            model = "deepseek-v4-flash"
+            "#,
+        )
+        .expect("utility model config");
+
+        let utility = config.utility_model_config().expect("utility model set");
+        assert_eq!(utility.api_key.as_deref(), Some("sk-main"));
+        assert_eq!(utility.provider, None);
+    }
+
+    #[test]
+    fn codesmith_utility_model_env_enables_utility_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-utility-model-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let _knobs = KnobGuard::new(&["CODESMITH_UTILITY_MODEL", "DEEPSEEK_UTILITY_MODEL"]);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("CODESMITH_UTILITY_MODEL", "deepseek-v4-flash");
+        }
+
+        let config = Config::load(None, None)?;
+        let utility = config.utility_model_config().expect("utility model set");
+        assert_eq!(utility.model, "deepseek-v4-flash");
+        Ok(())
     }
 
     #[test]

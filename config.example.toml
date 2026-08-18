@@ -481,7 +481,32 @@ exec_policy = true
 # Xiaomi MiMo image understanding can be configured through the same tool:
 # model = "mimo-v2.5"
 # api_key = "YOUR_XIAOMI_KEY"
-# base_url = "https://api.xiaomimimo.com/v1"
+# base_url = "https://api.xiaomimo.com/v1"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Utility Model Configuration (optional)
+# ─────────────────────────────────────────────────────────────────────────────────
+# A cheap/fast secondary LLM used for background assists so the main model's
+# budget is spent on the actual conversation:
+#   - workshop large-output synthesis (#548): tool results above the
+#     `large_output_threshold_tokens` threshold are condensed by this model;
+#     only the synthesis enters the parent context (the raw output is kept in
+#     the workshop variable `last_tool_result`)
+#   - auto-route classification (`/model auto` + sub-agent routing)
+#   - Flash seams (`[context] seam_model` default)
+#
+# When this table is absent every assist falls back to the main model and
+# behaviour is unchanged. api_key / base_url / provider inherit from the main
+# config when omitted; a different `provider` builds a dedicated second client
+# (e.g. main = anthropic, utility = deepseek).
+# The model id can also be set via CODESMITH_UTILITY_MODEL (legacy alias:
+# DEEPSEEK_UTILITY_MODEL).
+#
+# [utility_model]
+# model = "deepseek-v4-flash"        # Required: enables the utility model
+# provider = "deepseek"              # Optional: defaults to the main provider
+# api_key = "YOUR_API_KEY"           # Optional: defaults to main api_key
+# base_url = "https://api.deepseek.com/beta"  # Optional: defaults to main base_url
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Retry Configuration

@@ -101,6 +101,27 @@ pub struct VisionModelConfig {
     pub base_url: Option<String>,
 }
 
+/// Utility model configuration — a cheap/fast secondary LLM for background
+/// assists (workshop large-output synthesis #548, auto-route classification,
+/// Flash seams). When the table is absent every assist falls back to the main
+/// model and behaviour is unchanged.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UtilityModelConfig {
+    /// Model identifier (e.g., "deepseek-v4-flash"). Setting the table
+    /// enables the utility model.
+    pub model: String,
+    /// Provider for the utility model. Inherits the main provider when unset;
+    /// a different provider here builds a dedicated second client.
+    #[serde(default)]
+    pub provider: Option<ApiProvider>,
+    /// API key for the utility model. Inherits from main config if not specified.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Base URL for the utility model. Inherits from main config if not specified.
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
 /// Default token threshold above which a tool result is routed through the
 /// workshop. Matches the issue spec of 4 096 tokens.
 pub const DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS: usize = 4_096;
