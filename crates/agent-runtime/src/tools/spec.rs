@@ -224,6 +224,12 @@ pub struct ToolContext {
     /// routing (e.g. in sub-agents and test contexts to avoid recursion).
     pub large_output_router: Option<crate::tools::large_output_router::LargeOutputRouter>,
 
+    /// Resolved `[utility_model]` handle used by the large-output router for
+    /// synthesis (and other assist call sites). `None` — unconfigured or
+    /// client build failure — makes routing fall back to the truncation
+    /// preview.
+    pub utility_llm: Option<crate::tools::large_output_router::UtilityLlm>,
+
     /// Which search backend `web_search` should use. Default: DuckDuckGo. Set via
     /// `[search] provider` in config.toml.
     pub search_provider: crate::config_types::SearchProvider,
@@ -277,6 +283,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
+            utility_llm: None,
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
@@ -321,6 +328,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
+            utility_llm: None,
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
@@ -365,6 +373,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
+            utility_llm: None,
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
@@ -633,6 +642,18 @@ impl ToolContext {
     ) -> Self {
         self.large_output_router = Some(router);
         self.workshop_vars = Some(vars);
+        self
+    }
+
+    /// Attach the resolved `[utility_model]` handle used by the large-output
+    /// router's synthesis call. Without it routing still happens but falls
+    /// back to the truncation preview.
+    #[must_use]
+    pub fn with_utility_llm(
+        mut self,
+        utility: crate::tools::large_output_router::UtilityLlm,
+    ) -> Self {
+        self.utility_llm = Some(utility);
         self
     }
 }
