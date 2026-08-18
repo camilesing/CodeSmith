@@ -40,7 +40,7 @@ brew install deepseek-tui
 # 5. Docker — prebuilt release image.
 docker volume create codesmith-home
 docker run --rm -it \
-  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -e CODESMITH_API_KEY="$CODESMITH_API_KEY" \
   -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
@@ -189,13 +189,14 @@ You can also set it ahead of time:
 codesmith auth set --provider deepseek   # saves to ~/.codesmith/config.toml
 codesmith auth status                    # shows the active credential source
 
-export DEEPSEEK_API_KEY="YOUR_KEY"      # env var alternative; use ~/.zshenv for non-interactive shells
+export CODESMITH_API_KEY="YOUR_KEY"      # env var alternative; use ~/.zshenv for non-interactive shells
 codesmith
 
 codesmith doctor                         # verify setup
 ```
 
-If `codesmith doctor` says the rejected key came from `DEEPSEEK_API_KEY`, remove
+If `codesmith doctor` says the rejected key came from `CODESMITH_API_KEY` (or
+its `DEEPSEEK_API_KEY` legacy alias), remove
 the stale export from your shell startup file, open a fresh shell, or run
 `codesmith auth set --provider deepseek`. Use `codesmith auth status` to see the
 config, keyring, and env-var source state without printing the key. Saved config
@@ -254,7 +255,7 @@ cargo install codesmith-tui     --locked   # provides `codesmith-tui`
 codesmith --version
 ```
 
-Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
+Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases). Use `CODESMITH_RELEASE_BASE_URL` for mirrored release assets.
 
 ### Windows (Scoop)
 
@@ -339,8 +340,8 @@ codesmith auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
 OPENAI_BASE_URL="https://openai-compatible.example/v4" codesmith --provider openai --model glm-5
 
 # Custom DeepSeek-compatible endpoint
-DEEPSEEK_BASE_URL="https://your-provider.example/v1" \
-  DEEPSEEK_MODEL="deepseek-ai/DeepSeek-V4-Pro" \
+CODESMITH_BASE_URL="https://your-provider.example/v1" \
+  CODESMITH_MODEL="deepseek-ai/DeepSeek-V4-Pro" \
   codesmith --provider deepseek
 
 # Self-hosted SGLang
@@ -349,7 +350,7 @@ SGLANG_BASE_URL="http://localhost:30000/v1" codesmith --provider sglang --model 
 # Self-hosted vLLM
 VLLM_BASE_URL="http://localhost:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 # Trusted LAN vLLM over HTTP
-DEEPSEEK_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
+VLLM_BASE_URL="http://192.168.0.110:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 
 # Self-hosted Ollama
 ollama pull codesmith-coder:1.3b
@@ -420,7 +421,7 @@ Docker images are published to GHCR for release builds:
 docker volume create codesmith-home
 
 docker run --rm -it \
-  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -e CODESMITH_API_KEY="$CODESMITH_API_KEY" \
   -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
@@ -499,15 +500,13 @@ Key environment variables:
 
 | Variable | Purpose |
 |---|---|
-| `DEEPSEEK_API_KEY` | API key |
-| `DEEPSEEK_BASE_URL` | API base URL |
-| `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
-| `DEEPSEEK_MODEL` | Default model |
-| `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
+| `CODESMITH_API_KEY` | API key (legacy alias `DEEPSEEK_API_KEY`) |
+| `CODESMITH_BASE_URL` | API base URL |
+| `CODESMITH_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
+| `CODESMITH_MODEL` | Default model |
 | `CODESMITH_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
-| `DEEPSEEK_PROFILE` | Config profile name |
-| `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
-| `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Allow non-local `http://` API base URLs on trusted networks |
+| `CODESMITH_PROFILE` | Config profile name |
+| `CODESMITH_MEMORY` | Set to `on` to enable user memory |
 | `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `VOLCENGINE_API_KEY` / `OPENROUTER_API_KEY` / `XIAOMI_MIMO_API_KEY` / `XIAOMI_API_KEY` / `MIMO_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SILICONFLOW_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | Generic OpenAI-compatible endpoint and model ID |
 | `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | AtlasCloud endpoint and model override |

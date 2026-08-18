@@ -47,7 +47,7 @@ pub struct CapacityMemoryRecord {
 }
 
 fn capacity_memory_dirs() -> Vec<PathBuf> {
-    if let Ok(raw) = std::env::var("DEEPSEEK_CAPACITY_MEMORY_DIR") {
+    if let Some(raw) = codesmith_config::codesmith_env("CAPACITY_MEMORY_DIR") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
             return vec![PathBuf::from(shellexpand::tilde(trimmed).as_ref())];

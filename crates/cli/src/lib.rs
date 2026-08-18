@@ -1545,7 +1545,7 @@ fn build_tui_command(
 
     if let Some(provider) = cli.provider {
         let provider: ProviderKind = provider.into();
-        cmd.env("DEEPSEEK_PROVIDER", provider.as_str());
+        cmd.env("CODESMITH_PROVIDER", provider.as_str());
     }
     // §D2 slice 46 — `--custom-provider <id>` selects a `[[providers.custom]]`
     // entry. A builtin name is rejected here (use `--provider` for builtins);
@@ -1574,44 +1574,44 @@ fn build_tui_command(
         // TUI reloads auth_mode from config/profile, but it does not re-query the
         // platform keyring on normal startup. Bridge only the recovered secret;
         // replaying auth_mode here would turn it back into a profile override.
-        cmd.env("DEEPSEEK_API_KEY", api_key);
+        cmd.env("CODESMITH_API_KEY", api_key);
         for var in provider_env_vars(resolved_runtime.provider) {
             if *var != "DEEPSEEK_API_KEY" {
                 cmd.env(var, api_key);
             }
         }
         cmd.env(
-            "DEEPSEEK_API_KEY_SOURCE",
+            "CODESMITH_API_KEY_SOURCE",
             RuntimeApiKeySource::Keyring.as_env_value(),
         );
     }
 
     if let Some(model) = cli.model.as_ref() {
-        cmd.env("DEEPSEEK_MODEL", model);
+        cmd.env("CODESMITH_MODEL", model);
     }
     if let Some(output_mode) = cli.output_mode.as_ref() {
-        cmd.env("DEEPSEEK_OUTPUT_MODE", output_mode);
+        cmd.env("CODESMITH_OUTPUT_MODE", output_mode);
     }
     if let Some(log_level) = cli.log_level.as_ref() {
-        cmd.env("DEEPSEEK_LOG_LEVEL", log_level);
+        cmd.env("CODESMITH_LOG_LEVEL", log_level);
     }
     if let Some(telemetry) = cli.telemetry {
-        cmd.env("DEEPSEEK_TELEMETRY", telemetry.to_string());
+        cmd.env("CODESMITH_TELEMETRY", telemetry.to_string());
     }
     if let Some(policy) = cli.approval_policy.as_ref() {
-        cmd.env("DEEPSEEK_APPROVAL_POLICY", policy);
+        cmd.env("CODESMITH_APPROVAL_POLICY", policy);
     }
     if let Some(mode) = cli.sandbox_mode.as_ref() {
-        cmd.env("DEEPSEEK_SANDBOX_MODE", mode);
+        cmd.env("CODESMITH_SANDBOX_MODE", mode);
     }
     if cli.yolo {
-        cmd.env("DEEPSEEK_YOLO", "true");
+        cmd.env("CODESMITH_YOLO", "true");
     }
     if cli.bare {
-        cmd.env("DEEPSEEK_SIMPLE", "true");
+        cmd.env("CODESMITH_SIMPLE", "true");
     }
     if let Some(api_key) = cli.api_key.as_ref() {
-        cmd.env("DEEPSEEK_API_KEY", api_key);
+        cmd.env("CODESMITH_API_KEY", api_key);
         if resolved_runtime.provider == ProviderKind::Openai {
             cmd.env("OPENAI_API_KEY", api_key);
         }
@@ -1627,10 +1627,10 @@ fn build_tui_command(
         if resolved_runtime.provider == ProviderKind::Siliconflow {
             cmd.env("SILICONFLOW_API_KEY", api_key);
         }
-        cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
+        cmd.env("CODESMITH_API_KEY_SOURCE", "cli");
     }
     if let Some(base_url) = cli.base_url.as_ref() {
-        cmd.env("DEEPSEEK_BASE_URL", base_url);
+        cmd.env("CODESMITH_BASE_URL", base_url);
         if resolved_runtime.provider == ProviderKind::Anthropic {
             cmd.env("ANTHROPIC_BASE_URL", base_url);
         }
@@ -1669,7 +1669,7 @@ to execute it. Common fixes:\n\
 come from the same install directory.\n\
   - If you downloaded release assets manually, keep both `codesmith` and \
 `codesmith-tui` binaries together and make sure the TUI binary is executable.\n\
-  - Set DEEPSEEK_TUI_BIN to the absolute path of a working `codesmith-tui` \
+  - Set CODESMITH_TUI_BIN to the absolute path of a working `codesmith-tui` \
 binary.",
         tui.display()
     )
@@ -1680,18 +1680,21 @@ binary.",
 /// the npm-distributed Windows package — which ships
 /// `bin/downloads/codesmith-tui.exe` — is found by `Path::exists` (#247).
 ///
-/// `DEEPSEEK_TUI_BIN` is consulted first as an explicit override for
-/// custom installs and CI test layouts. On Windows we additionally try
-/// the suffix-less name as a fallback for users who already manually
-/// renamed the file before this fix landed.
+/// `CODESMITH_TUI_BIN` (legacy alias: `DEEPSEEK_TUI_BIN`) is consulted first
+/// as an explicit override for custom installs and CI test layouts. On
+/// Windows we additionally try the suffix-less name as a fallback for users
+/// who already manually renamed the file before this fix landed.
 fn locate_sibling_tui_binary() -> Result<PathBuf> {
-    if let Ok(override_path) = std::env::var("DEEPSEEK_TUI_BIN") {
+    let override_path = std::env::var("CODESMITH_TUI_BIN")
+        .or_else(|_| std::env::var("DEEPSEEK_TUI_BIN"))
+        .ok();
+    if let Some(override_path) = override_path {
         let candidate = PathBuf::from(override_path);
         if candidate.is_file() {
             return Ok(candidate);
         }
         bail!(
-            "DEEPSEEK_TUI_BIN points at {}, which is not a regular file.",
+            "CODESMITH_TUI_BIN points at {}, which is not a regular file.",
             candidate.display()
         );
     }
@@ -1715,7 +1718,7 @@ The `codesmith` dispatcher delegates interactive sessions to a sibling \
 `codesmith-tui-<platform>` from https://github.com/Hmbown/CodeSmith/releases/latest \
 and place them in the same directory.\n\
 \n\
-Or set DEEPSEEK_TUI_BIN to the absolute path of an existing `codesmith-tui` binary.",
+Or set CODESMITH_TUI_BIN to the absolute path of an existing `codesmith-tui` binary.",
         expected.display()
     );
 }
@@ -2793,11 +2796,11 @@ mod tests {
 
         let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
+            command_env(&cmd, "CODESMITH_PROVIDER").as_deref(),
             Some("openai")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
+            command_env(&cmd, "CODESMITH_API_KEY").as_deref(),
             Some("resolved-openai-key")
         );
         assert_eq!(
@@ -2805,10 +2808,10 @@ mod tests {
             Some("resolved-openai-key")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
+            command_env(&cmd, "CODESMITH_API_KEY_SOURCE").as_deref(),
             Some("keyring")
         );
-        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_AUTH_MODE"), None);
         let args: Vec<String> = cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -2860,7 +2863,7 @@ mod tests {
             "--custom-provider should forward to the TUI via env",
         );
         // `--provider` was not given, so the builtin selector env stays unset.
-        assert_eq!(command_env(&cmd, "DEEPSEEK_PROVIDER"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_PROVIDER"), None);
     }
 
     #[test]
@@ -2932,13 +2935,13 @@ mod tests {
 
         let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
 
-        assert_eq!(command_env(&cmd, "DEEPSEEK_PROVIDER"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_MODEL"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_BASE_URL"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_API_KEY"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
-        assert_eq!(command_env(&cmd, "DEEPSEEK_HTTP_HEADERS"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_PROVIDER"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_MODEL"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_BASE_URL"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_API_KEY"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_API_KEY_SOURCE"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_AUTH_MODE"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_HTTP_HEADERS"), None);
         let args: Vec<String> = cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -2987,15 +2990,15 @@ mod tests {
 
         let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
+            command_env(&cmd, "CODESMITH_PROVIDER").as_deref(),
             Some("moonshot")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_MODEL").as_deref(),
+            command_env(&cmd, "CODESMITH_MODEL").as_deref(),
             Some("kimi-k2.6")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
+            command_env(&cmd, "CODESMITH_API_KEY").as_deref(),
             Some("resolved-kimi-key")
         );
         assert_eq!(
@@ -3007,10 +3010,10 @@ mod tests {
             Some("resolved-kimi-key")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
+            command_env(&cmd, "CODESMITH_API_KEY_SOURCE").as_deref(),
             Some("keyring")
         );
-        assert_eq!(command_env(&cmd, "DEEPSEEK_AUTH_MODE"), None);
+        assert_eq!(command_env(&cmd, "CODESMITH_AUTH_MODE"), None);
     }
 
     #[test]
@@ -3054,15 +3057,15 @@ mod tests {
         let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
 
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
+            command_env(&cmd, "CODESMITH_PROVIDER").as_deref(),
             Some("openai")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_MODEL").as_deref(),
+            command_env(&cmd, "CODESMITH_MODEL").as_deref(),
             Some("glm-5")
         );
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
+            command_env(&cmd, "CODESMITH_BASE_URL").as_deref(),
             Some("https://openai-compatible.example/v4")
         );
     }
@@ -3106,7 +3109,7 @@ mod tests {
         let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
 
         assert_eq!(
-            command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
+            command_env(&cmd, "CODESMITH_BASE_URL").as_deref(),
             Some("https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
         );
         assert_eq!(
@@ -3197,7 +3200,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{flag}: {e}"));
 
             assert_eq!(
-                command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
+                command_env(&cmd, "CODESMITH_API_KEY").as_deref(),
                 Some("test-key"),
                 "{flag}: DEEPSEEK_API_KEY not forwarded"
             );
@@ -3209,12 +3212,12 @@ mod tests {
                 );
             }
             assert_eq!(
-                command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
+                command_env(&cmd, "CODESMITH_API_KEY_SOURCE").as_deref(),
                 Some("keyring"),
                 "{flag}: expected keyring source bridge"
             );
             assert_eq!(
-                command_env(&cmd, "DEEPSEEK_AUTH_MODE"),
+                command_env(&cmd, "CODESMITH_AUTH_MODE"),
                 None,
                 "{flag}: auth mode should come from config/profile, not env handoff"
             );
@@ -3428,7 +3431,7 @@ mod tests {
         assert!(message.contains("C:/tools/codesmith-tui.exe"));
         assert!(message.contains("access is denied"));
         assert!(message.contains("where codesmith"));
-        assert!(message.contains("DEEPSEEK_TUI_BIN"));
+        assert!(message.contains("CODESMITH_TUI_BIN"));
     }
 
     /// Windows-only fallback: the user from #247 manually renamed the
@@ -3451,8 +3454,9 @@ mod tests {
         assert_eq!(found, suffixless);
     }
 
-    /// `DEEPSEEK_TUI_BIN` overrides the discovery path. Useful for
-    /// custom Windows install layouts and CI test rigs.
+    /// `CODESMITH_TUI_BIN` (and its legacy `DEEPSEEK_TUI_BIN` alias — see
+    /// `locate_sibling_tui_binary_honours_legacy_env_override`) overrides the
+    /// discovery path. Useful for custom Windows install layouts and CI rigs.
     #[test]
     fn locate_sibling_tui_binary_honours_env_override() {
         let _lock = env_lock();
@@ -3460,6 +3464,23 @@ mod tests {
         let custom = dir
             .path()
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&custom, b"").unwrap();
+        let custom_str = custom.to_string_lossy().into_owned();
+        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
+
+        let resolved = locate_sibling_tui_binary().expect("override must resolve");
+        assert_eq!(resolved, custom);
+    }
+
+    /// The legacy `DEEPSEEK_TUI_BIN` alias still overrides discovery so
+    /// pre-rebrand CI layouts keep working.
+    #[test]
+    fn locate_sibling_tui_binary_honours_legacy_env_override() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let custom = dir
+            .path()
+            .join(format!("legacy-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
         let custom_str = custom.to_string_lossy().into_owned();
         let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);

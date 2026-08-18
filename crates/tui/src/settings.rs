@@ -92,12 +92,13 @@ impl TuiPrefs {
     /// `~/.deepseek/tui.toml`.
     ///
     /// Tests may override the home directory through the
-    /// `DEEPSEEK_CONFIG_PATH` environment variable (the parent directory of
-    /// the pointed-to config is used instead of `~/.deepseek`).
+    /// `CODESMITH_CONFIG_PATH` environment variable (the parent directory of
+    /// the pointed-to config is used instead of `~/.deepseek`; the legacy
+    /// `DEEPSEEK_CONFIG_PATH` alias still works).
     pub fn path() -> Result<PathBuf> {
         // Honour the same env-var escape hatch used by Settings::path so that
         // integration tests can redirect all config I/O to a temp directory.
-        if let Ok(config_path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
+        if let Some(config_path) = codesmith_config::codesmith_env("CONFIG_PATH") {
             let config_path = config_path.trim();
             if !config_path.is_empty() {
                 let p = expand_path(config_path);
@@ -331,9 +332,9 @@ impl Settings {
     /// Get the settings file path
     pub fn path() -> Result<PathBuf> {
         // Allow tests to override the settings directory via the same env var
-        // used for config (DEEPSEEK_CONFIG_PATH points at config.toml; the
+        // used for config (CODESMITH_CONFIG_PATH points at config.toml; the
         // settings file lives as a sibling in the same directory).
-        if let Ok(config_path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
+        if let Some(config_path) = codesmith_config::codesmith_env("CONFIG_PATH") {
             let config_path = config_path.trim();
             if !config_path.is_empty() {
                 let p = expand_path(config_path);

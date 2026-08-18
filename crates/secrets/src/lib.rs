@@ -675,11 +675,11 @@ impl Secrets {
 ///
 /// | Provider | Env var(s) |
 /// |---|---|
-/// | `deepseek` | `DEEPSEEK_API_KEY` |
+/// | `deepseek` | `CODESMITH_API_KEY`, `DEEPSEEK_API_KEY` |
 /// | `openrouter` | `OPENROUTER_API_KEY` |
 /// | `xiaomi-mimo` / `mimo` | `XIAOMI_MIMO_API_KEY`, `XIAOMI_API_KEY`, `MIMO_API_KEY` |
 /// | `novita` | `NOVITA_API_KEY` |
-/// | `nvidia` / `nvidia-nim` / `nim` | `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY`, `DEEPSEEK_API_KEY` |
+/// | `nvidia` / `nvidia-nim` / `nim` | `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY`, `CODESMITH_API_KEY`, `DEEPSEEK_API_KEY` |
 /// | `fireworks` | `FIREWORKS_API_KEY` |
 /// | `siliconflow` | `SILICONFLOW_API_KEY` |
 /// | `moonshot` / `kimi` | `MOONSHOT_API_KEY`, `KIMI_API_KEY` |
@@ -696,18 +696,21 @@ impl Secrets {
 #[must_use]
 pub fn env_for(name: &str) -> Option<String> {
     let candidates: &[&str] = match name.to_ascii_lowercase().as_str() {
-        "deepseek" => &["DEEPSEEK_API_KEY"],
+        "deepseek" => &["CODESMITH_API_KEY", "DEEPSEEK_API_KEY"],
         "openrouter" => &["OPENROUTER_API_KEY"],
         "xiaomi-mimo" | "xiaomi_mimo" | "xiaomimimo" | "mimo" | "xiaomi" => {
             &["XIAOMI_MIMO_API_KEY", "XIAOMI_API_KEY", "MIMO_API_KEY"]
         }
         "novita" => &["NOVITA_API_KEY"],
-        // NVIDIA NIM falls back to `DEEPSEEK_API_KEY` last because the
+        // NVIDIA NIM falls back to the app-wide key last because the
         // catalog endpoint accepts the same DeepSeek-issued key when no
         // dedicated NVIDIA token is set. This mirrors pre-v0.7 behaviour.
-        "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => {
-            &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"]
-        }
+        "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => &[
+            "NVIDIA_API_KEY",
+            "NVIDIA_NIM_API_KEY",
+            "CODESMITH_API_KEY",
+            "DEEPSEEK_API_KEY",
+        ],
         "fireworks" | "fireworks-ai" => &["FIREWORKS_API_KEY"],
         "siliconflow" | "silicon-flow" | "silicon_flow" => &["SILICONFLOW_API_KEY"],
         "moonshot" | "moonshot-ai" | "kimi" | "kimi-k2" => &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
@@ -760,6 +763,7 @@ mod tests {
     fn clear_known_envs() {
         for var in [
             "CODESMITH_HOME",
+            "CODESMITH_API_KEY",
             "DEEPSEEK_API_KEY",
             "OPENROUTER_API_KEY",
             "NOVITA_API_KEY",
@@ -1041,6 +1045,25 @@ mod tests {
         );
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    }
+
+    #[test]
+    fn env_for_prefers_codesmith_api_key_over_deepseek_alias() {
+        let _lock = env_lock();
+        clear_known_envs();
+        // Safety: env mutation guarded by env_lock().
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", "legacy-key");
+            std::env::set_var("CODESMITH_API_KEY", "app-key");
+        }
+
+        assert_eq!(env_for("deepseek").as_deref(), Some("app-key"));
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe {
+            std::env::remove_var("CODESMITH_API_KEY");
+            std::env::remove_var("DEEPSEEK_API_KEY");
+        }
     }
 
     #[test]

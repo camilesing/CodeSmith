@@ -47,7 +47,10 @@ Anything that targets the DeepSeek provider API stays exactly as it was:
   `DEEPSEEK_LOG_LEVEL`, plus the existing `DEEPSEEK_TUI_*` runtime knobs
   (`DEEPSEEK_TUI_BIN`, `DEEPSEEK_TUI_RELEASE_BASE_URL`, etc.). They're kept
   for backward compatibility; renaming them would break every shell rc on
-  the planet.
+  the planet. Every app-level `DEEPSEEK_*` knob now also accepts a
+  `CODESMITH_*` name (resolved by `codesmith_config::codesmith_env`, which
+  tries `CODESMITH_` → `CODEWHALE_` → `DEEPSEEK_`); the CLI facade forwards
+  flags under the `CODESMITH_*` names, and `.env.example` showcases them.
 - **Model IDs**: `deepseek-v4-pro`, `deepseek-v4-flash`, and the legacy
   aliases `deepseek-chat` and `deepseek-reasoner`.
 - **Hosts**: `api.deepseek.com` (global) and `api.deepseeki.com` (China

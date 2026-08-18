@@ -536,14 +536,9 @@ pub struct RuntimeThreadManagerConfig {
 impl RuntimeThreadManagerConfig {
     #[must_use]
     pub fn from_task_data_dir(task_data_dir: PathBuf) -> Self {
-        let data_dir = if let Ok(override_dir) = std::env::var("DEEPSEEK_RUNTIME_DIR") {
-            if override_dir.trim().is_empty() {
-                task_data_dir.join("runtime")
-            } else {
-                PathBuf::from(override_dir)
-            }
-        } else {
-            task_data_dir.join("runtime")
+        let data_dir = match codesmith_config::codesmith_env("RUNTIME_DIR") {
+            Some(override_dir) => PathBuf::from(override_dir),
+            None => task_data_dir.join("runtime"),
         };
         Self {
             data_dir,

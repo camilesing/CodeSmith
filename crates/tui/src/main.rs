@@ -1715,7 +1715,7 @@ fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String>
     for o in flag_origins {
         push(o);
     }
-    if let Ok(env_value) = std::env::var("DEEPSEEK_CORS_ORIGINS") {
+    if let Some(env_value) = codesmith_config::codesmith_env("CORS_ORIGINS") {
         for piece in env_value.split(',') {
             push(piece);
         }
@@ -1922,12 +1922,8 @@ enum ApiKeySource {
 }
 
 fn resolve_api_key_source(config: &Config) -> ApiKeySource {
-    if std::env::var("DEEPSEEK_API_KEY")
-        .ok()
-        .filter(|k| !k.trim().is_empty())
-        .is_some()
-    {
-        match std::env::var("DEEPSEEK_API_KEY_SOURCE").ok().as_deref() {
+    if codesmith_config::codesmith_env("API_KEY").is_some() {
+        match codesmith_config::codesmith_env("API_KEY_SOURCE").as_deref() {
             Some("config") => return ApiKeySource::Config,
             Some("keyring") => return ApiKeySource::Keyring,
             _ => {}
@@ -1944,11 +1940,7 @@ fn resolve_api_key_source(config: &Config) -> ApiKeySource {
             .is_some_and(|k| !k.trim().is_empty())
     {
         ApiKeySource::Config
-    } else if std::env::var("DEEPSEEK_API_KEY")
-        .ok()
-        .filter(|k| !k.trim().is_empty())
-        .is_some()
-    {
+    } else if codesmith_config::codesmith_env("API_KEY").is_some() {
         ApiKeySource::Env
     } else {
         ApiKeySource::Missing
@@ -2343,7 +2335,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Per-provider state: env + config file only (no values printed).
     // Keep doctor/status prompt-free even for unsigned rebuilt binaries.
-    let dispatcher_api_key_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
+    let dispatcher_api_key_source = codesmith_config::codesmith_env("API_KEY_SOURCE");
     for (provider, slot, env_names) in [
         (
             crate::config::ApiProvider::Deepseek,
@@ -3245,15 +3237,12 @@ fn run_doctor_json(
     // until the two PRs land and it can be replaced with a single
     // method call.)
     let memory_path = config.memory_path();
-    let memory_enabled_env = std::env::var("DEEPSEEK_MEMORY")
-        .ok()
-        .map(|raw| {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "1" | "on" | "true" | "yes" | "y" | "enabled"
-            )
-        })
-        .unwrap_or(false);
+    let memory_enabled_env = codesmith_config::codesmith_env("MEMORY").is_some_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "on" | "true" | "yes" | "y" | "enabled"
+        )
+    });
     let memory_summary = json!({
         // The MVP feature is opt-in by default; this defaults to false
         // on branches without the [memory] section in `Config`.
@@ -3828,7 +3817,7 @@ fn load_config_from_cli_with_exec_model(cli: &Cli, exec_model: Option<&str>) -> 
     let profile = cli
         .profile
         .clone()
-        .or_else(|| std::env::var("DEEPSEEK_PROFILE").ok());
+        .or_else(|| codesmith_config::codesmith_env("PROFILE"));
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
     config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
@@ -8045,15 +8034,15 @@ mod setup_helper_tests {
 
         let keys = documented_env_keys(&env_example);
         for required in [
-            "DEEPSEEK_API_KEY",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_MODEL",
+            "CODESMITH_API_KEY",
+            "CODESMITH_BASE_URL",
+            "CODESMITH_MODEL",
             "NVIDIA_API_KEY",
             "NIM_BASE_URL",
             "RUST_LOG",
-            "DEEPSEEK_APPROVAL_POLICY",
-            "DEEPSEEK_SANDBOX_MODE",
-            "DEEPSEEK_YOLO",
+            "CODESMITH_APPROVAL_POLICY",
+            "CODESMITH_SANDBOX_MODE",
+            "CODESMITH_YOLO",
         ] {
             assert!(
                 keys.contains(required),
@@ -8070,8 +8059,16 @@ mod setup_helper_tests {
         .join("\n");
 
         for key in keys {
+            // Keys are wired either as a literal read or — for the
+            // `CODESMITH_*` tier — through the suffix-based alias helpers
+            // (`app_env("X")` / `codesmith_env("X")` resolve
+            // `CODESMITH_X` → `CODEWHALE_X` → `DEEPSEEK_X`).
+            let suffix = key.strip_prefix("CODESMITH_").unwrap_or(&key);
+            let wired = sources.contains(&key)
+                || sources.contains(&format!("app_env(\"{suffix}\")"))
+                || sources.contains(&format!("codesmith_env(\"{suffix}\")"));
             assert!(
-                sources.contains(&key),
+                wired,
                 ".env.example documents {key}, but no source file references it"
             );
         }

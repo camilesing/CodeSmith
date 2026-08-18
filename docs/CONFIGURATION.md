@@ -265,7 +265,7 @@ default_text_model = "codesmith-coder:1.3b"
 Select a profile with:
 
 - CLI: `codesmith --profile work`
-- Env: `DEEPSEEK_PROFILE=work`
+- Env: `CODESMITH_PROFILE=work`
 
 If a profile is selected but missing, codesmith exits with an error listing available profiles.
 
@@ -274,23 +274,21 @@ If a profile is selected but missing, codesmith exits with an error listing avai
 Most runtime environment variables override config values. API-key variables are
 fallbacks after saved config and keyring credentials.
 
-The three user-facing slots — provider, model, base URL — expose `CODESMITH_*`
-aliases. When both forms are set the `CODESMITH_*` value wins; the
-`DEEPSEEK_*` form is kept for older shells:
+Every app-level variable accepts the `CODESMITH_*` name (preferred) plus its
+legacy `DEEPSEEK_*` (and older `CODEWHALE_*`) alias as a fallback. When both
+forms are set the `CODESMITH_*` value wins:
 
 - `CODESMITH_PROVIDER` (preferred) / `DEEPSEEK_PROVIDER` (legacy alias) —
   `deepseek|nvidia-nim|openai|atlascloud|wanjie-ark|openrouter|xiaomi-mimo|novita|fireworks|siliconflow|moonshot|sglang|vllm|ollama`
 - `CODESMITH_MODEL` (preferred) / `DEEPSEEK_MODEL` (legacy alias) — default model for the active provider
 - `CODESMITH_BASE_URL` (preferred) / `DEEPSEEK_BASE_URL` (legacy alias) — base URL for the active provider
 
-Remaining variables:
+Remaining app-level variables (each also answers to its `DEEPSEEK_*` alias):
 
-- `DEEPSEEK_API_KEY`
-- `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
-- `DEEPSEEK_DEFAULT_TEXT_MODEL` (extra legacy alias of `DEEPSEEK_MODEL`)
-- `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` (stream idle timeout in seconds; default `300`, clamped to `1..=3600`)
-- `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS` (connection setup + response-header wait in seconds; default `45`, clamped to `5..=300`; distinct from the per-chunk idle timeout)
-- `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)
+- `CODESMITH_API_KEY`
+- `CODESMITH_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
+- `DEEPSEEK_DEFAULT_TEXT_MODEL` (extra legacy alias of `CODESMITH_MODEL`)
+- `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `CODESMITH_API_KEY` / `DEEPSEEK_API_KEY`)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
 - `NVIDIA_NIM_MODEL`
 - `OPENAI_API_KEY`
@@ -329,47 +327,45 @@ Remaining variables:
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
 - `OLLAMA_API_KEY` (optional; many localhost Ollama servers do not require auth)
-- `DEEPSEEK_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
-- `DEEPSEEK_SKILLS_DIR`
-- `DEEPSEEK_MCP_CONFIG`
-- `DEEPSEEK_NOTES_PATH`
-- `DEEPSEEK_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
-- `DEEPSEEK_MEMORY_PATH`
-- `DEEPSEEK_ALLOW_SHELL` (`1`/`true` enables)
-- `DEEPSEEK_APPROVAL_POLICY` (`on-request|untrusted|never`)
-- `DEEPSEEK_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
-- `DEEPSEEK_MANAGED_CONFIG_PATH`
-- `DEEPSEEK_REQUIREMENTS_PATH`
-- `DEEPSEEK_MAX_SUBAGENTS` (clamped to `1..=20`)
-- `DEEPSEEK_TASKS_DIR` (runtime task queue/artifact storage, default
+- `CODESMITH_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
+- `CODESMITH_SKILLS_DIR`
+- `CODESMITH_MCP_CONFIG`
+- `CODESMITH_NOTES_PATH`
+- `CODESMITH_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
+- `CODESMITH_MEMORY_PATH`
+- `CODESMITH_ALLOW_SHELL` (`1`/`true` enables)
+- `CODESMITH_APPROVAL_POLICY` (`on-request|untrusted|never`)
+- `CODESMITH_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
+- `CODESMITH_MANAGED_CONFIG_PATH`
+- `CODESMITH_REQUIREMENTS_PATH`
+- `CODESMITH_MAX_SUBAGENTS` (clamped to `1..=20`)
+- `CODESMITH_TASKS_DIR` (runtime task queue/artifact storage, default
   `~/.codesmith/tasks`, with legacy `~/.deepseek/tasks` fallback when only the
   legacy directory exists)
-- `DEEPSEEK_ALLOW_INSECURE_HTTP` (`1`/`true` allows non-local `http://` base URLs; default is reject)
-- `DEEPSEEK_FORCE_HTTP1` (`1|true|yes|on` pins the HTTP client to HTTP/1.1, disabling HTTP/2; useful on Windows or behind proxies that mishandle long-lived H2 streams)
 - `CODESMITH_HOME` (override the base data directory; defaults to `~/.codesmith`).
   If you previously exported `DEEPSEEK_HOME`, rename it to `CODESMITH_HOME`;
   the old env var is not used for new CodeSmith state paths.
 - `CODESMITH_RELEASE_BASE_URL` (release asset mirror used by `codesmith update`
   and by TUI startup update checks when `[update].update_uri` is not set, or as
   a fallback when that configured URI cannot be fetched)
-- `DEEPSEEK_AUTOMATIONS_DIR` (override the automations storage directory; uses
+- `CODESMITH_AUTOMATIONS_DIR` (override the automations storage directory; uses
   `~/.codesmith/automations` by default, with legacy `~/.deepseek/automations`
   fallback when only the legacy directory exists)
-- `DEEPSEEK_CAPACITY_ENABLED`
-- `DEEPSEEK_CAPACITY_LOW_RISK_MAX`
-- `DEEPSEEK_CAPACITY_MEDIUM_RISK_MAX`
-- `DEEPSEEK_CAPACITY_SEVERE_MIN_SLACK`
-- `DEEPSEEK_CAPACITY_SEVERE_VIOLATION_RATIO`
-- `DEEPSEEK_CAPACITY_REFRESH_COOLDOWN_TURNS`
-- `DEEPSEEK_CAPACITY_REPLAN_COOLDOWN_TURNS`
-- `DEEPSEEK_CAPACITY_MAX_REPLAY_PER_TURN`
-- `DEEPSEEK_CAPACITY_MIN_TURNS_BEFORE_GUARDRAIL`
-- `DEEPSEEK_CAPACITY_PROFILE_WINDOW`
-- `DEEPSEEK_CAPACITY_PRIOR_CHAT`
-- `DEEPSEEK_CAPACITY_PRIOR_REASONER`
-- `DEEPSEEK_CAPACITY_PRIOR_V4_PRO`
-- `DEEPSEEK_CAPACITY_PRIOR_V4_FLASH`
-- `DEEPSEEK_CAPACITY_PRIOR_FALLBACK`
+- `CODESMITH_CAPACITY_ENABLED`
+- `CODESMITH_CAPACITY_LOW_RISK_MAX`
+- `CODESMITH_CAPACITY_MEDIUM_RISK_MAX`
+- `CODESMITH_CAPACITY_SEVERE_MIN_SLACK`
+- `CODESMITH_CAPACITY_SEVERE_VIOLATION_RATIO`
+- `CODESMITH_CAPACITY_REFRESH_COOLDOWN_TURNS`
+- `CODESMITH_CAPACITY_REPLAN_COOLDOWN_TURNS`
+- `CODESMITH_CAPACITY_MAX_REPLAY_PER_TURN`
+- `CODESMITH_CAPACITY_MIN_TURNS_BEFORE_GUARDRAIL`
+- `CODESMITH_CAPACITY_PROFILE_WINDOW`
+- `CODESMITH_CAPACITY_PRIOR_CHAT`
+- `CODESMITH_CAPACITY_PRIOR_REASONER`
+- `CODESMITH_CAPACITY_PRIOR_V4_PRO`
+- `CODESMITH_CAPACITY_PRIOR_V4_FLASH`
+- `CODESMITH_CAPACITY_PRIOR_FALLBACK`
 - `NO_ANIMATIONS` (`1|true|yes|on` forces `low_motion = true` and
   `fancy_animations = false` at startup, regardless of the saved
   settings; see [`docs/ACCESSIBILITY.md`](./ACCESSIBILITY.md)).
@@ -769,7 +765,7 @@ Notes:
 
 - `memory_path` stays at the top level beside `notes_path` and
   `skills_dir`; it is not nested under `[memory]`.
-- `DEEPSEEK_MEMORY_PATH` overrides the file path from the environment.
+- `CODESMITH_MEMORY_PATH` overrides the file path from the environment.
 - `DEEPSEEK_MEMORY=on` (also `1`, `true`, `yes`, `y`, or `enabled`)
   flips the feature on without editing `config.toml`.
 - The feature is inert when disabled: no file is injected, `# foo`

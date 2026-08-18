@@ -1358,9 +1358,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 /// `~/.deepseek/tasks` when only the legacy directory exists).
 #[must_use]
 pub fn default_tasks_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("DEEPSEEK_TASKS_DIR")
-        && !path.trim().is_empty()
-    {
+    if let Some(path) = codesmith_config::codesmith_env("TASKS_DIR") {
         return PathBuf::from(path);
     }
     dirs::home_dir()

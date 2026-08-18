@@ -1424,7 +1424,7 @@ struct RequirementsFile {
 impl Config {
     #[must_use]
     pub fn search_provider_resolution(&self) -> SearchProviderResolution {
-        if let Ok(raw) = std::env::var("DEEPSEEK_SEARCH_PROVIDER")
+        if let Ok(raw) = app_env("SEARCH_PROVIDER")
             && let Some(provider) = SearchProvider::parse(&raw)
         {
             return SearchProviderResolution {
@@ -2302,7 +2302,7 @@ impl Config {
     #[must_use]
     pub fn memory_enabled(&self) -> bool {
         // 1. Explicit disable env (truthy -> off; defined-falsy -> on).
-        if let Ok(value) = std::env::var("DEEPSEEK_DISABLE_AUTO_MEMORY") {
+        if let Ok(value) = app_env("DISABLE_AUTO_MEMORY") {
             return !parse_env_bool(&value);
         }
         // 2. bare/simple mode -> off.
@@ -2311,7 +2311,7 @@ impl Config {
         }
         // 3. remote mode without a persistent memory dir -> off.
         if env_flag_truthy_any(&["DEEPSEEK_REMOTE", "CODESMITH_REMOTE"])
-            && std::env::var("DEEPSEEK_REMOTE_MEMORY_DIR")
+            && app_env("REMOTE_MEMORY_DIR")
                 .map(|v| v.trim().is_empty())
                 .unwrap_or(true)
         {
@@ -2858,28 +2858,26 @@ fn default_memory_path() -> Option<PathBuf> {
 
 // === Environment Overrides ===
 
+/// Read an app-level env var by name suffix: `app_env("SANDBOX_MODE")` reads
+/// `CODESMITH_SANDBOX_MODE`, falling back to the legacy `CODEWHALE_` /
+/// `DEEPSEEK_` aliases. Empty values are skipped so a blank shell export does
+/// not erase configured settings.
+fn app_env(suffix: &str) -> Result<String, std::env::VarError> {
+    codesmith_config::codesmith_env(suffix).ok_or(std::env::VarError::NotPresent)
+}
+
 /// Read a CodeSmith env var, preferring the `CODESMITH_*` form over legacy
 /// aliases. Empty values are ignored so a blank shell export does not erase
 /// configured provider settings.
 fn codesmith_env_var(
     codesmith_name: &str,
-    legacy_name: &str,
+    _legacy_name: &str,
 ) -> Result<String, std::env::VarError> {
-    let codewhale_name = codesmith_name.replacen("CODESMITH_", "CODEWHALE_", 1);
-    std::env::var(codesmith_name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::var(&codewhale_name)
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .or_else(|| {
-            std::env::var(legacy_name)
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .ok_or(std::env::VarError::NotPresent)
+    app_env(
+        codesmith_name
+            .strip_prefix("CODESMITH_")
+            .unwrap_or(codesmith_name),
+    )
 }
 
 fn parse_env_bool(value: &str) -> bool {
@@ -3162,7 +3160,7 @@ fn apply_env_overrides(config: &mut Config) {
             .vllm
             .base_url = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_HTTP_HEADERS")
+    if let Ok(value) = app_env("HTTP_HEADERS")
         && let Ok(headers) = parse_http_headers(&value)
         && !headers.is_empty()
     {
@@ -3295,7 +3293,8 @@ fn apply_env_overrides(config: &mut Config) {
                 .filter(|value| !value.trim().is_empty())
         })
     {
-        // The CLI `--model` handoff always sets DEEPSEEK_MODEL, never the
+        // The CLI `--model` handoff always sets CODESMITH_MODEL (legacy
+        // DEEPSEEK_MODEL), never the
         // provider-specific *_MODEL var. The legacy root `default_text_model`
         // is a DeepSeek-only slot (the validator rejects non-DeepSeek IDs
         // there). For a non-DeepSeek provider the explicit model must land in
@@ -3338,47 +3337,47 @@ fn apply_env_overrides(config: &mut Config) {
     {
         config.default_text_model = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SKILLS_DIR") {
+    if let Ok(value) = app_env("SKILLS_DIR") {
         config.skills_dir = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_MCP_CONFIG") {
+    if let Ok(value) = app_env("MCP_CONFIG") {
         config.mcp_config_path = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_NOTES_PATH") {
+    if let Ok(value) = app_env("NOTES_PATH") {
         config.notes_path = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_MEMORY_PATH") {
+    if let Ok(value) = app_env("MEMORY_PATH") {
         config.memory_path = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_MEMORY") {
+    if let Ok(value) = app_env("MEMORY") {
         let on = parse_env_bool(&value);
         config
             .memory
             .get_or_insert_with(MemoryConfig::default)
             .enabled = Some(on);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_ALLOW_SHELL") {
+    if let Ok(value) = app_env("ALLOW_SHELL") {
         config.allow_shell = Some(parse_env_bool(&value));
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_APPROVAL_POLICY") {
+    if let Ok(value) = app_env("APPROVAL_POLICY") {
         config.approval_policy = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_MODE") {
+    if let Ok(value) = app_env("SANDBOX_MODE") {
         config.sandbox_mode = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_YOLO") {
+    if let Ok(value) = app_env("YOLO") {
         config.yolo = Some(parse_env_bool(&value));
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_BACKEND") {
+    if let Ok(value) = app_env("SANDBOX_BACKEND") {
         config.sandbox_backend = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_URL") {
+    if let Ok(value) = app_env("SANDBOX_URL") {
         config.sandbox_url = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_API_KEY") {
+    if let Ok(value) = app_env("SANDBOX_API_KEY") {
         config.sandbox_api_key = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_PREFER_BWRAP") {
+    if let Ok(value) = app_env("PREFER_BWRAP") {
         let on = parse_env_bool(&value);
         config.prefer_bwrap = Some(on);
         config
@@ -3386,51 +3385,49 @@ fn apply_env_overrides(config: &mut Config) {
             .get_or_insert_with(SandboxConfigToml::default)
             .prefer_bwrap = Some(on);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_ENABLED") {
+    if let Ok(value) = app_env("SANDBOX_ENABLED") {
         config
             .sandbox
             .get_or_insert_with(SandboxConfigToml::default)
             .enabled = Some(parse_env_bool(&value));
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE") {
+    if let Ok(value) = app_env("SANDBOX_FAIL_IF_UNAVAILABLE") {
         config
             .sandbox
             .get_or_insert_with(SandboxConfigToml::default)
             .fail_if_unavailable = Some(parse_env_bool(&value));
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_ENABLED_PLATFORMS") {
+    if let Ok(value) = app_env("SANDBOX_ENABLED_PLATFORMS") {
         config
             .sandbox
             .get_or_insert_with(SandboxConfigToml::default)
             .enabled_platforms = Some(parse_env_list(&value));
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_EXCLUDED_COMMANDS") {
+    if let Ok(value) = app_env("SANDBOX_EXCLUDED_COMMANDS") {
         config
             .sandbox
             .get_or_insert_with(SandboxConfigToml::default)
             .excluded_commands = Some(parse_env_list(&value));
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_AUTO_ALLOW_BASH_IF_SANDBOXED") {
+    if let Ok(value) = app_env("AUTO_ALLOW_BASH_IF_SANDBOXED") {
         config
             .sandbox
             .get_or_insert_with(SandboxConfigToml::default)
             .auto_allow_bash_if_sandboxed = Some(parse_env_bool(&value));
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH") {
+    if let Ok(value) = app_env("MANAGED_CONFIG_PATH") {
         config.managed_config_path = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_SEARCH_API_KEY")
-        && !value.trim().is_empty()
-    {
+    if let Ok(value) = app_env("SEARCH_API_KEY") {
         config
             .search
             .get_or_insert_with(SearchConfig::default)
             .api_key = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_REQUIREMENTS_PATH") {
+    if let Ok(value) = app_env("REQUIREMENTS_PATH") {
         config.requirements_path = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_MAX_SUBAGENTS")
+    if let Ok(value) = app_env("MAX_SUBAGENTS")
         && let Ok(parsed) = value.parse::<usize>()
     {
         config.max_subagents = Some(parsed.clamp(1, MAX_SUBAGENTS));
@@ -3454,76 +3451,76 @@ fn apply_env_overrides(config: &mut Config) {
         fallback_default_prior: None,
     });
 
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_ENABLED") {
+    if let Ok(value) = app_env("CAPACITY_ENABLED") {
         let val = value.trim().to_ascii_lowercase();
         capacity.enabled = Some(matches!(val.as_str(), "1" | "true" | "yes" | "on"));
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_LOW_RISK_MAX")
+    if let Ok(value) = app_env("CAPACITY_LOW_RISK_MAX")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.low_risk_max = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_MEDIUM_RISK_MAX")
+    if let Ok(value) = app_env("CAPACITY_MEDIUM_RISK_MAX")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.medium_risk_max = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_SEVERE_MIN_SLACK")
+    if let Ok(value) = app_env("CAPACITY_SEVERE_MIN_SLACK")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.severe_min_slack = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_SEVERE_VIOLATION_RATIO")
+    if let Ok(value) = app_env("CAPACITY_SEVERE_VIOLATION_RATIO")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.severe_violation_ratio = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_REFRESH_COOLDOWN_TURNS")
+    if let Ok(value) = app_env("CAPACITY_REFRESH_COOLDOWN_TURNS")
         && let Ok(parsed) = value.parse::<u64>()
     {
         capacity.refresh_cooldown_turns = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_REPLAN_COOLDOWN_TURNS")
+    if let Ok(value) = app_env("CAPACITY_REPLAN_COOLDOWN_TURNS")
         && let Ok(parsed) = value.parse::<u64>()
     {
         capacity.replan_cooldown_turns = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_MAX_REPLAY_PER_TURN")
+    if let Ok(value) = app_env("CAPACITY_MAX_REPLAY_PER_TURN")
         && let Ok(parsed) = value.parse::<usize>()
     {
         capacity.max_replay_per_turn = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_MIN_TURNS_BEFORE_GUARDRAIL")
+    if let Ok(value) = app_env("CAPACITY_MIN_TURNS_BEFORE_GUARDRAIL")
         && let Ok(parsed) = value.parse::<u64>()
     {
         capacity.min_turns_before_guardrail = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_PROFILE_WINDOW")
+    if let Ok(value) = app_env("CAPACITY_PROFILE_WINDOW")
         && let Ok(parsed) = value.parse::<usize>()
     {
         capacity.profile_window = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_PRIOR_CHAT")
+    if let Ok(value) = app_env("CAPACITY_PRIOR_CHAT")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.deepseek_v3_2_chat_prior = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_PRIOR_REASONER")
+    if let Ok(value) = app_env("CAPACITY_PRIOR_REASONER")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.deepseek_v3_2_reasoner_prior = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_PRIOR_V4_PRO")
+    if let Ok(value) = app_env("CAPACITY_PRIOR_V4_PRO")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.deepseek_v4_pro_prior = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_PRIOR_V4_FLASH")
+    if let Ok(value) = app_env("CAPACITY_PRIOR_V4_FLASH")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.deepseek_v4_flash_prior = Some(parsed);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_PRIOR_FALLBACK")
+    if let Ok(value) = app_env("CAPACITY_PRIOR_FALLBACK")
         && let Ok(parsed) = value.parse::<f64>()
     {
         capacity.fallback_default_prior = Some(parsed);
@@ -4376,7 +4373,7 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
 pub fn active_provider_has_env_api_key(config: &Config) -> bool {
     match config.api_provider() {
         ApiProvider::Deepseek => {
-            std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+            app_env("API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
         ApiProvider::NvidiaNim => {
             std::env::var("NVIDIA_API_KEY").is_ok_and(|k| !k.trim().is_empty())
@@ -7112,6 +7109,103 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
         let config = Config::load(None, None)?;
         assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
         assert_eq!(config.deepseek_base_url(), "https://short-nim.example/v1");
+        Ok(())
+    }
+
+    /// Snapshot-and-restore guard for app-knob env vars that the big
+    /// [`EnvGuard`] does not cover (approval/sandbox/skills and their
+    /// `CODESMITH_*` aliases).
+    struct KnobGuard(Vec<(&'static str, Option<OsString>)>);
+
+    impl KnobGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let saved: Vec<_> = keys.iter().map(|k| (*k, env::var_os(k))).collect();
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                keys.iter().for_each(|k| env::remove_var(k));
+            }
+            Self(saved)
+        }
+    }
+
+    impl Drop for KnobGuard {
+        fn drop(&mut self) {
+            // Safety: restoring snapshots taken under the test env mutex.
+            unsafe {
+                for (key, value) in self.0.iter() {
+                    if let Some(value) = value {
+                        env::set_var(key, value);
+                    } else {
+                        env::remove_var(key);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codesmith_env_knobs_take_precedence_in_tui_overrides() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-knob-precedence-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let _knobs = KnobGuard::new(&[
+            "CODESMITH_APPROVAL_POLICY",
+            "DEEPSEEK_APPROVAL_POLICY",
+            "CODESMITH_SANDBOX_MODE",
+            "DEEPSEEK_SANDBOX_MODE",
+            "CODESMITH_SKILLS_DIR",
+        ]);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_APPROVAL_POLICY", "never");
+            env::set_var("CODESMITH_APPROVAL_POLICY", "on-request");
+            env::set_var("DEEPSEEK_SANDBOX_MODE", "danger-full-access");
+            env::set_var("CODESMITH_SANDBOX_MODE", "workspace-write");
+            env::set_var("CODESMITH_SKILLS_DIR", "/tmp/codesmith-skills");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.approval_policy.as_deref(), Some("on-request"));
+        assert_eq!(config.sandbox_mode.as_deref(), Some("workspace-write"));
+        assert_eq!(config.skills_dir.as_deref(), Some("/tmp/codesmith-skills"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_deepseek_env_knobs_still_apply_in_tui_overrides() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-legacy-knobs-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let _knobs = KnobGuard::new(&["DEEPSEEK_YOLO", "DEEPSEEK_ALLOW_SHELL"]);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_YOLO", "true");
+            env::set_var("DEEPSEEK_ALLOW_SHELL", "1");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.yolo, Some(true));
+        assert_eq!(config.allow_shell, Some(true));
         Ok(())
     }
 

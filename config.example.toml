@@ -121,7 +121,7 @@ memory_path = "~/.codesmith/memory.md"
 # ─────────────────────────────────────────────────────────────────────────────────
 [memory]
 # enabled = true            # turn the feature on (default: false)
-# Override the env-var equivalent: `DEEPSEEK_MEMORY=on`
+# Override the env-var equivalent: `CODESMITH_MEMORY=on`
 
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
@@ -153,9 +153,9 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 # sandbox_api_key = "YOUR_API_KEY"  # Optional Bearer token sent with requests
 #
 # Env-var overrides:
-#   DEEPSEEK_SANDBOX_BACKEND   → sandbox_backend
-#   DEEPSEEK_SANDBOX_URL       → sandbox_url
-#   DEEPSEEK_SANDBOX_API_KEY   → sandbox_api_key
+#   CODESMITH_SANDBOX_BACKEND   → sandbox_backend
+#   CODESMITH_SANDBOX_URL       → sandbox_url
+#   CODESMITH_SANDBOX_API_KEY   → sandbox_api_key
 #
 # Example OpenSandbox setup:
 #
@@ -180,7 +180,7 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 #
 # prefer_bwrap = false  # default — use Landlock only
 #
-# Env override: DEEPSEEK_PREFER_BWRAP=true
+# Env override: CODESMITH_PREFER_BWRAP=true
 
 # auto_allow entries match by command prefix, not raw string.
 # See command_safety.rs for the prefix dictionary.
@@ -210,7 +210,8 @@ max_subagents = 10 # optional (1-20)
 # `--provider wanjie-ark` / `/provider volcengine` / `/provider fireworks` /
 # `--provider siliconflow` / `/provider moonshot`
 # switches between them without having to re-enter keys. Env vars override anything set here:
-#   DeepSeek: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+#   DeepSeek: CODESMITH_API_KEY, CODESMITH_BASE_URL, CODESMITH_MODEL
+#             (legacy DEEPSEEK_* aliases also work)
 #   NIM:      NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY), NIM_BASE_URL
 #             (or NVIDIA_NIM_BASE_URL / NVIDIA_BASE_URL), NVIDIA_NIM_MODEL
 #   OpenAI-compatible: OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
@@ -249,9 +250,8 @@ max_subagents = 10 # optional (1-20)
 # model = "deepseek-ai/deepseek-v4-pro"     # or deepseek-ai/deepseek-v4-flash
 
 # Generic OpenAI-compatible endpoint. Use the built-in `openai` provider for
-# third-party gateways; do not invent a custom provider name. For non-local
-# http:// gateways, launch with DEEPSEEK_ALLOW_INSECURE_HTTP=1 only on a
-# trusted network.
+# third-party gateways; do not invent a custom provider name. Only use
+# non-local http:// gateways on a trusted network.
 [providers.openai]
 # api_key = "YOUR_OPENAI_COMPATIBLE_API_KEY"
 # base_url = "https://api.openai.com/v1"
@@ -389,8 +389,8 @@ max_subagents = 10 # optional (1-20)
 #                             # storing API keys. Prefer env vars for local smoke tests.
 #
 # Env-var overrides:
-#   DEEPSEEK_SEARCH_PROVIDER → search.provider
-#   DEEPSEEK_SEARCH_API_KEY  → search.api_key
+#   CODESMITH_SEARCH_PROVIDER → search.provider
+#   CODESMITH_SEARCH_API_KEY  → search.api_key
 #   METASO_API_KEY           → metaso key fallback
 #   BAIDU_SEARCH_API_KEY     → baidu key fallback
 
@@ -558,7 +558,7 @@ fallback_default_prior = 3.8
 # ─────────────────────────────────────────────────────────────────────────────────
 # Profile Example (for multiple environments)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Select a profile with `deepseek --profile <name>` or `DEEPSEEK_PROFILE=<name>`.
+# Select a profile with `deepseek --profile <name>` or `CODESMITH_PROFILE=<name>`.
 [profiles.work]
 api_key = "WORK_DEEPSEEK_API_KEY"
 base_url = "https://api.deepseek.com/beta"
@@ -716,7 +716,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # Use `cors_origins` to add extra dev origins (e.g. Vite's default `:5173`).
 # User entries STACK on top of the defaults — they do not replace them. The
 # CLI flag `--cors-origin URL` (repeatable) and env var
-# `DEEPSEEK_CORS_ORIGINS=url1,url2` resolve to the same merged list.
+# `CODESMITH_CORS_ORIGINS=url1,url2` resolve to the same merged list.
 #
 # [runtime_api]
 # cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]

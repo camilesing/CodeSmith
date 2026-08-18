@@ -435,7 +435,7 @@ pub async fn run_http_server(
     });
     let resolved_auth = resolve_runtime_auth(
         options.auth_token.clone(),
-        std::env::var("DEEPSEEK_RUNTIME_TOKEN").ok(),
+        codesmith_config::codesmith_env("RUNTIME_TOKEN"),
         options.insecure_no_auth,
     );
     let runtime_token = resolved_auth.token.clone();

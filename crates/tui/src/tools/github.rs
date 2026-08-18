@@ -392,7 +392,7 @@ fn close_github_thread(
 }
 
 fn gh_bin() -> String {
-    if let Ok(bin) = std::env::var("DEEPSEEK_GH_BIN") {
+    if let Some(bin) = codesmith_config::codesmith_env("GH_BIN") {
         return bin;
     }
     for path in FALLBACK_GH_PATHS {

@@ -2637,6 +2637,17 @@ struct EnvRuntimeOverrides {
     anthropic_base_url: Option<String>,
 }
 
+/// Read an app-level env var by suffix, preferring `CODESMITH_{suffix}` over
+/// the legacy `CODEWHALE_{suffix}` / `DEEPSEEK_{suffix}` aliases. Empty values
+/// are skipped so a blank shell export does not erase configured settings.
+pub fn codesmith_env(suffix: &str) -> Option<String> {
+    ["CODESMITH_", "CODEWHALE_", "DEEPSEEK_"].iter().find_map(|prefix| {
+        std::env::var(format!("{prefix}{suffix}"))
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    })
+}
+
 impl EnvRuntimeOverrides {
     fn load() -> Self {
         Self {
@@ -2667,19 +2678,14 @@ impl EnvRuntimeOverrides {
                 .or_else(|_| std::env::var("MIMO_MODEL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
-            output_mode: std::env::var("DEEPSEEK_OUTPUT_MODE").ok(),
-            auth_mode: std::env::var("DEEPSEEK_AUTH_MODE").ok(),
-            log_level: std::env::var("DEEPSEEK_LOG_LEVEL").ok(),
-            telemetry: std::env::var("DEEPSEEK_TELEMETRY")
-                .ok()
-                .and_then(|v| parse_bool(&v).ok()),
-            approval_policy: std::env::var("DEEPSEEK_APPROVAL_POLICY").ok(),
-            sandbox_mode: std::env::var("DEEPSEEK_SANDBOX_MODE").ok(),
-            yolo: std::env::var("DEEPSEEK_YOLO")
-                .ok()
-                .and_then(|v| parse_bool(&v).ok()),
-            http_headers: std::env::var("DEEPSEEK_HTTP_HEADERS")
-                .ok()
+            output_mode: codesmith_env("OUTPUT_MODE"),
+            auth_mode: codesmith_env("AUTH_MODE"),
+            log_level: codesmith_env("LOG_LEVEL"),
+            telemetry: codesmith_env("TELEMETRY").and_then(|v| parse_bool(&v).ok()),
+            approval_policy: codesmith_env("APPROVAL_POLICY"),
+            sandbox_mode: codesmith_env("SANDBOX_MODE"),
+            yolo: codesmith_env("YOLO").and_then(|v| parse_bool(&v).ok()),
+            http_headers: codesmith_env("HTTP_HEADERS")
                 .and_then(|value| parse_http_headers(&value).ok())
                 .filter(|headers| !headers.is_empty()),
             deepseek_base_url: std::env::var("CODESMITH_BASE_URL")
@@ -2822,6 +2828,20 @@ mod tests {
         deepseek_default_text_model: Option<OsString>,
         deepseek_provider: Option<OsString>,
         deepseek_auth_mode: Option<OsString>,
+        deepseek_output_mode: Option<OsString>,
+        deepseek_log_level: Option<OsString>,
+        deepseek_telemetry: Option<OsString>,
+        deepseek_approval_policy: Option<OsString>,
+        deepseek_sandbox_mode: Option<OsString>,
+        deepseek_yolo: Option<OsString>,
+        codesmith_output_mode: Option<OsString>,
+        codesmith_auth_mode: Option<OsString>,
+        codesmith_log_level: Option<OsString>,
+        codesmith_telemetry: Option<OsString>,
+        codesmith_approval_policy: Option<OsString>,
+        codesmith_sandbox_mode: Option<OsString>,
+        codesmith_yolo: Option<OsString>,
+        codesmith_http_headers: Option<OsString>,
         nvidia_api_key: Option<OsString>,
         nvidia_nim_api_key: Option<OsString>,
         nim_base_url: Option<OsString>,
@@ -2879,6 +2899,20 @@ mod tests {
                 deepseek_default_text_model: env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL"),
                 deepseek_provider: env::var_os("DEEPSEEK_PROVIDER"),
                 deepseek_auth_mode: env::var_os("DEEPSEEK_AUTH_MODE"),
+                deepseek_output_mode: env::var_os("DEEPSEEK_OUTPUT_MODE"),
+                deepseek_log_level: env::var_os("DEEPSEEK_LOG_LEVEL"),
+                deepseek_telemetry: env::var_os("DEEPSEEK_TELEMETRY"),
+                deepseek_approval_policy: env::var_os("DEEPSEEK_APPROVAL_POLICY"),
+                deepseek_sandbox_mode: env::var_os("DEEPSEEK_SANDBOX_MODE"),
+                deepseek_yolo: env::var_os("DEEPSEEK_YOLO"),
+                codesmith_output_mode: env::var_os("CODESMITH_OUTPUT_MODE"),
+                codesmith_auth_mode: env::var_os("CODESMITH_AUTH_MODE"),
+                codesmith_log_level: env::var_os("CODESMITH_LOG_LEVEL"),
+                codesmith_telemetry: env::var_os("CODESMITH_TELEMETRY"),
+                codesmith_approval_policy: env::var_os("CODESMITH_APPROVAL_POLICY"),
+                codesmith_sandbox_mode: env::var_os("CODESMITH_SANDBOX_MODE"),
+                codesmith_yolo: env::var_os("CODESMITH_YOLO"),
+                codesmith_http_headers: env::var_os("CODESMITH_HTTP_HEADERS"),
                 codesmith_provider: env::var_os("CODESMITH_PROVIDER"),
                 codesmith_model: env::var_os("CODESMITH_MODEL"),
                 codesmith_base_url: env::var_os("CODESMITH_BASE_URL"),
@@ -2934,6 +2968,20 @@ mod tests {
                 env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
                 env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("DEEPSEEK_AUTH_MODE");
+                env::remove_var("DEEPSEEK_OUTPUT_MODE");
+                env::remove_var("DEEPSEEK_LOG_LEVEL");
+                env::remove_var("DEEPSEEK_TELEMETRY");
+                env::remove_var("DEEPSEEK_APPROVAL_POLICY");
+                env::remove_var("DEEPSEEK_SANDBOX_MODE");
+                env::remove_var("DEEPSEEK_YOLO");
+                env::remove_var("CODESMITH_OUTPUT_MODE");
+                env::remove_var("CODESMITH_AUTH_MODE");
+                env::remove_var("CODESMITH_LOG_LEVEL");
+                env::remove_var("CODESMITH_TELEMETRY");
+                env::remove_var("CODESMITH_APPROVAL_POLICY");
+                env::remove_var("CODESMITH_SANDBOX_MODE");
+                env::remove_var("CODESMITH_YOLO");
+                env::remove_var("CODESMITH_HTTP_HEADERS");
                 env::remove_var("CODESMITH_PROVIDER");
                 env::remove_var("CODESMITH_MODEL");
                 env::remove_var("CODESMITH_BASE_URL");
@@ -3005,6 +3053,26 @@ mod tests {
                 );
                 Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("DEEPSEEK_AUTH_MODE", self.deepseek_auth_mode.take());
+                Self::restore_var("DEEPSEEK_OUTPUT_MODE", self.deepseek_output_mode.take());
+                Self::restore_var("DEEPSEEK_LOG_LEVEL", self.deepseek_log_level.take());
+                Self::restore_var("DEEPSEEK_TELEMETRY", self.deepseek_telemetry.take());
+                Self::restore_var(
+                    "DEEPSEEK_APPROVAL_POLICY",
+                    self.deepseek_approval_policy.take(),
+                );
+                Self::restore_var("DEEPSEEK_SANDBOX_MODE", self.deepseek_sandbox_mode.take());
+                Self::restore_var("DEEPSEEK_YOLO", self.deepseek_yolo.take());
+                Self::restore_var("CODESMITH_OUTPUT_MODE", self.codesmith_output_mode.take());
+                Self::restore_var("CODESMITH_AUTH_MODE", self.codesmith_auth_mode.take());
+                Self::restore_var("CODESMITH_LOG_LEVEL", self.codesmith_log_level.take());
+                Self::restore_var("CODESMITH_TELEMETRY", self.codesmith_telemetry.take());
+                Self::restore_var(
+                    "CODESMITH_APPROVAL_POLICY",
+                    self.codesmith_approval_policy.take(),
+                );
+                Self::restore_var("CODESMITH_SANDBOX_MODE", self.codesmith_sandbox_mode.take());
+                Self::restore_var("CODESMITH_YOLO", self.codesmith_yolo.take());
+                Self::restore_var("CODESMITH_HTTP_HEADERS", self.codesmith_http_headers.take());
                 Self::restore_var("CODESMITH_PROVIDER", self.codesmith_provider.take());
                 Self::restore_var("CODESMITH_MODEL", self.codesmith_model.take());
                 Self::restore_var("CODESMITH_BASE_URL", self.codesmith_base_url.take());
@@ -3297,6 +3365,41 @@ mod tests {
 
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
         assert_eq!(resolved.base_url, "https://short-nim.example/v1");
+    }
+
+    #[test]
+    fn codesmith_env_knobs_override_deepseek_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_YOLO", "false");
+            env::set_var("CODESMITH_YOLO", "true");
+            env::set_var("DEEPSEEK_APPROVAL_POLICY", "never");
+            env::set_var("CODESMITH_APPROVAL_POLICY", "on-request");
+        }
+
+        let overrides = EnvRuntimeOverrides::load();
+
+        assert_eq!(overrides.yolo, Some(true));
+        assert_eq!(overrides.approval_policy.as_deref(), Some("on-request"));
+    }
+
+    #[test]
+    fn deepseek_env_knobs_still_apply_and_blank_codesmith_is_skipped() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_YOLO", "true");
+            env::set_var("DEEPSEEK_SANDBOX_MODE", "workspace-write");
+            env::set_var("CODESMITH_SANDBOX_MODE", "   ");
+        }
+
+        let overrides = EnvRuntimeOverrides::load();
+
+        assert_eq!(overrides.yolo, Some(true));
+        assert_eq!(overrides.sandbox_mode.as_deref(), Some("workspace-write"));
     }
 
     #[test]
