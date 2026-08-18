@@ -163,6 +163,37 @@ api_key = "YOUR_XIAOMI_KEY"
 base_url = "https://api.xiaomimimo.com/v1"
 ```
 
+### Utility Model
+
+`[utility_model]` designates a cheap/fast secondary LLM for background
+assists so the main model's budget is spent on the actual conversation:
+
+- Workshop large-output synthesis (#548): tool results above the
+  `large_output_threshold_tokens` threshold are condensed by this model;
+  only the synthesis enters the parent context, the raw text is kept in
+  the workshop variable `last_tool_result` (`raw = true` on a tool call
+  bypasses routing)
+- Auto-route classification (`/model auto` and sub-agent routing)
+- Flash seam default (`[context] seam_model`, when that key is unset)
+
+When the table is absent every assist uses the main model — behaviour is
+unchanged for single-model setups.
+
+```toml
+[utility_model]
+model = "deepseek-v4-flash"        # required: setting the table enables it
+# provider = "openai"              # optional: defaults to the main provider
+# api_key = "YOUR_API_KEY"         # optional: defaults to the main api_key
+# base_url = "https://..."         # optional: defaults to the main base_url
+```
+
+Same-provider setups reuse the main client with a per-request model
+override; a different `provider` builds a dedicated second client (for
+example main = anthropic, utility = deepseek) and then needs its own
+`api_key` — one vendor's key is never sent to another. The model id can
+also be set with `CODESMITH_UTILITY_MODEL` (legacy alias
+`DEEPSEEK_UTILITY_MODEL`).
+
 To bootstrap MCP and skills directories at their resolved paths, run `codesmith-tui setup`.
 To only scaffold MCP, run `codesmith-tui mcp init`.
 
@@ -689,7 +720,8 @@ If you are upgrading from older releases:
   - `[context].l2_threshold` (int, default `384000`)
   - `[context].l3_threshold` (int, default `576000`)
   - `[context].cycle_threshold` (int, default `768000`)
-  - `[context].seam_model` (string, default `deepseek-v4-flash`)
+  - `[context].seam_model` (string, default: the configured `[utility_model]`
+    model id, else `deepseek-v4-flash`)
 - `retry.*` (optional): retry/backoff settings for API requests:
   - `[retry].enabled` (bool, default `true`)
   - `[retry].max_retries` (int, default `3`)

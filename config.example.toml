@@ -540,15 +540,17 @@ l3_threshold = 576000
 # Hard cycle reserves the normal 262144-token internal turn budget plus 1024
 # safety tokens, separate from V4's official 384000 max-output metadata.
 cycle_threshold = 768000
+# Defaults to the [utility_model] model id when configured, else Flash.
 seam_model = "deepseek-v4-flash"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Workshop / Large-Output Routing (#548)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Tool outputs exceeding `large_output_threshold_tokens` are routed through a
-# V4-Flash synthesis sub-agent.  Only the synthesis reaches the parent context;
-# the raw text is stored in the workshop variable `last_tool_result` so the
-# parent can call `promote_to_context` later if it needs the full content.
+# synthesis sub-agent powered by [utility_model] (main model when unconfigured).
+# Only the synthesis reaches the parent context; the raw text is stored in the
+# workshop variable `last_tool_result` so the parent can call
+# `promote_to_context` later if it needs the full content.
 #
 # Per-tool overrides let high-volume tools (e.g. exec_shell) use tighter
 # thresholds without changing the global default.
