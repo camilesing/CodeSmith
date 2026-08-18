@@ -1632,9 +1632,9 @@ impl RuntimeThreadManager {
         let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
         let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
         let auto_approve = req.auto_approve.unwrap_or(thread.auto_approve);
-        let show_thinking = crate::settings::Settings::load()
-            .unwrap_or_default()
-            .show_thinking;
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        let show_thinking = settings.show_thinking;
+        let is_simple = settings.is_simple;
 
         engine
             .send(Op::SendMessage {
@@ -1650,6 +1650,7 @@ impl RuntimeThreadManager {
                 auto_approve,
                 translation_enabled: false,
                 show_thinking,
+                is_simple,
                 allowed_tools: None,
                 approval_mode: if auto_approve {
                     crate::tui::approval::ApprovalMode::Auto
@@ -2013,6 +2014,7 @@ impl RuntimeThreadManager {
             project_context_pack_enabled: self.config.project_context_pack_enabled(),
             translation_enabled: false,
             show_thinking: settings.show_thinking,
+            is_simple: settings.is_simple,
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),

@@ -540,6 +540,9 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.show_thinking = settings.show_thinking;
             app.mark_history_updated();
         }
+        "is_simple" | "simple" => {
+            app.is_simple = settings.is_simple;
+        }
         "show_tool_details" | "tool_details" => {
             app.show_tool_details = settings.show_tool_details;
             app.mark_history_updated();

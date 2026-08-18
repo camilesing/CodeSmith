@@ -513,6 +513,12 @@ Common settings keys:
   `@`-mention completion walks. Set to `0` for unlimited depth in deeply
   nested workspaces; keep the default in very large repos unless needed.
 - `show_thinking` (on/off)
+- `is_simple` (on/off, default off): answer in maximum-compression "simple"
+  (caveman) conversation style — short sentences, no filler or pleasantries —
+  while code, commands, and error messages stay byte-exact and the user's
+  language is preserved. Security warnings and destructive-operation notices
+  automatically switch back to full clarity. Toggle via `/config is_simple on`;
+  applies from the next turn.
 - `show_tool_details` (on/off)
 - `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`; default `auto`): UI chrome
   locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or

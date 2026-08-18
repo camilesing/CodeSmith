@@ -203,6 +203,10 @@ pub struct Settings {
     pub mention_walk_depth: usize,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
+    /// Answer in maximum-compression "simple" (caveman) conversation style:
+    /// short sentences, no filler, technical content byte-exact. Toggle via
+    /// `/config is_simple on|off`; applies from the next turn.
+    pub is_simple: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
     /// UI locale: auto, en, ja, zh-Hans, pt-BR, es-419
@@ -303,6 +307,7 @@ impl Default for Settings {
             mention_menu_limit: 128,
             mention_walk_depth: 6,
             show_thinking: true,
+            is_simple: false,
             show_tool_details: true,
             locale: "auto".to_string(),
             theme: "system".to_string(),
@@ -516,6 +521,9 @@ impl Settings {
             }
             "show_thinking" | "thinking" => {
                 self.show_thinking = parse_bool(value)?;
+            }
+            "is_simple" | "simple" => {
+                self.is_simple = parse_bool(value)?;
             }
             "show_tool_details" | "tool_details" => {
                 self.show_tool_details = parse_bool(value)?;
@@ -1108,6 +1116,16 @@ mod tests {
     fn default_settings_show_footer_water_strip() {
         let settings = Settings::default();
         assert!(settings.fancy_animations);
+    }
+
+    #[test]
+    fn simple_conversation_style_defaults_off_and_is_togglable() {
+        let mut settings = Settings::default();
+        assert!(!settings.is_simple);
+        settings.set("is_simple", "on").expect("enable simple style");
+        assert!(settings.is_simple);
+        settings.set("simple", "off").expect("disable via alias");
+        assert!(!settings.is_simple);
     }
 
     #[test]

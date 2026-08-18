@@ -5584,6 +5584,7 @@ async fn run_exec_agent(
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: false,
         show_thinking: settings.show_thinking,
+        is_simple: settings.is_simple,
         max_steps: 100,
         max_subagents,
         features: config.features(),
@@ -5688,6 +5689,7 @@ async fn run_exec_agent(
             auto_approve,
             translation_enabled: false,
             show_thinking: settings.show_thinking,
+            is_simple: settings.is_simple,
             approval_mode: if auto_approve {
                 crate::tui::approval::ApprovalMode::Auto
             } else {
@@ -6151,6 +6153,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: false,
         show_thinking: settings.show_thinking,
+        is_simple: settings.is_simple,
         max_steps: 100,
         max_subagents: config.max_subagents(),
         features: config.features(),
@@ -6224,6 +6227,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
             auto_approve,
             translation_enabled: false,
             show_thinking: settings.show_thinking,
+            is_simple: settings.is_simple,
             approval_mode: if auto_approve {
                 crate::tui::approval::ApprovalMode::Auto
             } else {

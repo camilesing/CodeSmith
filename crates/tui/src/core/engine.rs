@@ -600,6 +600,7 @@ pub fn build_engine(
         translation_enabled: config.translation_enabled,
         model_id: &config.model,
         show_thinking: config.show_thinking,
+        is_simple: config.is_simple,
         skills_block: crate::skills::render_available_skills_context_for_workspace(
             &config.workspace,
         )

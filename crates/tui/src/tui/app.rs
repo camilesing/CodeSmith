@@ -1134,6 +1134,10 @@ pub struct App {
     /// changed via `/config status_indicator <whale|dots|off>`.
     pub status_indicator: String,
     pub show_thinking: bool,
+    /// Answer in "simple" (caveman) conversation style. Mirrors
+    /// `Settings::is_simple`; the per-turn engine dispatch re-reads settings,
+    /// this copy feeds the inline `EngineConfig` / prompt-context builds.
+    pub is_simple: bool,
     pub verbose_transcript: bool,
     pub show_tool_details: bool,
     pub ui_locale: Locale,
@@ -1677,6 +1681,7 @@ impl App {
         let synchronized_output_enabled = settings.synchronized_output_enabled();
         let status_indicator = settings.status_indicator.clone();
         let show_thinking = settings.show_thinking;
+        let is_simple = settings.is_simple;
         let show_tool_details = settings.show_tool_details;
         let ui_locale = resolve_locale(&settings.locale);
         let cost_currency = match (settings.cost_currency.as_str(), ui_locale.tag()) {
@@ -1881,6 +1886,7 @@ impl App {
             synchronized_output_enabled,
             status_indicator,
             show_thinking,
+            is_simple,
             verbose_transcript: false,
             show_tool_details,
             ui_locale,

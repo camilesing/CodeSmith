@@ -54,6 +54,11 @@ pub struct SettingsSection {
     pub fancy_animations: bool,
     pub paste_burst_detection: bool,
     pub show_thinking: bool,
+    #[schemars(
+        title = "Simple conversation style",
+        description = "Answer in max-compression caveman style; code and errors stay exact"
+    )]
+    pub is_simple: bool,
     pub show_tool_details: bool,
     pub locale: UiLocale,
     pub theme: UiThemeValue,
@@ -324,6 +329,7 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             fancy_animations: settings.fancy_animations,
             paste_burst_detection: settings.paste_burst_detection,
             show_thinking: settings.show_thinking,
+            is_simple: settings.is_simple,
             show_tool_details: settings.show_tool_details,
             locale: UiLocale::from_setting(&settings.locale)?,
             theme: UiThemeValue::from_setting(&settings.theme)?,
@@ -487,6 +493,7 @@ pub fn apply_document(
             bool_str(doc.settings.paste_burst_detection),
         ),
         ("show_thinking", bool_str(doc.settings.show_thinking)),
+        ("is_simple", bool_str(doc.settings.is_simple)),
         (
             "show_tool_details",
             bool_str(doc.settings.show_tool_details),

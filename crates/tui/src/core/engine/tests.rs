@@ -3888,6 +3888,7 @@ fn make_send_op(content: &str) -> Op {
         approval_mode: ApprovalMode::Auto,
         translation_enabled: false,
         show_thinking: true,
+        is_simple: false,
         allowed_tools: None,
     }
 }

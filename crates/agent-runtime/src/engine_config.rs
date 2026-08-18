@@ -82,6 +82,10 @@ pub struct EngineConfig {
     /// Whether user-visible transcript rendering shows thinking blocks.
     /// Prompt assembly uses this to avoid localizing hidden reasoning.
     pub show_thinking: bool,
+    /// Whether the assistant answers in maximum-compression "simple"
+    /// conversation style (the `is_simple` user setting). Prompt assembly
+    /// appends a presentation-only style block when true.
+    pub is_simple: bool,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -236,6 +240,7 @@ impl Default for EngineConfig {
             project_context_pack_enabled: true,
             translation_enabled: false,
             show_thinking: true,
+            is_simple: false,
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
