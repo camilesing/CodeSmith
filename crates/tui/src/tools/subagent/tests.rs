@@ -617,7 +617,8 @@ fn test_build_allowed_tools_independent_of_allow_shell() {
     // Both calls return None (full inheritance) for a default General
     // agent.
     let with_shell = build_allowed_tools(&SubAgentType::General, None, true, None, false).unwrap();
-    let without_shell = build_allowed_tools(&SubAgentType::General, None, false, None, false).unwrap();
+    let without_shell =
+        build_allowed_tools(&SubAgentType::General, None, false, None, false).unwrap();
     assert!(with_shell.is_none());
     assert!(without_shell.is_none());
 }
@@ -1428,7 +1429,14 @@ fn build_allowed_tools_custom_requires_explicit_list() {
 #[test]
 fn build_allowed_tools_explicit_list_returned_as_some() {
     let explicit = vec!["read_file".to_string(), "list_dir".to_string()];
-    let result = build_allowed_tools(&SubAgentType::Custom, Some(explicit.clone()), true, None, false).unwrap();
+    let result = build_allowed_tools(
+        &SubAgentType::Custom,
+        Some(explicit.clone()),
+        true,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(result, Some(explicit));
 }
 
@@ -1440,7 +1448,8 @@ fn build_allowed_tools_explicit_list_dedupes_and_trims() {
         "list_dir".to_string(),
         "".to_string(), // skip empty
     ];
-    let result = build_allowed_tools(&SubAgentType::Custom, Some(explicit), true, None, false).unwrap();
+    let result =
+        build_allowed_tools(&SubAgentType::Custom, Some(explicit), true, None, false).unwrap();
     assert_eq!(
         result,
         Some(vec!["read_file".to_string(), "list_dir".to_string()])
@@ -1473,8 +1482,7 @@ fn build_allowed_tools_default_unrestricted_when_parent_basis_none() {
     // An unrestricted parent (full surface, basis = None) → General child
     // gets full inheritance (Ok(None)). This is the common top-level case,
     // so recursion via `agent_spawn` is preserved.
-    let result =
-        build_allowed_tools(&SubAgentType::General, None, true, None, false).unwrap();
+    let result = build_allowed_tools(&SubAgentType::General, None, true, None, false).unwrap();
     assert!(result.is_none());
 }
 
@@ -1602,10 +1610,7 @@ fn intersect_tool_names_some_basis_filters_out_missing() {
         ],
         Some(basis.as_slice()),
     );
-    assert_eq!(
-        kept,
-        vec!["read_file".to_string(), "list_dir".to_string()]
-    );
+    assert_eq!(kept, vec!["read_file".to_string(), "list_dir".to_string()]);
 }
 
 #[test]
@@ -1613,10 +1618,18 @@ fn intersect_tool_names_preserves_request_order() {
     // The child's requested order is preserved; only membership is filtered.
     let basis = vec!["a".to_string(), "b".to_string(), "c".to_string()];
     let kept = intersect_tool_names(
-        vec!["c".to_string(), "a".to_string(), "b".to_string(), "z".to_string()],
+        vec![
+            "c".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "z".to_string(),
+        ],
         Some(basis.as_slice()),
     );
-    assert_eq!(kept, vec!["c".to_string(), "a".to_string(), "b".to_string()]);
+    assert_eq!(
+        kept,
+        vec!["c".to_string(), "a".to_string(), "b".to_string()]
+    );
 }
 
 #[test]
@@ -1624,8 +1637,7 @@ fn child_runtime_propagates_inherit_full_registry_and_basis() {
     // The escape-hatch flag propagates to children; the subset basis also
     // propagates so a grandchild's build_allowed_tools sees its parent's
     // effective set at spawn entry.
-    let parent = stub_runtime()
-        .with_inherit_full_registry(true);
+    let parent = stub_runtime().with_inherit_full_registry(true);
     // Simulate SubAgentToolRegistry::new setting the parent's own basis.
     let mut parent = parent;
     parent.child_subset_basis = Some(vec!["read_file".to_string()]);

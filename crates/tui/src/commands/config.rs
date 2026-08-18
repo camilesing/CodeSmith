@@ -1222,11 +1222,11 @@ async fn auto_route_flash_recommendation(
     // heuristic — on non-DeepSeek providers.)
     let main_client = crate::core::engine::resolve_llm_client(config)?;
     let main_model = main_client.model().to_string();
-    let (client, model) =
-        match crate::core::engine::resolve_utility_llm(config, Some(&main_client)) {
-            Some(utility) => (utility.client, utility.model),
-            None => (main_client, main_model),
-        };
+    let (client, model) = match crate::core::engine::resolve_utility_llm(config, Some(&main_client))
+    {
+        Some(utility) => (utility.client, utility.model),
+        None => (main_client, main_model),
+    };
     let mut router_system = AUTO_MODEL_ROUTER_SYSTEM_PROMPT.to_string();
     if config.auto_cost_saving() {
         router_system.push_str(AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM);

@@ -265,9 +265,7 @@ impl WorkshopVariables {
 mod tests {
     use super::*;
     use crate::llm_client::{LlmClient, StreamEventBox};
-    use crate::models::{
-        ContentBlock, MessageRequest, MessageResponse, Usage,
-    };
+    use crate::models::{ContentBlock, MessageRequest, MessageResponse, Usage};
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
@@ -425,8 +423,7 @@ mod tests {
         fn create_message(
             &self,
             request: MessageRequest,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<MessageResponse>> + Send + '_>>
-        {
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<MessageResponse>> + Send + '_>> {
             *self.last_request.lock().unwrap() = Some(request);
             let reply = self.reply.clone();
             Box::pin(async move {
@@ -451,8 +448,7 @@ mod tests {
         fn create_message_stream(
             &self,
             _request: MessageRequest,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>>
-        {
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>> {
             Box::pin(async { Err(anyhow::anyhow!("not used in tests")) })
         }
     }

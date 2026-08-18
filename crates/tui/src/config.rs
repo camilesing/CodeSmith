@@ -1715,8 +1715,7 @@ impl Config {
         {
             return Ok(());
         }
-        let has_explicit_model = exec_model
-            .is_some_and(|model| !model.trim().is_empty())
+        let has_explicit_model = exec_model.is_some_and(|model| !model.trim().is_empty())
             || self
                 .provider_config()
                 .and_then(|config| config.model.as_deref())
@@ -1744,7 +1743,7 @@ impl Config {
                     .as_deref()
                     .filter(|base| base.contains("integrate.api.nvidia.com"))
                     .map(|_| ApiProvider::NvidiaNim)
-                        .unwrap_or(ApiProvider::Deepseek)
+                    .unwrap_or(ApiProvider::Deepseek)
             })
     }
 
@@ -1753,7 +1752,10 @@ impl Config {
     /// instead of the builtin `provider`/`api_provider` path.
     #[must_use]
     pub fn custom_provider(&self) -> Option<&str> {
-        self.custom_provider.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        self.custom_provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     }
 
     /// The `[[providers.custom]]` entry matching [`custom_provider`](Self::custom_provider),
@@ -1830,7 +1832,12 @@ impl Config {
         // fields, then a generic default. Custom endpoints are OpenAI-compat
         // and accept arbitrary model ids.
         if let Some(entry) = self.custom_provider_entry() {
-            if let Some(model) = entry.model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(model) = entry
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 return model.to_string();
             }
             if let Some(model) = self
@@ -1936,7 +1943,12 @@ impl Config {
             {
                 return base.to_string();
             }
-            if let Some(base) = self.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(base) = self
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 return base.to_string();
             }
             return String::new();
@@ -3292,12 +3304,14 @@ fn apply_env_overrides(config: &mut Config) {
             .model = Some(value);
     }
     if let Ok(value) = codesmith_env_var("CODESMITH_UTILITY_MODEL", "DEEPSEEK_UTILITY_MODEL") {
-        let utility = config.utility_model.get_or_insert_with(|| UtilityModelConfig {
-            model: String::new(),
-            provider: None,
-            api_key: None,
-            base_url: None,
-        });
+        let utility = config
+            .utility_model
+            .get_or_insert_with(|| UtilityModelConfig {
+                model: String::new(),
+                provider: None,
+                api_key: None,
+                base_url: None,
+            });
         utility.model = value;
     }
     if let Some(value) = codesmith_env_var("CODESMITH_MODEL", "DEEPSEEK_MODEL")
@@ -4388,9 +4402,7 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
 #[must_use]
 pub fn active_provider_has_env_api_key(config: &Config) -> bool {
     match config.api_provider() {
-        ApiProvider::Deepseek => {
-            app_env("API_KEY").is_ok_and(|k| !k.trim().is_empty())
-        }
+        ApiProvider::Deepseek => app_env("API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::NvidiaNim => {
             std::env::var("NVIDIA_API_KEY").is_ok_and(|k| !k.trim().is_empty())
                 || std::env::var("NVIDIA_NIM_API_KEY").is_ok_and(|k| !k.trim().is_empty())
@@ -5230,7 +5242,10 @@ mod tests {
         let prev = env::var_os("CODESMITH_CUSTOM_PROVIDER");
         unsafe { env::set_var("CODESMITH_CUSTOM_PROVIDER", "acme") };
         let mut config = Config::default();
-        assert!(config.custom_provider.is_none(), "default has no custom provider");
+        assert!(
+            config.custom_provider.is_none(),
+            "default has no custom provider"
+        );
 
         apply_env_overrides(&mut config);
 
@@ -5272,7 +5287,6 @@ mod tests {
         // empty env value does not clobber the config-file selector.
         assert_eq!(config.custom_provider.as_deref(), Some("from-file"));
     }
-
 
     #[test]
     fn search_provider_resolution_ignores_invalid_env_override() {
@@ -9582,10 +9596,7 @@ model = "deepseek-ai/deepseek-v4-pro"
             api_key: Some("root-key".to_string()),
             base_url: Some("https://api.deepseek.com/beta".to_string()),
             default_text_model: Some("deepseek-v4-pro".to_string()),
-            http_headers: Some(HashMap::from([(
-                "X-Root".to_string(),
-                "r".to_string(),
-            )])),
+            http_headers: Some(HashMap::from([("X-Root".to_string(), "r".to_string())])),
             custom_provider: Some("acme".to_string()),
             providers: custom_providers(vec![CustomProviderConfig {
                 id: "acme".to_string(),
@@ -9614,7 +9625,10 @@ model = "deepseek-ai/deepseek-v4-pro"
         assert_eq!(config.deepseek_api_key()?, "acme-key");
         // http_headers: entry headers merged on top of root.
         let headers = config.http_headers();
-        assert_eq!(headers.get("X-Root").map(String::as_str), Some("overridden"));
+        assert_eq!(
+            headers.get("X-Root").map(String::as_str),
+            Some("overridden")
+        );
         assert_eq!(headers.get("X-Org").map(String::as_str), Some("acme"));
         Ok(())
     }

@@ -1,4 +1,3 @@
-use codesmith_agent_runtime::telemetry::TelemetrySink;
 use crate::core::capacity::{
     CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
     GuardrailAction, ReplayOutcome, RiskBand, TargetedRefreshOutcome,
@@ -10,6 +9,7 @@ use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::tools::spec::ToolContext;
 use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
 use crate::tui::approval::ApprovalMode;
+use codesmith_agent_runtime::telemetry::TelemetrySink;
 
 use super::*;
 
@@ -226,7 +226,10 @@ async fn resolve_llm_client_builds_via_registry() {
         .health_check()
         .await
         .expect("health_check on the rig-backed client must not error");
-    assert!(healthy, "rig-backed deepseek client must report healthy without a network probe");
+    assert!(
+        healthy,
+        "rig-backed deepseek client must report healthy without a network probe"
+    );
 }
 
 /// `resolve_llm_client` must route a non-DeepSeek provider (here: anthropic)
@@ -369,8 +372,8 @@ fn seam_resolution_uses_utility_model_default() {
         ..Config::default()
     };
     let main = super::resolve_llm_client(&cfg).expect("main client builds");
-    let utility = super::resolve_utility_llm(&cfg, Some(&main))
-        .expect("cross-provider utility builds");
+    let utility =
+        super::resolve_utility_llm(&cfg, Some(&main)).expect("cross-provider utility builds");
 
     let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
     assert_eq!(model, "claude-haiku-4-5");
@@ -403,8 +406,8 @@ fn seam_resolution_explicit_model_wins_over_utility() {
         ..Config::default()
     };
     let main = super::resolve_llm_client(&cfg).expect("main client builds");
-    let utility = super::resolve_utility_llm(&cfg, Some(&main))
-        .expect("cross-provider utility builds");
+    let utility =
+        super::resolve_utility_llm(&cfg, Some(&main)).expect("cross-provider utility builds");
 
     let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
     assert_eq!(model, "deepseek-v4-flash");
@@ -2561,8 +2564,7 @@ async fn pre_request_refresh_skips_compaction_below_normal_threshold() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 5;
     engine
         .capacity_controller
@@ -2607,8 +2609,7 @@ async fn pre_request_refresh_invoked_when_medium_risk() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 5;
     engine
         .capacity_controller
@@ -2662,8 +2663,7 @@ async fn post_tool_replay_invoked_when_high_non_severe_risk() {
     engine.session.workspace = tmp.path().to_path_buf();
     engine.config.workspace = tmp.path().to_path_buf();
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 4;
     engine
         .capacity_controller
@@ -2725,8 +2725,7 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
@@ -2845,8 +2844,7 @@ async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
@@ -2924,8 +2922,7 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
@@ -2966,8 +2963,8 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
         pass: true,
         replay_outcome: "pass".to_string(),
         diff_summary: "output_match".to_string(),
-        verification_note:
-            "[verification replay] tool=read_file pass=true details=output_match".to_string(),
+        verification_note: "[verification replay] tool=read_file pass=true details=output_match"
+            .to_string(),
     };
 
     let applied = engine
@@ -3038,8 +3035,7 @@ async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
@@ -3077,14 +3073,7 @@ async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
     };
 
     let applied = engine
-        .apply_targeted_context_refresh(
-            &turn,
-            None,
-            AppMode::Agent,
-            None,
-            true,
-            Some(outcome),
-        )
+        .apply_targeted_context_refresh(&turn, None, AppMode::Agent, None, true, Some(outcome))
         .await;
 
     // State work ran to completion (canonical persist, system-prompt fold,
@@ -3108,8 +3097,7 @@ async fn controller_disabled_keeps_behavior_unchanged() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 3;
     engine
         .capacity_controller
@@ -4209,14 +4197,14 @@ impl codesmith_agent::extension::Handler for EngineLifecycleRecHandler {
         codesmith_agent::extension::HandlerOutcome,
         codesmith_agent::extension::ExtensionError,
     > {
-    let label = match event {
-        codesmith_agent::extension::ExtensionEvent::SessionStart { .. } => "SessionStart",
-        codesmith_agent::extension::ExtensionEvent::AgentSettled => "AgentSettled",
-        codesmith_agent::extension::ExtensionEvent::SessionShutdown => "SessionShutdown",
-        _ => return Ok(codesmith_agent::extension::HandlerOutcome::Continue),
-    };
-    self.seen.lock().unwrap().push(label);
-    Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+        let label = match event {
+            codesmith_agent::extension::ExtensionEvent::SessionStart { .. } => "SessionStart",
+            codesmith_agent::extension::ExtensionEvent::AgentSettled => "AgentSettled",
+            codesmith_agent::extension::ExtensionEvent::SessionShutdown => "SessionShutdown",
+            _ => return Ok(codesmith_agent::extension::HandlerOutcome::Continue),
+        };
+        self.seen.lock().unwrap().push(label);
+        Ok(codesmith_agent::extension::HandlerOutcome::Continue)
     }
 }
 
@@ -4274,7 +4262,9 @@ async fn f2b_engine_emits_session_start_settled_shutdown() {
             tmp.path().to_path_buf(),
             codesmith_agent::extension::ExtensionMode::Tui,
             idle,
-            Arc::new(std::sync::Mutex::new(tokio_util::sync::CancellationToken::new())),
+            Arc::new(std::sync::Mutex::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
             runner.generation_arc(),
         ));
         runner.bind_core(ctx);
@@ -4319,7 +4309,11 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
     let workspace = tmp.path().to_path_buf();
 
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
-    assert_eq!(runner.generation(), 0, "fresh runner starts at generation 0");
+    assert_eq!(
+        runner.generation(),
+        0,
+        "fresh runner starts at generation 0"
+    );
 
     // Load a recording ext + bind_core so its handler is live.
     let seen: Arc<std::sync::Mutex<Vec<&'static str>>> =
@@ -4332,7 +4326,9 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         workspace.clone(),
         codesmith_agent::extension::ExtensionMode::Tui,
         Arc::new(std::sync::Mutex::new(true)),
-        Arc::new(std::sync::Mutex::new(tokio_util::sync::CancellationToken::new())),
+        Arc::new(std::sync::Mutex::new(
+            tokio_util::sync::CancellationToken::new(),
+        )),
         runner.generation_arc(),
     )));
 
@@ -4345,8 +4341,7 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
     // Reload: clear → invalidate → re-discover (empty) → re-bind. The handler
     // is cleared (it wasn't discovered via `discover_static`, so it isn't
     // re-bound); generation bumps.
-    let state = crate::extension_state::ExtensionStateStore::load_default()
-        .unwrap_or_default();
+    let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
     super::reload_extension_runtime(
         &runner,
         &workspace,

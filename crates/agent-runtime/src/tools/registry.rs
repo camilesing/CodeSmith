@@ -248,7 +248,10 @@ impl ToolRegistry {
         let context = Arc::new(self.context.clone());
         let mut set = codesmith_agent::tools::ToolSet::new();
         for spec in self.tools.values() {
-            set.register(Arc::new(ToolSpecAdapter::new(spec.clone(), context.clone())));
+            set.register(Arc::new(ToolSpecAdapter::new(
+                spec.clone(),
+                context.clone(),
+            )));
         }
         set
     }
@@ -733,12 +736,8 @@ impl ToolDispatcher for ToolRegistry {
 mod tests {
     use super::*;
     use crate::llm_client::{LlmClient, StreamEventBox};
-    use crate::models::{
-        ContentBlock, MessageRequest, MessageResponse, Usage,
-    };
-    use crate::tools::large_output_router::{
-        LargeOutputRouter, WorkshopConfig, WorkshopVariables,
-    };
+    use crate::models::{ContentBlock, MessageRequest, MessageResponse, Usage};
+    use crate::tools::large_output_router::{LargeOutputRouter, WorkshopConfig, WorkshopVariables};
     use crate::tools::spec::{ToolCapability, ToolContext, ToolResult, ToolSpec};
     use std::future::Future;
     use std::pin::Pin;
@@ -764,7 +763,11 @@ mod tests {
             vec![ToolCapability::ReadOnly]
         }
 
-        async fn execute(&self, _input: Value, _context: &ToolContext) -> Result<ToolResult, crate::tools::spec::ToolError> {
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, crate::tools::spec::ToolError> {
             Ok(ToolResult::success("v".repeat(13_000)))
         }
     }
@@ -786,8 +789,7 @@ mod tests {
         fn create_message(
             &self,
             _request: MessageRequest,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<MessageResponse>> + Send + '_>>
-        {
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<MessageResponse>> + Send + '_>> {
             let reply = self.reply;
             Box::pin(async move {
                 let text = reply.ok_or_else(|| anyhow::anyhow!("synthesis failed"))?;
@@ -811,13 +813,14 @@ mod tests {
         fn create_message_stream(
             &self,
             _request: MessageRequest,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>>
-        {
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>> {
             Box::pin(async { Err(anyhow::anyhow!("not used in tests")) })
         }
     }
 
-    fn registry_with(utility: Option<crate::tools::large_output_router::UtilityLlm>) -> ToolRegistry {
+    fn registry_with(
+        utility: Option<crate::tools::large_output_router::UtilityLlm>,
+    ) -> ToolRegistry {
         let workspace = std::env::temp_dir().join("codesmith-registry-test");
         let vars = Arc::new(tokio::sync::Mutex::new(WorkshopVariables::default()));
         let context = ToolContext::new(workspace)
