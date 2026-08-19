@@ -192,6 +192,16 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(FileSearchTool))
     }
 
+    /// Include code-index navigation tools (`symbol_search`,
+    /// `find_references`). Register only when the session built an index
+    /// service, so the catalog stays session-stable (KV prefix cache).
+    #[must_use]
+    pub fn with_index_tools(self) -> Self {
+        use super::symbols::{FindReferencesTool, SymbolSearchTool};
+        self.with_tool(Arc::new(SymbolSearchTool))
+            .with_tool(Arc::new(FindReferencesTool))
+    }
+
     /// Include git inspection tools (`git_status`, `git_diff`).
     #[must_use]
     pub fn with_git_tools(self) -> Self {

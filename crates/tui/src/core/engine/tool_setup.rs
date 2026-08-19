@@ -104,13 +104,18 @@ pub(super) fn build_tool_context_for(
     // Wire the large-output router (#548). Only attaches when the
     // [workshop] config table is present; sub-agents don't inherit the
     // router (their ToolContext is built separately) to prevent recursive
-    // routing of the synthesis call itself.
+    // routing of the synthesis call itself. The utility model handle rides
+    // along so routing synthesises through `[utility_model]` when configured;
+    // without it routing falls back to the truncation preview.
     if let Some(workshop_cfg) = config.workshop.as_ref()
         && let Some(vars_arc) = host.workshop_vars.as_ref()
     {
         let router =
             crate::tools::large_output_router::LargeOutputRouter::new(workshop_cfg.clone());
         ctx = ctx.with_large_output_router(router, vars_arc.clone());
+        if let Some(utility) = host.utility_llm.clone() {
+            ctx = ctx.with_utility_llm(utility);
+        }
     }
 
     // Wire the external sandbox backend (#516). exec_shell checks this
@@ -186,6 +191,14 @@ pub(super) fn build_turn_tool_registry_builder_for(
             .with_goal_tools(config.goal_state.clone())
             .with_worktree_tools(config.worktree_state.clone())
     };
+
+    // Code-index navigation tools: registered only when the session enabled
+    // the index — a session-constant decision, so the tool catalog stays
+    // stable for the KV prefix cache (#263). Applies to Plan and Agent
+    // modes alike (read-only navigation).
+    if config.index_enabled {
+        builder = builder.with_index_tools();
+    }
 
     // Review + parallel are NOT added for coordinator — it delegates
     // all work to workers and doesn't need review/parallel capabilities.

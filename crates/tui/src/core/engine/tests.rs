@@ -1,4 +1,3 @@
-use codesmith_agent_runtime::telemetry::TelemetrySink;
 use crate::core::capacity::{
     CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
     GuardrailAction, ReplayOutcome, RiskBand, TargetedRefreshOutcome,
@@ -10,6 +9,7 @@ use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::tools::spec::ToolContext;
 use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
 use crate::tui::approval::ApprovalMode;
+use codesmith_agent_runtime::telemetry::TelemetrySink;
 
 use super::*;
 
@@ -17,7 +17,7 @@ use super::{
     TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
     effective_max_output_tokens,
 };
-use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL};
+use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL, UtilityModelConfig};
 use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, ToolCaller};
 use crate::test_support::lock_test_env;
 use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs, new_shared_plan_state};
@@ -226,7 +226,10 @@ async fn resolve_llm_client_builds_via_registry() {
         .health_check()
         .await
         .expect("health_check on the rig-backed client must not error");
-    assert!(healthy, "rig-backed deepseek client must report healthy without a network probe");
+    assert!(
+        healthy,
+        "rig-backed deepseek client must report healthy without a network probe"
+    );
 }
 
 /// `resolve_llm_client` must route a non-DeepSeek provider (here: anthropic)
@@ -260,6 +263,157 @@ async fn resolve_llm_client_routes_anthropic_to_rig_factory() {
     assert!(
         healthy,
         "rig-backed anthropic client must report healthy without a network probe"
+    );
+}
+
+/// `resolve_utility_llm` returns `None` when no `[utility_model]` is
+/// configured — every assist then falls back to the main model.
+#[test]
+fn resolve_utility_llm_none_when_unconfigured() {
+    let cfg = Config::default();
+    assert!(super::resolve_utility_llm(&cfg, None).is_none());
+}
+
+/// Same-provider `[utility_model]` (no dedicated base_url/api_key) must reuse
+/// the main client handle and only swap the per-request model id — no second
+/// client is built.
+#[test]
+fn resolve_utility_llm_reuses_main_client_same_provider() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "deepseek-v4-flash".to_string(),
+            provider: None,
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main))
+        .expect("same-provider utility reuses the main client");
+    assert_eq!(utility.model, "deepseek-v4-flash");
+    assert!(
+        std::sync::Arc::ptr_eq(&utility.client, &main),
+        "same-provider utility must share the main client handle"
+    );
+}
+
+/// A same-provider `[utility_model]` with no main client available (registry
+/// failure upstream) yields `None` — there is nothing to reuse.
+#[test]
+fn resolve_utility_llm_same_provider_without_main_client_is_none() {
+    let cfg = Config {
+        utility_model: Some(UtilityModelConfig {
+            model: "deepseek-v4-flash".to_string(),
+            provider: None,
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    assert!(super::resolve_utility_llm(&cfg, None).is_none());
+}
+
+/// A cross-provider `[utility_model]` builds a dedicated second client through
+/// the provider registry (anthropic factory wins the dispatch, proven by
+/// `provider_name` without a network call).
+#[test]
+fn resolve_utility_llm_builds_cross_provider_client() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let utility = super::resolve_utility_llm(&cfg, None)
+        .expect("cross-provider utility builds a dedicated client");
+    assert_eq!(utility.model, "claude-haiku-4-5");
+    assert_eq!(utility.client.provider_name(), "anthropic");
+}
+
+/// Seam resolution keeps the built-in Flash default when neither
+/// `[context] seam_model` nor a utility model is configured.
+#[test]
+fn seam_resolution_defaults_to_flash_without_any_config() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main));
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &utility);
+    assert_eq!(model, crate::seam_manager::DEFAULT_SEAM_MODEL);
+    assert!(std::sync::Arc::ptr_eq(&client, &main));
+}
+
+/// A configured utility model supplies the seam default; same-provider setups
+/// reuse the main client, cross-provider setups switch to the utility client.
+#[test]
+fn seam_resolution_uses_utility_model_default() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility =
+        super::resolve_utility_llm(&cfg, Some(&main)).expect("cross-provider utility builds");
+
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
+    assert_eq!(model, "claude-haiku-4-5");
+    assert_eq!(client.provider_name(), "anthropic");
+    assert!(
+        std::sync::Arc::ptr_eq(&client, &utility.client),
+        "cross-provider seam must use the utility client"
+    );
+}
+
+/// An explicit `[context] seam_model` always wins and keeps the main client —
+/// even when a cross-provider utility model is configured (the explicit id
+/// belongs to the main provider).
+#[test]
+fn seam_resolution_explicit_model_wins_over_utility() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        context: crate::config::ContextConfig {
+            seam_model: Some("deepseek-v4-flash".to_string()),
+            ..crate::config::ContextConfig::default()
+        },
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility =
+        super::resolve_utility_llm(&cfg, Some(&main)).expect("cross-provider utility builds");
+
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
+    assert_eq!(model, "deepseek-v4-flash");
+    assert!(
+        std::sync::Arc::ptr_eq(&client, &main),
+        "explicit seam model keeps the main client"
     );
 }
 
@@ -2410,8 +2564,7 @@ async fn pre_request_refresh_skips_compaction_below_normal_threshold() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 5;
     engine
         .capacity_controller
@@ -2456,8 +2609,7 @@ async fn pre_request_refresh_invoked_when_medium_risk() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 5;
     engine
         .capacity_controller
@@ -2511,8 +2663,7 @@ async fn post_tool_replay_invoked_when_high_non_severe_risk() {
     engine.session.workspace = tmp.path().to_path_buf();
     engine.config.workspace = tmp.path().to_path_buf();
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 4;
     engine
         .capacity_controller
@@ -2574,8 +2725,7 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
@@ -2694,8 +2844,7 @@ async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
@@ -2773,8 +2922,7 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
@@ -2815,8 +2963,8 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
         pass: true,
         replay_outcome: "pass".to_string(),
         diff_summary: "output_match".to_string(),
-        verification_note:
-            "[verification replay] tool=read_file pass=true details=output_match".to_string(),
+        verification_note: "[verification replay] tool=read_file pass=true details=output_match"
+            .to_string(),
     };
 
     let applied = engine
@@ -2887,8 +3035,7 @@ async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 6;
     engine
         .capacity_controller
@@ -2926,14 +3073,7 @@ async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
     };
 
     let applied = engine
-        .apply_targeted_context_refresh(
-            &turn,
-            None,
-            AppMode::Agent,
-            None,
-            true,
-            Some(outcome),
-        )
+        .apply_targeted_context_refresh(&turn, None, AppMode::Agent, None, true, Some(outcome))
         .await;
 
     // State work ran to completion (canonical persist, system-prompt fold,
@@ -2957,8 +3097,7 @@ async fn controller_disabled_keeps_behavior_unchanged() {
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
-    engine.capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
     engine.turn_counter = 3;
     engine
         .capacity_controller
@@ -3888,6 +4027,7 @@ fn make_send_op(content: &str) -> Op {
         approval_mode: ApprovalMode::Auto,
         translation_enabled: false,
         show_thinking: true,
+        is_simple: false,
         allowed_tools: None,
     }
 }
@@ -4057,14 +4197,14 @@ impl codesmith_agent::extension::Handler for EngineLifecycleRecHandler {
         codesmith_agent::extension::HandlerOutcome,
         codesmith_agent::extension::ExtensionError,
     > {
-    let label = match event {
-        codesmith_agent::extension::ExtensionEvent::SessionStart { .. } => "SessionStart",
-        codesmith_agent::extension::ExtensionEvent::AgentSettled => "AgentSettled",
-        codesmith_agent::extension::ExtensionEvent::SessionShutdown => "SessionShutdown",
-        _ => return Ok(codesmith_agent::extension::HandlerOutcome::Continue),
-    };
-    self.seen.lock().unwrap().push(label);
-    Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+        let label = match event {
+            codesmith_agent::extension::ExtensionEvent::SessionStart { .. } => "SessionStart",
+            codesmith_agent::extension::ExtensionEvent::AgentSettled => "AgentSettled",
+            codesmith_agent::extension::ExtensionEvent::SessionShutdown => "SessionShutdown",
+            _ => return Ok(codesmith_agent::extension::HandlerOutcome::Continue),
+        };
+        self.seen.lock().unwrap().push(label);
+        Ok(codesmith_agent::extension::HandlerOutcome::Continue)
     }
 }
 
@@ -4122,7 +4262,9 @@ async fn f2b_engine_emits_session_start_settled_shutdown() {
             tmp.path().to_path_buf(),
             codesmith_agent::extension::ExtensionMode::Tui,
             idle,
-            Arc::new(std::sync::Mutex::new(tokio_util::sync::CancellationToken::new())),
+            Arc::new(std::sync::Mutex::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
             runner.generation_arc(),
         ));
         runner.bind_core(ctx);
@@ -4167,7 +4309,11 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
     let workspace = tmp.path().to_path_buf();
 
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
-    assert_eq!(runner.generation(), 0, "fresh runner starts at generation 0");
+    assert_eq!(
+        runner.generation(),
+        0,
+        "fresh runner starts at generation 0"
+    );
 
     // Load a recording ext + bind_core so its handler is live.
     let seen: Arc<std::sync::Mutex<Vec<&'static str>>> =
@@ -4180,7 +4326,9 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         workspace.clone(),
         codesmith_agent::extension::ExtensionMode::Tui,
         Arc::new(std::sync::Mutex::new(true)),
-        Arc::new(std::sync::Mutex::new(tokio_util::sync::CancellationToken::new())),
+        Arc::new(std::sync::Mutex::new(
+            tokio_util::sync::CancellationToken::new(),
+        )),
         runner.generation_arc(),
     )));
 
@@ -4193,8 +4341,7 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
     // Reload: clear → invalidate → re-discover (empty) → re-bind. The handler
     // is cleared (it wasn't discovered via `discover_static`, so it isn't
     // re-bound); generation bumps.
-    let state = crate::extension_state::ExtensionStateStore::load_default()
-        .unwrap_or_default();
+    let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
     super::reload_extension_runtime(
         &runner,
         &workspace,

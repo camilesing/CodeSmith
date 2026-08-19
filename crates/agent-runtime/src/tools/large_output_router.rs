@@ -30,6 +30,32 @@ pub const WORKSHOP_LAST_TOOL_RESULT_VAR: &str = "last_tool_result";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
+/// A resolved handle to the configured utility model (`[utility_model]`):
+/// the LLM client plus the model id to send with each assist request.
+///
+/// The engine resolves this once at build time. Same-provider configurations
+/// reuse the main client handle with a per-request model override; a
+/// cross-provider configuration carries a dedicated second client. Consumers
+/// (workshop synthesis, auto-route classification, seams) treat it as an
+/// optional optimisation — when absent they fall back to the main model.
+#[derive(Clone)]
+pub struct UtilityLlm {
+    /// Client handle for the utility model's provider.
+    pub client: crate::llm_client::LlmClientHandle,
+    /// Model id filled into `MessageRequest.model` for assist calls.
+    pub model: String,
+}
+
+impl std::fmt::Debug for UtilityLlm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The trait-object handle has no Debug; the model id is the part that
+        // matters in engine/host debug dumps.
+        f.debug_struct("UtilityLlm")
+            .field("model", &self.model)
+            .finish_non_exhaustive()
+    }
+}
+
 // ── Token estimation ──────────────────────────────────────────────────────────
 
 /// Estimate the number of tokens in `text` using a character-count heuristic.
@@ -97,17 +123,12 @@ impl LargeOutputRouter {
         }
     }
 
-    /// Build the synthesis prompt sent to the V4-Flash workshop sub-agent.
+    /// Build the synthesis prompt sent to the utility-model workshop
+    /// sub-agent.
     ///
-    /// The prompt is intentionally terse — Flash is a fast model and we just
-    /// want a faithful summary, not deep reasoning.
-    ///
-    /// This is the building block for the live LLM synthesis call wired in
-    /// the follow-up (once the async Flash client is safe to call from the
-    /// registry layer). The method is public so callers outside this crate
-    /// can unit-test the prompt shape.
+    /// The prompt is intentionally terse — the utility model is a fast model
+    /// and we just want a faithful summary, not deep reasoning.
     #[must_use]
-    #[allow(dead_code)] // used by future Flash synthesis call; keep for API stability
     pub fn synthesis_prompt(tool_name: &str, raw_output: &str, estimated_tokens: usize) -> String {
         format!(
             "You are a synthesis assistant. The tool `{tool_name}` produced {estimated_tokens} tokens \
@@ -117,6 +138,69 @@ impl LargeOutputRouter {
              information. Do NOT add commentary or interpretation beyond what is in the source.\n\n\
              <raw_tool_output>\n{raw_output}\n</raw_tool_output>"
         )
+    }
+
+    /// Run the synthesis call for a routed large output through the utility
+    /// LLM (#548 follow-up).
+    ///
+    /// Returns `None` on timeout (30s), transport error, or an empty
+    /// synthesis so the caller keeps its truncation-preview fallback — the
+    /// tool result is never blocked or failed by the synthesis step. On
+    /// success the usage is reported to the cost side-channel (#526) so the
+    /// assist shows up in the session cost.
+    pub async fn synthesise_via_utility_llm(
+        utility: &UtilityLlm,
+        tool_name: &str,
+        raw_output: &str,
+        estimated_tokens: usize,
+    ) -> Option<String> {
+        use crate::models::{ContentBlock, Message, MessageRequest};
+
+        let request = MessageRequest {
+            model: utility.model.clone(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: Self::synthesis_prompt(tool_name, raw_output, estimated_tokens),
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: 1_024,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: Some(false),
+            temperature: Some(0.1),
+            top_p: None,
+        };
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            utility.client.create_message(request),
+        )
+        .await
+        .ok()?
+        .ok()?;
+
+        let mut text = String::new();
+        for block in &response.content {
+            if let ContentBlock::Text { text: chunk, .. } = block
+                && !chunk.trim().is_empty()
+            {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(chunk);
+            }
+        }
+        if text.trim().is_empty() {
+            return None;
+        }
+        crate::cost_status::report(&utility.model, &response.usage);
+        Some(text)
     }
 
     /// Wrap a synthesis result with a workshop provenance header and a hint
@@ -180,6 +264,11 @@ impl WorkshopVariables {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm_client::{LlmClient, StreamEventBox};
+    use crate::models::{ContentBlock, MessageRequest, MessageResponse, Usage};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
 
     fn make_result(content: &str) -> ToolResult {
         ToolResult::success(content.to_string())
@@ -285,5 +374,120 @@ mod tests {
         assert!(wrapped.contains("web_search"));
         assert!(wrapped.contains("5000"));
         assert!(wrapped.contains("key facts here"));
+    }
+
+    // ── synthesis via utility LLM (#548 follow-up) ────────────────────────────
+
+    /// Scripted utility client: replies with a fixed outcome and captures the
+    /// last request so tests can assert on the synthesis call shape.
+    struct ScriptedUtilityClient {
+        reply: Result<String, String>,
+        last_request: Mutex<Option<MessageRequest>>,
+    }
+
+    impl ScriptedUtilityClient {
+        fn with_text(text: &str) -> Arc<Self> {
+            Arc::new(Self {
+                reply: Ok(text.to_string()),
+                last_request: Mutex::new(None),
+            })
+        }
+
+        fn failing() -> Arc<Self> {
+            Arc::new(Self {
+                reply: Err("transport exploded".to_string()),
+                last_request: Mutex::new(None),
+            })
+        }
+
+        fn captured_model(self: &Arc<Self>) -> String {
+            self.last_request
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("no request captured")
+                .model
+                .clone()
+        }
+    }
+
+    impl LlmClient for ScriptedUtilityClient {
+        fn provider_name(&self) -> &'static str {
+            "scripted"
+        }
+
+        fn model(&self) -> &str {
+            "scripted-utility"
+        }
+
+        fn create_message(
+            &self,
+            request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<MessageResponse>> + Send + '_>> {
+            *self.last_request.lock().unwrap() = Some(request);
+            let reply = self.reply.clone();
+            Box::pin(async move {
+                let text = reply.map_err(anyhow::Error::msg)?;
+                Ok(MessageResponse {
+                    id: "synth-1".to_string(),
+                    r#type: "message".to_string(),
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text,
+                        cache_control: None,
+                    }],
+                    model: "scripted-utility".to_string(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    container: None,
+                    usage: Usage::default(),
+                })
+            })
+        }
+
+        fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>> {
+            Box::pin(async { Err(anyhow::anyhow!("not used in tests")) })
+        }
+    }
+
+    fn utility(client: Arc<ScriptedUtilityClient>) -> UtilityLlm {
+        UtilityLlm {
+            client,
+            model: "deepseek-v4-flash".to_string(),
+        }
+    }
+
+    fn big_output() -> String {
+        "x".repeat(13_000)
+    }
+
+    #[tokio::test]
+    async fn synthesis_returns_text_and_targets_utility_model() {
+        let client = ScriptedUtilityClient::with_text("faithful summary of the tool output");
+        let out = LargeOutputRouter::synthesise_via_utility_llm(
+            &utility(client.clone()),
+            "exec_shell",
+            &big_output(),
+            5_000,
+        )
+        .await
+        .expect("synthesis should succeed");
+        assert_eq!(out, "faithful summary of the tool output");
+        assert_eq!(client.captured_model(), "deepseek-v4-flash");
+    }
+
+    #[tokio::test]
+    async fn synthesis_falls_back_on_client_error() {
+        let out = LargeOutputRouter::synthesise_via_utility_llm(
+            &utility(ScriptedUtilityClient::failing()),
+            "exec_shell",
+            &big_output(),
+            5_000,
+        )
+        .await;
+        assert!(out.is_none(), "transport errors must fall back to preview");
     }
 }

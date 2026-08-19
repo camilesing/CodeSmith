@@ -180,20 +180,26 @@ impl ToolRegistry {
                         vars.store_raw(name, &result.content);
                     }
 
-                    // Build a terse synthesis using the same model the registry
-                    // was constructed for (workshop Flash model). For now we
-                    // produce a structured header + truncated preview without
-                    // a live API call so the engine stays dependency-free at
-                    // the registry layer. A follow-up can wire in the Flash
-                    // client when the async LLM call is safe here.
-                    let preview_chars = 1_200usize;
-                    let preview: String = result.content.chars().take(preview_chars).collect();
-                    let ellipsis = if result.content.chars().count() > preview_chars {
-                        "\n… [output truncated — full text in workshop variable `last_tool_result`]"
-                    } else {
-                        ""
-                    };
-                    let synthesis = format!("{preview}{ellipsis}");
+                    // Live synthesis through the configured utility model
+                    // (`[utility_model]`). The registry never builds a client
+                    // itself — the engine injects the resolved handle — and
+                    // every failure mode (no handle, timeout, transport
+                    // error, empty answer) falls back to the truncation
+                    // preview so tool execution is never blocked.
+                    let synthesis = match ctx.utility_llm.as_ref() {
+                        Some(utility) => {
+                            LargeOutputRouter::synthesise_via_utility_llm(
+                                utility,
+                                name,
+                                &result.content,
+                                estimated_tokens,
+                            )
+                            .await
+                        }
+                        None => None,
+                    }
+                    .unwrap_or_else(|| truncated_preview(&result.content));
+
                     let wrapped = LargeOutputRouter::wrap_synthesis(
                         name,
                         &synthesis,
@@ -204,6 +210,7 @@ impl ToolRegistry {
                         tool = name,
                         estimated_tokens,
                         threshold,
+                        synthesised = ctx.utility_llm.is_some(),
                         "large-output routed through workshop"
                     );
                     return Ok(ToolResult::success(wrapped));
@@ -241,7 +248,10 @@ impl ToolRegistry {
         let context = Arc::new(self.context.clone());
         let mut set = codesmith_agent::tools::ToolSet::new();
         for spec in self.tools.values() {
-            set.register(Arc::new(ToolSpecAdapter::new(spec.clone(), context.clone())));
+            set.register(Arc::new(ToolSpecAdapter::new(
+                spec.clone(),
+                context.clone(),
+            )));
         }
         set
     }
@@ -581,6 +591,20 @@ impl FailClosedTool {
     }
 }
 
+/// Fallback synthesis for the large-output router (#548): a head-truncated
+/// preview pointing at the workshop variable that holds the full raw text.
+/// Used when no utility model is configured or the synthesis call fails.
+fn truncated_preview(raw: &str) -> String {
+    const PREVIEW_CHARS: usize = 1_200;
+    let preview: String = raw.chars().take(PREVIEW_CHARS).collect();
+    let ellipsis = if raw.chars().count() > PREVIEW_CHARS {
+        "\n… [output truncated — full text in workshop variable `last_tool_result`]"
+    } else {
+        ""
+    };
+    format!("{preview}{ellipsis}")
+}
+
 #[async_trait::async_trait]
 impl ToolSpec for FailClosedTool {
     fn name(&self) -> &str {
@@ -703,5 +727,165 @@ impl ToolDispatcher for ToolRegistry {
             .hook_executor
             .clone()
             .map(|h| -> Arc<dyn HookHost> { h })
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm_client::{LlmClient, StreamEventBox};
+    use crate::models::{ContentBlock, MessageRequest, MessageResponse, Usage};
+    use crate::tools::large_output_router::{LargeOutputRouter, WorkshopConfig, WorkshopVariables};
+    use crate::tools::spec::{ToolCapability, ToolContext, ToolResult, ToolSpec};
+    use std::future::Future;
+    use std::pin::Pin;
+
+    /// Tool that always succeeds with a fixed (large) body.
+    struct BigOutputTool;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for BigOutputTool {
+        fn name(&self) -> &str {
+            "big_output"
+        }
+
+        fn description(&self) -> &str {
+            "emits a large body for workshop routing tests"
+        }
+
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, crate::tools::spec::ToolError> {
+            Ok(ToolResult::success("v".repeat(13_000)))
+        }
+    }
+
+    /// Minimal scripted client: create_message answers with fixed text.
+    struct SynthesisMockClient {
+        reply: Option<&'static str>,
+    }
+
+    impl LlmClient for SynthesisMockClient {
+        fn provider_name(&self) -> &'static str {
+            "synthesis-mock"
+        }
+
+        fn model(&self) -> &str {
+            "mock-utility"
+        }
+
+        fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<MessageResponse>> + Send + '_>> {
+            let reply = self.reply;
+            Box::pin(async move {
+                let text = reply.ok_or_else(|| anyhow::anyhow!("synthesis failed"))?;
+                Ok(MessageResponse {
+                    id: "synth-mock".to_string(),
+                    r#type: "message".to_string(),
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                        cache_control: None,
+                    }],
+                    model: "mock-utility".to_string(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    container: None,
+                    usage: Usage::default(),
+                })
+            })
+        }
+
+        fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>> {
+            Box::pin(async { Err(anyhow::anyhow!("not used in tests")) })
+        }
+    }
+
+    fn registry_with(
+        utility: Option<crate::tools::large_output_router::UtilityLlm>,
+    ) -> ToolRegistry {
+        let workspace = std::env::temp_dir().join("codesmith-registry-test");
+        let vars = Arc::new(tokio::sync::Mutex::new(WorkshopVariables::default()));
+        let context = ToolContext::new(workspace)
+            .with_large_output_router(LargeOutputRouter::new(WorkshopConfig::default()), vars);
+        let context = match utility {
+            Some(utility) => context.with_utility_llm(utility),
+            None => context,
+        };
+        let mut registry = ToolRegistry::new(context);
+        registry.register(Arc::new(BigOutputTool));
+        registry
+    }
+
+    #[tokio::test]
+    async fn large_output_synthesises_through_utility_llm() {
+        let utility = crate::tools::large_output_router::UtilityLlm {
+            client: Arc::new(SynthesisMockClient {
+                reply: Some("condensed: 3 facts preserved"),
+            }),
+            model: "mock-utility".to_string(),
+        };
+        let registry = registry_with(Some(utility));
+
+        let result = registry
+            .execute_full_with_context("big_output", serde_json::json!({}), None)
+            .await
+            .expect("tool executes");
+        assert!(result.content.contains("workshop-synthesis"));
+        assert!(
+            result.content.contains("condensed: 3 facts preserved"),
+            "synthesis text must reach the parent context"
+        );
+    }
+
+    #[tokio::test]
+    async fn large_output_falls_back_to_preview_without_utility_llm() {
+        let registry = registry_with(None);
+
+        let result = registry
+            .execute_full_with_context("big_output", serde_json::json!({}), None)
+            .await
+            .expect("tool executes");
+        assert!(result.content.contains("workshop-synthesis"));
+        assert!(
+            result.content.contains("output truncated"),
+            "without a utility model the truncation preview is used"
+        );
+    }
+
+    #[tokio::test]
+    async fn large_output_falls_back_to_preview_on_synthesis_error() {
+        let utility = crate::tools::large_output_router::UtilityLlm {
+            client: Arc::new(SynthesisMockClient { reply: None }),
+            model: "mock-utility".to_string(),
+        };
+        let registry = registry_with(Some(utility));
+
+        let result = registry
+            .execute_full_with_context("big_output", serde_json::json!({}), None)
+            .await
+            .expect("tool executes");
+        assert!(result.content.contains("workshop-synthesis"));
+        assert!(
+            result.content.contains("output truncated"),
+            "a failing synthesis must fall back to the preview, not the error"
+        );
     }
 }

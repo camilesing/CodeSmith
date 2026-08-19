@@ -160,6 +160,17 @@ drives turns through Chat Completions.
   - `registry.rs` - Language detection and default server map (rust-analyzer, pyright, gopls, clangd, typescript-language-server, jdtls, vue-language-server)
   - Wired into the engine via `core/engine/lsp_hooks.rs` — called after every successful edit
 
+### Code Index
+
+- **`crates/index`** (`codesmith-index`) — persistent per-workspace code index (see `docs/INDEX.md`)
+  - `types.rs` / `backend.rs` — value types + the three seams: `IndexBackendFactory`/`IndexBackend` (provider-registry pattern), `IndexServiceApi` (LspManagerApi-style injection), reserved `SemanticIndexApi`
+  - `registry.rs` — `IndexBackendRegistry` mirroring `ProviderRegistry` (upsert, build error lists registered ids)
+  - `tree_sitter.rs` — built-in symbol backend behind the `tree-sitter` cargo feature (rust/python/js/ts/go; container scoping, lexical references)
+  - `walk.rs` — `ignore`-based workspace walk (`.gitignore`-aware) feeding the inventory + freshness diff
+  - `store.rs` — per-workspace SQLite under `~/.codesmith/index/<ws-hash>/` (schema-version mismatch → rebuild)
+  - `service.rs` — `IndexService` orchestration: lazy incremental refresh (mtime+size diff, budget + `stale_files` reporting) with background completion
+- Wiring: tui builds the service once per workspace (`tui/index.rs`, `[index]` config) into `RuntimeToolServices::index_service` → per-turn `ToolContext`; `symbol_search` / `find_references` live in `codesmith-tool-impls` and registration is gated session-constantly via `EngineConfig::index_enabled` (catalog stability, KV prefix cache)
+
 ### Security
 
 - **`sandbox/`** - platform sandbox policy preparation and denial reporting

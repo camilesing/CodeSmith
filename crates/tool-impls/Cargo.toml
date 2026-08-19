@@ -10,6 +10,7 @@ description = "Model-visible tool implementations for CodeSmith (concrete impl T
 codesmith-agent = { path = "../agent", version = "0.8.48" }
 codesmith-agent-runtime = { path = "../agent-runtime", version = "0.8.48" }
 codesmith-config = { path = "../config", version = "0.8.48" }
+codesmith-index = { path = "../index", version = "0.8.48" }
 codesmith-tools = { path = "../tools", version = "0.8.48" }
 anyhow.workspace = true
 async-trait.workspace = true

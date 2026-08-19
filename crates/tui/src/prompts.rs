@@ -74,6 +74,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             translation_enabled: false,
             model_id: "codesmith",
             show_thinking: true,
+            is_simple: false,
             skills_block: crate::skills::render_available_skills_context_for_workspace(workspace)
                 .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context)),
         },
@@ -444,6 +445,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
             ApprovalMode::Suggest,
@@ -517,6 +519,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
             ApprovalMode::Suggest,
@@ -546,6 +549,45 @@ mod tests {
     }
 
     #[test]
+    fn simple_conversation_style_section_is_conditional_on_is_simple() {
+        let tmp = tempdir().expect("tempdir");
+        let build = |is_simple| {
+            match system_prompt_for_mode_with_context_skills_session_and_approval(
+                AppMode::Agent,
+                tmp.path(),
+                None,
+                None,
+                None,
+                PromptSessionContext {
+                    user_memory_block: None,
+                    knowledge_prompt_block: None,
+                    goal_objective: None,
+                    project_context_pack_enabled: false,
+                    locale_tag: "en",
+                    translation_enabled: false,
+                    model_id: "codesmith",
+                    show_thinking: true,
+                    is_simple,
+                    skills_block: None,
+                },
+                ApprovalMode::Suggest,
+            ) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            }
+        };
+
+        assert!(
+            build(true).contains("## Conversation Style: Simple"),
+            "is_simple must append the conversation-style section"
+        );
+        assert!(
+            !build(false).contains("## Conversation Style: Simple"),
+            "default prompt must not include the conversation-style section"
+        );
+    }
+
+    #[test]
     fn hidden_thinking_uses_english_reasoning_without_locale_bookends() {
         let tmp = tempdir().expect("tempdir");
         let text = match system_prompt_for_mode_with_context_skills_session_and_approval(
@@ -563,6 +605,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: false,
+                is_simple: false,
                 skills_block: None,
             },
             ApprovalMode::Suggest,
@@ -619,6 +662,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
             ApprovalMode::Suggest,
@@ -726,6 +770,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
         ) {
@@ -765,6 +810,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
         ) {
@@ -796,6 +842,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
         ) {
@@ -856,6 +903,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
         ) {
@@ -887,6 +935,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
         ) {
@@ -1085,6 +1134,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
         ) {
@@ -1122,6 +1172,7 @@ mod tests {
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
+                is_simple: false,
                 skills_block: None,
             },
         ) {

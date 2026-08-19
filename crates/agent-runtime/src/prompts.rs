@@ -48,6 +48,11 @@ pub struct PromptSessionContext<'a> {
     /// When false, the prompt should not spend localization pressure on
     /// `reasoning_content` the user will never see.
     pub show_thinking: bool,
+    /// When true, a `## Conversation Style: Simple` block is appended to the
+    /// system prompt instructing the model to answer in maximum-compression
+    /// "caveman" style — short sentences, no filler — while keeping code,
+    /// commands, and error messages byte-exact.
+    pub is_simple: bool,
     /// Pre-rendered `## Skills` block. The caller resolves this from the
     /// workspace/skills directories via `crate::skills::render_available_skills_context*`
     /// so the prompt builder stays free of skills-discovery dependencies
@@ -105,6 +110,7 @@ impl Default for PromptSessionContext<'_> {
             translation_enabled: false,
             model_id: "codesmith",
             show_thinking: true,
+            is_simple: false,
             skills_block: None,
         }
     }
@@ -289,6 +295,11 @@ pub fn load_handoff_block(workspace: &Path) -> Option<String> {
 /// Core: task execution, tool-use rules, output format, toolbox reference,
 /// "When NOT to use" guidance, sub-agent sentinel protocol.
 pub const BASE_PROMPT: &str = include_str!("prompts/base.md");
+
+/// Conversation-style overlay appended when `PromptSessionContext::is_simple`
+/// is true (the `is_simple` user setting). Presentation-only: compressed
+/// sentences, byte-exact technical content.
+pub const SIMPLE_CONVERSATION_STYLE: &str = include_str!("prompts/styles/simple.md");
 
 // ── Embedder prompt overrides ──
 // Let an embedder replace these compile-time prompt constants at startup,
@@ -1100,6 +1111,17 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
             "translation_requirement",
             "Translation output requirement",
             translation_output_instruction(session_context.locale_tag),
+            PromptSectionStability::Session,
+            PromptSectionSource::Builtin,
+        );
+    }
+
+    if session_context.is_simple {
+        append_section(
+            &mut bundle,
+            "conversation_style",
+            "Conversation style",
+            SIMPLE_CONVERSATION_STYLE,
             PromptSectionStability::Session,
             PromptSectionSource::Builtin,
         );

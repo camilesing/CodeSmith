@@ -876,7 +876,7 @@ impl StatusItem {
 pub use codesmith_agent::retry::RetryPolicy;
 pub use codesmith_agent_runtime::config_types::{
     DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, SearchProvider, ToolOverride,
-    ToolsConfig, VisionModelConfig,
+    ToolsConfig, UtilityModelConfig, VisionModelConfig,
 };
 
 /// Capacity-controller config loaded from config files/environment.
@@ -1135,6 +1135,12 @@ pub struct Config {
     #[serde(default)]
     pub search: Option<SearchConfig>,
 
+    /// Persistent code index configuration (`[index]` table). When absent,
+    /// the index is enabled with the built-in `tree-sitter` symbol backend;
+    /// every capability is individually switchable. See docs/INDEX.md.
+    #[serde(default)]
+    pub index: Option<codesmith_index::IndexConfig>,
+
     /// User-level memory file (#489). Default behaviour is **opt-in**:
     /// loading + injection happens only when `[memory] enabled = true` or
     /// `DEEPSEEK_MEMORY=on` is set.
@@ -1179,6 +1185,12 @@ pub struct Config {
     /// Vision model configuration for the `image_analyze` tool.
     #[serde(default)]
     pub vision_model: Option<VisionModelConfig>,
+
+    /// Utility model configuration — a cheap/fast secondary LLM for background
+    /// assists (workshop large-output synthesis, auto-route classification,
+    /// Flash seams). When absent, all assists use the main model.
+    #[serde(default)]
+    pub utility_model: Option<UtilityModelConfig>,
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -1451,6 +1463,37 @@ impl Config {
         self.search_provider_resolution().provider
     }
 
+    /// Effective `[index]` configuration: config table over built-in
+    /// defaults, with env overrides applied at resolution time
+    /// (`CODESMITH_INDEX_ENABLED` / `DEEPSEEK_INDEX_ENABLED` and
+    /// `CODESMITH_INDEX_SYMBOLS_BACKEND` / `DEEPSEEK_INDEX_SYMBOLS_BACKEND`).
+    #[must_use]
+    pub fn index_config(&self) -> codesmith_index::IndexConfig {
+        let mut cfg = self.index.clone().unwrap_or_default();
+        if let Ok(raw) = app_env("INDEX_ENABLED")
+            && let Ok(value) = index_parse_bool(&raw)
+        {
+            cfg.enabled = Some(value);
+        }
+        if let Ok(raw) = app_env("INDEX_SYMBOLS_BACKEND") {
+            let trimmed = raw.trim().to_string();
+            if !trimmed.is_empty() {
+                cfg.symbols.backend = Some(trimmed);
+            }
+        }
+        cfg
+    }
+
+    /// Whether the session registers the code-index navigation tools
+    /// (`symbol_search`, `find_references`): master switch AND the symbol
+    /// capability must both be on. Session-constant so the tool catalog
+    /// stays stable for the KV prefix cache.
+    #[must_use]
+    pub fn index_tools_enabled(&self) -> bool {
+        let cfg = self.index_config();
+        cfg.is_enabled() && cfg.symbols.is_enabled()
+    }
+
     /// Return `true` if the `[auto] cost_saving = true` opt-in is set
     /// (#1207). When true, the auto-mode router biases toward
     /// `deepseek-v4-flash` for ambiguous requests instead of escalating to
@@ -1709,8 +1752,7 @@ impl Config {
         {
             return Ok(());
         }
-        let has_explicit_model = exec_model
-            .is_some_and(|model| !model.trim().is_empty())
+        let has_explicit_model = exec_model.is_some_and(|model| !model.trim().is_empty())
             || self
                 .provider_config()
                 .and_then(|config| config.model.as_deref())
@@ -1738,7 +1780,7 @@ impl Config {
                     .as_deref()
                     .filter(|base| base.contains("integrate.api.nvidia.com"))
                     .map(|_| ApiProvider::NvidiaNim)
-                        .unwrap_or(ApiProvider::Deepseek)
+                    .unwrap_or(ApiProvider::Deepseek)
             })
     }
 
@@ -1747,7 +1789,10 @@ impl Config {
     /// instead of the builtin `provider`/`api_provider` path.
     #[must_use]
     pub fn custom_provider(&self) -> Option<&str> {
-        self.custom_provider.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        self.custom_provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     }
 
     /// The `[[providers.custom]]` entry matching [`custom_provider`](Self::custom_provider),
@@ -1824,7 +1869,12 @@ impl Config {
         // fields, then a generic default. Custom endpoints are OpenAI-compat
         // and accept arbitrary model ids.
         if let Some(entry) = self.custom_provider_entry() {
-            if let Some(model) = entry.model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(model) = entry
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 return model.to_string();
             }
             if let Some(model) = self
@@ -1930,7 +1980,12 @@ impl Config {
             {
                 return base.to_string();
             }
-            if let Some(base) = self.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(base) = self
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 return base.to_string();
             }
             return String::new();
@@ -2862,6 +2917,14 @@ fn default_memory_path() -> Option<PathBuf> {
 /// `CODESMITH_SANDBOX_MODE`, falling back to the legacy `CODEWHALE_` /
 /// `DEEPSEEK_` aliases. Empty values are skipped so a blank shell export does
 /// not erase configured settings.
+fn index_parse_bool(raw: &str) -> std::result::Result<bool, ()> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "enabled" => Ok(true),
+        "0" | "false" | "no" | "off" | "disabled" => Ok(false),
+        _ => Err(()),
+    }
+}
+
 fn app_env(suffix: &str) -> Result<String, std::env::VarError> {
     codesmith_config::codesmith_env(suffix).ok_or(std::env::VarError::NotPresent)
 }
@@ -3284,6 +3347,17 @@ fn apply_env_overrides(config: &mut Config) {
             .get_or_insert_with(ProvidersConfig::default)
             .siliconflow
             .model = Some(value);
+    }
+    if let Ok(value) = codesmith_env_var("CODESMITH_UTILITY_MODEL", "DEEPSEEK_UTILITY_MODEL") {
+        let utility = config
+            .utility_model
+            .get_or_insert_with(|| UtilityModelConfig {
+                model: String::new(),
+                provider: None,
+                api_key: None,
+                base_url: None,
+            });
+        utility.model = value;
     }
     if let Some(value) = codesmith_env_var("CODESMITH_MODEL", "DEEPSEEK_MODEL")
         .ok()
@@ -3849,6 +3923,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         notes_path: override_cfg.notes_path.or(base.notes_path),
         memory_path: override_cfg.memory_path.or(base.memory_path),
         vision_model: override_cfg.vision_model.or(base.vision_model),
+        utility_model: override_cfg.utility_model.or(base.utility_model),
         // #454: project's instructions array replaces user's array
         // wholesale. The typical "merge" pattern is for users who want
         // both — they list `~/global.md` inside the project array.
@@ -3884,6 +3959,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
         search: override_cfg.search.or(base.search),
+        index: override_cfg.index.or(base.index),
         memory: override_cfg.memory.or(base.memory),
         auto: override_cfg.auto.or(base.auto),
         update: override_cfg.update.or(base.update),
@@ -4372,9 +4448,7 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
 #[must_use]
 pub fn active_provider_has_env_api_key(config: &Config) -> bool {
     match config.api_provider() {
-        ApiProvider::Deepseek => {
-            app_env("API_KEY").is_ok_and(|k| !k.trim().is_empty())
-        }
+        ApiProvider::Deepseek => app_env("API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::NvidiaNim => {
             std::env::var("NVIDIA_API_KEY").is_ok_and(|k| !k.trim().is_empty())
                 || std::env::var("NVIDIA_NIM_API_KEY").is_ok_and(|k| !k.trim().is_empty())
@@ -4953,6 +5027,62 @@ mod tests {
     }
 
     #[test]
+    fn utility_model_defaults_to_none() {
+        let config = Config::default();
+        assert!(config.utility_model.is_none());
+    }
+
+    #[test]
+    fn utility_model_deserializes_full_table() {
+        let config: Config = toml::from_str(
+            r#"
+            [utility_model]
+            model = "deepseek-v4-flash"
+            provider = "deepseek"
+            api_key = "sk-utility"
+            base_url = "https://api.deepseek.com/beta"
+            "#,
+        )
+        .expect("utility model config");
+
+        let utility = config.utility_model.as_ref().expect("utility model set");
+        assert_eq!(utility.model, "deepseek-v4-flash");
+        assert_eq!(utility.provider, Some(ApiProvider::Deepseek));
+        assert_eq!(utility.api_key.as_deref(), Some("sk-utility"));
+        assert_eq!(
+            utility.base_url.as_deref(),
+            Some("https://api.deepseek.com/beta")
+        );
+    }
+
+    #[test]
+    fn codesmith_utility_model_env_enables_utility_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-utility-model-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let _knobs = KnobGuard::new(&["CODESMITH_UTILITY_MODEL", "DEEPSEEK_UTILITY_MODEL"]);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("CODESMITH_UTILITY_MODEL", "deepseek-v4-flash");
+        }
+
+        let config = Config::load(None, None)?;
+        let utility = config.utility_model.as_ref().expect("utility model set");
+        assert_eq!(utility.model, "deepseek-v4-flash");
+        Ok(())
+    }
+
+    #[test]
     fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {
         let policy: NetworkPolicyToml = toml::from_str(
             r#"
@@ -5062,6 +5192,74 @@ mod tests {
     }
 
     #[test]
+    fn index_config_defaults_to_enabled_tree_sitter() {
+        let _guard = lock_test_env();
+        for var in ["CODESMITH_INDEX_ENABLED", "DEEPSEEK_INDEX_ENABLED"] {
+            unsafe { env::remove_var(var) };
+        }
+        let config: Config = toml::from_str("").expect("empty config");
+        let index = config.index_config();
+        assert!(index.is_enabled());
+        assert!(index.symbols.is_enabled());
+        assert!(index.files.is_enabled());
+        assert!(!index.semantic.is_enabled());
+        assert_eq!(index.symbols.backend_id(), "tree-sitter");
+        assert!(config.index_tools_enabled());
+    }
+
+    #[test]
+    fn index_config_parses_table_and_respects_switches() {
+        let _guard = lock_test_env();
+        for var in ["CODESMITH_INDEX_ENABLED", "DEEPSEEK_INDEX_ENABLED"] {
+            unsafe { env::remove_var(var) };
+        }
+        let config: Config = toml::from_str(
+            "[index.symbols]\nbackend = \"tree-sitter\"\n[index.symbols.languages]\npython = false\n",
+        )
+        .expect("index config");
+        let index = config.index_config();
+        assert!(
+            !index
+                .symbols
+                .language_enabled(codesmith_index::Language::Python)
+        );
+        assert!(
+            index
+                .symbols
+                .language_enabled(codesmith_index::Language::Rust)
+        );
+
+        let disabled: Config = toml::from_str("[index]\nenabled = false\n").expect("cfg");
+        assert!(!disabled.index_tools_enabled());
+
+        let symbols_off: Config =
+            toml::from_str("[index.symbols]\nenabled = false\n").expect("cfg");
+        assert!(!symbols_off.index_tools_enabled());
+    }
+
+    #[test]
+    fn index_env_overrides_apply_at_resolution_time() {
+        let _guard = lock_test_env();
+        let prev_enabled = env::var_os("CODESMITH_INDEX_ENABLED");
+        let prev_backend = env::var_os("CODESMITH_INDEX_SYMBOLS_BACKEND");
+
+        unsafe { env::set_var("CODESMITH_INDEX_ENABLED", "false") };
+        assert!(!Config::default().index_tools_enabled());
+
+        unsafe {
+            env::set_var("CODESMITH_INDEX_ENABLED", "true");
+            env::set_var("CODESMITH_INDEX_SYMBOLS_BACKEND", "none");
+        }
+        let index = Config::default().index_config();
+        assert_eq!(index.symbols.backend_id(), "none");
+
+        unsafe {
+            EnvGuard::restore_var("CODESMITH_INDEX_ENABLED", prev_enabled);
+            EnvGuard::restore_var("CODESMITH_INDEX_SYMBOLS_BACKEND", prev_backend);
+        }
+    }
+
+    #[test]
     fn search_provider_resolution_reports_default_source() {
         let _guard = lock_test_env();
         let prev = env::var_os("DEEPSEEK_SEARCH_PROVIDER");
@@ -5158,7 +5356,10 @@ mod tests {
         let prev = env::var_os("CODESMITH_CUSTOM_PROVIDER");
         unsafe { env::set_var("CODESMITH_CUSTOM_PROVIDER", "acme") };
         let mut config = Config::default();
-        assert!(config.custom_provider.is_none(), "default has no custom provider");
+        assert!(
+            config.custom_provider.is_none(),
+            "default has no custom provider"
+        );
 
         apply_env_overrides(&mut config);
 
@@ -5200,7 +5401,6 @@ mod tests {
         // empty env value does not clobber the config-file selector.
         assert_eq!(config.custom_provider.as_deref(), Some("from-file"));
     }
-
 
     #[test]
     fn search_provider_resolution_ignores_invalid_env_override() {
@@ -9510,10 +9710,7 @@ model = "deepseek-ai/deepseek-v4-pro"
             api_key: Some("root-key".to_string()),
             base_url: Some("https://api.deepseek.com/beta".to_string()),
             default_text_model: Some("deepseek-v4-pro".to_string()),
-            http_headers: Some(HashMap::from([(
-                "X-Root".to_string(),
-                "r".to_string(),
-            )])),
+            http_headers: Some(HashMap::from([("X-Root".to_string(), "r".to_string())])),
             custom_provider: Some("acme".to_string()),
             providers: custom_providers(vec![CustomProviderConfig {
                 id: "acme".to_string(),
@@ -9542,7 +9739,10 @@ model = "deepseek-ai/deepseek-v4-pro"
         assert_eq!(config.deepseek_api_key()?, "acme-key");
         // http_headers: entry headers merged on top of root.
         let headers = config.http_headers();
-        assert_eq!(headers.get("X-Root").map(String::as_str), Some("overridden"));
+        assert_eq!(
+            headers.get("X-Root").map(String::as_str),
+            Some("overridden")
+        );
         assert_eq!(headers.get("X-Org").map(String::as_str), Some("acme"));
         Ok(())
     }

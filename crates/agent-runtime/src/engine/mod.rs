@@ -541,6 +541,7 @@ impl Engine {
                     approval_mode,
                     translation_enabled,
                     show_thinking,
+                    is_simple,
                     allowed_tools,
                 } => {
                     self.handle_send_message(
@@ -557,6 +558,7 @@ impl Engine {
                         approval_mode,
                         translation_enabled,
                         show_thinking,
+                        is_simple,
                         allowed_tools,
                     )
                     .await;
@@ -747,6 +749,7 @@ impl Engine {
                         self.session.approval_mode,
                         self.config.translation_enabled,
                         self.config.show_thinking,
+                        self.config.is_simple,
                         self.config.allowed_tools.clone(),
                     )
                     .await;
@@ -1042,6 +1045,7 @@ impl Engine {
         approval_mode: crate::mode::ApprovalMode,
         translation_enabled: bool,
         show_thinking: bool,
+        is_simple: bool,
         allowed_tools: Option<Vec<String>>,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
@@ -1163,6 +1167,7 @@ impl Engine {
         self.config.trust_mode = trust_mode;
         self.config.translation_enabled = translation_enabled;
         self.config.show_thinking = show_thinking;
+        self.config.is_simple = is_simple;
         self.session.auto_approve = auto_approve;
         self.session.approval_mode = if auto_approve {
             crate::mode::ApprovalMode::Auto
@@ -2606,6 +2611,7 @@ impl Engine {
             translation_enabled: self.config.translation_enabled,
             model_id: &self.config.model,
             show_thinking: self.config.show_thinking,
+            is_simple: self.config.is_simple,
             skills_block: crate::skills::render_available_skills_context_for_workspace(
                 &self.config.workspace,
             )

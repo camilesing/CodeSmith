@@ -1632,9 +1632,9 @@ impl RuntimeThreadManager {
         let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
         let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
         let auto_approve = req.auto_approve.unwrap_or(thread.auto_approve);
-        let show_thinking = crate::settings::Settings::load()
-            .unwrap_or_default()
-            .show_thinking;
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        let show_thinking = settings.show_thinking;
+        let is_simple = settings.is_simple;
 
         engine
             .send(Op::SendMessage {
@@ -1650,6 +1650,7 @@ impl RuntimeThreadManager {
                 auto_approve,
                 translation_enabled: false,
                 show_thinking,
+                is_simple,
                 allowed_tools: None,
                 approval_mode: if auto_approve {
                     crate::tui::approval::ApprovalMode::Auto
@@ -1984,6 +1985,10 @@ impl RuntimeThreadManager {
             background_task_registry: None,
             team_sender: None,
             notifier: Some(crate::tui::notifications::wrap_notifier()),
+            // Background threads build their own engine context; the code
+            // index service attaches per-workspace in the main session
+            // (IndexManager wiring).
+            index_service: None,
         };
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
@@ -2013,6 +2018,7 @@ impl RuntimeThreadManager {
             project_context_pack_enabled: self.config.project_context_pack_enabled(),
             translation_enabled: false,
             show_thinking: settings.show_thinking,
+            is_simple: settings.is_simple,
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
@@ -2055,6 +2061,9 @@ impl RuntimeThreadManager {
                 .to_string(),
             workshop: self.config.workshop.clone(),
             search_provider: self.config.search_provider(),
+            // Background threads run without the code index in v1; the
+            // service attaches to the main session's ToolContext only.
+            index_enabled: false,
             search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
             tools_always_load: self.config.tools_always_load(),
             tools: self.config.tools.clone(),

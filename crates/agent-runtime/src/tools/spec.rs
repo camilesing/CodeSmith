@@ -75,6 +75,15 @@ pub struct RuntimeToolServices {
     /// downstream, `tool-impls`) need not depend on the host's
     /// terminal-coupled notification module.
     pub notifier: Option<std::sync::Arc<dyn crate::host_services::NotifierHost>>,
+    /// Per-workspace code index backing the `symbol_search` /
+    /// `find_references` tools. `None` when the index is disabled
+    /// (`[index] enabled = false`), the host did not build one, or the
+    /// context is a test that does not need symbol navigation. Index-backed
+    /// tools fail closed with a clear "not available" error when unset.
+    /// Trait-erased to `Arc<dyn IndexServiceApi>` so the kernel stays
+    /// grammar-free (the tree-sitter feature is enabled by the host, not
+    /// agent-runtime).
+    pub index_service: Option<std::sync::Arc<dyn codesmith_index::IndexServiceApi>>,
 }
 
 impl Default for RuntimeToolServices {
@@ -96,6 +105,7 @@ impl Default for RuntimeToolServices {
             background_task_registry: None,
             team_sender: None,
             notifier: None,
+            index_service: None,
         }
     }
 }
@@ -125,6 +135,7 @@ impl std::fmt::Debug for RuntimeToolServices {
             )
             .field("team_sender", &self.team_sender)
             .field("notifier", &self.notifier.is_some())
+            .field("index_service", &self.index_service.is_some())
             .finish()
     }
 }
@@ -224,6 +235,12 @@ pub struct ToolContext {
     /// routing (e.g. in sub-agents and test contexts to avoid recursion).
     pub large_output_router: Option<crate::tools::large_output_router::LargeOutputRouter>,
 
+    /// Resolved `[utility_model]` handle used by the large-output router for
+    /// synthesis (and other assist call sites). `None` — unconfigured or
+    /// client build failure — makes routing fall back to the truncation
+    /// preview.
+    pub utility_llm: Option<crate::tools::large_output_router::UtilityLlm>,
+
     /// Which search backend `web_search` should use. Default: DuckDuckGo. Set via
     /// `[search] provider` in config.toml.
     pub search_provider: crate::config_types::SearchProvider,
@@ -277,6 +294,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
+            utility_llm: None,
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
@@ -321,6 +339,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
+            utility_llm: None,
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
@@ -365,6 +384,7 @@ impl ToolContext {
             agent_memory_scope: None,
             lsp_manager: None,
             large_output_router: None,
+            utility_llm: None,
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
@@ -633,6 +653,18 @@ impl ToolContext {
     ) -> Self {
         self.large_output_router = Some(router);
         self.workshop_vars = Some(vars);
+        self
+    }
+
+    /// Attach the resolved `[utility_model]` handle used by the large-output
+    /// router's synthesis call. Without it routing still happens but falls
+    /// back to the truncation preview.
+    #[must_use]
+    pub fn with_utility_llm(
+        mut self,
+        utility: crate::tools::large_output_router::UtilityLlm,
+    ) -> Self {
+        self.utility_llm = Some(utility);
         self
     }
 }

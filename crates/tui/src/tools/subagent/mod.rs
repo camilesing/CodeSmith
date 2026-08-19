@@ -5872,8 +5872,17 @@ async fn subagent_flash_router(
         return Ok(None);
     }
 
+    // Classify through the configured [utility_model] when present; otherwise
+    // the runtime's main client with its own model. (Previously pinned to
+    // deepseek-v4-flash, which errored — and silently fell back to the
+    // heuristic — on non-DeepSeek providers.)
+    let (client, model) = match runtime.context.utility_llm.as_ref() {
+        Some(utility) => (utility.client.clone(), utility.model.clone()),
+        None => (runtime.client.clone(), runtime.model.clone()),
+    };
+
     let request = MessageRequest {
-        model: "deepseek-v4-flash".to_string(),
+        model,
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
@@ -5895,11 +5904,8 @@ async fn subagent_flash_router(
         top_p: None,
     };
 
-    let response = tokio::time::timeout(
-        Duration::from_secs(4),
-        runtime.client.create_message(request),
-    )
-    .await??;
+    let response =
+        tokio::time::timeout(Duration::from_secs(4), client.create_message(request)).await??;
     Ok(crate::commands::parse_auto_route_recommendation(
         &message_response_text(&response.content),
     ))
@@ -6390,9 +6396,7 @@ fn build_allowed_tools(
     // the sub-agent management family whenever the parent's basis includes it,
     // so recursion is preserved wherever the parent can recurse. The escape
     // hatch restores unrestricted full inheritance.
-    if !inherit_full_registry
-        && let Some(basis) = parent_basis
-    {
+    if !inherit_full_registry && let Some(basis) = parent_basis {
         return Ok(Some(basis.to_vec()));
     }
     Ok(None)

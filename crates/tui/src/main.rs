@@ -29,6 +29,7 @@ mod compaction;
 mod composer_history;
 mod composer_stash;
 mod config;
+mod index;
 mod config_ui;
 mod core;
 mod cost_status;
@@ -5584,6 +5585,7 @@ async fn run_exec_agent(
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: false,
         show_thinking: settings.show_thinking,
+        is_simple: settings.is_simple,
         max_steps: 100,
         max_subagents,
         features: config.features(),
@@ -5623,6 +5625,7 @@ async fn run_exec_agent(
             .to_string(),
         workshop: config.workshop.clone(),
         search_provider: config.search_provider(),
+        index_enabled: config.index_tools_enabled(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
@@ -5688,6 +5691,7 @@ async fn run_exec_agent(
             auto_approve,
             translation_enabled: false,
             show_thinking: settings.show_thinking,
+            is_simple: settings.is_simple,
             approval_mode: if auto_approve {
                 crate::tui::approval::ApprovalMode::Auto
             } else {
@@ -6151,6 +6155,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: false,
         show_thinking: settings.show_thinking,
+        is_simple: settings.is_simple,
         max_steps: 100,
         max_subagents: config.max_subagents(),
         features: config.features(),
@@ -6190,6 +6195,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
             .to_string(),
         workshop: config.workshop.clone(),
         search_provider: config.search_provider(),
+        index_enabled: config.index_tools_enabled(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
@@ -6224,6 +6230,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
             auto_approve,
             translation_enabled: false,
             show_thinking: settings.show_thinking,
+            is_simple: settings.is_simple,
             approval_mode: if auto_approve {
                 crate::tui::approval::ApprovalMode::Auto
             } else {

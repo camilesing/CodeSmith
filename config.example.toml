@@ -395,6 +395,36 @@ max_subagents = 10 # optional (1-20)
 #   BAIDU_SEARCH_API_KEY     → baidu key fallback
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Persistent code index (docs/INDEX.md). Enables `symbol_search` /
+# `find_references`: indexed symbol navigation that beats grep_files on
+# large repositories. Index data lives under ~/.codesmith/index/<workspace>/,
+# refreshed lazily and incrementally on every query (mtime+size diff, no
+# file watcher). Everything below is optional — absent table = enabled with
+# the built-in `tree-sitter` backend for rust/python/js/ts/go.
+#
+# [index]
+# enabled = true              # master switch (CODESMITH_INDEX_ENABLED)
+# refresh_budget_ms = 2000    # per-query incremental refresh budget
+#
+# [index.files]               # file inventory cache (list_files surface)
+# enabled = true
+#
+# [index.symbols]             # symbol index capability
+# enabled = true
+# backend = "tree-sitter"     # registry id (CODESMITH_INDEX_SYMBOLS_BACKEND)
+# [index.symbols.languages]   # per-language switches, absent = enabled
+# rust = true
+# python = true
+# typescript = true
+# javascript = true
+# go = true
+#
+# [index.semantic]            # reserved: embedding-based search. No built-in
+# enabled = false             # backend yet; enabling with backend = "none"
+# backend = "none"            # fails validation with guidance.
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Network Policy (#135)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Per-domain allow/deny rules for outbound network calls made by the TUI's
@@ -481,7 +511,34 @@ exec_policy = true
 # Xiaomi MiMo image understanding can be configured through the same tool:
 # model = "mimo-v2.5"
 # api_key = "YOUR_XIAOMI_KEY"
-# base_url = "https://api.xiaomimimo.com/v1"
+# base_url = "https://api.xiaomimo.com/v1"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Utility Model Configuration (optional)
+# ─────────────────────────────────────────────────────────────────────────────────
+# A cheap/fast secondary LLM used for background assists so the main model's
+# budget is spent on the actual conversation:
+#   - workshop large-output synthesis (#548): tool results above the
+#     `large_output_threshold_tokens` threshold are condensed by this model;
+#     only the synthesis enters the parent context (the raw output is kept in
+#     the workshop variable `last_tool_result`)
+#   - auto-route classification (`/model auto` + sub-agent routing)
+#   - Flash seams (`[context] seam_model` default)
+#
+# When this table is absent every assist falls back to the main model and
+# behaviour is unchanged. api_key / base_url / provider inherit from the main
+# config when omitted (same-provider setups reuse the main client with a
+# per-request model override); a different `provider` builds a dedicated second
+# client (e.g. main = anthropic, utility = deepseek) and then needs its own
+# api_key — one vendor's key is never sent to another.
+# The model id can also be set via CODESMITH_UTILITY_MODEL (legacy alias:
+# DEEPSEEK_UTILITY_MODEL).
+#
+# [utility_model]
+# model = "deepseek-v4-flash"        # Required: enables the utility model
+# provider = "deepseek"              # Optional: defaults to the main provider
+# api_key = "YOUR_API_KEY"           # Optional: defaults to main api_key
+# base_url = "https://api.deepseek.com/beta"  # Optional: defaults to main base_url
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Retry Configuration
@@ -513,15 +570,17 @@ l3_threshold = 576000
 # Hard cycle reserves the normal 262144-token internal turn budget plus 1024
 # safety tokens, separate from V4's official 384000 max-output metadata.
 cycle_threshold = 768000
+# Defaults to the [utility_model] model id when configured, else Flash.
 seam_model = "deepseek-v4-flash"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Workshop / Large-Output Routing (#548)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Tool outputs exceeding `large_output_threshold_tokens` are routed through a
-# V4-Flash synthesis sub-agent.  Only the synthesis reaches the parent context;
-# the raw text is stored in the workshop variable `last_tool_result` so the
-# parent can call `promote_to_context` later if it needs the full content.
+# synthesis sub-agent powered by [utility_model] (main model when unconfigured).
+# Only the synthesis reaches the parent context; the raw text is stored in the
+# workshop variable `last_tool_result` so the parent can call
+# `promote_to_context` later if it needs the full content.
 #
 # Per-tool overrides let high-volume tools (e.g. exec_shell) use tighter
 # thresholds without changing the global default.

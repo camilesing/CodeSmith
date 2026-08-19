@@ -528,6 +528,12 @@ pub async fn run_tui(
     // `shell_manager` so the runtime-services view the UI polls and the
     // concrete the engine shares stay backed by the same `ShellManager`.
     let shell_manager = crate::tools::shell::wrap_shell_manager(app.shell_manager.clone());
+    // Code index: build once per workspace (cached on App) and attach to
+    // the session's runtime services; per-turn ToolContexts inherit it via
+    // EngineHost.runtime_services -> tool_setup.
+    if app.index_service.is_none() {
+        app.index_service = crate::index::build_index_service(&app.workspace, config);
+    }
     app.runtime_services = RuntimeToolServices {
         shell_manager: Some(shell_manager),
         task_manager: Some(wrap_task_manager(task_manager.clone())),
@@ -547,6 +553,7 @@ pub async fn run_tui(
         background_task_registry: app.runtime_services.background_task_registry.clone(),
         team_sender: None,
         notifier: Some(crate::tui::notifications::wrap_notifier()),
+        index_service: app.index_service.clone(),
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
@@ -779,6 +786,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         project_context_pack_enabled: config.project_context_pack_enabled(),
         translation_enabled: app.translation_enabled,
         show_thinking: app.show_thinking,
+        is_simple: app.is_simple,
         // Effectively unlimited. V4 has a 1M context window and the user
         // wants the model running until it's actually done. The previous cap
         // of 100 hit the ceiling on long multi-step plans (wide refactors,
@@ -834,6 +842,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         workshop: config.workshop.clone(),
         search_provider: config.search_provider(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        index_enabled: config.index_tools_enabled(),
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
@@ -4687,6 +4696,7 @@ async fn dispatch_user_message(
                 translation_enabled: app.translation_enabled,
                 model_id: &app.model,
                 show_thinking: app.show_thinking,
+                is_simple: app.is_simple,
                 skills_block: crate::skills::render_available_skills_context_for_workspace(
                     &app.workspace,
                 ),
@@ -4787,6 +4797,7 @@ async fn dispatch_user_message(
             approval_mode: app.approval_mode,
             translation_enabled: app.translation_enabled,
             show_thinking: app.show_thinking,
+            is_simple: app.is_simple,
             allowed_tools: app.active_allowed_tools.clone(),
         })
         .await

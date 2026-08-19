@@ -39,7 +39,7 @@ use codesmith_agent_runtime::host_services::{
 // `runtime_traits`, `ui`, …). These items MUST stay `pub` in AR's engine
 // module (see C7-2).
 pub use codesmith_agent_runtime::engine::{
-    CancelReason, Engine, EngineConfig, ApprovalDecision, UserInputDecision,
+    ApprovalDecision, CancelReason, Engine, EngineConfig, UserInputDecision,
     build_model_tool_catalog, compact_tool_result_for_context, goal_objective_for_prompt,
     system_prompt_hash,
 };
@@ -49,37 +49,61 @@ pub use codesmith_agent_runtime::engine::{
 // does not flag them as unused imports.
 #[cfg(test)]
 pub use codesmith_agent_runtime::engine::{
+    // tool_catalog
+    CODE_EXECUTION_TOOL_NAME,
+    // context
+    COMPACTION_SUMMARY_MARKER,
+    // streaming
+    FAKE_WRAPPER_NOTICE,
+    MAX_STREAM_ERRORS_BEFORE_FAIL,
+    MAX_TRANSPARENT_STREAM_RETRIES,
+    TOOL_CALL_START_MARKERS,
+    TOOL_SEARCH_BM25_NAME,
+    TOOL_SEARCH_REGEX_NAME,
+    TURN_MAX_OUTPUT_TOKENS,
+    // dispatch
+    ToolExecOutcome,
+    ToolExecutionBatch,
+    ToolExecutionPlan,
+    ToolUseState,
+    active_tools_for_step,
+    caller_allowed_for_tool,
+    contains_fake_tool_wrapper,
+    context_input_budget,
+    context_input_budget_for_provider,
     // top-level engine fn
     default_active_native_tool_names,
-    // context
-    COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS, context_input_budget,
-    context_input_budget_for_provider, effective_max_output_tokens,
-    effective_max_output_tokens_for_provider, extract_compaction_summary_prompt,
-    is_context_length_error_message,
-    // dispatch
-    ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool,
-    final_tool_input, format_tool_error, plan_tool_execution_batches,
-    should_force_update_plan_first, should_parallelize_tool_batch, should_stop_after_plan_tool,
     // lsp_hooks
     edited_paths_for_tool,
-    // streaming
-    FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL, MAX_TRANSPARENT_STREAM_RETRIES,
-    TOOL_CALL_START_MARKERS, ToolUseState, contains_fake_tool_wrapper,
-    filter_tool_call_delta, should_transparently_retry_stream,
-    // tool_catalog
-    CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME,
-    active_tools_for_step, ensure_advanced_tooling, execute_code_execution_tool,
-    execute_tool_search, initial_active_tools, maybe_activate_requested_deferred_tool,
-    maybe_hydrate_requested_deferred_tool, missing_tool_error_message,
-    preflight_requested_deferred_tool, should_default_defer_tool,
+    effective_max_output_tokens,
+    effective_max_output_tokens_for_provider,
+    ensure_advanced_tooling,
+    execute_code_execution_tool,
+    execute_tool_search,
+    extract_compaction_summary_prompt,
+    filter_tool_call_delta,
+    final_tool_input,
+    format_tool_error,
+    initial_active_tools,
+    is_context_length_error_message,
+    maybe_activate_requested_deferred_tool,
+    maybe_hydrate_requested_deferred_tool,
+    missing_tool_error_message,
+    plan_tool_execution_batches,
+    preflight_requested_deferred_tool,
+    should_default_defer_tool,
+    should_force_update_plan_first,
+    should_parallelize_tool_batch,
+    should_stop_after_plan_tool,
+    should_transparently_retry_stream,
 };
 
 use crate::config::{ApiProvider, Config};
 use crate::features::Feature;
 use crate::llm_client::LlmClientHandle;
-use codesmith_agent::provider::{ProviderConfig, ProviderId};
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
+use crate::tools::large_output_router::UtilityLlm;
 use crate::tools::plan::SharedPlanState;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
@@ -90,6 +114,7 @@ use crate::tools::todo::SharedTodoList;
 use crate::tools::{ToolContext, ToolRegistryBuilder, ToolRegistryPluginExt};
 use crate::tui::app::AppMode;
 use crate::utils::spawn_supervised;
+use codesmith_agent::provider::{ProviderConfig, ProviderId};
 
 use super::capacity::CapacityController;
 use super::events::{Event, TurnOutcomeStatus};
@@ -162,6 +187,11 @@ pub struct EngineHost {
     pub workshop_vars: Option<
         std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
     >,
+    /// Resolved `[utility_model]` handle for background assists (workshop
+    /// synthesis, auto-route classification, seams). `None` when unconfigured
+    /// or when a dedicated client could not be built — assists then use the
+    /// main model.
+    pub utility_llm: Option<crate::tools::large_output_router::UtilityLlm>,
     /// External sandbox backend (#516). `None` when no backend is configured.
     pub sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
     /// §F2c — bound extension runner, set by `build_engine` (alongside the
@@ -188,6 +218,7 @@ impl Default for EngineHost {
                 crate::config::MAX_SUBAGENTS,
             ),
             workshop_vars: None,
+            utility_llm: None,
             sandbox_backend: None,
             extension_runner: None,
         }
@@ -336,6 +367,109 @@ pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClien
     codesmith_providers::default_registry().build(&cfg)
 }
 
+/// Resolve the optional `[utility_model]` into a ready-to-use handle.
+///
+/// Three outcomes:
+/// - table absent → `None`; every assist falls back to the main model
+/// - table present, same provider, no dedicated base_url/api_key → the main
+///   client is reused with a per-request model override (the rig adapter
+///   honours `MessageRequest.model` over the client default)
+/// - table present with a different provider (or dedicated endpoint) → a
+///   second client is built through the provider registry
+///
+/// Building a dedicated client never fails the session: on error the utility
+/// model is dropped with a warning and assists use the main model. Custom
+/// gateway (`custom_provider`) setups inherit the main client via the
+/// same-provider branch — an explicit `provider` cannot name a custom id.
+pub(crate) fn resolve_utility_llm(
+    api_config: &Config,
+    main_client: Option<&LlmClientHandle>,
+) -> Option<UtilityLlm> {
+    // Raw table (not `utility_model_config()`): the api_key inheritance done
+    // by the accessor would turn an unset key into `Some(main_key)` and break
+    // the same-provider reuse check below. Inheritance happens explicitly in
+    // the dedicated-client branch.
+    let utility = api_config.utility_model.clone()?;
+    let main_provider = api_config.api_provider();
+    let provider = utility.provider.unwrap_or(main_provider);
+    let inherits_main =
+        provider == main_provider && utility.base_url.is_none() && utility.api_key.is_none();
+    if inherits_main {
+        let client = main_client?.clone();
+        return Some(UtilityLlm {
+            client,
+            model: utility.model,
+        });
+    }
+
+    // Key resolution: an explicit utility key wins; otherwise the main key is
+    // only valid for the same provider (never leak one vendor's key to
+    // another). A cross-provider table without a key builds an empty key and
+    // lets the factory surface the error, which falls back to the main model.
+    let api_key = if let Some(key) = utility.api_key.clone() {
+        key
+    } else if provider == main_provider {
+        api_config.deepseek_api_key().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let cfg = ProviderConfig {
+        provider: ProviderId::from(provider.as_str()),
+        api_key,
+        base_url: utility
+            .base_url
+            .clone()
+            .unwrap_or_else(|| api_config.deepseek_base_url()),
+        default_model: utility.model.clone(),
+        retry: codesmith_agent::llm_client::RetryConfig::from(api_config.retry_policy()),
+        http_headers: api_config.http_headers(),
+        on_retry: None,
+    };
+    match codesmith_providers::default_registry().build(&cfg) {
+        Ok(client) => Some(UtilityLlm {
+            client,
+            model: utility.model,
+        }),
+        Err(err) => {
+            tracing::warn!(
+                "utility model client unavailable; assists fall back to the main model: {err:#}"
+            );
+            None
+        }
+    }
+}
+
+/// Resolve the seam client + model (#159) honouring, in order:
+/// 1. an explicit `[context] seam_model` — keeps the main client, the id
+///    belongs to the main provider
+/// 2. a configured utility model — same-provider setups reuse the main client
+///    with a per-request model override; cross-provider setups use the
+///    utility client
+/// 3. the built-in Flash default (`DEFAULT_SEAM_MODEL`) on the main client
+pub(crate) fn resolve_seam_model_and_client(
+    api_config: &Config,
+    main_client: &LlmClientHandle,
+    utility_llm: &Option<UtilityLlm>,
+) -> (LlmClientHandle, String) {
+    if let Some(explicit) = api_config.context.seam_model.clone() {
+        return (main_client.clone(), explicit);
+    }
+    match utility_llm.as_ref() {
+        Some(utility) => {
+            let client = if utility.client.provider_name() != main_client.provider_name() {
+                utility.client.clone()
+            } else {
+                main_client.clone()
+            };
+            (client, utility.model.clone())
+        }
+        None => (
+            main_client.clone(),
+            crate::seam_manager::DEFAULT_SEAM_MODEL.to_string(),
+        ),
+    }
+}
+
 // === §F1 Extension runtime wiring ===
 
 /// Discover compiled-in extensions, reconcile with the on-disk
@@ -365,8 +499,7 @@ fn build_extension_runtime(
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> Arc<codesmith_extensions::ExtensionRunner> {
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
-    let state = crate::extension_state::ExtensionStateStore::load_default()
-        .unwrap_or_default();
+    let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
     populate_extension_runtime(&runner, workspace, &state, shared_cancel_token);
     runner
 }
@@ -397,21 +530,18 @@ fn populate_extension_runtime(
     // (!global) sources when the workspace is not trusted (Model A — consume
     // FirstLoad's persisted-trust flip via is_workspace_trusted). Discovery is
     // trust-agnostic; the gate is the host's concern.
-    let global_dir = crate::config::effective_home_dir()
-        .map(|home| home.join(".codesmith").join("extensions"));
+    let global_dir =
+        crate::config::effective_home_dir().map(|home| home.join(".codesmith").join("extensions"));
     let project_dir = workspace.join(".codesmith").join("extensions");
     let project_trusted = crate::config::is_workspace_trusted(workspace);
     let global_roots: Vec<std::path::PathBuf> = global_dir.into_iter().collect();
     let project_roots = vec![project_dir];
-    let discovered_dylib =
-        codesmith_extensions::discover_dylib(&global_roots, &project_roots);
-    let enabled_dylib: Vec<_> = codesmith_extensions::apply_trust_gate(
-        discovered_dylib,
-        !project_trusted,
-    )
-    .into_iter()
-    .filter(|d| state.is_enabled(&d.id))
-    .collect();
+    let discovered_dylib = codesmith_extensions::discover_dylib(&global_roots, &project_roots);
+    let enabled_dylib: Vec<_> =
+        codesmith_extensions::apply_trust_gate(discovered_dylib, !project_trusted)
+            .into_iter()
+            .filter(|d| state.is_enabled(&d.id))
+            .collect();
 
     // 3. Load + configure each against the stub api (best-effort; §F2 logs).
     //    The async `Extension::configure` is driven on a fresh single-thread
@@ -440,9 +570,7 @@ fn populate_extension_runtime(
                 // runtime. Best-effort: a failing dylib is warned + skipped
                 // (§8.3 isolation).
                 for d in enabled_dylib {
-                    if let Err(e) =
-                        load_rt.block_on(runner_for_thread.load_dylib(&d.dylib_path))
-                    {
+                    if let Err(e) = load_rt.block_on(runner_for_thread.load_dylib(&d.dylib_path)) {
                         tracing::warn!(
                             target: "codesmith_extensions::loader",
                             "skip dylib {}: {e}",
@@ -532,8 +660,7 @@ pub fn build_engine(
     // §F1 — build the extension runtime + bind to the host executor. §F2c
     // Layer 2: hand the engine's **shared** `cancel_token` `Arc` (not a
     // snapshot clone) so `ctx.signal()` reflects per-turn resets.
-    let extension_runner =
-        build_extension_runtime(&config.workspace, shared_cancel_token.clone());
+    let extension_runner = build_extension_runtime(&config.workspace, shared_cancel_token.clone());
     // §F2c — surface the runner on `EngineHost` too so `HostServices`
     // (`build_turn_dispatcher` / `spawn_subagent`) can emit `ProjectTrust`
     // without going through the `Engine`.
@@ -600,6 +727,7 @@ pub fn build_engine(
         translation_enabled: config.translation_enabled,
         model_id: &config.model,
         show_thinking: config.show_thinking,
+        is_simple: config.is_simple,
         skills_block: crate::skills::render_available_skills_context_for_workspace(
             &config.workspace,
         )
@@ -650,11 +778,22 @@ pub fn build_engine(
     if host.runtime_services.shell_manager.is_none() {
         host.runtime_services.shell_manager = Some(wrap_shell_manager(shell_manager.clone()));
     }
-    let capacity_controller =
-        Arc::new(StdMutex::new(CapacityController::new(config.capacity.clone())));
+    let capacity_controller = Arc::new(StdMutex::new(CapacityController::new(
+        config.capacity.clone(),
+    )));
 
-    // Create Flash seam manager for layered context (#159).
+    // Resolve the optional [utility_model] once. Seam defaults below and the
+    // workshop synthesis handle both consume it.
+    let utility_llm = resolve_utility_llm(api_config, llm_client.as_ref());
+
+    // Create Flash seam manager for layered context (#159). An explicit
+    // `[context] seam_model` always wins (and keeps the main client — the id
+    // belongs to the main provider); otherwise a configured utility model
+    // supplies the seam model, and a cross-provider utility also brings its
+    // own client for seam calls.
     let seam_manager = llm_client.as_ref().map(|main_client| {
+        let (seam_client, seam_model) =
+            resolve_seam_model_and_client(api_config, main_client, &utility_llm);
         let seam_config = SeamConfig {
             enabled: api_config.context.enabled.unwrap_or(false),
             verbatim_window_turns: api_config
@@ -677,13 +816,9 @@ pub fn build_engine(
                 .context
                 .cycle_threshold
                 .unwrap_or(crate::seam_manager::DEFAULT_CYCLE_THRESHOLD),
-            seam_model: api_config
-                .context
-                .seam_model
-                .clone()
-                .unwrap_or_else(|| crate::seam_manager::DEFAULT_SEAM_MODEL.to_string()),
+            seam_model,
         };
-        SeamManager::new(main_client.clone(), seam_config)
+        SeamManager::new(seam_client, seam_config)
     });
     host.seam_manager = seam_manager;
 
@@ -730,6 +865,7 @@ pub fn build_engine(
     host.shell_manager = Some(shell_manager);
     host.subagent_manager = subagent_manager;
     host.workshop_vars = workshop_vars;
+    host.utility_llm = utility_llm;
     host.sandbox_backend = sandbox_backend;
 
     let api_provider = api_config.api_provider();

@@ -37,6 +37,7 @@ pub mod pandoc;
 pub mod plan;
 pub mod plan_file;
 pub mod search;
+pub mod symbols;
 pub mod test_runner;
 pub mod todo;
 pub mod tool_result_retrieval;

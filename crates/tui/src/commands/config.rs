@@ -540,6 +540,9 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.show_thinking = settings.show_thinking;
             app.mark_history_updated();
         }
+        "is_simple" | "simple" => {
+            app.is_simple = settings.is_simple;
+        }
         "show_tool_details" | "tool_details" => {
             app.show_tool_details = settings.show_tool_details;
             app.mark_history_updated();
@@ -1213,13 +1216,23 @@ async fn auto_route_flash_recommendation(
         return Ok(None);
     }
 
-    let client = crate::core::engine::resolve_llm_client(config)?;
+    // Classify through the configured [utility_model] when present; otherwise
+    // the main client with its default model. (Previously pinned to
+    // deepseek-v4-flash, which errored — and silently fell back to the
+    // heuristic — on non-DeepSeek providers.)
+    let main_client = crate::core::engine::resolve_llm_client(config)?;
+    let main_model = main_client.model().to_string();
+    let (client, model) = match crate::core::engine::resolve_utility_llm(config, Some(&main_client))
+    {
+        Some(utility) => (utility.client, utility.model),
+        None => (main_client, main_model),
+    };
     let mut router_system = AUTO_MODEL_ROUTER_SYSTEM_PROMPT.to_string();
     if config.auto_cost_saving() {
         router_system.push_str(AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM);
     }
     let request = MessageRequest {
-        model: "deepseek-v4-flash".to_string(),
+        model,
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
