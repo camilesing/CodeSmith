@@ -1,6 +1,6 @@
 # MCP (External Tool Servers)
 
-codesmith can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the TUI starts and communicates with over stdio.
+codesmith can load additional tools via MCP (Model Context Protocol). MCP servers are either local stdio child processes that the TUI spawns, or remote servers reached over Streamable HTTP (with legacy SSE fallback), SSE, or WebSocket.
 
 Browsing note:
 - `web.run` is the canonical built-in browsing tool.
@@ -70,7 +70,7 @@ Default path:
 Overrides:
 
 - Config: `mcp_config_path = "/path/to/mcp.json"`
-- Env: `DEEPSEEK_MCP_CONFIG=/path/to/mcp.json`
+- Env: `CODESMITH_MCP_CONFIG=/path/to/mcp.json` (legacy aliases `CODEWHALE_MCP_CONFIG` and `DEEPSEEK_MCP_CONFIG` are still accepted)
 
 `codesmith-tui mcp init` (and `codesmith-tui setup --mcp`) writes to this resolved path.
 
@@ -84,9 +84,9 @@ After editing the file or changing `mcp_config_path`, restart the TUI.
 
 Discovered MCP tools are exposed to the model as:
 
-- `mcp_<server>_<tool>`
+- `mcp__<server>__<tool>`
 
-Example: a server named `git` with a tool named `status` becomes `mcp_git_status`.
+Example: a server named `git` with a tool named `status` becomes `mcp__git__status`. The older single-underscore form (`mcp_<server>_<tool>`) is still accepted as a call-time alias for backward compatibility, but the double-underscore form is what the model sees in tool listings.
 
 The command palette includes MCP entries grouped by server. It shows disabled
 and failed servers instead of hiding them, and uses the same runtime tool names
@@ -123,9 +123,9 @@ The CLI also exposes helper tools when MCP is enabled:
 
 You can also use `mcpServers` instead of `servers` for compatibility with other clients.
 
-## Running DeepSeek as an MCP Server
+## Running CodeSmith as an MCP Server
 
-You can register your local DeepSeek binary as an MCP server so other DeepSeek sessions (or any MCP client) can call its tools.
+You can register your local CodeSmith binary as an MCP server so other CodeSmith sessions (or any MCP client) can call its tools.
 
 ### Quick Setup
 
@@ -170,11 +170,11 @@ correct binary.
 
 ### Tool Naming
 
-Tools from a self-hosted DeepSeek server follow the standard naming convention:
+Tools from a self-hosted CodeSmith server follow the standard naming convention:
 
-- `mcp_deepseek_<tool>` (if the server is named `codesmith`)
+- `mcp__<server>__<tool>` — with the default server name `codesmith`, this is `mcp__codesmith__<tool>`
 
-For example, the `shell` tool becomes `mcp_deepseek_shell`.
+For example, the `shell` tool becomes `mcp__codesmith__shell`.
 
 ### MCP Server vs HTTP/SSE API vs ACP
 
@@ -185,9 +185,9 @@ For example, the `shell` tool becomes `mcp_deepseek_shell`.
 | **Config** | `~/.codesmith/mcp.json` entry | Direct URL connection | Editor `agent_servers` custom command |
 | **Lifecycle** | Spawned per client session | Long-running daemon | Spawned per editor agent session |
 
-Use `mcp add-self` when you want DeepSeek tools available to other MCP clients.
+Use `mcp add-self` when you want CodeSmith tools available to other MCP clients.
 Use `serve --http` when building applications that consume the API directly.
-Use `serve --acp` when an editor wants to talk to DeepSeek as an ACP agent.
+Use `serve --acp` when an editor wants to talk to CodeSmith as an ACP agent.
 
 ### Verification
 
@@ -202,15 +202,27 @@ codesmith-tui mcp tools codesmith
 
 Per-server settings:
 
-- `command` (string, required)
+- `command` (string, required for stdio servers): the executable to spawn. Remote servers use `url` instead.
 - `args` (array of strings, optional)
 - `env` (object, optional)
+- `url` (string, optional): base URL of a remote MCP server. URL-based servers use Streamable HTTP by default and fall back to legacy SSE when the server rejects Streamable HTTP.
+- `transport` (string, optional): explicit transport override for `url` servers. Supported values: `http` / `streamable` / `streamable-http` (default), `sse`, `sse-ide`, `ws` / `websocket`, `ws-ide` / `websocket-ide`. Use `sse` or `sse-ide` for legacy SSE endpoints that must start with endpoint discovery, and `ws` / `ws-ide` for WebSocket MCP endpoints.
+- `headers` (object, optional): extra HTTP headers sent with every request to this server (e.g. `Authorization: Bearer ...`). Only the HTTP transports honor this; stdio servers ignore it. Header keys and values are passed through as-is (no environment-variable substitution) and are stored in plain text in `mcp.json` — treat the file with the same care as any other secret-bearing config.
 - `connect_timeout`, `execute_timeout`, `read_timeout` (seconds, optional)
 - `disabled` (bool, optional)
 - `enabled` (bool, optional, default `true`)
 - `required` (bool, optional): startup/connect validation fails if this server cannot initialize.
 - `enabled_tools` (array, optional): allowlist of tool names for this server.
 - `disabled_tools` (array, optional): denylist applied after `enabled_tools`.
+
+## Feature Flag
+
+MCP support is gated by the `mcp` feature flag, enabled by default (experimental). To turn MCP off entirely, set in `config.toml`:
+
+```toml
+[features]
+mcp = false
+```
 
 ## Safety Notes
 
