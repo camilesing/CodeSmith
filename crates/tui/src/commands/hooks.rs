@@ -63,6 +63,22 @@ fn events() -> CommandResult {
             HookEvent::OnError,
             "fires on transport / capacity / tool errors",
         ),
+        (
+            HookEvent::ShellEnv,
+            "fires before each exec_shell; stdout KEY=VALUE lines are injected as env vars",
+        ),
+        (
+            HookEvent::TaskCreated,
+            "fires when the task manager creates a task",
+        ),
+        (
+            HookEvent::TaskCompleted,
+            "fires when a tracked task completes",
+        ),
+        (
+            HookEvent::PreCompact,
+            "fires before context compaction; stdout is preserved in the summary",
+        ),
     ];
     for (event, desc) in ordered {
         out.push_str(&format!("  - `{}` — {desc}\n", event_label(event)));
@@ -264,6 +280,10 @@ mod tests {
             "tool_call_after",
             "mode_change",
             "on_error",
+            "shell_env",
+            "task_created",
+            "task_completed",
+            "pre_compact",
         ]
         .iter()
         .map(|name| {
@@ -290,6 +310,8 @@ mod tests {
         assert!(body.contains("alias: pre_tool_use"));
         assert!(body.contains("alias: post_tool_use"));
         assert!(body.contains("read-only observer"));
+        assert!(body.contains("stdout KEY=VALUE lines are injected as env vars"));
+        assert!(body.contains("stdout is preserved in the summary"));
     }
 
     #[test]

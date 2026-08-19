@@ -587,6 +587,7 @@ without recreating skills the user deliberately deleted.
 | [PROVIDERS.md](docs/PROVIDERS.md) | Provider IDs, auth, model defaults, and capability metadata |
 | [MODES.md](docs/MODES.md) | Plan / Agent / YOLO modes |
 | [MCP.md](docs/MCP.md) | Model Context Protocol integration |
+| [HOOKS.md](docs/HOOKS.md) | Lifecycle hooks: events, conditions, and I/O contracts |
 | [RUNTIME_API.md](docs/RUNTIME_API.md) | HTTP/SSE API server and mobile control page |
 | [INSTALL.md](docs/INSTALL.md) | Platform-specific install guide |
 | [DOCKER.md](docs/DOCKER.md) | GHCR image, volumes, and Docker usage |

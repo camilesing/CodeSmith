@@ -731,7 +731,11 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #
 # Available events: session_start, session_end, message_submit,
 # tool_call_before (alias: pre_tool_use), tool_call_after (alias: post_tool_use),
-# mode_change, on_error, shell_env.
+# mode_change, on_error, shell_env, task_created, task_completed, pre_compact.
+#
+# `message_submit` is the only mutable hook: it receives JSON on stdin and
+# can replace or block the submitted text (see docs/HOOKS.md). `pre_compact`
+# stdout is merged into the compaction summary as preserved context.
 #
 # `shell_env` (#456) is special: the hook runs immediately before each
 # `exec_shell` invocation and its stdout is parsed as `KEY=VALUE\n` lines.
@@ -741,6 +745,8 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # values) are written to `~/.codesmith/audit.log` so each session can be
 # reconciled later. Hook failure / timeout simply contributes no vars —
 # it does not abort the shell call.
+#
+# Full schema, conditions, and I/O contracts: docs/HOOKS.md
 #
 # [hooks]
 # enabled = true

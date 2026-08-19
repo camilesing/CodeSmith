@@ -466,8 +466,9 @@ configured lifecycle hook grouped by event, including each
 hook's name, command preview, timeout, and condition. The
 `[hooks].enabled` flag's state is shown at the top so it's
 obvious when hooks are globally suppressed. Hooks are
-configured under `[[hooks.hooks]]` entries — see the existing
-hook-system documentation for the full schema.
+configured under `[[hooks.hooks]]` entries — see
+[docs/HOOKS.md](HOOKS.md) for the full schema, event list,
+conditions, and I/O contracts.
 
 ### Mutable `message_submit` hooks
 
