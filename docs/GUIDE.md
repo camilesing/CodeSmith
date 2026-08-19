@@ -387,8 +387,11 @@ If a repository has its own instructions, treat them as part of the active
 work. Read the local guidance before editing, and keep any contribution within
 the repository's conventions.
 
-Next: see the "Publishing Your Own Skill" section in [README.md](../README.md)
-and configuration details in [CONFIGURATION.md](CONFIGURATION.md).
+Next: the full skill reference — authoring, discovery directories,
+conditional activation, and community installs — lives in
+[SKILLS.md](SKILLS.md). The "Publishing Your Own Skill" section in
+[README.md](../README.md) is the short version, and configuration details
+are in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## 10. Getting Help
 

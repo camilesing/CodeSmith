@@ -568,6 +568,8 @@ Instructions for the agent go here.
 
 Commands: `/skills` (list), `/skill <name>` (activate), `/skill new` (scaffold), `/skill install github:<owner>/<repo>` (community), `/skill update` / `uninstall` / `trust`. Community installs from GitHub require no backend service. Installed skills appear in the model-visible session context; the agent can auto-select relevant skills via the `load_skill` tool when your task matches their descriptions.
 
+This section is the short version — the full reference (frontmatter fields, conditional `paths` activation, trust model, troubleshooting) lives in [docs/SKILLS.md](docs/SKILLS.md).
+
 First launch also installs bundled system skills for common workflows:
 `skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`,
 `skill-installer`, `mcp-builder`, `documents`, `presentations`,
@@ -586,6 +588,7 @@ without recreating skills the user deliberately deleted.
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Full config reference |
 | [PROVIDERS.md](docs/PROVIDERS.md) | Provider IDs, auth, model defaults, and capability metadata |
 | [MODES.md](docs/MODES.md) | Plan / Agent / YOLO modes |
+| [SKILLS.md](docs/SKILLS.md) | Skills: authoring, discovery, and community installs |
 | [MCP.md](docs/MCP.md) | Model Context Protocol integration |
 | [HOOKS.md](docs/HOOKS.md) | Lifecycle hooks: events, conditions, and I/O contracts |
 | [RUNTIME_API.md](docs/RUNTIME_API.md) | HTTP/SSE API server and mobile control page |
