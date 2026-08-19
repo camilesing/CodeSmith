@@ -192,6 +192,14 @@ pub(super) fn build_turn_tool_registry_builder_for(
             .with_worktree_tools(config.worktree_state.clone())
     };
 
+    // Code-index navigation tools: registered only when the session enabled
+    // the index — a session-constant decision, so the tool catalog stays
+    // stable for the KV prefix cache (#263). Applies to Plan and Agent
+    // modes alike (read-only navigation).
+    if config.index_enabled {
+        builder = builder.with_index_tools();
+    }
+
     // Review + parallel are NOT added for coordinator — it delegates
     // all work to workers and doesn't need review/parallel capabilities.
     if mode != AppMode::Coordinator {

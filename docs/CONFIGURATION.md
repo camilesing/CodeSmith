@@ -194,6 +194,31 @@ example main = anthropic, utility = deepseek) and then needs its own
 also be set with `CODESMITH_UTILITY_MODEL` (legacy alias
 `DEEPSEEK_UTILITY_MODEL`).
 
+### Code Index
+
+`[index]` configures the persistent per-workspace code index that backs the
+`symbol_search` and `find_references` tools (see `docs/INDEX.md`). The
+table is optional — absent means enabled with the built-in `tree-sitter`
+backend for rust/python/js/ts/go, SQLite storage under
+`~/.codesmith/index/<workspace>/`, and lazy incremental refresh on every
+query (no file watcher):
+
+```toml
+[index]
+enabled = true              # master switch (CODESMITH_INDEX_ENABLED)
+refresh_budget_ms = 2000    # per-query incremental refresh budget
+
+[index.symbols]
+backend = "tree-sitter"     # backend id (CODESMITH_INDEX_SYMBOLS_BACKEND)
+[index.symbols.languages]   # per-language switches, absent = enabled
+python = false              # e.g. skip python
+```
+
+Setting `enabled = false` (or `[index.symbols] enabled = false`) removes
+the two tools from the session catalog entirely. `[index.semantic]` exists
+as a reserved seam for embedding-based search but has no built-in backend
+yet — leave it disabled.
+
 To bootstrap MCP and skills directories at their resolved paths, run `codesmith-tui setup`.
 To only scaffold MCP, run `codesmith-tui mcp init`.
 

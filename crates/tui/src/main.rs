@@ -29,6 +29,7 @@ mod compaction;
 mod composer_history;
 mod composer_stash;
 mod config;
+mod index;
 mod config_ui;
 mod core;
 mod cost_status;
@@ -5624,6 +5625,7 @@ async fn run_exec_agent(
             .to_string(),
         workshop: config.workshop.clone(),
         search_provider: config.search_provider(),
+        index_enabled: config.index_tools_enabled(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
@@ -6193,6 +6195,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
             .to_string(),
         workshop: config.workshop.clone(),
         search_provider: config.search_provider(),
+        index_enabled: config.index_tools_enabled(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),

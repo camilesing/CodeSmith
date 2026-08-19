@@ -175,6 +175,13 @@ pub struct EngineConfig {
     /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
     /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
     pub search_api_key: Option<String>,
+    /// Whether the session registered the code-index navigation tools
+    /// (`symbol_search`, `find_references`). Session-constant by design:
+    /// the tool catalog must stay stable across turns for the KV prefix
+    /// cache. Resolved by the host from `[index]` config
+    /// (`Config::index_tools_enabled()`); the service itself is attached
+    /// through `RuntimeToolServices::index_service`, not EngineConfig.
+    pub index_enabled: bool,
     /// Per-step DeepSeek API timeout for sub-agent `create_message` requests.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800)
     /// once at engine construction, then threaded onto every
@@ -272,6 +279,7 @@ impl Default for EngineConfig {
             workshop: None,
             search_provider: SearchProvider::default(),
             search_api_key: None,
+            index_enabled: true,
             subagent_api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
             subagent_inherit_full_registry: false,
             tools_always_load: HashSet::new(),

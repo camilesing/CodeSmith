@@ -75,6 +75,15 @@ pub struct RuntimeToolServices {
     /// downstream, `tool-impls`) need not depend on the host's
     /// terminal-coupled notification module.
     pub notifier: Option<std::sync::Arc<dyn crate::host_services::NotifierHost>>,
+    /// Per-workspace code index backing the `symbol_search` /
+    /// `find_references` tools. `None` when the index is disabled
+    /// (`[index] enabled = false`), the host did not build one, or the
+    /// context is a test that does not need symbol navigation. Index-backed
+    /// tools fail closed with a clear "not available" error when unset.
+    /// Trait-erased to `Arc<dyn IndexServiceApi>` so the kernel stays
+    /// grammar-free (the tree-sitter feature is enabled by the host, not
+    /// agent-runtime).
+    pub index_service: Option<std::sync::Arc<dyn codesmith_index::IndexServiceApi>>,
 }
 
 impl Default for RuntimeToolServices {
@@ -96,6 +105,7 @@ impl Default for RuntimeToolServices {
             background_task_registry: None,
             team_sender: None,
             notifier: None,
+            index_service: None,
         }
     }
 }
@@ -125,6 +135,7 @@ impl std::fmt::Debug for RuntimeToolServices {
             )
             .field("team_sender", &self.team_sender)
             .field("notifier", &self.notifier.is_some())
+            .field("index_service", &self.index_service.is_some())
             .finish()
     }
 }

@@ -528,6 +528,12 @@ pub async fn run_tui(
     // `shell_manager` so the runtime-services view the UI polls and the
     // concrete the engine shares stay backed by the same `ShellManager`.
     let shell_manager = crate::tools::shell::wrap_shell_manager(app.shell_manager.clone());
+    // Code index: build once per workspace (cached on App) and attach to
+    // the session's runtime services; per-turn ToolContexts inherit it via
+    // EngineHost.runtime_services -> tool_setup.
+    if app.index_service.is_none() {
+        app.index_service = crate::index::build_index_service(&app.workspace, config);
+    }
     app.runtime_services = RuntimeToolServices {
         shell_manager: Some(shell_manager),
         task_manager: Some(wrap_task_manager(task_manager.clone())),
@@ -547,6 +553,7 @@ pub async fn run_tui(
         background_task_registry: app.runtime_services.background_task_registry.clone(),
         team_sender: None,
         notifier: Some(crate::tui::notifications::wrap_notifier()),
+        index_service: app.index_service.clone(),
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
@@ -835,6 +842,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         workshop: config.workshop.clone(),
         search_provider: config.search_provider(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        index_enabled: config.index_tools_enabled(),
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,

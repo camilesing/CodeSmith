@@ -395,6 +395,36 @@ max_subagents = 10 # optional (1-20)
 #   BAIDU_SEARCH_API_KEY     → baidu key fallback
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Persistent code index (docs/INDEX.md). Enables `symbol_search` /
+# `find_references`: indexed symbol navigation that beats grep_files on
+# large repositories. Index data lives under ~/.codesmith/index/<workspace>/,
+# refreshed lazily and incrementally on every query (mtime+size diff, no
+# file watcher). Everything below is optional — absent table = enabled with
+# the built-in `tree-sitter` backend for rust/python/js/ts/go.
+#
+# [index]
+# enabled = true              # master switch (CODESMITH_INDEX_ENABLED)
+# refresh_budget_ms = 2000    # per-query incremental refresh budget
+#
+# [index.files]               # file inventory cache (list_files surface)
+# enabled = true
+#
+# [index.symbols]             # symbol index capability
+# enabled = true
+# backend = "tree-sitter"     # registry id (CODESMITH_INDEX_SYMBOLS_BACKEND)
+# [index.symbols.languages]   # per-language switches, absent = enabled
+# rust = true
+# python = true
+# typescript = true
+# javascript = true
+# go = true
+#
+# [index.semantic]            # reserved: embedding-based search. No built-in
+# enabled = false             # backend yet; enabling with backend = "none"
+# backend = "none"            # fails validation with guidance.
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Network Policy (#135)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Per-domain allow/deny rules for outbound network calls made by the TUI's

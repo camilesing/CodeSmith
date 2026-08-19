@@ -10,6 +10,7 @@ members = [
     "crates/extensions",
     "crates/extensions-fixture-dylib",
     "crates/hooks",
+    "crates/index",
     "crates/mcp",
     "crates/protocol",
     "crates/providers",
@@ -57,6 +58,16 @@ thiserror = "2.0"
 tokio = { version = "1.49.0", features = ["full"] }
 toml = "0.9.7"
 sha2 = "0.10"
+ignore = "0.4"
+# tree-sitter: grammars bundle their own C sources and depend only on the
+# stable `tree-sitter-language` ABI crate, so grammar versions float
+# independently of the core crate pinned here.
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.25"
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-appender = "0.2"

@@ -1985,6 +1985,10 @@ impl RuntimeThreadManager {
             background_task_registry: None,
             team_sender: None,
             notifier: Some(crate::tui::notifications::wrap_notifier()),
+            // Background threads build their own engine context; the code
+            // index service attaches per-workspace in the main session
+            // (IndexManager wiring).
+            index_service: None,
         };
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
@@ -2057,6 +2061,9 @@ impl RuntimeThreadManager {
                 .to_string(),
             workshop: self.config.workshop.clone(),
             search_provider: self.config.search_provider(),
+            // Background threads run without the code index in v1; the
+            // service attaches to the main session's ToolContext only.
+            index_enabled: false,
             search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
             tools_always_load: self.config.tools_always_load(),
             tools: self.config.tools.clone(),

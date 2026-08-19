@@ -1135,6 +1135,12 @@ pub struct Config {
     #[serde(default)]
     pub search: Option<SearchConfig>,
 
+    /// Persistent code index configuration (`[index]` table). When absent,
+    /// the index is enabled with the built-in `tree-sitter` symbol backend;
+    /// every capability is individually switchable. See docs/INDEX.md.
+    #[serde(default)]
+    pub index: Option<codesmith_index::IndexConfig>,
+
     /// User-level memory file (#489). Default behaviour is **opt-in**:
     /// loading + injection happens only when `[memory] enabled = true` or
     /// `DEEPSEEK_MEMORY=on` is set.
@@ -1455,6 +1461,37 @@ impl Config {
     #[must_use]
     pub fn search_provider(&self) -> SearchProvider {
         self.search_provider_resolution().provider
+    }
+
+    /// Effective `[index]` configuration: config table over built-in
+    /// defaults, with env overrides applied at resolution time
+    /// (`CODESMITH_INDEX_ENABLED` / `DEEPSEEK_INDEX_ENABLED` and
+    /// `CODESMITH_INDEX_SYMBOLS_BACKEND` / `DEEPSEEK_INDEX_SYMBOLS_BACKEND`).
+    #[must_use]
+    pub fn index_config(&self) -> codesmith_index::IndexConfig {
+        let mut cfg = self.index.clone().unwrap_or_default();
+        if let Ok(raw) = app_env("INDEX_ENABLED")
+            && let Ok(value) = index_parse_bool(&raw)
+        {
+            cfg.enabled = Some(value);
+        }
+        if let Ok(raw) = app_env("INDEX_SYMBOLS_BACKEND") {
+            let trimmed = raw.trim().to_string();
+            if !trimmed.is_empty() {
+                cfg.symbols.backend = Some(trimmed);
+            }
+        }
+        cfg
+    }
+
+    /// Whether the session registers the code-index navigation tools
+    /// (`symbol_search`, `find_references`): master switch AND the symbol
+    /// capability must both be on. Session-constant so the tool catalog
+    /// stays stable for the KV prefix cache.
+    #[must_use]
+    pub fn index_tools_enabled(&self) -> bool {
+        let cfg = self.index_config();
+        cfg.is_enabled() && cfg.symbols.is_enabled()
     }
 
     /// Return `true` if the `[auto] cost_saving = true` opt-in is set
@@ -2880,6 +2917,14 @@ fn default_memory_path() -> Option<PathBuf> {
 /// `CODESMITH_SANDBOX_MODE`, falling back to the legacy `CODEWHALE_` /
 /// `DEEPSEEK_` aliases. Empty values are skipped so a blank shell export does
 /// not erase configured settings.
+fn index_parse_bool(raw: &str) -> std::result::Result<bool, ()> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "enabled" => Ok(true),
+        "0" | "false" | "no" | "off" | "disabled" => Ok(false),
+        _ => Err(()),
+    }
+}
+
 fn app_env(suffix: &str) -> Result<String, std::env::VarError> {
     codesmith_config::codesmith_env(suffix).ok_or(std::env::VarError::NotPresent)
 }
@@ -3914,6 +3959,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
         search: override_cfg.search.or(base.search),
+        index: override_cfg.index.or(base.index),
         memory: override_cfg.memory.or(base.memory),
         auto: override_cfg.auto.or(base.auto),
         update: override_cfg.update.or(base.update),
@@ -5143,6 +5189,74 @@ mod tests {
             config.search.and_then(|search| search.provider),
             Some(SearchProvider::Volcengine)
         );
+    }
+
+    #[test]
+    fn index_config_defaults_to_enabled_tree_sitter() {
+        let _guard = lock_test_env();
+        for var in ["CODESMITH_INDEX_ENABLED", "DEEPSEEK_INDEX_ENABLED"] {
+            unsafe { env::remove_var(var) };
+        }
+        let config: Config = toml::from_str("").expect("empty config");
+        let index = config.index_config();
+        assert!(index.is_enabled());
+        assert!(index.symbols.is_enabled());
+        assert!(index.files.is_enabled());
+        assert!(!index.semantic.is_enabled());
+        assert_eq!(index.symbols.backend_id(), "tree-sitter");
+        assert!(config.index_tools_enabled());
+    }
+
+    #[test]
+    fn index_config_parses_table_and_respects_switches() {
+        let _guard = lock_test_env();
+        for var in ["CODESMITH_INDEX_ENABLED", "DEEPSEEK_INDEX_ENABLED"] {
+            unsafe { env::remove_var(var) };
+        }
+        let config: Config = toml::from_str(
+            "[index.symbols]\nbackend = \"tree-sitter\"\n[index.symbols.languages]\npython = false\n",
+        )
+        .expect("index config");
+        let index = config.index_config();
+        assert!(
+            !index
+                .symbols
+                .language_enabled(codesmith_index::Language::Python)
+        );
+        assert!(
+            index
+                .symbols
+                .language_enabled(codesmith_index::Language::Rust)
+        );
+
+        let disabled: Config = toml::from_str("[index]\nenabled = false\n").expect("cfg");
+        assert!(!disabled.index_tools_enabled());
+
+        let symbols_off: Config =
+            toml::from_str("[index.symbols]\nenabled = false\n").expect("cfg");
+        assert!(!symbols_off.index_tools_enabled());
+    }
+
+    #[test]
+    fn index_env_overrides_apply_at_resolution_time() {
+        let _guard = lock_test_env();
+        let prev_enabled = env::var_os("CODESMITH_INDEX_ENABLED");
+        let prev_backend = env::var_os("CODESMITH_INDEX_SYMBOLS_BACKEND");
+
+        unsafe { env::set_var("CODESMITH_INDEX_ENABLED", "false") };
+        assert!(!Config::default().index_tools_enabled());
+
+        unsafe {
+            env::set_var("CODESMITH_INDEX_ENABLED", "true");
+            env::set_var("CODESMITH_INDEX_SYMBOLS_BACKEND", "none");
+        }
+        let index = Config::default().index_config();
+        assert_eq!(index.symbols.backend_id(), "none");
+
+        unsafe {
+            EnvGuard::restore_var("CODESMITH_INDEX_ENABLED", prev_enabled);
+            EnvGuard::restore_var("CODESMITH_INDEX_SYMBOLS_BACKEND", prev_backend);
+        }
     }
 
     #[test]

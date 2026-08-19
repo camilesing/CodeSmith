@@ -47,6 +47,7 @@ pub use codesmith_tool_impls::tools::review;
 pub use codesmith_tool_impls::tools::rlm;
 pub mod schema_sanitize;
 pub use codesmith_tool_impls::tools::search;
+pub use codesmith_tool_impls::tools::symbols;
 pub mod shell;
 mod shell_output;
 pub mod skill;

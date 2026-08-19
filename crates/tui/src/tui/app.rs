@@ -1250,6 +1250,12 @@ pub struct App {
     pub todos: SharedTodoList,
     /// Durable runtime services exposed to model-visible task/automation tools.
     pub runtime_services: RuntimeToolServices,
+    /// Per-workspace code index service (`symbol_search` /
+    /// `find_references`). Built lazily once per workspace at engine spawn
+    /// and threaded through `runtime_services.index_service` into every
+    /// per-turn ToolContext. `None` when the index is disabled or failed
+    /// to build (tools then fail closed with a clear error).
+    pub index_service: Option<std::sync::Arc<dyn codesmith_index::IndexServiceApi>>,
     /// Concrete background-shell process manager shared with the engine. The
     /// trait-erased `Arc<dyn ShellManagerApi>` view in
     /// `runtime_services.shell_manager` wraps this same concrete, so tools
@@ -1959,6 +1965,7 @@ impl App {
                 shell_manager: Some(wrap_shell_manager(shell_manager)),
                 ..RuntimeToolServices::default()
             },
+            index_service: None,
             mcp_snapshot: None,
             telemetry_sink: None,
             // Read the MCP config once at boot to know how many servers
