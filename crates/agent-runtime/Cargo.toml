@@ -45,7 +45,14 @@ unicode-normalization.workspace = true
 unicode-properties.workspace = true
 uuid.workspace = true
 shellexpand = "3"
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"], optional = true }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
 tiny_http = "0.12"
+
+[features]
+# Real tokenizer support (HuggingFace `tokenizers`, BPE/Unigram via
+# tokenizer.json files). Off by default for the portable core; hosts that
+# want exact token counts (`[context].tokenizer_path`) enable this feature.
+hf-tokenizer = ["dep:tokenizers"]

@@ -2068,6 +2068,8 @@ impl RuntimeThreadManager {
             tools_always_load: self.config.tools_always_load(),
             tools: self.config.tools.clone(),
             team_context: None,
+            file_freshness_tracker:
+                codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
             // Runtime-thread (API) engines don't carry a telemetry sink yet
             // (Plan 06 / 6.1 wires the interactive path only); capacity
             // events from these engines are dropped — the safe opt-in default.

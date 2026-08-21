@@ -33,7 +33,7 @@ path = "src/bin/deepseek_tui_legacy_shim.rs"
 anyhow = "1.0.100"
 arboard = "3.4"
 codesmith-agent = { path = "../agent", version = "0.8.48" }
-codesmith-agent-runtime = { path = "../agent-runtime", version = "0.8.48" }
+codesmith-agent-runtime = { path = "../agent-runtime", version = "0.8.48", features = ["hf-tokenizer"] }
 codesmith-config = { path = "../config", version = "0.8.48" }
 codesmith-index = { path = "../index", version = "0.8.48", features = ["tree-sitter"] }
 codesmith-extensions = { path = "../extensions", version = "0.8.48" }

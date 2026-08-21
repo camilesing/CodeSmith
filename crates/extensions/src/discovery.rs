@@ -6,8 +6,8 @@
 //! enable/disable filtering against `ExtensionStateStore` happens in
 //! `build_extension_runtime`, Task 9). Mirrors pi-mono's `builtInExtensions`.
 
-use codesmith_agent::extension::ExtensionMetadata;
 use crate::manifest::ExtensionManifest;
+use codesmith_agent::extension::ExtensionMetadata;
 use std::path::{Path, PathBuf};
 
 /// A compiled-in extension registration. `factory` constructs a fresh
@@ -100,17 +100,18 @@ fn discover_in_root(root: &Path, global: bool, out: &mut Vec<DiscoveredSource>) 
                     if let Some(s) = discover_manifest_dir(&p, global) {
                         out.push(s);
                     }
-                } else if is_dylib_file(&p) {
-                    if let Some(s) = discover_bare(&p, global) {
-                        out.push(s);
-                    }
+                } else if is_dylib_file(&p)
+                    && let Some(s) = discover_bare(&p, global)
+                {
+                    out.push(s);
                 }
             }
         }
-    } else if root.is_file() && is_dylib_file(root) {
-        if let Some(s) = discover_bare(root, global) {
-            out.push(s);
-        }
+    } else if root.is_file()
+        && is_dylib_file(root)
+        && let Some(s) = discover_bare(root, global)
+    {
+        out.push(s);
     }
 }
 
@@ -327,7 +328,10 @@ mod tests {
         assert!(
             all.iter().any(|r| r.metadata.id == "test-noop"),
             "test-noop not discovered; all={} (inventory submit may need module-scope; see plan §4.3 fallback)",
-            all.iter().map(|r| r.metadata.id).collect::<Vec<_>>().join(", ")
+            all.iter()
+                .map(|r| r.metadata.id)
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 

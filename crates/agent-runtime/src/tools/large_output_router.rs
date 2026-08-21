@@ -20,11 +20,6 @@ use codesmith_tools::ToolResult;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-/// Approximate characters-per-token ratio used for the heuristic estimate.
-/// We intentionally choose a conservative value (3 chars/token) so we err
-/// on the side of routing rather than dumping raw data into the parent.
-const CHARS_PER_TOKEN_ESTIMATE: usize = 3;
-
 /// Workshop variable name where the raw tool output is stored.
 pub const WORKSHOP_LAST_TOOL_RESULT_VAR: &str = "last_tool_result";
 
@@ -58,16 +53,16 @@ impl std::fmt::Debug for UtilityLlm {
 
 // ── Token estimation ──────────────────────────────────────────────────────────
 
-/// Estimate the number of tokens in `text` using a character-count heuristic.
+/// Estimate the number of tokens in `text`.
 ///
-/// This avoids a real tokeniser dependency; the estimate is deliberately
-/// conservative (under-counts tokens) so we route aggressively rather than
-/// letting a 5K-token blob slip through.
+/// Delegates to the process-wide [`crate::tokenizer::TokenCounter`] — the
+/// historical `chars/3` heuristic by default, exact counts when a
+/// tokenizer.json was loaded via `[context].tokenizer_path`. The heuristic
+/// is deliberately conservative (under-counts tokens) so we route
+/// aggressively rather than letting a 5K-token blob slip through.
 #[must_use]
 pub fn estimate_tokens(text: &str) -> usize {
-    let chars = text.chars().count();
-    // Round up: partial last token still costs a token.
-    chars.div_ceil(CHARS_PER_TOKEN_ESTIMATE)
+    crate::tokenizer::default_counter().count_text(text)
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────

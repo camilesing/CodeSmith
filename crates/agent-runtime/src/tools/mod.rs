@@ -22,6 +22,7 @@ pub mod cargo_failure_summary;
 pub mod diff_format;
 pub mod extension;
 pub mod framework_adapter;
+pub mod freshness;
 pub mod git_env;
 pub mod handle;
 pub mod js_execution;

@@ -748,6 +748,15 @@ If you are upgrading from older releases:
   - `[context].cycle_threshold` (int, default `768000`)
   - `[context].seam_model` (string, default: the configured `[utility_model]`
     model id, else `deepseek-v4-flash`)
+  - `[context].tokenizer_path` (string, optional): path to a HuggingFace
+    `tokenizer.json` (BPE/Unigram). When set and loadable, every token budget
+    in the engine (compaction triggers, capacity preflight, large-output
+    routing, truncation thresholds) switches from the chars÷3 heuristic to
+    exact counts — noticeably more accurate for CJK-heavy text and JSON tool
+    output. A failed load logs a warning and keeps the heuristic. Obtain a
+    tokenizer with e.g.
+    `huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json --local-dir ~/.codesmith/tokenizers`
+    and point `tokenizer_path` at the downloaded file.
 - `retry.*` (optional): retry/backoff settings for API requests:
   - `[retry].enabled` (bool, default `true`)
   - `[retry].max_retries` (int, default `3`)
@@ -889,7 +898,13 @@ web_search = true # enables canonical web.run plus the compatibility web_search 
 apply_patch = true
 mcp = true
 exec_policy = true
+# file_freshness = true # read-before-edit validation for edit_file/write_file/fim_edit/apply_patch
 ```
+
+`file_freshness` (default on) makes editing tools reject files that were
+never read in the session or that changed on disk since their last read —
+the error tells the model to `read_file` first. It is a correctness guard,
+not a security control, and applies in every mode including Yolo.
 
 You can also override features for a single run:
 

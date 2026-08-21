@@ -928,6 +928,14 @@ pub struct ContextConfig {
     /// Model used for seam/briefing work. Default: "deepseek-v4-flash".
     #[serde(default)]
     pub seam_model: Option<String>,
+    /// Path to a HuggingFace `tokenizer.json` (e.g. DeepSeek's) used for
+    /// exact token counts across compaction, capacity, and truncation
+    /// budgets. When unset (or on load failure) the chars/3 heuristic
+    /// estimate is used. Download e.g.:
+    /// `huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json
+    /// --local-dir ~/.codesmith/tokenizers`
+    #[serde(default)]
+    pub tokenizer_path: Option<std::path::PathBuf>,
 }
 
 /// Sub-agent model overrides. Keys in `models` can be role names (`worker`,
@@ -3991,6 +3999,10 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .cycle_threshold
                 .or(base.context.cycle_threshold),
             seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
+            tokenizer_path: override_cfg
+                .context
+                .tokenizer_path
+                .or(base.context.tokenizer_path),
         },
         subagents: override_cfg.subagents.or(base.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),

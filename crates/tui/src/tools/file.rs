@@ -539,7 +539,7 @@ impl ToolSpec for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries with leading-whitespace-tolerant fuzzy matching automatically. The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead."
+        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries with leading-whitespace-tolerant fuzzy matching automatically. The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. When `search` matches multiple locations the call FAILS unless you pass `replace_all: true` (replace every occurrence) or `occurrence: N` (replace the N-th match, 1-based). Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead."
     }
 
     fn input_schema(&self) -> Value {
@@ -561,6 +561,14 @@ impl ToolSpec for EditFileTool {
                 "fuzz": {
                     "type": "boolean",
                     "description": "Deprecated: fuzzy fallback is now automatic. Accepted for backward compatibility but ignored."
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence of `search`. Required when `search` matches multiple locations and all of them should be replaced. Mutually exclusive with `occurrence`."
+                },
+                "occurrence": {
+                    "type": "integer",
+                    "description": "Replace only the N-th match of `search` (1-based). Required when `search` matches multiple locations and a specific one should be replaced. Mutually exclusive with `replace_all`."
                 }
             },
             "required": ["path", "search", "replace"]
@@ -591,6 +599,29 @@ impl ToolSpec for EditFileTool {
             ));
         }
 
+        let replace_all = optional_bool(&input, "replace_all", false);
+        let occurrence = match input.get("occurrence") {
+            None => None,
+            Some(v) => match v.as_u64() {
+                None => {
+                    return Err(ToolError::invalid_input(
+                        "occurrence must be a positive 1-based integer".to_string(),
+                    ));
+                }
+                Some(0) => {
+                    return Err(ToolError::invalid_input(
+                        "occurrence is 1-based and must be greater than 0".to_string(),
+                    ));
+                }
+                Some(n) => Some(n as usize),
+            },
+        };
+        if replace_all && occurrence.is_some() {
+            return Err(ToolError::invalid_input(
+                "pass either replace_all or occurrence, not both".to_string(),
+            ));
+        }
+
         let file_path = context.resolve_path(path_str)?;
 
         let contents = fs::read_to_string(&file_path).map_err(|e| {
@@ -598,14 +629,16 @@ impl ToolSpec for EditFileTool {
         })?;
 
         let count = contents.matches(search).count();
-        let (updated, count, fuzz_kind) = if count == 0 {
+        // `occurrence_of` records the 1-based index the caller selected when
+        // disambiguating a multi-match search.
+        let (updated, replaced_count, fuzz_kind, occurrence_of) = if count == 0 {
             // First fallback: tolerate indentation differences.
             let indent_matches = leading_whitespace_fuzzy_matches(&contents, search);
             match indent_matches.as_slice() {
                 [(start, end)] => {
                     let mut updated = contents.clone();
                     updated.replace_range(*start..*end, replace);
-                    (updated, 1, Some("indentation"))
+                    (updated, 1, Some("indentation"), None)
                 }
                 [] => {
                     // Second fallback: tolerate typographic-punctuation
@@ -624,7 +657,7 @@ impl ToolSpec for EditFileTool {
                         [(start, end)] => {
                             let mut updated = contents.clone();
                             updated.replace_range(*start..*end, replace);
-                            (updated, 1, Some("punctuation"))
+                            (updated, 1, Some("punctuation"), None)
                         }
                         _ => {
                             return Err(ToolError::execution_failed(format!(
@@ -643,8 +676,46 @@ impl ToolSpec for EditFileTool {
                     )));
                 }
             }
+        } else if count > 1 && !replace_all {
+            // Replacing every occurrence of an ambiguous search without an
+            // explicit choice is a silent-corruption failure mode, so a
+            // multi-match call must pick `replace_all` or a 1-based
+            // `occurrence`.
+            match occurrence {
+                None => {
+                    return Err(ToolError::execution_failed(format!(
+                        "Search string matched {count} locations in {}; pass replace_all=true to replace every occurrence, or occurrence=N (1..={count}) to replace a specific one",
+                        file_path.display()
+                    )));
+                }
+                Some(n) if n > count => {
+                    return Err(ToolError::execution_failed(format!(
+                        "occurrence {n} is out of range: search string matched {count} locations in {}",
+                        file_path.display()
+                    )));
+                }
+                Some(n) => {
+                    let (start, end) =
+                        nth_match_range(&contents, search, n).expect("n <= count is validated");
+                    let mut updated = contents.clone();
+                    updated.replace_range(start..end, replace);
+                    (updated, 1, None, Some(n))
+                }
+            }
         } else {
-            (contents.replace(search, replace), count, None)
+            // Single match (with or without an explicit occurrence=1), or an
+            // explicit replace_all over any match count.
+            if count == 1 {
+                if let Some(n) = occurrence {
+                    if n != 1 {
+                        return Err(ToolError::execution_failed(format!(
+                            "occurrence {n} is out of range: search string matched 1 location in {}",
+                            file_path.display()
+                        )));
+                    }
+                }
+            }
+            (contents.replace(search, replace), count, None, None)
         };
 
         fs::write(&file_path, &updated).map_err(|e| {
@@ -653,12 +724,10 @@ impl ToolSpec for EditFileTool {
 
         let display = file_path.display().to_string();
         let diff = make_unified_diff(&display, &contents, &updated);
-        let summary = if count > 1 {
-            format!(
-                "Replaced {count} occurrence(s) in {display}\n\
-                 Warning: multiple matches were replaced with the same substitution. \
-                 Verify the result with read_file before proceeding."
-            )
+        let summary = if let Some(n) = occurrence_of {
+            format!("Replaced occurrence {n} of {count} in {display}")
+        } else if replaced_count > 1 {
+            format!("Replaced {replaced_count} occurrences (replace_all) in {display}")
         } else {
             let fuzz_note = match fuzz_kind {
                 Some("indentation") => " (fuzzy indentation match)",
@@ -794,6 +863,24 @@ fn punctuation_normalized_matches(contents: &str, search: &str) -> Vec<(usize, u
         cursor = norm_start.saturating_add(1);
     }
     matches
+}
+
+/// Byte range of the n-th (1-based) non-overlapping occurrence of `search`
+/// in `contents`, using the same left-to-right, non-overlapping scan as
+/// `str::matches` so `count` and `occurrence` agree on match numbering.
+fn nth_match_range(contents: &str, search: &str, n: usize) -> Option<(usize, usize)> {
+    let mut cursor = 0;
+    let mut seen = 0;
+    while let Some(rel) = contents[cursor..].find(search) {
+        seen += 1;
+        let start = cursor + rel;
+        let end = start + search.len();
+        if seen == n {
+            return Some((start, end));
+        }
+        cursor = end;
+    }
+    None
 }
 
 // === ListDirTool ===
@@ -1521,20 +1608,38 @@ mod tests {
         fs::write(&test_file, "hello world hello").expect("write");
 
         let tool = EditFileTool;
+        // A multi-match search without replace_all/occurrence is rejected.
         let result = tool
             .execute(
                 json!({"path": "edit_me.txt", "search": "hello", "replace": "hi"}),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("matched 2 locations") && err.contains("replace_all"),
+            "error must explain the disambiguation options: {err}"
+        );
+        // The file is untouched after the rejection.
+        let unchanged = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(unchanged, "hello world hello");
+
+        // With replace_all the edit applies and reports every occurrence.
+        let result = tool
+            .execute(
+                json!({"path": "edit_me.txt", "search": "hello", "replace": "hi", "replace_all": true}),
                 &ctx,
             )
             .await
             .expect("execute");
 
         assert!(result.success);
-        assert!(result.content.contains("2 occurrence(s)"));
         assert!(
-            result.content.contains("multiple matches were replaced"),
-            "{}",
-            result.content
+            result
+                .content
+                .contains("Replaced 2 occurrences (replace_all)")
         );
         // Inline diff (#505) — the unified diff lands above the summary
         // line so the TUI's diff-aware renderer kicks in.
@@ -1553,6 +1658,105 @@ mod tests {
         // Verify edit was applied
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "hi world hi");
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_occurrence_replaces_nth_match_only() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("nth.txt");
+        fs::write(&test_file, "a b a b a").expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({"path": "nth.txt", "search": "a", "replace": "X", "occurrence": 2}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        assert!(
+            result.content.contains("Replaced occurrence 2 of 3"),
+            "{}",
+            result.content
+        );
+        let edited = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(edited, "a b X b a");
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_occurrence_out_of_range() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("range.txt");
+        fs::write(&test_file, "a b a").expect("write");
+
+        let tool = EditFileTool;
+        // 4 is beyond the 2 matches in the file.
+        let result = tool
+            .execute(
+                json!({"path": "range.txt", "search": "a", "replace": "X", "occurrence": 4}),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("out of range"));
+
+        // occurrence=2 against a file with a single match is also out of range.
+        let single = tmp.path().join("single_range.txt");
+        fs::write(&single, "only one a here").expect("write");
+        let result = tool
+            .execute(
+                json!({"path": "single_range.txt", "search": "a", "replace": "X", "occurrence": 2}),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("out of range"));
+
+        // occurrence=1 on a single match succeeds.
+        let result = tool
+            .execute(
+                json!({"path": "single_range.txt", "search": "a", "replace": "X", "occurrence": 1}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_rejects_replace_all_and_occurrence_together() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("both.txt");
+        fs::write(&test_file, "a a").expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({"path": "both.txt", "search": "a", "replace": "X", "replace_all": true, "occurrence": 1}),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not both"));
+
+        // Non-positive and non-integer occurrence values are rejected up front.
+        for bad in [json!(0), json!(-1), json!("two")] {
+            let result = tool
+                .execute(
+                    json!({"path": "both.txt", "search": "a", "replace": "X", "occurrence": bad}),
+                    &ctx,
+                )
+                .await;
+            assert!(result.is_err(), "occurrence={bad} must be rejected");
+        }
     }
 
     #[tokio::test]

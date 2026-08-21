@@ -270,5 +270,11 @@ pub(super) fn build_turn_tool_registry_builder_for(
     // so there's no failure mode worth gating on.
     builder = builder.with_notify_tool();
 
+    // Read-before-edit freshness validation: wrap the file tools against the
+    // per-engine tracker. Catalog-neutral and runtime-gated by
+    // `[features].file_freshness`, so modes that never write (Plan) simply
+    // record reads.
+    builder = builder.with_file_freshness(config.file_freshness_tracker.clone());
+
     builder
 }

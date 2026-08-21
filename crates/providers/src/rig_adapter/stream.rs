@@ -74,7 +74,9 @@ where
                     container: None,
                     usage: Usage::default(),
                 };
-                state.pending.push_back(Ok(StreamEvent::MessageStart { message: msg }));
+                state
+                    .pending
+                    .push_back(Ok(StreamEvent::MessageStart { message: msg }));
                 continue;
             }
             // 3. Pull the next rig item.
@@ -111,8 +113,12 @@ where
 /// `ContentBlockDelta` / `ContentBlockStop` emission.
 #[derive(Debug)]
 enum CurrentBlock {
-    Text { index: u32 },
-    Thinking { index: u32 },
+    Text {
+        index: u32,
+    },
+    Thinking {
+        index: u32,
+    },
     /// A tool-use block assembled from deltas. `started` is false until the
     /// `ContentBlockStart` has been emitted (deferred until the name is known
     /// or an argument chunk forces it).
@@ -231,7 +237,8 @@ where
                 caller: None,
             },
         }));
-        self.pending.push_back(Ok(StreamEvent::ContentBlockStop { index }));
+        self.pending
+            .push_back(Ok(StreamEvent::ContentBlockStop { index }));
     }
 
     /// Ensure a delta-assembled tool-use block is current for `id`, returning
@@ -239,10 +246,10 @@ where
     /// The `ContentBlockStart` is deferred until the name is known or an
     /// argument chunk forces it (see [`Self::start_tool_use_if_needed`]).
     fn ensure_tool_use_delta(&mut self, id: String) {
-        if let Some(CurrentBlock::ToolUse { id: cur_id, .. }) = &self.current {
-            if *cur_id == id {
-                return;
-            }
+        if let Some(CurrentBlock::ToolUse { id: cur_id, .. }) = &self.current
+            && *cur_id == id
+        {
+            return;
         }
         self.close_current_block();
         let index = self.next_index;
@@ -351,7 +358,9 @@ where
                         // Buffer the name; don't force-start yet — a later
                         // argument chunk or the block close will emit Start.
                         if let Some(CurrentBlock::ToolUse {
-                            name: n, started: false, ..
+                            name: n,
+                            started: false,
+                            ..
                         }) = &mut self.current
                         {
                             *n = Some(name);

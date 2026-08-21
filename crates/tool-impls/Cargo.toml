@@ -29,7 +29,9 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 toml.workspace = true
-ignore = "0.4"
+ignore.workspace = true
+grep-regex.workspace = true
+grep-matcher.workspace = true
 base64 = "0.22.1"
 pdf-extract = "0.7"
 tokio-util = { version = "0.7.16", features = ["io"] }

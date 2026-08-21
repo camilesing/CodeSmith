@@ -95,23 +95,25 @@ pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 0;
 // === Token-estimation helpers (moved from tui compaction/mod.rs) ===
 //
 // Pure functions over API message types. Kept `pub` so the TUI's heavy
-// compaction engine can re-export and call them unqualified; they are the
-// single source of truth for the rough char/token heuristic.
+// compaction engine can re-export and call them unqualified. All counting
+// routes through [`crate::tokenizer`] — the historical chars/3 heuristic by
+// default, exact counts when a tokenizer.json was installed at startup.
 
 pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) -> usize {
+    let counter = crate::tokenizer::default_counter();
     message
         .content
         .iter()
         .map(|c| match c {
-            ContentBlock::Text { text, .. } => text.len() / 4,
+            ContentBlock::Text { text, .. } => counter.count_text(text),
             // Historical reasoning blocks are UI/session metadata for DeepSeek.
             // Only current-turn tool-call reasoning is sent back to the API.
-            ContentBlock::Thinking { thinking } if include_thinking => thinking.len() / 4,
+            ContentBlock::Thinking { thinking } if include_thinking => counter.count_text(thinking),
             ContentBlock::Thinking { .. } => 0,
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
-                .map(|s| s.len() / 4)
+                .map(|s| counter.count_text(&s))
                 .unwrap_or(100),
-            ContentBlock::ToolResult { content, .. } => content.len() / 4,
+            ContentBlock::ToolResult { content, .. } => counter.count_text(content),
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => 0,
@@ -120,9 +122,9 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
 }
 
 pub fn estimate_tokens(messages: &[Message]) -> usize {
-    // Rough estimate: ~4 chars per token. DeepSeek thinking-mode rule: any
-    // assistant message with tool_calls keeps its reasoning_content forever
-    // (replayed in all subsequent requests). Final text-only answers drop it.
+    // DeepSeek thinking-mode rule: any assistant message with tool_calls
+    // keeps its reasoning_content forever (replayed in all subsequent
+    // requests). Final text-only answers drop it.
     messages
         .iter()
         .map(|message| estimate_tokens_for_message(message, message_has_tool_use(message)))
@@ -137,7 +139,7 @@ pub fn message_has_tool_use(message: &Message) -> bool {
 }
 
 pub fn estimate_text_tokens_conservative(text: &str) -> usize {
-    text.chars().count().div_ceil(3)
+    crate::tokenizer::default_counter().count_text(text)
 }
 
 pub fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {

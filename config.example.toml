@@ -496,6 +496,10 @@ apply_patch = true
 mcp = true
 exec_policy = true
 # vision_model = false  # enable vision model for image_analyze tool
+# file_freshness = true  # read-before-edit validation: edit_file/write_file/fim_edit/apply_patch
+#                        # reject files never read in this session or changed on disk since
+#                        # their last read. Correctness guard (not a security control);
+#                        # applies in all modes including Yolo.
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Vision Model Configuration (optional)
@@ -572,6 +576,12 @@ l3_threshold = 576000
 cycle_threshold = 768000
 # Defaults to the [utility_model] model id when configured, else Flash.
 seam_model = "deepseek-v4-flash"
+# Exact token counting: path to a HuggingFace tokenizer.json (BPE/Unigram).
+# When set (and loadable), compaction / capacity / truncation budgets use
+# real counts instead of the chars÷3 heuristic. Obtain one with e.g.
+#   huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json \
+#     --local-dir ~/.codesmith/tokenizers
+# tokenizer_path = "~/.codesmith/tokenizers/tokenizer.json"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Workshop / Large-Output Routing (#548)

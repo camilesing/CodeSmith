@@ -846,6 +846,8 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
+        file_freshness_tracker:
+            codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
         telemetry_sink: app.telemetry_sink.clone(),
     }
 }

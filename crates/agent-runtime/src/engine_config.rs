@@ -212,6 +212,11 @@ pub struct EngineConfig {
     /// `None` disables AgentTeams runtime services. `Some(Mutex(None))` means
     /// AgentTeams is available but no team is active yet.
     pub team_context: Option<SharedTeamContext>,
+    /// Per-engine file-freshness tracker shared across turns. Read/edit/write
+    /// tools registered by the host are wrapped against this handle so
+    /// read-before-edit validation (`[features].file_freshness`) sees reads
+    /// from earlier turns.
+    pub file_freshness_tracker: crate::tools::freshness::FileFreshnessTracker,
     /// Local-only telemetry sink handle (Plan 06 / 6.1). Carried on
     /// `EngineConfig` because [`TelemetrySink`] lives in this same crate
     /// (it is *not* a host-injected OS-bridging manager like
@@ -287,6 +292,7 @@ impl Default for EngineConfig {
             sandbox_runtime: SandboxRuntimeConfig::default(),
             tools: None,
             team_context: None,
+            file_freshness_tracker: crate::tools::freshness::FileFreshnessTracker::new(),
             telemetry_sink: None,
         }
     }

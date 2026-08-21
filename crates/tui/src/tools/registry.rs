@@ -140,6 +140,26 @@ impl ToolRegistryBuilder {
         self
     }
 
+    /// Wrap the tracked file tools (`read_file`, `edit_file`, `write_file`,
+    /// `fim_edit`, `apply_patch`) with read-before-edit freshness validation
+    /// against `tracker`. Other tools pass through untouched, and wrapping is
+    /// catalog-neutral (name/schema/capabilities delegate verbatim), so this
+    /// is safe to call on a fully assembled builder. Call once, after the
+    /// last `with_*` tool addition.
+    #[must_use]
+    pub fn with_file_freshness(
+        mut self,
+        tracker: codesmith_agent_runtime::tools::freshness::FileFreshnessTracker,
+    ) -> Self {
+        use codesmith_agent_runtime::tools::freshness::wrap_if_freshness_eligible;
+        self.tools = self
+            .tools
+            .into_iter()
+            .map(|tool| wrap_if_freshness_eligible(tool, tracker.clone()))
+            .collect();
+        self
+    }
+
     /// Include file tools (read, write, edit, list).
     #[must_use]
     pub fn with_file_tools(self) -> Self {
@@ -1542,5 +1562,123 @@ mod tests {
         assert_eq!(sanitize_tool_name(""), "fail_closed_tool");
         let long = sanitize_tool_name(&"x".repeat(MAX_TOOL_NAME_LEN + 100));
         assert_eq!(long.len(), MAX_TOOL_NAME_LEN);
+    }
+
+    #[tokio::test]
+    async fn file_freshness_blocks_edit_until_file_is_read() {
+        use codesmith_agent_runtime::tools::freshness::FileFreshnessTracker;
+
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        std::fs::write(tmp.path().join("f.txt"), "hello world").expect("write");
+
+        let registry = ToolRegistryBuilder::new()
+            .with_file_tools()
+            .with_file_freshness(FileFreshnessTracker::new())
+            .build(ctx);
+
+        // Editing before any read is rejected.
+        let err = registry
+            .execute_full(
+                "edit_file",
+                json!({"path": "f.txt", "search": "hello", "replace": "hi"}),
+            )
+            .await
+            .expect_err("edit before read must fail");
+        assert!(
+            err.to_string().contains("has not been read"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("f.txt")).expect("read"),
+            "hello world",
+            "file must be untouched after the rejection"
+        );
+
+        // Read, then the same edit succeeds.
+        registry
+            .execute_full("read_file", json!({"path": "f.txt"}))
+            .await
+            .expect("read_file");
+        let result = registry
+            .execute_full(
+                "edit_file",
+                json!({"path": "f.txt", "search": "hello", "replace": "hi"}),
+            )
+            .await
+            .expect("edit after read");
+        assert!(result.success, "{}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("f.txt")).expect("read"),
+            "hi world"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_freshness_allows_creating_new_files() {
+        use codesmith_agent_runtime::tools::freshness::FileFreshnessTracker;
+
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let registry = ToolRegistryBuilder::new()
+            .with_file_tools()
+            .with_file_freshness(FileFreshnessTracker::new())
+            .build(ctx);
+
+        let result = registry
+            .execute_full("write_file", json!({"path": "new.txt", "content": "fresh"}))
+            .await
+            .expect("creating a new file needs no prior read");
+        assert!(result.success, "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn file_freshness_disabled_feature_passes_through() {
+        use codesmith_agent_runtime::features::{Feature, Features};
+        use codesmith_agent_runtime::tools::freshness::FileFreshnessTracker;
+
+        let tmp = tempdir().expect("tempdir");
+        let mut features = Features::with_defaults();
+        features.disable(Feature::FileFreshness);
+        let ctx = ToolContext::new(tmp.path().to_path_buf()).with_features(features);
+        std::fs::write(tmp.path().join("f.txt"), "hello world").expect("write");
+
+        let registry = ToolRegistryBuilder::new()
+            .with_file_tools()
+            .with_file_freshness(FileFreshnessTracker::new())
+            .build(ctx);
+
+        let result = registry
+            .execute_full(
+                "edit_file",
+                json!({"path": "f.txt", "search": "hello", "replace": "hi"}),
+            )
+            .await
+            .expect("feature disabled: no freshness gate");
+        assert!(result.success, "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn file_freshness_preserves_tool_catalog() {
+        use codesmith_agent_runtime::tools::freshness::FileFreshnessTracker;
+
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let plain = ToolRegistryBuilder::new()
+            .with_file_tools()
+            .build(ctx.clone());
+        let wrapped = ToolRegistryBuilder::new()
+            .with_file_tools()
+            .with_file_freshness(FileFreshnessTracker::new())
+            .build(ctx);
+
+        let plain_catalog = serde_json::to_string(&plain.to_api_tools()).expect("serialize");
+        let wrapped_catalog = serde_json::to_string(&wrapped.to_api_tools()).expect("serialize");
+        assert_eq!(
+            plain_catalog, wrapped_catalog,
+            "wrapping must be catalog-neutral (names, schemas, order)"
+        );
     }
 }

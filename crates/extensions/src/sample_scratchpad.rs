@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use codesmith_agent::extension::*;
 use codesmith_tools::{ToolCapability, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::discovery::ExtensionRegistration;
 use crate::ExtensionMetadata;
+use crate::discovery::ExtensionRegistration;
 
 /// Shared scratchpad string (per-process; slice 1 — a real per-session store
 /// scoped via [`ExtensionContext`] is §F2). Guarded by a `std::sync::Mutex`
@@ -83,7 +83,7 @@ impl ToolDefinition for ScratchTool {
                 *SCRATCH.lock().unwrap() = Some(text.clone());
                 Ok(ToolResult::success(format!("scratch set to {text:?}")))
             }
-            "get" | _ => {
+            _ => {
                 let val = SCRATCH.lock().unwrap().clone().unwrap_or_default();
                 Ok(ToolResult::success(val))
             }

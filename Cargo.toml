@@ -59,6 +59,11 @@ tokio = { version = "1.49.0", features = ["full"] }
 toml = "0.9.7"
 sha2 = "0.10"
 ignore = "0.4"
+# ripgrep engine crates: `grep_files` walks with `ignore` and matches with
+# `grep-regex`/`grep-matcher` so tool search gets ripgrep semantics
+# (gitignore-aware walking, multi-line mode) without shelling out to `rg`.
+grep-regex = "0.1"
+grep-matcher = "0.1"
 # tree-sitter: grammars bundle their own C sources and depend only on the
 # stable `tree-sitter-language` ABI crate, so grammar versions float
 # independently of the core crate pinned here.

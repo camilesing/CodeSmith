@@ -3,12 +3,13 @@
 //! These tools provide powerful code search capabilities within the workspace,
 //! similar to ripgrep/grep functionality.
 
+use async_trait::async_trait;
 use codesmith_agent_runtime::tools::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_bool, optional_str,
     optional_u64, required_str,
 };
-use async_trait::async_trait;
-use regex::Regex;
+use grep_matcher::Matcher;
+use grep_regex::RegexMatcherBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
@@ -47,7 +48,7 @@ impl ToolSpec for GrepFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search for a regex pattern in workspace files. Use this instead of `grep -r`, `rg`, or `find ... -exec grep` in `exec_shell` — pure-Rust, faster, and respects `.gitignore`. Returns matching lines with context (default: 2 lines before/after each match)."
+        "Search for a regex pattern in workspace files. Use this instead of `grep -r`, `rg`, or `find ... -exec grep` in `exec_shell` — ripgrep-engine, faster, and respects `.gitignore`. Returns matching lines with context (default: 2 lines before/after each match). Set `multiline: true` to match patterns that span line breaks (e.g. `fn\\s+\\w+\\(\\s*[^)]*\\)\\s*\\{`); prefix the pattern with `(?s)` when `.` itself must match newlines."
     }
 
     fn input_schema(&self) -> Value {
@@ -83,6 +84,10 @@ impl ToolSpec for GrepFilesTool {
                 "max_results": {
                     "type": "integer",
                     "description": "Maximum number of results to return (default: 100)"
+                },
+                "multiline": {
+                    "type": "boolean",
+                    "description": "Search the whole file buffer so patterns can span line breaks (default: false). Each match is reported at its starting line. Prefix the pattern with `(?s)` if `.` must match newlines."
                 }
             },
             "required": ["pattern"]
@@ -103,6 +108,7 @@ impl ToolSpec for GrepFilesTool {
         let context_lines =
             usize::try_from(optional_u64(&input, "context_lines", 2)).unwrap_or(usize::MAX);
         let case_insensitive = optional_bool(&input, "case_insensitive", false);
+        let multiline = optional_bool(&input, "multiline", false);
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64))
             .unwrap_or(MAX_RESULTS);
 
@@ -153,14 +159,13 @@ impl ToolSpec for GrepFilesTool {
                 },
             );
 
-        // Build regex
-        let regex_pattern = if case_insensitive {
-            format!("(?i){pattern_str}")
-        } else {
-            pattern_str.to_string()
-        };
-
-        let regex = Regex::new(&regex_pattern)
+        // Build the ripgrep matcher. `grep-regex` is the same engine `rg`
+        // uses, so pattern semantics (including `(?i)` inline flags) carry
+        // over; `case_insensitive` and `multi_line` map to builder knobs.
+        let matcher = RegexMatcherBuilder::new()
+            .case_insensitive(case_insensitive)
+            .multi_line(multiline)
+            .build(pattern_str)
             .map_err(|e| ToolError::invalid_input(format!("Invalid regex pattern: {e}")))?;
 
         // Resolve search path
@@ -182,6 +187,14 @@ impl ToolSpec for GrepFilesTool {
                 &exclude_patterns,
                 cancel_token,
             )?;
+
+            // The ripgrep walker canonicalizes its root (e.g. /var ->
+            // /private/var on macOS), which can defeat strip_prefix against
+            // the raw workspace path; fall back to the canonical form before
+            // surfacing an absolute path.
+            let canonical_workspace = workspace
+                .canonicalize()
+                .unwrap_or_else(|_| workspace.clone());
 
             // Search files
             let mut results: Vec<GrepMatch> = Vec::new();
@@ -209,41 +222,67 @@ impl ToolSpec for GrepFilesTool {
 
                 files_searched += 1;
                 let lines: Vec<&str> = file_content.lines().collect();
+                let relative_path = file_path
+                    .strip_prefix(&workspace)
+                    .or_else(|_| file_path.strip_prefix(&canonical_workspace))
+                    .unwrap_or(&file_path)
+                    .to_string_lossy()
+                    .to_string();
 
-                for (line_idx, line) in lines.iter().enumerate() {
-                    check_cancelled(cancel_token)?;
+                if multiline {
+                    // Whole-buffer matching: `.` and `^`/`$` cross line
+                    // breaks; each match is reported at its starting line.
+                    // `find_iter` drives a callback (return false to stop);
+                    // keep returning true so `total_matches` stays accurate
+                    // past `max_results` within this file.
+                    matcher
+                        .find_iter(file_content.as_bytes(), |m| {
+                            let line_idx = file_content[..m.start()]
+                                .bytes()
+                                .filter(|b| *b == b'\n')
+                                .count();
+                            let Some(line) = lines.get(line_idx) else {
+                                // Zero-width artifact at EOF (e.g. empty
+                                // pattern against a trailing newline).
+                                return true;
+                            };
+                            total_matches += 1;
+                            if results.len() < max_results {
+                                let (context_before, context_after) =
+                                    collect_context(&lines, line_idx, context_lines);
+                                results.push(GrepMatch {
+                                    file: relative_path.clone(),
+                                    line_number: line_idx + 1,
+                                    line: (*line).to_string(),
+                                    context_before,
+                                    context_after,
+                                });
+                            }
+                            true
+                        })
+                        .map_err(|e| {
+                            ToolError::execution_failed(format!("grep matcher error: {e}"))
+                        })?;
+                } else {
+                    for (line_idx, line) in lines.iter().enumerate() {
+                        check_cancelled(cancel_token)?;
 
-                    if regex.is_match(line) {
-                        total_matches += 1;
-
-                        // Get context lines
-                        let context_before: Vec<String> = (line_idx.saturating_sub(context_lines)
-                            ..line_idx)
-                            .filter_map(|i| lines.get(i).map(|s| (*s).to_string()))
-                            .collect();
-
-                        let context_after: Vec<String> = ((line_idx + 1)
-                            ..=(line_idx + context_lines).min(lines.len() - 1))
-                            .filter_map(|i| lines.get(i).map(|s| (*s).to_string()))
-                            .collect();
-
-                        // Get relative path from workspace
-                        let relative_path = file_path
-                            .strip_prefix(&workspace)
-                            .unwrap_or(&file_path)
-                            .to_string_lossy()
-                            .to_string();
-
-                        results.push(GrepMatch {
-                            file: relative_path,
-                            line_number: line_idx + 1,
-                            line: (*line).to_string(),
-                            context_before,
-                            context_after,
-                        });
-
-                        if results.len() >= max_results {
-                            break;
+                        let matched = matcher.is_match(line.as_bytes()).map_err(|e| {
+                            ToolError::execution_failed(format!("grep matcher error: {e}"))
+                        })?;
+                        if matched {
+                            total_matches += 1;
+                            if results.len() < max_results {
+                                let (context_before, context_after) =
+                                    collect_context(&lines, line_idx, context_lines);
+                                results.push(GrepMatch {
+                                    file: relative_path.clone(),
+                                    line_number: line_idx + 1,
+                                    line: (*line).to_string(),
+                                    context_before,
+                                    context_after,
+                                });
+                            }
                         }
                     }
                 }
@@ -329,93 +368,76 @@ fn grep_match_to_json(item: &GrepMatch, context_lines: usize) -> Value {
     }
 }
 
-/// Collect files to search based on include/exclude patterns
+/// Context lines around `line_idx` (0-based), `context_lines` before/after.
+fn collect_context(
+    lines: &[&str],
+    line_idx: usize,
+    context_lines: usize,
+) -> (Vec<String>, Vec<String>) {
+    let context_before: Vec<String> = (line_idx.saturating_sub(context_lines)..line_idx)
+        .filter_map(|i| lines.get(i).map(|s| (*s).to_string()))
+        .collect();
+    let context_after: Vec<String> = ((line_idx + 1)
+        ..=(line_idx + context_lines).min(lines.len().saturating_sub(1)))
+        .filter_map(|i| lines.get(i).map(|s| (*s).to_string()))
+        .collect();
+    (context_before, context_after)
+}
+
+/// Collect files to search based on include/exclude patterns.
+///
+/// The walk is ripgrep's `ignore` walker, so `.gitignore` rules are honoured
+/// (`require_git(false)` applies them in plain directories too, matching the
+/// tool's documented behavior) and gitignored subtrees are pruned natively.
+/// Include/exclude globs still go through the tool's own matcher so
+/// caller-facing semantics are unchanged from the hand-rolled walk (children
+/// of an excluded directory are filtered per-path — the default exclude list
+/// carries both `dir` and `dir/*` forms for exactly that reason, #2200).
 fn collect_files(
     root: &Path,
     include_patterns: &[String],
     exclude_patterns: &[String],
     cancel_token: Option<&CancellationToken>,
 ) -> Result<Vec<PathBuf>, ToolError> {
-    let mut files = Vec::new();
     check_cancelled(cancel_token)?;
 
     if root.is_file() {
-        files.push(root.to_path_buf());
-        return Ok(files);
+        return Ok(vec![root.to_path_buf()]);
     }
 
-    collect_files_recursive(
-        root,
-        root,
-        include_patterns,
-        exclude_patterns,
-        cancel_token,
-        &mut files,
-    )?;
-    Ok(files)
-}
+    let mut files = Vec::new();
+    let it = ignore::WalkBuilder::new(root)
+        .hidden(false) // keep the historic inclusive behavior for dotfiles
+        .follow_links(false) // matches the old walk's symlink skip
+        .require_git(false) // apply .gitignore even outside a git repo
+        .build();
 
-fn collect_files_recursive(
-    root: &Path,
-    current: &Path,
-    include_patterns: &[String],
-    exclude_patterns: &[String],
-    cancel_token: Option<&CancellationToken>,
-    files: &mut Vec<PathBuf>,
-) -> Result<(), ToolError> {
-    check_cancelled(cancel_token)?;
-
-    let entries = fs::read_dir(current).map_err(|e| {
-        ToolError::execution_failed(format!(
-            "Failed to read directory {}: {}",
-            current.display(),
-            e
-        ))
-    })?;
-
-    for entry in entries {
+    for entry in it {
         check_cancelled(cancel_token)?;
-
-        let entry = entry.map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|e| {
-            ToolError::execution_failed(format!(
-                "Failed to inspect file type for {}: {}",
-                path.display(),
-                e
-            ))
-        })?;
-        if file_type.is_symlink() {
+        let Ok(entry) = entry else {
+            continue; // unreadable entry: skip like rg's warnings
+        };
+        // Depth 0 is the search root itself.
+        if entry.depth() == 0 {
             continue;
         }
-
-        // Get relative path for pattern matching
-        let relative = path.strip_prefix(root).unwrap_or(&path);
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
         let relative_str = relative.to_string_lossy();
-
-        // Check exclusions
         if should_exclude(&relative_str, exclude_patterns) {
             continue;
         }
-
-        if file_type.is_dir() {
-            collect_files_recursive(
-                root,
-                &path,
-                include_patterns,
-                exclude_patterns,
-                cancel_token,
-                files,
-            )?;
-        } else if file_type.is_file() {
-            // Check inclusions (if any specified)
-            if include_patterns.is_empty() || should_include(&relative_str, include_patterns) {
-                files.push(path);
-            }
+        if !include_patterns.is_empty() && !should_include(&relative_str, include_patterns) {
+            continue;
         }
+        files.push(entry.into_path());
     }
-
-    Ok(())
+    Ok(files)
 }
 
 fn check_cancelled(cancel_token: Option<&CancellationToken>) -> Result<(), ToolError> {
@@ -715,6 +737,69 @@ mod tests {
                 .next()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_multiline_matches_across_line_breaks() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        fs::write(tmp.path().join("multi.txt"), "alpha\nbeta\n").expect("write");
+
+        let tool = GrepFilesTool;
+
+        // Line mode never sees the newline, so the pattern cannot match.
+        let result = tool
+            .execute(json!({"pattern": "alpha\\nbeta", "multiline": false}), &ctx)
+            .await
+            .expect("execute");
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["total_matches"].as_u64().unwrap(), 0);
+
+        // Multiline mode searches the whole buffer; the match is reported at
+        // its starting line.
+        let result = tool
+            .execute(json!({"pattern": "alpha\\nbeta", "multiline": true}), &ctx)
+            .await
+            .expect("execute");
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["total_matches"].as_u64().unwrap(), 1);
+        let matches = parsed["matches"].as_array().unwrap();
+        assert_eq!(matches[0]["line_number"].as_u64().unwrap(), 1);
+        assert_eq!(matches[0]["line"].as_str().unwrap(), "alpha");
+
+        // Inline `(?s)` lets `.` cross newlines in multiline mode.
+        let result = tool
+            .execute(
+                json!({"pattern": "(?s)alpha.beta", "multiline": true}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["total_matches"].as_u64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_respects_gitignore() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        fs::write(tmp.path().join(".gitignore"), "ignored_dir/\n").expect("write");
+        fs::create_dir_all(tmp.path().join("ignored_dir")).expect("mkdir");
+        fs::write(tmp.path().join("ignored_dir/hidden.rs"), "NEEDLE\n").expect("write");
+        fs::write(tmp.path().join("visible.rs"), "NEEDLE\n").expect("write");
+
+        let tool = GrepFilesTool;
+        let result = tool
+            .execute(json!({"pattern": "NEEDLE"}), &ctx)
+            .await
+            .expect("execute");
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        let matches = parsed["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "gitignore'd directory must be skipped");
+        assert_eq!(matches[0]["file"].as_str().unwrap(), "visible.rs");
     }
 
     #[tokio::test]

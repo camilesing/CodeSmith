@@ -8,6 +8,7 @@
 //! §8.2).
 
 use std::path::Path;
+use std::str::FromStr as _;
 
 use codesmith_agent::extension::ExtensionError;
 
@@ -32,14 +33,18 @@ pub struct ExtensionManifest {
     pub api_version: Option<String>,
 }
 
-impl ExtensionManifest {
+impl std::str::FromStr for ExtensionManifest {
+    type Err = ExtensionError;
+
     /// Parse an `extension.toml` document. Returns
     /// [`ExtensionError::Load`] on malformed TOML or a missing required
     /// field (`id`/`version`).
-    pub fn from_str(text: &str) -> Result<Self, ExtensionError> {
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
         toml::from_str(text).map_err(|e| ExtensionError::Load(format!("manifest parse: {e}")))
     }
+}
 
+impl ExtensionManifest {
     /// Parse the `extension.toml` at `path`.
     pub fn parse(path: &Path) -> Result<Self, ExtensionError> {
         let text = std::fs::read_to_string(path)

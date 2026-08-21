@@ -84,6 +84,7 @@ pub mod subagent;
 pub mod team;
 pub mod telemetry;
 pub mod test_support;
+pub mod tokenizer;
 pub mod tool_dispatch;
 pub mod tool_parser;
 pub mod tool_state;

@@ -54,6 +54,10 @@ pub enum Feature {
     /// Enable coordinator mode — LLM acts as orchestrator only,
     /// delegating all work to worker sub-agents.
     CoordinatorMode,
+    /// Enforce read-before-edit file freshness validation: editing tools
+    /// reject files that were never read in this session or that changed
+    /// on disk since their last read.
+    FileFreshness,
 }
 
 impl fmt::Display for Stage {
@@ -240,6 +244,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "coordinator_mode",
         stage: Stage::Experimental,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::FileFreshness,
+        key: "file_freshness",
+        stage: Stage::Beta,
+        default_enabled: true,
     },
 ];
 

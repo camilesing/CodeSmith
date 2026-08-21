@@ -3822,7 +3822,19 @@ fn load_config_from_cli_with_exec_model(cli: &Cli, exec_model: Option<&str>) -> 
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
     config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
+    install_token_counter(&config);
     Ok(config)
+}
+
+/// Install the process-wide exact token counter when
+/// `[context].tokenizer_path` points at a tokenizer.json. Warn and keep the
+/// chars/3 heuristic on any failure so a bad path never blocks startup.
+fn install_token_counter(config: &Config) {
+    if let Some(path) = config.context.tokenizer_path.as_deref()
+        && let Err(err) = codesmith_agent_runtime::tokenizer::init_from_path(Some(path))
+    {
+        tracing::warn!("tokenizer_path ignored: {err}");
+    }
 }
 
 fn read_api_key_from_stdin() -> Result<String> {
@@ -5630,6 +5642,8 @@ async fn run_exec_agent(
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
         team_context: None,
+        file_freshness_tracker:
+            codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
         telemetry_sink: None,
     };
 
@@ -6199,6 +6213,8 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
         tools: config.tools.clone(),
+        file_freshness_tracker:
+            codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
         team_context: Some(team_context),
         telemetry_sink: None,
     };
