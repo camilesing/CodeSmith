@@ -16,7 +16,10 @@
 //! compatibility and keeps the compaction test module, which depends on
 //! TUI-local `MockLlmClient` / `HookExecutor`.
 
-use crate::models::{ContentBlock, Message, SystemPrompt};
+use crate::models::{
+    CONSERVATIVE_ESTIMATE_DENOMINATOR, CONSERVATIVE_ESTIMATE_NUMERATOR, ContentBlock, Message,
+    SystemPrompt,
+};
 
 pub mod attachment_reinject;
 pub mod circuit_breaker;
@@ -154,12 +157,20 @@ pub fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usi
 }
 
 /// Conservative estimate for full request input tokens (messages + system + framing).
+///
+/// The message portion is scaled by the shared
+/// [`CONSERVATIVE_ESTIMATE_NUMERATOR`]/[`CONSERVATIVE_ESTIMATE_DENOMINATOR`]
+/// (3/2) factor; the small-window compaction trigger in
+/// `compaction_threshold_for_model` divides by the same factor, so the two
+/// cannot drift apart.
 #[must_use]
 pub fn estimate_input_tokens_conservative(
     messages: &[Message],
     system: Option<&SystemPrompt>,
 ) -> usize {
-    let message_tokens = estimate_tokens(messages).saturating_mul(3).div_ceil(2);
+    let message_tokens = estimate_tokens(messages)
+        .saturating_mul(CONSERVATIVE_ESTIMATE_NUMERATOR)
+        .div_ceil(CONSERVATIVE_ESTIMATE_DENOMINATOR);
     let system_tokens = estimate_system_tokens_conservative(system);
     let framing_overhead = messages.len().saturating_mul(12).saturating_add(48);
     message_tokens

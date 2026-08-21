@@ -1,6 +1,6 @@
 # 上下文工程改进计划
 
-状态：规划
+状态：规划（§3 已于 2026-08-21 执行完毕，见该节落地记录）
 前置：[agent-capability-strengthening.md](agent-capability-strengthening.md) Stage 4
 （集中式 TokenCounter）是本计划多数条目的地基。
 
@@ -56,6 +56,42 @@ budget 85%）已在压缩侧做了一半。
 2. 阈值与 Stage 4 的真实 tokenizer 计数联动，替代 chars/3 近似。
 3. 验收：mock provider 上模拟 128K 窗口模型，长会话不再出现
    prompt-too-long 重试；默认 deepseek 配置行为不变。
+
+### 落地记录（2026-08-21）
+
+执行时澄清的两个事实（与上方方案原文的假设不同）：
+
+- `[providers.*]` 配置里**没有** context window 字段；窗口元数据从模型名
+  派生（`crates/agent/src/models.rs` 的 `context_window_for_model`：
+  `_Nk` 后缀 → DeepSeek 启发 → 已知模型表 → claude 200K）。`_Nk` 后缀
+  （如 `test-128k`）即 mock/自托管场景声明窗口的方式。
+- 容量预检（`run_capacity_preflight`，硬预算门）在生产路径**始终开启**，
+  无需"再启用"；v0.8.11 默认禁用的是 Gate A CapacityController（会改写
+  历史消息的护栏干预）。经确认 Gate A 维持默认禁用，本条目落在
+  "预检常开 + 收紧相关阈值"。
+
+实际根因是**排序倒挂**：自动压缩用原始计数对比阈值，预检用保守计数
+（×3/2）对比预算；128K 模型下旧阈值（95,000 原始）高于预检触发点
+（≈81,920 原始当量），干净的自动压缩永远轮不到，清理总走紧急恢复或
+provider 拒绝 + peel-retry。
+
+落地内容：
+
+1. `SMALL_CONTEXT_WINDOW_TOKENS = 200_000`；窗口 <200K 时压缩阈值改为
+   `(有效窗口 − 13K) × 2/3`（与保守估算的 3/2 放大互为倒数，系数提取为
+   `agent::models` 共享常量防止漂移）。128K 例：95,000 → 63,333；
+   200K–500K（claude/GLM）与 ≥500K（默认 deepseek 967,000）公式逐字节
+   不变；未知模型 fallback 95,000 不变。
+2. `engine/context.rs` 的本地 chars/3 估算副本删除，统一 re-export
+   `compaction` 的 TokenCounter 版本——预检/紧急恢复/容量观测的 system
+   prompt 计数从此也走 TokenCounter（装 tokenizer.json 即精确）。
+3. 窗口 <200K 的预检预算额外预留 window/100（128K 例 +1,280），≥200K
+   预算不变（默认 deepseek 1M 预算 736,832 有断言守卫）。
+4. 验收测试：`capacity_small_window_auto_compacts_before_preflight_budget`
+   （agent-runtime，证明压缩先于预检触发）、
+   `engine_128k_window_long_session_compacts_without_prompt_too_long`
+   （tui，128K 模型长会话零 prompt-too-long 当量请求 + 压缩发生）；
+   deepseek 默认行为回归由 models.rs 阈值快照与预算分层测试守卫。
 
 ## 4. MCP 客户端能力补全
 

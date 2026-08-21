@@ -2052,7 +2052,10 @@ fn provider_aware_context_budget_uses_provider_capability_window_and_output() {
 
     let ollama_budget = context_input_budget_for_provider(ApiProvider::Ollama, "llama3")
         .expect("Ollama capability should provide a window");
-    assert_eq!(ollama_budget, 8_192 - 4_096 - 1_024);
+    // 8K windows are below the small-window cutoff, so the budget reserves
+    // the extra proportional preflight headroom (1% of 8,192 = 81) on top of
+    // the plain 1,024.
+    assert_eq!(ollama_budget, 8_192 - 4_096 - 1_024 - 81);
 }
 
 #[test]
@@ -4099,6 +4102,135 @@ async fn engine_injects_mock_client_and_completes_text_turn() {
     );
 
     assert_eq!(mock_arc.call_count(), 1);
+}
+
+// === context-engineering §3 acceptance: 128K-window model ==================
+
+/// Acceptance test for capacity adaptivity (docs/plans/context-engineering.md
+/// §3): a long session on a 128K-window model ("test-128k") must compact
+/// through the tightened automatic trigger and complete the turn without any
+/// request a real 128K provider would reject as prompt-too-long.
+///
+/// The compaction threshold mirrors the TUI's production assembly
+/// (`compaction_threshold_for_model`), whose tightened small-window formula
+/// yields 63,333 raw tokens — below the preflight trip point, so clean
+/// auto-compaction runs before any budget gate or provider rejection.
+#[tokio::test]
+async fn engine_128k_window_long_session_compacts_without_prompt_too_long() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    let threshold = crate::models::compaction_threshold_for_model("test-128k");
+    assert_eq!(threshold, 63_333);
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        allow_shell: false,
+        trust_mode: true,
+        snapshots_enabled: false,
+        model: "test-128k".to_string(),
+        compaction: crate::compaction::CompactionConfig {
+            enabled: true,
+            token_threshold: threshold,
+            model: "test-128k".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let turn = vec![canned::simple_text_turn("ok")];
+    let mock = MockLlmClient::new(turn).with_model("test-128k");
+    // Non-streaming summary served to `compact_messages_safe`.
+    mock.push_message_response(crate::models::MessageResponse {
+        id: "summary".to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "session summary".to_string(),
+            cache_control: None,
+        }],
+        model: "test-128k".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        usage: Default::default(),
+    });
+
+    let mock_arc = Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+    let (mut engine, handle) = Engine::new_with_client(config, &Config::default(), client);
+
+    // Seed a long session: 70 × 3,150-char messages ≈ 69,300 summarizable
+    // raw tokens — over the 63,333 trigger, under the preflight budget
+    // (121,600 conservative), and under a real provider's raw limit.
+    let body = "x".repeat(3_150);
+    for i in 0..70 {
+        engine
+            .add_session_message(Message {
+                role: if i % 2 == 0 {
+                    "user".to_string()
+                } else {
+                    "assistant".to_string()
+                },
+                content: vec![ContentBlock::Text {
+                    text: body.clone(),
+                    cache_control: None,
+                }],
+            })
+            .await;
+    }
+    tokio::spawn(async move { engine.run().await });
+
+    let mut op = make_send_op("continue");
+    if let Op::SendMessage { model, .. } = &mut op {
+        *model = "test-128k".to_string();
+    }
+    handle.send(op).await.expect("send op");
+
+    let events = collect_until_turn_complete(&handle).await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Completed,
+                ..
+            }
+        )),
+        "expected TurnComplete::Completed"
+    );
+
+    // Provider side of the acceptance: no streamed request may exceed what a
+    // 128K provider accepts (raw chars/3 estimate ≤ 128,000 − 4,096) — that
+    // is exactly the request a real provider would reject prompt-too-long.
+    let provider_raw_limit: usize = 128_000 - 4_096;
+    for request in mock_arc.captured_requests() {
+        let raw: usize = request
+            .messages
+            .iter()
+            .map(|m| {
+                m.content
+                    .iter()
+                    .map(|b| match b {
+                        ContentBlock::Text { text, .. } => text.chars().count().div_ceil(3),
+                        _ => 0,
+                    })
+                    .sum::<usize>()
+            })
+            .sum();
+        assert!(
+            raw <= provider_raw_limit,
+            "a request would hit prompt-too-long ({raw} > {provider_raw_limit} raw tokens)"
+        );
+    }
+    // Compaction ran before the request: the first streamed request carries
+    // a compacted transcript, not the 70 seeded + turn messages.
+    let captured = mock_arc.captured_requests();
+    let first = captured.first().expect("at least one streamed request");
+    assert!(
+        first.messages.len() < 30,
+        "expected compacted transcript, got {} messages",
+        first.messages.len()
+    );
 }
 
 // === Test 2: Tool call round-trip ============================================

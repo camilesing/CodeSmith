@@ -4,10 +4,12 @@
 //! engine session maintenance code. Keeping them here prevents the top-level
 //! engine module from accumulating unrelated context-policy details.
 
-use crate::compaction::estimate_tokens;
 use crate::config_types::{ApiProvider, provider_capability};
 use crate::error_taxonomy::ErrorCategory;
-use crate::models::{Message, SystemPrompt, context_window_for_model, max_output_tokens_for_model};
+use crate::models::{
+    SMALL_CONTEXT_WINDOW_TOKENS, SystemPrompt, context_window_for_model,
+    max_output_tokens_for_model,
+};
 use crate::tools::spec::ToolResult;
 
 /// Max output tokens requested for normal agent turns. Generous on purpose:
@@ -360,32 +362,17 @@ pub fn extract_compaction_summary_prompt(prompt: Option<SystemPrompt>) -> Option
     }
 }
 
-fn estimate_text_tokens_conservative(text: &str) -> usize {
-    text.chars().count().div_ceil(3)
-}
-
-fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
-    match system {
-        Some(SystemPrompt::Text(text)) => estimate_text_tokens_conservative(text),
-        Some(SystemPrompt::Blocks(blocks)) => blocks
-            .iter()
-            .map(|block| estimate_text_tokens_conservative(&block.text))
-            .sum(),
-        None => 0,
-    }
-}
-
-pub fn estimate_input_tokens_conservative(
-    messages: &[Message],
-    system: Option<&SystemPrompt>,
-) -> usize {
-    let message_tokens = estimate_tokens(messages).saturating_mul(3).div_ceil(2);
-    let system_tokens = estimate_system_tokens_conservative(system);
-    let framing_overhead = messages.len().saturating_mul(12).saturating_add(48);
-    message_tokens
-        .saturating_add(system_tokens)
-        .saturating_add(framing_overhead)
-}
+/// Conservative input-token estimate (messages + system + framing) shared
+/// with the compaction pipeline.
+///
+/// Re-exported from [`crate::compaction`] so every engine budget check
+/// (capacity preflight, emergency recovery, capacity observation) counts
+/// through the process-wide [`crate::tokenizer::TokenCounter`]. The historical
+/// local copy hardcoded chars/3 for the system prompt and drifted from the
+/// tokenizer-backed message estimate; numbers are identical under the default
+/// Heuristic counter, and installing a tokenizer.json via
+/// `[context].tokenizer_path` sharpens both parts equally.
+pub use crate::compaction::estimate_input_tokens_conservative;
 
 /// Context windows at or above this size reserve the full
 /// [`TURN_MAX_OUTPUT_TOKENS`] (262K) when computing the internal input budget,
@@ -393,6 +380,28 @@ pub fn estimate_input_tokens_conservative(
 /// falls back to [`effective_max_output_tokens`] so a smaller self-hosted
 /// window does not underflow to a negative budget.
 const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
+
+/// Extra preflight headroom for sub-[`SMALL_CONTEXT_WINDOW_TOKENS`]
+/// windows: 1% of the window. Small-window providers hard-reject on context
+/// length and the default Heuristic token counter can undercount dense
+/// (e.g. CJK) content, so the preflight should trip slightly before the
+/// provider does; scaling with the window keeps the margin meaningful at
+/// 128K (≈1,280 tokens) without swallowing a meaningful slice of a tiny
+/// (e.g. 8K self-hosted) window. Windows at or above the cutoff keep the
+/// plain headroom, so the default deepseek (1M) budget is unchanged.
+const SMALL_WINDOW_EXTRA_HEADROOM_PERCENT: usize = 100;
+
+fn small_window_extra_headroom_tokens(window_tokens: u32) -> usize {
+    usize::try_from(window_tokens).unwrap_or(0) / SMALL_WINDOW_EXTRA_HEADROOM_PERCENT
+}
+
+fn context_headroom_for_window(window_tokens: u32) -> usize {
+    if window_tokens < SMALL_CONTEXT_WINDOW_TOKENS {
+        CONTEXT_HEADROOM_TOKENS + small_window_extra_headroom_tokens(window_tokens)
+    } else {
+        CONTEXT_HEADROOM_TOKENS
+    }
+}
 
 /// Internal input-side token budget for a model: `window - reserved_output -
 /// headroom`. Used by the preflight check, emergency recovery, and capacity
@@ -407,12 +416,15 @@ const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
 ///     `256K - 262K - 1K`, which underflows `checked_sub` to `None` and
 ///     *silently disables every preflight and emergency recovery path* — the
 ///     session then runs until the provider hard-rejects on context length.
+///
+/// Windows below [`SMALL_CONTEXT_WINDOW_TOKENS`] additionally reserve
+/// [`small_window_extra_headroom_tokens`] (see there for why).
 fn input_budget_from_window_and_output(window_tokens: u32, reserved_output: u32) -> Option<usize> {
     let window = usize::try_from(window_tokens).ok()?;
     let output = usize::try_from(reserved_output).ok()?;
     window
         .checked_sub(output)
-        .and_then(|v| v.checked_sub(CONTEXT_HEADROOM_TOKENS))
+        .and_then(|v| v.checked_sub(context_headroom_for_window(window_tokens)))
 }
 
 fn reserved_output_for_input_budget(window_tokens: u32, fallback_output: u32) -> u32 {
@@ -451,7 +463,6 @@ pub fn is_context_length_error_message(message: &str) -> bool {
 mod tests {
     use super::*;
     use crate::models::SystemBlock;
-    use crate::test_support::lock_test_env;
 
     #[test]
     fn summarize_text_short_text_unchanged() {
@@ -488,6 +499,28 @@ mod tests {
     }
 
     #[test]
+    fn small_window_budget_adds_extra_preflight_headroom() {
+        // Sub-200K windows reserve 1% of the window as extra headroom so the
+        // preflight trips before the provider hard-rejects (the Heuristic
+        // counter can undercount dense content).
+        assert_eq!(
+            input_budget_from_window_and_output(128_000, 4_096),
+            Some(128_000 - 4_096 - CONTEXT_HEADROOM_TOKENS - 1_280)
+        );
+        // Windows at or above the cutoff keep the plain headroom: the
+        // boundary window itself (200K) and the default deepseek 1M budget
+        // are unchanged.
+        assert_eq!(
+            input_budget_from_window_and_output(200_000, 8_192),
+            Some(200_000 - 8_192 - CONTEXT_HEADROOM_TOKENS)
+        );
+        assert_eq!(
+            input_budget_from_window_and_output(1_000_000, TURN_MAX_OUTPUT_TOKENS),
+            Some(1_000_000 - 262_144 - CONTEXT_HEADROOM_TOKENS)
+        );
+    }
+
+    #[test]
     fn is_context_length_error_message_matches_known_patterns() {
         assert!(is_context_length_error_message(
             "This model's maximum context length is 128000 tokens"
@@ -499,6 +532,32 @@ mod tests {
     fn is_context_length_error_message_rejects_normal_errors() {
         assert!(!is_context_length_error_message("Connection timed out"));
         assert!(!is_context_length_error_message("Internal server error"));
+    }
+
+    #[test]
+    fn input_estimator_is_the_tokenizer_backed_compaction_estimator() {
+        // Engine budget checks (preflight, emergency recovery, capacity
+        // observation) must share the compaction pipeline's estimator — the
+        // token-counter-backed one — never a local chars/3 copy.
+        let messages = vec![crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: "hello world".to_string(),
+                cache_control: None,
+            }],
+        }];
+        let system = Some(SystemPrompt::Text("system prompt".to_string()));
+        assert_eq!(
+            estimate_input_tokens_conservative(&messages, system.as_ref()),
+            crate::compaction::estimate_input_tokens_conservative(&messages, system.as_ref()),
+        );
+        // Heuristic-counter regression: chars/3 + 3/2 scale + framing for one
+        // message ("hello world" = 11 chars → 4 tokens → 6; system 13 chars →
+        // 5 tokens; framing 12 + 48).
+        assert_eq!(
+            estimate_input_tokens_conservative(&messages, system.as_ref()),
+            6 + 5 + 12 + 48
+        );
     }
 
     #[test]

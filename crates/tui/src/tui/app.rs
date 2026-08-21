@@ -6005,12 +6005,13 @@ mod tests {
         let mut app = App::new(test_options(false), &Config::default());
         app.model = "unknown-test-model".to_string();
         app.update_model_compaction_budget();
-        let initial_threshold = app.compact_threshold;
+        // Unknown models keep the provider-neutral fallback threshold.
+        assert_eq!(app.compact_threshold, 95_000);
         app.model = "deepseek-v3.2-128k".to_string();
         app.update_model_compaction_budget();
-        // Threshold may have changed based on model
-        // Explicit 128k DeepSeek model IDs have a higher threshold than unknown models.
-        assert!(app.compact_threshold >= initial_threshold);
+        // Known 128K windows run the tightened small-window trigger
+        // ((108K − 13K) × 2/3).
+        assert_eq!(app.compact_threshold, 63_333);
     }
 
     #[test]

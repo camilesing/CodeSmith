@@ -8370,7 +8370,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_summary_flows_to_host_merge_post_run() {
         let mut sess = fresh_session();
-        // 10 text messages (~750 tokens) ≪ the 3072 Ollama/llama2 budget, so
+        // 10 text messages (~750 tokens) ≪ the 2991 Ollama/llama2 budget, so
         // the preflight (seam 1) proceeds; the provider "rejects" with a
         // context-length error, exercising the reactive seam-2 path.
         seed_text_messages(&mut sess, 10);
@@ -9254,7 +9254,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_signal_on_recovery_micro() {
         let mut sess = fresh_session();
-        // A >32 KB `file_read` tool result pushes the transcript over the 3072
+        // A >32 KB `file_read` tool result pushes the transcript over the 2991
         // budget (Ollama / "llama2"). No CompactionProbe ⇒ run_compaction's
         // Phase-1 micro is skipped; only the capacity recovery's best-effort
         // micro runs (and clears enough — no LLM compaction).
@@ -9301,7 +9301,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_signal_on_hard_trim() {
         let mut sess = fresh_session();
-        // 40 text messages × ~200 chars > 3072 budget (Ollama / "llama2").
+        // 40 text messages × ~200 chars > 2991 budget (Ollama / "llama2").
         seed_text_messages(&mut sess, 40);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
@@ -9754,7 +9754,7 @@ mod tests {
     // === reinject provider-budget (slice 31 §E) ===========================
 
     /// Slice 31 §E: `ReinjectProbe::provider_input_budget()` returns `Some`
-    /// for a known provider/model pair (Ollama / "llama2" → 3072 tokens).
+    /// for a known provider/model pair (Ollama / "llama2" → 2991 tokens).
     #[test]
     fn reinject_provider_budget_known_returns_some() {
         let probe = ReinjectProbe::new(
@@ -9793,18 +9793,18 @@ mod tests {
     /// Slice 31 §E: `run_compaction`'s Ok arm now passes the provider budget
     /// (via `ReinjectProbe::provider_input_budget()`) instead of `None`. A
     /// combined `read_files` candidate (10 entries × 1.2 KB preview each ≈ 12 KB
-    /// ≈ 4.5K conservative tokens) exceeds the Ollama/llama2 budget (3072
+    /// ≈ 4.5K conservative tokens) exceeds the Ollama/llama2 budget (2991
     /// tokens) and is skipped on the auto-compact path — previously it would
     /// have been pushed unconditionally (`None` budget). The small plan
     /// candidate (well under budget) is still pushed.
     #[tokio::test]
     async fn reinject_auto_compact_respects_provider_budget() {
         let mut sess = fresh_session();
-        // Known model so `provider_input_budget()` returns `Some(3072)`.
+        // Known model so `provider_input_budget()` returns `Some(2991)`.
         sess.model = "llama2".to_string();
         seed_text_messages(&mut sess, 12);
         // Seed 10 read_files (each preview capped at 1.2 KB → combined
-        // candidate ≈ 12 KB ≈ 4.5K conservative tokens > 3072 budget).
+        // candidate ≈ 12 KB ≈ 4.5K conservative tokens > 2991 budget).
         for i in 0..10 {
             sess.record_read_file_result(
                 &serde_json::json!({"path": format!("big_file_{i}.rs")}),
@@ -9857,12 +9857,12 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        // Plan candidate is small (well under 3072 tokens) → pushed.
+        // Plan candidate is small (well under 2991 tokens) → pushed.
         assert!(
             transcript.contains("plan-step-one"),
             "plan candidate reinjected (under provider budget)"
         );
-        // Combined read_files candidate exceeds 3072 tokens → skipped.
+        // Combined read_files candidate exceeds 2991 tokens → skipped.
         assert!(
             !transcript.contains("big_file_0.rs"),
             "read_files candidate skipped (exceeds provider budget after auto-compact)"
@@ -10242,8 +10242,9 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(MockLlm::new(vec![end_call()]));
-        // Ollama / "llama2" → context_window 8192, budget = 8192 − 4096 − 1024
-        // = 3072 tokens. A single "hello" (~17 tokens) is far under budget.
+        // Ollama / "llama2" → context_window 8192, budget = 8192 − 4096 − 1024 − 81
+        // (small-window extra headroom = window/100) = 2991 tokens. A single "hello"
+        // (~17 tokens) is far under budget.
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -10271,7 +10272,7 @@ mod tests {
     async fn capacity_over_budget_recovers_via_compaction() {
         let mut sess = fresh_session();
         // 40 text messages × ~200 chars ≈ 40 × 75 × 1.5 + framing ≈ 3615
-        // tokens > 3072 budget (Ollama / "llama2").
+        // tokens > 2991 budget (Ollama / "llama2").
         seed_text_messages(&mut sess, 40);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
@@ -10302,6 +10303,80 @@ mod tests {
         assert_eq!(mock.compaction_calls(), 1);
         // Transcript shrank: 40 seeded + user + assistant ≪ 42.
         assert!(history.len() < 42);
+    }
+
+    /// Tight small-window ordering (context-engineering §3): a "test-128k"
+    /// model whose transcript exceeds the tightened compaction trigger
+    /// (`compaction_threshold_for_model` = 63,333 raw tokens) but whose
+    /// conservative estimate stays under the preflight budget
+    /// (128,000 − 4,096 − 1,024 − 1,280 = 121,600) must compact through the
+    /// clean automatic path — never emergency recovery, never a provider
+    /// context-length rejection. Under the old fixed-buffer threshold
+    /// (95,000) no compaction would fire at all.
+    #[tokio::test]
+    async fn capacity_small_window_auto_compacts_before_preflight_budget() {
+        let mut sess = fresh_session();
+        // 70 messages × 3,150 'x' chars = 1,050 raw tokens each (chars/3):
+        // summarizable ≈ 66 × 1,050 = 69,300 > 63,333 trigger, while the
+        // conservative estimate ≈ 70 × 1,050 × 1.5 + framing ≈ 111,150 stays
+        // under the 121,600 preflight budget.
+        let body = "x".repeat(3_150);
+        for i in 0..70 {
+            sess.add_message(Message {
+                role: if i % 2 == 0 {
+                    "user".to_string()
+                } else {
+                    "assistant".to_string()
+                },
+                content: vec![ContentBlock::Text {
+                    text: body.clone(),
+                    cache_control: None,
+                }],
+            });
+        }
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![end_call()]).with_compaction_summary("SUMMARY"));
+        let threshold = crate::models::compaction_threshold_for_model("test-128k");
+        assert_eq!(threshold, 63_333);
+        let compaction_config = CompactionConfig {
+            token_threshold: threshold,
+            model: "test-128k".to_string(),
+            ..CompactionConfig::default()
+        };
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                compaction_config.clone(),
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            Some(CapacityProbe::new(
+                ApiProvider::Deepseek,
+                "test-128k".to_string(),
+                compaction_config,
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // The conservative estimate never exceeded the budget, so this
+        // compaction call can only come from the automatic `run_compaction`
+        // path — emergency recovery never ran.
+        assert_eq!(mock.compaction_calls(), 1);
+        assert!(history.len() < 71, "history len = {}", history.len());
     }
 
     #[tokio::test]
@@ -10390,10 +10465,10 @@ mod tests {
     async fn capacity_recovery_fails_proceeds_with_request() {
         let mut sess = fresh_session();
         // Ten large text messages + user text = 11 messages, well over the
-        // 3072 budget. Compaction is attempted (enough messages beyond the
+        // 2991 budget. Compaction is attempted (enough messages beyond the
         // keep-recent window for plan_compaction to produce summarize
         // indices) but the mock errors. Hard trim can't bring 4 × 10K-char
-        // messages under 3072, so recovery fails — the request goes out
+        // messages under 2991, so recovery fails — the request goes out
         // anyway (Proceed), and the mock returns a canned reply.
         let body = "x".repeat(10_000);
         for _ in 0..10 {
@@ -10452,7 +10527,7 @@ mod tests {
     #[tokio::test]
     async fn reactive_recovery_recovers_on_context_length_error() {
         let mut sess = fresh_session();
-        // 10 text messages (~750 tokens) ≪ the 3072 Ollama/llama2 budget, so
+        // 10 text messages (~750 tokens) ≪ the 2991 Ollama/llama2 budget, so
         // the preflight proceeds; the provider "rejects" with a context-length
         // error (its real count exceeds its limit).
         seed_text_messages(&mut sess, 10);
