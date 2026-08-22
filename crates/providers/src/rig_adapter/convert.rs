@@ -14,14 +14,17 @@
 //! (`ServerToolUse`, `ToolSearchToolResult`, `CodeExecutionToolResult`,
 //! assistant `Image`) are dropped, and provider-only fields (`caller`,
 //! `is_error`, `content_blocks`, `cache_control`) are not round-tripped here.
-//! The shaper restores the ones that matter for a given provider.
+//! The shaper restores the ones that matter for a given provider. User-side
+//! `Image` blocks are the one wire-visible addition: they map to rig
+//! `UserContent::Image` so the provider layer serializes the OpenAI-compatible
+//! `image_url` form.
 
 use anyhow::{Result, anyhow};
-use codesmith_agent::models::{
-    ContentBlock, Message, MessageResponse, Tool, Usage,
-};
+use base64::Engine as _;
+use codesmith_agent::models::{ContentBlock, ImageSource, Message, MessageResponse, Tool, Usage};
 use rig_core::completion::message::{
-    AssistantContent, ToolCall as RigToolCall, ToolFunction, ToolResult as RigToolResult,
+    AssistantContent, DocumentSourceKind, Image as RigImage, ImageDetail, ImageMediaType,
+    MimeType, ToolCall as RigToolCall, ToolFunction, ToolResult as RigToolResult,
     ToolResultContent, UserContent,
 };
 use rig_core::completion::{Message as RigMessage, ToolDefinition, Usage as RigUsage};
@@ -80,7 +83,8 @@ fn assistant_block_to_rig(block: &ContentBlock) -> Option<AssistantContent> {
 }
 
 /// Map a single CodeSmith content block (inside a user message) to rig
-/// `UserContent`. Tool results become rig `ToolResult` text content.
+/// `UserContent`. Tool results become rig `ToolResult` text content; `Image`
+/// blocks become rig `UserContent::Image`.
 fn user_block_to_rig(block: &ContentBlock) -> Option<UserContent> {
     match block {
         ContentBlock::Text { text, .. } => Some(UserContent::text(text.clone())),
@@ -93,6 +97,56 @@ fn user_block_to_rig(block: &ContentBlock) -> Option<UserContent> {
             call_id: None,
             content: OneOrMany::one(ToolResultContent::text(content.clone())),
         })),
+        ContentBlock::Image { source } => image_block_to_rig(source),
+        _ => None,
+    }
+}
+
+/// Map a user-message `Image` block to rig `UserContent::Image`. File-backed
+/// sources are read and base64-encoded here (request-build time); the rig
+/// provider layer assembles the `data:<mime>;base64,…` URI for the
+/// OpenAI-compatible `image_url` form from the media type. Returns `None`
+/// when the file cannot be read or the media type has no rig analogue, so the
+/// block is dropped — the user text still carries the
+/// `[Attached image: … at <path>]` reference as fallback.
+fn image_block_to_rig(source: &ImageSource) -> Option<UserContent> {
+    let (media_type, data) = match source {
+        ImageSource::Base64 { media_type, data } => (media_type.clone(), data.clone()),
+        ImageSource::File { path, media_type } => {
+            let media_type = match media_type {
+                Some(explicit) => explicit.clone(),
+                None => image_media_type_from_path(path)?.to_mime_type().to_string(),
+            };
+            let bytes = std::fs::read(path).ok()?;
+            (
+                media_type,
+                base64::engine::general_purpose::STANDARD.encode(bytes),
+            )
+        }
+    };
+    let media_type = ImageMediaType::from_mime_type(&media_type)?;
+    Some(UserContent::Image(RigImage {
+        data: DocumentSourceKind::Base64(data),
+        media_type: Some(media_type),
+        detail: Some(ImageDetail::Auto),
+        additional_params: None,
+    }))
+}
+
+/// Media types the rig providers can serialize. Anything else (tif, ppm, …)
+/// has no `image_url` representation and is dropped by
+/// [`image_block_to_rig`].
+fn image_media_type_from_path(path: &std::path::Path) -> Option<ImageMediaType> {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => Some(ImageMediaType::PNG),
+        Some("jpg" | "jpeg") => Some(ImageMediaType::JPEG),
+        Some("gif") => Some(ImageMediaType::GIF),
+        Some("webp") => Some(ImageMediaType::WEBP),
         _ => None,
     }
 }
@@ -242,4 +296,101 @@ pub(crate) fn build_message_response(
         container: None,
         usage: usage_to_codesmith(usage),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn user_message(content: Vec<ContentBlock>) -> Message {
+        Message {
+            role: "user".to_string(),
+            content,
+        }
+    }
+
+    #[test]
+    fn file_image_block_maps_to_rig_image() {
+        let path = std::env::temp_dir().join(format!(
+            "codesmith-convert-img-{}.png",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"fake-png-bytes").expect("write temp png");
+        let msg = user_message(vec![ContentBlock::Image {
+            source: ImageSource::File {
+                path: path.clone(),
+                media_type: None,
+            },
+        }]);
+        let converted = message_to_rig(&msg).expect("convert");
+        let _ = std::fs::remove_file(&path);
+
+        let RigMessage::User { content } = converted else {
+            panic!("expected user message");
+        };
+        let item = content.into_iter().next().expect("one content item");
+        let UserContent::Image(image) = item else {
+            panic!("expected image content, got {item:?}");
+        };
+        assert_eq!(image.media_type, Some(ImageMediaType::PNG));
+        let DocumentSourceKind::Base64(data) = &image.data else {
+            panic!("expected base64 source");
+        };
+        assert_eq!(
+            data.as_str(),
+            base64::engine::general_purpose::STANDARD.encode(b"fake-png-bytes")
+        );
+    }
+
+    #[test]
+    fn base64_image_block_passes_through() {
+        let msg = user_message(vec![ContentBlock::Image {
+            source: ImageSource::Base64 {
+                media_type: "image/jpeg".to_string(),
+                data: "aGVsbG8=".to_string(),
+            },
+        }]);
+        let converted = message_to_rig(&msg).expect("convert");
+        let RigMessage::User { content } = converted else {
+            panic!("expected user message");
+        };
+        let UserContent::Image(image) = content.into_iter().next().expect("one item") else {
+            panic!("expected image content");
+        };
+        assert_eq!(image.media_type, Some(ImageMediaType::JPEG));
+        assert!(matches!(image.data, DocumentSourceKind::Base64(_)));
+    }
+
+    #[test]
+    fn unreadable_or_unsupported_image_blocks_are_dropped() {
+        // Missing file falls back to the empty-text placeholder rather than
+        // failing the whole request.
+        let missing = user_message(vec![ContentBlock::Image {
+            source: ImageSource::File {
+                path: PathBuf::from("/nonexistent/codesmith-convert-test.png"),
+                media_type: None,
+            },
+        }]);
+        let converted = message_to_rig(&missing).expect("convert");
+        let RigMessage::User { content } = converted else {
+            panic!("expected user message");
+        };
+        assert!(content.into_iter().all(|item| {
+            matches!(item, UserContent::Text(_))
+        }));
+
+        // Unsupported media type on an explicit base64 source is dropped too.
+        let unsupported = user_message(vec![ContentBlock::Image {
+            source: ImageSource::Base64 {
+                media_type: "image/tiff".to_string(),
+                data: "aGVsbG8=".to_string(),
+            },
+        }]);
+        let converted = message_to_rig(&unsupported).expect("convert");
+        let RigMessage::User { content } = converted else {
+            panic!("expected user message");
+        };
+        assert!(content.into_iter().all(|item| matches!(item, UserContent::Text(_))));
+    }
 }

@@ -939,9 +939,26 @@ provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu
 
 Use `@path/to/file` in the composer to add local text file or directory context
 to the next message. Use `/attach <path>` for local image/video media paths, or
-`Ctrl+V` to attach an image from the clipboard. DeepSeek's public Chat
-Completions API currently accepts text message content, so media attachments are
-sent as explicit local path references instead of native image/video payloads.
+`Ctrl+V` to attach an image from the clipboard.
+
+When the active provider+model supports vision, attached images are sent as
+**native image content blocks** (OpenAI-compatible `image_url` payloads) with
+the message — no tool round-trip needed. Vision support is resolved from a
+static model-name matrix (deepseek-vl*, Qwen-VL, GLM-V, gpt-4o and later,
+claude-*, xiaomi mimo-v2.5, …) and can be overridden per provider:
+
+```toml
+[providers.openai]        # or any [providers.*] table / [[providers.custom]] entry
+vision = true             # gateway fronts a vision model the matrix cannot see
+```
+
+Custom `[[providers.custom]]` gateways default to `false` (no matrix entry
+exists) — set `vision = true` explicitly to enable inline images. When vision
+is not supported, attachments degrade to the text-reference mode: the
+`[Attached image: … at <path>]` placeholder lines plus a note pointing the
+model at the `image_analyze` tool (when `[vision_model]` is configured) or
+`read_file`'s OCR extraction.
+
 Attachment rows appear above the composer before submit; move to the start of
 the composer, press `↑` to select an attachment row, then press `Backspace` or
 `Delete` to remove it without editing the placeholder text by hand.

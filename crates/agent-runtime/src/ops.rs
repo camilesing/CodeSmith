@@ -27,6 +27,11 @@ pub enum Op {
     /// Send a message to the AI
     SendMessage {
         content: String,
+        /// Image attachments promoted to native `Image` content blocks
+        /// (product-polish §1). The host only fills this when the active
+        /// provider+model supports vision; otherwise the placeholder text
+        /// references stay the fallback and this is empty.
+        image_paths: Vec<PathBuf>,
         mode: AppMode,
         model: String,
         goal_objective: Option<String>,

@@ -7,7 +7,7 @@
 | [agent-capability-strengthening.md](agent-capability-strengthening.md) | Agent 核心能力补强（文件新鲜度校验、真实 tokenizer、ripgrep 化 grep、edit_file 精确替换） | 已完成（2026-08-21） |
 | [context-engineering.md](context-engineering.md) | 上下文工程（语义检索、prompt zones Phase 2、容量自适应、MCP 客户端补全） | §3 容量自适应已完成（2026-08-21），其余规划 |
 | [codebase-health.md](codebase-health.md) | 代码库健康（巨型文件拆分、迁移残留清理、废弃工具下线、rebrand 收尾） | 规划 |
-| [product-polish.md](product-polish.md) | 产品补全（原生多模态、配置精简、provider 分层提示词、notebook、git 工具、任务重连） | 规划 |
+| [product-polish.md](product-polish.md) | 产品补全（原生多模态、配置精简、provider 分层提示词、notebook、git 工具、任务重连） | §1 原生多模态已完成（2026-08-22），其余规划 |
 
 优先级建议（按对任务成功率的影响排序）：
 

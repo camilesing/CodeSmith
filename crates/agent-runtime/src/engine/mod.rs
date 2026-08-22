@@ -9,6 +9,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 
@@ -38,7 +39,8 @@ use crate::llm_client::LlmClientHandle;
 use crate::mcp::McpPool;
 use crate::mode::AppMode;
 use crate::models::{
-    ContentBlock, LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, Message, SystemPrompt, Tool, Usage,
+    ContentBlock, ImageSource, LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, Message, SystemPrompt, Tool,
+    Usage,
 };
 use crate::prompts;
 use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, run_purge};
@@ -529,6 +531,7 @@ impl Engine {
             match op {
                 Op::SendMessage {
                     content,
+                    image_paths,
                     mode,
                     model,
                     goal_objective,
@@ -546,6 +549,7 @@ impl Engine {
                 } => {
                     self.handle_send_message(
                         content,
+                        image_paths,
                         mode,
                         model,
                         goal_objective,
@@ -737,6 +741,7 @@ impl Engine {
                     let mode = AppMode::Agent; // default fallback
                     self.handle_send_message(
                         new_message,
+                        Vec::new(),
                         mode,
                         self.session.model.clone(),
                         self.config.goal_objective.clone(),
@@ -1033,6 +1038,7 @@ impl Engine {
     async fn handle_send_message(
         &mut self,
         content: String,
+        image_paths: Vec<PathBuf>,
         mode: AppMode,
         model: String,
         goal_objective: Option<String>,
@@ -1133,13 +1139,14 @@ impl Engine {
         let _force_update_plan_first = should_force_update_plan_first(mode, &content);
 
         // Add user message to session
-        let user_msg = self.user_text_message_with_turn_metadata_for_route(
+        let mut user_msg = self.user_text_message_with_turn_metadata_for_route(
             content,
             &model,
             auto_model,
             reasoning_effort.as_deref(),
             reasoning_effort_auto,
         );
+        append_image_blocks(&mut user_msg, &image_paths);
         self.session.add_message(user_msg);
 
         let previous_goal_objective = self.config.goal_objective.clone();
@@ -2885,6 +2892,21 @@ impl Engine {
         engine.rehydrate_latest_canonical_state();
         engine
     }
+}
+
+/// Append native `Image` content blocks for attached image paths
+/// (product-polish §1). Placed after the user text so the wire order is
+/// `[turn_meta, text, image…]`; the media type is resolved from the file
+/// extension at request-build time in the rig adapter.
+fn append_image_blocks(message: &mut Message, image_paths: &[PathBuf]) {
+    message
+        .content
+        .extend(image_paths.iter().map(|path| ContentBlock::Image {
+            source: ImageSource::File {
+                path: path.clone(),
+                media_type: None,
+            },
+        }));
 }
 
 pub fn system_prompt_hash(prompt: Option<&SystemPrompt>) -> u64 {

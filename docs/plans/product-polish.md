@@ -5,13 +5,17 @@
 [agent-capability-strengthening.md](agent-capability-strengthening.md)（工具层）
 与 [context-engineering.md](context-engineering.md)（上下文层）。
 
-## 1. 原生多模态输入（Image ContentBlock）
+## 1. 原生多模态输入（Image ContentBlock）✅ 已完成（2026-08-22）
 
-现状：`crates/agent/src/models.rs:74` 的消息模型无 Image 变体；视觉走独立的
-`image_analyze` 工具（另配 vision model）+ `read_file` 的 OCR 提取。截图调试、
-UI 还原类任务需模型先调工具再"转述"，信息损耗明显。
+落地方式：`ContentBlock::Image`（source: base64 / file path，crates/agent
+models.rs）+ rig 适配层映射（convert.rs → rig `UserContent::Image`，OpenAI
+`image_url` 序列化由 rig-core 透传）；`/attach` / Ctrl+V 附件在 dispatch 层
+按 `Config::vision_supported_for_model` 决定挂原生 Image 块或降级为文本引用
++ `image_analyze`/`read_file` OCR 引导；`[providers.*] vision = true|false`
+覆盖静态模型名矩阵（`ProviderCapability.vision_supported`）。真机验收
+（粘贴截图 → 模型引用图中细节）待配置 vision 的 provider 实测。
 
-方案：
+原方案：
 
 1. wire 模型增加 Image content block（source: base64 / file path），
    OpenAI-compatible `image_url` 格式序列化（rig 适配层透传）。

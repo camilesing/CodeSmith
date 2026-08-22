@@ -4018,6 +4018,7 @@ fn test_engine_config(workspace: &Path) -> EngineConfig {
 fn make_send_op(content: &str) -> Op {
     Op::SendMessage {
         content: content.to_string(),
+        image_paths: Vec::new(),
         mode: AppMode::Agent,
         model: "mock-model".to_string(),
         goal_objective: None,

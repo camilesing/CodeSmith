@@ -880,6 +880,9 @@ fn session_to_detail(session: SavedSession) -> SessionDetailResponse {
                     crate::models::ContentBlock::Thinking { thinking, .. } => {
                         json!({ "type": "thinking", "text": thinking })
                     }
+                    crate::models::ContentBlock::Image { source } => {
+                        json!({ "type": "image", "summary": source.summary() })
+                    }
                     crate::models::ContentBlock::ToolUse { id, name, input, caller } => {
                         let mut obj =
                             json!({ "type": "tool_use", "id": id, "name": name, "input": input });

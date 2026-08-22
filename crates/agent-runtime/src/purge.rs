@@ -192,6 +192,9 @@ fn format_content_block(buf: &mut String, blk_idx: usize, block: &ContentBlock) 
             // Omit thinking blocks — API-mandated on tool-call messages;
             // the agent cannot remove them, so listing them only adds noise.
         }
+        ContentBlock::Image { source } => {
+            let _ = writeln!(buf, "  [{blk_idx}] Image: {}", source.summary());
+        }
         ContentBlock::ToolUse {
             name, input, id, ..
         } => {

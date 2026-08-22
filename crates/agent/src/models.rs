@@ -1,5 +1,7 @@
 //! API request/response models for `DeepSeek` and OpenAI-compatible endpoints.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 /// Context window used only for legacy CodeSmith model IDs that do not name a
@@ -83,6 +85,46 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
 }
 
+/// Payload of an [`ContentBlock::Image`] block.
+///
+/// `File` is the primary shape on the CodeSmith side: clipboard pastes are
+/// already materialized under `~/.codesmith/clipboard-images/`, and keeping
+/// sessions path-based keeps persisted session JSON small. `Base64` exists so
+/// embedders that only have in-memory bytes can still attach an image. The
+/// rig adapter resolves both into the OpenAI-compatible `image_url` data URI
+/// at request time.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(tag = "type")]
+pub enum ImageSource {
+    #[serde(rename = "base64")]
+    Base64 { media_type: String, data: String },
+    #[serde(rename = "file")]
+    File {
+        path: PathBuf,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        media_type: Option<String>,
+    },
+}
+
+impl ImageSource {
+    /// One-line description used when compaction / inspection layers flatten
+    /// an image block to text (summarizer input, RLM session digests, purge
+    /// listings). Never reads file contents.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        match self {
+            ImageSource::Base64 { media_type, .. } => format!("image ({media_type})"),
+            ImageSource::File { path, .. } => format!("image at {}", path.display()),
+        }
+    }
+}
+
+/// Rough token cost of one inline image content block for context
+/// estimators. Vision providers tile images into fixed-size patches, so the
+/// cost is roughly size-independent; ~1.2K tokens covers a typical screenshot
+/// without reading pixel data.
+pub const IMAGE_BLOCK_ESTIMATED_TOKENS: usize = 1_200;
+
 /// A single content block inside a message.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
@@ -93,6 +135,11 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// Inline image attached to a user message (product-polish §1). Only the
+    /// user role carries this variant; assistant image output is not produced
+    /// by the providers CodeSmith targets.
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
     #[serde(rename = "tool_use")]
@@ -664,5 +711,65 @@ mod tests {
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("unknown")),
             967_000
         );
+    }
+
+    #[test]
+    fn image_block_file_source_round_trips() {
+        let block = ContentBlock::Image {
+            source: ImageSource::File {
+                path: PathBuf::from("/tmp/clipboard-123.png"),
+                media_type: Some("image/png".to_string()),
+            },
+        };
+        let json = serde_json::to_value(&block).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "file",
+                    "path": "/tmp/clipboard-123.png",
+                    "media_type": "image/png"
+                }
+            })
+        );
+        let back: ContentBlock = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn image_block_base64_source_round_trips() {
+        let block = ContentBlock::Image {
+            source: ImageSource::Base64 {
+                media_type: "image/jpeg".to_string(),
+                data: "aGVsbG8=".to_string(),
+            },
+        };
+        let json = serde_json::to_value(&block).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": "aGVsbG8="
+                }
+            })
+        );
+        let back: ContentBlock = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn image_block_file_source_omits_absent_media_type() {
+        let json = serde_json::to_value(ContentBlock::Image {
+            source: ImageSource::File {
+                path: PathBuf::from("shot.png"),
+                media_type: None,
+            },
+        })
+        .expect("serialize");
+        assert!(json["source"].get("media_type").is_none());
     }
 }

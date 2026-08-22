@@ -117,6 +117,10 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
                 .map(|s| counter.count_text(&s))
                 .unwrap_or(100),
             ContentBlock::ToolResult { content, .. } => counter.count_text(content),
+            // Vision providers tile images into fixed-size patches, so the
+            // token cost is roughly size-independent (see
+            // `IMAGE_BLOCK_ESTIMATED_TOKENS`).
+            ContentBlock::Image { .. } => crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS,
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => 0,

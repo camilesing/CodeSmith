@@ -52,7 +52,8 @@ use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
 use crate::hooks::{HookEvent, HookExecutor};
 use crate::models::{
-    ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
+    ContentBlock, ImageSource, Message, MessageRequest, SystemPrompt, Usage,
+    context_window_for_model,
 };
 use crate::palette;
 use crate::prompts;
@@ -4680,7 +4681,22 @@ async fn dispatch_user_message(
         &app.workspace,
         cwd.clone(),
     );
-    let content = queued_message_content_for_app(app, &message, cwd);
+    let mut content = queued_message_content_for_app(app, &message, cwd);
+    // product-polish §1: promote attached images to native image content
+    // blocks when the active provider+model accepts them. Without vision the
+    // placeholder lines stay the text fallback and a note points the model at
+    // the existing `image_analyze` / `read_file` OCR chain.
+    let attached_image_paths = crate::tui::file_mention::image_attachment_paths(&message.display);
+    let image_paths = if config.vision_supported_for_model(&app.model) {
+        attached_image_paths
+    } else {
+        if !attached_image_paths.is_empty() {
+            content.push_str(&crate::tui::file_mention::image_fallback_note(
+                &attached_image_paths,
+            ));
+        }
+        Vec::new()
+    };
     let message_index = app.api_messages.len();
     app.system_prompt = Some(
         prompts::system_prompt_for_mode_with_context_skills_and_session(
@@ -4711,12 +4727,19 @@ async fn dispatch_user_message(
     let history_cell = app.history.len().saturating_sub(1);
     app.record_context_references(history_cell, message_index, references);
     app.scroll_to_bottom();
+    let mut mirror_content = vec![ContentBlock::Text {
+        text: content.clone(),
+        cache_control: None,
+    }];
+    mirror_content.extend(image_paths.iter().map(|path| ContentBlock::Image {
+        source: ImageSource::File {
+            path: path.clone(),
+            media_type: None,
+        },
+    }));
     app.api_messages.push(Message {
         role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: content.clone(),
-            cache_control: None,
-        }],
+        content: mirror_content,
     });
     maybe_warn_context_pressure(app);
     if should_auto_compact_before_send(app) {
@@ -4787,6 +4810,7 @@ async fn dispatch_user_message(
     if let Err(err) = engine_handle
         .send(Op::SendMessage {
             content,
+            image_paths,
             mode: app.mode,
             model: effective_model,
             goal_objective: app.hunt.quarry.clone(),

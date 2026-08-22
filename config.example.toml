@@ -243,6 +243,15 @@ max_subagents = 10 # optional (1-20)
 # model = "deepseek-ai/DeepSeek-V4-Pro"
 # http_headers = { "X-Model-Provider-Id" = "your-model-provider" } # optional custom request headers
 
+# Vision capability (product-polish §1). Every [providers.*] table (and each
+# [[providers.custom]] entry) accepts an optional `vision = true|false`.
+# Unset -> static model-name matrix (deepseek-vl*, Qwen-VL, GLM-V, gpt-4o+,
+# claude-*, mimo-v2.5 ... are vision-capable; text-only families are not).
+# Set `true` when a gateway fronts a vision model the matrix cannot see, or
+# `false` to force the text-reference fallback on a vision-capable model.
+# When true, `/attach` + Ctrl+V images are sent as native image content
+# blocks; when false they degrade to path references + image_analyze/read_file.
+
 # NVIDIA NIM-hosted DeepSeek V4 (https://build.nvidia.com)
 [providers.nvidia_nim]
 # api_key = "YOUR_NVIDIA_API_KEY"
@@ -260,6 +269,7 @@ max_subagents = 10 # optional (1-20)
 # fails fast without one):
 # base_url = "https://gateway.example/v1"
 # model = "your-deepseek-compatible-model"
+# vision = true   # gateway fronts a vision model -> send inline image blocks
 
 # AtlasCloud OpenAI-compatible endpoint (https://www.atlascloud.ai/docs/models/llm)
 [providers.atlascloud]

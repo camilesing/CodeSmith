@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::models::{ContentBlock, Message};
+use crate::models::{ContentBlock, ImageSource, Message};
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use serde_json::Value;
@@ -522,6 +522,7 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
                 ContentBlock::Thinking { thinking } => total += thinking.len(),
                 ContentBlock::ToolUse { input, .. } => total += input.to_string().len(),
                 ContentBlock::ToolResult { content, .. } => total += content.len(),
+                ContentBlock::Image { source } => total += image_source_chars(source),
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
                 | ContentBlock::CodeExecutionToolResult { .. } => {}
@@ -529,6 +530,17 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
         }
     }
     total
+}
+
+/// Serialized char cost of an image block: base64 payloads dominate, file
+/// references stay path-sized.
+fn image_source_chars(source: &ImageSource) -> usize {
+    match source {
+        ImageSource::Base64 { data, .. } => data.len(),
+        ImageSource::File { path, media_type } => {
+            path.display().to_string().len() + media_type.as_deref().map_or(0, str::len)
+        }
+    }
 }
 
 // === Hashing ===

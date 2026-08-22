@@ -231,6 +231,9 @@ pub fn message_text(msg: &Message) -> String {
             ContentBlock::ToolResult { content, .. } => {
                 let _ = writeln!(text, "{content}");
             }
+            ContentBlock::Image { source } => {
+                let _ = writeln!(text, "[{}]", source.summary());
+            }
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => {}
@@ -258,6 +261,9 @@ pub fn extract_paths_from_message(
             ContentBlock::ToolResult { content, .. } => extract_paths_from_text(content, workspace),
             ContentBlock::ToolUse { input, .. } => extract_paths_from_tool_input(input, workspace),
             ContentBlock::Thinking { .. } => Vec::new(),
+            // The `[Attached image: … at <path>]` placeholder line in the user
+            // text already feeds the path to the text extractor.
+            ContentBlock::Image { .. } => Vec::new(),
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => Vec::new(),
@@ -1471,6 +1477,9 @@ pub fn build_formatted_summary_request(
                 }
                 ContentBlock::Thinking { .. } => {
                     // Skip thinking blocks in summary
+                }
+                ContentBlock::Image { source } => {
+                    let _ = write!(conversation_text, "{role}: [attached {}]\n\n", source.summary());
                 }
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }

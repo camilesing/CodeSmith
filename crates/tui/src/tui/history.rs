@@ -641,6 +641,10 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                     });
                 }
             }
+            // Image blocks ride along with their `[Attached image: …]`
+            // placeholder line inside the user text; rendering a second
+            // marker here would duplicate it.
+            ContentBlock::Image { .. } => {}
             _ => {}
         }
     }

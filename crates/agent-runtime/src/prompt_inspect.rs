@@ -887,6 +887,11 @@ fn build_chat_messages_with_reasoning(
                     }
                 }
                 ContentBlock::Thinking { thinking } => thinking_parts.push(thinking.clone()),
+                // Wire-visible user content: rendered as a one-line marker so
+                // the inspect preview reflects the request shape.
+                ContentBlock::Image { source } => {
+                    text_parts.push(format!("[{}]", source.summary()))
+                }
                 ContentBlock::ToolUse {
                     id,
                     name,

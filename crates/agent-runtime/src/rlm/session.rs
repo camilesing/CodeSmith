@@ -353,6 +353,10 @@ fn compact_content_block(block: &ContentBlock) -> Value {
             "sha256": sha256_hex(thinking.as_bytes()),
             "preview_240": truncate_chars(thinking, 240),
         }),
+        ContentBlock::Image { source } => json!({
+            "type": "image",
+            "summary": source.summary(),
+        }),
         ContentBlock::ToolUse {
             id,
             name,

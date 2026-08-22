@@ -962,6 +962,9 @@ fn extract_paths_from_message(message: &Message) -> Vec<String> {
             ContentBlock::ToolResult { content, .. } => {
                 paths.extend(extract_paths_from_text(content));
             }
+            // The `[Attached image: … at <path>]` placeholder line in the user
+            // text already feeds the path to the text extractor.
+            ContentBlock::Image { .. } => {}
             ContentBlock::Thinking { .. }
             | ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
@@ -1128,6 +1131,7 @@ fn message_mentions_any_path(message: &Message, needles: &[String], max_scan_cha
                 }
             }
             ContentBlock::Thinking { .. }
+            | ContentBlock::Image { .. }
             | ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => {}

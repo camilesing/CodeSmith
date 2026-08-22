@@ -262,6 +262,7 @@ fn estimate_tokens_for_message(msg: &Message) -> usize {
                 .map(|s| s.len() / 4)
                 .unwrap_or(100),
             ContentBlock::ToolResult { content, .. } => content.len() / 4,
+            ContentBlock::Image { .. } => crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS,
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => 0,

@@ -369,6 +369,11 @@ pub struct ProviderCapability {
     pub max_output: u32,
     /// Whether the provider+model supports thinking/reasoning mode.
     pub thinking_supported: bool,
+    /// Whether the provider+model accepts inline image content blocks
+    /// (product-polish §1). Derived from static model-name knowledge; the
+    /// `[providers.*] vision = true|false` config key overrides it for
+    /// gateway deployments whose backend model the static matrix cannot see.
+    pub vision_supported: bool,
     /// Whether the provider returns prompt-cache telemetry fields.
     pub cache_telemetry_supported: bool,
     /// Which request-payload dialect the provider uses.
@@ -418,6 +423,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             context_window: crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS,
             max_output: 4096,
             thinking_supported: false,
+            vision_supported: openai_family_model_supports_vision(resolved_model),
             cache_telemetry_supported: false,
             request_payload_mode: RequestPayloadMode::ChatCompletions,
             alias_deprecation: None,
@@ -431,6 +437,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             context_window: 1_000_000,
             max_output: 128_000,
             thinking_supported: true,
+            vision_supported: true,
             cache_telemetry_supported: false,
             request_payload_mode: RequestPayloadMode::ChatCompletions,
             alias_deprecation: None,
@@ -444,6 +451,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             context_window: 8192,
             max_output: 4096,
             thinking_supported: false,
+            vision_supported: model_name_supports_vision(resolved_model),
             cache_telemetry_supported: false,
             request_payload_mode: RequestPayloadMode::ChatCompletions,
             alias_deprecation: None,
@@ -468,6 +476,8 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             context_window: 200_000,
             max_output: 8_192,
             thinking_supported,
+            // Every Claude model in the API era accepts inline images.
+            vision_supported: model_lower.contains("claude-"),
             cache_telemetry_supported: true,
             request_payload_mode: RequestPayloadMode::Messages,
             alias_deprecation: None,
@@ -518,6 +528,11 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         ApiProvider::Deepseek | ApiProvider::NvidiaNim | ApiProvider::Volcengine
     );
 
+    // Vision: static model-name knowledge only (deepseek-vl, Qwen-VL, GLM-V,
+    // …). Unknown names report `false`; gateway deployments override via the
+    // `[providers.*] vision` config key.
+    let vision_supported = model_name_supports_vision(resolved_model);
+
     // Request payload mode: all current providers use chat completions.
     let request_payload_mode = RequestPayloadMode::ChatCompletions;
 
@@ -527,10 +542,38 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         context_window,
         max_output,
         thinking_supported,
+        vision_supported,
         cache_telemetry_supported,
         request_payload_mode,
         alias_deprecation,
     }
+}
+
+/// Static model-name heuristic for vision-capable model IDs across
+/// OpenAI-compatible endpoints (deepseek-vl, Qwen-VL, GLM-V, LLaVA, …).
+/// Deliberately conservative: unknown names report `false` so the
+/// `[providers.*] vision` override stays the source of truth for gateways
+/// fronting models the static matrix cannot see.
+fn model_name_supports_vision(resolved_model: &str) -> bool {
+    const VISION_MARKERS: [&str; 7] = ["vl", "vision", "-4v", "-5v", "4.5v", "llava", "moondream"];
+    let model_lower = resolved_model.to_ascii_lowercase();
+    VISION_MARKERS
+        .iter()
+        .any(|marker| model_lower.contains(marker))
+}
+
+/// OpenAI-family gateways (OpenAI, Atlascloud, Moonshot): multimodal GPT
+/// generations since gpt-4o, plus the o-series reasoning models.
+fn openai_family_model_supports_vision(resolved_model: &str) -> bool {
+    let model_lower = resolved_model.to_ascii_lowercase();
+    model_lower.starts_with("o3")
+        || model_lower.starts_with("o4")
+        || model_lower.contains("gpt-4o")
+        || model_lower.contains("gpt-4.1")
+        || model_lower.contains("gpt-4-turbo")
+        || model_lower.contains("gpt-5")
+        || model_lower.contains("chatgpt-4o")
+        || model_name_supports_vision(resolved_model)
 }
 
 fn deepseek_alias_deprecation(model_lower: &str) -> Option<ModelAliasDeprecation> {

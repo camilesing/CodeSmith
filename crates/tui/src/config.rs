@@ -1357,6 +1357,12 @@ pub struct ProviderConfig {
     pub model: Option<String>,
     pub auth_mode: Option<String>,
     pub http_headers: Option<HashMap<String, String>>,
+    /// Capability override (product-polish §1): does this provider's resolved
+    /// model accept inline image content blocks? `None` defers to the static
+    /// `provider_capability` model-name matrix. Set `true` for gateways
+    /// fronting a vision model the matrix cannot see, `false` to force the
+    /// text-reference fallback on a vision-capable model.
+    pub vision: Option<bool>,
 }
 
 /// Runtime view of a single `[[providers.custom]]` entry (ROADMAP §D2).
@@ -1375,6 +1381,10 @@ pub struct CustomProviderConfig {
     pub model: Option<String>,
     pub auth_mode: Option<String>,
     pub http_headers: Option<HashMap<String, String>>,
+    /// Capability override (product-polish §1); see [`ProviderConfig::vision`].
+    /// Custom gateways have no static matrix entry, so the effective default
+    /// is `false` (text-reference fallback) unless this is set.
+    pub vision: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1839,6 +1849,32 @@ impl Config {
 
     pub(crate) fn provider_config(&self) -> Option<&ProviderConfig> {
         self.provider_config_for(self.api_provider())
+    }
+
+    /// Whether the active provider accepts inline image content blocks for
+    /// its default model (product-polish §1). See [`Self::vision_supported_for_model`].
+    #[must_use]
+    pub fn vision_supported(&self) -> bool {
+        self.vision_supported_for_model(&self.default_model())
+    }
+
+    /// Whether the active provider accepts inline image content blocks
+    /// (product-polish §1) for the given model id. Resolution order: the
+    /// `[[providers.custom]]` entry's `vision` override (custom gateways
+    /// default to `false` — no static matrix entry exists), then the
+    /// `[providers.<id>] vision` override, then the static
+    /// `provider_capability` model-name matrix. When `false`, attached images
+    /// degrade to the existing text-reference mode (`image_analyze` /
+    /// `read_file` OCR chain).
+    #[must_use]
+    pub fn vision_supported_for_model(&self, model: &str) -> bool {
+        if let Some(entry) = self.custom_provider_entry() {
+            return entry.vision.unwrap_or(false);
+        }
+        if let Some(vision) = self.provider_config().and_then(|config| config.vision) {
+            return vision;
+        }
+        provider_capability(self.api_provider(), model).vision_supported
     }
 
     /// §B3 slice 52 — read-side fallback for hand-edited `[providers.deepseek_cn]`
@@ -4018,6 +4054,7 @@ fn merge_provider_config(base: ProviderConfig, override_cfg: ProviderConfig) -> 
         model: override_cfg.model.or(base.model),
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         http_headers: override_cfg.http_headers.or(base.http_headers),
+        vision: override_cfg.vision.or(base.vision),
     }
 }
 
@@ -9288,6 +9325,122 @@ model = "deepseek-ai/deepseek-v4-pro"
             cap.request_payload_mode,
             RequestPayloadMode::ChatCompletions
         );
+    }
+
+    #[test]
+    fn provider_capability_vision_matrix_name_heuristics() {
+        // Text-only DeepSeek family and unknown names report false.
+        assert!(!provider_capability(ApiProvider::Deepseek, "deepseek-v4-pro").vision_supported);
+        assert!(!provider_capability(ApiProvider::Deepseek, "deepseek-chat").vision_supported);
+        // VL / -v-suffix / vision families report true.
+        for (provider, model) in [
+            (ApiProvider::Deepseek, "deepseek-vl2"),
+            (ApiProvider::Openrouter, "z-ai/glm-5v-turbo"),
+            (ApiProvider::Openrouter, "qwen/qwen3-vl-235b"),
+            (ApiProvider::Ollama, "llama3.2-vision"),
+            (ApiProvider::Ollama, "llama3.1"),
+        ] {
+            let expected = !model.contains("llama3.1");
+            assert_eq!(
+                provider_capability(provider, model).vision_supported,
+                expected,
+                "model {model}"
+            );
+        }
+        // Claude family and OpenAI multimodal generations.
+        assert!(provider_capability(ApiProvider::Anthropic, "claude-sonnet-4").vision_supported);
+        assert!(provider_capability(ApiProvider::Openai, "gpt-4o").vision_supported);
+        assert!(provider_capability(ApiProvider::Openai, "o3-mini").vision_supported);
+        assert!(!provider_capability(ApiProvider::Openai, "gpt-3.5-turbo").vision_supported);
+        // Xiaomi MiMo v2.5 is multimodal.
+        assert!(
+            provider_capability(ApiProvider::XiaomiMimo, DEFAULT_XIAOMI_MIMO_MODEL)
+                .vision_supported
+        );
+    }
+
+    #[test]
+    fn vision_supported_prefers_provider_override_then_matrix() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-vision-supported-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Default DeepSeek (text-only matrix) reports false.
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "deepseek"
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert!(!config.vision_supported());
+        // Explicit model id drives the matrix (e.g. a /model switch).
+        assert!(config.vision_supported_for_model("deepseek-vl2"));
+
+        // [providers.deepseek] vision = true overrides the matrix.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "deepseek"
+
+[providers.deepseek]
+vision = true
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert!(config.vision_supported());
+
+        // Custom gateways default to false and honor their own override.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+custom_provider = "my-gateway"
+
+[[providers.custom]]
+id = "my-gateway"
+base_url = "https://gw.example.com/v1"
+model = "some-private-model"
+
+[[providers.custom]]
+id = "vision-gateway"
+base_url = "https://gw2.example.com/v1"
+model = "some-vision-model"
+vision = true
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert!(!config.vision_supported());
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+custom_provider = "vision-gateway"
+
+[[providers.custom]]
+id = "my-gateway"
+base_url = "https://gw.example.com/v1"
+model = "some-private-model"
+
+[[providers.custom]]
+id = "vision-gateway"
+base_url = "https://gw2.example.com/v1"
+model = "some-vision-model"
+vision = true
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert!(config.vision_supported());
+        Ok(())
     }
 
     #[test]

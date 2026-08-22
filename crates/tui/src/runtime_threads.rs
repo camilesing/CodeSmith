@@ -1639,6 +1639,7 @@ impl RuntimeThreadManager {
         engine
             .send(Op::SendMessage {
                 content: prompt,
+                image_paths: Vec::new(),
                 mode,
                 model: model.clone(),
                 goal_objective: None,

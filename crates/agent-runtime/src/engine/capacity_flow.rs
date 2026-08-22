@@ -76,6 +76,7 @@ pub(crate) fn recent_unique_reference_count(
                     }
                 }
                 ContentBlock::Thinking { .. }
+                | ContentBlock::Image { .. }
                 | ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
                 | ContentBlock::CodeExecutionToolResult { .. } => {}

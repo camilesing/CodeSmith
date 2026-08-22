@@ -557,6 +557,35 @@ pub fn media_attachment_references(input: &str) -> Vec<MediaAttachmentReference>
     out
 }
 
+/// Image attachment paths parsed from `[Attached image: … at <path>]` lines,
+/// in composer order. Video attachments are excluded — they stay on the
+/// text-reference path (no wire representation targets them today).
+pub fn image_attachment_paths(input: &str) -> Vec<PathBuf> {
+    media_attachment_references(input)
+        .into_iter()
+        .filter(|reference| reference.kind == "image")
+        .map(|reference| PathBuf::from(reference.path))
+        .collect()
+}
+
+/// Degradation note (product-polish §1) appended to the user request when the
+/// active provider does not accept native image blocks: the placeholder path
+/// references remain, and the model is pointed at the existing
+/// `image_analyze` / `read_file` OCR chain.
+pub fn image_fallback_note(paths: &[PathBuf]) -> String {
+    let mut note = String::from(
+        "\n\n<attached_images>\n\
+         The following images were attached as local files. This model cannot \
+         receive inline image content; inspect them with the `image_analyze` \
+         tool if available, or `read_file` (OCR extraction):\n",
+    );
+    for path in paths {
+        let _ = writeln!(note, "- {}", path.display());
+    }
+    note.push_str("</attached_images>");
+    note
+}
+
 fn extract_media_attachment_references(input: &str) -> Vec<MediaAttachmentReference> {
     media_attachment_references(input)
 }
@@ -991,6 +1020,38 @@ mod tests {
             &input[reference.start_byte..reference.end_byte],
             "[Attached image: 8x4 PNG at /tmp/pasted.png]\n"
         );
+    }
+
+    #[test]
+    fn image_attachment_paths_filter_images_in_order() {
+        let input = "look at these\n\
+            [Attached image: 8x4 PNG at /tmp/first.png]\n\
+            [Attached video: 12s MP4 at /tmp/clip.mp4]\n\
+            [Attached image: /tmp/second.jpg]\n";
+
+        let paths = image_attachment_paths(input);
+
+        assert_eq!(
+            paths,
+            vec![
+                std::path::PathBuf::from("/tmp/first.png"),
+                std::path::PathBuf::from("/tmp/second.jpg")
+            ]
+        );
+    }
+
+    #[test]
+    fn image_fallback_note_lists_every_path() {
+        let note = image_fallback_note(&[
+            std::path::PathBuf::from("/tmp/first.png"),
+            std::path::PathBuf::from("/tmp/second.jpg"),
+        ]);
+
+        assert!(note.starts_with("\n\n<attached_images>"));
+        assert!(note.ends_with("</attached_images>"));
+        assert!(note.contains("`image_analyze`"));
+        assert!(note.contains("- /tmp/first.png"));
+        assert!(note.contains("- /tmp/second.jpg"));
     }
 
     #[test]

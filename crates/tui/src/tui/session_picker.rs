@@ -769,6 +769,9 @@ fn message_text_for_history(message: &crate::models::Message) -> String {
                 }
             }
             crate::models::ContentBlock::Thinking { .. } => String::new(),
+            crate::models::ContentBlock::Image { source } => {
+                format!("image: {}", source.summary())
+            }
             crate::models::ContentBlock::ToolUse { name, input, .. } => {
                 format!("tool call: {name} {}", truncate(&input.to_string(), 180))
             }

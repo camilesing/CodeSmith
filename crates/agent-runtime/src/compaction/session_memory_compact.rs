@@ -229,6 +229,7 @@ fn estimate_tokens_for_message_conservative(msg: &Message) -> usize {
                 .map(|s| s.len().div_ceil(3))
                 .unwrap_or(100),
             ContentBlock::ToolResult { content, .. } => content.len().div_ceil(3),
+            ContentBlock::Image { .. } => crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS,
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => 0,

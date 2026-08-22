@@ -5693,6 +5693,7 @@ async fn run_exec_agent(
     engine_handle
         .send(Op::SendMessage {
             content: prompt.to_string(),
+            image_paths: Vec::new(),
             mode,
             model: effective_model.clone(),
             goal_objective: None,
@@ -6234,6 +6235,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
     engine_handle
         .send(Op::SendMessage {
             content: prompt.clone(),
+            image_paths: Vec::new(),
             mode,
             model: effective_model.clone(),
             goal_objective: None,

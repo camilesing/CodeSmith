@@ -25,6 +25,10 @@ rig-core = { workspace = true, optional = true }
 # `reqwest 0.13.x` rig and `codesmith-agent` already pull in, so enabling it
 # under `rig` adds no extra compile — Cargo unifies the features into one build.
 reqwest = { workspace = true, optional = true }
+# Image content blocks are base64-encoded at request-build time in
+# `rig_adapter::convert`. Optional with the `rig` aggregate so a
+# `--no-default-features` build stays lean.
+base64 = { version = "0.22.1", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -42,7 +46,7 @@ mock = []
 # compiled exactly when at least one rig-backed provider is selected. rig
 # compiles all its provider modules unconditionally, so these features select
 # only which CodeSmith factory glue is linked — not which rig providers exist.
-rig = ["dep:rig-core", "dep:reqwest"]
+rig = ["dep:rig-core", "dep:reqwest", "dep:base64"]
 openai = ["rig"]
 anthropic = ["rig"]
 deepseek = ["rig"]

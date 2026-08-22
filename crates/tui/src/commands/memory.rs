@@ -147,6 +147,7 @@ fn content_block_for_memory_extract(block: &ContentBlock) -> Option<String> {
             thinking.chars().count()
         )),
         ContentBlock::ToolUse { name, input, .. } => Some(format!("[tool_use: {name} {input}]")),
+        ContentBlock::Image { source } => Some(format!("[attached {}]", source.summary())),
         ContentBlock::ToolResult {
             content, is_error, ..
         } => {

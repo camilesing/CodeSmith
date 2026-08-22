@@ -727,6 +727,7 @@ pub fn latest_assistant_text(messages: &[Message]) -> Option<String> {
                     ContentBlock::Thinking { .. }
                     | ContentBlock::ToolUse { .. }
                     | ContentBlock::ToolResult { .. }
+                    | ContentBlock::Image { .. }
                     | ContentBlock::ServerToolUse { .. }
                     | ContentBlock::ToolSearchToolResult { .. }
                     | ContentBlock::CodeExecutionToolResult { .. } => None,
