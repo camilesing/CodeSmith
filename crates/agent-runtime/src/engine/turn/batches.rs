@@ -26,9 +26,10 @@ use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message};
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
+use super::approval::requires_approval;
 use super::stream::{EarlyToolTask, early_start_safe};
 use crate::engine::dispatch::{ToolExecutionBatch, ToolExecutionPlan, plan_tool_execution_batches};
-use crate::engine::host_executor::{HostAgentExecutor, requires_approval};
+use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
 use crate::tools::spec::ApprovalRequirement;
@@ -133,7 +134,7 @@ impl HostAgentExecutor {
                 tool.as_ref().map(|t| t.capabilities()).unwrap_or_default();
             let read_only = caps.contains(&ToolCapability::ReadOnly);
             // Per-input approval override (mirrors `request_approval`'s
-            // own logic at :3529-3536): a host dispatcher's
+            // own logic in `turn::approval`): a host dispatcher's
             // `Required` / `Suggest` downgrades/upgrades the gate per
             // input; `Auto` or `None` falls back to the static capability gate.
             let approval_required = match self

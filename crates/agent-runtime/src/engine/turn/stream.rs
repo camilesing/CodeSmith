@@ -107,11 +107,12 @@ use codesmith_agent::models::{
 };
 use codesmith_agent::tools::{ToolCapability, ToolError, ToolResult};
 
+use super::approval::requires_approval;
 use crate::engine::context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, context_input_budget_for_provider,
     is_context_length_error_message,
 };
-use crate::engine::host_executor::{HostAgentExecutor, requires_approval};
+use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::summarize_text;
 
 /// Whether a tool is a safe candidate for **early speculative dispatch**

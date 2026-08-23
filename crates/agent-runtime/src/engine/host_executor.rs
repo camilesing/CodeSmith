@@ -64,43 +64,17 @@
 //!    `on_llm_end` fire once per step, a `Status` event is the only retry
 //!    surfacing). See "Known gaps" below for reactive capacity recovery.
 //! 4. **steer** ([`drain_steers`](HostAgentExecutor::drain_steers)) — lets a
-//!    user inject additional text input into an in-flight turn. At the top of
-//!    each step (before the LLM request), queued steers are drained via
-//!    `try_recv` and each becomes a `user` message in the transcript so the
-//!    model re-reads them on this step's request — mirroring
-//!    `handle_deepseek_turn`'s top-of-loop drain.
-//!    The receiver is `Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>`
-//!    — interior-mutable because [`AgentExecutor::run`] is `&self` while
-//!    `try_recv` takes `&mut self` (same pattern as the LSP flush's `pending`
-//!    accumulator; the lock is held only for the synchronous `try_recv`). The
-//!    three secondary drain sites are all absorbed ✅: the **mid-stream buffer**
-//!    ([`reduce_stream`](HostAgentExecutor::reduce_stream) `try_recv`s into a
-//!    per-step `pending_steers` vec after each stream event, flushed post-stream
-//!    / post-tool via [`flush_pending_steers`](HostAgentExecutor::flush_pending_steers)),
-//!    the **post-stream resume** (the no-tool-calls arm flushes + resumes), and
-//!    the **blocking `recv` during sub-agent hold** (the hold's own `biased
-//!    select!` arms).
+//!    user inject additional text input into an in-flight turn: at the top of
+//!    each step, queued steers are drained into the transcript as `user`
+//!    messages (plus the mid-stream buffer flush and the sub-agent hold's
+//!    steer arm). Full semantics, receiver rationale, and the drain-site map
+//!    live in the `engine/turn/seams.rs` module docs.
 //! 5. **approval** ([`request_approval`](HostAgentExecutor::request_approval))
-//!    — gates write / code-execution tools behind user permission. Before
-//!    running such a tool, the executor emits `Event::ApprovalRequired`
-//!    (carrying the two fingerprint keys the host uses for approve-for-session
-//!    / deny-exact dedup, plus the model's intent summary for write tools) and
-//!    blocks on the approval-decision channel, matching by wire tool id (stale
-//!    decisions for other ids are dropped) — mirroring
-//!    `handle_deepseek_turn`'s per-tool approval flow
-//!    (`handle_deepseek_turn`). A denied call never runs the tool and feeds
-//!    back a `permission_denied` error so the model can react (the turn
-//!    continues). The receiver is
-//!    `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>` —
-//!    the first guardrail to use a `tokio::sync::Mutex` (rather than
-//!    `std::sync::Mutex` like steer / LSP), because the guard must cross the
-//!    blocking `recv().await` (a std mutex guard isn't `Send`). Approval
-//!    requirement is derived statically from [`Tool::capabilities`]
-//!    (`ExecutesCode` / `WritesFiles` / `RequiresApproval`) — the framework
-//!    `Tool` trait deliberately carries no per-input approval surface (§E
-//!    design note); the dynamic override threads in at the wire-in step. See
-//!    "Known gaps in approval" below for the sandbox-elevation and
-//!    static-derivation gaps.
+//!    — gates write / code-execution tools behind user permission: emits
+//!    `Event::ApprovalRequired` and blocks on the decision channel (denied ⇒
+//!    `permission_denied` error, tool skipped). Full semantics and the
+//!    by-design gap inventory live in the `engine/turn/approval.rs` module
+//!    docs.
 //! 6. **compaction** ([`run_compaction`](HostAgentExecutor::run_compaction)) —
 //!    keeps the transcript within the model's context window. At the top of
 //!    each step (after steer drain, before the LSP flush), the executor runs a
@@ -205,31 +179,17 @@
 //!    (tighten-only `auto_approve`/`trust_mode`) is still deferred — it mutates
 //!    `Session` state not reachable through `ChatHistory`, and production
 //!    hardcodes `context_patch: None` today. See "Known gaps in subagent" below.
-//! 10. **cancel-token** (`cancel_token` field + [`is_cancelled`]) — the
+//! 10. **cancel-token** (`cancel_token` field +
+//!     [`is_cancelled`](HostAgentExecutor::is_cancelled)) — the
 //!     **first cross-cutting guardrail**. An optional
 //!     [`CancellationToken`](tokio_util::sync::CancellationToken) (`None` ⇒ all
 //!     cancel checks are no-ops) mirrors production's seven turn-cancellation
-//!     checkpoints. When set, a cancelled turn surfaces
+//!     checkpoints; a cancelled turn surfaces
 //!     [`StopReason::Interrupted`](codesmith_agent::callback::StopReason::Interrupted)
 //!     (distinct from `Error`) so the host can show "cancelled" rather than
-//!     "failed". **Checkpoint A** (loop-top, before `max_steps`) bounds all
-//!     `continue` loops (capacity `RetryStep`, reactive `RecoveredContextOverflow`,
-//!     subagent resume); **Checkpoint B** (stream-open race) races the token
-//!     against `create_message_stream` in a `biased select!` so a cancelled turn
-//!     aborts before the stream opens; **Checkpoint C** (`Empty` arm) aborts a
-//!     transparent retry; **Checkpoint D** (post-stream `Complete`/`Partial`)
-//!     discards already-produced content; **Checkpoint G** (post-tool-loop, before
-//!     `loop_guard_halt`) lets a tool-triggered cancel take priority over a
-//!     loop-guard halt; the **approval cancel race** breaks out of the blocking
-//!     `recv().await` via `select!` (the tool records an error result, then
-//!     Checkpoint G catches the cancel); and the **steer stale-drain**
-//!     ([`drain_stale_steers`](HostAgentExecutor::drain_stale_steers)) is a
-//!     `pub` host-side method — the host calls it before `run` (mirrors
-//!     `handle_send_message`'s `while rx_steer.try_recv().is_ok() {}`), not
-//!     inside the turn loop. The subagent **blocking hold** cancel race
-//!     (Checkpoint E) is **absorbed ✅** — it lives in the hold's own `biased
-//!     select!` cancel arm. See "Known gaps in subagent" below for per-guardrail
-//!     cancel status.
+//!     "failed". The checkpoint map (A/B/C/D/G + the approval cancel race +
+//!     the steer stale-drain + Checkpoint E) lives in the
+//!     `engine/turn/seams.rs` module docs.
 //!
 //! Guardrail status (loop-guard warn/halt, transparent-retry "retrying n/3",
 //! steer "Steer input accepted", compaction "Compaction completed/failed",
@@ -388,29 +348,8 @@
 //!
 //! The "known gaps in transparent-retry" inventory moved with the stream code
 //! to the `engine/turn/stream.rs` module docs.
-//! ## Known gaps in approval (by design)
-//!
-//! - **cancel-token race** ✅ — production's `await_tool_approval` selects over
-//!   `cancel_token.cancelled()` so a cancelled turn breaks out of the approval
-//!   wait. This executor now mirrors it: `request_approval`'s `recv().await`
-//!   loop is wrapped in a `biased select!` over the cancel token — cancel wins
-//!   ⇒ `Err("Request cancelled while awaiting approval")` (fed back as a tool
-//!   error; Checkpoint G then surfaces `StopReason::Interrupted`). See
-//!   guardrail 10 (cancel-token).
-//! - **static-only approval derivation** — [`requires_approval`] checks
-//!   [`Tool::capabilities`] (`ExecutesCode` / `WritesFiles` /
-//!   `RequiresApproval`), mirroring `ToolSpec::approval_requirement()`'s default.
-//!   The per-input dynamic override (`ToolSpec::approval_requirement_for_input`,
-//!   e.g. `exec_shell rm` ⇒ `Required` vs `exec_shell ls` ⇒ `Auto`) and any
-//!   `ToolSpec::approval_requirement()` overrides that declare none of these
-//!   capabilities are not visible from the framework `Tool` trait; they thread in
-//!   at the wire-in step when the executor consults a `ToolDispatcher`.
-//! - **`RetryWithPolicy` treated as `Approved`** — sandbox elevation needs
-//!   `ToolDispatcher::execute` with a `sandbox_override` (the host rebuilds the
-//!   tool context with elevated sandbox access), which the framework `Tool::run`
-//!   path doesn't carry (the `ToolSpecAdapter` runs with a fixed `ToolContext`).
-//!   The executor therefore runs the tool with the unchanged context on a
-//!   `RetryWithPolicy` decision; the elevation threads in at the wire-in step.
+//! The "known gaps in approval" inventory moved with the approval code to
+//! the `engine/turn/approval.rs` module docs.
 //!
 //! ## Known gaps in compaction (by design)
 //!
@@ -638,7 +577,7 @@ use codesmith_agent::executor::{AgentExecutor, AgentExecutorConfig};
 use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
-use codesmith_agent::tools::{Tool, ToolCapability, ToolResult, ToolSet};
+use codesmith_agent::tools::{ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
 use super::capacity_flow::{
@@ -652,7 +591,7 @@ use super::context::{
 use super::loop_guard::LoopGuard;
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
-use super::turn::{EarlyToolTask, StreamRoundOutcome};
+use super::turn::{EarlyToolTask, StreamRoundOutcome, approval_intent_summary};
 use super::{CapacityDecision, GuardrailAction, ReplayOutcome, TargetedRefreshOutcome};
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
 use crate::compaction::micro_compact::{
@@ -666,68 +605,8 @@ use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::{DiagnosticBlock, render_blocks as render_lsp_blocks};
 use crate::subagent::SubAgentCompletion;
 use crate::tool_dispatch::ToolDispatcher;
-use crate::tools::approval_cache::{build_approval_grouping_key, build_approval_key};
-use crate::tools::spec::ApprovalRequirement;
 use crate::working_set::WorkingSet;
 use tokio_util::sync::CancellationToken;
-
-/// Whether a tool requires user approval before execution, derived from its
-/// declared capabilities. Mirrors `ToolSpec::approval_requirement()`'s default
-/// derivation (`ExecutesCode` ⇒ `Required`, `WritesFiles` ⇒ `Suggest`, both
-/// `!= Auto` ⇒ gate) plus an explicit `RequiresApproval` capability — the
-/// most faithful static approximation reachable from the framework `Tool`
-/// trait (which deliberately carries no `approval_requirement_for_input`
-/// surface; see the §E `ToolSpecAdapter` design note).
-///
-/// **By-design gap:** static only. Production also consults the per-input
-/// `ToolSpec::approval_requirement_for_input` (e.g. `exec_shell rm` ⇒ Required
-/// vs `exec_shell ls` ⇒ Auto) via the `ToolDispatcher`. That dynamic override
-/// and any `ToolSpec::approval_requirement()` overrides that don't declare one
-/// of these capabilities are not visible here; they thread in at the wire-in
-/// step when the executor consults a `ToolDispatcher`.
-pub(crate) fn requires_approval(caps: &[ToolCapability]) -> bool {
-    caps.iter().any(|c| {
-        matches!(
-            c,
-            ToolCapability::RequiresApproval
-                | ToolCapability::ExecutesCode
-                | ToolCapability::WritesFiles
-        )
-    })
-}
-
-/// Cap on the approval intent-summary length. (Relocated from the retired
-/// `handle_deepseek_turn`'s `MAX_APPROVAL_INTENT_SUMMARY_CHARS` in the slice
-/// 20 §E cutover; the `turn_loop::` original was deleted in slice 49.)
-const APPROVAL_INTENT_SUMMARY_MAX_CHARS: usize = 2_000;
-
-/// Extract the model's preceding text this step as an approval "intent summary"
-/// — the *why* shown in the approval view before the *what*. Joins the step's
-/// `Text` blocks and caps the length. (Relocated from the retired
-/// `handle_deepseek_turn`'s `approval_intent_summary` in the slice 20 §E cutover;
-/// the `turn_loop::` original was deleted in slice 49 — this is now the single
-/// source.)
-fn approval_intent_summary(content: &[ContentBlock]) -> Option<String> {
-    let mut text = String::new();
-    for block in content {
-        if let ContentBlock::Text { text: t, .. } = block {
-            text.push_str(t);
-        }
-    }
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let mut chars = trimmed.chars();
-    let mut summary: String = chars
-        .by_ref()
-        .take(APPROVAL_INTENT_SUMMARY_MAX_CHARS)
-        .collect();
-    if chars.next().is_some() {
-        summary.push_str("...");
-    }
-    Some(summary)
-}
 
 /// Decide whether the turn should hold (block) for still-running sub-agents
 /// when the non-blocking completion drain found nothing (mirrors
@@ -1170,7 +1049,7 @@ pub struct HostAgentExecutor {
     pub(crate) tools: Arc<ToolSet>,
     pub(crate) callback: Arc<dyn Callback>,
     config: AgentExecutorConfig,
-    event_tx: Option<mpsc::Sender<Event>>,
+    pub(crate) event_tx: Option<mpsc::Sender<Event>>,
     /// Optional LSP diagnostics probe (§E). `None` ⇒ collect/flush no-op.
     lsp: Option<LspProbe>,
     /// Optional steer input receiver (§E). `None` ⇒ steer drain is a no-op.
@@ -1204,7 +1083,7 @@ pub struct HostAgentExecutor {
     /// ✅ (production's `await_tool_approval` also selects on
     /// `cancel_token.cancelled()` — see guardrail 10 / "Known gaps in
     /// approval" below).
-    approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
+    pub(crate) approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
     /// Optional compaction probe (§E). `None` ⇒ micro-compact + auto-compact
     /// are no-ops. The probe carries interior-mutable `micro_state` +
     /// `circuit_breaker` (both `Arc<std::sync::Mutex<…>>`, matching the
@@ -1268,7 +1147,8 @@ pub struct HostAgentExecutor {
     pub(crate) cancel_token: Option<CancellationToken>,
     /// Optional host tool-dispatcher (slice 20 §E) for per-input approval
     /// overrides. `None` (default; all embeds/tests) ⇒ `request_approval`
-    /// falls back to the static [`requires_approval`] capability gate. When
+    /// falls back to the static `requires_approval` capability gate
+    /// (`engine/turn/approval.rs`). When
     /// `Some` (production wire-in), consults
     /// [`ToolDispatcher::approval_requirement_for`] first — mirroring
     /// production's `registry.approval_requirement_for(..)` (`handle_deepseek_turn`).
@@ -1285,7 +1165,7 @@ pub struct HostAgentExecutor {
     /// matching the retired production `handle_deepseek_turn` push sites.
     /// The subagent-completion sentinel push is **never** enriched (plain
     /// text, matching production).
-    turn_meta: Option<TurnMetaProbe>,
+    pub(crate) turn_meta: Option<TurnMetaProbe>,
     /// Post-compaction attachment re-inject probe (slice 25b §E). Carries
     /// `Arc` clones of `config.plan_state` / `config.todos` /
     /// `session.recent_read_files` (snapshotted at wire-in before the
@@ -1727,7 +1607,7 @@ impl HostAgentExecutor {
     /// them; this stays faithful.) The `add_optional_usage` helper duplicates
     /// `turn.rs`'s private one — to be unified into a shared `Usage::add`
     /// later, same class of "lift later" duplication as
-    /// `approval_intent_summary` / `block_tool_result`.
+    /// `turn::approval::approval_intent_summary` / `block_tool_result`.
     fn accumulate_usage(&self, delta: &Usage) {
         let mut acc = self.usage.lock().expect("usage mutex poisoned");
         acc.input_tokens = acc.input_tokens.saturating_add(delta.input_tokens);
@@ -1746,15 +1626,6 @@ impl HostAgentExecutor {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(Event::status(message)).await;
         }
-    }
-
-    /// Whether the turn has been cancelled. `None` cancel token ⇒ never
-    /// cancelled (embeds/tests that don't need cancellation). Mirrors production
-    /// `self.cancel_token.is_cancelled()` checks at every turn-loop checkpoint.
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancel_token
-            .as_ref()
-            .map_or(false, |t| t.is_cancelled())
     }
 
     /// (3) per-tool post-edit seam — collect LSP diagnostics after a successful
@@ -1862,121 +1733,6 @@ impl HostAgentExecutor {
             },
         };
         history.push(message);
-    }
-
-    /// (1) per-step pre-request seam — drain queued steer inputs into the
-    /// transcript as `user` messages so the model sees them before its next
-    /// request. Mirrors `handle_deepseek_turn`'s top-of-loop steer drain
-    /// (`handle_deepseek_turn`): `try_recv` loop → trim → skip-empty → push a
-    /// `user` message → emit status. `try_recv` is non-blocking — this only
-    /// drains what's already queued; it never waits for new input.
-    ///
-    /// When a [`TurnMetaProbe`] is wired in (production), this mirrors
-    /// production's `working_set.observe_user_message(text, &workspace)` +
-    /// `user_text_message_with_turn_metadata` wrap for each drained steer
-    /// (observe before the move, then enrich). Embeds/tests (`probe` absent)
-    /// push plain text — the pre-slice-22 behavior. The mid-stream buffer
-    /// drain site (inside [`reduce_stream`](HostAgentExecutor::reduce_stream)'s
-    /// `try_recv` + [`flush_pending_steers`](HostAgentExecutor::flush_pending_steers))
-    /// is now absorbed ✅; the blocking `recv` during the sub-agent hold is
-    /// enriched via the hold's own steer arm.
-    /// Push a steer message into the transcript, observing against the shared
-    /// working set and wrapping in `<turn_meta>` when a [`TurnMetaProbe`] is
-    /// present (production); plain text otherwise. Shared by the pre-request
-    /// drain ([`drain_steers`](Self::drain_steers)), the sub-agent blocking-hold
-    /// steer arm, and the mid-stream buffer flush
-    /// ([`flush_pending_steers`](Self::flush_pending_steers)) — single source for
-    /// the observe + enrich + push logic so the three push sites cannot drift.
-    /// Sync: [`ChatHistory::push`] is sync and `observe_user_message` /
-    /// `enrich_user_text_message` are sync (the lock on the shared working set
-    /// is never held across an `await`).
-    fn push_steer_message(&self, steer: String, history: &mut dyn ChatHistory) {
-        let message = match &self.turn_meta {
-            Some(probe) => {
-                probe.observe_user_message(&steer);
-                probe.enrich_user_text_message(steer)
-            }
-            None => Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: steer,
-                    cache_control: None,
-                }],
-            },
-        };
-        history.push(message);
-    }
-
-    /// Flush mid-stream-buffered steers into the transcript (observe + enrich +
-    /// push). No status — "Steer input queued" was already emitted during
-    /// buffering in [`reduce_stream`](Self::reduce_stream). Returns the count
-    /// flushed so callers can decide whether to resume the turn. Mirrors
-    /// production's `pending_steers.drain(..)` at `handle_deepseek_turn`
-    /// (post-stream no-tools — caller resumes on a fresh step) and
-    /// `:2632-2637` (post-tool — caller falls through to the next step).
-    fn flush_pending_steers(
-        &self,
-        pending: &mut Vec<String>,
-        history: &mut dyn ChatHistory,
-    ) -> usize {
-        let count = pending.len();
-        for steer in pending.drain(..) {
-            self.push_steer_message(steer, history);
-        }
-        count
-    }
-
-    async fn drain_steers(&self, history: &mut dyn ChatHistory) {
-        let Some(rx) = &self.steer else {
-            return;
-        };
-        loop {
-            // `try_recv` is synchronous and non-blocking — the tokio mutex
-            // guard is taken and dropped within this block, never across an
-            // `await` (matching the LSP flush pattern). The lock is
-            // uncontended (single consumer) so `.await` is effectively instant.
-            let steer = {
-                let mut guard = rx.lock().await;
-                match guard.try_recv() {
-                    Ok(s) => s,
-                    // Empty or disconnected — nothing more to drain this step.
-                    Err(_) => break,
-                }
-            };
-            let steer = steer.trim().to_string();
-            if steer.is_empty() {
-                continue;
-            }
-            // Compute the status preview before moving `steer` into the
-            // message (mirrors production's `steer.clone()` + summarize).
-            let status = format!("Steer input accepted: {}", summarize_text(&steer, 120));
-            self.push_steer_message(steer, history);
-            self.emit_status(status).await;
-        }
-    }
-
-    /// Drain stale steer inputs from a previous (possibly cancelled) turn.
-    /// Mirrors production's `while self.rx_steer.try_recv().is_ok() {}` at the
-    /// start of `handle_send_message` (`engine/mod.rs:1013-1014`) — a per-turn
-    /// reset so steers queued during an interrupted previous turn don't leak
-    /// into the new turn. Unlike [`drain_steers`](Self::drain_steers), this
-    /// **discards** (does not inject into the transcript): stale steers are not
-    /// the user's intent for this turn. Async — the tokio mutex guard is
-    /// taken and dropped within the loop, never across another `await` (the
-    /// steer receiver migrated from `std::sync::Mutex` to `tokio::sync::Mutex`
-    /// in the blocking-hold slice so the `biased select!` steer arm can hold
-    /// the guard across `recv().await`).
-    ///
-    /// **Host-side concern:** the host calls this BEFORE
-    /// [`AgentExecutor::run`], not inside the turn loop. Calling it inside
-    /// `run_inner` would discard steers the host queued for the current turn
-    /// before calling `run`.
-    pub async fn drain_stale_steers(&self) {
-        let Some(rx) = &self.steer else {
-            return;
-        };
-        let mut guard = rx.lock().await;
-        while guard.try_recv().is_ok() {}
     }
 
     /// Re-inject post-compaction attachment messages (plan / todos /
@@ -2702,117 +2458,6 @@ impl HostAgentExecutor {
             .await;
         }
         recovered
-    }
-
-    /// Per-tool approval gate (seam 3). Returns `Ok(())` to proceed with
-    /// execution (the tool doesn't require approval, no approval channel was
-    /// supplied, or the user approved) or `Err(denial_message)` to skip the
-    /// tool and feed back a `permission_denied` error so the model can react
-    /// (mirrors `handle_deepseek_turn`'s per-tool approval flow,
-    /// `handle_deepseek_turn`).
-    ///
-    /// The approval requirement is derived statically from [`Tool::capabilities`]
-    /// (see [`requires_approval`]); the dynamic per-input override is a by-design
-    /// gap. The executor emits `Event::ApprovalRequired` (carrying the two
-    /// fingerprint keys the host uses for approve-for-session / deny-exact
-    /// dedup, plus the model's intent summary for write tools) and then blocks
-    /// on the decision channel, matching by wire tool id — stale decisions for
-    /// other ids are dropped (mirrors production's `_ => continue`).
-    pub(crate) async fn request_approval(
-        &self,
-        tool_id: &str,
-        name: &str,
-        input: &serde_json::Value,
-        tool: &Arc<dyn Tool>,
-        intent_summary: &Option<String>,
-    ) -> Result<(), String> {
-        let Some(rx) = &self.approval else {
-            return Ok(()); // no approval channel ⇒ gating disabled
-        };
-        // Per-input approval override (slice 20 §E): when a host dispatcher is
-        // attached, consult its `approval_requirement_for` first — a `Some`
-        // answer downgrades/upgrades the gate per input (mirrors production's
-        // `registry.approval_requirement_for(..)` at handle_deepseek_turn). `None`
-        // (no dispatcher, or dispatcher has no opinion) falls back to the
-        // static capability gate.
-        let approval_required = match self
-            .tool_dispatcher
-            .as_ref()
-            .and_then(|d| d.approval_requirement_for(name, input))
-        {
-            Some(req) => req != ApprovalRequirement::Auto,
-            None => requires_approval(&tool.capabilities()),
-        };
-        if !approval_required {
-            return Ok(()); // dispatcher said Auto, or static gate says no
-        }
-        let is_read_only = tool
-            .capabilities()
-            .iter()
-            .any(|c| *c == ToolCapability::ReadOnly);
-        // Emit the approval request so a host UI can prompt and resolve. The
-        // fingerprints are built here (not inside the await) and carried on the
-        // event — the runtime emits them, the host owns the dedup sets (same
-        // split as production).
-        if let Some(tx) = &self.event_tx {
-            let approval_key = build_approval_key(name, input).0;
-            let approval_grouping_key = build_approval_grouping_key(name, input).0;
-            let _ = tx
-                .send(Event::ApprovalRequired {
-                    id: tool_id.to_string(),
-                    tool_name: name.to_string(),
-                    description: tool.description().to_string(),
-                    input: input.clone(),
-                    approval_key,
-                    approval_grouping_key,
-                    intent_summary: if is_read_only {
-                        None
-                    } else {
-                        intent_summary.clone()
-                    },
-                })
-                .await;
-        }
-        // Block on the decision channel, matching by tool id. `tokio::sync::Mutex`
-        // (not `std::sync::Mutex`) so the guard may cross the blocking
-        // `recv().await`. Single consumer ⇒ holding the guard across the await
-        // cannot deadlock. The cancel race (mirrors production's
-        // `await_tool_approval` select over `cancel_token.cancelled()` at
-        // `approval.rs:76-82`) lets a cancelled turn break out of the wait:
-        // cancel wins ⇒ `Err("Request cancelled while awaiting approval")`
-        // (fed back as a tool error; Checkpoint G in `run_inner` then surfaces
-        // `StopReason::Interrupted`).
-        let cancel_token = self.cancel_token.clone();
-        let mut guard = rx.lock().await;
-        loop {
-            let cancelled = async {
-                match &cancel_token {
-                    Some(token) => token.cancelled().await,
-                    None => std::future::pending::<()>().await,
-                }
-            };
-            tokio::select! {
-                biased;
-                _ = cancelled => {
-                    return Err("Request cancelled while awaiting approval".to_string());
-                }
-                decision = guard.recv() => match decision {
-                    Some(ApprovalDecision::Approved { id }) if id == tool_id => return Ok(()),
-                    Some(ApprovalDecision::Denied { id }) if id == tool_id => {
-                        return Err(format!("Tool '{name}' denied by user"));
-                    }
-                    // Sandbox elevation needs `ToolDispatcher::execute` with a
-                    // `sandbox_override`, which the framework `Tool::run` path
-                    // doesn't carry; treat as approved (run with the fixed context).
-                    // By-design gap — threads in at the wire-in step.
-                    Some(ApprovalDecision::RetryWithPolicy { id, .. }) if id == tool_id => {
-                        return Ok(());
-                    }
-                    Some(_) => continue, // stale id for a different call — ignore
-                    None => return Err("Approval channel closed".to_string()),
-                }
-            }
-        }
     }
 }
 
@@ -3740,7 +3385,7 @@ mod tests {
     };
     use crate::tool_state::todo::{SharedTodoList, TodoStatus, new_shared_todo_list};
     use crate::tools::registry::ToolRegistry;
-    use crate::tools::spec::{ToolContext, ToolSpec};
+    use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
     use codesmith_agent::callback::StreamDelta;
     use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
     use codesmith_agent::models::{
@@ -3845,7 +3490,7 @@ mod tests {
     }
 
     /// A `ToolSpec` standing in for a code-execution tool (`exec_shell`): it
-    /// declares `ExecutesCode`, so the static [`requires_approval`] gate fires
+    /// declares `ExecutesCode`, so the static `requires_approval` gate fires
     /// for it — used to exercise the slice 20 §E per-input approval override
     /// (override-downgrade: dispatcher `Auto` ⇒ skip gating despite
     /// `ExecutesCode`; override-upgrade / none-opinion ⇒ gating fires).
@@ -5909,7 +5554,7 @@ mod tests {
     }
 
     /// Build an `ExecSpec` tool registry → framework `ToolSet`. `ExecSpec`
-    /// declares `ExecutesCode`, so the static [`requires_approval`] gate fires
+    /// declares `ExecutesCode`, so the static `requires_approval` gate fires
     /// for it — used by the per-input override tests.
     fn exec_tools() -> Arc<ToolSet> {
         let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/ws")));
@@ -5939,7 +5584,7 @@ mod tests {
     /// - `Some(Required)` / `Some(Suggest)` ⇒ override-**upgrade** (gate
     ///   despite a static read-only capability, since `req != Auto`);
     /// - `None` ⇒ the dispatcher has no opinion ⇒ fall back to the static
-    ///   [`requires_approval`] capability gate.
+    ///   `requires_approval` capability gate.
     /// All other trait methods are stubbed: the executor's tool path goes
     /// through `Tool::run` (via `ToolSpecAdapter`), not `ToolDispatcher::execute`.
     struct FakeDispatcher {
@@ -6529,7 +6174,7 @@ mod tests {
 
     /// No-opinion fallback: `ExecSpec` (static gate ⇒ needs approval) + a
     /// dispatcher with **no opinion** (`None`). The executor must fall back to
-    /// the static [`requires_approval`] capability gate and fire gating —
+    /// the static `requires_approval` capability gate and fire gating —
     /// proving the `None` arm of the override match doesn't silently disable
     /// approval for a tool the static gate would gate.
     #[tokio::test]
