@@ -2999,6 +2999,7 @@ mod streaming;
 mod team_inbox;
 mod tool_catalog;
 mod tool_execution;
+mod turn;
 mod turn_meta;
 
 pub mod host_executor;

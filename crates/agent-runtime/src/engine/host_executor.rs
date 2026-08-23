@@ -24,7 +24,7 @@
 //! ## Absorbed guardrails
 //!
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (with an inline stream reducer,
-//! [`reduce_stream`], that replaced the CORE `accumulate_stream` and emits
+//! [`reduce_stream`](HostAgentExecutor::reduce_stream), that replaced the CORE `accumulate_stream` and emits
 //! streaming deltas to `Callback::on_stream_delta` in real time) and absorbs
 //! the production guardrails slice by slice. Ten are in:
 //!
@@ -49,7 +49,7 @@
 //!    the production `Engine.pending_lsp_blocks` field semantics (an edit on a turn
 //!    that ends before the next request — e.g. a `MaxSteps` halt — surfaces its
 //!    diagnostics on the next turn's first pre-request flush).
-//! 3. **transparent-retry** ([`stream_with_transparent_retry`]) — the **first
+//! 3. **transparent-retry** ([`stream_with_transparent_retry`](HostAgentExecutor::stream_with_transparent_retry)) — the **first
 //!    seam-2 guardrail**. When the stream dies mid-flight before any content is
 //!    committed (`reduce_stream` returns `StreamReduceOutcome::Empty`), the
 //!    executor silently re-issues the SAME request up to
@@ -154,10 +154,10 @@
 //!    rejection → recovery) is absorbed — `stream_with_transparent_retry`
 //!    classifies a pre-stream `Err` and runs the same
 //!    `recover_context_overflow`. See "Known gaps in capacity" below.
-//! 8. **early-tool-start** ([`early_start_safe`] + [`EarlyToolTask`]) — the
+//! 8. **early-tool-start** (`early_start_safe` + [`EarlyToolTask`]) — the
 //!    **second seam-2 guardrail**. When a tool block reaches
-//!    `ContentBlockStop` mid-stream, [`reduce_stream`] finalizes its input and
-//!    — if [`early_start_safe`] passes (read-only + no approval + no
+//!    `ContentBlockStop` mid-stream, [`reduce_stream`](HostAgentExecutor::reduce_stream) finalizes its input and
+//!    — if `early_start_safe` passes (read-only + no approval + no
 //!    code-exec / file-write) — `tokio::spawn`s the tool immediately so its
 //!    result is ready by the time the executor reaches the tool loop, mirroring
 //!    `handle_deepseek_turn`'s `early_tool_start_safe` + `early_tool_tasks`
@@ -305,7 +305,7 @@
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) now flow through the
 //! framework `Callback::on_stream_delta` seam — the inline stream reducer
-//! ([`reduce_stream`]) replaced the CORE `accumulate_stream` call, emitting
+//! ([`reduce_stream`](HostAgentExecutor::reduce_stream)) replaced the CORE `accumulate_stream` call, emitting
 //! each text/thinking delta to the callback in real time (§E inline-stream-
 //! reduction slice). The [`CallbackBridge`] maps them onto the host's
 //! `Event::MessageDelta` / `Event::ThinkingDelta` channel. Block-lifecycle
@@ -386,35 +386,8 @@
 //!   the placeholder. A separate gap, not part of thinking-only *handling*
 //!   (which is about a thinking-*only* response), and not addressed here.
 //!
-//! ## Known gaps in transparent-retry (by design)
-//!
-//! - **bail-on-error gap closed** ✅ — the inline `reduce_stream` reducer (§E
-//!   inline-stream-reduction slice) replaced the CORE `accumulate_stream` call.
-//!   It tracks `any_content_received` and returns `StreamReduceOutcome::Partial`
-//!   (surface partial content, don't retry) when the stream dies after content
-//!   was produced, and `StreamReduceOutcome::Empty` (retry transparently) only
-//!   when no content arrived. This mirrors production's
-//!   `should_transparently_retry_stream` guard (`streaming.rs:81-87`). The old
-//!   `accumulate_stream` dropped partial blocks on the first erroring item, so
-//!   the executor retried even when production would ship partial content — that
-//!   gap is now closed.
-//! - **pre-stream connection errors: reactive recovery absorbed** ✅ — a
-//!   `create_message_stream` `Err` is now classified via
-//!   `is_context_length_error_message` before propagating. A context-length
-//!   rejection triggers `try_recover_context_overflow` (emergency compaction);
-//!   on success the step restarts so the request snapshot picks up the
-//!   compacted transcript, and on failure (or a non-context-length error) the
-//!   turn hard-fails (mirrors `handle_deepseek_turn`). Only mid-flight stream
-//!   errors (from `reduce_stream`) retry transparently; pre-stream errors are
-//!   either recovered or hard-failed.
-//! - **cancel-token short-circuit** ✅ — production's
-//!   `should_transparently_retry_stream` checks `!cancelled` to abort a retry
-//!   loop on a cancelled turn. This executor now mirrors it: Checkpoint C (the
-//!   `Empty` arm) checks `is_cancelled()` and returns
-//!   `StreamRoundOutcome::Interrupted` (no retry); Checkpoint B (stream-open
-//!   race) and Checkpoint D (post-stream `Complete`/`Partial`) are also wired.
-//!   See guardrail 10 (cancel-token) for the full checkpoint map.
-//!
+//! The "known gaps in transparent-retry" inventory moved with the stream code
+//! to the `engine/turn/stream.rs` module docs.
 //! ## Known gaps in approval (by design)
 //!
 //! - **cancel-token race** ✅ — production's `await_tool_approval` selects over
@@ -604,56 +577,8 @@
 //!   itself has no internal cancel check (mirrors production); Checkpoint A is
 //!   the bound. See guardrail 10 (cancel-token).
 //!
-//! ## Known gaps in early-tool-start (by design)
-//!
-//! - **`ToolCallStarted` emitted at stream time ✅** — [`reduce_stream`] fires
-//!   `StreamDelta::ToolCallStarted` on `ContentBlockStop` for tool blocks
-//!   (carrying the wire id), so the UI shows "calling X" before the tool
-//!   executes. The `Callback::on_tool_start` trait now carries the wire `id`,
-//!   so the [`CallbackBridge`] uses the real wire id (no more `bridge-{n}`
-//!   synthesis) and deduplicates: the stream-time `ToolCallStarted` marks the
-//!   id as announced, and the execute-time `on_tool_start` skips re-emitting.
-//! - **static-only safety gate** — [`early_start_safe`] checks
-//!   [`Tool::capabilities`] (`ReadOnly` present AND none of
-//!   `{RequiresApproval, ExecutesCode, WritesFiles}`), mirroring the final
-//!   composite clause of `handle_deepseek_turn`'s `early_tool_start_safe`. Production
-//!   additionally checks `metadata.is_read_only &&
-//!   metadata.supports_parallel && !is_interactive && validate_input().is_ok()
-//!   && approval_requirement_for(...) == Auto` plus a tool-catalog allowlist
-//!   (not-MCP / not-code-execution / not-tool-search). Those per-input /
-//!   per-metadata surfaces are not reachable from the framework `Tool` trait;
-//!   they thread in at the wire-in step (§E design note, same gap as
-//!   [`requires_approval`]). The practical effect: a read-only tool whose
-//!   per-input validation would reject the args is spawned speculatively and
-//!   the (rejected) result is discarded at execute time — wasted work, not a
-//!   correctness bug.
-//! - **no loop-guard at spawn time** — production's `early_tool_start_safe`
-//!   consults the `LoopGuard` so a 3rd-identical call isn't speculatively
-//!   started (it'd be blocked at execute time anyway). This executor spawns
-//!   without consulting `LoopGuard` to avoid threading a `&mut LoopGuard`
-//!   through the streaming path (which would double-count the attempt — once at
-//!   spawn, once at execute). The execute-time `record_attempt` is the single
-//!   source of truth: a speculatively-started task for a call that the
-//!   loop-guard blocks is popped + `Drop`-aborted in the tool loop (the
-//!   `AttemptDecision::Block` arm). So the wasted work is a spawned task that's
-//!   immediately aborted — cheap for a read-only tool.
-//! - **no per-input approval / interactive checks** — `early_start_safe`
-//!   statically excludes `RequiresApproval`-tagged tools, but a tool that's
-//!   `Auto`-by-default yet `Required` for a specific input (e.g. `exec_shell rm`)
-//!   isn't visible from `capabilities()`. Such a tool would be speculatively
-//!   started and, if the execute-time approval comes back `Required`, the task
-//!   is popped + `Drop`-aborted (the approval `Err(denial)` arm). Again wasted
-//!   work, not a correctness bug. Threads in with the per-input approval
-//!   surface at the wire-in step.
-//! - **cancel-token short-circuit** — by design (N/A): production's
-//!   `early_tool_start_safe` doesn't check cancel at spawn time either; a
-//!   cancelled turn still spawns speculative tasks for tool blocks that close
-//!   before the stream errors, but the `early_tasks.clear()` at the end of the
-//!   step (and `Drop` on map drop) aborts them. The work is bounded by the
-//!   number of tool blocks in the partial stream. Checkpoint A (loop-top) and
-//!   Checkpoint D (post-stream) bound the turn before the next step's
-//!   speculative dispatch.
-//!
+//! The "known gaps in early-tool-start" inventory moved with the stream code
+//! to the `engine/turn/stream.rs` module docs.
 //! ## Known gaps in subagent (by design)
 //!
 //! - **blocking hold absorbed ✅** — production, when the model returns no
@@ -699,71 +624,52 @@
 //!
 //! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use futures_util::stream::FuturesUnordered;
-use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
-use codesmith_agent::callback::{Callback, StopReason, StreamDelta};
+use codesmith_agent::callback::{Callback, StopReason};
 use codesmith_agent::executor::{AgentExecutor, AgentExecutorConfig};
-use codesmith_agent::llm_client::{LlmClientHandle, StreamEventBox};
+use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::memory::ChatHistory;
-use codesmith_agent::models::{
-    ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, StreamEvent,
-    SystemPrompt, ToolCaller, Usage,
-};
-use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
+use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
+use codesmith_agent::tools::{Tool, ToolCapability, ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
-use super::dispatch::{
-    plan_tool_execution_batches, ToolExecutionBatch, ToolExecutionPlan,
-};
 use super::capacity_flow::{
-    replay_and_push_verification_note, reset_history_to_latest_user_and_verified,
-    trim_oldest_messages_to_budget_history, CapacityGateProbe,
+    CapacityGateProbe, replay_and_push_verification_note,
+    reset_history_to_latest_user_and_verified, trim_oldest_messages_to_budget_history,
 };
 use super::context::{
-    compact_tool_result_for_context, context_input_budget_for_provider,
-    estimate_input_tokens_conservative, is_context_length_error_message,
-    MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
+    MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP, compact_tool_result_for_context,
+    context_input_budget_for_provider, estimate_input_tokens_conservative,
 };
-use super::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
+use super::loop_guard::LoopGuard;
 use super::lsp_hooks::edit_file_paths;
 use super::summarize_text;
+use super::turn::{EarlyToolTask, StreamRoundOutcome};
 use super::{CapacityDecision, GuardrailAction, ReplayOutcome, TargetedRefreshOutcome};
-use crate::subagent::SubAgentCompletion;
-use tokio_util::sync::CancellationToken;
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
 use crate::compaction::micro_compact::{
-    micro_compact_messages, should_trigger_micro_compact, MicroCompactState,
+    MicroCompactState, micro_compact_messages, should_trigger_micro_compact,
 };
-use crate::compaction::{compact_messages_safe, should_compact, CompactionConfig};
+use crate::compaction::{CompactionConfig, compact_messages_safe, should_compact};
 use crate::config_types::ApiProvider;
-use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
+use crate::error_taxonomy::ErrorCategory;
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
-use crate::lsp_diagnostics::{render_blocks as render_lsp_blocks, DiagnosticBlock};
+use crate::lsp_diagnostics::{DiagnosticBlock, render_blocks as render_lsp_blocks};
+use crate::subagent::SubAgentCompletion;
 use crate::tool_dispatch::ToolDispatcher;
 use crate::tools::approval_cache::{build_approval_grouping_key, build_approval_key};
 use crate::tools::spec::ApprovalRequirement;
 use crate::working_set::WorkingSet;
-
-/// The `ToolResult` fed back when the loop-guard blocks an identical repeat
-/// call (mirrors `handle_deepseek_turn`'s `loop_guard_block_tool_result`). Duplicated here
-/// rather than imported to keep this slice additive — zero production call-site
-/// changes; a later cleanup can lift it into `loop_guard` proper as the single
-/// source of truth.
-fn block_tool_result(message: String) -> ToolResult {
-    ToolResult::error(message).with_metadata(serde_json::json!({
-        "loop_guard": "identical_tool_call"
-    }))
-}
+use tokio_util::sync::CancellationToken;
 
 /// Whether a tool requires user approval before execution, derived from its
 /// declared capabilities. Mirrors `ToolSpec::approval_requirement()`'s default
@@ -779,7 +685,7 @@ fn block_tool_result(message: String) -> ToolResult {
 /// and any `ToolSpec::approval_requirement()` overrides that don't declare one
 /// of these capabilities are not visible here; they thread in at the wire-in
 /// step when the executor consults a `ToolDispatcher`.
-fn requires_approval(caps: &[ToolCapability]) -> bool {
+pub(crate) fn requires_approval(caps: &[ToolCapability]) -> bool {
     caps.iter().any(|c| {
         matches!(
             c,
@@ -788,25 +694,6 @@ fn requires_approval(caps: &[ToolCapability]) -> bool {
                 | ToolCapability::WritesFiles
         )
     })
-}
-
-/// Whether a tool is a safe candidate for **early speculative dispatch**
-/// (early-tool-start, §E): the read-only, parallel-safe, no-approval, no-side-
-/// effect tools whose results can be pre-computed during streaming and reused
-/// at execute time (mirrors `handle_deepseek_turn`'s `early_tool_start_safe` final composite
-/// gate). The framework `Tool` trait exposes only `capabilities()`, so this is a
-/// **static approximation**: `ReadOnly` present AND none of `{RequiresApproval,
-/// ExecutesCode, WritesFiles}`. Production additionally checks
-/// `metadata.is_read_only && metadata.supports_parallel && !is_interactive &&
-/// validate_input().is_ok() && approval_requirement_for(...) == Auto` plus a
-/// tool-catalog allowlist (not-MCP / not-code-execution / not-tool-search) —
-/// those per-input / per-metadata surfaces are not reachable from the framework
-/// `Tool` and thread in at the wire-in step (§E design note, same gap as
-/// [`requires_approval`]). `Network` / `Sandboxable` capabilities are not
-/// disqualifying (a read-only network fetch is safe to start early).
-fn early_start_safe(caps: &[ToolCapability]) -> bool {
-    let read_only = caps.iter().any(|c| *c == ToolCapability::ReadOnly);
-    read_only && !requires_approval(caps)
 }
 
 /// Cap on the approval intent-summary length. (Relocated from the retired
@@ -832,7 +719,10 @@ fn approval_intent_summary(content: &[ContentBlock]) -> Option<String> {
         return None;
     }
     let mut chars = trimmed.chars();
-    let mut summary: String = chars.by_ref().take(APPROVAL_INTENT_SUMMARY_MAX_CHARS).collect();
+    let mut summary: String = chars
+        .by_ref()
+        .take(APPROVAL_INTENT_SUMMARY_MAX_CHARS)
+        .collect();
     if chars.next().is_some() {
         summary.push_str("...");
     }
@@ -844,10 +734,7 @@ fn approval_intent_summary(content: &[ContentBlock]) -> Option<String> {
 /// `handle_deepseek_turn`). Hold fires when there are already-queued
 /// completions OR children still running — so the turn waits for a child to
 /// finish rather than ending prematurely.
-fn should_hold_turn_for_subagents(
-    queued_completions: usize,
-    running_children: usize,
-) -> bool {
+fn should_hold_turn_for_subagents(queued_completions: usize, running_children: usize) -> bool {
     queued_completions > 0 || running_children > 0
 }
 
@@ -868,11 +755,7 @@ fn should_emit_thinking_only_status(
     steers_pending: bool,
     holding_for_subagents: bool,
 ) -> bool {
-    tool_uses_empty
-        && turn_error_is_none
-        && !cancelled
-        && !steers_pending
-        && !holding_for_subagents
+    tool_uses_empty && turn_error_is_none && !cancelled && !steers_pending && !holding_for_subagents
 }
 
 /// Build the `<codesmith:runtime_event kind="subagent_completion">` sentinel
@@ -991,9 +874,7 @@ impl CompactionProbe {
             config,
             workspace,
             micro_state: Arc::new(std::sync::Mutex::new(MicroCompactState::default())),
-            circuit_breaker: Arc::new(std::sync::Mutex::new(
-                CompactionCircuitBreaker::new(),
-            )),
+            circuit_breaker: Arc::new(std::sync::Mutex::new(CompactionCircuitBreaker::new())),
         }
     }
 
@@ -1027,7 +908,8 @@ impl CompactionProbe {
 pub struct ReinjectProbe {
     plan_state: crate::tool_state::plan::SharedPlanState,
     todos: crate::tool_state::todo::SharedTodoList,
-    recent_read_files: Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
+    recent_read_files:
+        Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
     /// Model id used by [`compact_tool_result_for_context`] (model-dependent
     /// context limits) when observing a `read_file` result into
     /// `recent_read_files`. Mirrors the retired `handle_deepseek_turn`'s call
@@ -1055,7 +937,9 @@ impl ReinjectProbe {
     pub fn new(
         plan_state: crate::tool_state::plan::SharedPlanState,
         todos: crate::tool_state::todo::SharedTodoList,
-        recent_read_files: Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
+        recent_read_files: Arc<
+            std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>,
+        >,
         model: String,
         api_provider: ApiProvider,
     ) -> Self {
@@ -1090,7 +974,11 @@ impl ReinjectProbe {
     /// executor's tool-result path when a `read_file` tool succeeds, so the
     /// data is live for the next compaction reinject.
     pub fn record_read_file_result(&self, input: &serde_json::Value, output_for_context: &str) {
-        crate::session::record_read_file_result_into(&self.recent_read_files, input, output_for_context);
+        crate::session::record_read_file_result_into(
+            &self.recent_read_files,
+            input,
+            output_for_context,
+        );
     }
 }
 
@@ -1106,8 +994,8 @@ impl ReinjectProbe {
 /// local [`MicroCompactState`] (best-effort pass; the persistent micro-compact
 /// state lives on [`CompactionProbe`] if present).
 pub struct CapacityProbe {
-    api_provider: ApiProvider,
-    model: String,
+    pub(crate) api_provider: ApiProvider,
+    pub(crate) model: String,
     compaction_config: CompactionConfig,
     workspace: PathBuf,
 }
@@ -1252,126 +1140,6 @@ enum CapacityPreflight {
     Fail(String),
 }
 
-/// Accumulator for a single content block being built from streaming deltas.
-/// Mirrors `accumulate_stream`'s local `BlockBuild` (in
-/// `codesmith-agent::executor`) — kept here as a private duplicate so the
-/// inline reducer can emit deltas *while* accumulating, which the CORE reducer
-/// cannot (it has no `Callback` handle). The `BTreeMap<u32, BlockBuild>` keying
-/// preserves wire order (block indices are monotonic but not necessarily
-/// contiguous, so `BTreeMap` not `Vec`).
-enum BlockBuild {
-    Text(String),
-    Thinking(String),
-    ToolUse {
-        id: String,
-        name: String,
-        input_buf: String,
-        start_input: serde_json::Value,
-        caller: Option<ToolCaller>,
-    },
-}
-
-/// Resolve a tool block's final input from its accumulated `input_buf`
-/// (streamed `InputJsonDelta` fragments) with a fallback to the
-/// `start_input` carried by `ContentBlockStart::ToolUse`, and finally to an
-/// empty object — the same logic as the CORE `accumulate_stream`'s tail.
-/// Extracted so both [`finalize_blocks`] (at stream end) and the early-start
-/// spawn (at `ContentBlockStop`, mid-stream) finalize identically.
-fn finalize_tool_input(input_buf: &str, start_input: &serde_json::Value) -> serde_json::Value {
-    if !input_buf.is_empty() {
-        serde_json::from_str(input_buf).unwrap_or(serde_json::Value::Null)
-    } else if !start_input.is_null() {
-        start_input.clone()
-    } else {
-        serde_json::Value::Object(serde_json::Map::new())
-    }
-}
-
-/// A speculatively-dispatched read-only tool task started during streaming
-/// (early-tool-start, §E). When a `ContentBlockStop` for a tool block lands
-/// mid-stream, [`reduce_stream`](HostAgentExecutor::reduce_stream) checks
-/// [`early_start_safe`] and, if the tool qualifies, spawns it on the runtime
-/// so its result is ready by the time the executor reaches the tool loop. At
-/// execute time the executor pops the task by wire `id`, re-verifies the
-/// name + input (the model could in principle revise args after the block
-/// closed), and awaits the `JoinHandle` to reuse the result instead of
-/// re-running the tool (mirrors `handle_deepseek_turn`'s `early_tool_tasks` map +
-/// `EarlyToolTask`).
-///
-/// `Drop` aborts the spawned task so an unreused / orphaned task (e.g. a
-/// block that didn't survive into the parsed `tool_uses`, or a call blocked
-/// by the loop-guard / denied approval at execute time) never leaks a
-/// background task. Aborting a task that already completed is a no-op, so the
-/// reuse path (await then drop) is safe. The handle is wrapped in `Option` so
-/// the reuse path can [`Option::take`] it out for `.await` — a type that
-/// implements `Drop` can't otherwise let a field be moved out of it.
-struct EarlyToolTask {
-    /// Tool name (re-verified at execute time).
-    name: String,
-    /// Finalized input (re-verified at execute time).
-    input: serde_json::Value,
-    /// The speculative task. `Some` until the reuse path [`Option::take`]s
-    /// it for `.await`; aborted on every other path (via `Drop`).
-    handle: Option<tokio::task::JoinHandle<Result<ToolResult, ToolError>>>,
-}
-
-impl Drop for EarlyToolTask {
-    fn drop(&mut self) {
-        if let Some(handle) = &self.handle {
-            // `abort` takes `&self`; safe on a completed task (no-op).
-            handle.abort();
-        }
-    }
-}
-
-/// Per-tool dispatch outcome carried from the batch-dispatch phase to the
-/// sequential post-batch phase (slice 40 §E — seam-3 parallel dispatch).
-/// `blocked` marks loop-guard interventions (a guard-blocked call records no
-/// `record_outcome` / LSP / read-file, mirroring the prior sequential loop's
-/// `!blocked` guard). Local struct instead of `dispatch::ToolExecOutcome` to
-/// avoid that type's unused `started_at` / `context_patch` fields and to carry
-/// the `blocked` flag the post-batch pass needs.
-struct DispatchedTool {
-    index: usize,
-    id: String,
-    name: String,
-    input: serde_json::Value,
-    result: Result<ToolResult, ToolError>,
-    blocked: bool,
-}
-
-/// Finalize an accumulated `BlockBuild` map into assembled `ContentBlock`s.
-/// This is the same assembly logic as `accumulate_stream`'s tail — extracted
-/// so the inline reducer can call it both on clean completion and on
-/// mid-flight error (partial content).
-fn finalize_blocks(blocks: BTreeMap<u32, BlockBuild>) -> Vec<ContentBlock> {
-    blocks
-        .into_values()
-        .map(|build| match build {
-            BlockBuild::Text(text) => ContentBlock::Text {
-                text,
-                cache_control: None,
-            },
-            BlockBuild::Thinking(thinking) => ContentBlock::Thinking { thinking },
-            BlockBuild::ToolUse {
-                id,
-                name,
-                input_buf,
-                start_input,
-                caller,
-            } => {
-                let input = finalize_tool_input(&input_buf, &start_input);
-                ContentBlock::ToolUse {
-                    id,
-                    name,
-                    input,
-                    caller,
-                }
-            }
-        })
-        .collect()
-}
-
 /// `Option<u32>` saturating add — mirrors `turn.rs::add_optional_usage`
 /// (`Some` + `Some` → saturating add; `Some` + `None` → keep the `Some`;
 /// `None` + `None` → `None`). Defined inline here rather than re-exported
@@ -1384,75 +1152,6 @@ fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
         (None, Some(d)) => Some(d),
         (None, None) => None,
     }
-}
-
-/// Outcome of the inline stream reducer ([`HostAgentExecutor::reduce_stream`]).
-/// Replaces the CORE `accumulate_stream`'s binary `Result<(Vec<ContentBlock>,
-/// Option<String>)>` with a three-way result that distinguishes "clean
-/// completion" from "partial content + error" from "empty + error" — the
-/// distinction drives the transparent-retry decision (only `Empty` retries).
-enum StreamReduceOutcome {
-    /// Stream completed cleanly (either `MessageStop` seen or the stream ended
-    /// without error). The assembled content blocks and stop reason are
-    /// available.
-    Complete {
-        content: Vec<ContentBlock>,
-        stop_reason: Option<String>,
-        /// Token usage captured for this stream (slice 21 §E):
-        /// `MessageStart` sets input tokens, `MessageDelta` overwrites with
-        /// the latest cumulative usage (replace-within-stream — mirrors the
-        /// retired `handle_deepseek_turn`). The caller adds it to the per-turn
-        /// total (mirrors `handle_deepseek_turn`'s `turn.add_usage`).
-        usage: Usage,
-    },
-    /// The stream produced content (text/thinking/tool deltas arrived) and
-    /// then died mid-flight. The partial content assembled so far is available
-    /// — the caller should surface it (not retry), matching production's
-    /// `any_content_received` guard (`handle_deepseek_turn`: once the user has
-    /// seen output, retrying double-bills and loses the partial turn).
-    Partial {
-        content: Vec<ContentBlock>,
-        stop_reason: Option<String>,
-        error: String,
-        /// Same capture as [`StreamReduceOutcome::Complete`]'s `usage` — the
-        /// partial stream's usage up to the mid-flight death (surfaced, not
-        /// retried, so its tokens still count).
-        usage: Usage,
-    },
-    /// The stream died before any content was produced (only `MessageStart`
-    /// or nothing arrived). Safe to retry transparently — the provider hasn't
-    /// billed for output and the user has seen nothing (mirrors
-    /// `should_transparently_retry_stream` in `streaming.rs:81`).
-    Empty { error: String },
-}
-
-/// Outcome of one (possibly retried) stream round in
-/// [`HostAgentExecutor::stream_with_transparent_retry`]. Replaces the binary
-/// `Result<(Vec<ContentBlock>, Option<String>)>` so the caller can distinguish
-/// "content produced — proceed" from "reactive recovery succeeded — restart
-/// the step" (the seam-2 reactive context-length recovery signal).
-enum StreamRoundOutcome {
-    /// The stream produced content (clean completion or partial surfacing).
-    /// The assembled blocks and stop reason feed back into the transcript.
-    Content {
-        content: Vec<ContentBlock>,
-        stop_reason: Option<String>,
-        /// Per-stream usage threaded up from [`reduce_stream`] (slice 21 §E)
-        /// — `run_inner` adds it to the per-turn total via
-        /// [`HostAgentExecutor::accumulate_usage`].
-        usage: Usage,
-    },
-    /// A pre-stream context-length rejection was classified (via
-    /// [`is_context_length_error_message`]) and emergency compaction succeeded
-    /// — the caller should `continue` the step loop so the request snapshot
-    /// picks up the compacted transcript (mirrors `handle_deepseek_turn`).
-    RecoveredContextOverflow,
-    /// The turn was cancelled during the stream phase (Checkpoint B race at
-    /// stream-open, Checkpoint C guard in the transparent-retry `Empty` arm,
-    /// or Checkpoint D post-stream gate). The caller should surface
-    /// [`StopReason::Interrupted`] — mirroring production's
-    /// `TurnOutcomeStatus::Interrupted` (`handle_deepseek_turn`).
-    Interrupted,
 }
 
 /// Host-side [`AgentExecutor`] — the growing home for the production turn loop.
@@ -1468,8 +1167,8 @@ enum StreamRoundOutcome {
 /// transcript is mutated in place through [`ChatHistory`].
 pub struct HostAgentExecutor {
     client: LlmClientHandle,
-    tools: Arc<ToolSet>,
-    callback: Arc<dyn Callback>,
+    pub(crate) tools: Arc<ToolSet>,
+    pub(crate) callback: Arc<dyn Callback>,
     config: AgentExecutorConfig,
     event_tx: Option<mpsc::Sender<Event>>,
     /// Optional LSP diagnostics probe (§E). `None` ⇒ collect/flush no-op.
@@ -1487,7 +1186,7 @@ pub struct HostAgentExecutor {
     /// accumulate — the receiver merely persists across `run` invocations on
     /// the same executor so a steer queued between turns is picked up on the
     /// next turn's first pre-request drain.
-    steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
+    pub(crate) steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
     /// Optional approval-decision receiver (§E). `None` ⇒ approval gating is a
     /// no-op (all tools run ungated — for embeds/tests that never prompt).
     ///
@@ -1521,7 +1220,7 @@ pub struct HostAgentExecutor {
     /// is stateless — the per-run recovery counter is a local in `run_inner`,
     /// and the forced-compaction micro-compact pass uses a fresh
     /// [`MicroCompactState`].
-    capacity: Option<CapacityProbe>,
+    pub(crate) capacity: Option<CapacityProbe>,
     /// Optional sub-agent completion receiver (§E). `None` ⇒ the post-stream
     /// completion drain is a no-op (the turn ends on the first no-tool-call
     /// round). When the model finishes a step with no tool calls, queued
@@ -1566,7 +1265,7 @@ pub struct HostAgentExecutor {
     /// sub-agent blocking hold race (Checkpoint E) is absorbed ✅ — it lives
     /// in the hold's own `biased select!` cancel arm. Early-tool-start spawn
     /// has no production cancel guard (bounded by `early_tasks.clear()`/`Drop`).
-    cancel_token: Option<CancellationToken>,
+    pub(crate) cancel_token: Option<CancellationToken>,
     /// Optional host tool-dispatcher (slice 20 §E) for per-input approval
     /// overrides. `None` (default; all embeds/tests) ⇒ `request_approval`
     /// falls back to the static [`requires_approval`] capability gate. When
@@ -1575,7 +1274,7 @@ pub struct HostAgentExecutor {
     /// production's `registry.approval_requirement_for(..)` (`handle_deepseek_turn`).
     /// A `Some(Auto)` answer downgrades an `ExecutesCode` tool to
     /// no-approval for a specific safe input.
-    tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
+    pub(crate) tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
     /// Optional `<turn_meta>` enrichment probe (slice 22 §E). `None` (default;
     /// all embeds/tests) ⇒ steer / LSP-flush pushes emit plain user text with
     /// no working-set observe, preserving the pre-slice-22 behavior. When
@@ -1600,7 +1299,7 @@ pub struct HostAgentExecutor {
     /// from [`turn_meta`].
     reinject: Option<ReinjectProbe>,
     /// Per-turn token usage accumulated across streams (slice 21 §E). The
-    /// inline stream reducer ([`reduce_stream`]) captures `MessageStart` +
+    /// inline stream reducer ([`reduce_stream`](Self::reduce_stream)) captures `MessageStart` +
     /// `MessageDelta` usage (replace-within-stream — the latest cumulative
     /// value wins, mirroring the retired `handle_deepseek_turn`);
     /// `run_inner` adds each completed stream's usage here (mirrors
@@ -1715,61 +1414,61 @@ pub struct HostAgentExecutor {
 }
 
 impl HostAgentExecutor {
-/// Construct from the four collaborators + config + an optional guardrail
-/// status channel (`None` for embeds that don't surface guardrail status) +
-/// an optional [`LspProbe`] (`None` ⇒ LSP collect/flush disabled) + an
-/// optional steer input receiver (`None` ⇒ steer drain disabled) + an
-/// optional approval-decision receiver (`None` ⇒ approval gating disabled) +
-/// an optional [`CompactionProbe`] (`None` ⇒ compaction disabled) + an
-/// optional [`CapacityProbe`] (`None` ⇒ capacity preflight disabled) + an
-/// optional sub-agent completion receiver (`None` ⇒ the post-stream
-/// completion drain is disabled — the turn ends on the first no-tool-call
-/// round) + an optional [`CancellationToken`] (`None` ⇒ cancel checks are
-/// no-ops) + an optional sub-agent manager handle (`None` ⇒ the blocking hold
-/// for still-running children is disabled — no `running_count` to check).
-#[must_use]
-pub fn new(
-    client: LlmClientHandle,
-    tools: Arc<ToolSet>,
-    callback: Arc<dyn Callback>,
-    config: AgentExecutorConfig,
-    event_tx: Option<mpsc::Sender<Event>>,
-    lsp: Option<LspProbe>,
-    steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
-    approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
-    compaction: Option<CompactionProbe>,
-    capacity: Option<CapacityProbe>,
-    subagent: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>,
-    cancel_token: Option<CancellationToken>,
-    subagent_api: Option<Arc<dyn crate::host_services::SubAgentApi>>,
-) -> Self {
-    Self {
-        client,
-        tools,
-        callback,
-        config,
-        event_tx,
-        lsp,
-        steer,
-        approval,
-        compaction,
-        capacity,
-        subagent,
-        cancel_token,
-        subagent_api,
-        tool_dispatcher: None,
-        turn_meta: None,
-        reinject: None,
-        usage: std::sync::Mutex::new(Usage::default()),
-        pending_compaction_summary: std::sync::Mutex::new(None),
-        pending_post_compact_cleanup: std::sync::Mutex::new(false),
-        capacity_gate: None,
-        pending_capacity_decision: std::sync::Mutex::new(None),
-        pending_replay_outcome: std::sync::Mutex::new(None),
-        pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
-        extension: None,
+    /// Construct from the four collaborators + config + an optional guardrail
+    /// status channel (`None` for embeds that don't surface guardrail status) +
+    /// an optional [`LspProbe`] (`None` ⇒ LSP collect/flush disabled) + an
+    /// optional steer input receiver (`None` ⇒ steer drain disabled) + an
+    /// optional approval-decision receiver (`None` ⇒ approval gating disabled) +
+    /// an optional [`CompactionProbe`] (`None` ⇒ compaction disabled) + an
+    /// optional [`CapacityProbe`] (`None` ⇒ capacity preflight disabled) + an
+    /// optional sub-agent completion receiver (`None` ⇒ the post-stream
+    /// completion drain is disabled — the turn ends on the first no-tool-call
+    /// round) + an optional [`CancellationToken`] (`None` ⇒ cancel checks are
+    /// no-ops) + an optional sub-agent manager handle (`None` ⇒ the blocking hold
+    /// for still-running children is disabled — no `running_count` to check).
+    #[must_use]
+    pub fn new(
+        client: LlmClientHandle,
+        tools: Arc<ToolSet>,
+        callback: Arc<dyn Callback>,
+        config: AgentExecutorConfig,
+        event_tx: Option<mpsc::Sender<Event>>,
+        lsp: Option<LspProbe>,
+        steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
+        approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
+        compaction: Option<CompactionProbe>,
+        capacity: Option<CapacityProbe>,
+        subagent: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>,
+        cancel_token: Option<CancellationToken>,
+        subagent_api: Option<Arc<dyn crate::host_services::SubAgentApi>>,
+    ) -> Self {
+        Self {
+            client,
+            tools,
+            callback,
+            config,
+            event_tx,
+            lsp,
+            steer,
+            approval,
+            compaction,
+            capacity,
+            subagent,
+            cancel_token,
+            subagent_api,
+            tool_dispatcher: None,
+            turn_meta: None,
+            reinject: None,
+            usage: std::sync::Mutex::new(Usage::default()),
+            pending_compaction_summary: std::sync::Mutex::new(None),
+            pending_post_compact_cleanup: std::sync::Mutex::new(false),
+            capacity_gate: None,
+            pending_capacity_decision: std::sync::Mutex::new(None),
+            pending_replay_outcome: std::sync::Mutex::new(None),
+            pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
+            extension: None,
+        }
     }
-}
 
     /// Opt into per-input approval consultation (slice 20 §E). The production
     /// wire-in calls this after [`new`] with `plan.tool_registry.clone()` so
@@ -1931,10 +1630,7 @@ pub fn new(
     /// iteration (never mutated), and the slot accumulates *only* summaries, so
     /// `merge(base, peek(cumulative))` recomputes `base + cumulative` each step
     /// — never `base + cumulative + cumulative`.
-    fn refresh_system_prompt_snapshot(
-        &self,
-        base: Option<&SystemPrompt>,
-    ) -> Option<SystemPrompt> {
+    fn refresh_system_prompt_snapshot(&self, base: Option<&SystemPrompt>) -> Option<SystemPrompt> {
         crate::compaction::merge_system_prompts(base, self.peek_pending_compaction_summary())
     }
 
@@ -2036,21 +1732,17 @@ pub fn new(
         let mut acc = self.usage.lock().expect("usage mutex poisoned");
         acc.input_tokens = acc.input_tokens.saturating_add(delta.input_tokens);
         acc.output_tokens = acc.output_tokens.saturating_add(delta.output_tokens);
-        acc.prompt_cache_hit_tokens = add_optional_usage(
-            acc.prompt_cache_hit_tokens,
-            delta.prompt_cache_hit_tokens,
-        );
-        acc.prompt_cache_miss_tokens = add_optional_usage(
-            acc.prompt_cache_miss_tokens,
-            delta.prompt_cache_miss_tokens,
-        );
+        acc.prompt_cache_hit_tokens =
+            add_optional_usage(acc.prompt_cache_hit_tokens, delta.prompt_cache_hit_tokens);
+        acc.prompt_cache_miss_tokens =
+            add_optional_usage(acc.prompt_cache_miss_tokens, delta.prompt_cache_miss_tokens);
         acc.reasoning_tokens = add_optional_usage(acc.reasoning_tokens, delta.reasoning_tokens);
     }
 
     /// Surface a guardrail status message onto the host's UI `Event` channel,
     /// if one was supplied. Guardrails emit here directly rather than through
     /// the framework `Callback` (see the module docs).
-    async fn emit_status(&self, message: String) {
+    pub(crate) async fn emit_status(&self, message: String) {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(Event::status(message)).await;
         }
@@ -2059,601 +1751,10 @@ pub fn new(
     /// Whether the turn has been cancelled. `None` cancel token ⇒ never
     /// cancelled (embeds/tests that don't need cancellation). Mirrors production
     /// `self.cancel_token.is_cancelled()` checks at every turn-loop checkpoint.
-    fn is_cancelled(&self) -> bool {
-        self.cancel_token.as_ref().map_or(false, |t| t.is_cancelled())
-    }
-
-    /// Inline stream reducer — replaces the CORE `accumulate_stream` call so
-    /// the executor can emit streaming deltas to the [`Callback`] in real time
-    /// and track `any_content_received` (closing the transparent-retry
-    /// bail-on-error gap). This is the §E inline-stream-reduction slice.
-    ///
-    /// The accumulation logic mirrors `accumulate_stream`
-    /// (`codesmith-agent::executor::mod.rs`): a `BTreeMap<u32, BlockBuild>`
-    /// keyed by the wire content-block index, with text/thinking deltas
-    /// appended to their block's buffer and tool-input JSON deltas buffered
-    /// for a final `serde_json::from_str` at assembly time. The key difference
-    /// from the CORE reducer is that each text/thinking delta is **also**
-    /// forwarded to [`Callback::on_stream_delta`] before being buffered, so
-    /// the host's UI lights up as the stream arrives (not after the whole
-    /// stream is buffered).
-    ///
-    /// `any_content_received` flips on the first non-`MessageStart` event —
-    /// the moment we cross from "stream not yet productive" (eligible for
-    /// transparent retry) into "the model has billed for output" (must
-    /// surface). On a mid-flight `Err`, this drives the
-    /// [`StreamReduceOutcome`] variant: `Empty` (no content → safe to retry)
-    /// vs `Partial` (content received → surface, don't retry). This mirrors
-    /// production's `any_content_received` guard in
-    /// `should_transparently_retry_stream` (`streaming.rs:81-87`).
-    ///
-    /// Tool-input JSON deltas (`Delta::InputJsonDelta`) are **not** emitted
-    /// to the callback — they're assembled into the `ToolUse` block's input,
-    /// which isn't user-visible until `on_llm_end`. Block-lifecycle events
-    /// (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
-    /// `MessageComplete`) **are** synthesized here, at `ContentBlockStart` /
-    /// `ContentBlockStop` for text/thinking blocks — letting the host's UI frame
-    /// a block before its first delta and mark it done when its last delta
-    /// lands (matching production's `handle_deepseek_turn`).
-    ///
-    /// **Early speculative dispatch (early-tool-start):** when a tool block
-    /// reaches `ContentBlockStop`, its input is finalized and — if the tool is
-    /// [`early_start_safe`] — a [`tokio::spawn`] runs it immediately so its
-    /// result is ready by the time the executor reaches the tool loop. The
-    /// `JoinHandle` is stored in `early_tasks` keyed by the wire tool id; the
-    /// tool loop pops it by id, re-verifies name + input, and awaits it to
-    /// reuse the result (mirrors `handle_deepseek_turn`'s `early_tool_tasks` map +
-    /// `early_tool_start_safe`). `Event::ToolCallStarted` is also fired on
-    /// `ContentBlockStop` for tool blocks via `StreamDelta::ToolCallStarted`
-    /// (carrying the wire id) — the `CallbackBridge` deduplicates this
-    /// stream-time emission against the execute-time `on_tool_start`.
-    async fn reduce_stream(
-        &self,
-        mut stream: StreamEventBox,
-        early_tasks: &mut HashMap<String, EarlyToolTask>,
-        pending_steers: &mut Vec<String>,
-    ) -> StreamReduceOutcome {
-        let mut blocks: BTreeMap<u32, BlockBuild> = BTreeMap::new();
-        let mut stop_reason: Option<String> = None;
-        let mut any_content_received = false;
-        // Per-stream usage (slice 21 §E): `MessageStart` sets input tokens,
-        // `MessageDelta` overwrites with the latest cumulative usage
-        // (replace-within-stream — mirrors the retired `handle_deepseek_turn`).
-        // Returned on `Complete`/`Partial` so the caller adds it to the
-        // per-turn total (mirrors `handle_deepseek_turn`). `Empty`
-        // carries none — a retried stream's partial usage is dropped, matching
-        // production's `continue` before `turn.add_usage`.
-        let mut usage = Usage {
-            input_tokens: 0,
-            output_tokens: 0,
-            ..Usage::default()
-        };
-
-        while let Some(item) = stream.next().await {
-            let event = match item {
-                Ok(e) => e,
-                Err(e) => {
-                    // Stream died mid-flight. Whether to retry depends on
-                    // whether any content was produced before the error.
-                    let error = e.to_string();
-                    if any_content_received {
-                        let content = finalize_blocks(std::mem::take(&mut blocks));
-                        return StreamReduceOutcome::Partial {
-                            content,
-                            stop_reason,
-                            error,
-                            usage,
-                        };
-                    }
-                    return StreamReduceOutcome::Empty { error };
-                }
-            };
-
-            // Flip on the first non-MessageStart event — that's the moment we
-            // cross from "stream not yet productive" into "the model has billed
-            // for output" (mirrors `handle_deepseek_turn`).
-            if !any_content_received && !matches!(event, StreamEvent::MessageStart { .. }) {
-                any_content_received = true;
-            }
-
-            // Mid-stream steer buffer (mirrors `handle_deepseek_turn`): drain
-            // any steers that arrived while the stream was producing. These are
-            // buffered (not injected mid-stream) and flushed by `run_inner`
-            // post-stream / post-tool — without this, steers arriving during the
-            // last step's streaming would be discarded by the next turn's stale
-            // drain. The tokio mutex guard is taken and dropped within the `{ }`
-            // block before `emit_status().await` — no lock crosses an `await`
-            // (matching `drain_steers`).
-            if let Some(rx) = &self.steer {
-                loop {
-                    let steer = {
-                        let mut guard = rx.lock().await;
-                        match guard.try_recv() {
-                            Ok(s) => s,
-                            Err(_) => break,
-                        }
-                    };
-                    let steer = steer.trim().to_string();
-                    if steer.is_empty() {
-                        continue;
-                    }
-                    pending_steers.push(steer.clone());
-                    self.emit_status(format!(
-                        "Steer input queued: {}",
-                        summarize_text(&steer, 120)
-                    ))
-                    .await;
-                }
-            }
-
-            match event {
-                StreamEvent::MessageStart { message } => {
-                    // Replace the running usage with the message's usage
-                    // (input tokens + cache tokens arrive here for Anthropic
-                    // / OpenAI). Mirrors the retired `handle_deepseek_turn`
-                    // `usage = message.usage;`.
-                    usage = message.usage;
-                }
-                StreamEvent::ContentBlockStart {
-                    index,
-                    content_block,
-                } => {
-                    let build = match content_block {
-                        ContentBlockStart::Text { text } => {
-                            // Block-lifecycle: a text block started — let the
-                            // host frame the message before its first delta.
-                            self.callback
-                                .on_stream_delta(&StreamDelta::MessageStarted {
-                                    index: index as usize,
-                                })
-                                .await;
-                            BlockBuild::Text(text)
-                        }
-                        ContentBlockStart::Thinking { thinking } => {
-                            self.callback
-                                .on_stream_delta(&StreamDelta::ThinkingStarted {
-                                    index: index as usize,
-                                })
-                                .await;
-                            BlockBuild::Thinking(thinking)
-                        }
-                        ContentBlockStart::ToolUse {
-                            id,
-                            name,
-                            input,
-                            caller,
-                        } => BlockBuild::ToolUse {
-                            id,
-                            name,
-                            input_buf: String::new(),
-                            start_input: input,
-                            caller,
-                        },
-                        ContentBlockStart::ServerToolUse { id, name, input } => {
-                            BlockBuild::ToolUse {
-                                id,
-                                name,
-                                input_buf: String::new(),
-                                start_input: input,
-                                caller: None,
-                            }
-                        }
-                    };
-                    blocks.insert(index, build);
-                }
-                StreamEvent::ContentBlockDelta { index, delta } => {
-                    if let Some(build) = blocks.get_mut(&index) {
-                        match (build, delta) {
-                            (BlockBuild::Text(buf), Delta::TextDelta { text }) => {
-                                // Forward the delta to the callback before
-                                // buffering — the host's UI streams as the
-                                // model produces text.
-                                self.callback
-                                    .on_stream_delta(&StreamDelta::Text {
-                                        index: index as usize,
-                                        content: text.clone(),
-                                    })
-                                    .await;
-                                buf.push_str(&text);
-                            }
-                            (
-                                BlockBuild::Thinking(buf),
-                                Delta::ThinkingDelta { thinking },
-                            ) => {
-                                self.callback
-                                    .on_stream_delta(&StreamDelta::Thinking {
-                                        index: index as usize,
-                                        content: thinking.clone(),
-                                    })
-                                    .await;
-                                buf.push_str(&thinking);
-                            }
-                            (
-                                BlockBuild::ToolUse { input_buf, .. },
-                                Delta::InputJsonDelta { partial_json },
-                            ) => {
-                                // Tool-input JSON is not user-visible — buffer
-                                // for assembly, no callback emission.
-                                input_buf.push_str(&partial_json);
-                            }
-                            // Delta/block kind mismatch — ignore (provider quirk).
-                            _ => {}
-                        }
-                    }
-                }
-                StreamEvent::ContentBlockStop { index } => {
-                    // Block-lifecycle: mark the block done. Production emits
-                    // `ThinkingComplete` / `MessageComplete` here (and
-                    // `ToolCallStarted` for tool blocks — the latter is
-                    // absorbed ✅, see the `reduce_stream` doc / module doc). The block is
-                    // looked up (not removed) so it stays available for
-                    // `finalize_blocks` at stream end.
-                    if let Some(build) = blocks.get(&index) {
-                        match build {
-                            BlockBuild::Thinking(_) => {
-                                self.callback
-                                    .on_stream_delta(&StreamDelta::ThinkingComplete {
-                                        index: index as usize,
-                                    })
-                                    .await;
-                            }
-                            BlockBuild::Text(_) => {
-                                self.callback
-                                    .on_stream_delta(&StreamDelta::MessageComplete {
-                                        index: index as usize,
-                                    })
-                                    .await;
-                            }
-                            BlockBuild::ToolUse {
-                                id,
-                                name,
-                                input_buf,
-                                start_input,
-                                ..
-                            } => {
-                                // Finalize the tool input now that all
-                                // `InputJsonDelta` fragments have arrived.
-                                let finalized_input =
-                                    finalize_tool_input(input_buf, start_input);
-
-                                // Announce the tool call at stream-time —
-                                // production fires `Event::ToolCallStarted` on
-                                // `ContentBlockStop` for tool blocks (carrying
-                                // the wire id) so the UI can show "calling X"
-                                // before the tool actually executes. The
-                                // `CallbackBridge` marks the id as announced so
-                                // the execute-time `on_tool_start` skips
-                                // re-emitting (dedup).
-                                self.callback
-                                    .on_stream_delta(&StreamDelta::ToolCallStarted {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        input: finalized_input.clone(),
-                                    })
-                                    .await;
-
-                                // Early speculative dispatch: if the tool is
-                                // early-start-safe (read-only, no approval),
-                                // spawn it now so its result is ready by the
-                                // tool loop (mirrors `handle_deepseek_turn`'s
-                                // `early_tool_start_safe` + spawn at
-                                // `ContentBlockStop`). `tokio::spawn` returns
-                                // immediately (non-blocking); the stream keeps
-                                // consuming. `Drop` on `EarlyToolTask` aborts
-                                // an unreused task so nothing leaks.
-                                if let Some(tool) = self.tools.get(name) {
-                                    if early_start_safe(&tool.capabilities()) {
-                                        let tool = Arc::clone(tool);
-                                        let input = finalized_input.clone();
-                                        let handle = tokio::spawn(async move {
-                                            tool.run(input).await
-                                        });
-                                        early_tasks.insert(
-                                            id.clone(),
-                                            EarlyToolTask {
-                                                name: name.clone(),
-                                                input: finalized_input,
-                                                handle: Some(handle),
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                StreamEvent::MessageDelta {
-                    delta: MessageDelta { stop_reason: sr, .. },
-                    usage: delta_usage,
-                } => {
-                    if let Some(u) = delta_usage {
-                        // Replace — the latest cumulative usage wins (mirrors
-                        // the retired `handle_deepseek_turn`
-                        // `if let Some(u) = delta_usage { usage = u; }`).
-                        usage = u;
-                    }
-                    if sr.is_some() {
-                        stop_reason = sr;
-                    }
-                }
-                StreamEvent::MessageStop => break,
-                StreamEvent::Ping => {}
-            }
-        }
-
-        let content = finalize_blocks(blocks);
-        StreamReduceOutcome::Complete {
-            content,
-            stop_reason,
-            usage,
-        }
-    }
-
-    /// (2) per-step post-stream seam — transparent stream retry + reactive
-    /// capacity recovery.
-    ///
-    /// Drives `create_message_stream` + [`reduce_stream`] with a bounded
-    /// transparent-retry loop. Only `StreamReduceOutcome::Empty` (the stream
-    /// died before any content was produced) is eligible for retry — `Complete`
-    /// and `Partial` both surface immediately. This closes the
-    /// `accumulate_stream` bail-on-error gap: the old CORE reducer dropped
-    /// partial blocks on the first erroring item, so the executor retried even
-    /// when production would ship partial content (it tracks
-    /// `any_content_received` and skips the retry once the user has seen
-    /// output). The inline reducer now makes the same distinction.
-    ///
-    /// Re-issue the SAME request up to [`MAX_STREAM_RETRIES`] (3) times before
-    /// propagating the failure. This mirrors `handle_deepseek_turn`'s outer
-    /// "stream died with nothing" retry (`handle_deepseek_turn`). A healthy
-    /// round resets the budget (`handle_deepseek_turn`), so a bad prior step
-    /// doesn't carry over.
-    ///
-    /// **Reactive context-length recovery (seam 2):** a pre-stream error
-    /// (`create_message_stream` returning `Err`) is classified via
-    /// [`is_context_length_error_message`] before propagating. A
-    /// context-length rejection triggers [`try_recover_context_overflow`] — if
-    /// emergency compaction succeeds, the round returns
-    /// [`StreamRoundOutcome::RecoveredContextOverflow`] so the caller restarts
-    /// the step (the request snapshot picks up the compacted transcript),
-    /// mirroring `handle_deepseek_turn`. Other pre-stream errors (connection /
-    /// auth / timeout) and budget-exhausted / failed-recovery context-length
-    /// errors propagate as a hard fail. A successful stream open resets the
-    /// reactive recovery budget (mirrors `handle_deepseek_turn`). The retry and
-    /// recovery are transparent to the [`Callback`]: `on_llm_start` /
-    /// `on_llm_end` fire once per step, and a `Status` event is the only
-    /// surfacing (matching production's silent re-issue / recovery).
-    ///
-    /// # Cancel-token checkpoints (absorbed)
-    ///
-    /// The cancel-token short-circuits are **absorbed** — Checkpoint B (stream-
-    /// open race), Checkpoint C (`!cancelled` in the transparent-retry `Empty`
-    /// arm, mirroring `should_transparently_retry_stream`), and Checkpoint D
-    /// (post-stream gate, discarding even cleanly-completed content if the turn
-    /// was cancelled mid-stream). All return [`StreamRoundOutcome::Interrupted`]
-    /// so `run_inner` surfaces [`StopReason::Interrupted`]. The loop-top gate
-    /// (Checkpoint A in `run_inner`) bounds the capacity/reactive `continue`
-    /// loops on a cancelled turn. Production's inner mid-flight retry (resetting
-    /// the stream *inside* the event loop when no content was received yet,
-    /// `handle_deepseek_turn`) is not replicated here; this executor uses the
-    /// simpler outer retry (re-call `create_message_stream`). The two are
-    /// functionally equivalent for the retry decision; the inner retry's
-    /// advantage is avoiding a redundant `MessageStart` round-trip, which
-    /// matters only for latency-sensitive production paths.
-    async fn stream_with_transparent_retry(
-        &self,
-        client: &LlmClientHandle,
-        request: MessageRequest,
-        stream_retry_attempts: &mut u32,
-        context_recovery_attempts: &mut u8,
-        history: &mut dyn ChatHistory,
-        system: Option<&SystemPrompt>,
-        early_tasks: &mut HashMap<String, EarlyToolTask>,
-        pending_steers: &mut Vec<String>,
-    ) -> Result<StreamRoundOutcome> {
-        /// Cap on transparent stream retries — matches `handle_deepseek_turn`'s
-        /// `MAX_STREAM_RETRIES` (3). One initial attempt + 3 retries = 4 total
-        /// `create_message_stream` calls before the failure surfaces.
-        const MAX_STREAM_RETRIES: u32 = 3;
-        // Clone the token once per round so the cancel future owns a local
-        // (not a `&self` borrow) — avoids borrow-checker conflicts with the
-        // `self.emit_status` / `self.try_recover_context_overflow` calls in the
-        // select arms. `CancellationToken::clone` is a cheap Arc bump.
-        let cancel_token = self.cancel_token.clone();
-        loop {
-            // Checkpoint B — stream-open cancel race (mirrors
-            // `handle_deepseek_turn`): race the cancel token against
-            // `create_message_stream` so a cancelled turn aborts before the
-            // stream even opens. `biased` so cancel wins if both are ready.
-            // A pre-stream error may be a context-length rejection — classify
-            // before propagating so reactive recovery (seam 2) can run. Only
-            // mid-flight stream errors (from `reduce_stream`) retry
-            // transparently; pre-stream errors are either recovered (restart
-            // the step) or hard-failed.
-            let stream = tokio::select! {
-                biased;
-                _ = async {
-                    match &cancel_token {
-                        Some(token) => token.cancelled().await,
-                        None => std::future::pending::<()>().await,
-                    }
-                } => {
-                    self.emit_status("Request cancelled".to_string()).await;
-                    return Ok(StreamRoundOutcome::Interrupted);
-                }
-                result = client.create_message_stream(request.clone()) => match result {
-                    Ok(s) => {
-                        // The provider accepted the request — the context was
-                        // fine. Reset the reactive recovery budget (mirrors
-                        // `handle_deepseek_turn`).
-                        *context_recovery_attempts = 0;
-                        s
-                    }
-                    Err(e) => {
-                        let message = e.to_string();
-                        if self
-                            .try_recover_context_overflow(
-                                client,
-                                history,
-                                system,
-                                &message,
-                                context_recovery_attempts,
-                            )
-                            .await
-                        {
-                            // Recovery succeeded — signal the caller to restart
-                            // the step so the request snapshot picks up the
-                            // compacted transcript (mirrors `handle_deepseek_turn`).
-                            // Reset the stream-retry budget too (fresh step).
-                            *stream_retry_attempts = 0;
-                            return Ok(StreamRoundOutcome::RecoveredContextOverflow);
-                        }
-                        // Not a context-length error, no probe, budget exhausted,
-                        // or recovery failed — hard-fail the turn.
-                        return Err(anyhow::anyhow!(message));
-                    }
-                }
-            };
-            match self.reduce_stream(stream, early_tasks, pending_steers).await {
-                StreamReduceOutcome::Complete {
-                    content,
-                    stop_reason,
-                    usage,
-                } => {
-                    // Checkpoint D — post-stream cancel gate (mirrors
-                    // `handle_deepseek_turn`): even a cleanly-completed
-                    // stream is discarded if the turn was cancelled mid-stream.
-                    if self.is_cancelled() {
-                        self.emit_status("Request cancelled".to_string()).await;
-                        return Ok(StreamRoundOutcome::Interrupted);
-                    }
-                    // Healthy round → reset the retry budget so a bad prior
-                    // step doesn't carry over (mirrors `handle_deepseek_turn`).
-                    *stream_retry_attempts = 0;
-                    return Ok(StreamRoundOutcome::Content { content, stop_reason, usage });
-                }
-                StreamReduceOutcome::Partial {
-                    content,
-                    stop_reason,
-                    error,
-                    usage,
-                } => {
-                    // Checkpoint D — post-stream cancel gate. Same as Complete:
-                    // if cancelled, discard the partial content and return
-                    // `Interrupted`.
-                    if self.is_cancelled() {
-                        self.emit_status("Request cancelled".to_string()).await;
-                        return Ok(StreamRoundOutcome::Interrupted);
-                    }
-                    // Stream died after content was received — surface the
-                    // partial content, don't retry (the model has billed for
-                    // output; retrying would double-bill and lose the partial
-                    // turn). Reset the budget so a bad prior step doesn't
-                    // carry over (mirrors `handle_deepseek_turn`).
-                    *stream_retry_attempts = 0;
-                    self.emit_status(format!(
-                        "Stream interrupted after partial content; surfacing what was received: {error}"
-                    ))
-                    .await;
-                    return Ok(StreamRoundOutcome::Content { content, stop_reason, usage });
-                }
-                StreamReduceOutcome::Empty { error } => {
-                    // Checkpoint C — transparent-retry `!cancelled` guard
-                    // (mirrors `should_transparently_retry_stream` in
-                    // `streaming.rs:81-87`): if the turn was cancelled, don't
-                    // retry — return `Interrupted` (not `Err`).
-                    if self.is_cancelled() {
-                        self.emit_status("Request cancelled".to_string()).await;
-                        return Ok(StreamRoundOutcome::Interrupted);
-                    }
-                    // Stream died before any content — safe to retry
-                    // transparently (no output billed, nothing shown).
-                    if *stream_retry_attempts < MAX_STREAM_RETRIES {
-                        *stream_retry_attempts = stream_retry_attempts.saturating_add(1);
-                        self.emit_status(format!(
-                            "Connection interrupted; retrying ({}/{MAX_STREAM_RETRIES})",
-                            *stream_retry_attempts,
-                        ))
-                        .await;
-                        continue;
-                    }
-                    // Budget exhausted → surface the failure.
-                    return Err(anyhow::anyhow!(error));
-                }
-            }
-        }
-    }
-
-    /// Reactive seam-2 context-length recovery. When the provider rejects a
-    /// request with a context-length error (classified via
-    /// [`is_context_length_error_message`]), run emergency compaction via
-    /// [`recover_context_overflow`] and signal the caller to restart the step
-    /// — mirrors `handle_deepseek_turn`. Returns `true` only when **all** of:
-    /// a [`CapacityProbe`] is present, the error is a context-length
-    /// rejection, the recovery budget (`*context_recovery_attempts` bounded by
-    /// [`MAX_CONTEXT_RECOVERY_ATTEMPTS`]) allows, the model's budget is known,
-    /// **and** [`recover_context_overflow`] succeeded.
-    ///
-    /// Any miss returns `false` so [`stream_with_transparent_retry`] hard-fails
-    /// the turn: a non-context-length error (connection / auth / timeout), a
-    /// missing probe (capacity disabled), an unknown model (no budget to judge
-    /// recovery against), or budget exhaustion all propagate as a hard fail.
-    /// On success the budget is incremented (mirrors `handle_deepseek_turn`); the
-    /// reset lives in [`stream_with_transparent_retry`] on a successful stream
-    /// open (`handle_deepseek_turn`).
-    ///
-    /// In practice a second reactive recovery in the same turn almost always
-    /// fails: the first compaction leaves a short transcript (summary + recent
-    /// tail), and re-summarizing the single older summary message is a no-op
-    /// (no shrinkage ⇒ `recover_context_overflow` returns `false`). The
-    /// [`MAX_CONTEXT_RECOVERY_ATTEMPTS`] cap is therefore a safety net that the
-    /// preflight path (`run_capacity_preflight`) is far more likely to reach
-    /// than this reactive path — matching production's defensive `MAX = 2`.
-    async fn try_recover_context_overflow(
-        &self,
-        client: &LlmClientHandle,
-        history: &mut dyn ChatHistory,
-        system: Option<&SystemPrompt>,
-        error_message: &str,
-        context_recovery_attempts: &mut u8,
-    ) -> bool {
-        let Some(probe) = &self.capacity else {
-            // No capacity probe ⇒ reactive recovery is disabled (mirrors the
-            // preflight's `None` ⇒ `Proceed`, but here a pre-stream error has
-            // no in-band fallback — hard-fail).
-            return false;
-        };
-        if !is_context_length_error_message(error_message) {
-            return false;
-        }
-        if *context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
-            self.emit_status(format!(
-                "Context length exceeded but recovery budget exhausted \
-                 ({MAX_CONTEXT_RECOVERY_ATTEMPTS} attempts); failing the turn."
-            ))
-            .await;
-            return false;
-        }
-        let Some(target_budget) =
-            context_input_budget_for_provider(probe.api_provider, &probe.model)
-        else {
-            // Unknown model ⇒ no budget ⇒ can't judge recovery. Hard-fail
-            // (mirrors the preflight's `None` budget ⇒ `Proceed`, but here the
-            // provider already rejected — there's nothing to fall through to).
-            return false;
-        };
-        let recovered = self
-            .recover_context_overflow(
-                client,
-                history,
-                system,
-                target_budget,
-                "provider context-length rejection",
-            )
-            .await;
-        if recovered {
-            *context_recovery_attempts = context_recovery_attempts.saturating_add(1);
-        }
-        recovered
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancel_token
+            .as_ref()
+            .map_or(false, |t| t.is_cancelled())
     }
 
     /// (3) per-tool post-edit seam — collect LSP diagnostics after a successful
@@ -2664,7 +1765,7 @@ pub fn new(
     /// shared [`edit_file_paths`] helper; `apply_patch` path derivation is
     /// deferred (needs `HostServices::preflight_apply_patch_paths`, unreachable
     /// from this crate without the heavy host trait — see module docs).
-    async fn collect_lsp_diagnostics(&self, tool_name: &str, input: &serde_json::Value) {
+    pub(crate) async fn collect_lsp_diagnostics(&self, tool_name: &str, input: &serde_json::Value) {
         let Some(probe) = &self.lsp else {
             return;
         };
@@ -2709,7 +1810,12 @@ pub fn new(
     /// probe ⇒ no `recent_read_files` Arc ⇒ the data would never be read by a
     /// reinject, so skipping is correct), when the tool isn't `read_file`, or
     /// when the result didn't succeed.
-    fn record_read_file_result(&self, name: &str, input: &serde_json::Value, result: &ToolResult) {
+    pub(crate) fn record_read_file_result(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+        result: &ToolResult,
+    ) {
         if name != "read_file" || !result.success {
             return;
         }
@@ -2843,10 +1949,7 @@ pub fn new(
             }
             // Compute the status preview before moving `steer` into the
             // message (mirrors production's `steer.clone()` + summarize).
-            let status = format!(
-                "Steer input accepted: {}",
-                summarize_text(&steer, 120)
-            );
+            let status = format!("Steer input accepted: {}", summarize_text(&steer, 120));
             self.push_steer_message(steer, history);
             self.emit_status(status).await;
         }
@@ -2941,8 +2044,7 @@ pub fn new(
         // `live_running_snapshots` is on the trait.
         if let Some(api) = &self.subagent_api {
             let snapshots = api.live_running_snapshots().await;
-            let summaries =
-                crate::compaction::attachment_reinject::summarize_subagents(&snapshots);
+            let summaries = crate::compaction::attachment_reinject::summarize_subagents(&snapshots);
             if let Some(message) =
                 crate::compaction::attachment_reinject::reinject_subagent_attachments(&summaries)
             {
@@ -2973,15 +2075,18 @@ pub fn new(
                 candidate.content.insert(0, block.clone());
             }
             // Dedup (live transcript).
-            if history.messages().iter().any(|message| message == &candidate) {
+            if history
+                .messages()
+                .iter()
+                .any(|message| message == &candidate)
+            {
                 continue;
             }
             // Budget trial (only on the recovery path).
             if let Some(budget) = target_input_budget {
                 let mut trial = history.messages().to_vec();
                 trial.push(candidate.clone());
-                if estimate_input_tokens_conservative(&trial, self.config.system.as_ref())
-                    > budget
+                if estimate_input_tokens_conservative(&trial, self.config.system.as_ref()) > budget
                 {
                     continue;
                 }
@@ -3374,7 +2479,13 @@ pub fn new(
             return CapacityPreflight::Fail(msg);
         }
         if self
-            .recover_context_overflow(client, history, system, target_budget, "preflight token budget")
+            .recover_context_overflow(
+                client,
+                history,
+                system,
+                target_budget,
+                "preflight token budget",
+            )
             .await
         {
             *context_recovery_attempts = context_recovery_attempts.saturating_add(1);
@@ -3427,7 +2538,7 @@ pub fn new(
     /// the transcript replace with `Some(target_budget)`; dedup + budget
     /// trial + push). Still deferred (same gaps as the compaction slice):
     /// `CompactionEnhancements`.
-    async fn recover_context_overflow(
+    pub(crate) async fn recover_context_overflow(
         &self,
         client: &LlmClientHandle,
         history: &mut dyn ChatHistory,
@@ -3462,8 +2573,7 @@ pub fn new(
                 let after_micro = estimate_input_tokens_conservative(history.messages(), system);
                 if after_micro <= target_budget {
                     self.emit_status(
-                        "Emergency recovery: micro-compaction cleared enough context"
-                            .to_string(),
+                        "Emergency recovery: micro-compaction cleared enough context".to_string(),
                     )
                     .await;
                     // Slice 25c §E: signal the host to run
@@ -3608,7 +2718,7 @@ pub fn new(
     /// dedup, plus the model's intent summary for write tools) and then blocks
     /// on the decision channel, matching by wire tool id — stale decisions for
     /// other ids are dropped (mirrors production's `_ => continue`).
-    async fn request_approval(
+    pub(crate) async fn request_approval(
         &self,
         tool_id: &str,
         name: &str,
@@ -3748,12 +2858,14 @@ impl HostAgentExecutor {
         // system prompt. AgentStart (observe) fires right after.
         if let Some(runner) = &extension {
             let out = runner
-                .emit(codesmith_agent::extension::ExtensionEvent::BeforeAgentStart(
-                    codesmith_agent::extension::AgentStartEvent {
-                        system_prompt: None,
-                        inject_message: None,
-                    },
-                ))
+                .emit(
+                    codesmith_agent::extension::ExtensionEvent::BeforeAgentStart(
+                        codesmith_agent::extension::AgentStartEvent {
+                            system_prompt: None,
+                            inject_message: None,
+                        },
+                    ),
+                )
                 .await;
             if let codesmith_agent::extension::ExtensionEvent::BeforeAgentStart(e) = out.event {
                 if let Some(msg) = e.inject_message {
@@ -4015,9 +3127,7 @@ impl HostAgentExecutor {
             // request is assembled.
             if let Some(runner) = &extension {
                 let _ = runner
-                    .emit(
-                        codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders,
-                    )
+                    .emit(codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders)
                     .await;
             }
             let mut request = MessageRequest {
@@ -4054,7 +3164,8 @@ impl HostAgentExecutor {
                     )
                     .await;
                 if let codesmith_agent::extension::ExtensionEvent::BeforeProviderRequest(e) =
-                    out.event {
+                    out.event
+                {
                     if let Ok(rewritten) = serde_json::from_value::<Vec<Message>>(e.messages) {
                         request.messages = rewritten;
                     }
@@ -4108,7 +3219,11 @@ impl HostAgentExecutor {
                 )
                 .await
             {
-                Ok(StreamRoundOutcome::Content { content, stop_reason, usage }) => {
+                Ok(StreamRoundOutcome::Content {
+                    content,
+                    stop_reason,
+                    usage,
+                }) => {
                     // Add this stream's usage to the per-turn total — the
                     // end-of-stream handoff the retired `handle_deepseek_turn`
                     // (`turn.add_usage(&usage)`) used to do inline; the host
@@ -4163,9 +3278,12 @@ impl HostAgentExecutor {
             // but persist only sendable assistant turns — DeepSeek chat API
             // rejects assistant messages that contain only a thinking block
             // (`handle_deepseek_turn`). slice 39 §E.
-            let has_sendable_assistant_content = content
-                .iter()
-                .any(|block| matches!(block, ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }));
+            let has_sendable_assistant_content = content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }
+                )
+            });
             let thinking_only = !has_sendable_assistant_content;
 
             // Persist the assistant turn (only when sendable — see above).
@@ -4185,14 +3303,15 @@ impl HostAgentExecutor {
             let tool_uses: Vec<(String, String, serde_json::Value)> = content
                 .into_iter()
                 .filter_map(|block| match block {
-                    ContentBlock::ToolUse { id, name, input, .. } => Some((id, name, input)),
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => Some((id, name, input)),
                     _ => None,
                 })
                 .collect();
 
             // Track tool-call IDs for the capacity-gate probe (slice 33 §E).
-            tool_call_ids_this_run
-                .extend(tool_uses.iter().map(|(id, _, _)| id.clone()));
+            tool_call_ids_this_run.extend(tool_uses.iter().map(|(id, _, _)| id.clone()));
 
             if tool_uses.is_empty() {
                 // Mid-stream steer flush (mirrors `handle_deepseek_turn`):
@@ -4405,531 +3524,23 @@ impl HostAgentExecutor {
 
             // Execute the parsed tool calls and feed each result back as a
             // `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
-            //
-            // (3) per-tool seam — ✅ loop-guard; ✅ approval; ✅ early-tool-start
-            // (reuse a speculatively-started task spawned at `ContentBlockStop`
-            // during streaming if the args still match; otherwise abort + run
-            // fresh); ✅ LSP post-edit collect; ✅ parallel dispatch (slice 40 §E).
-            // `plan_tool_execution_batches` groups consecutive parallel-safe
-            // (read-only, no-approval) tool_uses into a single `Parallel` batch
-            // run concurrently via `FuturesUnordered`; each unsafe tool becomes
-            // its own `Serial` batch (approval / write / blocked). Outcomes are
-            // index-preserving (a pre-allocated array written by `plan.index`),
-            // and `record_outcome` / LSP / read-file / error-escalation / push
-            // `ToolResult` are deferred to a sequential post-batch pass.
-            // `on_tool_start`/`on_tool_end` fire per-batch LIFO (starts in index
-            // order before dispatch, ends in reverse order after) so the
-            // `CallbackBridge`'s pending-stack pairing stays correct. Deferred:
-            // `multi_tool_use.parallel` parsing (host concern — the framework
-            // executor receives flat `tool_uses` from `reduce_stream`) and
-            // `tool_exec_lock` (unnecessary for single-loop dispatch — a
-            // `Parallel` batch drains before the next `Serial` batch starts).
-            // `loop_guard_halt` is per-step: a halt short-circuits the tool loop
-            // and the whole turn at the (4) seam below.
-            let mut loop_guard_halt: Option<String> = None;
-            let n = tool_uses.len();
-
-            // --- Phase 1: planning (sequential) — build a `ToolExecutionPlan`
-            // per tool_use, pop speculative `early_tasks`, and run the loop-guard
-            // `record_attempt` (the guard is per-tool, in order, so deferring it
-            // would mis-count identical calls). `early_for_plan` / `tool_for_plan`
-            // are parallel arrays keyed by `plan.index` — the `ToolExecutionPlan`
-            // struct's own `blocked_error` field is left `None` (the framework
-            // executor tracks speculative early-start tasks in its own distinct
-            // `EarlyToolTask` type + `early_tasks` map, not on the plan).
-            let mut plans: Vec<ToolExecutionPlan> = Vec::with_capacity(n);
-            let mut early_for_plan: Vec<Option<EarlyToolTask>> = Vec::with_capacity(n);
-            let mut tool_for_plan: Vec<Option<Arc<dyn Tool>>> = Vec::with_capacity(n);
-            for (i, (id, name, input)) in tool_uses.into_iter().enumerate() {
-                // loop-guard: block the 3rd identical (name+args) call this turn.
-                let guard_result = match loop_guard.record_attempt(&name, &input) {
-                    AttemptDecision::Block(message) => {
-                        // Abort any speculatively-started task — the call
-                        // won't execute (Drop aborts the `JoinHandle`).
-                        early_tasks.remove(&id);
-                        Some(block_tool_result(message))
-                    }
-                    AttemptDecision::Proceed => None,
-                };
-                // Pop the speculative early-start task (if any) for reuse / abort
-                // at dispatch time.
-                let early_task = early_tasks.remove(&id);
-                let tool = tools.get(&name).cloned();
-                let caps: Vec<ToolCapability> = tool
-                    .as_ref()
-                    .map(|t| t.capabilities())
-                    .unwrap_or_default();
-                let read_only = caps.iter().any(|c| *c == ToolCapability::ReadOnly);
-                // Per-input approval override (mirrors `request_approval`'s
-                // own logic at :3529-3536): a host dispatcher's
-                // `Required` / `Suggest` downgrades/upgrades the gate per
-                // input; `Auto` or `None` falls back to the static capability gate.
-                let approval_required = match self
-                    .tool_dispatcher
-                    .as_ref()
-                    .and_then(|d| d.approval_requirement_for(&name, &input))
-                {
-                    Some(req) => req != ApprovalRequirement::Auto,
-                    None => requires_approval(&caps),
-                };
-                plans.push(ToolExecutionPlan {
-                    index: i,
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                    caller: None,
-                    interactive: false,
-                    approval_required,
-                    approval_description: String::new(),
-                    // Framework `Tool` doesn't expose `supports_parallel` /
-                    // `interactive` directly; assume `true` / `false` so the
-                    // classifier's predicate reduces to `read_only &&
-                    // !approval_required` — the same gate as `early_start_safe`.
-                    supports_parallel: true,
-                    read_only,
-                    stream_early_start_safe: early_start_safe(&caps),
-                    blocked_error: None,
-                    guard_result: guard_result.clone(),
-                });
-                early_for_plan.push(early_task);
-                tool_for_plan.push(tool);
-            }
-
-            // --- Phase 2: batch classification (reuses the production classifier).
-            let batches = plan_tool_execution_batches(plans);
-
-            // --- Phase 3: per-batch dispatch. A `Parallel` batch runs its plans
-            // concurrently via `FuturesUnordered` (each future is `'static` — it
-            // owns an `Arc<dyn Tool>` clone, matching the early-start spawn
-            // site's `async move { tool.run(input).await }` pattern); a `Serial`
-            // batch runs one tool with approval gating (borrows `&self`).
-            let mut outcomes: Vec<Option<DispatchedTool>> = (0..n).map(|_| None).collect();
-            for batch in batches {
-                match batch {
-                    ToolExecutionBatch::Parallel(batch_plans) => {
-                        // `on_tool_start` in index order before dispatch (LIFO
-                        // push — `CallbackBridge` stashes each on its pending
-                        // stack).
-                        // §F2b T1 — honor `Block` at `ToolCall` (parallel arm):
-                        // record per-plan block reasons here, then skip dispatch
-                        // for those indices (mirrors the loop-guard blocked path).
-                        let mut ext_blocks: HashMap<usize, String> = HashMap::new();
-                        for plan in &batch_plans {
-                            callback
-                                .on_tool_start(&plan.id, &plan.name, &plan.input)
-                                .await;
-                            if let Some(runner) = &extension {
-                                let out = runner
-                                    .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
-                                        codesmith_agent::extension::ToolCallEvent {
-                                            id: plan.id.clone(),
-                                            name: plan.name.clone(),
-                                            input: plan.input.clone(),
-                                        },
-                                    ))
-                                    .await;
-                                if let codesmith_agent::extension::HandlerOutcome::Block {
-                                    reason,
-                                } = out.outcome
-                                {
-                                    ext_blocks.insert(plan.index, reason);
-                                }
-                            }
-                        }
-                        let mut futs: FuturesUnordered<
-                            Pin<Box<dyn Future<Output = DispatchedTool> + Send>>,
-                        > = FuturesUnordered::new();
-                        for plan in &batch_plans {
-                            let tool = tool_for_plan[plan.index]
-                                .clone()
-                                .expect("parallel-safe plan has a registered read-only tool");
-                            let early = early_for_plan[plan.index].take();
-                            let guard = plan.guard_result.clone();
-                            // §F2b T1 — the per-plan extension Block reason
-                            // (if a handler blocked this `ToolCall`), cloned
-                            // into the `'static` future.
-                            let ext_block_reason = ext_blocks.get(&plan.index).cloned();
-                            // §F2b T3 — capture the runner into the `'static`
-                            // future so ToolExecutionStart/End can bracket the
-                            // tool run from inside `async move`.
-                            let ext = extension.clone();
-                            let id = plan.id.clone();
-                            let name = plan.name.clone();
-                            let input = plan.input.clone();
-                            let index = plan.index;
-                            futs.push(Box::pin(async move {
-                                let blocked = guard.is_some() || ext_block_reason.is_some();
-                                let result = if let Some(g) = guard {
-                                    // Loop-guard blocked this call — don't run
-                                    // the tool (the speculative task was already
-                                    // aborted in planning).
-                                    Ok(g)
-                                } else if let Some(reason) = ext_block_reason {
-                                    // §F2b T1 — an extension blocked this
-                                    // `ToolCall`; skip dispatch and feed back a
-                                    // blocked (failed) result (an intervention,
-                                    // not an execution failure — does not count
-                                    // toward the error-escalation halt).
-                                    Ok(ToolResult::error(reason))
-                                } else {
-                                    // Early-tool-start reuse: await the
-                                    // speculatively-started task if the model
-                                    // didn't revise the args; otherwise abort
-                                    // (Drop) and run fresh.
-                                    // §F2b T3 — ToolExecutionStart/End bracket
-                                    // the actual tool run (mirrors the serial arm).
-                                    if let Some(runner) = &ext {
-                                        let _ = runner
-                                            .emit(
-                                                codesmith_agent::extension::ExtensionEvent::ToolExecutionStart,
-                                            )
-                                            .await;
-                                    }
-                                    let r = match early {
-                                        Some(mut early)
-                                            if early.name == name
-                                                && early.input == input =>
-                                        {
-                                            let handle = early
-                                                .handle
-                                                .take()
-                                                .expect("handle present until consumed");
-                                            match handle.await {
-                                                Ok(result) => result,
-                                                Err(join_err) => Err(ToolError::execution_failed(
-                                                    format!(
-                                                        "Early tool execution task failed: {join_err}"
-                                                    ),
-                                                )),
-                                            }
-                                        }
-                                        Some(_) => {
-                                            // Args revised after the block closed
-                                            // — the dropped `EarlyToolTask` (Drop
-                                            // aborts) cleans up the orphaned task.
-                                            tool.run(input.clone()).await
-                                        }
-                                        None => tool.run(input.clone()).await,
-                                    };
-                                    if let Some(runner) = &ext {
-                                        let _ = runner
-                                            .emit(
-                                                codesmith_agent::extension::ExtensionEvent::ToolExecutionEnd,
-                                            )
-                                            .await;
-                                    }
-                                    r
-                                };
-                                DispatchedTool {
-                                    index,
-                                    id,
-                                    name,
-                                    input,
-                                    result,
-                                    blocked,
-                                }
-                            }));
-                        }
-                        // Index-preserving drain — completion order is
-                        // irrelevant; each outcome is written at its `index`.
-                        while let Some(outcome) = futs.next().await {
-                            let index = outcome.index;
-                            outcomes[index] = Some(outcome);
-                        }
-                        // `on_tool_end` in reverse index order (LIFO pop).
-                        // §F2b T1 — honor `Transform` at `ToolResult`: emit
-                        // BEFORE `on_tool_end` so the callback + downstream
-                        // transcript see the (possibly transformed) result, and
-                        // write the final result back into `outcomes` so Phase-4
-                        // pushes the transformed (not original) `ToolResult`.
-                        for plan in batch_plans.iter().rev() {
-                            let original_result = outcomes[plan.index]
-                                .as_ref()
-                                .expect("outcome populated by the FuturesUnordered drain")
-                                .result
-                                .clone();
-                            let final_result = if let Some(runner) = &extension {
-                                let out = runner
-                                    .emit(codesmith_agent::extension::ExtensionEvent::ToolResult(
-                                        codesmith_agent::extension::ToolResultEvent {
-                                            id: plan.id.clone(),
-                                            name: plan.name.clone(),
-                                            result: original_result.clone(),
-                                        },
-                                    ))
-                                    .await;
-                                match out.event {
-                                    codesmith_agent::extension::ExtensionEvent::ToolResult(tr) => {
-                                        tr.result
-                                    }
-                                    // Out-of-place transform (the terminal
-                                    // event is not `ToolResult`) → Continue.
-                                    _ => original_result,
-                                }
-                            } else {
-                                original_result
-                            };
-                            callback
-                                .on_tool_end(&plan.name, &final_result)
-                                .await;
-                            outcomes[plan.index]
-                                .as_mut()
-                                .expect("outcome populated by the FuturesUnordered drain")
-                                .result = final_result;
-                        }
-                    }
-                    ToolExecutionBatch::Serial(plan) => {
-                        let idx = plan.index;
-                        callback
-                            .on_tool_start(&plan.id, &plan.name, &plan.input)
-                            .await;
-                        // §F2b T1 — honor `Block` at `ToolCall` (serial arm):
-                        // capture the block reason, then skip approval/`tool.run`
-                        // below (mirrors the loop-guard blocked path — a failed
-                        // result, not an execution error).
-                        let ext_blocked_reason: Option<String> =
-                            if let Some(runner) = &extension {
-                                let out = runner
-                                    .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
-                                        codesmith_agent::extension::ToolCallEvent {
-                                            id: plan.id.clone(),
-                                            name: plan.name.clone(),
-                                            input: plan.input.clone(),
-                                        },
-                                    ))
-                                    .await;
-                                if let codesmith_agent::extension::HandlerOutcome::Block {
-                                    reason,
-                                } = out.outcome
-                                {
-                                    Some(reason)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
-                        // approval gate: a tool that requires approval is gated
-                        // behind the decision channel; denied ⇒ the tool never
-                        // runs and a `permission_denied` error is fed back so the
-                        // model can react (turn continues). Order: loop-guard
-                        // first (matches production), then approval, then
-                        // early-start reuse.
-                        let (result, blocked) = if let Some(guard) = &plan.guard_result {
-                            (Ok(guard.clone()), true)
-                        } else if let Some(reason) = ext_blocked_reason {
-                            // §F2b T1 — extension blocked this `ToolCall`; skip
-                            // approval/`tool.run` and feed back a blocked result.
-                            (Ok(ToolResult::error(reason)), true)
-                        } else {
-                            // §F2b T3 — ToolExecutionStart/End bracket the
-                            // serial dispatch (approval + run).
-                            if let Some(runner) = &extension {
-                                let _ = runner
-                                    .emit(
-                                        codesmith_agent::extension::ExtensionEvent::ToolExecutionStart,
-                                    )
-                                    .await;
-                            }
-                            let r = match &tool_for_plan[idx] {
-                                Some(tool) => {
-                                    match self
-                                        .request_approval(
-                                            &plan.id,
-                                            &plan.name,
-                                            &plan.input,
-                                            tool,
-                                            &intent_summary,
-                                        )
-                                        .await
-                                    {
-                                        Ok(()) => {
-                                            // Early-tool-start reuse (same shape
-                                            // as the parallel arm, but sequential).
-                                            match early_for_plan[idx].take() {
-                                                Some(mut early)
-                                                    if early.name == plan.name
-                                                        && early.input == plan.input =>
-                                                {
-                                                    let handle = early
-                                                        .handle
-                                                        .take()
-                                                        .expect("handle present until consumed");
-                                                    match handle.await {
-                                                        Ok(result) => (result, false),
-                                                        Err(join_err) => (
-                                                            Err(ToolError::execution_failed(
-                                                                format!(
-                                                                    "Early tool execution task failed: {join_err}"
-                                                                ),
-                                                            )),
-                                                            false,
-                                                        ),
-                                                    }
-                                                }
-                                                Some(_) => {
-                                                    // Args revised after the block
-                                                    // closed — can't reuse; the
-                                                    // dropped `EarlyToolTask` (Drop
-                                                    // aborts) cleans up the orphaned
-                                                    // speculative task.
-                                                    (tool.run(plan.input.clone()).await, false)
-                                                }
-                                                None => {
-                                                    (tool.run(plan.input.clone()).await, false)
-                                                }
-                                            }
-                                        }
-                                        Err(denial) => {
-                                            // Approval denied — abort any
-                                            // speculative task (defensive:
-                                            // early-start-safe tools don't
-                                            // require approval, so this path has
-                                            // none, but `Drop` is cheap).
-                                            early_for_plan[idx].take();
-                                            (Err(ToolError::permission_denied(denial)), false)
-                                        }
-                                    }
-                                }
-                                None => {
-                                    // No tool registered — abort any speculative
-                                    // task (`reduce_stream` only spawns for
-                                    // registered tools, so this is defensive).
-                                    early_for_plan[idx].take();
-                                    (
-                                        Err(ToolError::NotAvailable {
-                                            message: format!("no tool named '{}'", plan.name),
-                                        }),
-                                        false,
-                                    )
-                                }
-                            };
-                            // §F2b T3 — ToolExecutionEnd brackets the
-                            // serial dispatch.
-                            if let Some(runner) = &extension {
-                                let _ = runner
-                                    .emit(
-                                        codesmith_agent::extension::ExtensionEvent::ToolExecutionEnd,
-                                    )
-                                    .await;
-                            }
-                            r
-                        };
-                        // §F2b T1 — honor `Transform` at `ToolResult`: emit
-                        // BEFORE `on_tool_end` so the callback + downstream
-                        // transcript see the (possibly transformed) result;
-                        // write the final result into `outcomes` so Phase-4
-                        // pushes the transformed `ToolResult`.
-                        let final_result = if let Some(runner) = &extension {
-                            let out = runner
-                                .emit(codesmith_agent::extension::ExtensionEvent::ToolResult(
-                                    codesmith_agent::extension::ToolResultEvent {
-                                        id: plan.id.clone(),
-                                        name: plan.name.clone(),
-                                        result: result.clone(),
-                                    },
-                                ))
-                                .await;
-                            match out.event {
-                                codesmith_agent::extension::ExtensionEvent::ToolResult(tr) => {
-                                    tr.result
-                                }
-                                // Out-of-place transform → Continue.
-                                _ => result,
-                            }
-                        } else {
-                            result
-                        };
-                        callback.on_tool_end(&plan.name, &final_result).await;
-                        outcomes[idx] = Some(DispatchedTool {
-                            index: idx,
-                            id: plan.id.clone(),
-                            name: plan.name.clone(),
-                            input: plan.input.clone(),
-                            result: final_result,
-                            blocked,
-                        });
-                    }
-                }
-            }
-
-            // --- Phase 4: post-batch processing (sequential, index order).
-            // `record_outcome` / LSP collect / read-file observe /
-            // error-escalation / push `ToolResult` are deferred to here so they
-            // run after every concurrent batch has drained — behavior-preserving
-            // w.r.t. the prior sequential loop (the loop-guard's failure halt is
-            // checked at the (4) seam below, after the tool loop, so deferring
-            // `record_outcome` to this pass does not change the halt decision).
-            let ordered: Vec<DispatchedTool> = outcomes
-                .into_iter()
-                .map(|o| o.expect("every plan slot filled by the batch dispatch"))
-                .collect();
-            for o in &ordered {
-                let blocked = o.blocked;
-                // loop-guard: track consecutive failures of this tool (warn at
-                // 3, halt at 8). A guard-blocked call records no outcome — it
-                // is an intervention, not an execution, so it doesn't count
-                // toward the failure halt.
-                if !blocked {
-                    let success = o.result.as_ref().map(|r| r.success).unwrap_or(false);
-                    match loop_guard.record_outcome(&o.name, success) {
-                        OutcomeDecision::Continue => {}
-                        OutcomeDecision::Warn(message) => {
-                            tracing::warn!("{}", message);
-                            self.emit_status(message).await;
-                        }
-                        OutcomeDecision::Halt(message) => {
-                            loop_guard_halt.get_or_insert(message);
-                        }
-                    }
-                }
-
-                // (3) per-tool seam — loop-guard (absorbed); ✅ LSP post-edit
-                // collect (only on a successful, non-blocked edit — mirrors
-                // production `output.success && tool_was_executed`); ✅ read_file
-                // observe (records the compacted/sanitized output into
-                // `recent_read_files` for post-compaction reinject); ✅ parallel
-                // dispatch (slice 40 §E — post-batch).
-                if !blocked {
-                    if let Ok(r) = &o.result {
-                        if r.success {
-                            self.collect_lsp_diagnostics(&o.name, &o.input).await;
-                            self.record_read_file_result(&o.name, &o.input, r);
-                        }
-                    } else if let Err(e) = &o.result {
-                        // Error-escalation tracking (slice 34 §E): categorize a
-                        // dispatch error via the shared taxonomy (the retired
-                        // `handle_deepseek_turn`). Only `Err(ToolError)` counts —
-                        // `Ok(ToolResult { success: false })` is a failed result,
-                        // not a dispatch error (faithful to production).
-                        let envelope: ErrorEnvelope = e.clone().into();
-                        step_error_count += 1;
-                        step_error_categories.push(envelope.category);
-                    }
-                }
-
-                let (content_str, is_error) = match &o.result {
-                    Ok(r) => (r.content.clone(), !r.success),
-                    Err(e) => (format!("Error: {e}"), true),
-                };
-                history.push(Message {
-                    role: "user".to_string(),
-                    content: vec![ContentBlock::ToolResult {
-                        tool_use_id: o.id.clone(),
-                        content: content_str,
-                        is_error: Some(is_error),
-                        content_blocks: None,
-                    }],
-                });
-            }
-
-            // Abort any speculatively-started tasks that weren't consumed by
-            // the tool loop (e.g. a tool block completed during streaming but
-            // didn't survive into the parsed `tool_uses`, or an args-mismatch
-            // path left an orphaned task). `Drop` on each `EarlyToolTask`
-            // aborts the spawned task. In normal operation every spawned task
-            // is consumed or aborted within the loop, so this is defensive.
-            early_tasks.clear();
+            // Planning + batch dispatch + the post-batch pass now live in
+            // `turn::batches::execute_tool_batches` (codebase-health §1 split);
+            // the parameters are exactly this step's locals.
+            let loop_guard_halt = self
+                .execute_tool_batches(
+                    history,
+                    tool_uses,
+                    &mut early_tasks,
+                    &mut loop_guard,
+                    &tools,
+                    &callback,
+                    &extension,
+                    &intent_summary,
+                    &mut step_error_count,
+                    &mut step_error_categories,
+                )
+                .await;
 
             // Mid-stream steer flush (mirrors `handle_deepseek_turn`): push
             // any steers that arrived during streaming into the transcript
@@ -5125,11 +3736,12 @@ mod tests {
     use crate::session_history::SessionChatHistory;
     use crate::subagent::SubAgentResult;
     use crate::tool_state::plan::{
-        new_shared_plan_state, PlanItemArg, SharedPlanState, StepStatus, UpdatePlanArgs,
+        PlanItemArg, SharedPlanState, StepStatus, UpdatePlanArgs, new_shared_plan_state,
     };
-    use crate::tool_state::todo::{new_shared_todo_list, SharedTodoList, TodoStatus};
+    use crate::tool_state::todo::{SharedTodoList, TodoStatus, new_shared_todo_list};
     use crate::tools::registry::ToolRegistry;
     use crate::tools::spec::{ToolContext, ToolSpec};
+    use codesmith_agent::callback::StreamDelta;
     use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
     use codesmith_agent::models::{
         ContentBlockStart, Delta, MessageDelta, MessageResponse, StreamEvent, SystemBlock, Usage,
@@ -5583,9 +4195,7 @@ mod tests {
                 if let Some(msg) = error {
                     anyhow::bail!("{msg}");
                 }
-                reply.ok_or_else(|| {
-                    anyhow::anyhow!("mock does not implement create_message")
-                })
+                reply.ok_or_else(|| anyhow::anyhow!("mock does not implement create_message"))
             })
         }
         fn create_message_stream(
@@ -5593,10 +4203,7 @@ mod tests {
             request: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
             self.requests.lock().unwrap().push(request.messages.clone());
-            self.systems
-                .lock()
-                .unwrap()
-                .push(request.system.clone());
+            self.systems.lock().unwrap().push(request.system.clone());
             let next = self.rounds.lock().unwrap().pop_front();
             // §E cancel-token test hook: take the token (if set) here so the
             // lock doesn't cross an await, but cancel it INSIDE the async
@@ -5622,14 +4229,12 @@ mod tests {
                 }
                 let round = next.unwrap_or(MockRound::Events(vec![]));
                 match round {
-                    MockRound::Events(events) => Ok(Box::pin(
-                        futures_util::stream::iter(events.into_iter().map(Ok)),
-                    )
-                        as StreamEventBox),
-                    MockRound::StreamErr(msg) => Ok(Box::pin(
-                        futures_util::stream::iter(vec![Err(anyhow::anyhow!(msg))]),
-                    )
-                        as StreamEventBox),
+                    MockRound::Events(events) => Ok(Box::pin(futures_util::stream::iter(
+                        events.into_iter().map(Ok),
+                    )) as StreamEventBox),
+                    MockRound::StreamErr(msg) => Ok(Box::pin(futures_util::stream::iter(vec![Err(
+                        anyhow::anyhow!(msg),
+                    )])) as StreamEventBox),
                     MockRound::EventsThenErr(events, msg) => {
                         let mut items: Vec<Result<StreamEvent>> =
                             events.into_iter().map(Ok).collect();
@@ -5749,10 +4354,7 @@ mod tests {
 
     impl HookHost for RecordingHookHost {
         fn execute(&self, event: HookEvent, context: &HookContext) -> Vec<HookResult> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((event, context.clone()));
+            self.calls.lock().unwrap().push((event, context.clone()));
             Vec::new()
         }
         fn execute_pre_compact_hook(&self, _context: &HookContext) -> Option<String> {
@@ -5997,9 +4599,7 @@ mod tests {
         // proof the ToolSpec flowed through ToolSpecAdapter into the loop.
         match &sess.messages[2].content[0] {
             ContentBlock::ToolResult {
-                content,
-                is_error,
-                ..
+                content, is_error, ..
             } => {
                 assert!(
                     content.starts_with(&workspace_stamp),
@@ -6051,7 +4651,15 @@ mod tests {
         assert_eq!(calls[0].1.tool_name.as_deref(), Some("echo"));
         assert_eq!(calls[0].1.session_id.as_deref(), Some("test"));
         assert_eq!(calls[1].1.tool_name.as_deref(), Some("echo"));
-        assert_eq!(calls[1].1.tool_result.as_deref().unwrap().ends_with("|world"), true);
+        assert_eq!(
+            calls[1]
+                .1
+                .tool_result
+                .as_deref()
+                .unwrap()
+                .ends_with("|world"),
+            true
+        );
         assert_eq!(calls[1].1.tool_success, Some(true));
     }
 
@@ -6094,9 +4702,7 @@ mod tests {
 
         match &sess.messages[2].content[0] {
             ContentBlock::ToolResult {
-                content,
-                is_error,
-                ..
+                content, is_error, ..
             } => {
                 assert!(content.starts_with("Error:"));
                 assert_eq!(*is_error, Some(true));
@@ -6205,7 +4811,9 @@ mod tests {
         // proof the tool actually ran twice.
         for &idx in &[2usize, 4] {
             match &sess.messages[idx].content[0] {
-                ContentBlock::ToolResult { content, is_error, .. } => {
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
                     assert!(
                         content.starts_with(&workspace_stamp),
                         "echo ran at msg[{idx}]: {content}"
@@ -6217,7 +4825,9 @@ mod tests {
         }
         // Third is the loop-guard block — echo did NOT run, error, block message.
         match &sess.messages[6].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert!(
                     !content.starts_with(&workspace_stamp),
                     "echo must not run on the blocked call: {content}"
@@ -6349,9 +4959,9 @@ mod tests {
     /// Helper: does any message in `sess` carry a `<diagnostics` text block?
     fn has_diagnostics_msg(sess: &Session) -> bool {
         sess.messages.iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics"))
-            })
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics")),
+            )
         })
     }
 
@@ -6415,9 +5025,9 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 2);
         let saw_diag = reqs[1].iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics"))
-            })
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics")),
+            )
         });
         assert!(saw_diag, "call2 request must include diagnostics: {reqs:?}");
 
@@ -6535,7 +5145,10 @@ mod tests {
             "failed edit must not probe LSP: {:?}",
             fake.calls()
         );
-        assert!(!has_diagnostics_msg(&sess), "no diagnostics message expected");
+        assert!(
+            !has_diagnostics_msg(&sess),
+            "no diagnostics message expected"
+        );
     }
 
     #[tokio::test]
@@ -6628,7 +5241,10 @@ mod tests {
             .await
             .expect("run1");
         assert_eq!(reason, StopReason::MaxSteps);
-        assert!(!has_diagnostics_msg(&sess_a), "run1 must not flush before MaxSteps");
+        assert!(
+            !has_diagnostics_msg(&sess_a),
+            "run1 must not flush before MaxSteps"
+        );
 
         // Run 2: SAME executor, FRESH session. The first pre-request flush must
         // drain run1's leftover pending into run2's transcript — impossible with
@@ -6655,11 +5271,14 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 2, "run1 + run2 each fired one request");
         let saw = reqs[1].iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics"))
-            })
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("<diagnostics")),
+            )
         });
-        assert!(saw, "run2 request must include leftover diagnostics: {reqs:?}");
+        assert!(
+            saw,
+            "run2 request must include leftover diagnostics: {reqs:?}"
+        );
     }
 
     // === transparent-retry (seam 2) =======================================
@@ -6890,7 +5509,11 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
 
         // Exactly one request — no retry on a clean (error-free) empty stream.
-        assert_eq!(mock.requests().len(), 1, "clean empty stream must not retry");
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "clean empty stream must not retry"
+        );
         // An empty stream is `!has_sendable` → the thinking-only guardrail
         // (issue #1727, slice 39 §E) emits its status at the clean tail
         // (faithful to production's `thinking_only_no_sendable =
@@ -6989,7 +5612,6 @@ mod tests {
         })
     }
 
-
     #[tokio::test]
     async fn steer_drain_injects_queued_input_before_request() {
         let tools = Arc::new(ToolSet::new());
@@ -7045,14 +5667,14 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 1);
         let saw1 = reqs[0].iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text == "remember this")
-            })
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "remember this"))
         });
         let saw2 = reqs[0].iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text == "and also this")
-            })
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "and also this"))
         });
         assert!(saw1, "request must include first steer: {reqs:?}");
         assert!(saw2, "request must include second steer: {reqs:?}");
@@ -7256,9 +5878,9 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 2, "run1 + run2 each fired one request");
         let saw = reqs[1].iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text == "steered between runs")
-            })
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text == "steered between runs"),
+            )
         });
         assert!(saw, "run2 request must include the steer: {reqs:?}");
     }
@@ -7276,7 +5898,12 @@ mod tests {
     /// Round 1: the model explains intent then calls `write_file` (id `call_1`).
     fn write_call() -> Vec<StreamEvent> {
         let mut call = text_block(0, "writing the file now");
-        call.extend(tool_use_block(1, "call_1", "write_file", r#"{"path":"/tmp/x"}"#));
+        call.extend(tool_use_block(
+            1,
+            "call_1",
+            "write_file",
+            r#"{"path":"/tmp/x"}"#,
+        ));
         call.extend(finish("tool_use"));
         call
     }
@@ -7293,7 +5920,12 @@ mod tests {
     /// Round 1: the model calls `exec_shell` (id `call_1`) with a `command` input.
     fn exec_call() -> Vec<StreamEvent> {
         let mut call = text_block(0, "running the command now");
-        call.extend(tool_use_block(1, "call_1", "exec_shell", r#"{"command":"ls"}"#));
+        call.extend(tool_use_block(
+            1,
+            "call_1",
+            "exec_shell",
+            r#"{"command":"ls"}"#,
+        ));
         call.extend(finish("tool_use"));
         call
     }
@@ -7346,13 +5978,12 @@ mod tests {
             _name: &str,
             _input: &serde_json::Value,
         ) -> Option<ApprovalRequirement> {
-            *self.approval.lock().expect("FakeDispatcher approval poisoned")
+            *self
+                .approval
+                .lock()
+                .expect("FakeDispatcher approval poisoned")
         }
-        fn validate_input(
-            &self,
-            _name: &str,
-            _input: &serde_json::Value,
-        ) -> Result<(), ToolError> {
+        fn validate_input(&self, _name: &str, _input: &serde_json::Value) -> Result<(), ToolError> {
             Ok(())
         }
         fn to_api_tools(&self) -> Vec<crate::models::Tool> {
@@ -7448,7 +6079,9 @@ mod tests {
         // [user(seed), assistant(text+tool_use), user(tool_result), assistant]
         assert_eq!(history.len(), 4);
         match &sess.messages[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert_eq!(content, "wrote:/tmp/x", "approved tool must run");
                 assert_eq!(*is_error, Some(false));
             }
@@ -7496,8 +6129,13 @@ mod tests {
         // to the model (turn continues).
         assert_eq!(history.len(), 4);
         match &sess.messages[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
-                assert!(!content.contains("wrote:"), "tool must not have run: {content}");
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert!(
+                    !content.contains("wrote:"),
+                    "tool must not have run: {content}"
+                );
                 assert!(content.contains("denied"), "must be a denial: {content}");
                 assert_eq!(*is_error, Some(true));
             }
@@ -7536,7 +6174,9 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
 
         match &sess.messages[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert_eq!(content, "wrote:/tmp/x", "ungated tool must run");
                 assert_eq!(*is_error, Some(false));
             }
@@ -7592,7 +6232,9 @@ mod tests {
 
         // Echo ran, stamped with the workspace path (context flowed through).
         match &sess.messages[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert!(
                     content.starts_with(&workspace_stamp),
                     "echo ran ungated: {content}"
@@ -7665,7 +6307,9 @@ mod tests {
                 assert!(!approval_grouping_key.is_empty());
                 // write tool (not read-only) → the model's preceding text is attached.
                 assert!(
-                    intent_summary.as_ref().is_some_and(|s| s.contains("writing")),
+                    intent_summary
+                        .as_ref()
+                        .is_some_and(|s| s.contains("writing")),
                     "intent summary must carry the model's text: {intent_summary:?}"
                 );
             }
@@ -7714,7 +6358,9 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
 
         match &sess.messages[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert_eq!(content, "wrote:/tmp/x", "tool ran on RetryWithPolicy");
                 assert_eq!(*is_error, Some(false));
             }
@@ -7769,7 +6415,9 @@ mod tests {
 
         // The exec tool ran ungated.
         match &sess.messages[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert_eq!(content, "ran:ls", "exec tool must run ungated: {content}");
                 assert_eq!(*is_error, Some(false));
             }
@@ -7866,7 +6514,9 @@ mod tests {
 
         // After approval, the read-only tool ran (early-started + reused).
         match &sess.messages[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert!(
                     content.starts_with(&workspace_stamp),
                     "echo ran after approval: {content}"
@@ -7935,7 +6585,9 @@ mod tests {
 
         // After approval, the exec tool ran.
         match &sess.messages[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert_eq!(content, "ran:ls", "exec tool ran after approval: {content}");
                 assert_eq!(*is_error, Some(false));
             }
@@ -8200,8 +6852,9 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock =
-            Arc::new(MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction failure"));
+        let mock = Arc::new(
+            MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction failure"),
+        );
         let probe = CompactionProbe::new(
             compaction_config_low_threshold(),
             PathBuf::from("/tmp/codesmith-test"),
@@ -8246,7 +6899,8 @@ mod tests {
         // session) records failure #2.
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(
-            MockLlm::new(vec![end_call(), end_call()]).with_compaction_error("mock compaction failure"),
+            MockLlm::new(vec![end_call(), end_call()])
+                .with_compaction_error("mock compaction failure"),
         );
         let probe = CompactionProbe::new(
             compaction_config_low_threshold(),
@@ -8535,7 +7189,8 @@ mod tests {
         );
         // Register `echo` so the step-0 tool call runs cleanly and the loop
         // continues to step 1, where the folded summary is observed.
-        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
+        let mut registry =
+            ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
         registry.register(Arc::new(EchoSpec));
         let executor = HostAgentExecutor::new(
             mock.clone(),
@@ -8576,14 +7231,20 @@ mod tests {
         );
         // Step 0: refresh ran before the compaction ⇒ base snapshot, no summary.
         let step0 = system_prompt_text(systems[0].as_ref().expect("step 0 system"));
-        assert!(step0.contains("BASE PROMPT"), "step 0 carries the base: {step0}");
+        assert!(
+            step0.contains("BASE PROMPT"),
+            "step 0 carries the base: {step0}"
+        );
         assert!(
             !step0.contains("CONVO SUMMARY"),
             "step 0 must not yet see the summary (refresh is before compaction): {step0}"
         );
         // Step 1: the top-of-loop refresh folded step 0's summary into the base.
         let step1 = system_prompt_text(systems[1].as_ref().expect("step 1 system"));
-        assert!(step1.contains("BASE PROMPT"), "step 1 still carries the base: {step1}");
+        assert!(
+            step1.contains("BASE PROMPT"),
+            "step 1 still carries the base: {step1}"
+        );
         assert!(
             step1.contains("CONVO SUMMARY"),
             "step 1 sees the folded compaction summary (same turn): {step1}"
@@ -8599,7 +7260,8 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(MockLlm::new(vec![echo_call(), end_call()]));
-        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
+        let mut registry =
+            ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
         registry.register(Arc::new(EchoSpec));
         let base = SystemPrompt::Text("BASE PROMPT".to_string());
         let executor = HostAgentExecutor::new(
@@ -8651,7 +7313,8 @@ mod tests {
         let mock = Arc::new(
             MockLlm::new(vec![echo_call(), end_call()]).with_compaction_summary("CONVO SUMMARY"),
         );
-        let mut registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
+        let mut registry =
+            ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/codesmith-test")));
         registry.register(Arc::new(EchoSpec));
         let executor = HostAgentExecutor::new(
             mock.clone(),
@@ -8760,9 +7423,8 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         // Single round (end) — the loop runs exactly one step.
-        let mock = Arc::new(
-            MockLlm::new(vec![end_call()]).with_compaction_summary("CONVO SUMMARY"),
-        );
+        let mock =
+            Arc::new(MockLlm::new(vec![end_call()]).with_compaction_summary("CONVO SUMMARY"));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -8904,8 +7566,11 @@ mod tests {
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
-        let callback: Arc<dyn Callback> =
-            Arc::new(CallbackBridge::new(Some(tx.clone()), None, HookContext::new()));
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx.clone()),
+            None,
+            HookContext::new(),
+        ));
 
         // A thinking block only — no text, no tool calls.
         let mut call = thinking_block(0, "pondering the request");
@@ -8955,7 +7620,11 @@ mod tests {
             thinking_status.is_some(),
             "expected a thinking-only status, got: {events:?}"
         );
-        assert!(thinking_status.unwrap().contains("Send a follow-up to retry"));
+        assert!(
+            thinking_status
+                .unwrap()
+                .contains("Send a follow-up to retry")
+        );
     }
 
     /// Slice 39 §E: a plain text turn (no thinking) is unaffected by the
@@ -8968,8 +7637,11 @@ mod tests {
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
-        let callback: Arc<dyn Callback> =
-            Arc::new(CallbackBridge::new(Some(tx.clone()), None, HookContext::new()));
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx.clone()),
+            None,
+            HookContext::new(),
+        ));
 
         let mut call = text_block(0, "all done");
         call.extend(finish("end_turn"));
@@ -9002,8 +7674,10 @@ mod tests {
 
         // No thinking-only status (has_sendable was true via the Text block).
         let events = drain(&mut rx);
-        let has_thinking_status = events.iter().any(|e| matches!(e,
-            Event::Status { message } if message.contains("reasoning but no answer")));
+        let has_thinking_status = events.iter().any(|e| {
+            matches!(e,
+            Event::Status { message } if message.contains("reasoning but no answer"))
+        });
         assert!(
             !has_thinking_status,
             "text-only turn must not emit a thinking-only status: {events:?}"
@@ -9020,8 +7694,11 @@ mod tests {
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
-        let callback: Arc<dyn Callback> =
-            Arc::new(CallbackBridge::new(Some(tx.clone()), None, HookContext::new()));
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx.clone()),
+            None,
+            HookContext::new(),
+        ));
 
         // A thinking block followed by a text block — has_sendable is true.
         let mut call = thinking_block(0, "reasoning first");
@@ -9069,8 +7746,10 @@ mod tests {
 
         // No thinking-only status.
         let events = drain(&mut rx);
-        let has_thinking_status = events.iter().any(|e| matches!(e,
-            Event::Status { message } if message.contains("reasoning but no answer")));
+        let has_thinking_status = events.iter().any(|e| {
+            matches!(e,
+            Event::Status { message } if message.contains("reasoning but no answer"))
+        });
         assert!(
             !has_thinking_status,
             "thinking+text turn must not emit a thinking-only status: {events:?}"
@@ -9090,8 +7769,11 @@ mod tests {
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
-        let callback: Arc<dyn Callback> =
-            Arc::new(CallbackBridge::new(Some(tx.clone()), None, HookContext::new()));
+        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
+            Some(tx.clone()),
+            None,
+            HookContext::new(),
+        ));
         let (steer_tx, steer_rx) = steer_channel();
 
         // Round 1: thinking-only — the mid-stream steer is caught + flushed,
@@ -9136,8 +7818,10 @@ mod tests {
         // No thinking-only status ever reached the channel — the resume
         // branch fired before the tail.
         let events = drain(&mut rx);
-        let has_thinking_status = events.iter().any(|e| matches!(e,
-            Event::Status { message } if message.contains("reasoning but no answer")));
+        let has_thinking_status = events.iter().any(|e| {
+            matches!(e,
+            Event::Status { message } if message.contains("reasoning but no answer"))
+        });
         assert!(
             !has_thinking_status,
             "thinking-only turn that resumed for a steer must not emit the status: {events:?}"
@@ -9306,9 +7990,8 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         // Compaction fails → Phase-3 hard trim is the fallback.
-        let mock = Arc::new(
-            MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"),
-        );
+        let mock =
+            Arc::new(MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -9352,9 +8035,7 @@ mod tests {
         seed_text_messages(&mut sess, 40);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(
-            MockLlm::new(vec![end_call()]).with_compaction_summary("SUMMARY"),
-        );
+        let mock = Arc::new(MockLlm::new(vec![end_call()]).with_compaction_summary("SUMMARY"));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -9465,16 +8146,13 @@ mod tests {
         api_provider: ApiProvider,
     ) -> (SharedPlanState, SharedTodoList, ReinjectProbe) {
         let plan_state = new_shared_plan_state();
-        plan_state
-            .lock()
-            .await
-            .update(UpdatePlanArgs {
-                explanation: Some("plan-explanation".to_string()),
-                plan: vec![PlanItemArg {
-                    step: "plan-step-one".to_string(),
-                    status: StepStatus::InProgress,
-                }],
-            });
+        plan_state.lock().await.update(UpdatePlanArgs {
+            explanation: Some("plan-explanation".to_string()),
+            plan: vec![PlanItemArg {
+                step: "plan-step-one".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
         let todos = new_shared_todo_list();
         todos
             .lock()
@@ -9570,7 +8248,8 @@ mod tests {
     #[tokio::test]
     async fn reinject_dedup_skips_already_present() {
         let mut sess = fresh_session();
-        let (plan_state, _todos, probe) = populated_reinject_probe(&sess, ApiProvider::Deepseek).await;
+        let (plan_state, _todos, probe) =
+            populated_reinject_probe(&sess, ApiProvider::Deepseek).await;
         // Pre-compute the exact plan candidate the method will build (same
         // snapshot ⇒ same summary ⇒ same `<system-reminder>` message) and
         // pre-push it so dedup must skip it on re-inject.
@@ -9606,7 +8285,10 @@ mod tests {
             .await;
         // The plan candidate was deduped (already present); only the todo
         // candidate is pushed (read_files is empty here).
-        assert_eq!(pushed, 1, "plan candidate skipped by dedup; only todo pushed");
+        assert_eq!(
+            pushed, 1,
+            "plan candidate skipped by dedup; only todo pushed"
+        );
         let plan_count = history
             .messages()
             .iter()
@@ -9841,11 +8523,7 @@ mod tests {
             .await
             .expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
-        assert_eq!(
-            mock.compaction_calls(),
-            1,
-            "Phase-2 auto-compaction fired"
-        );
+        assert_eq!(mock.compaction_calls(), 1, "Phase-2 auto-compaction fired");
         let transcript: String = history
             .messages()
             .iter()
@@ -9900,10 +8578,7 @@ mod tests {
         let probe = read_file_reinject_probe(&sess, ApiProvider::Deepseek);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(MockLlm::new(vec![
-            read_file_call("src/lib.rs"),
-            end_call(),
-        ]));
+        let mock = Arc::new(MockLlm::new(vec![read_file_call("src/lib.rs"), end_call()]));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             read_file_tools(ReadFileSpec::new("pub fn library() {}")),
@@ -9980,10 +8655,7 @@ mod tests {
         let probe = read_file_reinject_probe(&sess, ApiProvider::Deepseek);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(MockLlm::new(vec![
-            read_file_call("missing.rs"),
-            end_call(),
-        ]));
+        let mock = Arc::new(MockLlm::new(vec![read_file_call("missing.rs"), end_call()]));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             read_file_tools(ReadFileSpec::failing("Error: file not found")),
@@ -10022,7 +8694,12 @@ mod tests {
             {
                 let mut c = read_file_call("src/lib.rs");
                 // second tool_use in the same round
-                c.extend(tool_use_block(2, "call_2", "read_file", r#"{"path":"src/lib.rs"}"#));
+                c.extend(tool_use_block(
+                    2,
+                    "call_2",
+                    "read_file",
+                    r#"{"path":"src/lib.rs"}"#,
+                ));
                 c.extend(finish("tool_use"));
                 c
             },
@@ -10067,10 +8744,7 @@ mod tests {
         let probe = read_file_reinject_probe(&sess, ApiProvider::Deepseek);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(MockLlm::new(vec![
-            read_file_call("evil.txt"),
-            end_call(),
-        ]));
+        let mock = Arc::new(MockLlm::new(vec![read_file_call("evil.txt"), end_call()]));
         // Content with a zero-width space injected mid-token.
         let poisoned = format!("clean_start\u{200B}secret_end");
         let executor = HostAgentExecutor::new(
@@ -10115,10 +8789,7 @@ mod tests {
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(MockLlm::new(vec![
-            read_file_call("src/lib.rs"),
-            end_call(),
-        ]));
+        let mock = Arc::new(MockLlm::new(vec![read_file_call("src/lib.rs"), end_call()]));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             read_file_tools(ReadFileSpec::new("pub fn library() {}")),
@@ -10175,9 +8846,7 @@ mod tests {
             ..Default::default()
         };
         CapacityGateProbe::new(
-            Arc::new(Mutex::new(crate::capacity::CapacityController::new(
-                config,
-            ))),
+            Arc::new(Mutex::new(crate::capacity::CapacityController::new(config))),
             model.to_string(),
             PathBuf::from("/tmp/codesmith-test"),
             working_set,
@@ -10276,9 +8945,7 @@ mod tests {
         seed_text_messages(&mut sess, 40);
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(
-            MockLlm::new(vec![end_call()]).with_compaction_summary("SUMMARY"),
-        );
+        let mock = Arc::new(MockLlm::new(vec![end_call()]).with_compaction_summary("SUMMARY"));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -10386,9 +9053,8 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         // Compaction fails → hard trim is the fallback.
-        let mock = Arc::new(
-            MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"),
-        );
+        let mock =
+            Arc::new(MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -10482,9 +9148,8 @@ mod tests {
         }
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(
-            MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"),
-        );
+        let mock =
+            Arc::new(MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -10580,9 +9245,9 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         // "Connection timed out" classifies as Timeout, not context-length.
-        let mock = Arc::new(MockLlm::with_rounds(vec![
-            MockRound::StreamOpenErr("Connection timed out".to_string()),
-        ]));
+        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::StreamOpenErr(
+            "Connection timed out".to_string(),
+        )]));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -10663,9 +9328,9 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let ctx_len_msg = "This model's maximum context length is 128000 tokens.";
-        let mock = Arc::new(MockLlm::with_rounds(vec![
-            MockRound::StreamOpenErr(ctx_len_msg.to_string()),
-        ]));
+        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::StreamOpenErr(
+            ctx_len_msg.to_string(),
+        )]));
         let executor = HostAgentExecutor::new(
             mock.clone(),
             Arc::new(ToolSet::new()),
@@ -10804,11 +9469,7 @@ mod tests {
             None,
             None,
         )
-        .with_capacity_gate(Some(capacity_gate_probe(
-            "mock-v0",
-            5,
-            working_set,
-        )));
+        .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)));
         let reason = executor
             .run(&mut history, "hello".to_string())
             .await
@@ -10853,9 +9514,7 @@ mod tests {
             ..Default::default()
         };
         let gate = CapacityGateProbe::new(
-            Arc::new(Mutex::new(crate::capacity::CapacityController::new(
-                config,
-            ))),
+            Arc::new(Mutex::new(crate::capacity::CapacityController::new(config))),
             "mock-v0".to_string(),
             PathBuf::from("/tmp/codesmith-test"),
             working_set,
@@ -10928,11 +9587,7 @@ mod tests {
             None,
             None,
         )
-        .with_capacity_gate(Some(capacity_gate_probe(
-            "mock-v0",
-            5,
-            working_set,
-        )));
+        .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)));
         let reason = executor
             .run(&mut history, "hello".to_string())
             .await
@@ -10949,7 +9604,9 @@ mod tests {
         let events = drain(&mut rx);
         let capacity_events: Vec<_> = events
             .iter()
-            .filter(|e| matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:")))
+            .filter(
+                |e| matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:")),
+            )
             .collect();
         assert_eq!(
             capacity_events.len(),
@@ -11011,11 +9668,7 @@ mod tests {
             None,
             None,
         )
-        .with_capacity_gate(Some(capacity_gate_probe(
-            "mock-v0",
-            5,
-            working_set,
-        )));
+        .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)));
         let reason = executor
             .run(&mut history, "hello".to_string())
             .await
@@ -11023,9 +9676,9 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
         // The event channel received an Event::Status with "Capacity:" prefix.
         let events = drain(&mut rx);
-        let has_capacity_status = events.iter().any(|e| {
-            matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:"))
-        });
+        let has_capacity_status = events.iter().any(
+            |e| matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:")),
+        );
         assert!(
             has_capacity_status,
             "expected a Capacity status event, got: {events:?}"
@@ -11332,9 +9985,7 @@ mod tests {
             ..Default::default()
         };
         CapacityGateProbe::new(
-            Arc::new(Mutex::new(crate::capacity::CapacityController::new(
-                config,
-            ))),
+            Arc::new(Mutex::new(crate::capacity::CapacityController::new(config))),
             model.to_string(),
             PathBuf::from("/tmp/codesmith-test"),
             working_set,
@@ -11641,11 +10292,7 @@ mod tests {
             None,
             None,
         )
-        .with_capacity_gate(Some(capacity_gate_probe(
-            "mock-v0",
-            5,
-            working_set,
-        )));
+        .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)));
         let reason = executor
             .run(&mut history, "hello".to_string())
             .await
@@ -11667,7 +10314,9 @@ mod tests {
         let events = drain(&mut rx);
         let capacity_events: Vec<_> = events
             .iter()
-            .filter(|e| matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:")))
+            .filter(
+                |e| matches!(e, Event::Status { message, .. } if message.starts_with("Capacity:")),
+            )
             .collect();
         assert_eq!(
             capacity_events.len(),
@@ -11808,9 +10457,7 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let before_len = history.messages().len();
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(
-            MockLlm::new(vec![]).with_compaction_summary("Conversation summary."),
-        );
+        let mock = Arc::new(MockLlm::new(vec![]).with_compaction_summary("Conversation summary."));
         let client: LlmClientHandle = mock.clone();
         let executor = HostAgentExecutor::new(
             mock.clone(),
@@ -11830,11 +10477,7 @@ mod tests {
             None,
             None,
         )
-        .with_capacity_gate(Some(capacity_gate_probe(
-            "mock-v0",
-            5,
-            working_set,
-        )))
+        .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)))
         .with_reinject(Some(reinject));
 
         let outcome = executor
@@ -11846,7 +10489,11 @@ mod tests {
             outcome.before_tokens > 0,
             "before_tokens captured pre-refresh"
         );
-        assert_eq!(mock.compaction_calls(), 1, "one LLM compaction summary call");
+        assert_eq!(
+            mock.compaction_calls(),
+            1,
+            "one LLM compaction summary call"
+        );
         assert!(
             history.messages().len() < before_len,
             "transcript shrank: {} < {before_len}",
@@ -11866,7 +10513,10 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(transcript.contains("plan-step-one"), "plan candidate re-injected");
+        assert!(
+            transcript.contains("plan-step-one"),
+            "plan candidate re-injected"
+        );
         assert!(
             transcript.contains("Active todos resumed"),
             "todo candidate re-injected"
@@ -11899,9 +10549,7 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let before_len = history.messages().len();
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
-        let mock = Arc::new(
-            MockLlm::new(vec![]).with_compaction_error("mock compaction failure"),
-        );
+        let mock = Arc::new(MockLlm::new(vec![]).with_compaction_error("mock compaction failure"));
         let client: LlmClientHandle = mock.clone();
         let executor = HostAgentExecutor::new(
             mock.clone(),
@@ -11921,11 +10569,7 @@ mod tests {
             None,
             None,
         )
-        .with_capacity_gate(Some(capacity_gate_probe(
-            "mock-v0",
-            5,
-            working_set,
-        )));
+        .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)));
 
         let outcome = executor
             .refresh_targeted_context_mid_loop(&client, &mut history, None)
@@ -11933,9 +10577,19 @@ mod tests {
         let outcome = outcome.expect("both probes present ⇒ Some outcome");
         // Compaction was attempted but failed — the local-trim fallback then
         // reduced the transcript.
-        assert_eq!(mock.compaction_calls(), 1, "compaction attempted then failed");
-        assert!(outcome.refreshed, "local-trim fallback reduced the transcript");
-        assert!(outcome.before_tokens > 0, "before_tokens captured pre-refresh");
+        assert_eq!(
+            mock.compaction_calls(),
+            1,
+            "compaction attempted then failed"
+        );
+        assert!(
+            outcome.refreshed,
+            "local-trim fallback reduced the transcript"
+        );
+        assert!(
+            outcome.before_tokens > 0,
+            "before_tokens captured pre-refresh"
+        );
         // Trim stops at the MIN_RECENT_MESSAGES_TO_KEEP floor (4).
         assert!(
             history.messages().len() <= MIN_RECENT_MESSAGES_TO_KEEP,
@@ -11987,11 +10641,7 @@ mod tests {
             None,
             None,
         )
-        .with_capacity_gate(Some(capacity_gate_probe(
-            "mock-v0",
-            5,
-            working_set,
-        )));
+        .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)));
 
         let outcome = executor
             .refresh_targeted_context_mid_loop(&client, &mut history, None)
@@ -11999,11 +10649,7 @@ mod tests {
         let outcome = outcome.expect("both probes present ⇒ Some outcome");
         assert!(!outcome.refreshed, "under budget → no refresh");
         assert_eq!(mock.compaction_calls(), 0, "should_compact false → no call");
-        assert_eq!(
-            history.messages().len(),
-            before_len,
-            "transcript unchanged"
-        );
+        assert_eq!(history.messages().len(), before_len, "transcript unchanged");
     }
 
     /// §E slice 3c: a disabled `CapacityGateProbe` (`enabled: false`) never
@@ -12151,7 +10797,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_capacity_gate(Some(capacity_gate_probe_high_prior(
             "mock-v0",
@@ -12215,7 +10869,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_capacity_gate(Some(disabled_capacity_gate_probe(
             "mock-v0",
@@ -12258,7 +10920,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         // No .with_capacity_gate() → capacity_gate is None → no checkpoint.
         let reason = executor
@@ -12547,10 +11217,8 @@ mod tests {
             Event::MessageDelta { index, content } => Some((*index, content.clone())),
             _ => None,
         });
-        let (t_idx, t_content) =
-            thinking.expect("Event::ThinkingDelta should have been emitted");
-        let (x_idx, x_content) =
-            text.expect("Event::MessageDelta should have been emitted");
+        let (t_idx, t_content) = thinking.expect("Event::ThinkingDelta should have been emitted");
+        let (x_idx, x_content) = text.expect("Event::MessageDelta should have been emitted");
         assert_eq!(t_idx, 0);
         assert_eq!(t_content, "reasoning");
         assert_eq!(x_idx, 1);
@@ -12836,11 +11504,8 @@ mod tests {
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
-        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
-            Some(tx),
-            None,
-            test_template(),
-        ));
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx), None, test_template()));
 
         let mut call1 = text_block(0, "calling");
         call1.extend(tool_use_block(1, "toolu_42", "echo", r#"{"text":"yo"}"#));
@@ -12911,11 +11576,8 @@ mod tests {
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
-        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
-            Some(tx),
-            None,
-            test_template(),
-        ));
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx), None, test_template()));
 
         let mut call1 = text_block(0, "calling");
         call1.extend(tool_use_block(1, "toolu_99", "echo", r#"{"text":"x"}"#));
@@ -12954,8 +11616,7 @@ mod tests {
             .filter(|e| matches!(e, Event::ToolCallStarted { .. }))
             .count();
         assert_eq!(
-            started_count,
-            1,
+            started_count, 1,
             "exactly one ToolCallStarted (deduped): {events:?}"
         );
         let started = events
@@ -13140,40 +11801,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn early_start_safe_allows_readonly() {
-        assert!(early_start_safe(&[ToolCapability::ReadOnly]));
-        // Network / Sandboxable don't disqualify a read-only tool.
-        assert!(early_start_safe(&[
-            ToolCapability::ReadOnly,
-            ToolCapability::Network,
-        ]));
-        assert!(early_start_safe(&[
-            ToolCapability::ReadOnly,
-            ToolCapability::Sandboxable,
-        ]));
-    }
-
-    #[test]
-    fn early_start_safe_disqualifies_non_readonly() {
-        // No ReadOnly at all ⇒ not safe.
-        assert!(!early_start_safe(&[]), "empty caps");
-        assert!(!early_start_safe(&[ToolCapability::Network]), "network only");
-        // ReadOnly + a disqualifier ⇒ not safe.
-        assert!(!early_start_safe(&[
-            ToolCapability::ReadOnly,
-            ToolCapability::WritesFiles,
-        ]));
-        assert!(!early_start_safe(&[
-            ToolCapability::ReadOnly,
-            ToolCapability::ExecutesCode,
-        ]));
-        assert!(!early_start_safe(&[
-            ToolCapability::ReadOnly,
-            ToolCapability::RequiresApproval,
-        ]));
-    }
-
     /// The read-only tool is dispatched **during** streaming (at
     /// `ContentBlockStop`), before the executor reaches the tool loop. Proven
     /// by running the executor on a spawned task and awaiting the tool's
@@ -13232,10 +11859,7 @@ mod tests {
         // either. The only way this `notified` resolves is the early dispatch.
         notify.notified().await;
 
-        let reason = handle
-            .await
-            .expect("executor task panicked")
-            .expect("run");
+        let reason = handle.await.expect("executor task panicked").expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
     }
 
@@ -13369,9 +11993,7 @@ mod tests {
         // The tool result is an error carrying the join-failure message.
         let last_tool_result = &sess.messages[2].content[0];
         let ContentBlock::ToolResult {
-            content,
-            is_error,
-            ..
+            content, is_error, ..
         } = last_tool_result
         else {
             panic!("expected ToolResult, got {last_tool_result:?}");
@@ -13404,7 +12026,12 @@ mod tests {
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
 
         let mut call1 = text_block(0, "write");
-        call1.extend(tool_use_block(1, "w1", "write_file", r#"{"path":"/tmp/x"}"#));
+        call1.extend(tool_use_block(
+            1,
+            "w1",
+            "write_file",
+            r#"{"path":"/tmp/x"}"#,
+        ));
         call1.extend(finish("tool_use"));
         let mut call2 = text_block(0, "done");
         call2.extend(finish("end_turn"));
@@ -13700,19 +12327,14 @@ mod tests {
 
         let handle = tokio::spawn(async move {
             let mut history = SessionChatHistory::new(&mut sess);
-            executor
-                .run(&mut history, "run both".to_string())
-                .await
+            executor.run(&mut history, "run both".to_string()).await
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(3), barrier.wait())
             .await
             .expect("both read-only tools reached the barrier concurrently");
 
-        let reason = handle
-            .await
-            .expect("executor task panicked")
-            .expect("run");
+        let reason = handle.await.expect("executor task panicked").expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
     }
 
@@ -14185,11 +12807,8 @@ mod tests {
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
-        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
-            Some(tx.clone()),
-            None,
-            test_template(),
-        ));
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(Some(tx.clone()), None, test_template()));
 
         let (tx_sub, rx_sub) = subagent_channel();
         tx_sub.send(completion("child-a finished")).unwrap();
@@ -14235,7 +12854,11 @@ mod tests {
         // The injected sentinels reached the transcript. Layout:
         // [user(seed), assistant(text), user(sentinel-a), user(sentinel-b),
         //  assistant(text)]
-        assert!(history.len() >= 5, "expected ≥5 messages, got {}", history.len());
+        assert!(
+            history.len() >= 5,
+            "expected ≥5 messages, got {}",
+            history.len()
+        );
         // Both sentinel messages are present in the session transcript.
         let sentinel_msgs: Vec<&Message> = sess
             .messages
@@ -14268,7 +12891,8 @@ mod tests {
         // Status surfaced the resume count.
         let msgs = statuses(&drain(&mut rx));
         assert!(
-            msgs.iter().any(|m| m.contains("Resuming turn with 2 sub-agent completion(s)")),
+            msgs.iter()
+                .any(|m| m.contains("Resuming turn with 2 sub-agent completion(s)")),
             "expected resume status, got {msgs:?}"
         );
     }
@@ -14321,7 +12945,9 @@ mod tests {
         assert_eq!(mock.requests().len(), 1, "run1: one round, no resume");
 
         // Between runs: queue a completion on the SAME receiver.
-        tx_sub.send(completion("child finished between turns")).unwrap();
+        tx_sub
+            .send(completion("child finished between turns"))
+            .unwrap();
 
         // run2: SAME executor (+ new Session). Post-stream drain surfaces the
         // queued completion → resume → second round ends.
@@ -14414,7 +13040,9 @@ mod tests {
         // non-blocking drain alone would not emit this).
         let events = drain(&mut rx_event);
         assert!(
-            events.iter().any(|e| matches!(e, Event::Status { message, .. } if message
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Status { message, .. } if message
                 .contains("Waiting on 1 sub-agent(s)"))),
             "hold must emit the waiting status: {events:?}"
         );
@@ -14937,7 +13565,12 @@ mod tests {
         let token = CancellationToken::new();
         // Round 1: text + tool_use(write_file) → requires approval (blocks).
         let mut call1 = text_block(0, "writing the file");
-        call1.extend(tool_use_block(1, "call_1", "write_file", r#"{"path":"/tmp/x"}"#));
+        call1.extend(tool_use_block(
+            1,
+            "call_1",
+            "write_file",
+            r#"{"path":"/tmp/x"}"#,
+        ));
         call1.extend(finish("tool_use"));
         // Round 2: never reached.
         let mut call2 = text_block(0, "done");
@@ -14993,14 +13626,8 @@ mod tests {
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
 
         let (tx_steer, rx_steer) = steer_channel();
-        tx_steer
-            .send("stale steer 1".to_string())
-            .await
-            .unwrap();
-        tx_steer
-            .send("stale steer 2".to_string())
-            .await
-            .unwrap();
+        tx_steer.send("stale steer 1".to_string()).await.unwrap();
+        tx_steer.send("stale steer 2".to_string()).await.unwrap();
 
         let mut call = text_block(0, "acknowledged");
         call.extend(finish("end_turn"));
@@ -15036,8 +13663,10 @@ mod tests {
         let reqs = mock.requests();
         assert!(
             !reqs[0].iter().any(|m| {
-                m.content.iter().any(|b| matches!(b,
-                    ContentBlock::Text { text, .. } if text.contains("stale steer")))
+                m.content.iter().any(|b| {
+                    matches!(b,
+                    ContentBlock::Text { text, .. } if text.contains("stale steer"))
+                })
             }),
             "stale steers must be discarded, not injected"
         );
@@ -15076,7 +13705,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let reason = executor
             .run(&mut history, "go".to_string())
@@ -15113,7 +13750,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let reason = executor
             .run(&mut history, "echo hi".to_string())
@@ -15168,7 +13813,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let reason = executor
             .run(&mut history, "go".to_string())
@@ -15199,7 +13852,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let reason = executor
             .run(&mut history, "go".to_string())
@@ -15237,7 +13898,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let reason = executor
             .run(&mut history, "go".to_string())
@@ -15296,10 +13965,17 @@ mod tests {
         // first, then the raw text.
         let msg = probe.enrich_user_text_message("steer body".to_string());
         assert_eq!(msg.role.as_str(), "user");
-        assert_eq!(msg.content.len(), 2, "enriched message has turn_meta + text");
+        assert_eq!(
+            msg.content.len(),
+            2,
+            "enriched message has turn_meta + text"
+        );
         match (&msg.content[0], &msg.content[1]) {
             (ContentBlock::Text { text: meta, .. }, ContentBlock::Text { text: body, .. }) => {
-                assert!(meta.contains("<turn_meta>"), "first block is turn_meta: {meta}");
+                assert!(
+                    meta.contains("<turn_meta>"),
+                    "first block is turn_meta: {meta}"
+                );
                 assert!(meta.contains("</turn_meta>"));
                 assert!(meta.contains("Current local date"));
                 assert_eq!(body, "steer body", "second block is the raw text");
@@ -15364,7 +14040,11 @@ mod tests {
         }
         // The steer message is enriched: `<turn_meta>` block + raw steer text.
         assert_eq!(sess.messages[1].role.as_str(), "user");
-        assert_eq!(sess.messages[1].content.len(), 2, "steer is enriched (2 blocks)");
+        assert_eq!(
+            sess.messages[1].content.len(),
+            2,
+            "steer is enriched (2 blocks)"
+        );
         match (&sess.messages[1].content[0], &sess.messages[1].content[1]) {
             (ContentBlock::Text { text: meta, .. }, ContentBlock::Text { text: body, .. }) => {
                 assert!(meta.contains("<turn_meta>"), "steer wrapped: {meta}");
@@ -15383,11 +14063,14 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 1);
         let saw_turn_meta = reqs[0].iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text.contains("<turn_meta>"))
-            })
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("<turn_meta>")),
+            )
         });
-        assert!(saw_turn_meta, "request must include the steer's <turn_meta>: {reqs:?}");
+        assert!(
+            saw_turn_meta,
+            "request must include the steer's <turn_meta>: {reqs:?}"
+        );
     }
 
     #[tokio::test]
@@ -15648,11 +14331,14 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 2);
         let saw_steer = reqs[1].iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text == "mid-stream steer")
-            })
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "mid-stream steer"))
         });
-        assert!(saw_steer, "request 2 must contain the mid-stream steer: {reqs:?}");
+        assert!(
+            saw_steer,
+            "request 2 must contain the mid-stream steer: {reqs:?}"
+        );
     }
 
     /// A steer arriving during streaming with tool calls is flushed after tool
@@ -15717,11 +14403,14 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 2);
         let saw_steer = reqs[1].iter().any(|m| {
-            m.content.iter().any(|b| {
-                matches!(b, ContentBlock::Text { text, .. } if text == "mid-stream steer")
-            })
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "mid-stream steer"))
         });
-        assert!(saw_steer, "request 2 must contain the mid-stream steer: {reqs:?}");
+        assert!(
+            saw_steer,
+            "request 2 must contain the mid-stream steer: {reqs:?}"
+        );
     }
 
     /// A mid-stream-buffered steer emits "Steer input queued:" (distinct from
@@ -15876,10 +14565,8 @@ mod tests {
 
         let mut round1 = text_block(0, "answer");
         round1.extend(finish("end_turn"));
-        let mock = Arc::new(
-            MockLlm::new(vec![round1])
-                .with_steer_on_stream(tx_steer, "   ".to_string()),
-        );
+        let mock =
+            Arc::new(MockLlm::new(vec![round1]).with_steer_on_stream(tx_steer, "   ".to_string()));
 
         let executor = HostAgentExecutor::new(
             mock.clone(),
@@ -16001,7 +14688,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_extension_runner(Some(runner));
 
@@ -16130,7 +14825,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_extension_runner(Some(runner));
 
@@ -16298,7 +15001,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_extension_runner(Some(runner));
 
@@ -16360,7 +15071,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_extension_runner(Some(runner));
 
@@ -16400,14 +15119,12 @@ mod tests {
             _ctx: &dyn ExtensionContext,
         ) -> Result<HandlerOutcome, ExtensionError> {
             if let ExtensionEvent::BeforeAgentStart(_) = event {
-                return Ok(HandlerOutcome::Transform(
-                    ExtensionEvent::BeforeAgentStart(
-                        codesmith_agent::extension::AgentStartEvent {
-                            system_prompt: Some("OVERRIDE".to_string()),
-                            inject_message: Some("INJECTED".to_string()),
-                        },
-                    ),
-                ));
+                return Ok(HandlerOutcome::Transform(ExtensionEvent::BeforeAgentStart(
+                    codesmith_agent::extension::AgentStartEvent {
+                        system_prompt: Some("OVERRIDE".to_string()),
+                        inject_message: Some("INJECTED".to_string()),
+                    },
+                )));
             }
             Ok(HandlerOutcome::Continue)
         }
@@ -16467,7 +15184,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_extension_runner(Some(runner));
 
@@ -16585,7 +15310,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_extension_runner(Some(runner));
 
@@ -16601,16 +15334,18 @@ mod tests {
             "provider must receive at least one message"
         );
         let saw_rewritten = first_req.iter().any(|m| {
-            m.content.iter().any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "REWRITTEN"))
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "REWRITTEN"))
         });
         assert!(
             saw_rewritten,
             "rewritten message must reach the provider: {first_req:?}"
         );
         let saw_original = first_req.iter().any(|m| {
-            m.content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("echo world")))
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("echo world")),
+            )
         });
         assert!(
             !saw_original,
@@ -16636,11 +15371,11 @@ mod tests {
             _ctx: &dyn ExtensionContext,
         ) -> Result<HandlerOutcome, ExtensionError> {
             if let ExtensionEvent::Input(_) = event {
-                return Ok(HandlerOutcome::Transform(
-                    ExtensionEvent::Input(codesmith_agent::extension::InputEvent {
+                return Ok(HandlerOutcome::Transform(ExtensionEvent::Input(
+                    codesmith_agent::extension::InputEvent {
                         text: "REWRITTEN-INPUT".to_string(),
-                    }),
-                ));
+                    },
+                )));
             }
             Ok(HandlerOutcome::Continue)
         }
@@ -16697,7 +15432,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_extension_runner(Some(runner));
 
@@ -16722,9 +15465,9 @@ mod tests {
             "rewritten input must reach the provider: {first_req:?}"
         );
         let saw_original = first_req.iter().any(|m| {
-            m.content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("original text")))
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("original text")),
+            )
         });
         assert!(
             !saw_original,
@@ -16819,7 +15562,15 @@ mod tests {
             tools,
             callback,
             AgentExecutorConfig::default(),
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .with_extension_runner(Some(runner));
 
@@ -16924,9 +15675,7 @@ mod tests {
             "SessionBeforeCompact cancel must skip the compaction LLM call"
         );
         assert!(
-            executor
-                .take_pending_compaction_summary()
-                .is_none(),
+            executor.take_pending_compaction_summary().is_none(),
             "no summary_prompt recorded when compaction is vetoed"
         );
     }
@@ -17117,11 +15866,13 @@ mod tests {
         let recorded = seen.lock().unwrap();
         assert_eq!(recorded.len(), 2, "both ProjectTrust emits must dispatch");
         assert_eq!(
-            recorded[0], TrustReason::Trusted,
+            recorded[0],
+            TrustReason::Trusted,
             "first emit must carry Trusted"
         );
         assert_eq!(
-            recorded[1], TrustReason::Untrusted,
+            recorded[1],
+            TrustReason::Untrusted,
             "second emit must carry Untrusted"
         );
     }
@@ -17162,7 +15913,8 @@ mod tests {
         let recorded = seen.lock().unwrap();
         assert_eq!(recorded.len(), 1, "FirstLoad emit must dispatch");
         assert_eq!(
-            recorded[0], TrustReason::FirstLoad,
+            recorded[0],
+            TrustReason::FirstLoad,
             "the emit must carry FirstLoad"
         );
     }
