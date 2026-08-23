@@ -8,8 +8,8 @@
 //! not yet migrated to the runtime crate). The verbatim test module below
 //! exercises the full public surface via the glob re-export.
 
-pub use codesmith_agent_runtime::prompts::*;
 pub use codesmith_agent_runtime::prompt_sources::{InstructionSource, PromptAppendSource};
+pub use codesmith_agent_runtime::prompts::*;
 
 use crate::models::SystemPrompt;
 use crate::tui::app::AppMode;
@@ -75,6 +75,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             model_id: "codesmith",
             show_thinking: true,
             is_simple: false,
+            personality: Personality::Calm,
             skills_block: crate::skills::render_available_skills_context_for_workspace(workspace)
                 .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context)),
         },
@@ -446,6 +447,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
             ApprovalMode::Suggest,
@@ -520,6 +522,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
             ApprovalMode::Suggest,
@@ -551,8 +554,8 @@ mod tests {
     #[test]
     fn simple_conversation_style_section_is_conditional_on_is_simple() {
         let tmp = tempdir().expect("tempdir");
-        let build = |is_simple| {
-            match system_prompt_for_mode_with_context_skills_session_and_approval(
+        let build =
+            |is_simple| match system_prompt_for_mode_with_context_skills_session_and_approval(
                 AppMode::Agent,
                 tmp.path(),
                 None,
@@ -568,14 +571,14 @@ mod tests {
                     model_id: "codesmith",
                     show_thinking: true,
                     is_simple,
+                    personality: Personality::Calm,
                     skills_block: None,
                 },
                 ApprovalMode::Suggest,
             ) {
                 SystemPrompt::Text(text) => text,
                 SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
-            }
-        };
+            };
 
         assert!(
             build(true).contains("## Conversation Style: Simple"),
@@ -606,6 +609,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: false,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
             ApprovalMode::Suggest,
@@ -663,6 +667,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
             ApprovalMode::Suggest,
@@ -771,6 +776,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
         ) {
@@ -811,6 +817,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
         ) {
@@ -843,6 +850,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
         ) {
@@ -904,6 +912,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
         ) {
@@ -936,6 +945,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
         ) {
@@ -1097,6 +1107,37 @@ mod tests {
     }
 
     #[test]
+    fn session_context_personality_flows_into_bundle() {
+        let tmp = tempdir().expect("tempdir");
+        let mut session = PromptSessionContext::default();
+        session.personality = Personality::Playful;
+        let prompt = match system_prompt_for_mode_with_context_skills_session_and_approval(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            session,
+            ApprovalMode::Suggest,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert!(
+            prompt.contains("Personality: Playful"),
+            "session personality must select the prompt overlay"
+        );
+        assert!(!prompt.contains("Personality: Calm"));
+    }
+
+    #[test]
+    fn personality_parse_accepts_known_values_only() {
+        assert_eq!(Personality::parse("calm"), Ok(Personality::Calm));
+        assert_eq!(Personality::parse(" PLAYFUL "), Ok(Personality::Playful));
+        assert!(Personality::parse("bogus").is_err());
+    }
+
+    #[test]
     fn compact_template_is_included_in_full_prompt() {
         let tmp = tempdir().expect("tempdir");
         let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
@@ -1135,6 +1176,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
         ) {
@@ -1173,6 +1215,7 @@ mod tests {
                 model_id: "codesmith",
                 show_thinking: true,
                 is_simple: false,
+                personality: Personality::Calm,
                 skills_block: None,
             },
         ) {

@@ -86,6 +86,11 @@ pub struct EngineConfig {
     /// conversation style (the `is_simple` user setting). Prompt assembly
     /// appends a presentation-only style block when true.
     pub is_simple: bool,
+    /// Personality overlay applied to the system prompt (the `personality`
+    /// config key, `"calm"` or `"playful"`). Voice and tone only — the
+    /// engine keeps this on the session context so prompt assembly can
+    /// swap the overlay without touching behavior layers.
+    pub personality: crate::prompts::Personality,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -253,6 +258,7 @@ impl Default for EngineConfig {
             translation_enabled: false,
             show_thinking: true,
             is_simple: false,
+            personality: crate::prompts::Personality::Calm,
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),

@@ -100,9 +100,7 @@ pub(crate) fn recent_unique_reference_count(
 /// (`reset_history_to_latest_user_and_verified`, via `ChatHistory`) and the
 /// post-`run` `Engine::apply_verify_and_replan` (via `&mut Vec<Message>`)
 /// share one extraction source (§E slice 3a).
-pub(crate) fn latest_user_and_verified(
-    messages: &[Message],
-) -> (Option<Message>, Option<Message>) {
+pub(crate) fn latest_user_and_verified(messages: &[Message]) -> (Option<Message>, Option<Message>) {
     let latest_user = messages
         .iter()
         .rev()
@@ -257,11 +255,12 @@ pub(crate) fn select_replay_candidate_from_messages(
             continue;
         }
         for block in msg.content.iter().rev() {
-            if let ContentBlock::ToolUse { id, name, input, .. } = block {
+            if let ContentBlock::ToolUse {
+                id, name, input, ..
+            } = block
+            {
                 if let Some((content, is_error)) = results.get(id.as_str()) {
-                    if *is_error != Some(true)
-                        && is_replayable_read_only(name, tool_registry)
-                    {
+                    if *is_error != Some(true) && is_replayable_read_only(name, tool_registry) {
                         return Some(ReplayCandidate {
                             id: id.clone(),
                             name: name.clone(),
@@ -448,19 +447,11 @@ impl CapacityGateProbe {
             .saturating_add(tool_call_ids.len())
             .saturating_add(1);
         let tool_calls_recent_window = recent_tool_call_count(messages, message_window);
-        let working_set = self
-            .working_set
-            .lock()
-            .expect("working_set poisoned");
-        let unique_reference_ids_recent_window = recent_unique_reference_count(
-            messages,
-            message_window,
-            tool_call_ids,
-            &working_set,
-        );
+        let working_set = self.working_set.lock().expect("working_set poisoned");
+        let unique_reference_ids_recent_window =
+            recent_unique_reference_count(messages, message_window, tool_call_ids, &working_set);
         let context_window = usize::try_from(
-            context_window_for_model(&self.model)
-                .unwrap_or(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS),
+            context_window_for_model(&self.model).unwrap_or(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS),
         )
         .unwrap_or(usize::try_from(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS).unwrap_or(128_000))
         .max(1);
@@ -592,7 +583,8 @@ impl CapacityGateProbe {
         // re-entrant deadlock (the slice 33 deadlock-fix concern does not
         // apply to the probe path).
         let last = self.last_snapshot();
-        let snapshot = last.or_else(|| self.observe_pre_turn(messages, step, tool_call_ids, system));
+        let snapshot =
+            last.or_else(|| self.observe_pre_turn(messages, step, tool_call_ids, system));
         let Some(snapshot) = snapshot else {
             return None;
         };
@@ -618,8 +610,7 @@ impl CapacityGateProbe {
         // Override the reason with the escalation format (production lines
         // 390–401) so the host post-`run` `apply_verify_and_replan` records
         // the escalation context (slice 33 passes `&decision.reason`).
-        let category_labels: Vec<String> =
-            error_categories.iter().map(|c| c.to_string()).collect();
+        let category_labels: Vec<String> = error_categories.iter().map(|c| c.to_string()).collect();
         decision.reason = format!(
             "error_escalation: step_errors={}, consecutive_steps={}, categories={}",
             step_error_count,
@@ -699,8 +690,14 @@ impl Engine {
                 false
             }
             GuardrailAction::VerifyAndReplan => {
-                self.apply_verify_and_replan(turn, mode, snapshot.as_ref(), "high_risk_post_tool", false)
-                    .await
+                self.apply_verify_and_replan(
+                    turn,
+                    mode,
+                    snapshot.as_ref(),
+                    "high_risk_post_tool",
+                    false,
+                )
+                .await
             }
             GuardrailAction::NoIntervention | GuardrailAction::TargetedContextRefresh => false,
         }
@@ -830,12 +827,7 @@ impl Engine {
             .lock()
             .expect("working_set poisoned");
         let ids: Vec<String> = turn.tool_calls.iter().map(|t| t.id.clone()).collect();
-        recent_unique_reference_count(
-            &self.session.messages,
-            message_window,
-            &ids,
-            &working_set,
-        )
+        recent_unique_reference_count(&self.session.messages, message_window, &ids, &working_set)
     }
 
     pub async fn emit_coherence_signal(
@@ -1124,10 +1116,12 @@ impl Engine {
                         if !result.messages.is_empty() || self.session.messages.is_empty() {
                             self.session.messages = result.messages;
                             self.merge_compaction_summary(result.summary_prompt);
-                            self.reinject_compaction_attachments(context_input_budget_for_provider(
-                                self.api_provider,
-                                &self.session.model,
-                            ))
+                            self.reinject_compaction_attachments(
+                                context_input_budget_for_provider(
+                                    self.api_provider,
+                                    &self.session.model,
+                                ),
+                            )
                             .await;
                             refreshed = true;
                         }
@@ -1258,8 +1252,9 @@ impl Engine {
                 let interactive = if McpPool::is_mcp_tool(&candidate.name) {
                     false
                 } else {
-                    tool_registry
-                        .is_some_and(|registry| registry.is_interactive(&candidate.name, &candidate.input))
+                    tool_registry.is_some_and(|registry| {
+                        registry.is_interactive(&candidate.name, &candidate.input)
+                    })
                 };
 
                 let replay_result = Self::execute_tool_with_lock(
@@ -1327,7 +1322,14 @@ impl Engine {
                 })
                 .await;
 
-                (candidate.id, candidate.name, pass, replay_outcome, diff_summary, verification_note)
+                (
+                    candidate.id,
+                    candidate.name,
+                    pass,
+                    replay_outcome,
+                    diff_summary,
+                    verification_note,
+                )
             };
 
         // State work — always runs (canonical persist, system-prompt fold, emit,
@@ -1423,8 +1425,7 @@ impl Engine {
         // replanning work. The state work below (canonical persist, system-prompt
         // fold, emit, mark) always runs.
         if !skip_transcript {
-            let (latest_user, latest_verified) =
-                latest_user_and_verified(&self.session.messages);
+            let (latest_user, latest_verified) = latest_user_and_verified(&self.session.messages);
             self.session.messages.clear();
             if let Some(msg) = latest_user {
                 self.session.messages.push(msg);
@@ -1680,9 +1681,7 @@ impl Engine {
         let pointer = format!("memory://{}/{}", self.session.id, record.id);
         if let Err(err) = append_capacity_record(&self.session.id, record) {
             let event = Event::CapacityMemoryPersistFailed {
-                session_id: VerifiedAnalyticsMetadata::verified(
-                    &self.session.telemetry_session_id,
-                ),
+                session_id: VerifiedAnalyticsMetadata::verified(&self.session.telemetry_session_id),
                 turn_id: VerifiedAnalyticsMetadata::verified(&turn.id),
                 action: VerifiedAnalyticsMetadata::verified(action.as_str()),
                 error: RedactedAnalyticsMetadata::redact(&summarize_text(&err.to_string(), 280)),

@@ -87,15 +87,15 @@ use crate::host_services::{
 // capacity, sub-agent). `CallbackBridge` + `SessionChatHistory` close the
 // framework ↔ host bridge. `AgentExecutor` (trait) is in scope so `.run()`
 // resolves on the executor.
-use host_executor::{
-    CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe, ReinjectProbe, TurnMetaProbe,
-};
-use capacity_flow::CapacityGateProbe;
 use crate::callback_bridge::CallbackBridge;
 use crate::session_history::SessionChatHistory;
+use capacity_flow::CapacityGateProbe;
 use codesmith_agent::callback::{Callback, StopReason};
 use codesmith_agent::executor::{AgentExecutor, AgentExecutorConfig};
 use codesmith_agent::tools::ToolSet;
+use host_executor::{
+    CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe, ReinjectProbe, TurnMetaProbe,
+};
 
 /// Reason the active turn was cancelled. The token from `tokio_util`
 /// does not carry a cause, so the engine keeps a sibling latch for
@@ -153,8 +153,7 @@ pub struct Engine {
     /// `Arc::clone` it per turn — the single consumer is the executor's
     /// post-stream completion drain, which surfaces `<codesmith:subagent.done>`
     /// sentinels into the parent's transcript before deciding to end the turn.
-    pub(crate) rx_subagent_completion:
-        Arc<AsyncMutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>,
+    pub(crate) rx_subagent_completion: Arc<AsyncMutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>,
     pub cancel_token: CancellationToken,
     pub(crate) shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     /// Latched reason for the current cancellation, mirrored to
@@ -1001,7 +1000,11 @@ impl Engine {
         reasoning_effort: Option<&str>,
         reasoning_effort_auto: bool,
     ) -> ContentBlock {
-        let working_set = self.session.working_set.lock().expect("working_set poisoned");
+        let working_set = self
+            .session
+            .working_set
+            .lock()
+            .expect("working_set poisoned");
         turn_meta::turn_metadata_block(
             &working_set,
             &self.config.workspace,
@@ -1349,10 +1352,8 @@ impl Engine {
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
         .with_extension_runner(self.extension_runner.clone());
-        let mut history = SessionChatHistory::new_with_event_tx(
-            &mut self.session,
-            Some(self.tx_event.clone()),
-        );
+        let mut history =
+            SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()));
         // Drain steers queued between turns (mirrors the retired pre-turn
         // `while rx_steer.try_recv().is_ok() {}`).
         executor.drain_stale_steers().await;
@@ -1397,9 +1398,7 @@ impl Engine {
             self.merge_compaction_summary(Some(summary));
         }
         if needs_cleanup {
-            crate::compaction::post_compact_cleanup::post_compact_cleanup(
-                &mut self.session,
-            );
+            crate::compaction::post_compact_cleanup::post_compact_cleanup(&mut self.session);
         }
         if had_summary || needs_cleanup {
             self.emit_session_updated().await;
@@ -2619,6 +2618,7 @@ impl Engine {
             model_id: &self.config.model,
             show_thinking: self.config.show_thinking,
             is_simple: self.config.is_simple,
+            personality: self.config.personality,
             skills_block: crate::skills::render_available_skills_context_for_workspace(
                 &self.config.workspace,
             )
@@ -2989,8 +2989,8 @@ pub use context::{
 // is kept private here. Private `use` bindings remain visible to this
 // module's descendants, so sibling submodules still resolve them via `super::`.
 use context::{
-    MIN_RECENT_MESSAGES_TO_KEEP,
-    estimate_input_tokens_conservative, summarize_text, turn_response_headroom_tokens,
+    MIN_RECENT_MESSAGES_TO_KEEP, estimate_input_tokens_conservative, summarize_text,
+    turn_response_headroom_tokens,
 };
 mod dispatch;
 mod loop_guard;
@@ -3013,14 +3013,14 @@ pub fn default_active_native_tool_names() -> &'static [&'static str] {
 
 pub use self::approval::{ApprovalDecision, UserInputDecision};
 pub use self::dispatch::should_parallelize_tool_batch;
+use self::dispatch::{
+    ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, mcp_tool_is_parallel_safe,
+    mcp_tool_is_read_only, parse_parallel_tool_calls,
+};
 pub use self::dispatch::{
     ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool,
     final_tool_input, format_tool_error, plan_tool_execution_batches,
     should_force_update_plan_first, should_stop_after_plan_tool,
-};
-use self::dispatch::{
-    ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, mcp_tool_is_parallel_safe, mcp_tool_is_read_only,
-    parse_parallel_tool_calls,
 };
 pub use self::lsp_hooks::edited_paths_for_tool;
 pub use self::streaming::TOOL_CALL_START_MARKERS;
@@ -3030,12 +3030,10 @@ pub use self::streaming::{
     should_transparently_retry_stream,
 };
 pub use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME,
-    active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling,
-    execute_code_execution_tool, execute_tool_search, initial_active_tools,
-    maybe_activate_requested_deferred_tool, maybe_hydrate_requested_deferred_tool,
-    missing_tool_error_message, preflight_requested_deferred_tool, should_default_defer_tool,
+    CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME, active_tools_for_step,
+    build_model_tool_catalog, ensure_advanced_tooling, execute_code_execution_tool,
+    execute_tool_search, initial_active_tools, maybe_activate_requested_deferred_tool,
+    maybe_hydrate_requested_deferred_tool, missing_tool_error_message,
+    preflight_requested_deferred_tool, should_default_defer_tool,
 };
-use self::tool_catalog::{
-    MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
-};
+use self::tool_catalog::{MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME};

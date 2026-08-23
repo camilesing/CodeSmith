@@ -7,14 +7,14 @@
 //! This keeps each concern in its own file and makes prompt tuning
 //! a single-file operation.
 
+use crate::mode::AppMode;
+use crate::mode::ApprovalMode;
 use crate::models::SystemPrompt;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
 use crate::prompt_runtime::{
     EffectiveSystemPromptInput, PromptBundle, PromptCachePolicy, PromptSection,
     PromptSectionSource, PromptSectionStability, build_effective_system_prompt,
 };
-use crate::mode::AppMode;
-use crate::mode::ApprovalMode;
 pub use crate::prompt_sources::{InstructionSource, PromptAppendSource};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -58,6 +58,10 @@ pub struct PromptSessionContext<'a> {
     /// so the prompt builder stays free of skills-discovery dependencies
     /// (and portable across crates). `None` when no skills are available.
     pub skills_block: Option<String>,
+    /// Personality overlay — voice and tone only, never behavior. Resolved
+    /// from the `personality` config key; call sites predate it default to
+    /// [`Personality::Calm`].
+    pub personality: Personality,
 }
 
 impl<'a> PromptSessionContext<'a> {
@@ -112,6 +116,7 @@ impl Default for PromptSessionContext<'_> {
             show_thinking: true,
             is_simple: false,
             skills_block: None,
+            personality: Personality::Calm,
         }
     }
 }
@@ -757,6 +762,18 @@ impl Personality {
         }
     }
 
+    /// Parse the `personality` config key value. Case-insensitive;
+    /// accepts `"calm"` and `"playful"`.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "calm" => Ok(Self::Calm),
+            "playful" => Ok(Self::Playful),
+            other => Err(format!(
+                "unknown personality `{other}` (expected `calm` or `playful`)"
+            )),
+        }
+    }
+
     fn prompt(self) -> &'static str {
         match self {
             Self::Calm => CALM_PERSONALITY,
@@ -928,10 +945,11 @@ pub fn compose_mode_prompt_with_approval(mode: AppMode, approval_mode: ApprovalM
 
 pub fn compose_mode_prompt_with_approval_and_model(
     mode: AppMode,
+    personality: Personality,
     approval_mode: ApprovalMode,
     model_id: &str,
 ) -> String {
-    compose_prompt_with_approval_and_model(mode, Personality::Calm, approval_mode, model_id)
+    compose_prompt_with_approval_and_model(mode, personality, approval_mode, model_id)
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -1051,8 +1069,12 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
     session_context: PromptSessionContext<'_>,
     approval_mode: ApprovalMode,
 ) -> PromptBundle {
-    let mode_prompt =
-        compose_mode_prompt_with_approval_and_model(mode, approval_mode, session_context.model_id);
+    let mode_prompt = compose_mode_prompt_with_approval_and_model(
+        mode,
+        session_context.personality,
+        approval_mode,
+        session_context.model_id,
+    );
 
     let project_context = load_project_context_with_parents(workspace);
     let mut bundle = PromptBundle::new();
@@ -1375,4 +1397,3 @@ pub fn build_system_prompt(base: &str, project_context: Option<&ProjectContext>)
         };
     SystemPrompt::Text(full_prompt)
 }
-

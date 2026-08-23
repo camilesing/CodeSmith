@@ -2020,6 +2020,7 @@ impl RuntimeThreadManager {
             translation_enabled: false,
             show_thinking: settings.show_thinking,
             is_simple: settings.is_simple,
+            personality: self.config.personality(),
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),

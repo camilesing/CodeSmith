@@ -29,7 +29,6 @@ mod compaction;
 mod composer_history;
 mod composer_stash;
 mod config;
-mod index;
 mod config_ui;
 mod core;
 mod cost_status;
@@ -43,6 +42,7 @@ mod extension_state;
 mod features;
 mod handoff;
 mod hooks;
+mod index;
 mod knowledge;
 mod llm_client;
 mod localization;
@@ -949,8 +949,7 @@ async fn main() -> Result<()> {
                 run_models(&config, args).await
             }
             Commands::Exec(args) => {
-                let config =
-                    load_config_from_cli_with_exec_model(&cli, args.model.as_deref())?;
+                let config = load_config_from_cli_with_exec_model(&cli, args.model.as_deref())?;
                 let model = args
                     .model
                     .clone()
@@ -5028,11 +5027,13 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
     }
 
     // String fields a project may legitimately override (model,
-    // approval/sandbox tightening, notes path, reasoning effort).
+    // approval/sandbox tightening, notes path, reasoning effort,
+    // personality overlay).
     for (key, field) in [
         ("model", &mut config.default_text_model),
         ("reasoning_effort", &mut config.reasoning_effort),
         ("notes_path", &mut config.notes_path),
+        ("personality", &mut config.personality),
     ] {
         if let Some(v) = table.get(key).and_then(toml::Value::as_str)
             && !v.is_empty()
@@ -5598,6 +5599,7 @@ async fn run_exec_agent(
         translation_enabled: false,
         show_thinking: settings.show_thinking,
         is_simple: settings.is_simple,
+        personality: config.personality(),
         max_steps: 100,
         max_subagents,
         features: config.features(),
@@ -6171,6 +6173,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         translation_enabled: false,
         show_thinking: settings.show_thinking,
         is_simple: settings.is_simple,
+        personality: config.personality(),
         max_steps: 100,
         max_subagents: config.max_subagents(),
         features: config.features(),

@@ -112,6 +112,29 @@ memory_path = "~/.codesmith/memory.md"
 # inside the project array if you want both. An explicit empty array
 # (`instructions = []`) clears the user list for the current repo.
 
+# personality = "calm"
+#
+# Voice-and-tone overlay for the system prompt: "calm" (default) or
+# "playful". Presentation-only — it changes how the agent speaks, never
+# what it does. Case-insensitive; anything else fails startup validation.
+# Overridable from project-level config.
+
+# append_system_prompt = ["~/.codesmith/extra-prompt.md"]
+#
+# Additional prompt sections appended after the assembled system prompt,
+# in declared order. Entries are file paths expanded so `~` and env vars
+# work; unreadable files are skipped with a warning.
+#
+# For a full override there are also (left commented — they discard the
+# built-in constitution, tool taxonomy, and mode layers):
+#
+# system_prompt = "You are a release engineering assistant..."
+# system_prompt_file = "~/.codesmith/prompt.md"
+#
+# Inline system_prompt wins over system_prompt_file; append sections still
+# render after the override. Prefer instructions + append_system_prompt.
+# Run /system in the TUI to inspect the final assembled prompt.
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # User memory (#489) — opt-in. When enabled, the TUI reads memory_path on
 # startup and injects its contents into the system prompt as a

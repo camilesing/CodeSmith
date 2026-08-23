@@ -44,6 +44,7 @@ Supported keys in the project overlay (top-level fields only):
 | `sandbox_mode` | `"read-only"` / `"workspace-write"` / `"danger-full-access"` |
 | `mcp_config_path` | per-repo MCP server set |
 | `notes_path` | keep notes in-repo |
+| `personality` | per-repo voice/tone overlay (`"calm"` / `"playful"`) |
 | `max_subagents` | clamp concurrency for a constrained repo (clamped to 1..=20) |
 | `allow_shell` | gate shell tool access on `false` |
 
@@ -459,6 +460,49 @@ Rules:
   array. Set `instructions = []` in the project to clear the
   user list for that repo.
 
+### System prompt customization
+
+The system prompt is assembled from composable layers: tool
+taxonomy → the CodeSmith constitution (`base.md`) → a
+personality overlay → mode delta → approval policy, plus
+runtime sections (project context, skills, environment,
+instructions, memory). Three of those layers are user-tunable
+from `config.toml`, ordered here from safest to most invasive:
+
+```toml
+# Voice and tone overlay: "calm" (default) or "playful".
+# Presentation-only — it changes how the agent speaks, never
+# what it does. Case-insensitive; invalid values fail startup
+# validation. Project config may override it.
+personality = "calm"
+
+# Additional prompt sections appended after the assembled
+# prompt. Entries are file paths (~ and env vars expanded),
+# rendered in declared order.
+append_system_prompt = ["~/.codesmith/extra-prompt.md"]
+
+# Full system prompt override. Inline `system_prompt` wins over
+# `system_prompt_file`. Replaces the built-in prompt entirely —
+# append sections are still rendered after it.
+# system_prompt = "You are a release engineering assistant..."
+# system_prompt_file = "~/.codesmith/prompt.md"
+```
+
+Prefer `instructions = [...]` and `append_system_prompt` over
+the full override: they keep the constitution (truthfulness,
+verification discipline, tool-use mandate), the tool taxonomy,
+and the mode/approval layers intact. Setting `system_prompt` /
+`system_prompt_file` discards all of that, so the model loses
+its grounding — only use it when you truly need a from-scratch
+persona. Run `/system` (or `/xitong`) inside the TUI to inspect
+the final assembled prompt and confirm your layers took
+effect.
+
+The exec-mode CLI also accepts one-shot equivalents:
+`--system-prompt` / `--system-prompt-file` and
+`--append-system-prompt` / `--append-system-prompt-file`. CLI
+inline values win over file values, which win over config.
+
 ### `/hooks` listing
 
 Run `/hooks` (or `/hooks list`) inside the TUI to see every
@@ -717,6 +761,20 @@ If you are upgrading from older releases:
 - `notes_path` (string, optional): defaults to `~/.codesmith/notes.txt`, with
   legacy `~/.deepseek/notes.txt` fallback when the CodeSmith path is absent, and
   is used by the model-visible `note` tool.
+- `personality` (string, optional): `calm` (default) or `playful` — the
+  voice-and-tone overlay in the system prompt. Case-insensitive; anything else
+  fails startup validation. Presentation-only: it cannot change what the agent
+  does, only how it speaks. See
+  [System prompt customization](#system-prompt-customization).
+- `append_system_prompt` (array of strings, optional): file paths rendered as
+  extra prompt sections after the assembled system prompt, in declared order.
+  `~` and env vars are expanded; unreadable files are skipped with a warning.
+- `system_prompt` / `system_prompt_file` (string, optional): full system prompt
+  override — inline text or a file path, inline wins when both are set.
+  Replaces the built-in prompt (constitution, tool taxonomy, mode/approval
+  layers); `append_system_prompt` sections still render after it. Prefer
+  `instructions` + `append_system_prompt` unless you need a from-scratch
+  persona. See [System prompt customization](#system-prompt-customization).
 - `[memory].enabled` (bool, optional): defaults to `false`. When `true`,
   the TUI loads the user memory file into a `<user_memory>` prompt block,
   enables `# foo` quick-capture in the composer, surfaces the `/memory`

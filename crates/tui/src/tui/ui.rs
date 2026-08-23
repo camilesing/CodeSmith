@@ -37,9 +37,6 @@ use crate::audit::log_sensitive_event;
 use crate::automation_manager::{
     AutomationManager, AutomationSchedulerConfig, spawn_scheduler, wrap_automation_manager,
 };
-use codesmith_agent_runtime::prompt_inspect::{
-    CacheWarmupKey, PromptInspection, build_cache_warmup_request, inspect_prompt_for_request,
-};
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{
@@ -91,6 +88,9 @@ use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::TranscriptScroll;
+use codesmith_agent_runtime::prompt_inspect::{
+    CacheWarmupKey, PromptInspection, build_cache_warmup_request, inspect_prompt_for_request,
+};
 // SelectionAutoscroll unused
 use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
@@ -788,6 +788,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         translation_enabled: app.translation_enabled,
         show_thinking: app.show_thinking,
         is_simple: app.is_simple,
+        personality: config.personality(),
         // Effectively unlimited. V4 has a 1M context window and the user
         // wants the model running until it's actually done. The previous cap
         // of 100 hit the ceiling on long multi-step plans (wide refactors,
@@ -1035,10 +1036,7 @@ async fn fetch_deepseek_balance(
 
 fn should_fetch_deepseek_balance(app: &App) -> bool {
     app.status_items.contains(&StatusItem::Balance)
-        && matches!(
-            app.api_provider,
-            ApiProvider::Deepseek
-        )
+        && matches!(app.api_provider, ApiProvider::Deepseek)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4715,6 +4713,7 @@ async fn dispatch_user_message(
                 model_id: &app.model,
                 show_thinking: app.show_thinking,
                 is_simple: app.is_simple,
+                personality: config.personality(),
                 skills_block: crate::skills::render_available_skills_context_for_workspace(
                     &app.workspace,
                 ),
@@ -5695,8 +5694,7 @@ async fn switch_workspace(
             out.outcome,
             codesmith_agent::extension::HandlerOutcome::Cancel { .. }
         ) {
-            app.status_message =
-                Some("Workspace switch cancelled by an extension.".to_string());
+            app.status_message = Some("Workspace switch cancelled by an extension.".to_string());
             app.add_message(HistoryCell::System {
                 content: "Workspace switch cancelled by an extension.".to_string(),
             });

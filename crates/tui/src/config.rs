@@ -1071,6 +1071,11 @@ pub struct Config {
     pub system_prompt_file: Option<String>,
     /// Additional system-prompt append sources rendered after the selected base.
     pub append_system_prompt: Option<Vec<String>>,
+    /// Personality overlay for the system prompt: `"calm"` (default) or
+    /// `"playful"`. Case-insensitive; invalid values fail `validate` at
+    /// startup so typos surface immediately instead of silently falling
+    /// back to calm. Presentation-only — voice and tone, never behavior.
+    pub personality: Option<String>,
     pub allow_shell: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
@@ -1699,6 +1704,11 @@ impl Config {
                     "Invalid approval_policy '{policy}': expected on-request, untrusted, never, auto, or suggest."
                 );
             }
+        }
+        if let Some(personality) = self.personality.as_deref()
+            && crate::prompts::Personality::parse(personality).is_err()
+        {
+            anyhow::bail!("Invalid personality '{personality}': expected calm or playful.");
         }
         if let Some(mode) = self.sandbox_mode.as_deref() {
             let normalized = mode.trim().to_ascii_lowercase();
@@ -2348,6 +2358,29 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(expand_path)
             .collect()
+    }
+
+    /// Resolve the configured personality overlay. Defaults to
+    /// [`crate::prompts::Personality::Calm`] when unset or empty; invalid
+    /// values are rejected by [`Config::validate`] before this resolver
+    /// runs, so parse failures here degrade to calm with a warning.
+    #[must_use]
+    pub fn personality(&self) -> crate::prompts::Personality {
+        let Some(raw) = self
+            .personality
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return crate::prompts::Personality::Calm;
+        };
+        match crate::prompts::Personality::parse(raw) {
+            Ok(personality) => personality,
+            Err(err) => {
+                tracing::warn!(target: "config", "{err}; falling back to calm");
+                crate::prompts::Personality::Calm
+            }
+        }
     }
 
     /// Resolve the configured full system-prompt override from inline config or
@@ -3977,6 +4010,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         append_system_prompt: override_cfg
             .append_system_prompt
             .or(base.append_system_prompt),
+        personality: override_cfg.personality.or(base.personality),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         yolo: override_cfg.yolo.or(base.yolo),
         telemetry: override_cfg.telemetry.or(base.telemetry),
@@ -7079,6 +7113,60 @@ api_key = "old-openrouter-key"
         config.validate()?;
         assert_eq!(config.default_model(), "auto");
         Ok(())
+    }
+
+    #[test]
+    fn personality_defaults_to_calm_and_resolves_configured_value() {
+        let config = Config::default();
+        assert_eq!(config.personality(), crate::prompts::Personality::Calm);
+
+        let config = Config {
+            personality: Some("Playful".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.personality(), crate::prompts::Personality::Playful);
+
+        // Invalid values degrade to calm here; `validate` is what rejects
+        // them at load time.
+        let config = Config {
+            personality: Some("bogus".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.personality(), crate::prompts::Personality::Calm);
+    }
+
+    #[test]
+    fn validate_rejects_unknown_personality() -> Result<()> {
+        let config = Config {
+            personality: Some("bogus".to_string()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+
+        let config = Config {
+            personality: Some("playful".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn merge_config_lets_profile_override_personality() {
+        let base = Config {
+            personality: Some("calm".to_string()),
+            ..Default::default()
+        };
+        let profile = Config {
+            personality: Some("playful".to_string()),
+            ..Default::default()
+        };
+        let merged = merge_config(base, profile);
+        assert_eq!(merged.personality.as_deref(), Some("playful"));
+
+        // Profile without the key keeps the user-level value.
+        let merged = merge_config(merged, Config::default());
+        assert_eq!(merged.personality.as_deref(), Some("playful"));
     }
 
     #[test]
