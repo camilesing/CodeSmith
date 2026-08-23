@@ -47,6 +47,7 @@ const ENGINE_SOURCES: &[&str] = &[
     include_str!("../src/engine/turn/batches.rs"),
     include_str!("../src/engine/turn/approval.rs"),
     include_str!("../src/engine/turn/seams.rs"),
+    include_str!("../src/engine/turn/postprocess.rs"),
 ];
 
 fn any_engine_source_contains(needle: &str) -> bool {
