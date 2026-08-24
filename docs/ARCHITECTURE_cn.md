@@ -1,6 +1,8 @@
 # codesmith 架构
 
 本文档为开发者和贡献者提供 codesmith 架构的概览。
+深度设计叙述（provider 接缝、框架核心执行器、guardrail 吸收、扩展系统）见
+[DESIGN_INTERNALS.md](DESIGN_INTERNALS.md)（英文）。
 
 当前边界说明（v0.8.6）：
 - `crates/tui` 仍然是 TUI、运行时 API、任务管理器和工具注册表接线的活跃终端用户运行时。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/tui/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。

@@ -507,6 +507,7 @@ description: 当 CodeSmith 需要遵循我的自定义工作流时使用这个�
 | 文档 | 主题 |
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 代码库内部结构 |
+| [DESIGN_INTERNALS.md](docs/DESIGN_INTERNALS.md) | 深度设计：框架核心、provider 接缝、guardrail、扩展系统 |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | 完整配置参考 |
 | [MODES.md](docs/MODES.md) | Plan / Agent / YOLO 模式 |
 | [MCP.md](docs/MCP.md) | Model Context Protocol 集成 |
@@ -595,6 +596,13 @@ v0.8.48 合并或吸收的贡献者包括：**[@cy2311](https://github.com/cy231
 - **[zhuangbiaowei](https://github.com/zhuangbiaowei)** — 更新发布渠道 (#2145)
 
 ---
+
+## 帮助与支持
+
+- **使用问题**——先查阅[文档](#文档)；仍有疑问可[提交 issue](https://github.com/Hmbown/CodeSmith/issues/new/choose)。
+- **Bug 与功能请求**——使用 [issue 模板](https://github.com/Hmbown/CodeSmith/issues/new/choose)。
+- **安全漏洞**——请**勿**公开开 issue，按 [SECURITY.md](SECURITY.md) 流程私下报告。
+- 完整分流指引见 [SUPPORT.md](SUPPORT.md)。
 
 ## 贡献
 

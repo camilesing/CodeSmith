@@ -7,7 +7,7 @@ and a `codesmith-providers` crate with one sample (`mock`) provider behind
 Cargo features. Everything below extends that slice.
 
 Each item carries enough detail (file references, coupling notes) to be picked
-up directly. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the layering.
+up directly. See [`DESIGN_INTERNALS.md`](./docs/DESIGN_INTERNALS.md) for the layering.
 
 ---
 

@@ -584,6 +584,7 @@ without recreating skills the user deliberately deleted.
 |---|---|
 | [GUIDE.md](docs/GUIDE.md) | First-run user guide |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Codebase internals |
+| [DESIGN_INTERNALS.md](docs/DESIGN_INTERNALS.md) | Deep dive: framework core, provider seam, guardrails, extensions |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Full config reference |
 | [PROVIDERS.md](docs/PROVIDERS.md) | Provider IDs, auth, model defaults, and capability metadata |
 | [MODES.md](docs/MODES.md) | Plan / Agent / YOLO modes |
@@ -719,6 +720,13 @@ credit: **[@buko](https://github.com/buko)**, **[@yyyCode](https://github.com/yy
 **[@PurplePulse](https://github.com/PurplePulse)**, and **[@nbiish](https://github.com/nbiish)**.
 
 ---
+
+## Help & Support
+
+- **Usage questions** — check the [documentation](#documentation) first; if you're still stuck, [open an issue](https://github.com/Hmbown/CodeSmith/issues/new/choose).
+- **Bugs & feature requests** — use the [issue templates](https://github.com/Hmbown/CodeSmith/issues/new/choose).
+- **Security vulnerabilities** — do **not** open a public issue; follow [SECURITY.md](SECURITY.md) instead.
+- Full routing guide: [SUPPORT.md](SUPPORT.md).
 
 ## Contributing
 

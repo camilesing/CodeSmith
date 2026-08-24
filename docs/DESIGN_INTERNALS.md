@@ -5,7 +5,8 @@ This document describes the **provider pluggability** layer introduced by the
 from *implementation*, and how a host assembles providers like Lego blocks at
 build time.
 
-For the backlog of work that extends this slice, see [`ROADMAP.md`](./ROADMAP.md).
+For a gentler whole-codebase overview, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For the backlog of work that extends this slice, see [`ROADMAP.md`](../ROADMAP.md).
 
 ## Design goals
 

@@ -1,6 +1,8 @@
 # codesmith Architecture
 
 This document provides an overview of the codesmith architecture for developers and contributors.
+For the deep design narrative (provider seam, framework-core agent executor, guardrail
+absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
 
 Current boundary note (v0.8.6):
 - `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/tui/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
