@@ -1,7 +1,7 @@
 # Tool surface
 
 Why these specific tools, in this groupings, and how each one is meant to be
-chosen over the available shell equivalent. Companion to `crates/tui/src/prompts/agent.txt`.
+chosen over the available shell equivalent. Companion to `crates/agent-runtime/src/prompts/agent.txt`.
 
 ## Design stance
 
@@ -82,7 +82,7 @@ restart-required after edits.
 
 The command palette includes MCP entries grouped by server. Disabled and failed
 servers stay visible, and discovered tools/prompts use the runtime names shown
-to the model, such as `mcp_<server>_<tool>`.
+to the model, such as `mcp__<server>__<tool>`.
 
 ### Git / diagnostics / testing
 
@@ -243,10 +243,17 @@ complete or cancel no-longer-needed running sessions with `agent_close`.
 ## Removed legacy aliases and surfaces
 
 v0.8.33 removed the old model-facing sub-agent fan-out surface from active
-prompting and tool catalogs. Do not use these names in new active guidance:
-`agent_spawn`, `agent_wait`, `agent_result`, `agent_send_input`,
+prompting. Do not use these names in new active guidance:
+`agent_wait`, `agent_result`, `agent_send_input`,
 `agent_assign`, `agent_resume`, `agent_list`, `spawn_agent`,
 `delegate_to_agent`, `send_input`, and `close_agent`.
+
+`agent_spawn` is the one survivor: it is still registered in the tool
+registry (`AgentSpawnTool`, `crates/tui/src/tools/registry.rs`) as the
+background one-shot alias — `agent_open` with `run_in_background = true`
+is equivalent — and sub-agents recurse through it (see
+`docs/SUBAGENTS.md`). New guidance should still prefer
+`agent_open` / `agent_eval`.
 
 The old one-shot `rlm` model-facing tool is also replaced by persistent
 `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` sessions.
@@ -284,7 +291,7 @@ Tool-surface smoke:
 
 ```bash
 rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_open"|"agent_eval"|"agent_close"' crates/tui/src
-rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/tui/src/prompts crates/tui/src/tools
+rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/agent-runtime/src/prompts crates/tui/src/tools
 ```
 
 The canonical v0.8.35 live names are:
@@ -293,10 +300,11 @@ The canonical v0.8.35 live names are:
 - `rlm_open`, `rlm_eval`, `rlm_configure`, `rlm_close`
 - `agent_open`, `agent_eval`, `agent_close`
 
-The registry should not actively advertise the legacy one-shot names
-`agent_spawn`, `agent_wait`, `agent_result`, or the old foreground `rlm` tool
-outside legacy/removal notes. Historical changelog entries and compatibility
-code may still mention them.
+The active guidance should not advertise the legacy one-shot names
+`agent_wait`, `agent_result`, or the old foreground `rlm` tool
+outside legacy/removal notes (`agent_spawn` stays registered as the
+background/compat alias described above). Historical changelog entries
+and compatibility code may still mention the removed names.
 
 ## Why we don't ship a single `bash` tool
 

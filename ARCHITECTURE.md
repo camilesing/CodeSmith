@@ -146,7 +146,7 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   `DefaultAgentExecutor` is the reference impl (core). The host-side
   `HostAgentExecutor` (in `codesmith-agent-runtime::engine::host_executor`,
   §E) mirrors the bare loop over the three bridges and is the designated home
-  for absorbing the production `Engine`'s guardrails slice by slice — **six**
+  for absorbing the production `Engine`'s guardrails slice by slice — **ten**
   are now absorbed: **loop-guard** (block the 3rd identical call, warn/halt on
   3/8 consecutive failures) at its per-tool / post-tool seams, **LSP flush**
   (collect diagnostics per successful edit, flush them as a user message before
@@ -158,10 +158,16 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   pre-request seam, **approval** (gate write/code-exec tools behind user
   permission: emit `ApprovalRequired` + block on the decision channel by wire
   tool id; denied ⇒ `permission_denied` error, tool skipped) at its per-tool
-  seam, and **compaction** (micro-compact stale tool results past the 32KB
+  seam, **compaction** (micro-compact stale tool results past the 32KB
   cache trigger without an LLM call, then auto-compact via an LLM summary when
   `should_compact` passes; both wholesale-replace via `clear()`+`push()`) at
-  its per-step pre-request seam. The LSP accumulator, the steer receiver, the
+  its per-step pre-request seam, plus **capacity**, **subagent** (completion
+  hold + sentinel), **early-tool-start**, and the **cycle** guardrail (see the
+  `host_executor.rs` module doc, "Absorbed guardrails", for the full list).
+  The per-step machinery is split by phase into private submodules under
+  `engine/turn/` (`stream.rs`, `batches.rs`, `approval.rs`, `seams.rs`,
+  `postprocess.rs`); `host_executor.rs` keeps the step loop itself plus the
+  cross-cutting guardrails it owns directly. The LSP accumulator, the steer receiver, the
   approval receiver, and the compaction probe are the
   **interior-mutability slices**: `LspProbe.pending` is
   `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` (LSP: lock never held across an
@@ -195,7 +201,11 @@ in the now-deleted `turn_loop.rs`, retired `handle_deepseek_turn`) absorbed
 into `HostAgentExecutor` — the three
 host→framework bridges are all landed (`ToolSpecAdapter`, `CallbackBridge`,
 `SessionChatHistory`), and the host-side `HostAgentExecutor` runs the bare
-LLM↔tool loop over them with **six guardrails absorbed**: **loop-guard** at
+LLM↔tool loop over them with **ten guardrails absorbed** (loop-guard, LSP
+flush, transparent-retry, steer, approval, compaction, capacity,
+early-tool-start, subagent post-stream drain, cancel-token; the per-step
+machinery is split by phase into `engine/turn/{stream,batches,approval,seams,postprocess}.rs`
+— see the `host_executor.rs` module doc for the full list): **loop-guard** at
 its per-tool / post-tool seams (block the 3rd identical call, warn/halt on 3/8
 consecutive failures), **LSP flush** at its per-tool (post-edit collect) /
 per-step pre-request (flush) seams — the first guardrail to need `Engine`

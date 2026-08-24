@@ -5,13 +5,14 @@
 pytest 而不是 unittest"、"这个代码库使用 4 空格缩进"、"提交前总是运行
 `cargo fmt`"——无需在每次对话中重复它们。
 
-记忆是**可选启用（opt-in）**的。禁用时（默认），不加载任何内容、不拦截
-任何输入，`remember` 工具也不会呈现给模型。这为没有要求该功能的用户
-保持了零开销行为。
+记忆**默认开启**（与 Claude Code 的自动记忆保持一致）。启用时，
+记忆文件会被加载、`# ` 快速添加会追加到该文件、`remember` 工具会
+呈现给模型。bare/simple 会话和无持久存储的远程会话会自动禁用该功能；
+通过 `enabled = false` 或 `DEEPSEEK_DISABLE_AUTO_MEMORY=1` 可完全退出。
 
 ## 启用记忆
 
-可以设置环境变量：
+等价的环境变量也可以切换该功能：
 
 ```bash
 export DEEPSEEK_MEMORY=on
@@ -248,7 +249,7 @@ export CODESMITH_MEMORY_EXCLUDES=~/work/secret/CLAUDE.md:/etc/sandbox-override.m
 ```toml
 # ~/.codesmith/config.toml
 [memory]
-enabled = true                    # default false; or set DEEPSEEK_MEMORY=on
+enabled = true                    # 默认 true（开启）；也可用 DEEPSEEK_MEMORY=on
 excludes = ["~/work/secret/CLAUDE.md"]  # skip these paths in the tier merge
 # Path is configured at the top-level (next to skills_dir, notes_path):
 memory_path = "~/.codesmith/memory.md"
@@ -256,7 +257,7 @@ memory_path = "~/.codesmith/memory.md"
 
 | 设置          | 默认值                        | 覆盖方式                                           |
 |---------------|-------------------------------|----------------------------------------------------|
-| 启用记忆      | `false`                       | `[memory] enabled = true` 或 `DEEPSEEK_MEMORY=on` |
+| 启用记忆      | `true`                        | `[memory] enabled = false` 或 `DEEPSEEK_DISABLE_AUTO_MEMORY=1` |
 | 记忆文件路径  | `~/.codesmith/memory.md`      | `memory_path = "..."` 或 `DEEPSEEK_MEMORY_PATH=`  |
 | 记忆排除项    | （无）                        | `[memory] excludes = ["..."]` 或 `CODESMITH_MEMORY_EXCLUDES=`（冒号分隔） |
 | 文件大小上限  | 100 KiB                       | （目前无；截断标记会显示切割位置）                 |

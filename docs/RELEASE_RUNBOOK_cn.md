@@ -12,7 +12,7 @@ npm 包装器的权威依据。
 - 面向最终用户的 crate：
   - `codesmith-tui`
   - `codesmith-cli`
-- 从本工作区发布的支撑 crate：
+- 从本工作区发布的支撑 crate（顺序与 `scripts/release/crates.sh` 一致）：
   - `codesmith-secrets`
   - `codesmith-config`
   - `codesmith-protocol`
@@ -25,6 +25,10 @@ npm 包装器的权威依据。
   - `codesmith-core`
   - `codesmith-app-server`
   - `codesmith-tui-core`
+- 其余工作区 crate（`codesmith-agent-runtime`、`codesmith-providers`、
+  `codesmith-tool-impls`、`codesmith-index`、`codesmith-extensions`、
+  `codesmith-release`）**不**发布——它们以路径依赖的形式被已发布的
+  二进制消费。
 
 ## 版本协调
 

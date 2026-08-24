@@ -7,14 +7,15 @@ sessions — "I prefer pytest over unittest", "this codebase uses
 4-space indentation", "always run `cargo fmt` before committing" —
 without having to repeat them in every conversation.
 
-Memory is **opt-in**. When disabled (the default), nothing is loaded,
-nothing is intercepted, and the `remember` tool isn't surfaced to the
-model. This keeps zero-overhead behavior for users who haven't asked
-for the feature.
+Memory is **on by default** (mirrors Claude Code's auto-memory). When
+enabled, the memory file is loaded, `# ` quick-adds append to it, and
+the `remember` tool is surfaced to the model. Bare/simple sessions and
+storage-less remote sessions disable it automatically; opt out
+entirely with `enabled = false` or `DEEPSEEK_DISABLE_AUTO_MEMORY=1`.
 
 ## Enabling memory
 
-Either set the env var:
+The env var equivalent toggles it too:
 
 ```bash
 export DEEPSEEK_MEMORY=on
@@ -283,7 +284,7 @@ loaded by `project_context` and live in the repo (or wherever you commit them).
 ```toml
 # ~/.codesmith/config.toml
 [memory]
-enabled = true                    # default false; or set DEEPSEEK_MEMORY=on
+enabled = true                    # default true (on); or set DEEPSEEK_MEMORY=on
 excludes = ["~/work/secret/CLAUDE.md"]  # skip these paths in the tier merge
 # Path is configured at the top-level (next to skills_dir, notes_path):
 memory_path = "~/.codesmith/memory.md"
@@ -291,7 +292,7 @@ memory_path = "~/.codesmith/memory.md"
 
 | Setting               | Default                       | Override                              |
 |-----------------------|-------------------------------|---------------------------------------|
-| Memory enabled        | `false`                       | `[memory] enabled = true` or `DEEPSEEK_MEMORY=on` |
+| Memory enabled        | `true`                        | `[memory] enabled = false` or `DEEPSEEK_DISABLE_AUTO_MEMORY=1` |
 | Memory file path      | `~/.codesmith/memory.md`       | `memory_path = "..."` or `DEEPSEEK_MEMORY_PATH=`  |
 | Memory excludes       | (none)                        | `[memory] excludes = ["..."]` or `CODESMITH_MEMORY_EXCLUDES=` (colon-separated) |
 | Max file size         | 100 KiB                       | (none today; truncation marker shows the cut)     |

@@ -298,9 +298,10 @@ sandbox_api_key = "YOUR_API_KEY"
 
 ## 相关
 
-- `crates/tui/src/sandbox/` — 实现
+- `crates/tui/src/sandbox/` — 宿主侧策略准备、运行时接线、外部后端（`opensandbox.rs`）
+- `crates/agent-runtime/src/sandbox/` — 强制执行辅助程序（`seatbelt.rs`、`landlock.rs`、`seccomp.rs`、`windows.rs`、`bwrap.rs`、`process_hardening.rs`；经 TUI 的 sandbox 模块重导出）
 - `crates/config/src/lib.rs` — 配置键
-- `crates/tui/src/tools/diagnostics.rs` — `diagnostics` 工具报告
+- `crates/tool-impls/src/tools/diagnostics.rs` — `diagnostics` 工具报告
   `sandbox_available`、`sandbox_type`、`bwrap_available`、
   `cgroup_version`
 - `config.example.toml` — 带注释的配置参考

@@ -621,7 +621,7 @@ Common settings keys:
   automatically switch back to full clarity. Toggle via `/config is_simple on`;
   applies from the next turn.
 - `show_tool_details` (on/off)
-- `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`; default `auto`): UI chrome
+- `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`, `es-419`, `vi`; default `auto`): UI chrome
   locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
   missing locales fall back to English. The runtime also exposes the resolved
   locale in the system prompt as the fallback natural language for V4 reasoning
@@ -882,8 +882,8 @@ compatible with the existing `---`-separated notes.
 
 ### User memory
 
-User memory is split across one top-level path setting and one opt-in
-toggle table:
+User memory is split across one top-level path setting and one toggle
+table (the feature is on by default):
 
 ```toml
 memory_path = "~/.codesmith/memory.md"
@@ -898,7 +898,10 @@ Notes:
   `skills_dir`; it is not nested under `[memory]`.
 - `CODESMITH_MEMORY_PATH` overrides the file path from the environment.
 - `DEEPSEEK_MEMORY=on` (also `1`, `true`, `yes`, `y`, or `enabled`)
-  flips the feature on without editing `config.toml`.
+  flips the feature on without editing `config.toml`;
+  `DEEPSEEK_DISABLE_AUTO_MEMORY=1` (or `enabled = false`) opts out.
+- Bare/simple sessions and storage-less remote sessions disable memory
+  automatically.
 - The feature is inert when disabled: no file is injected, `# foo`
   falls through to normal message submission, and the model does not
   see the `remember` tool.

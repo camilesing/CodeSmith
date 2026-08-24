@@ -1,6 +1,6 @@
 # 工具面
 
-为什么是这些特定的工具、这样的分组方式，以及在每个场景下如何相对于可用的 shell 等价物来选择它们。本文档是 `crates/tui/src/prompts/agent.txt` 的配套说明。
+为什么是这些特定的工具、这样的分组方式，以及在每个场景下如何相对于可用的 shell 等价物来选择它们。本文档是 `crates/agent-runtime/src/prompts/agent.txt` 的配套说明。
 
 ## 设计立场
 
@@ -70,7 +70,7 @@ reload/reconnect。配置编辑会立即写入，但编辑后对模型可见的 
 需要重启才能生效。
 
 命令调色板包含按服务器分组的 MCP 条目。禁用和失败的服务器保持可见，
-发现的工具/提示使用向模型展示的运行时名称，例如 `mcp_<server>_<tool>`。
+发现的工具/提示使用向模型展示的运行时名称，例如 `mcp__<server>__<tool>`。
 
 ### Git / 诊断 / 测试
 
@@ -221,11 +221,17 @@ RLM 现在同样是持久化的：
 
 ## 已移除的旧别名与工具面
 
-v0.8.33 从主动提示和工具目录中移除了旧的面向模型的子代理扇出工具面。
-不要在新的主动指导中使用这些名称：`agent_spawn`、`agent_wait`、
+v0.8.33 从主动提示中移除了旧的面向模型的子代理扇出工具面。
+不要在新的主动指导中使用这些名称：`agent_wait`、
 `agent_result`、`agent_send_input`、`agent_assign`、`agent_resume`、
 `agent_list`、`spawn_agent`、`delegate_to_agent`、`send_input` 和
 `close_agent`。
+
+`agent_spawn` 是唯一的幸存者：它仍注册在工具注册表中
+（`AgentSpawnTool`，`crates/tui/src/tools/registry.rs`）作为后台一次性
+别名 —— `agent_open` 加 `run_in_background = true` 与之等价 —— 且子代理
+通过它递归派生（见 `docs/SUBAGENTS.md`）。新的指导仍应优先使用
+`agent_open` / `agent_eval`。
 
 旧的一次性 `rlm` 面向模型工具也已被持久的
 `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` 会话取代。
@@ -261,7 +267,7 @@ codesmith-tui --version
 
 ```bash
 rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_open"|"agent_eval"|"agent_close"' crates/tui/src
-rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/tui/src/prompts crates/tui/src/tools
+rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/agent-runtime/src/prompts crates/tui/src/tools
 ```
 
 v0.8.35 的权威实时名称为：
@@ -270,9 +276,10 @@ v0.8.35 的权威实时名称为：
 - `rlm_open`, `rlm_eval`, `rlm_configure`, `rlm_close`
 - `agent_open`, `agent_eval`, `agent_close`
 
-注册表不应在旧版/移除说明之外主动宣传旧的一次性名称
-`agent_spawn`、`agent_wait`、`agent_result` 或旧的前台 `rlm` 工具。
-历史变更日志条目和兼容性代码仍可能提及它们。
+主动指导不应在旧版/移除说明之外宣传旧的一次性名称
+`agent_wait`、`agent_result` 或旧的前台 `rlm` 工具（`agent_spawn`
+按上文所述保留注册，作为后台/兼容别名）。历史变更日志条目
+和兼容性代码仍可能提及已移除的名称。
 
 ## 为什么我们不提供单一 `bash` 工具
 

@@ -207,8 +207,8 @@ OpenAI 兼容或本地端点即使 CodeSmith
 能够发送 schema，仍可能拒绝工具调用。
 
 DeepSeek 兼容别名 `deepseek-chat` 和 `deepseek-reasoner` 映射到
-`deepseek-v4-flash` 能力元数据，并计划于
-2026-07-24 的 2026-07-24T15:59:00Z 退役。
+`deepseek-v4-flash` 能力元数据。原定的 2026-07-24 退役日期已过但未执行
+移除——别名仍可解析，且未承诺新的移除日期。
 
 ## 漂移检查
 
@@ -238,7 +238,8 @@ python3 scripts/check-provider-registry.py
 - `codesmith-agent` 中统一的 `Provider` trait，负责环境变量优先级、
   密钥解析、base URL 规范化、认证头构造以及
   提供商元数据。这些职责目前仍分散在
-  `crates/config`、`crates/secrets` 和 `crates/tui/src/client.rs` 中。
+  `crates/config`、`crates/secrets`、`crates/tui/src/config.rs` 以及
+  `crates/providers` 中的提供商客户端。
 - 原生的 Hugging Face 提供商，例如 `[providers.huggingface]`。
 - 原生的 Hugging Face 认证环境变量，例如 `HF_TOKEN` 或 `HUGGINGFACE_API_KEY`。
 - 默认的 Hugging Face 路由器 base URL，例如

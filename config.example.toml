@@ -136,15 +136,26 @@ memory_path = "~/.codesmith/memory.md"
 # Run /system in the TUI to inspect the final assembled prompt.
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# User memory (#489) — opt-in. When enabled, the TUI reads memory_path on
+# User memory (#489) — default ON. When enabled, the TUI reads memory_path on
 # startup and injects its contents into the system prompt as a
 # <user_memory> block, intercepts `# foo` typed in the composer to append
 # the line as a timestamped bullet, and registers a `remember` tool the
-# model can call to add durable notes itself.
+# model can call to add durable notes itself. Opt out with
+# enabled = false or DEEPSEEK_DISABLE_AUTO_MEMORY=1 (bare/simple and
+# storage-less remote sessions also disable it automatically).
 # ─────────────────────────────────────────────────────────────────────────────────
 [memory]
-# enabled = true            # turn the feature on (default: false)
+# enabled = true            # default ON; set false to opt out entirely
 # Override the env-var equivalent: `CODESMITH_MEMORY=on`
+# kod_enabled = false       # directory-based Knowledge On Demand memory
+#                           # (frontmatter .md files + MEMORY.md entrypoint);
+#                           # requires enabled = true and the knowledge_on_demand
+#                           # feature flag
+# directory = "~/.codesmith/memory"  # defaults to the parent of memory_path
+#                                     # with /memory/ appended
+# excludes = []             # paths excluded from the four-tier CLAUDE.md memory
+#                           # merge (Plan 03 / finding F1); resolved into
+#                           # CODESMITH_MEMORY_EXCLUDES at engine startup
 
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
@@ -219,11 +230,58 @@ max_subagents = 10 # optional (1-20)
 # Optional sub-agent tuning. max_concurrent overrides top-level max_subagents.
 # [subagents]
 # max_concurrent = 10
-# api_timeout_secs = 120 # per-step API timeout, clamped to 1..=1800
+# api_timeout_secs = 120 # per-step API timeout, clamped to 1..=1800 (0/unset = 120)
+# inherit_full_registry = false  # false (default) = child tool surface is a
+#                                # subset of the parent's effective tools
+#                                # (restrictToSubset); true restores the legacy
+#                                # v0.6.6 full-inheritance behavior.
+# Per-role/per-type model defaults; explicit `model` values on agent_open win:
+# default_model = "deepseek-v4-pro"
+# worker_model = "deepseek-v4-pro"
+# explorer_model = "deepseek-v4-flash"
+# awaiter_model = "deepseek-v4-flash"
+# review_model = "deepseek-v4-pro"
+# custom_model = "deepseek-v4-pro"
+# [subagents.models]               # free-form role/type keys
+# worker = "deepseek-v4-pro"
+# explore = "deepseek-v4-flash"
 
 # Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):
 # managed_config_path = "/etc/deepseek/managed_config.toml"
 # requirements_path = "/etc/deepseek/requirements.toml"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Structured sandbox controls ([sandbox] + [sandbox.filesystem] / [sandbox.network])
+# ─────────────────────────────────────────────────────────────────────────────────
+# Every key is optional; these tables layer on top of the flat
+# sandbox_mode / prefer_bwrap keys above. See docs/SANDBOX.md for platform
+# details (macOS Seatbelt, Linux Landlock + seccomp, Windows Job Object,
+# bubblewrap) and denial metadata.
+#
+# [sandbox]
+# enabled = true                     # master switch for OS-level sandboxing
+# fail_if_unavailable = false        # true = fail closed instead of unsandboxed fallback
+# enabled_platforms = ["macos", "linux"]
+# excluded_commands = []             # program names or command prefixes never sandboxed
+# auto_allow_bash_if_sandboxed = true  # skip the approval prompt for shell calls
+#                                      # that ran inside the sandbox
+# prefer_bwrap = false               # same as the top-level flat key
+#
+# [sandbox.filesystem]               # path-level read/write policy
+# mode = "workspace-write"           # read-only | workspace-write | danger-full-access | external-sandbox
+# writable_roots = []                # extra writable paths (added to the mode default)
+# allow_read = []
+# deny_read = []                     # deny always wins over allow
+# allow_write = []
+# deny_write = []
+# exclude_tmpdir = true              # keep $TMPDIR writable for build tools
+# exclude_slash_tmp = false          # keep /tmp writable
+#
+# [sandbox.network]
+# enabled = true                     # network blocking inside the sandbox
+# allow_managed_domains_only = false # local OS sandboxes cannot enforce host allow-lists
+# allow = []
+# deny = []
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Per-provider credentials (peer providers — NIM is first-class, not a flag)
@@ -479,6 +537,9 @@ max_subagents = 10 # optional (1-20)
 # default = "prompt"     # allow | deny | prompt
 # allow = ["api.deepseek.com", "github.com", ".githubusercontent.com"]
 # deny = []
+# proxy = []             # hostnames whose DNS may resolve to fake-IP/private
+#                        # proxy ranges in an explicitly trusted proxy setup
+#                        # (literal IP URLs remain blocked)
 # audit = true            # one line per call to ~/.codesmith/audit.log
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -512,7 +573,7 @@ osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTer
 #                                    "always" = notify on every successful turn (no threshold);
 #                                    "never"  = suppress all turn-completion notifications;
 #                                    unset    = use [notifications] defaults (recommended).
-# locale = "auto"           # UI chrome language: auto | en | ja | zh-Hans | pt-BR
+# locale = "auto"           # UI chrome language: auto | en | ja | zh-Hans | pt-BR | es-419 | vi
 #                           # "auto" reads LC_ALL → LC_MESSAGES → LANG; falls back to English.
 #                           # Override: `locale = "zh-Hans"` for Simplified Chinese regardless of OS locale.
 #                           # Also settable at runtime: /config locale zh-Hans
@@ -794,6 +855,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # [hooks]
 # enabled = true
 # default_timeout_secs = 30
+# working_dir = "~/work"      # default: the active workspace
 #
 # [[hooks.hooks]]
 # event = "session_start"

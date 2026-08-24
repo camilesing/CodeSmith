@@ -184,24 +184,32 @@ branding, or global prompts without prior maintainer sign-off.
 
 ## Project Structure
 
-codesmith is a Cargo workspace. The live runtime and the majority of TUI,
-engine, and tool code currently live in `crates/tui/src/`. Smaller workspace
-crates provide shared abstractions that are being extracted incrementally.
+codesmith is a Cargo workspace. The TUI runtime lives in `crates/tui/src/`;
+the agent execution engine (turn loop, compaction, sandbox helpers, prompts)
+lives in `crates/agent-runtime/`. The remaining workspace crates provide
+shared abstractions that were extracted incrementally.
 
 ```
 crates/
 ├── tui/           codesmith-tui binary (interactive TUI + runtime API)
 ├── cli/           codesmith binary (dispatcher facade)
+├── agent-runtime/ Agent execution engine (engine, turn loop, prompts, sandbox)
+├── agent/         Model/provider registry + LlmClient trait (framework core)
+├── providers/     Pluggable LLM client implementations (rig adapter)
+├── tool-impls/    Model-visible tool implementations (migrated from the TUI)
 ├── app-server/    HTTP/SSE + JSON-RPC transport
-├── core/          Agent loop / session / turn management
+├── core/          Core runtime boundaries
 ├── protocol/      Request/response framing
 ├── config/        Config loading, profiles, env precedence
+├── secrets/       OS keyring + file secret storage
 ├── state/         SQLite thread/session persistence
 ├── tools/         Typed tool specs and lifecycle
 ├── mcp/           MCP client + stdio server
 ├── hooks/         Lifecycle hooks (stdout/jsonl/webhook)
 ├── execpolicy/    Approval/sandbox policy engine
-├── agent/         Model/provider registry
+├── extensions/    Extension runtime (discovery/loading/dispatch) (+ extensions-fixture-dylib test fixture)
+├── index/         Persistent per-workspace code index
+├── release/       Release discovery / version comparison
 └── tui-core/      Event-driven TUI state machine scaffold
 ```
 
@@ -245,7 +253,7 @@ A well-structured PR follows a consistent pattern. Recent exemplars include:
 - **#386** — `/init` command: new `crates/tui/src/commands/init.rs` module, project-type detection,
   AGENTS.md generation, command registration in `commands/mod.rs`, localization strings.
 - **#389** — Inline LSP diagnostics: LSP subsystem in `crates/tui/src/lsp/`, engine hooks in
-  `core/engine/lsp_hooks.rs`, config toggle, test coverage.
+  `crates/agent-runtime/src/engine/lsp_hooks.rs`, config toggle, test coverage.
 - **#387** — Self-update: new `crates/cli/src/update.rs` module, CLI subcommand registration,
   HTTP download + SHA256 verification + atomic binary replacement.
 - **#393** — `/share` session URL: new `crates/tui/src/commands/share.rs`, HTML rendering,

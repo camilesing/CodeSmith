@@ -583,7 +583,7 @@ codesmith 还将用户偏好存储在：
   切换回完全清晰的表达。通过 `/config is_simple on` 切换；从下一轮
   开始生效。
 - `show_tool_details`（开/关）
-- `locale`（`auto`、`en`、`ja`、`zh-Hans`、`pt-BR`；默认 `auto`）：
+- `locale`（`auto`、`en`、`ja`、`zh-Hans`、`pt-BR`、`es-419`、`vi`；默认 `auto`）：
   UI 界面语言。`auto` 依次检查 `LC_ALL`、`LC_MESSAGES`、`LANG`；
   不支持或缺失的语言回退为英语。运行时还会把解析出的语言写入系统
   提示词，作为 V4 推理和回复在最新用户消息有歧义时的回退自然语言。
@@ -661,7 +661,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `provider`（字符串，可选）：`deepseek`（默认）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm` 或 `ollama`。旧版 `deepseek-cn` 配置仍被接受，作为 `deepseek` 的别名；DeepSeek 在全球使用相同的官方主机 [`https://api.deepseek.com`](https://api-docs.deepseek.com/)。`nvidia-nim` 通过 `https://integrate.api.nvidia.com/v1` 指向 NVIDIA NIM 托管的 DeepSeek 端点；`openai` 指向通用 OpenAI 兼容端点，默认为 `https://api.openai.com/v1`；`atlascloud` 指向 AtlasCloud 的 OpenAI 兼容端点 `https://api.atlascloud.ai/v1`；`wanjie-ark` 指向 Wanjie Ark 的 OpenAI 兼容端点 `https://maas-openapi.wanjiedata.com/api/v1`；`openrouter` 指向 `https://openrouter.ai/api/v1`；`xiaomi-mimo` 指向小米 MiMo 的 OpenAI 兼容端点 `https://api.xiaomimimo.com/v1`；`novita` 指向 `https://api.novita.ai/v1`；`fireworks` 指向 `https://api.fireworks.ai/inference/v1`；`siliconflow` 指向 SiliconFlow，默认为 `https://api.siliconflow.com/v1`；`moonshot` 指向 Moonshot/Kimi，默认为 `https://api.moonshot.ai/v1`；`sglang` 指向自托管的 OpenAI 兼容端点，默认为 `http://localhost:30000/v1`；`vllm` 指向自托管的 vLLM OpenAI 兼容端点，默认为 `http://localhost:8000/v1`；`ollama` 指向 Ollama 的 OpenAI 兼容端点，默认为 `http://localhost:11434/v1`。
 - `api_key`（字符串，托管 provider 必填）：对 DeepSeek/托管 provider 必须非空（或设置该 provider 的 API 密钥环境变量）。自托管的 SGLang、vLLM 和 Ollama 可以省略。
 - `base_url`（字符串，可选）：对 DeepSeek 的 OpenAI 兼容 Chat Completions API 默认为 `https://api.deepseek.com/beta`，包括旧版 `provider = "deepseek-cn"` 配置。其他默认值：`nvidia-nim` 为 `https://integrate.api.nvidia.com/v1`，`openai` 为 `https://api.openai.com/v1`，`atlascloud` 为 `https://api.atlascloud.ai/v1`，`wanjie-ark` 为 `https://maas-openapi.wanjiedata.com/api/v1`，`openrouter` 为 `https://openrouter.ai/api/v1`，`xiaomi-mimo` 为 `https://api.xiaomimimo.com/v1`，`novita` 为 `https://api.novita.ai/v1`，`fireworks` 为 `https://api.fireworks.ai/inference/v1`，`siliconflow` 为 `https://api.siliconflow.com/v1`，`moonshot` 为 `https://api.moonshot.ai/v1`，`sglang` 为 `http://localhost:30000/v1`，`vllm` 为 `http://localhost:8000/v1`，`ollama` 为 `http://localhost:11434/v1`。显式设置 `https://api.deepseek.com` 或 `https://api.deepseek.com/v1` 可退出 DeepSeek beta 功能。
-- `default_text_model`（字符串，可选）：DeepSeek 和通用 OpenAI 兼容端点默认为 `deepseek-v4-pro`，NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。旧版 `deepseek-chat` 和 `deepseek-reasoner` 作为 `deepseek-v4-flash` 的兼容别名保留至 2026 年 7 月 24 日，但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项；`DEEPSEEK_MODEL` 是旧版别名。
+- `default_text_model`（字符串，可选）：DeepSeek 和通用 OpenAI 兼容端点默认为 `deepseek-v4-pro`，NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。旧版 `deepseek-chat` 和 `deepseek-reasoner` 仍作为 `deepseek-v4-flash` 的兼容别名解析（移除已列入计划，但未承诺具体日期），但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项；`DEEPSEEK_MODEL` 是旧版别名。
 - `reasoning_effort`（字符串，可选）：`off`、`low`、`medium`、`high` 或 `max`；默认为已配置的 UI 档位。DeepSeek 平台通过顶层 `thinking` / `reasoning_effort` 字段接收。NVIDIA NIM 通过 `chat_template_kwargs` 接收等价设置。
 - `allow_shell`（布尔，可选）：默认为 `true`（受沙箱保护）。
 - `telemetry`（布尔，可选，默认 `false`）：可选择加入的**仅本地**遥测。当为 `true` 时，容量决策分析事件会在通过工作区信任边界后写入 `~/.codesmith/telemetry/events.jsonl`。绝不联网；接收器在信任前在内存中排队，仅在信任后才附加（写入），因此在获得同意之前不会有任何工作区控制的数据落盘。事件携带临时的按会话 id，而不是持久线程 id。
@@ -836,7 +836,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 
 ### 用户记忆
 
-用户记忆由一个顶层路径设置和一个可选开关表组成：
+用户记忆由一个顶层路径设置和一个开关表组成（该功能默认开启）：
 
 ```toml
 memory_path = "~/.codesmith/memory.md"
@@ -851,7 +851,9 @@ enabled = true
   它不嵌套在 `[memory]` 之下。
 - `CODESMITH_MEMORY_PATH` 从环境中覆盖文件路径。
 - `DEEPSEEK_MEMORY=on`（也接受 `1`、`true`、`yes`、`y` 或 `enabled`）
-  无需编辑 `config.toml` 即可开启该功能。
+  无需编辑 `config.toml` 即可开启该功能；
+  `DEEPSEEK_DISABLE_AUTO_MEMORY=1`（或 `enabled = false`）可退出。
+- bare/simple 会话和无持久存储的远程会话会自动禁用记忆。
 - 禁用时该功能不起作用：不注入任何文件，`# foo` 按普通消息提交处理，
   模型看不到 `remember` 工具。
 - 示例和完整的 `/memory` 命令面请参阅 [`MEMORY.md`](MEMORY.md)。

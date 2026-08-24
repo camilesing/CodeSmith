@@ -27,8 +27,9 @@
 | `custom`      | 显式的窄工具白名单                     | 视情况  | 视情况        | 使用精选工具的受控派发                        |
 
 每个角色的完整系统提示词位于
-`crates/tui/src/tools/subagent/mod.rs`（搜索
-`*_AGENT_PROMPT`）。提示词前缀在子代理启动时自动加载；父代理的
+`crates/agent-runtime/src/subagent.rs`（`SubAgentType::system_prompt()`；
+每个子代理的合成提示词由 `crates/tui/src/tools/subagent/mod.rs` 中的
+`build_subagent_system_prompt` 构建）。提示词前缀在子代理启动时自动加载；父代理的
 任务分配提示词会成为第一轮的用户消息。
 
 ## 上下文分叉
@@ -184,7 +185,7 @@ RISKS:      what could go wrong / what the parent should double-check
 BLOCKERS:   what stopped you; "None." if you finished cleanly
 ```
 
-确切的格式位于 `crates/tui/src/prompts/subagent_output_format.md`。
+确切的格式位于 `crates/agent-runtime/src/prompts/subagent_output_format.md`。
 父代理会把 `EVIDENCE` 当作下一轮的工作集，因此探索者和审查者
 应在这一部分保持精确。
 

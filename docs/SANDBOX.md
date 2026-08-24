@@ -303,9 +303,10 @@ checks. The `denial_message()` method returns a human-readable explanation.
 
 ## Related
 
-- `crates/tui/src/sandbox/` — implementation
+- `crates/tui/src/sandbox/` — host-side policy preparation, runtime wiring, external backend (`opensandbox.rs`)
+- `crates/agent-runtime/src/sandbox/` — enforcement helpers (`seatbelt.rs`, `landlock.rs`, `seccomp.rs`, `windows.rs`, `bwrap.rs`, `process_hardening.rs`; re-exported through the TUI's sandbox module)
 - `crates/config/src/lib.rs` — config keys
-- `crates/tui/src/tools/diagnostics.rs` — `diagnostics` tool reports
+- `crates/tool-impls/src/tools/diagnostics.rs` — `diagnostics` tool reports
   `sandbox_available`, `sandbox_type`, `bwrap_available`, `cgroup_version`
 - `config.example.toml` — annotated config reference
 - Issue #2180 — this document

@@ -99,7 +99,7 @@ DeepSeek V4 的前缀缓存使其可行。宪法篇幅长且详细，但一旦�
 
 因为权威结构是显式的，失败不会被隐藏。非零退出码、两次轮次间来自 rust-analyzer 的类型错误、沙箱拒绝——这些被作为修正向量反馈。模型用自己的漂移进行自我校正。
 
-三种模式控制行动空间。Plan 只读。Agent 对破坏性操作设审批门控。YOLO 在可信工作区自动批准。macOS Seatbelt 是主动执行的沙箱；Linux Landlock 可检测但未执行；Windows 沙箱尚未开放。
+三种模式控制行动空间。Plan 只读。Agent 对破坏性操作设审批门控。YOLO 在可信工作区自动批准。操作系统级沙箱按平台执行：macOS Seatbelt、Linux Landlock + seccomp（外加可选的 bubblewrap）、Windows Job Object v1。详见 [docs/SANDBOX.md](docs/SANDBOX.md)。
 
 Fin——关闭思考的廉价 Flash 调用——每轮处理模型自动路由。`--model auto` 是默认值。
 
@@ -472,7 +472,7 @@ LANG=zh_CN.UTF-8 codesmith run
 | `deepseek-v4-pro` | 1M | $0.003625 / 1M | $0.435 / 1M | $0.87 / 1M |
 | `deepseek-v4-flash` | 1M | $0.0028 / 1M | $0.14 / 1M | $0.28 / 1M |
 
-旧别名 `deepseek-chat` / `deepseek-reasoner` 映射到 `deepseek-v4-flash`。NVIDIA NIM 变体使用你的 NVIDIA 账号条款。
+旧别名 `deepseek-chat` / `deepseek-reasoner` 仍映射到 `deepseek-v4-flash`（移除已列入计划，但未承诺具体日期）。NVIDIA NIM 变体使用你的 NVIDIA 账号条款。
 
 > [!Note]
 > 上表的 V4 Pro 单价现已成为官方长期价格：DeepSeek 已宣布在 75% 限时折扣窗口于 **2026 年 5 月 31 日 23:59（北京时间）** 结束后，正式将原始价格调整为约四分之一。TUI 的成本估算已使用这些数值，因此无需任何代码改动。后续价格变动请参阅官方 [DeepSeek 定价页面](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)。
@@ -481,7 +481,7 @@ LANG=zh_CN.UTF-8 codesmith run
 
 ## 创建和安装技能
 
-codesmith 从工作区目录（`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills`）和全局 `~/.codesmith/skills`（兼容旧版 `~/.deepseek/skills`）发现技能。每个技能是一个包含 `SKILL.md` 的目录：
+codesmith 从工作区目录（`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills` → `.codesmith/skills`）和全局目录（`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.deepseek/skills`）发现技能。每个技能是一个包含 `SKILL.md` 的目录：
 
 ```text
 ~/.codesmith/skills/my-skill/

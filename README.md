@@ -130,8 +130,9 @@ drift to self-correct.
 
 Three modes control the action space. Plan is read-only. Agent gates
 destructive operations behind approval. YOLO auto-approves in trusted
-workspaces. macOS Seatbelt is the active sandbox; Linux Landlock is
-detected but not yet enforced; Windows sandboxing is not yet advertised.
+workspaces. OS-level sandboxing is enforced per platform: macOS Seatbelt,
+Linux Landlock + seccomp (plus optional bubblewrap), and a Windows Job
+Object v1. See [docs/SANDBOX.md](docs/SANDBOX.md).
 
 Fin — a cheap Flash call with thinking off — handles model auto-routing per
 turn. `--model auto` is the default.
@@ -538,7 +539,7 @@ Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_AL
 
 DeepSeek Platform defaults to `https://api.deepseek.com/beta` so beta-gated API features can be tested without extra setup. Set `base_url = "https://api.deepseek.com"` to opt out.
 
-Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash` and retire after July 24, 2026. NVIDIA NIM variants use your NVIDIA account terms.
+Legacy aliases `deepseek-chat` / `deepseek-reasoner` still map to `deepseek-v4-flash` (removal is planned; no date is committed). NVIDIA NIM variants use your NVIDIA account terms.
 
 > [!Note]
 > DeepSeek's pricing page now lists the V4 Pro rates above as the permanent prices: the previous 75% promotional discount has been folded into a one-quarter base-rate adjustment as the promotion window closes on 15:59 UTC on 31 May 2026. The TUI cost estimator already uses these values, so no behavioural change is required. For any future price changes, consult the official [DeepSeek pricing page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing).
@@ -547,7 +548,7 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash` 
 
 ## Publishing Your Own Skill
 
-codesmith discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
+codesmith discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills` → `.codesmith/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
 
 ```text
 ~/.agents/skills/my-skill/

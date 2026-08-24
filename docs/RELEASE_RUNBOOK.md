@@ -12,7 +12,7 @@ Current packaging note:
 - End-user crates:
   - `codesmith-tui`
   - `codesmith-cli`
-- Supporting crates published from this workspace:
+- Supporting crates published from this workspace (order matches `scripts/release/crates.sh`):
   - `codesmith-secrets`
   - `codesmith-config`
   - `codesmith-protocol`
@@ -25,6 +25,10 @@ Current packaging note:
   - `codesmith-core`
   - `codesmith-app-server`
   - `codesmith-tui-core`
+- The remaining workspace crates (`codesmith-agent-runtime`, `codesmith-providers`,
+  `codesmith-tool-impls`, `codesmith-index`, `codesmith-extensions`,
+  `codesmith-release`) are **not** published — they are consumed via path
+  dependencies by the published binaries.
 
 ## Version Coordination
 

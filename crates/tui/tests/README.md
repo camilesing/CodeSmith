@@ -31,9 +31,9 @@ retired); the tests remain ignored pending the `EngineConfig`/`Config`
 test-infrastructure harness. See the comment block at the bottom of
 `integration_mock_llm.rs`.
 
-## `--record` mode for `deepseek eval`
+## `--record` mode for `codesmith-tui eval`
 
-The offline `deepseek eval` harness now accepts `--record <DIR>`. When set,
+The offline `codesmith-tui eval` harness now accepts `--record <DIR>`. When set,
 each tool step appends one JSON Lines record to `<DIR>/<scenario>.jsonl`
 (default scenario: `offline-tool-loop.jsonl`). Each line is a self-contained
 JSON object with the schema:
@@ -51,7 +51,7 @@ feed the mock in CI.
 Quick example:
 
 ```bash
-cargo run --bin deepseek -- eval --record crates/tui/tests/fixtures
+cargo run -p codesmith-tui -- eval --record crates/tui/tests/fixtures
 cat crates/tui/tests/fixtures/offline-tool-loop.jsonl | jq .
 ```
 

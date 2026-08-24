@@ -82,7 +82,7 @@ YOLO mode enables trust mode automatically.
 
 ## MCP Behavior
 
-MCP tools are exposed as `mcp_<server>_<tool>` and use the same approval flow as built-in tools. Read-only MCP helpers may auto-run in suggestive approval modes; MCP tools with possible side effects require approval.
+MCP tools are exposed as `mcp__<server>__<tool>` (double underscore; the old single-underscore `mcp_<server>_<tool>` spelling is still accepted as a legacy alias) and use the same approval flow as built-in tools. Read-only MCP helpers may auto-run in suggestive approval modes; MCP tools with possible side effects require approval.
 
 See `MCP.md`.
 

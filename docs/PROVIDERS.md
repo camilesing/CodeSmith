@@ -209,8 +209,9 @@ OpenAI-compatible or local endpoint can still reject tool calls even if
 CodeSmith can send the schema.
 
 DeepSeek compatibility aliases `deepseek-chat` and `deepseek-reasoner` map to
-`deepseek-v4-flash` capability metadata and are scheduled to retire on
-2026-07-24 at 2026-07-24T15:59:00Z.
+`deepseek-v4-flash` capability metadata. The originally announced 2026-07-24
+retirement date has passed without removal — the aliases still resolve, and
+no new removal date is committed.
 
 ## Drift Check
 
@@ -240,7 +241,8 @@ provider docs work, but they are not native shipped behavior in this checkout:
 - A unified `Provider` trait in `codesmith-agent` that owns env precedence,
   secret resolution, base URL normalization, auth-header construction, and
   provider metadata. Those responsibilities are still split across
-  `crates/config`, `crates/secrets`, and `crates/tui/src/client.rs`.
+  `crates/config`, `crates/secrets`, `crates/tui/src/config.rs`, and the
+  provider clients in `crates/providers`.
 - A native Hugging Face provider such as `[providers.huggingface]`.
 - Native Hugging Face auth envs such as `HF_TOKEN` or `HUGGINGFACE_API_KEY`.
 - A default Hugging Face router base URL such as

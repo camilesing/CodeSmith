@@ -29,8 +29,10 @@ stance toward the work — not just a different label.
 | `custom`      | explicit narrow tool allowlist         | depends | depends       | locked-down dispatch with hand-picked tools  |
 
 Each role's full system prompt lives in
-`crates/tui/src/tools/subagent/mod.rs` (search for
-`*_AGENT_PROMPT`). The prompt prefix loads automatically when the
+`crates/agent-runtime/src/subagent.rs` (`SubAgentType::system_prompt()`;
+the composed per-child prompt is built by
+`build_subagent_system_prompt` in `crates/tui/src/tools/subagent/mod.rs`).
+The prompt prefix loads automatically when the
 child agent boots; the parent's assignment prompt becomes the first
 turn's user message.
 
@@ -198,7 +200,7 @@ RISKS:      what could go wrong / what the parent should double-check
 BLOCKERS:   what stopped you; "None." if you finished cleanly
 ```
 
-The exact format lives in `crates/tui/src/prompts/subagent_output_format.md`.
+The exact format lives in `crates/agent-runtime/src/prompts/subagent_output_format.md`.
 The parent reads `EVIDENCE` as a working set for the next turn, so
 explorers and reviewers should be precise here.
 

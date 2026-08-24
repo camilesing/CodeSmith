@@ -1,4 +1,4 @@
-//! CLI entry point for the `DeepSeek` client.
+//! CLI entry point for the `codesmith-tui` binary (interactive TUI + subcommands).
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
