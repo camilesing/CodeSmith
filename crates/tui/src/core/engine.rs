@@ -22,10 +22,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use codesmith_agent_runtime::host_services::{
-    HostServices, ShellExecStatus, SpawnSubAgentRequest, StructuredStateRequest,
-    TurnDispatchRequest,
-};
+use codesmith_agent_runtime::host_services::HostServices;
 
 // Explicit re-export of the engine items the TUI actually depends on. This
 // replaces an earlier `pub use ...::engine::*` glob: the lists below are the
@@ -108,7 +105,7 @@ use crate::tools::plan::SharedPlanState;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::{
-    SharedSubAgentManager, SubAgentCompletion, new_shared_subagent_manager,
+    SharedSubAgentManager, new_shared_subagent_manager,
 };
 use crate::tools::todo::SharedTodoList;
 use crate::tools::{ToolContext, ToolRegistryBuilder, ToolRegistryPluginExt};
@@ -117,7 +114,10 @@ use crate::utils::spawn_supervised;
 use codesmith_agent::provider::{ProviderConfig, ProviderId};
 
 use super::capacity::CapacityController;
-use super::events::{Event, TurnOutcomeStatus};
+use super::events::Event;
+// Re-imported for the test module below, which picks it up via `use super::*`.
+#[cfg(test)]
+use super::events::TurnOutcomeStatus;
 use super::ops::Op;
 use super::session::Session;
 
@@ -764,7 +764,7 @@ pub fn build_engine(
     // Initialize prefix-cache stability monitor (lazy-pin).
     let _ = session
         .prefix_stability
-        .get_or_insert_with(|| crate::prefix_cache::PrefixStabilityManager::new_unpinned());
+        .get_or_insert_with(crate::prefix_cache::PrefixStabilityManager::new_unpinned);
 
     let subagent_manager =
         new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);

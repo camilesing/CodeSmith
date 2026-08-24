@@ -13,20 +13,18 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::task_manager::SharedTaskManager;
-use crate::tools::shell::{SharedShellManager, ShellJobSnapshot};
+use crate::tools::shell::SharedShellManager;
 use crate::tools::subagent::{SharedSubAgentManager, SubAgentType};
 
-pub use agent_bridge::{map_subagent_status, subagent_error};
 pub use codesmith_agent_runtime::background_task::*;
 pub use codesmith_agent_runtime::host_services::BgRegistryApi;
-pub use dream_task::{DreamResult, DreamStatus, DreamTaskRunner};
 pub use output::BackgroundTaskOutputManager;
 pub use shell_bridge::default_stall_patterns;
 
@@ -428,14 +426,13 @@ impl BackgroundTaskRegistry {
                     continue;
                 }
                 // Update extension with exit_code
-                if let Some(state) = self.tasks.get_mut(&bg_id) {
-                    if let BackgroundTaskExtension::Shell {
+                if let Some(state) = self.tasks.get_mut(&bg_id)
+                    && let BackgroundTaskExtension::Shell {
                         ref mut exit_code, ..
                     } = state.extension
                     {
                         *exit_code = exit_code_val;
                     }
-                }
                 if new_status == BackgroundTaskStatus::Failed {
                     error = Some(format!("exit code {}", exit_code_val.unwrap_or(-1)));
                 }
@@ -472,15 +469,14 @@ impl BackgroundTaskRegistry {
             };
 
             if let Some((new_status, error, steps_taken_val)) = agent_info {
-                if let Some(state) = self.tasks.get_mut(&bg_id) {
-                    if let BackgroundTaskExtension::Agent {
+                if let Some(state) = self.tasks.get_mut(&bg_id)
+                    && let BackgroundTaskExtension::Agent {
                         ref mut steps_taken,
                         ..
                     } = state.extension
                     {
                         *steps_taken = steps_taken_val;
                     }
-                }
                 if let Some(r) = self.update_task_status(&bg_id, new_status, error) {
                     results.push(r);
                 }

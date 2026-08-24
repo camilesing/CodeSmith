@@ -5,11 +5,8 @@
 //! session-scoped state object plus tools the model can use to inspect and
 //! close out that state.
 
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use async_trait::async_trait;
-use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::tools::spec::{

@@ -5284,14 +5284,10 @@ fn resolve_exec_append_system_prompts(
         args.append_system_prompt
             .iter()
             .enumerate()
-            .filter_map(|(index, content)| {
-                (!content.trim().is_empty()).then(|| {
-                    crate::prompts::PromptAppendSource::inline(
+            .filter(|&(index, content)| (!content.trim().is_empty())).map(|(index, content)| crate::prompts::PromptAppendSource::inline(
                         format!("cli:inline:{}", index + 1),
                         content.clone(),
-                    )
-                })
-            }),
+                    )),
     );
     sources.extend(
         args.append_system_prompt_file

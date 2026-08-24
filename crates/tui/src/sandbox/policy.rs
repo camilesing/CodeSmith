@@ -9,12 +9,17 @@
 //! mapping, which reference TUI-local command-spec/safety types.
 
 use std::io;
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 
 use super::{CommandSpec, ExecEnv};
 use crate::command_safety::SafetyLevel;
 
-pub use codesmith_agent_runtime::sandbox::{SandboxPolicy, WritableRoot};
+pub use codesmith_agent_runtime::sandbox::SandboxPolicy;
+// Only the test module below consumes this re-export today; the cfg gate
+// keeps the non-test bin pass from flagging it as an unused import.
+#[cfg(test)]
+pub use codesmith_agent_runtime::sandbox::WritableRoot;
 
 /// Unified trait for platform-specific sandbox executors (#2186).
 ///

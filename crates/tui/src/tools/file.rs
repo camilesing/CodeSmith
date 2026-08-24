@@ -705,16 +705,14 @@ impl ToolSpec for EditFileTool {
         } else {
             // Single match (with or without an explicit occurrence=1), or an
             // explicit replace_all over any match count.
-            if count == 1 {
-                if let Some(n) = occurrence {
-                    if n != 1 {
+            if count == 1
+                && let Some(n) = occurrence
+                    && n != 1 {
                         return Err(ToolError::execution_failed(format!(
                             "occurrence {n} is out of range: search string matched 1 location in {}",
                             file_path.display()
                         )));
                     }
-                }
-            }
             (contents.replace(search, replace), count, None, None)
         };
 

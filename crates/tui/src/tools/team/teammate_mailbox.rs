@@ -163,8 +163,8 @@ pub fn is_structured_protocol_message(text: &str) -> bool {
     if !trimmed.starts_with('{') {
         return false;
     }
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(type_val) = val.get("type").and_then(|v| v.as_str()) {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && let Some(type_val) = val.get("type").and_then(|v| v.as_str()) {
             return matches!(
                 type_val,
                 "shutdown_request"
@@ -182,7 +182,6 @@ pub fn is_structured_protocol_message(text: &str) -> bool {
                     | "sandbox_permission_response"
             );
         }
-    }
     false
 }
 

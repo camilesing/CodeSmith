@@ -4301,11 +4301,10 @@ fn build_initial_subagent_messages(
     // enhanced forked-messages builder that clones the parent's partial
     // assistant message and injects placeholder tool_results for maximum
     // prefix-cache reuse (Claude Code forkSubagent pattern).
-    if let Some(context) = fork_context {
-        if context.current_assistant_text.is_some() || context.current_turn_tool_calls.is_some() {
+    if let Some(context) = fork_context
+        && (context.current_assistant_text.is_some() || context.current_turn_tool_calls.is_some()) {
             return build_forked_messages(context, prompt, assignment, agent_type, agent_memory);
         }
-    }
 
     let mut messages = fork_context
         .map(|context| context.messages.clone())
@@ -6122,8 +6121,8 @@ impl SubAgentToolRegistry {
         // plus per-child fresh todo/plan state.
         let context = runtime.context.clone();
         let mut explicit_allowed_tools = explicit_allowed_tools;
-        if context.agent_memory_dir.is_some() {
-            if let Some(list) = explicit_allowed_tools.as_mut() {
+        if context.agent_memory_dir.is_some()
+            && let Some(list) = explicit_allowed_tools.as_mut() {
                 for tool in [
                     "agent_memory_read",
                     "agent_memory_write",
@@ -6134,14 +6133,12 @@ impl SubAgentToolRegistry {
                     }
                 }
             }
-        }
-        if context.runtime.team_sender.is_some() {
-            if let Some(list) = explicit_allowed_tools.as_mut()
+        if context.runtime.team_sender.is_some()
+            && let Some(list) = explicit_allowed_tools.as_mut()
                 && !list.iter().any(|name| name == "send_message")
             {
                 list.push("send_message".to_string());
             }
-        }
         // restrictToSubset (Plan 04 / finding F4): propagate THIS agent's
         // effective tool set as the subset basis for its grandchildren. The
         // `runtime` clone handed to the builder below (and thus to the

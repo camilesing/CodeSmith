@@ -17,19 +17,16 @@ pub mod policy;
 pub mod runtime;
 
 pub use codesmith_agent_runtime::sandbox::process_hardening;
-#[cfg(target_os = "macos")]
-pub use codesmith_agent_runtime::sandbox::seatbelt;
 #[cfg(target_os = "windows")]
 pub use codesmith_agent_runtime::sandbox::windows;
 #[cfg(target_os = "linux")]
 pub use codesmith_agent_runtime::sandbox::{bwrap, landlock, seccomp};
 
-pub use backend::SandboxExecRequest;
 pub use codesmith_agent_runtime::sandbox::{
-    CommandSpec, ExecEnv, SandboxManager, SandboxType, get_platform_sandbox, is_sandbox_available,
+    CommandSpec, ExecEnv, SandboxManager, SandboxType, get_platform_sandbox,
 };
 pub use policy::SandboxPolicy;
 pub use runtime::{
-    SandboxBackendKind, SandboxDecision, SandboxFilesystemConfig, SandboxNetworkConfig,
+    SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig,
     SandboxRuntimeConfig,
 };

@@ -8,7 +8,9 @@
 //! Command construction is split out as pure functions so it can be unit
 //! tested without invoking `tmux`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use tokio::process::Command;

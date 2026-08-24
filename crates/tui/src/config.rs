@@ -127,11 +127,11 @@ pub const OFFICIAL_DEEPSEEK_MODELS: &[&str] = &["deepseek-v4-pro", "deepseek-v4-
 // and the `DEEPSEEK_ALIAS_*` constants) moved to
 // `codesmith_agent_runtime::config_types`; re-exported here so the
 // historical `crate::config::{...}` paths keep resolving.
-pub use codesmith_agent_runtime::config_types::{
-    ApiProvider, DEEPSEEK_ALIAS_REPLACEMENT, DEEPSEEK_ALIAS_RETIREMENT_DATE,
-    DEEPSEEK_ALIAS_RETIREMENT_UTC, ModelAliasDeprecation, ProviderCapability, RequestPayloadMode,
-    provider_capability,
-};
+pub use codesmith_agent_runtime::config_types::{ApiProvider, provider_capability};
+// Only the test module below consumes these re-exports today; the cfg gate
+// keeps the non-test bin pass from flagging them as unused imports.
+#[cfg(test)]
+pub use codesmith_agent_runtime::config_types::{ProviderCapability, RequestPayloadMode};
 
 /// Canonicalize compact DeepSeek model aliases to stable IDs.
 ///
@@ -2132,14 +2132,13 @@ impl Config {
         // per-id env slot for an arbitrary custom id, so env lookup is skipped
         // (a localhost endpoint still returns an empty key, matching builtins).
         if let Some(id) = self.custom_provider() {
-            if let Some(entry) = self.custom_provider_entry() {
-                if let Some(configured) = entry.api_key.as_ref()
+            if let Some(entry) = self.custom_provider_entry()
+                && let Some(configured) = entry.api_key.as_ref()
                     && !configured.trim().is_empty()
                     && configured != API_KEYRING_SENTINEL
                 {
                     return Ok(configured.clone());
                 }
-            }
             if let Some(configured) = self.api_key.as_ref()
                 && !configured.trim().is_empty()
                 && configured != API_KEYRING_SENTINEL
@@ -2804,8 +2803,12 @@ pub(crate) use codesmith_agent_runtime::utils::effective_home_dir;
 // config.rs (and `crate::config::is_workspace_trusted` callers) keep resolving.
 pub(crate) use codesmith_agent_runtime::workspace_trust::{
     default_config_path, env_config_path, expand_path, expand_pathbuf, home_config_path,
-    is_workspace_trusted, workspace_config_key, workspace_trust_level_from_doc,
+    is_workspace_trusted, workspace_config_key,
 };
+// Only the test module below consumes this re-export today; the cfg gate
+// keeps the non-test bin pass from flagging it as an unused import.
+#[cfg(test)]
+pub(crate) use codesmith_agent_runtime::workspace_trust::workspace_trust_level_from_doc;
 
 pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
     let config_path = default_config_path()
@@ -3391,7 +3394,7 @@ fn apply_env_overrides(config: &mut Config) {
             });
         utility.model = value;
     }
-    if let Some(value) = codesmith_env_var("CODESMITH_MODEL").ok() {
+    if let Ok(value) = codesmith_env_var("CODESMITH_MODEL") {
         // The CLI `--model` handoff always sets CODESMITH_MODEL, never the
         // provider-specific *_MODEL var. The legacy root `default_text_model`
         // is a DeepSeek-only slot (the validator rejects non-DeepSeek IDs

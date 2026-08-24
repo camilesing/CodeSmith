@@ -13,6 +13,7 @@ pub use codesmith_agent_runtime::prompts::*;
 
 use crate::models::SystemPrompt;
 use crate::tui::app::AppMode;
+#[cfg(test)]
 use crate::tui::approval::ApprovalMode;
 use std::path::Path;
 

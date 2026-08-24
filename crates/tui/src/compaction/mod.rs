@@ -16,21 +16,6 @@ pub mod compact_prompt;
 // pulled in by this glob as public submodules.
 pub use codesmith_agent_runtime::compaction::*;
 
-use anyhow::Result;
-use regex::Regex;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fmt::Write;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
-
-use crate::hooks::{HookContext, HookExecutor, HookHost};
-use crate::llm_client::LlmClient;
-use crate::models::{
-    CacheControl, ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt,
-    context_window_for_model,
-};
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,6 +23,16 @@ mod tests {
     use crate::llm_client::{LlmClient, StreamEventBox};
     use crate::models::{MessageResponse, Usage};
     use serde_json::json;
+
+    // Imports that only the tests below consume. They live inside the
+    // #[cfg(test)] module so the non-test bin pass does not flag (and
+    // `cargo clippy --fix` does not delete) them as unused.
+    use anyhow::Result;
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use crate::models::{ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt};
 
     fn msg(role: &str, text: &str) -> Message {
         Message {

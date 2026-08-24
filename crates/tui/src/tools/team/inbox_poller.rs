@@ -8,9 +8,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::ops::Op;
-use crate::tools::team::protocol_handlers::{
-    SharedPermissionRequestRegistry, handle_plan_approval_auto_approve,
-};
+use crate::tools::team::protocol_handlers::handle_plan_approval_auto_approve;
 use crate::tools::team::{
     IdleReason, StructuredProtocolMessage, TeammateMessage, process_inbox_messages, team_lead_name,
 };

@@ -24,8 +24,12 @@ use crate::llm_client::LlmClientHandle;
 
 use super::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
 
+pub use codesmith_agent_runtime::tools::registry::ToolRegistry;
+// Only the test module below consumes these re-exports today; the cfg gate
+// keeps the non-test bin pass from flagging them as unused imports.
+#[cfg(test)]
 pub use codesmith_agent_runtime::tools::registry::{
-    MAX_TOOL_NAME_LEN, ToolRegistry, is_valid_tool_name, sanitize_tool_name,
+    MAX_TOOL_NAME_LEN, is_valid_tool_name, sanitize_tool_name,
 };
 
 /// TUI-coupled plugin/override operations on a [`ToolRegistry`].

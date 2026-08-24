@@ -6,6 +6,3 @@
 //! historical `crate::tools::shell_output` paths keep resolving.
 #![allow(dead_code)]
 
-pub use codesmith_agent_runtime::tools::shell_output::{
-    TruncationMeta, summarize_output, truncate_with_meta,
-};

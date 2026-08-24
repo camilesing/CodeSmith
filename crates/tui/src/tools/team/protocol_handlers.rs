@@ -5,7 +5,7 @@
 //! and performs side effects (cancel tokens, remove members, etc.).
 
 use crate::tools::team::{
-    IdleReason, StructuredProtocolMessage, TeammateMessage, team_lead_name, write_to_mailbox,
+    StructuredProtocolMessage, TeammateMessage, team_lead_name, write_to_mailbox,
 };
 
 // ---------------------------------------------------------------------------

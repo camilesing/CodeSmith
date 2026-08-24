@@ -7,7 +7,6 @@
 //! Priority inbox scanning: shutdown > lead messages > peer messages >
 //! permission responses > plan approval responses > task assignments.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -17,9 +16,9 @@ use crate::tools::spec::{ToolContext, ToolSpec};
 use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentRuntime, SubAgentType, SubagentRunTool,
 };
-use crate::tools::task_v2::{SharedTaskV2Manager, TaskV2Manager, TaskV2Record, TaskV2Status};
+use crate::tools::task_v2::{SharedTaskV2Manager, TaskV2Record, TaskV2Status};
 use crate::tools::team::protocol_handlers::{
-    PermissionDecision, SharedPermissionRequestRegistry, new_shared_permission_registry,
+    PermissionDecision, SharedPermissionRequestRegistry,
 };
 use crate::tools::team::{
     IdleReason, StructuredProtocolMessage, TeammateMessage, is_structured_protocol_message,
@@ -806,7 +805,7 @@ pub fn poll_leader_inbox(team_name: &str) -> anyhow::Result<Vec<String>> {
             StructuredProtocolMessage::ShutdownRejected { from, reason, .. } => {
                 format!("Teammate {} rejected shutdown: {}", from, reason)
             }
-            _ => format!("Protocol message from teammate"),
+            _ => "Protocol message from teammate".to_string(),
         })
         .collect();
 

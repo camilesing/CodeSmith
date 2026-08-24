@@ -44,7 +44,11 @@ pub mod diagnostics;
 pub mod registry;
 
 pub use client::{LspTransport, StdioLspTransport};
-pub use diagnostics::{Diagnostic, DiagnosticBlock, Severity, render_blocks};
+pub use diagnostics::{Diagnostic, DiagnosticBlock, Severity};
+// Only the test module below consumes this re-export today; the cfg gate
+// keeps the non-test bin pass from flagging it as an unused import.
+#[cfg(test)]
+pub use diagnostics::render_blocks;
 pub use registry::Language;
 
 /// `[lsp]` config schema. Re-exported from

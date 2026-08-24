@@ -11,8 +11,8 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 use crate::tools::team::protocol_handlers::{
-    handle_permission_request, handle_permission_response, handle_plan_approval_auto_approve,
-    handle_plan_approval_rejection, handle_shutdown_approval, handle_shutdown_rejection,
+    handle_plan_approval_auto_approve,
+    handle_plan_approval_rejection, handle_shutdown_rejection,
     handle_shutdown_request,
 };
 use crate::tools::team::{

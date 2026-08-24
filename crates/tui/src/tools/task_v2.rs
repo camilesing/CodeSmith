@@ -4,14 +4,8 @@
 //! in-conversation tasks with pending→in_progress→completed workflow, file
 //! persistence, concurrent-safe access via flock, and dependency tracking.
 
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use fd_lock::RwLock;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::tools::spec::{
@@ -178,8 +172,8 @@ impl ToolSpec for TaskV2CreateTool {
             })?;
 
         // Fire TaskCreated hook (can block creation with exit code 2)
-        if let Some(hook_executor) = &context.runtime.hook_executor {
-            if hook_executor.has_hooks_for_event(crate::hooks::HookEvent::TaskCreated) {
+        if let Some(hook_executor) = &context.runtime.hook_executor
+            && hook_executor.has_hooks_for_event(crate::hooks::HookEvent::TaskCreated) {
                 let hook_ctx = crate::hooks::HookContext::new()
                     .with_tool_name("task_create_v2")
                     .with_task_id(&task_id)
@@ -202,7 +196,6 @@ impl ToolSpec for TaskV2CreateTool {
                     }
                 }
             }
-        }
 
         Ok(ToolResult::success(format!(
             "Created task {task_id}: {subject_display}"
@@ -338,14 +331,13 @@ impl ToolSpec for TaskV2UpdateTool {
 
         let active_form = input
             .get("active_form")
-            .map(|v| {
+            .and_then(|v| {
                 if v.is_null() {
                     Some(None)
                 } else {
                     v.as_str().map(|s| Some(s.to_string()))
                 }
-            })
-            .flatten();
+            });
 
         let metadata_merge = input.get("metadata").cloned();
 
@@ -387,9 +379,9 @@ impl ToolSpec for TaskV2UpdateTool {
             })?;
 
         // Fire TaskCompleted hook when status transitions to completed (observer-only)
-        if completed {
-            if let Some(hook_executor) = &context.runtime.hook_executor {
-                if hook_executor.has_hooks_for_event(crate::hooks::HookEvent::TaskCompleted) {
+        if completed
+            && let Some(hook_executor) = &context.runtime.hook_executor
+                && hook_executor.has_hooks_for_event(crate::hooks::HookEvent::TaskCompleted) {
                     let hook_ctx = crate::hooks::HookContext::new()
                         .with_tool_name("task_update_v2")
                         .with_task_id(&updated.id)
@@ -398,8 +390,6 @@ impl ToolSpec for TaskV2UpdateTool {
                     let _ =
                         hook_executor.execute(crate::hooks::HookEvent::TaskCompleted, &hook_ctx);
                 }
-            }
-        }
 
         // Send mailbox notification when owner changes
         if let Some(mailbox) = &context.runtime.task_mailbox {

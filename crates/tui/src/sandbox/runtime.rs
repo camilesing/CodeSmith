@@ -7,5 +7,5 @@
 
 pub use codesmith_agent_runtime::sandbox::{
     SandboxBackendKind, SandboxDecision, SandboxFilesystemConfig, SandboxNetworkConfig,
-    SandboxRuntimeConfig, current_platform, is_managed_domain, managed_domains,
+    SandboxRuntimeConfig, managed_domains,
 };
