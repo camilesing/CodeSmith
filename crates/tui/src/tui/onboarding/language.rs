@@ -19,10 +19,10 @@ use crate::tui::app::App;
 pub const LANGUAGE_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('1', "auto", "Auto-detect", "(LC_ALL / LANG)"),
     ('2', "en", "English", ""),
-    ('3', "ja", "日本語", "(Japanese)"),
-    ('4', "zh-Hans", "简体中文", "(Simplified Chinese)"),
-    ('5', "zh-Hant", "繁體中文", "(Traditional Chinese)"),
-    ('6', "pt-BR", "Português (Brasil)", "(Brazilian Portuguese)"),
+    ('3', "zh-Hans", "简体中文", "(Simplified Chinese)"),
+    ('4', "zh-Hant", "繁體中文", "(Traditional Chinese)"),
+    ('5', "hi", "हिन्दी", "(Hindi)"),
+    ('6', "es-419", "Español", "(Latin American Spanish)"),
 ];
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {

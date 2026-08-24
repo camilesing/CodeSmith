@@ -205,7 +205,7 @@ pub struct Settings {
     pub is_simple: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
-    /// UI locale: auto, en, ja, zh-Hans, pt-BR, es-419
+    /// UI locale: auto, en, zh-Hans, zh-Hant, hi, es-419
     pub locale: String,
     /// Named UI theme. Accepts `"system"` (follow terminal background),
     /// `"dark"`, `"light"`, `"grayscale"`, or one of the community
@@ -527,7 +527,7 @@ impl Settings {
             "locale" | "language" => {
                 let Some(locale) = normalize_configured_locale(value) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR, es-419."
+                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, zh-Hans, zh-Hant, hi, es-419."
                     );
                 };
                 self.locale = locale.to_string();
@@ -801,7 +801,7 @@ impl Settings {
             ),
             (
                 "locale",
-                "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR, es-419",
+                "UI locale and default model language: auto, en, zh-Hans, zh-Hant, hi, es-419",
             ),
             (
                 "theme",
@@ -1183,16 +1183,18 @@ mod tests {
     #[test]
     fn locale_normalizes_supported_values_and_rejects_unknowns() {
         let mut settings = Settings::default();
-        settings.set("locale", "ja_JP.UTF-8").expect("set ja");
-        assert_eq!(settings.locale, "ja");
+        settings.set("locale", "hi_IN.UTF-8").expect("set hi");
+        assert_eq!(settings.locale, "hi");
 
-        settings.set("language", "pt-PT").expect("set pt fallback");
-        assert_eq!(settings.locale, "pt-BR");
+        settings.set("language", "zh-TW").expect("set zh-Hant");
+        assert_eq!(settings.locale, "zh-Hant");
 
-        let err = settings
-            .set("locale", "ar")
-            .expect_err("Arabic is planned, not shipped");
-        assert!(err.to_string().contains("invalid locale"));
+        for dropped in ["ja", "pt-BR", "vi"] {
+            let err = settings
+                .set("locale", dropped)
+                .expect_err("dropped locales must be rejected");
+            assert!(err.to_string().contains("invalid locale"));
+        }
     }
 
     #[test]

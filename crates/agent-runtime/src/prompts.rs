@@ -29,7 +29,7 @@ pub struct PromptSessionContext<'a> {
     pub goal_objective: Option<&'a str>,
     pub project_context_pack_enabled: bool,
     /// Resolved BCP-47 locale tag for the `## Environment` block in
-    /// the system prompt (e.g. `"en"`, `"zh-Hans"`, `"ja"`). The
+    /// the system prompt (e.g. `"en"`, `"zh-Hans"`, `"hi"`). The
     /// caller is responsible for resolving this from `Settings`; no
     /// disk I/O happens inside the prompt builder, so the workspace-
     /// static portion of the system prompt stays cache-friendly.
@@ -159,9 +159,7 @@ so any English prose in your response will block their decision-making."
 
 pub fn translation_target_language_for_tag(locale_tag: &str) -> &'static str {
     let normalized = locale_tag.trim().to_ascii_lowercase();
-    if normalized.starts_with("ja") {
-        "Japanese (日本語)"
-    } else if normalized.starts_with("zh-hant")
+    if normalized.starts_with("zh-hant")
         || normalized.contains("-tw")
         || normalized.contains("-hk")
         || normalized.contains("-mo")
@@ -169,10 +167,10 @@ pub fn translation_target_language_for_tag(locale_tag: &str) -> &'static str {
         "Traditional Chinese (繁體中文)"
     } else if normalized.starts_with("zh") {
         "Simplified Chinese (简体中文)"
-    } else if normalized.starts_with("pt") {
-        "Brazilian Portuguese (Português do Brasil)"
-    } else if normalized.starts_with("vi") {
-        "Vietnamese (Tiếng Việt)"
+    } else if normalized.starts_with("hi") {
+        "Hindi (हिन्दी)"
+    } else if normalized.starts_with("es") {
+        "Spanish (Español)"
     } else {
         "English"
     }
@@ -307,13 +305,11 @@ pub const SIMPLE_CONVERSATION_STYLE: &str = include_str!("prompts/styles/simple.
 // any engine spawns; later sets return the rejected override string.
 static BASE_PROMPT_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static LOCALE_PREAMBLE_ZH_HANS_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-static LOCALE_PREAMBLE_JA_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-static LOCALE_PREAMBLE_PT_BR_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-static LOCALE_PREAMBLE_VI_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static LOCALE_PREAMBLE_HI_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static LOCALE_PREAMBLE_ES_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static LOCALE_CLOSER_ZH_HANS_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-static LOCALE_CLOSER_JA_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-static LOCALE_CLOSER_PT_BR_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-static LOCALE_CLOSER_VI_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static LOCALE_CLOSER_HI_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static LOCALE_CLOSER_ES_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static AUTHORITY_RECAP_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Replace `BASE_PROMPT` for all subsequent prompt composition. First call
@@ -328,19 +324,14 @@ pub fn set_locale_preamble_zh_hans_override(s: String) -> Result<(), String> {
     set_prompt_override(&LOCALE_PREAMBLE_ZH_HANS_OVERRIDE, s)
 }
 
-/// Replace the Japanese locale preamble.
-pub fn set_locale_preamble_ja_override(s: String) -> Result<(), String> {
-    set_prompt_override(&LOCALE_PREAMBLE_JA_OVERRIDE, s)
+/// Replace the Hindi locale preamble (`## भाषा आवश्यकता`).
+pub fn set_locale_preamble_hi_override(s: String) -> Result<(), String> {
+    set_prompt_override(&LOCALE_PREAMBLE_HI_OVERRIDE, s)
 }
 
-/// Replace the Brazilian-Portuguese locale preamble.
-pub fn set_locale_preamble_pt_br_override(s: String) -> Result<(), String> {
-    set_prompt_override(&LOCALE_PREAMBLE_PT_BR_OVERRIDE, s)
-}
-
-/// Replace the Vietnamese locale preamble.
-pub fn set_locale_preamble_vi_override(s: String) -> Result<(), String> {
-    set_prompt_override(&LOCALE_PREAMBLE_VI_OVERRIDE, s)
+/// Replace the Spanish locale preamble.
+pub fn set_locale_preamble_es_override(s: String) -> Result<(), String> {
+    set_prompt_override(&LOCALE_PREAMBLE_ES_OVERRIDE, s)
 }
 
 /// Replace the Simplified-Chinese locale closer (`## 语言再次提醒`).
@@ -348,19 +339,14 @@ pub fn set_locale_closer_zh_hans_override(s: String) -> Result<(), String> {
     set_prompt_override(&LOCALE_CLOSER_ZH_HANS_OVERRIDE, s)
 }
 
-/// Replace the Japanese locale closer.
-pub fn set_locale_closer_ja_override(s: String) -> Result<(), String> {
-    set_prompt_override(&LOCALE_CLOSER_JA_OVERRIDE, s)
+/// Replace the Hindi locale closer.
+pub fn set_locale_closer_hi_override(s: String) -> Result<(), String> {
+    set_prompt_override(&LOCALE_CLOSER_HI_OVERRIDE, s)
 }
 
-/// Replace the Brazilian-Portuguese locale closer.
-pub fn set_locale_closer_pt_br_override(s: String) -> Result<(), String> {
-    set_prompt_override(&LOCALE_CLOSER_PT_BR_OVERRIDE, s)
-}
-
-/// Replace the Vietnamese locale closer.
-pub fn set_locale_closer_vi_override(s: String) -> Result<(), String> {
-    set_prompt_override(&LOCALE_CLOSER_VI_OVERRIDE, s)
+/// Replace the Spanish locale closer.
+pub fn set_locale_closer_es_override(s: String) -> Result<(), String> {
+    set_prompt_override(&LOCALE_CLOSER_ES_OVERRIDE, s)
 }
 
 /// Replace the trailing `## Authority Recap` block.
@@ -387,32 +373,24 @@ pub fn effective_locale_preamble_zh_hans() -> &'static str {
     effective_prompt_override(&LOCALE_PREAMBLE_ZH_HANS_OVERRIDE, LOCALE_PREAMBLE_ZH_HANS)
 }
 
-pub fn effective_locale_preamble_ja() -> &'static str {
-    effective_prompt_override(&LOCALE_PREAMBLE_JA_OVERRIDE, LOCALE_PREAMBLE_JA)
+pub fn effective_locale_preamble_hi() -> &'static str {
+    effective_prompt_override(&LOCALE_PREAMBLE_HI_OVERRIDE, LOCALE_PREAMBLE_HI)
 }
 
-pub fn effective_locale_preamble_pt_br() -> &'static str {
-    effective_prompt_override(&LOCALE_PREAMBLE_PT_BR_OVERRIDE, LOCALE_PREAMBLE_PT_BR)
-}
-
-pub fn effective_locale_preamble_vi() -> &'static str {
-    effective_prompt_override(&LOCALE_PREAMBLE_VI_OVERRIDE, LOCALE_PREAMBLE_VI)
+pub fn effective_locale_preamble_es() -> &'static str {
+    effective_prompt_override(&LOCALE_PREAMBLE_ES_OVERRIDE, LOCALE_PREAMBLE_ES)
 }
 
 pub fn effective_locale_closer_zh_hans() -> &'static str {
     effective_prompt_override(&LOCALE_CLOSER_ZH_HANS_OVERRIDE, LOCALE_CLOSER_ZH_HANS)
 }
 
-pub fn effective_locale_closer_ja() -> &'static str {
-    effective_prompt_override(&LOCALE_CLOSER_JA_OVERRIDE, LOCALE_CLOSER_JA)
+pub fn effective_locale_closer_hi() -> &'static str {
+    effective_prompt_override(&LOCALE_CLOSER_HI_OVERRIDE, LOCALE_CLOSER_HI)
 }
 
-pub fn effective_locale_closer_pt_br() -> &'static str {
-    effective_prompt_override(&LOCALE_CLOSER_PT_BR_OVERRIDE, LOCALE_CLOSER_PT_BR)
-}
-
-pub fn effective_locale_closer_vi() -> &'static str {
-    effective_prompt_override(&LOCALE_CLOSER_VI_OVERRIDE, LOCALE_CLOSER_VI)
+pub fn effective_locale_closer_es() -> &'static str {
+    effective_prompt_override(&LOCALE_CLOSER_ES_OVERRIDE, LOCALE_CLOSER_ES)
 }
 
 pub fn effective_authority_recap() -> &'static str {
@@ -434,7 +412,7 @@ pub fn effective_authority_recap() -> &'static str {
 /// screenshot that prompted this change.
 ///
 /// The list is intentionally short (only locales the TUI ships UI
-/// strings for: `zh-Hans`, `ja`, `pt-BR`). Other locales fall through
+/// strings for: `zh-Hans`, `hi`, `es-419`). Other locales fall through
 /// to `None` and get the English-only directive, which is the same
 /// behavior as before this change.
 ///
@@ -485,9 +463,8 @@ pub fn effective_authority_recap() -> &'static str {
 pub fn locale_reinforcement_preamble(locale_tag: &str) -> Option<&'static str> {
     match locale_tag {
         "zh-Hans" | "zh-CN" | "zh" => Some(effective_locale_preamble_zh_hans()),
-        "ja" | "ja-JP" => Some(effective_locale_preamble_ja()),
-        "pt-BR" | "pt" => Some(effective_locale_preamble_pt_br()),
-        "vi" | "vi-VN" => Some(effective_locale_preamble_vi()),
+        "hi" | "hi-IN" => Some(effective_locale_preamble_hi()),
+        "es-419" | "es" => Some(effective_locale_preamble_es()),
         _ => None,
     }
 }
@@ -511,9 +488,8 @@ pub fn locale_reinforcement_preamble(locale_tag: &str) -> Option<&'static str> {
 pub fn locale_reinforcement_closer(locale_tag: &str) -> Option<&'static str> {
     match locale_tag {
         "zh-Hans" | "zh-CN" | "zh" => Some(effective_locale_closer_zh_hans()),
-        "ja" | "ja-JP" => Some(effective_locale_closer_ja()),
-        "pt-BR" | "pt" => Some(effective_locale_closer_pt_br()),
-        "vi" | "vi-VN" => Some(effective_locale_closer_vi()),
+        "hi" | "hi-IN" => Some(effective_locale_closer_hi()),
+        "es-419" | "es" => Some(effective_locale_closer_es()),
         _ => None,
     }
 }
@@ -527,30 +503,29 @@ pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
 如果用户在会话中切换到另一种语言，从下一轮开始跟随切换。\
 如果用户明确要求（例如 \"think in English\"），则覆盖此规则。";
 
-pub const LOCALE_PREAMBLE_JA: &str = "## 言語要件\n\n\
-codesmith を実行しています。タスクコンテキスト（コード、エラーログ、\
-ファイル名）が英語であっても、システムプロンプトの他の部分が英語で\
-あっても、`reasoning_content`（内部思考）と最終的な返信は日本語で\
-行ってください。コード、ファイルパス、ツール名（例：`read_file`、\
-`exec_shell`）、環境変数、コマンドライン引数、URL は元のまま —— \
-自然言語の文章のみ日本語に切り替えます。\n\n\
-ユーザーがセッション中に別の言語に切り替えた場合は、次のターンから\
-それに従ってください。ユーザーが明示的に要求した場合（例：\
-\"think in English\"）はこのルールを上書きします。";
+pub const LOCALE_PREAMBLE_HI: &str = "## भाषा आवश्यकता\n\n\
+आप codesmith में चल रहे हैं। चाहे कार्य संदर्भ (कोड, त्रुटि लॉग, फ़ाइल नाम) \
+अंग्रेज़ी में हो, चाहे system prompt का बाक़ी हिस्सा अंग्रेज़ी में हो, आपको \
+`reasoning_content` (आंतरिक सोच) और अंतिम उत्तर दोनों हिन्दी में देने होंगे। \
+कोड, फ़ाइल पथ, tool नाम (जैसे `read_file`, `exec_shell`), environment चर, \
+कमांड-लाइन तर्क और URL मूल रूप में रहेंगे —— केवल प्राकृतिक भाषा की गद्य \
+हिन्दी में बदलेगी।\n\n\
+यदि उपयोगकर्ता सत्र के दौरान किसी अन्य भाषा पर स्विच करे, तो अगले टर्न से \
+उसका पालन करें। यदि उपयोगकर्ता स्पष्ट रूप से माँगे (जैसे \
+\"think in English\"), तो यह नियम ओवरराइट हो जाता है।";
 
-pub const LOCALE_PREAMBLE_PT_BR: &str = "## Requisito de Idioma\n\n\
-Você está rodando dentro do codesmith. Escreva tanto \
-`reasoning_content` (seu pensamento interno) quanto a resposta final \
-em português do Brasil, mesmo quando o contexto da tarefa (código, \
-logs de erro, nomes de arquivos) estiver em inglês e mesmo quando o \
-resto do system prompt for em inglês. Mantenha código, caminhos de \
-arquivos, nomes de ferramentas (por exemplo `read_file`, \
-`exec_shell`), variáveis de ambiente, flags de linha de comando e \
-URLs no formato original — apenas a prosa em linguagem natural muda \
-para português do Brasil.\n\n\
-Se o usuário mudar de idioma no meio da sessão, mude no próximo turno. \
-Se o usuário pedir explicitamente (por exemplo, \"think in English\"), \
-isso sobrescreve esta regra.";
+pub const LOCALE_PREAMBLE_ES: &str = "## Requisito de idioma\n\n\
+Estás ejecutándote dentro de codesmith. Tanto el `reasoning_content` \
+(tu razonamiento interno) como la respuesta final deben estar en español, \
+incluso cuando el contexto de la tarea (código, registros de errores, \
+nombres de archivos) esté en inglés y aunque el resto del system prompt \
+esté en inglés. Mantén el código, las rutas de archivos, los nombres de \
+herramientas (por ejemplo `read_file`, `exec_shell`), las variables de \
+entorno, los argumentos de línea de comandos y las URLs en su forma \
+original — solo la prosa en lenguaje natural cambia a español.\n\n\
+Si el usuario cambia de idioma durante la sesión, síguelo desde el próximo \
+turno. Si el usuario lo pide explícitamente (por ejemplo, \"think in \
+English\"), esa solicitud prevalece sobre esta regla.";
 
 // ── Closing bookends (appended to the very end of the system prompt) ──
 
@@ -561,43 +536,23 @@ pub const LOCALE_CLOSER_ZH_HANS: &str = "## 语言再次提醒\n\n\
 你的语言，与上下文中累积的英文内容无关。除非用户明确要求切换（例如 \
 \"think in English\"），否则继续用简体中文思考和回答。";
 
-pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
-**重要：`reasoning_content`（内部思考）と最終的な返信は日本語で行ってください。** \
-このセッションで読み込んだ英語のコード、エラーログ、ドキュメントの量に \
-関係なく、プロジェクトコンテキストが英語であっても、思考プロセスを \
-英語に逸らさないでください。これはセッションレベルの厳格な要件であり、 \
-ユーザーの言語があなたの言語を決定します。ユーザーが明示的に切り替えを \
-要求しない限り（例：\"think in English\"）、日本語で思考し、回答し続けて \
-ください。";
+pub const LOCALE_CLOSER_HI: &str = "## भाषा पुनः अनुस्मारक\n\n\
+**महत्वपूर्ण: आपका `reasoning_content` (आंतरिक सोच) और अंतिम उत्तर हिन्दी में ही \
+रहने चाहिए।** इस सत्र में आपने जितना भी अंग्रेज़ी कोड, त्रुटि लॉग या दस्तावेज़ पढ़ा \
+हो, और प्रोजेक्ट संदर्भ अंग्रेज़ी में क्यों न हो, सोच की प्रक्रिया अंग्रेज़ी में नहीं \
+भटकनी चाहिए। यह सत्र-स्तरीय कठोर आवश्यकता है —— उपयोगकर्ता की भाषा ही आपकी भाषा \
+तय करती है, संदर्भ में जमा अंग्रेज़ी सामग्री से नहीं। जब तक उपयोगकर्ता स्पष्ट रूप \
+से स्विच न माँगे (जैसे \"think in English\"), हिन्दी में सोचते और उत्तर देते रहें।";
 
-pub const LOCALE_CLOSER_PT_BR: &str = "## Reforço de Idioma\n\n\
-**Importante: seu `reasoning_content` (pensamento interno) e a resposta \
-final devem permanecer em português do Brasil.** Independentemente de \
-quanto código em inglês, logs de erro ou documentação você ler nesta \
-sessão, e independentemente de o contexto do projeto ser em inglês, o \
-processo de pensamento não pode derivar para o inglês. Este é um \
-requisito rígido em nível de sessão — o idioma do usuário define seu \
-idioma. A menos que o usuário peça explicitamente a troca (por exemplo, \
-\"think in English\"), continue pensando e respondendo em português do \
-Brasil.";
-
-pub const LOCALE_PREAMBLE_VI: &str = "## Yêu cầu ngôn ngữ\n\n\
-Bạn đang chạy trong codesmith. Cho dù ngữ cảnh tác vụ (mã nguồn, nhật ký lỗi, tên tệp) \
-là tiếng Anh, cho dù phần còn lại của system prompt là tiếng Anh, bạn đều phải sử dụng \
-tiếng Việt cho phần `reasoning_content` (suy nghĩ nội bộ) và câu trả lời cuối cùng. Các từ \
-mã nguồn, đường dẫn tệp, tên công cụ (ví dụ `read_file`, `exec_shell`), biến môi trường, \
-tham số dòng lệnh và URL giữ nguyên dạng gốc —— chỉ các văn bản giải thích bằng ngôn ngữ \
-tự nhiên mới được chuyển sang tiếng Việt.\n\n\
-Nếu người dùng chuyển sang ngôn ngữ khác trong phiên làm việc, hãy chuyển theo từ lượt tiếp theo. \
-Nếu người dùng yêu cầu rõ ràng (ví dụ \"think in English\"), hãy ghi đè quy tắc này.";
-
-pub const LOCALE_CLOSER_VI: &str = "## Nhắc nhở ngôn ngữ một lần nữa\n\n\
-**Quan trọng: phần `reasoning_content` (suy nghĩ nội bộ) và phản hồi cuối cùng của bạn phải được viết bằng tiếng Việt.** \
-Dù bạn có đọc bao nhiêu mã nguồn tiếng Anh, nhật ký lỗi hay tài liệu trong phiên làm việc này, và dù ngữ cảnh \
-dự án có là tiếng Anh, quá trình suy nghĩ của bạn cũng không được chuyển sang tiếng Anh. Đây là yêu cầu cứng \
-ở cấp phiên làm việc —— ngôn ngữ của người dùng quyết định ngôn ngữ của bạn, không phụ thuộc vào nội dung tiếng Anh \
-tích lũy trong ngữ cảnh. Trừ khi người dùng yêu cầu rõ ràng việc chuyển đổi (ví dụ \"think in English\"), \
-hãy tiếp tục suy nghĩ và trả lời bằng tiếng Việt.";
+pub const LOCALE_CLOSER_ES: &str = "## Refuerzo de idioma\n\n\
+**Importante: tu `reasoning_content` (razonamiento interno) y la respuesta \
+final deben permanecer en español.** Independientemente de cuánto código en \
+inglés, registros de errores o documentación hayas leído en esta sesión, e \
+independientemente de que el contexto del proyecto esté en inglés, el \
+proceso de razonamiento no debe derivar al inglés. Este es un requisito \
+estricto a nivel de sesión — el idioma del usuario define tu idioma. A menos \
+que el usuario pida explícitamente el cambio (por ejemplo, \"think in \
+English\"), sigue pensando y respondiendo en español.";
 
 /// Memory extraction worker prompt — used by `/memory extract --dry-run` and
 /// future background memory consolidation jobs. The prompt is intentionally a

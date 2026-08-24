@@ -3313,7 +3313,7 @@ mod tests {
 
     #[test]
     fn localized_composer_placeholders_render_at_narrow_widths() {
-        for locale in [Locale::Ja, Locale::ZhHans, Locale::PtBr] {
+        for locale in [Locale::ZhHans, Locale::Hi, Locale::Es419] {
             let mut app = create_test_app();
             app.ui_locale = locale;
             app.composer_density = ComposerDensity::Comfortable;

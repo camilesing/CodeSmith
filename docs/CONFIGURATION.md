@@ -617,7 +617,7 @@ Common settings keys:
   automatically switch back to full clarity. Toggle via `/config is_simple on`;
   applies from the next turn.
 - `show_tool_details` (on/off)
-- `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`, `es-419`, `vi`; default `auto`): UI chrome
+- `locale` (`auto`, `en`, `zh-Hans`, `zh-Hant`, `hi`, `es-419`; default `auto`): UI chrome
   locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
   missing locales fall back to English. The runtime also exposes the resolved
   locale in the system prompt as the fallback natural language for V4 reasoning

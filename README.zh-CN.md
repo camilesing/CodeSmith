@@ -3,8 +3,6 @@
 > **面向 [DeepSeek V4](https://platform.deepseek.com) 的终端原生编程智能体：100 万 token 上下文、思考模式流式推理、前缀缓存感知。以 `codesmith` 调度器和 `codesmith-tui` 运行时这一组自包含 Rust 二进制发布——开箱即带 MCP 客户端、沙箱和持久化任务队列。**
 
 [English README](README.md)
-[日本語 README](README.ja-JP.md)
-[Tiếng Việt README](README.vi.md)
 
 
 ## 安装
@@ -447,7 +445,7 @@ CodeSmith 可作为自定义 Agent Client Protocol 服务器运行，供 Zed 等
 1. 在 Composer 里输入 `/config`，按 Tab 或 Enter 打开配置面板。
 2. 选择 **Edit locale**，在 `New:` 字段输入 `zh-Hans`，按 Enter 应用。
 
-可选语言：`auto` | `en` | `ja` | `zh-Hans` | `pt-BR`。
+可选语言：`auto` | `en` | `zh-Hans` | `zh-Hant` | `hi` | `es-419`。
 
 也可以在 `~/.codesmith/config.toml` 里直接设置 `locale = "zh-Hans"`，或通过 `LC_ALL` / `LANG` 环境变量自动选择：
 

@@ -572,7 +572,7 @@ osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTer
 #                                    "always" = notify on every successful turn (no threshold);
 #                                    "never"  = suppress all turn-completion notifications;
 #                                    unset    = use [notifications] defaults (recommended).
-# locale = "auto"           # UI chrome language: auto | en | ja | zh-Hans | pt-BR | es-419 | vi
+# locale = "auto"           # UI chrome language: auto | en | zh-Hans | zh-Hant | hi | es-419
 #                           # "auto" reads LC_ALL → LC_MESSAGES → LANG; falls back to English.
 #                           # Override: `locale = "zh-Hans"` for Simplified Chinese regardless of OS locale.
 #                           # Also settable at runtime: /config locale zh-Hans

@@ -2445,7 +2445,7 @@ mod tests {
     #[test]
     fn localized_config_view_renders_at_narrow_width() {
         let mut app = create_test_app();
-        app.ui_locale = Locale::PtBr;
+        app.ui_locale = Locale::Es419;
         let view = ConfigView::new_for_app(&app);
         let area = Rect::new(0, 0, 60, 18);
         let mut buf = Buffer::empty(area);
@@ -2454,7 +2454,7 @@ mod tests {
 
         let dump = buffer_text(&buf, area);
         assert!(
-            dump.contains("Configuração") || dump.contains("Configura"),
+            dump.contains("Configuración"),
             "missing localized config title:\n{dump}"
         );
         assert!(

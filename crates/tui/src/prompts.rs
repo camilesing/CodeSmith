@@ -412,16 +412,16 @@ mod tests {
             );
         }
 
-        let ja = locale_reinforcement_preamble("ja").expect("ja preamble");
-        assert!(ja.contains("日本語"), "ja preamble must be in Japanese");
-        assert!(ja.contains("reasoning_content"));
+        let hi = locale_reinforcement_preamble("hi").expect("hi preamble");
+        assert!(hi.contains("हिन्दी"), "hi preamble must be in Hindi");
+        assert!(hi.contains("reasoning_content"));
 
-        let pt = locale_reinforcement_preamble("pt-BR").expect("pt-BR preamble");
+        let es = locale_reinforcement_preamble("es-419").expect("es-419 preamble");
         assert!(
-            pt.contains("português do Brasil"),
-            "pt preamble must call out pt-BR explicitly"
+            es.contains("español"),
+            "es preamble must call out Spanish explicitly"
         );
-        assert!(pt.contains("reasoning_content"));
+        assert!(es.contains("reasoning_content"));
     }
 
     #[test]
@@ -489,12 +489,12 @@ mod tests {
             zh.contains("reasoning_content"),
             "zh closer must steer reasoning_content"
         );
-        let ja = locale_reinforcement_closer("ja").expect("ja closer");
-        assert!(ja.contains("日本語"), "ja closer must be in Japanese");
-        assert!(ja.contains("reasoning_content"));
-        let pt = locale_reinforcement_closer("pt-BR").expect("pt-BR closer");
-        assert!(pt.contains("português do Brasil"));
-        assert!(pt.contains("reasoning_content"));
+        let hi = locale_reinforcement_closer("hi").expect("hi closer");
+        assert!(hi.contains("हिन्दी"), "hi closer must be in Hindi");
+        assert!(hi.contains("reasoning_content"));
+        let es = locale_reinforcement_closer("es-419").expect("es-419 closer");
+        assert!(es.contains("español"));
+        assert!(es.contains("reasoning_content"));
     }
 
     #[test]
@@ -771,7 +771,7 @@ mod tests {
                 knowledge_prompt_block: None,
                 goal_objective: None,
                 project_context_pack_enabled: true,
-                locale_tag: "ja",
+                locale_tag: "hi",
                 translation_enabled: false,
                 model_id: "codesmith",
                 show_thinking: true,
@@ -784,7 +784,7 @@ mod tests {
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
         assert!(prompt.contains("## Environment"));
-        assert!(prompt.contains("- lang: ja"));
+        assert!(prompt.contains("- lang: hi"));
         assert!(prompt.contains("- codesmith_version:"));
     }
 

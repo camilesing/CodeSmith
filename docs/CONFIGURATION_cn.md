@@ -580,7 +580,7 @@ codesmith 还将用户偏好存储在：
   切换回完全清晰的表达。通过 `/config is_simple on` 切换；从下一轮
   开始生效。
 - `show_tool_details`（开/关）
-- `locale`（`auto`、`en`、`ja`、`zh-Hans`、`pt-BR`、`es-419`、`vi`；默认 `auto`）：
+- `locale`（`auto`、`en`、`zh-Hans`、`zh-Hant`、`hi`、`es-419`；默认 `auto`）：
   UI 界面语言。`auto` 依次检查 `LC_ALL`、`LC_MESSAGES`、`LANG`；
   不支持或缺失的语言回退为英语。运行时还会把解析出的语言写入系统
   提示词，作为 V4 推理和回复在最新用户消息有歧义时的回退自然语言。

@@ -166,15 +166,15 @@ pub enum UiLocale {
     #[serde(rename = "en")]
     #[schemars(rename = "en")]
     En,
-    #[serde(rename = "ja")]
-    #[schemars(rename = "ja")]
-    Ja,
     #[serde(rename = "zh-Hans")]
     #[schemars(rename = "zh-Hans")]
     ZhHans,
-    #[serde(rename = "pt-BR")]
-    #[schemars(rename = "pt-BR")]
-    PtBr,
+    #[serde(rename = "zh-Hant")]
+    #[schemars(rename = "zh-Hant")]
+    ZhHant,
+    #[serde(rename = "hi")]
+    #[schemars(rename = "hi")]
+    Hi,
     #[serde(rename = "es-419")]
     #[schemars(rename = "es-419")]
     Es419,
@@ -709,9 +709,9 @@ impl UiLocale {
         match self {
             Self::Auto => "auto",
             Self::En => "en",
-            Self::Ja => "ja",
             Self::ZhHans => "zh-Hans",
-            Self::PtBr => "pt-BR",
+            Self::ZhHant => "zh-Hant",
+            Self::Hi => "hi",
             Self::Es419 => "es-419",
         }
     }
@@ -720,9 +720,9 @@ impl UiLocale {
         match normalize_configured_locale(value) {
             Some("auto") => Ok(Self::Auto),
             Some("en") => Ok(Self::En),
-            Some("ja") => Ok(Self::Ja),
             Some("zh-Hans") => Ok(Self::ZhHans),
-            Some("pt-BR") => Ok(Self::PtBr),
+            Some("zh-Hant") => Ok(Self::ZhHant),
+            Some("hi") => Ok(Self::Hi),
             Some("es-419") => Ok(Self::Es419),
             Some(other) => bail!("unsupported locale '{other}'"),
             None => bail!("invalid locale '{value}'"),
@@ -1177,7 +1177,7 @@ background_color = "#1A1B26"
         let locale = &schema["$defs"]["UiLocale"]["enum"];
         assert_eq!(
             locale,
-            &serde_json::json!(["auto", "en", "ja", "zh-Hans", "pt-BR", "es-419"])
+            &serde_json::json!(["auto", "en", "zh-Hans", "zh-Hant", "hi", "es-419"])
         );
         let theme = &schema["$defs"]["UiThemeValue"]["enum"];
         assert_eq!(

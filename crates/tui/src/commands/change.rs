@@ -99,10 +99,8 @@ pub fn change(app: &mut App, version: Option<&str>) -> CommandResult {
         let lang_name = match locale {
             Locale::ZhHans => "Simplified Chinese (中文)",
             Locale::ZhHant => "Traditional Chinese (繁體中文)",
-            Locale::Ja => "Japanese (日本語)",
-            Locale::PtBr => "Brazilian Portuguese (Português)",
+            Locale::Hi => "Hindi (हिन्दी)",
             Locale::Es419 => "Latin American Spanish (Español latinoamericano)",
-            Locale::Vi => "Vietnamese (Tiếng Việt)",
             // Fallback — should never reach here since we check En above.
             Locale::En => "English",
         };
@@ -476,8 +474,8 @@ Previous release.\n";
     fn change_in_non_english_also_sends_translation_action() {
         for (locale, _label) in [
             (Locale::ZhHans, "zh-Hans"),
-            (Locale::Ja, "ja"),
-            (Locale::PtBr, "pt-BR"),
+            (Locale::Hi, "hi"),
+            (Locale::Es419, "es-419"),
         ] {
             let tmp = tempfile::TempDir::new().unwrap();
             let mut app = make_app(&tmp, locale, true);
@@ -529,12 +527,12 @@ Previous release.\n";
     #[test]
     fn change_in_non_english_offline_uses_explicit_fallback() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = make_app(&tmp, Locale::Ja, true);
+        let mut app = make_app(&tmp, Locale::Hi, true);
         app.offline_mode = true;
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        assert!(msg.contains(tr(Locale::Ja, MessageId::CmdChangeTranslationUnavailable)));
+        assert!(msg.contains(tr(Locale::Hi, MessageId::CmdChangeTranslationUnavailable)));
         assert!(
             result.action.is_none(),
             "offline mode should not send translation"
@@ -891,28 +889,28 @@ Older release.\n";
     }
 
     #[test]
-    fn change_hint_in_japanese() {
+    fn change_hint_in_hindi() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = make_app(&tmp, Locale::Ja, true);
+        let mut app = make_app(&tmp, Locale::Hi, true);
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
         assert!(
-            msg.contains("前のバージョン"),
-            "ja output should contain localized hint: {msg}"
+            msg.contains("पिछला संस्करण"),
+            "hi output should contain localized hint: {msg}"
         );
     }
 
     #[test]
-    fn change_hint_in_portuguese() {
+    fn change_hint_in_spanish() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = make_app(&tmp, Locale::PtBr, true);
+        let mut app = make_app(&tmp, Locale::Es419, true);
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
         assert!(
-            msg.contains("Versão anterior"),
-            "pt-BR output should contain localized hint: {msg}"
+            msg.contains("Versión anterior"),
+            "es-419 output should contain localized hint: {msg}"
         );
     }
 }

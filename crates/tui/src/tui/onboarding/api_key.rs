@@ -151,15 +151,15 @@ mod tests {
             "expected zh-Hans footer, got: {body}"
         );
 
-        let ja = test_app_with_locale(Locale::Ja);
-        let body: String = lines(&ja)
+        let hi = test_app_with_locale(Locale::Hi);
+        let body: String = lines(&hi)
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            body.contains("キー"),
-            "expected ja 'key' label, got: {body}"
+            body.contains("अपनी DeepSeek API key जोड़ें"),
+            "expected hi title, got: {body}"
         );
 
         let en = test_app_with_locale(Locale::En);
