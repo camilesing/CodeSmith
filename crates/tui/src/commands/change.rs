@@ -19,7 +19,7 @@ use super::CommandResult;
 /// If the changelog section exceeds this, we truncate and show a notice.
 /// 4096 chars is large enough for most version entries.
 const MAX_INLINE_CHANGELOG_CHARS: usize = 4096;
-const DEEPSEEK_TUI_CHANGELOG: &str = include_str!("../../CHANGELOG.md");
+const CODESMITH_TUI_CHANGELOG: &str = include_str!("../../CHANGELOG.md");
 
 /// Execute the `/change` command.
 ///
@@ -29,12 +29,12 @@ pub fn change(app: &mut App, version: Option<&str>) -> CommandResult {
     let section = if let Some(ver) = version {
         let ver = ver.trim();
         if ver.is_empty() {
-            extract_latest_changelog_section(DEEPSEEK_TUI_CHANGELOG)
+            extract_latest_changelog_section(CODESMITH_TUI_CHANGELOG)
         } else {
-            extract_changelog_section_by_version(DEEPSEEK_TUI_CHANGELOG, ver)
+            extract_changelog_section_by_version(CODESMITH_TUI_CHANGELOG, ver)
         }
     } else {
-        extract_latest_changelog_section(DEEPSEEK_TUI_CHANGELOG)
+        extract_latest_changelog_section(CODESMITH_TUI_CHANGELOG)
     };
 
     let latest_section = match section {
@@ -63,7 +63,8 @@ pub fn change(app: &mut App, version: Option<&str>) -> CommandResult {
     let locale = app.ui_locale;
     let header = tr(locale, MessageId::CmdChangeHeader);
 
-    let prev_hint = if let Some(prev_ver) = previous_version_hint(DEEPSEEK_TUI_CHANGELOG, version) {
+    let prev_hint = if let Some(prev_ver) = previous_version_hint(CODESMITH_TUI_CHANGELOG, version)
+    {
         let template = tr(locale, MessageId::CmdChangePreviousVersion);
         format!("\n\n{}", template.replace("{version}", &prev_ver))
     } else {
@@ -434,7 +435,7 @@ Previous release.\n";
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        let expected = extract_latest_changelog_section(DEEPSEEK_TUI_CHANGELOG)
+        let expected = extract_latest_changelog_section(CODESMITH_TUI_CHANGELOG)
             .expect("bundled changelog should have a release section");
         assert!(msg.contains(expected.lines().next().unwrap()));
     }
@@ -462,7 +463,7 @@ Previous release.\n";
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        let expected = extract_latest_changelog_section(DEEPSEEK_TUI_CHANGELOG)
+        let expected = extract_latest_changelog_section(CODESMITH_TUI_CHANGELOG)
             .expect("bundled changelog should have a release section");
         assert!(msg.contains(expected.lines().next().unwrap()));
         assert!(
@@ -490,10 +491,10 @@ Previous release.\n";
                 result.action
             );
             if let Some(AppAction::SendMessage(prompt)) = &result.action {
-                let expected = extract_latest_changelog_section(DEEPSEEK_TUI_CHANGELOG)
+                let expected = extract_latest_changelog_section(CODESMITH_TUI_CHANGELOG)
                     .expect("bundled changelog should have a release section");
                 assert!(prompt.contains(expected.lines().next().unwrap()));
-                let prev_ver = extract_previous_version_number(DEEPSEEK_TUI_CHANGELOG)
+                let prev_ver = extract_previous_version_number(CODESMITH_TUI_CHANGELOG)
                     .expect("bundled changelog should have a previous release");
                 assert!(
                     prompt.contains(&prev_ver),

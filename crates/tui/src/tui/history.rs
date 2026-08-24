@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
-use crate::deepseek_theme::active_theme;
+use crate::brand_theme::active_theme;
 use crate::models::{ContentBlock, Message};
 use crate::palette;
 use crate::tools::review::ReviewOutput;
@@ -1042,7 +1042,7 @@ impl ReviewCell {
         lines.push(Line::from(Span::styled(
             "Issues",
             Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
+                .fg(palette::CODESMITH_BLUE)
                 .add_modifier(Modifier::BOLD),
         )));
         if output.issues.is_empty() {
@@ -1076,7 +1076,7 @@ impl ReviewCell {
         lines.push(Line::from(Span::styled(
             "Suggestions",
             Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
+                .fg(palette::CODESMITH_BLUE)
                 .add_modifier(Modifier::BOLD),
         )));
         if output.suggestions.is_empty() {
@@ -1476,7 +1476,7 @@ impl GenericToolCell {
 /// spilled to disk (#422 + #423). Produces a one-line muted hint:
 ///
 /// ```text
-///   full output: /Users/you/.deepseek/tool_outputs/call-abc12.txt
+///   full output: /Users/you/.codesmith/tool_outputs/call-abc12.txt
 /// ```
 ///
 /// Path is plain text on this branch; the OSC 8 hyperlink-wrap that
@@ -1728,7 +1728,7 @@ fn render_checklist_change_card(
 fn checklist_status_marker(status: &str) -> (&'static str, Color) {
     match status.to_ascii_lowercase().as_str() {
         "completed" | "done" => ("\u{2611}", palette::STATUS_SUCCESS), // ☑
-        "in_progress" | "inprogress" | "running" => ("\u{25D0}", palette::DEEPSEEK_SKY), // ◐
+        "in_progress" | "inprogress" | "running" => ("\u{25D0}", palette::CODESMITH_SKY), // ◐
         "blocked" | "failed" => ("\u{2717}", palette::STATUS_ERROR),   // ✗
         "cancelled" | "canceled" | "skipped" => ("\u{2298}", palette::TEXT_MUTED), // ⊘
         _ => ("\u{2610}", palette::TEXT_MUTED),                        // ☐ pending
@@ -2715,11 +2715,11 @@ fn is_cycle_boundary(content: &str) -> bool {
 }
 
 /// Render a cycle-boundary system message with distinct visual styling (#395):
-/// full-width line with DEEPSEEK_BLUE text and bold weight, plus a thin
+/// full-width line with CODESMITH_BLUE text and bold weight, plus a thin
 /// horizontal rule above for visual separation.
 fn render_cycle_boundary(content: &str, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
-        .fg(palette::DEEPSEEK_BLUE)
+        .fg(palette::CODESMITH_BLUE)
         .add_modifier(Modifier::BOLD);
     let rule_style = Style::default().fg(palette::TEXT_DIM);
     let content_width = usize::from(width.saturating_sub(2).max(1));
@@ -2758,7 +2758,7 @@ fn file_line_style(text: &str) -> Option<Style> {
     {
         Some(
             Style::default()
-                .fg(palette::DEEPSEEK_SKY)
+                .fg(palette::CODESMITH_SKY)
                 .add_modifier(Modifier::UNDERLINED),
         )
     } else {
@@ -2771,12 +2771,12 @@ fn file_line_style(text: &str) -> Option<Style> {
 /// Returns the appropriate style for the line based on its prefix:
 /// - Lines starting with `+` (after trimming) => `palette::DIFF_ADDED` (green)
 /// - Lines starting with `-` (after trimming) => `palette::STATUS_ERROR` (red)
-/// - Lines starting with `@@` => `palette::DEEPSEEK_SKY` (cyan/blue)
+/// - Lines starting with `@@` => `palette::CODESMITH_SKY` (cyan/blue)
 /// - All other lines => None (use default style)
 fn diff_line_style(text: &str) -> Option<Style> {
     let trimmed = text.trim_start();
     if trimmed.starts_with("@@") {
-        Some(Style::default().fg(palette::DEEPSEEK_BLUE))
+        Some(Style::default().fg(palette::CODESMITH_BLUE))
     } else if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
         Some(Style::default().fg(palette::DIFF_ADDED))
     } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
@@ -2925,9 +2925,9 @@ fn assistant_label_style_for(streaming: bool, low_motion: bool) -> Style {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        palette::pulse_brightness(palette::DEEPSEEK_SKY, now_ms)
+        palette::pulse_brightness(palette::CODESMITH_SKY, now_ms)
     } else {
-        palette::DEEPSEEK_SKY
+        palette::CODESMITH_SKY
     };
     Style::default().fg(color)
 }
@@ -3353,7 +3353,7 @@ mod tests {
         assistant_label_style_for, extract_reasoning_summary, render_thinking,
         running_status_label_with_elapsed,
     };
-    use crate::deepseek_theme::Theme;
+    use crate::brand_theme::Theme;
     use crate::models::{ContentBlock, Message};
     use crate::palette;
     use ratatui::style::Modifier;
@@ -3382,7 +3382,7 @@ mod tests {
             output: Some("very large output...".to_string()),
             prompts: None,
             spillover_path: Some(PathBuf::from(
-                "/Users/dev/.deepseek/tool_outputs/call-abc12.txt",
+                "/Users/dev/.codesmith/tool_outputs/call-abc12.txt",
             )),
             output_summary: None,
             is_diff: false,
@@ -3397,7 +3397,7 @@ mod tests {
             "expected annotation prefix: {joined:?}"
         );
         assert!(
-            joined.contains("/Users/dev/.deepseek/tool_outputs/call-abc12.txt"),
+            joined.contains("/Users/dev/.codesmith/tool_outputs/call-abc12.txt"),
             "expected the spillover path: {joined:?}"
         );
     }
@@ -3452,7 +3452,7 @@ mod tests {
     #[test]
     fn render_spillover_annotation_truncates_to_width() {
         use std::path::PathBuf;
-        let long_path = "/Users/dev/.deepseek/tool_outputs/this-is-a-very-long-tool-call-id-that-will-not-fit-in-narrow-widths.txt";
+        let long_path = "/Users/dev/.codesmith/tool_outputs/this-is-a-very-long-tool-call-id-that-will-not-fit-in-narrow-widths.txt";
         let cell = GenericToolCell {
             name: "exec_shell".to_string(),
             status: ToolStatus::Success,
@@ -4192,8 +4192,8 @@ mod tests {
         // source sky — pulse only fires when actively streaming.
         let idle = assistant_label_style_for(false, false);
         let low_motion = assistant_label_style_for(true, true);
-        assert_eq!(idle.fg, Some(palette::DEEPSEEK_SKY));
-        assert_eq!(low_motion.fg, Some(palette::DEEPSEEK_SKY));
+        assert_eq!(idle.fg, Some(palette::CODESMITH_SKY));
+        assert_eq!(low_motion.fg, Some(palette::CODESMITH_SKY));
     }
 
     #[test]
@@ -4207,8 +4207,8 @@ mod tests {
         let mut saw_dimmed = false;
         for _ in 0..50 {
             if let Some(Color::Rgb(_, _, b)) = assistant_label_style_for(true, false).fg {
-                let Color::Rgb(_, _, src_b) = palette::DEEPSEEK_SKY else {
-                    panic!("DEEPSEEK_SKY must be RGB");
+                let Color::Rgb(_, _, src_b) = palette::CODESMITH_SKY else {
+                    panic!("CODESMITH_SKY must be RGB");
                 };
                 if b < src_b {
                     saw_dimmed = true;
@@ -4425,7 +4425,7 @@ mod tests {
     // === Theme parity tests ===
     //
     // These lock the visible color/style choices for one plan cell and one
-    // tool cell against `deepseek_theme::Theme::dark()`. The render path is
+    // tool cell against `brand_theme::Theme::dark()`. The render path is
     // unchanged in shape; the assertions just guarantee a future skin swap
     // (or accidental drift) is caught here instead of at runtime.
 

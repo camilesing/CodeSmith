@@ -74,8 +74,7 @@ impl ProviderFactory for DeepSeekFactory {
         // the deepseek base_url, but if both the host and manifest are empty,
         // `resolve_base_url` still falls back to DeepSeek's built-in default so
         // the shim always has an absolute base.
-        let resolved_base_url =
-            crate::rig_adapter::resolve_base_url(&base_url).to_string();
+        let resolved_base_url = crate::rig_adapter::resolve_base_url(&base_url).to_string();
         let adapter = RigLlmClient::new(
             client,
             default_model,

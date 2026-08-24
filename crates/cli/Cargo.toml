@@ -20,12 +20,6 @@ path = "src/bin/codew_legacy_shim.rs"
 name = "codewhale"
 path = "src/bin/codewhale_legacy_shim.rs"
 
-# Legacy alias — forwards to `codesmith` and prints a deprecation notice.
-# Will be removed in v0.9.0.
-[[bin]]
-name = "deepseek"
-path = "src/bin/deepseek_legacy_shim.rs"
-
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

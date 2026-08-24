@@ -69,12 +69,12 @@ codesmith
 
 | 变量                            | 用途                                                                                |
 | ----------------------------------- | -------------------------------------------------------------------------------------- |
-| `DEEPSEEK_TUI_VERSION`              | 固定包装器下载的 release 版本（默认为 `deepseekBinaryVersion`）          |
-| `DEEPSEEK_TUI_GITHUB_REPO`          | 让下载器指向某个 fork（`owner/repo`）                                          |
-| `DEEPSEEK_TUI_RELEASE_BASE_URL`     | 覆盖下载根地址（例如内部镜像或 release 资产代理）            |
-| `DEEPSEEK_TUI_FORCE_DOWNLOAD=1`     | 即使缓存的二进制标记匹配也重新下载                                     |
-| `DEEPSEEK_TUI_DISABLE_INSTALL=1`    | 完全跳过 `postinstall` 下载（CI 冒烟、vendored 二进制）                 |
-| `DEEPSEEK_TUI_OPTIONAL_INSTALL=1`   | 下载/解压出错时不让 `npm install` 失败 —— 在 CI 矩阵中很有用            |
+| `CODESMITH_VERSION`              | 固定包装器下载的 release 版本（默认为 `deepseekBinaryVersion`）          |
+| `CODESMITH_GITHUB_REPO`          | 让下载器指向某个 fork（`owner/repo`）                                          |
+| `CODESMITH_RELEASE_BASE_URL`     | 覆盖下载根地址（例如内部镜像或 release 资产代理）            |
+| `CODESMITH_FORCE_DOWNLOAD=1`     | 即使缓存的二进制标记匹配也重新下载                                     |
+| `CODESMITH_DISABLE_INSTALL=1`    | 完全跳过 `postinstall` 下载（CI 冒烟、vendored 二进制）                 |
+| `CODESMITH_OPTIONAL_INSTALL=1`   | 下载/解压出错时不让 `npm install` 失败 —— 在 CI 矩阵中很有用            |
 
 > **中国大陆 npm 下载慢？** 如果 `npm install` 本身就慢（而不只是 postinstall 二进制下载慢），请使用 npm registry 镜像：
 > ```bash
@@ -393,7 +393,7 @@ cargo install codesmith-cli --locked
 
 ### 中国大陆 npm 下载慢或超时
 
-将 `DEEPSEEK_TUI_RELEASE_BASE_URL` 设置为镜像的 release 资产目录（rsproxy、TUNA、腾讯 COS、阿里云 OSS），或者完全跳过 npm，使用[第 4 节](#4-install-via-cargo-any-tier-1-rust-target)中的 Cargo 镜像配置。
+将 `CODESMITH_RELEASE_BASE_URL` 设置为镜像的 release 资产目录（rsproxy、TUNA、腾讯 COS、阿里云 OSS），或者完全跳过 npm，使用[第 4 节](#4-install-via-cargo-any-tier-1-rust-target)中的 Cargo 镜像配置。
 
 ### 中国大陆 `codesmith update` 被 GitHub 屏蔽
 
@@ -409,8 +409,8 @@ cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesm
 如果你运营二进制资产镜像，`codesmith update` 可以直接使用它：
 
 ```bash
-DEEPSEEK_TUI_VERSION=X.Y.Z \
-DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/vX.Y.Z/ \
+CODESMITH_VERSION=X.Y.Z \
+CODESMITH_RELEASE_BASE_URL=https://your-mirror.example.com/CodeSmith/vX.Y.Z/ \
 codesmith update
 ```
 
@@ -509,10 +509,10 @@ target/debug/build/libsqlite3-sys-*/build-script-build
    codesmith
    ```
 
-2. 在内部镜像 release 资产并设置 `DEEPSEEK_TUI_RELEASE_BASE_URL`：
+2. 在内部镜像 release 资产并设置 `CODESMITH_RELEASE_BASE_URL`：
 
    ```bash
-   export DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/
+   export CODESMITH_RELEASE_BASE_URL=https://your-mirror.example.com/CodeSmith/
    codesmith
    ```
 

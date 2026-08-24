@@ -28,7 +28,7 @@ codesmith --version
 说明：
 
 - 仅安装 cli 后，本地即可用的命令有 `codesmith --version`、`codesmith auth ...`、`codesmith config ...`、`codesmith model list` 等；交互与 `exec`/`doctor` 等命令需要 `codesmith-tui`。
-- 若 `codesmith-tui` 不在默认位置，也可通过环境变量 `DEEPSEEK_TUI_BIN` 指向已存在的 `codesmith-tui` 绝对路径。
+- 若 `codesmith-tui` 不在默认位置，也可通过环境变量 `CODESMITH_TUI_BIN` 指向已存在的 `codesmith-tui` 绝对路径。
 
 ## 步骤 3：配置 API key（唯一硬性凭据，三选一）
 
@@ -70,7 +70,7 @@ codesmith --model auto     # 自动路由模式（README 推荐）
 ## 无需手动准备的内容
 
 - 配置文件 `~/.codesmith/config.toml`：不存在时使用默认值，首次保存时自动创建目录并设置权限 0600；可用 `$CODESMITH_HOME` / `$CODESMITH_CONFIG_PATH` 或 `--config` 覆盖路径，支持项目级覆盖 `<workspace>/.codesmith/config.toml`。
-- 状态库 `~/.deepseek/state.db`：按需自动创建。
+- 状态库 `~/.codesmith/state.db`：按需自动创建。
 - 核心 prompt / 子代理模板：编译期已通过 `include_str!` 嵌入二进制，运行时不依赖仓库文件。
 - skills 目录（`~/.codesmith/skills`）与 MCP 配置（`~/.codesmith/mcp.json`）：可选，不存在时自动跳过，可由 `codesmith setup` 按需引导创建。
 - `~/.cargo/bin`：只要 `cargo` 本身可用即在 PATH 中，无需额外设置。

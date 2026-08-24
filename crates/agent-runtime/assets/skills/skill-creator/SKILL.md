@@ -2,7 +2,7 @@
 name: skill-creator
 description: Create or improve codesmith skills. Use when the user wants a new skill, wants to update an existing skill, or needs guidance on when a skill should be a skill versus MCP, hooks, tools, or a plugin scaffold.
 metadata:
-  short-description: Create DeepSeek skills
+  short-description: Create CodeSmith skills
 ---
 
 # Skill Creator
@@ -12,7 +12,7 @@ runtime this repository actually ships.
 
 ## What A Skill Is
 
-A skill is a local folder with a `SKILL.md` file. DeepSeek reads the skill name
+A skill is a local folder with a `SKILL.md` file. CodeSmith reads the skill name
 and description during discovery, then loads the body only when the user or task
 matches the skill.
 
@@ -25,7 +25,7 @@ Discovery paths, in precedence order:
 - `<workspace>/.cursor/skills`
 - `~/.agents/skills`
 - `~/.claude/skills`
-- `~/.deepseek/skills`
+- `~/.codesmith/skills`
 
 Use skills for model instructions, workflows, and lightweight conventions. Use
 MCP for live external APIs or durable tools. Use hooks for automatic local
@@ -42,7 +42,7 @@ my-skill/
 ```markdown
 ---
 name: my-skill
-description: Use when DeepSeek should follow this specific workflow.
+description: Use when CodeSmith should follow this specific workflow.
 ---
 
 # My Skill
@@ -56,7 +56,7 @@ plain single-line values. Use lower-case hyphen-case names.
 ## Writing Rules
 
 - Make the `description` action-oriented and trigger-specific. It is the main
-  signal DeepSeek sees before loading the body.
+  signal CodeSmith sees before loading the body.
 - Keep the body operational. Include what to do, what to avoid, and how to
   verify the result.
 - Do not include general programming advice, marketing copy, or long background

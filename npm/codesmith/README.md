@@ -37,13 +37,14 @@ codesmith
 
 The `codesmith` facade and `codesmith-tui` binary share
 `~/.codesmith/config.toml` for DeepSeek auth and default model settings. Legacy
-`~/.deepseek/config.toml` installs are still read as a compatibility fallback.
+`~/.deepseek/` installs are no longer read; migrate the directory to
+`~/.codesmith/`.
 Common TUI commands are available directly through the facade, including
 `codesmith doctor`, `codesmith models`, `codesmith sessions`, and
 `codesmith resume --last`.
 
 The app talks to DeepSeek's documented OpenAI-compatible Chat Completions API.
-Set `DEEPSEEK_BASE_URL` only if you need the China endpoint or DeepSeek beta
+Set `CODESMITH_BASE_URL` only if you need the China endpoint or DeepSeek beta
 features such as strict tool mode, chat prefix completion, or FIM completion.
 
 NVIDIA NIM-hosted DeepSeek V4 Pro is also supported:
@@ -80,14 +81,14 @@ build-from-source guide.
 
 - Default binary version comes from `codesmithBinaryVersion` in `package.json`
   (with `deepseekBinaryVersion` as a backward-compat fallback).
-- Set `DEEPSEEK_TUI_VERSION` or `DEEPSEEK_VERSION` to override the release version.
-- Set `DEEPSEEK_TUI_GITHUB_REPO` or `DEEPSEEK_GITHUB_REPO` to override the source repo (defaults to `Hmbown/CodeSmith`).
-- Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to use an internal or mirrored
+- Set `CODESMITH_VERSION` to override the release version.
+- Set `CODESMITH_GITHUB_REPO` to override the source repo (defaults to `Hmbown/CodeSmith`).
+- Set `CODESMITH_RELEASE_BASE_URL` to use an internal or mirrored
   release-asset directory when GitHub Releases is unavailable. The directory
   must contain `codesmith-artifacts-sha256.txt` and the platform binaries.
-- Set `DEEPSEEK_TUI_FORCE_DOWNLOAD=1` to force download even when the cached binary is already present.
-- Set `DEEPSEEK_TUI_DISABLE_INSTALL=1` to skip install-time download.
-- Set `DEEPSEEK_TUI_OPTIONAL_INSTALL=1` to make install-time retryable download
+- Set `CODESMITH_FORCE_DOWNLOAD=1` to force download even when the cached binary is already present.
+- Set `CODESMITH_DISABLE_INSTALL=1` to skip install-time download.
+- Set `CODESMITH_OPTIONAL_INSTALL=1` to make install-time retryable download
   failures warn and exit `0` instead of failing `npm install`.
 
 ## Release integrity

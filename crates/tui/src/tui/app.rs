@@ -10,7 +10,6 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::artifacts::ArtifactRecord;
-use codesmith_agent_runtime::prompt_inspect::{CacheWarmupKey, PromptInspection};
 use crate::compaction::CompactionConfig;
 use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
@@ -42,6 +41,7 @@ use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
+use codesmith_agent_runtime::prompt_inspect::{CacheWarmupKey, PromptInspection};
 
 // === Types ===
 
@@ -51,7 +51,7 @@ pub enum OnboardingState {
     Welcome,
     /// Pick the UI locale before any other config decisions (#566).
     /// Defaults to auto-detection from `LC_ALL` / `LANG`; explicit picks
-    /// land in `~/.deepseek/settings.toml` via `Settings::set("locale", …)`.
+    /// land in `~/.codesmith/settings.toml` via `Settings::set("locale", …)`.
     Language,
     ApiKey,
     TrustDirectory,
@@ -1232,7 +1232,7 @@ pub struct App {
     /// remaining English output before it reaches the user.
     pub translation_enabled: bool,
     /// Ordered list of footer items the user wants visible. Sourced from
-    /// `tui.status_items` in `~/.deepseek/config.toml` at startup; mutated
+    /// `tui.status_items` in `~/.codesmith/config.toml` at startup; mutated
     /// live by `/statusline`. The renderer iterates this slice; no item is
     /// hardcoded in the footer code path.
     pub status_items: Vec<crate::config::StatusItem>,
@@ -2104,7 +2104,7 @@ impl App {
     }
 
     /// Apply a locale tag selected from the onboarding language picker (#566).
-    /// Persists the value to `~/.deepseek/settings.toml` and immediately
+    /// Persists the value to `~/.codesmith/settings.toml` and immediately
     /// re-resolves `ui_locale` so the rest of onboarding renders in the new
     /// language. `App` doesn't keep `Settings` resident — it loads on entry
     /// and rewrites on exit, mirroring the pattern used by the `/config`
@@ -2118,7 +2118,7 @@ impl App {
         Ok(())
     }
 
-    /// Locale tag currently persisted in `~/.deepseek/settings.toml` (or
+    /// Locale tag currently persisted in `~/.codesmith/settings.toml` (or
     /// `"auto"` when no settings file exists). Used by the onboarding
     /// language picker to highlight the current selection without `App`
     /// having to keep `Settings` resident.
@@ -4401,7 +4401,7 @@ impl App {
 
     /// When the composer input exceeds [`MAX_SUBMITTED_INPUT_CHARS`], write
     /// the full content to a timestamped paste file under
-    /// `.deepseek/pastes/` and replace `self.input` with an `@`-mention
+    /// `.codesmith/pastes/` and replace `self.input` with an `@`-mention
     /// pointing at it so the model can read the full content via the
     /// normal file-mention resolution path (#553).
     fn consolidate_large_input(&mut self) {
@@ -4411,9 +4411,9 @@ impl App {
         let now = chrono::Local::now();
         let suffix = uuid::Uuid::new_v4().to_string()[..8].to_string();
         let filename = format!("paste-{}-{}.md", now.format("%Y-%m-%d-%H%M%S"), suffix);
-        let rel_path = format!(".deepseek/pastes/{filename}");
+        let rel_path = format!(".codesmith/pastes/{filename}");
 
-        let pastes_dir = self.workspace.join(".deepseek/pastes");
+        let pastes_dir = self.workspace.join(".codesmith/pastes");
         if let Err(e) = std::fs::create_dir_all(&pastes_dir) {
             // Fallback: keep a truncated version so we don't lose the
             // user's input entirely when the filesystem is unhappy.
@@ -5041,7 +5041,7 @@ mod tests {
             "default_provider = \"openai\"\n",
         )
         .expect("settings");
-        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+        let _config_path = EnvVarGuard::set("CODESMITH_CONFIG_PATH", &config_path);
         let _deepseek_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
         let _openai_key = EnvVarGuard::remove("OPENAI_API_KEY");
 
@@ -5396,9 +5396,9 @@ mod tests {
         let _lock = lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let config_path = tmp.path().join("config.toml");
-        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+        let _config_path = EnvVarGuard::set("CODESMITH_CONFIG_PATH", &config_path);
         let _provider_env = EnvVarGuard::remove("CODESMITH_PROVIDER");
-        let _legacy_provider_env = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
+        let _legacy_provider_env = EnvVarGuard::remove("CODESMITH_PROVIDER");
         let _api_key_envs: Vec<_> = [
             "DEEPSEEK_API_KEY",
             "NVIDIA_API_KEY",
@@ -5549,7 +5549,7 @@ mod tests {
 
         assert_eq!(app.input, full_content);
         assert_eq!(app.cursor_position, app.input.chars().count());
-        let pastes_dir = tmp.path().join(".deepseek/pastes");
+        let pastes_dir = tmp.path().join(".codesmith/pastes");
         assert!(
             !pastes_dir.exists() || std::fs::read_dir(&pastes_dir).unwrap().next().is_none(),
             "paste file should not be written before submit"
@@ -5563,7 +5563,7 @@ mod tests {
 
         let submitted = app.submit_input().expect("expected submitted input");
         assert!(
-            submitted.starts_with("@.deepseek/pastes/paste-") && submitted.ends_with(".md"),
+            submitted.starts_with("@.codesmith/pastes/paste-") && submitted.ends_with(".md"),
             "expected @mention after submit, got: {submitted}"
         );
         let rel_path = &submitted[1..];
@@ -5592,9 +5592,9 @@ mod tests {
         app.insert_paste_text(&small);
 
         assert_eq!(app.input, small);
-        assert!(!app.input.starts_with("@.deepseek/pastes/"));
+        assert!(!app.input.starts_with("@.codesmith/pastes/"));
         // No paste file gets written for under-cap pastes.
-        let pastes_dir = tmp.path().join(".deepseek/pastes");
+        let pastes_dir = tmp.path().join(".codesmith/pastes");
         assert!(
             !pastes_dir.exists() || std::fs::read_dir(&pastes_dir).unwrap().next().is_none(),
             "no paste file should be written for under-cap content"
@@ -5616,7 +5616,7 @@ mod tests {
         // The submitted text should be the @mention, not the truncated
         // original (#553).
         assert!(
-            submitted.starts_with("@.deepseek/pastes/paste-"),
+            submitted.starts_with("@.codesmith/pastes/paste-"),
             "expected @mention, got: {submitted}"
         );
         assert!(

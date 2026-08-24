@@ -96,7 +96,7 @@ Run `codesmith --help` for the canonical list. Common flags:
 - `codesmith exec --continue <PROMPT>`: continue the most recent saved session for this workspace non-interactively
 - `codesmith swebench run --instance-id <ID> --issue-file <PATH>`: run the tool-backed agent on one SWE-bench task and write/update a prediction JSONL row
 - `codesmith fork <ID|PREFIX>` / `codesmith fork --last`: copy a saved session into a new sibling session; forked sessions retain additive parent-session metadata and show that lineage in session listings
-- `--model <MODEL>`: when using the `codesmith` facade, forward a DeepSeek model override to the TUI
+- `--model <MODEL>`: when using the `codesmith` facade, forward a model override to the TUI
 - `--workspace <DIR>`: workspace root for file tools
 - `--yolo`: start in YOLO mode
 - `-r, --resume <ID|PREFIX|latest>`: resume a saved session
@@ -109,7 +109,7 @@ Run `codesmith --help` for the canonical list. Common flags:
 
 ## Branching and Rollback
 
-DeepSeek-TUI has three related but intentionally separate recovery paths:
+CodeSmith has three related but intentionally separate recovery paths:
 
 - `codesmith fork <ID>` creates a new saved session from an existing saved
   conversation and records the source session id. This is the safe way to

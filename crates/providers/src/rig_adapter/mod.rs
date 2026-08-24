@@ -25,11 +25,11 @@ mod convert;
 // DeepSeek family); Anthropic has its own thinking config and never calls it.
 // Gate it with the same cfg so the `anthropic`-only Lego build stays
 // warning-free.
+mod fim_translate;
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 mod reasoning;
 mod shaper;
 mod stream;
-mod fim_translate;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -41,13 +41,13 @@ use codesmith_agent::models::MessageRequest;
 use rig_core::client::CompletionClient;
 use rig_core::completion::{CompletionModel, CompletionRequestBuilder};
 
-pub(crate) use shaper::RequestShaper;
+#[cfg(feature = "deepseek")]
+pub(crate) use fim_translate::resolve_base_url;
 #[cfg(feature = "anthropic")]
 pub(crate) use shaper::AnthropicShaper;
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 pub(crate) use shaper::GenericShaper;
-#[cfg(feature = "deepseek")]
-pub(crate) use fim_translate::resolve_base_url;
+pub(crate) use shaper::RequestShaper;
 
 /// Monotonic counter for synthetic message IDs. rig doesn't always surface a
 /// provider message ID (and the streaming `MessageStart` fires before the

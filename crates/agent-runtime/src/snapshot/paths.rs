@@ -1,7 +1,7 @@
 //! Path resolution for the per-workspace snapshot side-repos.
 //!
 //! Snapshots live under the resolved state directory
-//! (`~/.codesmith/snapshots` or legacy `~/.deepseek/snapshots`) with
+//! (`~/.codesmith/snapshots`) with
 //! a two-level hash split so we can snapshot multiple worktrees of the
 //! same project independently — `git worktree list` users won't get
 //! cross-talk between feature branches.
@@ -42,12 +42,7 @@ pub fn snapshot_dir_with_home(workspace: &Path, home: Option<PathBuf>) -> PathBu
 
 fn snapshot_base_with_home(home: Option<PathBuf>) -> PathBuf {
     let home = home.unwrap_or_else(|| PathBuf::from("."));
-    // Prefer .codesmith, fall back to .deepseek
-    let primary = home.join(".codesmith").join("snapshots");
-    if primary.exists() {
-        return primary;
-    }
-    home.join(".deepseek").join("snapshots")
+    home.join(".codesmith").join("snapshots")
 }
 
 /// Resolve the `.git` directory inside the snapshot dir.
@@ -102,7 +97,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let dir = snapshot_dir_with_home(tmp.path(), Some(tmp.path().to_path_buf()));
         let mut iter = dir.strip_prefix(tmp.path()).unwrap().components();
-        assert_eq!(iter.next().unwrap().as_os_str(), ".deepseek");
+        assert_eq!(iter.next().unwrap().as_os_str(), ".codesmith");
         assert_eq!(iter.next().unwrap().as_os_str(), "snapshots");
         assert!(iter.next().is_some()); // project_hash
         assert!(iter.next().is_some()); // worktree_hash

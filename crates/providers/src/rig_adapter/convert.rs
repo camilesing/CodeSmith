@@ -22,14 +22,14 @@
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
 use codesmith_agent::models::{ContentBlock, ImageSource, Message, MessageResponse, Tool, Usage};
+use rig_core::OneOrMany;
 use rig_core::completion::message::{
-    AssistantContent, DocumentSourceKind, Image as RigImage, ImageDetail, ImageMediaType,
-    MimeType, ToolCall as RigToolCall, ToolFunction, ToolResult as RigToolResult,
-    ToolResultContent, UserContent,
+    AssistantContent, DocumentSourceKind, Image as RigImage, ImageDetail, ImageMediaType, MimeType,
+    ToolCall as RigToolCall, ToolFunction, ToolResult as RigToolResult, ToolResultContent,
+    UserContent,
 };
 use rig_core::completion::{Message as RigMessage, ToolDefinition, Usage as RigUsage};
 use rig_core::message::ToolChoice;
-use rig_core::OneOrMany;
 
 // === Request direction: CodeSmith -> rig =====================================
 
@@ -47,8 +47,11 @@ pub(crate) fn message_to_rig(msg: &Message) -> Result<RigMessage> {
             })
         }
         "assistant" => {
-            let items: Vec<AssistantContent> =
-                msg.content.iter().filter_map(assistant_block_to_rig).collect();
+            let items: Vec<AssistantContent> = msg
+                .content
+                .iter()
+                .filter_map(assistant_block_to_rig)
+                .collect();
             Ok(RigMessage::Assistant {
                 id: None,
                 content: one_or_many_assistant(items),
@@ -73,9 +76,12 @@ fn assistant_block_to_rig(block: &ContentBlock) -> Option<AssistantContent> {
     match block {
         ContentBlock::Text { text, .. } => Some(AssistantContent::text(text.clone())),
         ContentBlock::Thinking { thinking } => Some(AssistantContent::reasoning(thinking)),
-        ContentBlock::ToolUse { id, name, input, .. } => Some(AssistantContent::ToolCall(
-            RigToolCall::new(id.clone(), ToolFunction::new(name.clone(), input.clone())),
-        )),
+        ContentBlock::ToolUse {
+            id, name, input, ..
+        } => Some(AssistantContent::ToolCall(RigToolCall::new(
+            id.clone(),
+            ToolFunction::new(name.clone(), input.clone()),
+        ))),
         // Server-side / result blocks never appear in an assistant turn we send
         // back to a provider; ignore them.
         _ => None,
@@ -170,8 +176,7 @@ fn one_or_many_user(items: Vec<UserContent>) -> OneOrMany<UserContent> {
 }
 
 fn one_or_many_assistant(items: Vec<AssistantContent>) -> OneOrMany<AssistantContent> {
-    OneOrMany::many(items)
-        .unwrap_or_else(|_| OneOrMany::one(AssistantContent::text(String::new())))
+    OneOrMany::many(items).unwrap_or_else(|_| OneOrMany::one(AssistantContent::text(String::new())))
 }
 
 /// Map CodeSmith tool definitions to rig `ToolDefinition`s (name / description /
@@ -312,10 +317,8 @@ mod tests {
 
     #[test]
     fn file_image_block_maps_to_rig_image() {
-        let path = std::env::temp_dir().join(format!(
-            "codesmith-convert-img-{}.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("codesmith-convert-img-{}.png", std::process::id()));
         std::fs::write(&path, b"fake-png-bytes").expect("write temp png");
         let msg = user_message(vec![ContentBlock::Image {
             source: ImageSource::File {
@@ -376,9 +379,11 @@ mod tests {
         let RigMessage::User { content } = converted else {
             panic!("expected user message");
         };
-        assert!(content.into_iter().all(|item| {
-            matches!(item, UserContent::Text(_))
-        }));
+        assert!(
+            content
+                .into_iter()
+                .all(|item| { matches!(item, UserContent::Text(_)) })
+        );
 
         // Unsupported media type on an explicit base64 source is dropped too.
         let unsupported = user_message(vec![ContentBlock::Image {
@@ -391,6 +396,10 @@ mod tests {
         let RigMessage::User { content } = converted else {
             panic!("expected user message");
         };
-        assert!(content.into_iter().all(|item| matches!(item, UserContent::Text(_))));
+        assert!(
+            content
+                .into_iter()
+                .all(|item| matches!(item, UserContent::Text(_)))
+        );
     }
 }

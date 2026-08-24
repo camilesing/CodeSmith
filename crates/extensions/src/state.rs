@@ -44,7 +44,13 @@ impl HostExtensionContext {
         signal: Arc<Mutex<CancellationToken>>,
         generation: Arc<AtomicU64>,
     ) -> Self {
-        Self { cwd, mode, idle, signal, generation }
+        Self {
+            cwd,
+            mode,
+            idle,
+            signal,
+            generation,
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 # Accessibility
 
-DeepSeek-TUI runs in a terminal, so the platform's own accessibility
+CodeSmith runs in a terminal, so the platform's own accessibility
 stack (screen readers, magnifiers, terminal-level themes) does most
 of the work. The TUI provides a small set of toggles that reduce
 visual motion and density for screen-reader and low-motion users.
@@ -46,7 +46,7 @@ The same toggles are reachable from the command palette:
 * `/settings set calm_mode on`
 * `/settings set status_indicator off`
 
-Settings written this way persist to `~/.config/deepseek/settings.toml`.
+Settings written this way persist to `~/.config/codesmith/settings.toml`.
 The `NO_ANIMATIONS` env var still wins at startup if it's set, so
 unsetting the env var is the way to honor your saved choice.
 

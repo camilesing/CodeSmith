@@ -1299,32 +1299,27 @@ impl ConfigToml {
                             );
                         }
                         Some("api_key") => {
-                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
-                            {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
                                 e.api_key = None;
                             }
                         }
                         Some("base_url") => {
-                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
-                            {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
                                 e.base_url = None;
                             }
                         }
                         Some("model") => {
-                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
-                            {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
                                 e.model = None;
                             }
                         }
                         Some("auth_mode") => {
-                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
-                            {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
                                 e.auth_mode = None;
                             }
                         }
                         Some("http_headers") => {
-                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id)
-                            {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
                                 e.http_headers.clear();
                             }
                         }
@@ -1843,17 +1838,14 @@ fn sandbox_mode_rank(value: &str) -> Option<u8> {
 
 /// Load a project-level config from the workspace.
 ///
-/// Checks `$WORKSPACE/.codesmith/config.toml` first, falling back to
-/// `$WORKSPACE/.deepseek/config.toml` for backward compatibility.
-/// Returns `None` if neither file exists or can't be parsed.
+/// Reads `$WORKSPACE/.codesmith/config.toml`.
+/// Returns `None` if the file doesn't exist or can't be parsed.
 pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
-    for dir in [CODESMITH_APP_DIR, LEGACY_APP_DIR] {
-        let path = workspace.join(dir).join(CONFIG_FILE_NAME);
-        if path.exists()
-            && let Ok(raw) = fs::read_to_string(&path)
-        {
-            return toml::from_str(&raw).ok();
-        }
+    let path = workspace.join(CODESMITH_APP_DIR).join(CONFIG_FILE_NAME);
+    if path.exists()
+        && let Ok(raw) = fs::read_to_string(&path)
+    {
+        return toml::from_str(&raw).ok();
     }
     None
 }
@@ -2283,18 +2275,14 @@ pub fn default_secrets() -> &'static Secrets {
 
 // ── CodeSmith state root ─────────────────────────────────────────────
 //
-// CodeSmith writes new product-owned app state to ~/.codesmith/ while keeping
-// ~/.codewhale/ and ~/.deepseek/ as compatibility fallbacks. Existing installs
-// continue working without data loss.
+// CodeSmith writes product-owned app state to ~/.codesmith/ while keeping
+// ~/.codewhale/ as a compatibility fallback.
 
 /// Canonical CodeSmith app directory name under $HOME.
 pub const CODESMITH_APP_DIR: &str = ".codesmith";
 
 /// Legacy CodeWhale-branded app directory name (compatibility fallback).
 pub const LEGACY_CODEWHALE_APP_DIR: &str = ".codewhale";
-
-/// Legacy DeepSeek-branded app directory name (compatibility fallback).
-pub const LEGACY_APP_DIR: &str = ".deepseek";
 
 /// Resolve the primary CodeSmith home directory.
 ///
@@ -2322,20 +2310,12 @@ pub fn legacy_codewhale_home() -> Result<PathBuf> {
     Ok(home.join(LEGACY_CODEWHALE_APP_DIR))
 }
 
-/// Resolve the legacy DeepSeek home directory (`$HOME/.deepseek`).
-///
-/// Always returns the legacy path regardless of whether it exists.
-pub fn legacy_deepseek_home() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("failed to resolve home directory")?;
-    Ok(home.join(LEGACY_APP_DIR))
-}
-
 /// Resolve a state subdirectory, preferring the CodeSmith root if
-/// it already exists, otherwise falling back to legacy roots.
+/// it already exists, otherwise falling back to the legacy root.
 ///
 /// This is the read-path resolver: it returns the primary path when
 /// migration has occurred or on a fresh install, but keeps reading
-/// from legacy paths for users who haven't migrated yet.
+/// from the legacy path for users who haven't migrated yet.
 pub fn resolve_state_dir(subdir: &str) -> Result<PathBuf> {
     let primary = codesmith_home()?.join(subdir);
     if primary.exists() {
@@ -2344,10 +2324,6 @@ pub fn resolve_state_dir(subdir: &str) -> Result<PathBuf> {
     let legacy_codewhale = legacy_codewhale_home()?.join(subdir);
     if legacy_codewhale.exists() {
         return Ok(legacy_codewhale);
-    }
-    let legacy = legacy_deepseek_home()?.join(subdir);
-    if legacy.exists() {
-        return Ok(legacy);
     }
     // Neither exists — return primary for first-write creation.
     Ok(primary)
@@ -2363,8 +2339,7 @@ pub fn ensure_state_dir(subdir: &str) -> Result<PathBuf> {
 }
 
 /// Resolve a project-local state subdirectory, preferring `.codesmith/`
-/// when it exists, falling back to `.codewhale/` or `.deepseek/` for legacy
-/// projects.
+/// when it exists, falling back to `.codewhale/` for legacy projects.
 ///
 /// Returns `(true, path)` when the primary `.codesmith/` path is used,
 /// `(false, path)` for a legacy fallback. The boolean helps callers emit a
@@ -2375,11 +2350,7 @@ pub fn resolve_project_state_dir(workspace: &Path, subdir: &str) -> (bool, PathB
         return (true, primary);
     }
     let legacy_codewhale = workspace.join(LEGACY_CODEWHALE_APP_DIR).join(subdir);
-    if legacy_codewhale.exists() {
-        return (false, legacy_codewhale);
-    }
-    let legacy = workspace.join(LEGACY_APP_DIR).join(subdir);
-    (false, legacy)
+    (false, legacy_codewhale)
 }
 
 /// Ensure a project-local state subdirectory exists under `.codesmith/`,
@@ -2408,13 +2379,6 @@ pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
         } else {
             return default_config_path();
         }
-    } else if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            PathBuf::from(trimmed)
-        } else {
-            return default_config_path();
-        }
     } else {
         return default_config_path();
     };
@@ -2423,8 +2387,7 @@ pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
 
 pub fn default_config_path() -> Result<PathBuf> {
     // Prefer ~/.codesmith/config.toml when it exists (fresh install or
-    // migrated), otherwise fall back to ~/.codewhale/config.toml and then
-    // ~/.deepseek/config.toml.
+    // migrated), otherwise fall back to ~/.codewhale/config.toml.
     let primary = codesmith_home()?.join(CONFIG_FILE_NAME);
     if primary.exists() {
         return Ok(primary);
@@ -2433,15 +2396,11 @@ pub fn default_config_path() -> Result<PathBuf> {
     if legacy_codewhale.exists() {
         return Ok(legacy_codewhale);
     }
-    let legacy = legacy_deepseek_home()?.join(CONFIG_FILE_NAME);
-    if legacy.exists() {
-        return Ok(legacy);
-    }
     // Neither exists — return primary so first write creates it there.
     Ok(primary)
 }
 
-/// One-time migration from legacy config locations to
+/// One-time migration from the legacy config location to
 /// `~/.codesmith/config.toml`. Called on first launch after the config is
 /// loaded; copies the legacy file if the primary doesn't exist yet. Never
 /// overwrites an existing primary config.
@@ -2450,16 +2409,10 @@ pub fn migrate_config_if_needed() -> Result<()> {
     if primary.exists() {
         return Ok(());
     }
-    let legacy_codewhale = legacy_codewhale_home()?.join(CONFIG_FILE_NAME);
-    let legacy = if legacy_codewhale.exists() {
-        legacy_codewhale
-    } else {
-        let legacy_deepseek = legacy_deepseek_home()?.join(CONFIG_FILE_NAME);
-        if !legacy_deepseek.exists() {
-            return Ok(());
-        }
-        legacy_deepseek
-    };
+    let legacy = legacy_codewhale_home()?.join(CONFIG_FILE_NAME);
+    if !legacy.exists() {
+        return Ok(());
+    }
     // Copy the config to the new home.
     if let Some(parent) = primary.parent() {
         std::fs::create_dir_all(parent).context("failed to create codesmith config directory")?;
@@ -2638,10 +2591,10 @@ struct EnvRuntimeOverrides {
 }
 
 /// Read an app-level env var by suffix, preferring `CODESMITH_{suffix}` over
-/// the legacy `CODEWHALE_{suffix}` / `DEEPSEEK_{suffix}` aliases. Empty values
-/// are skipped so a blank shell export does not erase configured settings.
+/// the legacy `CODEWHALE_{suffix}` alias. Empty values are skipped so a blank
+/// shell export does not erase configured settings.
 pub fn codesmith_env(suffix: &str) -> Option<String> {
-    ["CODESMITH_", "CODEWHALE_", "DEEPSEEK_"].iter().find_map(|prefix| {
+    ["CODESMITH_", "CODEWHALE_"].iter().find_map(|prefix| {
         std::env::var(format!("{prefix}{suffix}"))
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -2652,12 +2605,9 @@ impl EnvRuntimeOverrides {
     fn load() -> Self {
         Self {
             provider: std::env::var("CODESMITH_PROVIDER")
-                .or_else(|_| std::env::var("DEEPSEEK_PROVIDER"))
                 .ok()
                 .and_then(|v| ProviderKind::parse(&v)),
             model: std::env::var("CODESMITH_MODEL")
-                .or_else(|_| std::env::var("DEEPSEEK_MODEL"))
-                .or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             volcengine_model: std::env::var("VOLCENGINE_MODEL")
@@ -2689,7 +2639,6 @@ impl EnvRuntimeOverrides {
                 .and_then(|value| parse_http_headers(&value).ok())
                 .filter(|headers| !headers.is_empty()),
             deepseek_base_url: std::env::var("CODESMITH_BASE_URL")
-                .or_else(|_| std::env::var("DEEPSEEK_BASE_URL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             nvidia_base_url: std::env::var("NVIDIA_NIM_BASE_URL")
@@ -2822,18 +2771,6 @@ mod tests {
 
     struct EnvGuard {
         deepseek_api_key: Option<OsString>,
-        deepseek_base_url: Option<OsString>,
-        deepseek_http_headers: Option<OsString>,
-        deepseek_model: Option<OsString>,
-        deepseek_default_text_model: Option<OsString>,
-        deepseek_provider: Option<OsString>,
-        deepseek_auth_mode: Option<OsString>,
-        deepseek_output_mode: Option<OsString>,
-        deepseek_log_level: Option<OsString>,
-        deepseek_telemetry: Option<OsString>,
-        deepseek_approval_policy: Option<OsString>,
-        deepseek_sandbox_mode: Option<OsString>,
-        deepseek_yolo: Option<OsString>,
         codesmith_output_mode: Option<OsString>,
         codesmith_auth_mode: Option<OsString>,
         codesmith_log_level: Option<OsString>,
@@ -2890,21 +2827,9 @@ mod tests {
     }
 
     impl EnvGuard {
-        fn without_deepseek_runtime_overrides() -> Self {
+        fn without_runtime_overrides() -> Self {
             let guard = Self {
                 deepseek_api_key: env::var_os("DEEPSEEK_API_KEY"),
-                deepseek_base_url: env::var_os("DEEPSEEK_BASE_URL"),
-                deepseek_http_headers: env::var_os("DEEPSEEK_HTTP_HEADERS"),
-                deepseek_model: env::var_os("DEEPSEEK_MODEL"),
-                deepseek_default_text_model: env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL"),
-                deepseek_provider: env::var_os("DEEPSEEK_PROVIDER"),
-                deepseek_auth_mode: env::var_os("DEEPSEEK_AUTH_MODE"),
-                deepseek_output_mode: env::var_os("DEEPSEEK_OUTPUT_MODE"),
-                deepseek_log_level: env::var_os("DEEPSEEK_LOG_LEVEL"),
-                deepseek_telemetry: env::var_os("DEEPSEEK_TELEMETRY"),
-                deepseek_approval_policy: env::var_os("DEEPSEEK_APPROVAL_POLICY"),
-                deepseek_sandbox_mode: env::var_os("DEEPSEEK_SANDBOX_MODE"),
-                deepseek_yolo: env::var_os("DEEPSEEK_YOLO"),
                 codesmith_output_mode: env::var_os("CODESMITH_OUTPUT_MODE"),
                 codesmith_auth_mode: env::var_os("CODESMITH_AUTH_MODE"),
                 codesmith_log_level: env::var_os("CODESMITH_LOG_LEVEL"),
@@ -2962,18 +2887,6 @@ mod tests {
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
                 env::remove_var("DEEPSEEK_API_KEY");
-                env::remove_var("DEEPSEEK_BASE_URL");
-                env::remove_var("DEEPSEEK_HTTP_HEADERS");
-                env::remove_var("DEEPSEEK_MODEL");
-                env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
-                env::remove_var("DEEPSEEK_PROVIDER");
-                env::remove_var("DEEPSEEK_AUTH_MODE");
-                env::remove_var("DEEPSEEK_OUTPUT_MODE");
-                env::remove_var("DEEPSEEK_LOG_LEVEL");
-                env::remove_var("DEEPSEEK_TELEMETRY");
-                env::remove_var("DEEPSEEK_APPROVAL_POLICY");
-                env::remove_var("DEEPSEEK_SANDBOX_MODE");
-                env::remove_var("DEEPSEEK_YOLO");
                 env::remove_var("CODESMITH_OUTPUT_MODE");
                 env::remove_var("CODESMITH_AUTH_MODE");
                 env::remove_var("CODESMITH_LOG_LEVEL");
@@ -3044,24 +2957,6 @@ mod tests {
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
-                Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
-                Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
-                Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
-                Self::restore_var(
-                    "DEEPSEEK_DEFAULT_TEXT_MODEL",
-                    self.deepseek_default_text_model.take(),
-                );
-                Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
-                Self::restore_var("DEEPSEEK_AUTH_MODE", self.deepseek_auth_mode.take());
-                Self::restore_var("DEEPSEEK_OUTPUT_MODE", self.deepseek_output_mode.take());
-                Self::restore_var("DEEPSEEK_LOG_LEVEL", self.deepseek_log_level.take());
-                Self::restore_var("DEEPSEEK_TELEMETRY", self.deepseek_telemetry.take());
-                Self::restore_var(
-                    "DEEPSEEK_APPROVAL_POLICY",
-                    self.deepseek_approval_policy.take(),
-                );
-                Self::restore_var("DEEPSEEK_SANDBOX_MODE", self.deepseek_sandbox_mode.take());
-                Self::restore_var("DEEPSEEK_YOLO", self.deepseek_yolo.take());
                 Self::restore_var("CODESMITH_OUTPUT_MODE", self.codesmith_output_mode.take());
                 Self::restore_var("CODESMITH_AUTH_MODE", self.codesmith_auth_mode.take());
                 Self::restore_var("CODESMITH_LOG_LEVEL", self.codesmith_log_level.take());
@@ -3158,7 +3053,7 @@ mod tests {
     #[test]
     fn root_deepseek_fields_are_runtime_fallbacks() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             api_key: Some("root-key".to_string()),
             base_url: Some("https://api.deepseek.com".to_string()),
@@ -3177,7 +3072,7 @@ mod tests {
     #[test]
     fn deepseek_runtime_defaults_to_beta_endpoint() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml::default();
 
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
@@ -3190,7 +3085,7 @@ mod tests {
     #[test]
     fn provider_specific_deepseek_fields_override_tui_compat_fields() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             api_key: Some("root-key".to_string()),
             base_url: Some("https://api.deepseek.com".to_string()),
@@ -3211,7 +3106,7 @@ mod tests {
     #[test]
     fn provider_http_headers_override_root_headers() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             api_key: Some("root-key".to_string()),
             base_url: Some("https://api.deepseek.com".to_string()),
@@ -3256,14 +3151,14 @@ mod tests {
     #[test]
     fn http_headers_env_overrides_config() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml::default();
         config
             .http_headers
             .insert("X-Model-Provider-Id".to_string(), "from-file".to_string());
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
+            env::set_var("CODESMITH_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
         }
 
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
@@ -3280,7 +3175,7 @@ mod tests {
     #[test]
     fn nvidia_nim_provider_defaults_to_catalog_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::NvidiaNim,
             ..ConfigToml::default()
@@ -3296,7 +3191,7 @@ mod tests {
     #[test]
     fn nvidia_nim_provider_uses_provider_specific_credentials() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             provider: ProviderKind::NvidiaNim,
             ..ConfigToml::default()
@@ -3316,7 +3211,7 @@ mod tests {
     #[test]
     fn nvidia_nim_provider_normalizes_flash_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let cli = CliRuntimeOverrides {
             provider: Some(ProviderKind::NvidiaNim),
             model: Some("deepseek-v4-flash".to_string()),
@@ -3332,10 +3227,10 @@ mod tests {
     #[test]
     fn nvidia_nim_provider_uses_nvidia_env_credentials() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
             env::set_var("NVIDIA_API_KEY", "nim-env-key");
             env::set_var("NVIDIA_NIM_BASE_URL", "https://nim-env.example/v1");
         }
@@ -3352,10 +3247,10 @@ mod tests {
     #[test]
     fn nvidia_nim_provider_accepts_short_nim_base_url_alias() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
             env::set_var("NVIDIA_API_KEY", "nim-env-key");
             env::set_var("NIM_BASE_URL", "https://short-nim.example/v1");
         }
@@ -3370,12 +3265,12 @@ mod tests {
     #[test]
     fn codesmith_env_knobs_override_deepseek_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_YOLO", "false");
+            env::set_var("CODESMITH_YOLO", "false");
             env::set_var("CODESMITH_YOLO", "true");
-            env::set_var("DEEPSEEK_APPROVAL_POLICY", "never");
+            env::set_var("CODESMITH_APPROVAL_POLICY", "never");
             env::set_var("CODESMITH_APPROVAL_POLICY", "on-request");
         }
 
@@ -3386,29 +3281,28 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_env_knobs_still_apply_and_blank_codesmith_is_skipped() {
+    fn blank_codesmith_env_knobs_are_skipped() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_YOLO", "true");
-            env::set_var("DEEPSEEK_SANDBOX_MODE", "workspace-write");
+            env::set_var("CODESMITH_YOLO", "true");
             env::set_var("CODESMITH_SANDBOX_MODE", "   ");
         }
 
         let overrides = EnvRuntimeOverrides::load();
 
         assert_eq!(overrides.yolo, Some(true));
-        assert_eq!(overrides.sandbox_mode.as_deref(), Some("workspace-write"));
+        assert_eq!(overrides.sandbox_mode, None);
     }
 
     #[test]
     fn nvidia_nim_provider_can_fallback_to_deepseek_api_key_env() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
             env::set_var("DEEPSEEK_API_KEY", "deepseek-compat-key");
         }
 
@@ -3557,9 +3451,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     ///   1. Start from a fresh root config that uses DeepSeek defaults.
     ///   2. Mutate it through the same key-value setters the
     ///      `codesmith config set providers.moonshot.*` CLI invokes.
-    ///   3. Switch the active provider through `CODESMITH_PROVIDER` —
-    ///      the public env alias — without ever touching the legacy
-    ///      `DEEPSEEK_PROVIDER` name.
+    ///   3. Switch the active provider through `CODESMITH_PROVIDER`.
     ///   4. Resolve the runtime and confirm the doctor/runtime values.
     ///
     /// No real API key is required; the `api_key` here is just a
@@ -3567,7 +3459,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn moonshot_kimi_code_smoke_config_set_then_resolve() -> Result<()> {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
 
         let mut config = ConfigToml {
             provider: ProviderKind::Deepseek,
@@ -3866,7 +3758,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn openrouter_provider_defaults_to_canonical_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::Openrouter,
             ..ConfigToml::default()
@@ -3882,7 +3774,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn xiaomi_mimo_provider_defaults_to_canonical_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::XiaomiMimo,
             ..ConfigToml::default()
@@ -3898,7 +3790,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn novita_provider_defaults_to_canonical_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::Novita,
             ..ConfigToml::default()
@@ -3914,7 +3806,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn fireworks_provider_defaults_to_canonical_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::Fireworks,
             ..ConfigToml::default()
@@ -3930,7 +3822,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn siliconflow_provider_defaults_to_canonical_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::Siliconflow,
             ..ConfigToml::default()
@@ -3946,7 +3838,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn moonshot_provider_defaults_to_kimi_k2() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::Moonshot,
             ..ConfigToml::default()
@@ -3962,7 +3854,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn moonshot_kimi_oauth_uses_kimi_code_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             provider: ProviderKind::Moonshot,
             ..ConfigToml::default()
@@ -3982,7 +3874,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn moonshot_kimi_code_api_key_endpoint_defaults_to_kimi_for_coding() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             provider: ProviderKind::Moonshot,
             ..ConfigToml::default()
@@ -4009,7 +3901,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn codesmith_provider_env_switches_active_provider() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only env mutation guarded by env_lock().
         unsafe {
             env::set_var("CODESMITH_PROVIDER", "moonshot");
@@ -4029,36 +3921,13 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         assert_eq!(resolved.api_key.as_deref(), Some("kimi-code-key"));
     }
 
-    /// When both `CODESMITH_PROVIDER` and the legacy `DEEPSEEK_PROVIDER`
-    /// are set, the public alias wins — a user adopting `CODESMITH_*` in a
-    /// fresh shell config is not tripped up by a stale legacy export still
-    /// living in their dotfiles.
-    #[test]
-    fn codesmith_provider_env_wins_over_deepseek_provider_env() {
-        let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
-        // Safety: test-only env mutation guarded by env_lock().
-        unsafe {
-            env::set_var("CODESMITH_PROVIDER", "moonshot");
-            env::set_var("DEEPSEEK_PROVIDER", "openrouter");
-        }
-        let config = ConfigToml {
-            provider: ProviderKind::Deepseek,
-            ..ConfigToml::default()
-        };
-
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
-
-        assert_eq!(resolved.provider, ProviderKind::Moonshot);
-    }
-
     /// `CODESMITH_MODEL` is the user-facing env alias for picking a model
     /// against the active provider. It must be honored by the runtime
-    /// resolver in place of `DEEPSEEK_MODEL`.
+    /// resolver.
     #[test]
     fn codesmith_model_env_alias_overrides_default_for_active_provider() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only env mutation guarded by env_lock().
         unsafe {
             env::set_var("CODESMITH_PROVIDER", "moonshot");
@@ -4075,7 +3944,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn blank_codesmith_model_env_alias_does_not_override_default_for_active_provider() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only env mutation guarded by env_lock().
         unsafe {
             env::set_var("CODESMITH_PROVIDER", "moonshot");
@@ -4090,26 +3959,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     }
 
     #[test]
-    fn deepseek_default_text_model_legacy_alias_still_overrides_active_provider_model() {
-        let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
-        // Safety: test-only env mutation guarded by env_lock().
-        unsafe {
-            env::set_var("CODESMITH_PROVIDER", "moonshot");
-            env::set_var("DEEPSEEK_DEFAULT_TEXT_MODEL", "legacy-env-model");
-        }
-        let config = ConfigToml::default();
-
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
-
-        assert_eq!(resolved.provider, ProviderKind::Moonshot);
-        assert_eq!(resolved.model, "legacy-env-model");
-    }
-
-    #[test]
     fn wanjie_ark_provider_defaults_to_openai_compatible_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::WanjieArk,
             ..ConfigToml::default()
@@ -4125,7 +3977,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn sglang_provider_defaults_to_local_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::Sglang,
             ..ConfigToml::default()
@@ -4141,7 +3993,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn vllm_provider_defaults_to_local_endpoint_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::Vllm,
             ..ConfigToml::default()
@@ -4157,7 +4009,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn ollama_provider_defaults_to_local_endpoint_and_small_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::Ollama,
             ..ConfigToml::default()
@@ -4174,7 +4026,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn self_hosted_providers_do_not_probe_secret_store_by_default() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let store = Arc::new(RecordingSecretsStore::with_value("secret-store-key"));
         let secrets = Secrets::new(store.clone());
 
@@ -4204,7 +4056,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn self_hosted_api_key_auth_can_use_secret_store_when_requested() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let store = Arc::new(RecordingSecretsStore::with_value("secret-store-key"));
         let secrets = Secrets::new(store.clone());
         let config = ConfigToml {
@@ -4223,7 +4075,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn moonshot_api_key_mode_can_use_secret_store_by_default() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let store = Arc::new(RecordingSecretsStore::with_value("secret-store-key"));
         let secrets = Secrets::new(store.clone());
         let config = ConfigToml {
@@ -4242,7 +4094,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn loopback_custom_deepseek_base_url_does_not_probe_secret_store_by_default() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let store = Arc::new(RecordingSecretsStore::with_value("stale-deepseek-key"));
         let secrets = Secrets::new(store.clone());
         let config = ConfigToml {
@@ -4265,7 +4117,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn ollama_provider_preserves_model_tags() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let cli = CliRuntimeOverrides {
             provider: Some(ProviderKind::Ollama),
             model: Some("deepseek-coder-v2:16b".to_string()),
@@ -4281,10 +4133,10 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn ollama_env_overrides_provider_base_url_and_optional_key() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "ollama-local");
+            env::set_var("CODESMITH_PROVIDER", "ollama-local");
             env::set_var("OLLAMA_BASE_URL", "http://ollama.example/v1");
             env::set_var("OLLAMA_API_KEY", "ollama-env-key");
         }
@@ -4300,10 +4152,10 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn openrouter_env_api_key_falls_back_when_config_missing() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "openrouter");
+            env::set_var("CODESMITH_PROVIDER", "openrouter");
             env::set_var("OPENROUTER_API_KEY", "or-env-key");
         }
 
@@ -4318,10 +4170,10 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn xiaomi_mimo_env_overrides_provider_key_base_url_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "xiaomi-mimo");
+            env::set_var("CODESMITH_PROVIDER", "xiaomi-mimo");
             env::set_var("MIMO_API_KEY", "mimo-env-key");
             env::set_var("MIMO_BASE_URL", "https://mimo-gateway.example/v1");
             env::set_var("MIMO_MODEL", "mimo-v2.5");
@@ -4339,10 +4191,10 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn novita_env_api_key_falls_back_when_config_missing() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "novita");
+            env::set_var("CODESMITH_PROVIDER", "novita");
             env::set_var("NOVITA_API_KEY", "novita-env-key");
         }
 
@@ -4357,10 +4209,10 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn fireworks_env_api_key_falls_back_when_config_missing() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "fireworks");
+            env::set_var("CODESMITH_PROVIDER", "fireworks");
             env::set_var("FIREWORKS_API_KEY", "fw-env-key");
         }
 
@@ -4375,7 +4227,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn siliconflow_env_overrides_key_base_url_and_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
             env::set_var("CODESMITH_PROVIDER", "siliconflow");
@@ -4396,7 +4248,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn siliconflow_cn_base_url_env_normalizes_model_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
             env::set_var("CODESMITH_PROVIDER", "siliconflow");
@@ -4425,10 +4277,10 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn wanjie_ark_env_api_key_and_base_url_fall_back_when_config_missing() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "wanjie-ark");
+            env::set_var("CODESMITH_PROVIDER", "wanjie-ark");
             env::set_var("WANJIE_ARK_API_KEY", "wanjie-env-key");
             env::set_var("WANJIE_ARK_BASE_URL", "https://wanjie.example/api/v1");
             env::set_var("WANJIE_ARK_MODEL", "account-model-id");
@@ -4446,7 +4298,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn openrouter_provider_normalizes_flash_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let cli = CliRuntimeOverrides {
             provider: Some(ProviderKind::Openrouter),
             model: Some("deepseek-v4-flash".to_string()),
@@ -4462,7 +4314,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn openrouter_provider_normalizes_recent_large_model_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
 
         for (alias, expected) in [
             (
@@ -4493,7 +4345,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn novita_provider_normalizes_flash_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let cli = CliRuntimeOverrides {
             provider: Some(ProviderKind::Novita),
             model: Some("deepseek-v4-flash".to_string()),
@@ -4509,7 +4361,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn siliconflow_provider_normalizes_flash_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let cli = CliRuntimeOverrides {
             provider: Some(ProviderKind::Siliconflow),
             model: Some("deepseek-v4-flash".to_string()),
@@ -4525,7 +4377,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn siliconflow_provider_normalizes_reasoning_aliases_to_pro() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
 
         for alias in ["deepseek-reasoner", "deepseek-r1"] {
             let cli = CliRuntimeOverrides {
@@ -4544,7 +4396,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn siliconflow_provider_preserves_deepseek_v3_2_alias() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let cli = CliRuntimeOverrides {
             provider: Some(ProviderKind::Siliconflow),
             model: Some("deepseek-v3.2".to_string()),
@@ -4560,7 +4412,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn sglang_provider_normalizes_flash_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let cli = CliRuntimeOverrides {
             provider: Some(ProviderKind::Sglang),
             model: Some("deepseek-v4-flash".to_string()),
@@ -4576,7 +4428,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn vllm_provider_normalizes_flash_aliases() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let cli = CliRuntimeOverrides {
             provider: Some(ProviderKind::Vllm),
             model: Some("deepseek-v4-flash".to_string()),
@@ -4592,7 +4444,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn openrouter_provider_specific_config_overrides_env() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             provider: ProviderKind::Openrouter,
             ..ConfigToml::default()
@@ -4609,7 +4461,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn openrouter_custom_base_url_preserves_provider_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             provider: ProviderKind::Openrouter,
             ..ConfigToml::default()
@@ -4627,7 +4479,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn fireworks_custom_base_url_preserves_provider_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             provider: ProviderKind::Fireworks,
             ..ConfigToml::default()
@@ -4646,7 +4498,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn siliconflow_custom_base_url_preserves_provider_model() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         let mut config = ConfigToml {
             provider: ProviderKind::Siliconflow,
             ..ConfigToml::default()
@@ -4665,7 +4517,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     fn config_file_resolves_above_env_and_keyring() {
         use codesmith_secrets::KeyringStore;
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
 
@@ -4691,7 +4543,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn env_resolves_when_config_file_and_keyring_empty() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
 
@@ -4712,7 +4564,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     #[test]
     fn config_file_resolves_when_keyring_and_env_empty() {
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
 
         let secrets = Secrets::new(std::sync::Arc::new(
             codesmith_secrets::InMemoryKeyringStore::new(),
@@ -4733,7 +4585,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     fn keyring_resolves_when_config_file_empty_even_if_env_is_set() {
         use codesmith_secrets::KeyringStore;
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key") };
 
@@ -4754,7 +4606,7 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     fn cli_flag_still_overrides_keyring() {
         use codesmith_secrets::KeyringStore;
         let _lock = env_lock();
-        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let _env = EnvGuard::without_runtime_overrides();
 
         let store = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
         store.set("deepseek", "ring-key").unwrap();
@@ -4822,7 +4674,9 @@ model = "b-1"
         assert_eq!(config.get_value("custom_provider").as_deref(), Some("acme"));
 
         // empty string clears (matches unset)
-        config.set_value("custom_provider", "").expect("empty clears");
+        config
+            .set_value("custom_provider", "")
+            .expect("empty clears");
         assert!(config.get_value("custom_provider").is_none());
 
         // explicit unset
@@ -4859,7 +4713,10 @@ model = "b-1"
         let display = config
             .get_display_value("providers.custom")
             .expect("display value");
-        assert!(!display.contains("sk-acme"), "api_key leaked in display: {display}");
+        assert!(
+            !display.contains("sk-acme"),
+            "api_key leaked in display: {display}"
+        );
 
         // whole-array set still bails with a hand-edit pointer (a single
         // string can't populate a table); per-entry sets are covered by the
@@ -4903,8 +4760,14 @@ model = "b-1"
             Some("https://new.acme.dev/v1"),
         );
         // untouched fields stay
-        assert_eq!(config.providers.custom[0].api_key.as_deref(), Some("sk-acme"));
-        assert_eq!(config.providers.custom[0].model.as_deref(), Some("acme-pro"));
+        assert_eq!(
+            config.providers.custom[0].api_key.as_deref(),
+            Some("sk-acme")
+        );
+        assert_eq!(
+            config.providers.custom[0].model.as_deref(),
+            Some("acme-pro")
+        );
     }
 
     #[test]
@@ -4943,7 +4806,8 @@ model = "b-1"
             .set_value("providers.custom.acme", "ignored")
             .expect_err("whole-entry set rejected");
         assert!(
-            err.to_string().contains("can't set whole [[providers.custom]] entry"),
+            err.to_string()
+                .contains("can't set whole [[providers.custom]] entry"),
             "unexpected message: {err}",
         );
     }
@@ -4971,7 +4835,9 @@ model = "b-1"
         assert!(entry.contains("https://api.acme.dev/v1"));
         // per-field
         assert_eq!(
-            config.get_value("providers.custom.acme.base_url").as_deref(),
+            config
+                .get_value("providers.custom.acme.base_url")
+                .as_deref(),
             Some("https://api.acme.dev/v1"),
         );
         assert_eq!(
@@ -4985,7 +4851,11 @@ model = "b-1"
         // missing entry / missing field
         assert!(config.get_value("providers.custom.no-such").is_none());
         // missing field on an existing entry resolves to None
-        assert!(config.get_value("providers.custom.acme.auth_mode").is_none());
+        assert!(
+            config
+                .get_value("providers.custom.acme.auth_mode")
+                .is_none()
+        );
     }
 
     #[test]
@@ -5036,7 +4906,9 @@ model = "b-1"
         assert!(!is_sensitive_config_key("providers.custom.acme.base_url"));
         assert!(!is_sensitive_config_key("providers.custom.acme.model"));
         assert!(!is_sensitive_config_key("providers.custom.acme.auth_mode"));
-        assert!(!is_sensitive_config_key("providers.custom.acme.http_headers"));
+        assert!(!is_sensitive_config_key(
+            "providers.custom.acme.http_headers"
+        ));
         assert!(!is_sensitive_config_key("providers.custom.acme.id"));
         // display path: a whole custom entry serializes api_key, so it is
         // redacted as a blob (neither api_key nor base_url leaks). Non-secret
@@ -5057,9 +4929,11 @@ model = "b-1"
         let api_key_display = config
             .get_display_value("providers.custom.acme.api_key")
             .expect("api_key display value");
-        assert!(!api_key_display.contains("sk-acme"), "api_key leaked: {api_key_display}");
+        assert!(
+            !api_key_display.contains("sk-acme"),
+            "api_key leaked: {api_key_display}"
+        );
     }
-
 
     #[test]
     fn merge_project_overrides_ignores_custom_provider() {

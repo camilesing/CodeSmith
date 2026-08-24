@@ -6,9 +6,7 @@
 #   1. No `crates/*/Cargo.toml` carries a literal `version = "x.y.z"`; every
 #      crate must inherit `version.workspace = true`.
 #   2. `npm/codesmith/package.json` `version` matches the workspace
-#      `version` in the root `Cargo.toml`. (`npm/deepseek-tui/` still
-#      exists during the transition as a deprecation shim package; its
-#      version is also checked.)
+#      `version` in the root `Cargo.toml`.
 #   3. Internal `codesmith-*` path dependency pins match the workspace version.
 #   4. The TUI crate's packaged changelog copy matches root `CHANGELOG.md`.
 #   5. The current release has a dated Keep a Changelog entry and compare link.
@@ -36,15 +34,6 @@ npm_version="$(node -p "require('./npm/codesmith/package.json').version")"
 if [[ "${workspace_version}" != "${npm_version}" ]]; then
   echo "::error::npm/codesmith/package.json version (${npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
   fail=1
-fi
-# Also pin the legacy deprecation shim package to the same workspace version
-# so a stale `deepseek-tui` doesn't ship pointing at a different release.
-if [[ -f npm/deepseek-tui/package.json ]]; then
-  legacy_npm_version="$(node -p "require('./npm/deepseek-tui/package.json').version")"
-  if [[ "${workspace_version}" != "${legacy_npm_version}" ]]; then
-    echo "::error::npm/deepseek-tui/package.json version (${legacy_npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
-    fail=1
-  fi
 fi
 
 # 3) Internal path dependency pins.
@@ -124,13 +113,13 @@ if [[ -n "${previous_tag}" ]]; then
 fi
 
 # 7) Security contact guard.
-security_email="security@deepseek-tui.com"
-if ! grep -qF "${security_email}" SECURITY.md; then
-  echo "::error::SECURITY.md must list ${security_email} as the security contact." >&2
+security_contact="https://github.com/Hmbown/CodeSmith/security/advisories/new"
+if ! grep -qF "${security_contact}" SECURITY.md; then
+  echo "::error::SECURITY.md must list ${security_contact} as the security contact channel." >&2
   fail=1
 fi
 if grep -qF "hmbown.dev@gmail.com" SECURITY.md; then
-  echo "::error::SECURITY.md must not use the personal fallback email; use ${security_email}." >&2
+  echo "::error::SECURITY.md must not use the personal fallback email; use the GitHub security advisory channel." >&2
   fail=1
 fi
 

@@ -51,8 +51,6 @@
         {
           default = codesmith;
           codesmith = codesmith;
-          # Compatibility alias for existing Nix users during the rename.
-          deepseek-tui = codesmith;
         }
       );
 

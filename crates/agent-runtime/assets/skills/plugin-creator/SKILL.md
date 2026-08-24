@@ -5,17 +5,17 @@ description: Scaffold codesmith local plugin directories and activation notes. U
 
 # Plugin Creator
 
-Use this skill when a user wants a DeepSeek plugin scaffold or a plan for a
+Use this skill when a user wants a CodeSmith plugin scaffold or a plan for a
 plugin-style extension.
 
-DeepSeek plugins are currently a documented packaging convention, not an
+CodeSmith plugins are currently a documented packaging convention, not an
 auto-loaded runtime. Be explicit about that. A plugin becomes active only when
 it is referenced from a skill, hook, MCP server, or future plugin loader.
 
 ## Workflow
 
 1. Pick the location:
-   - Global user plugin: `~/.deepseek/plugins/<plugin-name>/`
+   - Global user plugin: `~/.codesmith/plugins/<plugin-name>/`
    - Workspace plugin: `<workspace>/plugins/<plugin-name>/`
 2. Normalize names to lower-case hyphen-case.
 3. Create `PLUGIN.md` with frontmatter:

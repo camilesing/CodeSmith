@@ -1373,9 +1373,7 @@ fn run_app_server_command(args: AppServerArgs) -> Result<()> {
 }
 
 fn app_server_token_from_env() -> Option<String> {
-    std::env::var("CODESMITH_APP_SERVER_TOKEN")
-        .ok()
-        .or_else(|| std::env::var("DEEPSEEK_APP_SERVER_TOKEN").ok())
+    std::env::var("CODESMITH_APP_SERVER_TOKEN").ok()
 }
 
 fn run_mcp_server_command(store: &mut ConfigStore) -> Result<()> {
@@ -1680,14 +1678,12 @@ binary.",
 /// the npm-distributed Windows package — which ships
 /// `bin/downloads/codesmith-tui.exe` — is found by `Path::exists` (#247).
 ///
-/// `CODESMITH_TUI_BIN` (legacy alias: `DEEPSEEK_TUI_BIN`) is consulted first
+/// `CODESMITH_TUI_BIN` is consulted first
 /// as an explicit override for custom installs and CI test layouts. On
 /// Windows we additionally try the suffix-less name as a fallback for users
 /// who already manually renamed the file before this fix landed.
 fn locate_sibling_tui_binary() -> Result<PathBuf> {
-    let override_path = std::env::var("CODESMITH_TUI_BIN")
-        .or_else(|_| std::env::var("DEEPSEEK_TUI_BIN"))
-        .ok();
+    let override_path = std::env::var("CODESMITH_TUI_BIN").ok();
     if let Some(override_path) = override_path {
         let candidate = PathBuf::from(override_path);
         if candidate.is_file() {
@@ -1849,13 +1845,13 @@ mod tests {
         use anyhow::Context;
         let inner = anyhow::anyhow!("TOML parse error at line 1, column 20");
         let err = Err::<(), _>(inner)
-            .context("failed to parse config at C:\\Users\\test\\.deepseek\\config.toml")
+            .context("failed to parse config at C:\\Users\\test\\.codesmith\\config.toml")
             .unwrap_err();
 
         // What `eprintln!("error: {err}")` prints (top context only).
         assert_eq!(
             err.to_string(),
-            "failed to parse config at C:\\Users\\test\\.deepseek\\config.toml",
+            "failed to parse config at C:\\Users\\test\\.codesmith\\config.toml",
         );
 
         // What the `for cause in err.chain().skip(1)` loop iterates over.
@@ -1865,7 +1861,7 @@ mod tests {
 
     #[test]
     fn parses_config_command_matrix() {
-        let cli = parse_ok(&["deepseek", "config", "get", "provider"]);
+        let cli = parse_ok(&["codesmith", "config", "get", "provider"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Config(ConfigArgs {
@@ -1873,7 +1869,7 @@ mod tests {
             })) if key == "provider"
         ));
 
-        let cli = parse_ok(&["deepseek", "config", "set", "model", "deepseek-v4-flash"]);
+        let cli = parse_ok(&["codesmith", "config", "set", "model", "deepseek-v4-flash"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Config(ConfigArgs {
@@ -1881,7 +1877,7 @@ mod tests {
             })) if key == "model" && value == "deepseek-v4-flash"
         ));
 
-        let cli = parse_ok(&["deepseek", "config", "unset", "model"]);
+        let cli = parse_ok(&["codesmith", "config", "unset", "model"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Config(ConfigArgs {
@@ -1890,13 +1886,13 @@ mod tests {
         ));
 
         assert!(matches!(
-            parse_ok(&["deepseek", "config", "list"]).command,
+            parse_ok(&["codesmith", "config", "list"]).command,
             Some(Commands::Config(ConfigArgs {
                 command: ConfigCommand::List
             }))
         ));
         assert!(matches!(
-            parse_ok(&["deepseek", "config", "path"]).command,
+            parse_ok(&["codesmith", "config", "path"]).command,
             Some(Commands::Config(ConfigArgs {
                 command: ConfigCommand::Path
             }))
@@ -1946,7 +1942,7 @@ mod tests {
 
     #[test]
     fn parses_model_command_matrix() {
-        let cli = parse_ok(&["deepseek", "model", "list"]);
+        let cli = parse_ok(&["codesmith", "model", "list"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Model(ModelArgs {
@@ -1954,7 +1950,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "model", "list", "--provider", "openai"]);
+        let cli = parse_ok(&["codesmith", "model", "list", "--provider", "openai"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Model(ModelArgs {
@@ -1964,7 +1960,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "model", "resolve", "deepseek-v4-flash"]);
+        let cli = parse_ok(&["codesmith", "model", "resolve", "deepseek-v4-flash"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Model(ModelArgs {
@@ -1976,7 +1972,7 @@ mod tests {
         ));
 
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "model",
             "resolve",
             "--provider",
@@ -1996,7 +1992,7 @@ mod tests {
 
     #[test]
     fn parses_thread_command_matrix() {
-        let cli = parse_ok(&["deepseek", "thread", "list", "--all", "--limit", "50"]);
+        let cli = parse_ok(&["codesmith", "thread", "list", "--all", "--limit", "50"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Thread(ThreadArgs {
@@ -2007,7 +2003,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "thread", "read", "thread-1"]);
+        let cli = parse_ok(&["codesmith", "thread", "read", "thread-1"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Thread(ThreadArgs {
@@ -2015,7 +2011,7 @@ mod tests {
             })) if thread_id == "thread-1"
         ));
 
-        let cli = parse_ok(&["deepseek", "thread", "resume", "thread-2"]);
+        let cli = parse_ok(&["codesmith", "thread", "resume", "thread-2"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Thread(ThreadArgs {
@@ -2023,7 +2019,7 @@ mod tests {
             })) if thread_id == "thread-2"
         ));
 
-        let cli = parse_ok(&["deepseek", "thread", "fork", "thread-3"]);
+        let cli = parse_ok(&["codesmith", "thread", "fork", "thread-3"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Thread(ThreadArgs {
@@ -2031,7 +2027,7 @@ mod tests {
             })) if thread_id == "thread-3"
         ));
 
-        let cli = parse_ok(&["deepseek", "thread", "archive", "thread-4"]);
+        let cli = parse_ok(&["codesmith", "thread", "archive", "thread-4"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Thread(ThreadArgs {
@@ -2039,7 +2035,7 @@ mod tests {
             })) if thread_id == "thread-4"
         ));
 
-        let cli = parse_ok(&["deepseek", "thread", "unarchive", "thread-5"]);
+        let cli = parse_ok(&["codesmith", "thread", "unarchive", "thread-5"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Thread(ThreadArgs {
@@ -2047,7 +2043,7 @@ mod tests {
             })) if thread_id == "thread-5"
         ));
 
-        let cli = parse_ok(&["deepseek", "thread", "set-name", "thread-6", "My Thread"]);
+        let cli = parse_ok(&["codesmith", "thread", "set-name", "thread-6", "My Thread"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Thread(ThreadArgs {
@@ -2058,7 +2054,7 @@ mod tests {
             })) if thread_id == "thread-6" && name == "My Thread"
         ));
 
-        let cli = parse_ok(&["deepseek", "thread", "clear-name", "thread-7"]);
+        let cli = parse_ok(&["codesmith", "thread", "clear-name", "thread-7"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Thread(ThreadArgs {
@@ -2070,7 +2066,7 @@ mod tests {
     #[test]
     fn parses_sandbox_app_server_and_completion_matrix() {
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "sandbox",
             "check",
             "echo hello",
@@ -2088,7 +2084,7 @@ mod tests {
         ));
 
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "app-server",
             "--host",
             "0.0.0.0",
@@ -2105,13 +2101,13 @@ mod tests {
             })) if host == "0.0.0.0"
         ));
 
-        let cli = parse_ok(&["deepseek", "app-server", "--stdio"]);
+        let cli = parse_ok(&["codesmith", "app-server", "--stdio"]);
         assert!(matches!(
             cli.command,
             Some(Commands::AppServer(AppServerArgs { stdio: true, .. }))
         ));
 
-        let cli = parse_ok(&["deepseek", "completion", "bash"]);
+        let cli = parse_ok(&["codesmith", "completion", "bash"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Completion { shell: Shell::Bash })
@@ -2120,25 +2116,25 @@ mod tests {
 
     #[test]
     fn parses_direct_tui_command_aliases() {
-        let cli = parse_ok(&["deepseek", "doctor"]);
+        let cli = parse_ok(&["codesmith", "doctor"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Doctor(TuiPassthroughArgs { ref args })) if args.is_empty()
         ));
 
-        let cli = parse_ok(&["deepseek", "models", "--json"]);
+        let cli = parse_ok(&["codesmith", "models", "--json"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Models(TuiPassthroughArgs { ref args })) if args == &["--json"]
         ));
 
-        let cli = parse_ok(&["deepseek", "resume", "abc123"]);
+        let cli = parse_ok(&["codesmith", "resume", "abc123"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Resume(TuiPassthroughArgs { ref args })) if args == &["abc123"]
         ));
 
-        let cli = parse_ok(&["deepseek", "setup", "--skills", "--local"]);
+        let cli = parse_ok(&["codesmith", "setup", "--skills", "--local"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Setup(TuiPassthroughArgs { ref args }))
@@ -2170,7 +2166,7 @@ mod tests {
     fn deepseek_login_writes_shared_config_and_preserves_tui_defaults() {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-login-test-{}-{nanos}.toml",
+            "codesmith-cli-login-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
@@ -2204,7 +2200,7 @@ mod tests {
 
     #[test]
     fn parses_auth_subcommand_matrix() {
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "deepseek"]);
+        let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "deepseek"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2217,7 +2213,7 @@ mod tests {
         ));
 
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "auth",
             "set",
             "--provider",
@@ -2235,7 +2231,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "novita"]);
+        let cli = parse_ok(&["codesmith", "auth", "get", "--provider", "novita"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2245,7 +2241,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "clear", "--provider", "nvidia-nim"]);
+        let cli = parse_ok(&["codesmith", "auth", "clear", "--provider", "nvidia-nim"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2255,7 +2251,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "fireworks"]);
+        let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "fireworks"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2267,7 +2263,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "siliconflow"]);
+        let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "siliconflow"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2279,7 +2275,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "moonshot"]);
+        let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "moonshot"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2291,7 +2287,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "wanjie-ark"]);
+        let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "wanjie-ark"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2303,7 +2299,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "sglang"]);
+        let cli = parse_ok(&["codesmith", "auth", "get", "--provider", "sglang"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2313,7 +2309,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "vllm"]);
+        let cli = parse_ok(&["codesmith", "auth", "get", "--provider", "vllm"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2323,7 +2319,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "ollama"]);
+        let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "ollama"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2335,7 +2331,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "list"]);
+        let cli = parse_ok(&["codesmith", "auth", "list"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2343,7 +2339,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "migrate"]);
+        let cli = parse_ok(&["codesmith", "auth", "migrate"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2351,7 +2347,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "auth", "migrate", "--dry-run"]);
+        let cli = parse_ok(&["codesmith", "auth", "migrate", "--dry-run"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Auth(AuthArgs {
@@ -2367,7 +2363,7 @@ mod tests {
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-set-test-{}-{nanos}.toml",
+            "codesmith-cli-auth-set-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
@@ -2404,7 +2400,7 @@ mod tests {
     fn auth_set_ollama_accepts_empty_key_and_records_base_url() {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-ollama-test-{}-{nanos}.toml",
+            "codesmith-cli-auth-ollama-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
@@ -2438,7 +2434,7 @@ mod tests {
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-clear-test-{}-{nanos}.toml",
+            "codesmith-cli-auth-clear-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
@@ -2497,7 +2493,7 @@ mod tests {
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-active-keyring-test-{}-{nanos}.toml",
+            "codesmith-cli-auth-active-keyring-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
@@ -2528,7 +2524,7 @@ mod tests {
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-auth-status-table-test-{}-{nanos}.toml",
+            "codesmith-cli-auth-status-table-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
@@ -2706,7 +2702,7 @@ mod tests {
     #[test]
     fn parses_global_override_flags() {
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "--provider",
             "openai",
             "--config",
@@ -2769,10 +2765,10 @@ mod tests {
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
         let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
 
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "--provider",
             "openai",
             "--workspace",
@@ -2831,7 +2827,7 @@ mod tests {
             .path()
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
-        let scoped = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom.to_string_lossy());
+        let scoped = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom.to_string_lossy());
         (dir, scoped)
     }
 
@@ -2839,7 +2835,7 @@ mod tests {
     fn build_tui_command_forwards_custom_provider_env() {
         let _lock = env_lock();
         let _bin = tui_bin_fixture();
-        let cli = parse_ok(&["deepseek", "--custom-provider", "acme"]);
+        let cli = parse_ok(&["codesmith", "--custom-provider", "acme"]);
         let resolved = ResolvedRuntimeOptions {
             provider: ProviderKind::Deepseek,
             model: String::new(),
@@ -2870,7 +2866,7 @@ mod tests {
     fn build_tui_command_custom_provider_builtin_collision_bails() {
         let _lock = env_lock();
         let _bin = tui_bin_fixture();
-        let cli = parse_ok(&["deepseek", "--custom-provider", "deepseek"]);
+        let cli = parse_ok(&["codesmith", "--custom-provider", "deepseek"]);
         let resolved = ResolvedRuntimeOptions {
             provider: ProviderKind::Deepseek,
             model: String::new(),
@@ -2897,11 +2893,19 @@ mod tests {
     #[test]
     fn custom_provider_conflicts_with_provider_flag() {
         // clap `conflicts_with = "provider"` rejects the combination at parse.
-        let err = Cli::try_parse_from(["deepseek", "--provider", "openai", "--custom-provider", "acme"])
-            .expect_err("conflicting flags must be rejected");
-        assert!(err.to_string().contains("cannot be used with"), "unexpected: {err}");
+        let err = Cli::try_parse_from([
+            "deepseek",
+            "--provider",
+            "openai",
+            "--custom-provider",
+            "acme",
+        ])
+        .expect_err("conflicting flags must be rejected");
+        assert!(
+            err.to_string().contains("cannot be used with"),
+            "unexpected: {err}"
+        );
     }
-
 
     #[test]
     fn build_tui_command_does_not_export_default_runtime_overrides_for_profiles() {
@@ -2912,9 +2916,9 @@ mod tests {
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
         let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
 
-        let cli = parse_ok(&["deepseek", "--profile", "google"]);
+        let cli = parse_ok(&["codesmith", "--profile", "google"]);
         let mut resolved_headers = std::collections::BTreeMap::new();
         resolved_headers.insert("X-From-Base".to_string(), "base".to_string());
         let resolved = ResolvedRuntimeOptions {
@@ -2961,7 +2965,7 @@ mod tests {
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
         let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
 
         let cli = parse_ok(&[
             "codesmith",
@@ -3025,10 +3029,10 @@ mod tests {
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
         let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
 
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "--profile",
             "google",
             "--provider",
@@ -3079,10 +3083,10 @@ mod tests {
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
         let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
 
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "--provider",
             "anthropic",
             "--model",
@@ -3127,7 +3131,7 @@ mod tests {
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
         let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
 
         // (provider, cli flag, extra env vars that must be forwarded besides DEEPSEEK_API_KEY)
         let cases: &[(ProviderKind, &str, &[&str])] = &[
@@ -3226,7 +3230,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_prompt_flag_for_interactive_startup_prompt() {
-        let cli = parse_ok(&["deepseek", "-p", "Reply with exactly OK."]);
+        let cli = parse_ok(&["codesmith", "-p", "Reply with exactly OK."]);
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
         assert!(cli.prompt.is_empty());
@@ -3259,7 +3263,7 @@ mod tests {
 
     #[test]
     fn parses_split_top_level_prompt_words_for_windows_cmd_shims() {
-        let cli = parse_ok(&["deepseek", "hello", "world"]);
+        let cli = parse_ok(&["codesmith", "hello", "world"]);
 
         assert_eq!(cli.prompt, vec!["hello", "world"]);
         assert!(cli.command.is_none());
@@ -3271,7 +3275,7 @@ mod tests {
 
     #[test]
     fn prompt_flag_keeps_split_tail_words_for_windows_cmd_shims() {
-        let cli = parse_ok(&["deepseek", "-p", "hello", "world"]);
+        let cli = parse_ok(&["codesmith", "-p", "hello", "world"]);
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("hello"));
         assert_eq!(cli.prompt, vec!["world"]);
@@ -3283,7 +3287,7 @@ mod tests {
 
     #[test]
     fn known_subcommands_still_parse_before_prompt_tail() {
-        let cli = parse_ok(&["deepseek", "doctor"]);
+        let cli = parse_ok(&["codesmith", "doctor"]);
 
         assert!(cli.prompt.is_empty());
         assert!(matches!(cli.command, Some(Commands::Doctor(_))));
@@ -3454,8 +3458,7 @@ mod tests {
         assert_eq!(found, suffixless);
     }
 
-    /// `CODESMITH_TUI_BIN` (and its legacy `DEEPSEEK_TUI_BIN` alias — see
-    /// `locate_sibling_tui_binary_honours_legacy_env_override`) overrides the
+    /// `CODESMITH_TUI_BIN` overrides the
     /// discovery path. Useful for custom Windows install layouts and CI rigs.
     #[test]
     fn locate_sibling_tui_binary_honours_env_override() {
@@ -3472,30 +3475,13 @@ mod tests {
         assert_eq!(resolved, custom);
     }
 
-    /// The legacy `DEEPSEEK_TUI_BIN` alias still overrides discovery so
-    /// pre-rebrand CI layouts keep working.
-    #[test]
-    fn locate_sibling_tui_binary_honours_legacy_env_override() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("legacy-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
-
-        let resolved = locate_sibling_tui_binary().expect("override must resolve");
-        assert_eq!(resolved, custom);
-    }
-
     /// `team-teammate` is a passthrough subcommand used by the tmux/iTerm pane
     /// backends to run a teammate turn in-process. The dispatcher must parse it
     /// and forward every trailing flag verbatim to the TUI binary.
     #[test]
     fn team_teammate_passthrough_collects_trailing_flags() {
         let cli = parse_ok(&[
-            "deepseek",
+            "codesmith",
             "team-teammate",
             "--team",
             "demo",

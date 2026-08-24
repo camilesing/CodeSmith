@@ -42,11 +42,11 @@ facade、B2 `retry_status`、B4 `prompt_runtime`）对 rig adapter 不再适用 
 
 用户决策"激进：所有非 DeepSeek 切 rig"——OpenAI + 13 家 openai-compat + Anthropic 全部走
 `codesmith_providers::default_registry()` 的 rig 工厂；DeepSeek 家族暂留 tui-local
-`DeepSeekProviderFactory`（`DeepSeekClient`），待回放协议桥接后退役。
+`CodeSmithProviderFactory`（`CodeSmithClient`），待回放协议桥接后退役。
 
 - **§D1 落地（部分）**：`resolve_llm_client` 改为先 `default_registry()` 再按需覆盖
   DeepSeek 工厂。路由测试 `resolve_llm_client_routes_anthropic_to_rig_factory` 通过
-  `health_check`（rig 默认 `Ok(true)` 不探活 vs `DeepSeekClient` 探 `/models`）证明
+  `health_check`（rig 默认 `Ok(true)` 不探活 vs `CodeSmithClient` 探 `/models`）证明
   anthropic 走的是 rig 工厂。
 - **§A2 落地**：`crates/tui/src/client/anthropic.rs` 删除（~940 行死代码——latent bug：
   anthropic 用户原本命中错误端点）；Anthropic 改由 rig `AnthropicFactory` 承载，
@@ -69,16 +69,16 @@ facade、B2 `retry_status`、B4 `prompt_runtime`）对 rig adapter 不再适用 
   规避了 `ApiProvider` 依赖边（§B3 降级为低优先）。
 
 **下一聚焦工作：**
-- **DeepSeek `reasoning_content` 回放桥接**：把 `DeepSeekClient` 的
+- **DeepSeek `reasoning_content` 回放桥接**：把 `CodeSmithClient` 的
   `build_chat_messages_with_reasoning` 回放协议（effort→thinking 字段、reasoning_content
   序列化）完整迁入 rig DeepSeek 工厂，使其能双向 round-trip，然后删
-  `crates/tui/src/client.{rs,chat.rs}` + tui-local `DeepSeekProviderFactory`——完成 §A1 +
+  `crates/tui/src/client.{rs,chat.rs}` + tui-local `CodeSmithProviderFactory`——完成 §A1 +
   全量 §D1。`shape_messages` 已铺好 strip/占位的地基，缺的是 rig DeepSeek 工厂的完整接线。
 - **Gap E 流式回放**：`reasoning::is_reasoning_model_for_stream` 当前 `#[allow(dead_code)]`，
   rig 流式路径的 reasoning 检测未接线（rig 流式 reasoning 形态不同）；接线补齐。
 - **§D2**（config 选自定义 provider）、**§E**（agent executor / tool 抽象）维持原计划。
 
-**进度（2026-07-07 §A1 + 全量 §D1 落地，DeepSeek 切 rig，`DeepSeekClient` 退役，`feat/pluggable-framework-core`）：**
+**进度（2026-07-07 §A1 + 全量 §D1 落地，DeepSeek 切 rig，`CodeSmithClient` 退役，`feat/pluggable-framework-core`）：**
 
 上一检查点的"下一聚焦工作"已完成。经对照 rig-core 0.39.0 源码核实：rig 的
 OpenAI/DeepSeek compat 层**原生**把 `AssistantContent::Reasoning` 序列化为
@@ -87,9 +87,9 @@ Reasoning），故回放桥接在 adapter 层即已完成——无需把 `build_
 的回放协议搬进 rig 工厂，只需把 DeepSeek 切到 rig。
 
 - **§A1 落地（退役而非搬运）**：tui 启用 codesmith-providers 的 `deepseek` 特性；
-  `crates/tui/src/core/engine.rs` 删除 tui-local `DeepSeekProviderFactory`，
+  `crates/tui/src/core/engine.rs` 删除 tui-local `CodeSmithProviderFactory`，
   `resolve_llm_client` 改为 `pub(crate)`，构造中性 `ProviderConfig` 后委托
-  `default_registry().build()`，DeepSeek 与其他家族一致走 rig 工厂。`DeepSeekClient` 线
+  `default_registry().build()`，DeepSeek 与其他家族一致走 rig 工厂。`CodeSmithClient` 线
   客户端**整体退役**：`client.rs` 3183→329 行、`client/chat.rs` 3490→1427 行（-4979 行）。
   仅保留 inspect/warmup 根（`inspect_prompt_for_request` / `build_cache_warmup_request` /
   `CacheWarmupKey` / `PromptInspection`）及其传递依赖（`PromptBuilder` /
@@ -97,7 +97,7 @@ Reasoning），故回放桥接在 adapter 层即已完成——无需把 `build_
   `sha256_hex` 等），供 `ui.rs` 缓存预热与 `commands/debug.rs` inspect 子命令使用。
 - **全量 §D1 落地**：所有 LLM 流量（OpenAI + 13 家 openai-compat + Anthropic + DeepSeek）
   统一经 `default_registry()` 的 rig 工厂；tui 不再持有任何 provider 工厂。12 处
-  `DeepSeekClient::new` 调用点全部迁至 `resolve_llm_client`（acp/mcp/config/ui/main/
+  `CodeSmithClient::new` 调用点全部迁至 `resolve_llm_client`（acp/mcp/config/ui/main/
   tests/subagent/seam_manager）。
 - **Gap E 关闭**：`crates/providers/src/rig_adapter/reasoning.rs` 移除
   `is_reasoning_model_for_stream`（rig 流式 compat 层原生把 `delta.reasoning_content` 路由
@@ -108,14 +108,14 @@ Reasoning），故回放桥接在 adapter 层即已完成——无需把 `build_
 
 **已知行为差异 / 回归（需后续评估）：**
 - **`health_check` 不探活**：rig adapter 未覆写 `health_check`，沿用 trait 默认 `Ok(true)`，
-  不再像 `DeepSeekClient` 那样探 `/models`。路由测试正是用 `health_check()==Ok(true)` 反证
+  不再像 `CodeSmithClient` 那样探 `/models`。路由测试正是用 `health_check()==Ok(true)` 反证
   anthropic 走 rig。副作用：`test_api_connectivity` 等健康检查恒报健康；`list_models` 仍真探。
 - **`caller` 字段丢失**：旧线构建器在 tool-call JSON 注入 `caller`（`caller_type`/身份，供
   代理路由用，`client/chat.rs:867`）；rig 不发送该字段。若代理依赖它，需经 `RequestShaper`
   补回。
 - **模型列表无 owner 分组**：`run_models` 现收到 `Vec<String>`（纯 ID），旧 `AvailableModel`
   携带的 `owned_by`（DeepSeek 自有 vs 第三方）分组显示已移除。
-- **线层压缩退役**：`DeepSeekClient` 线构建器的第二轮 dedup/截断
+- **线层压缩退役**：`CodeSmithClient` 线构建器的第二轮 dedup/截断
   （`compact_tool_result_for_wire` 等）随线客户端删除；运行期 capture-time 压缩
   （`compact_tool_result_for_context` / `micro_compact_messages`）现为唯一压缩点
   （效率而非正确性差异）。
@@ -125,7 +125,7 @@ Reasoning），故回放桥接在 adapter 层即已完成——无需把 `build_
   `has_deepseek_r_series_marker` 仍同时存在于 `providers/src/rig_adapter/reasoning.rs` 与
   `tui/src/client/chat.rs`（后者是 inspect/warmup 的传递依赖）；后续抽到 `codesmith-agent`
   共享，使 reasoning.rs 成为唯一源。
-- ~~`crates/agent` / `crates/agent-runtime` 的 `LlmClient` trait 文档仍以 `DeepSeekClient`
+- ~~`crates/agent` / `crates/agent-runtime` 的 `LlmClient` trait 文档仍以 `CodeSmithClient`
   为具体实现示例（已退役，属陈旧文档，不影响编译）~~ → §D2 已清理（trait 文档改为中性
   措辞，不再以任何具体客户端为示例）。
 
@@ -169,7 +169,7 @@ OpenAI-compat provider 并按 id 选中，无需改源码、无需新 Cargo feat
   default_text_model 校验。`normalize_model_config` 对 custom 跳过 root 规整。
   `merge_config` / `merge_providers_config` 合并 custom 字段。
 - **陈旧文档清理**：`crates/agent/src/llm_client/mod.rs` 的 `LlmClient` trait 文档移除全部
-  6 处 `DeepSeekClient` 引用，改为中性措辞（"a provider that overrides this" /
+  6 处 `CodeSmithClient` 引用，改为中性措辞（"a provider that overrides this" /
   "rig-backed today"）。`crates/agent-runtime` 无引用（核验通过）。
 - **安全**：`merge_project_overrides` 刻意不合并 `custom_provider` 与 `providers.custom`
   （不可信 repo overlay——凭据/端点/provider 选择），与既有 policy 一致。
@@ -289,7 +289,7 @@ registry 一个方法），零既有调用点改动；production `Engine`/`turn_
   已知映射缺口：`on_llm_start`（无精确 event，`TurnStarted` 只带 turn_id）/`on_llm_end` content（`MessageComplete`
   只带 index，content 在 engine 内不在 wire）/`on_step`（`Event` 无 step 变体）；streaming delta（`MessageDelta`/
   `ThinkingDelta`）无法经 `Callback` 路由，Event 通道仍需保留。是 Engine 迁移的另一个前置。
-- **生产 `Engine`/`turn_loop` 迁移**：`handle_deepseek_turn`（`turn_loop.rs:239-2721`，~2483 行）迁到
+- **生产 `Engine`/`turn_loop` 迁移**：`handle_codesmith_turn`（`turn_loop.rs:239-2721`，~2483 行）迁到
   `AgentExecutor`——需 ToolSpec adapter（已就位）+ Callback 桥接先就位；guardrail（compaction/capacity/approval/
   early-tool-start/steer/transparent-retry/subagent/LSP/cycle/loop-guard）在 `DefaultAgentExecutor` 不存在，需增量
   迁移或作为 host 前后置逻辑保留。
@@ -343,7 +343,7 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
   本切片零 Cargo 改动（与 ToolSpec adapter 切片一致）。
 
 **下一聚焦工作：**
-- **生产 `Engine`/`turn_loop` 迁移**（§E "接真引擎"步）：`handle_deepseek_turn`
+- **生产 `Engine`/`turn_loop` 迁移**（§E "接真引擎"步）：`handle_codesmith_turn`
   （`turn_loop.rs:239-2672`，~2434 行）迁到 `AgentExecutor`。两个前置现已就位：`ToolSpec`→`Tool`
   adapter + `CallbackBridge`。迁移需 per-turn 构造 `CallbackBridge`（注入 turn 级 `HookContext`
   模板 + `tx_event` + `Arc<dyn HookHost>`）交给 executor，并把 inline `tx_event.send`/
@@ -362,7 +362,7 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
 生产 turn loop 迁移的 `HostAgentExecutor` 骨架（裸 LLM↔tool 循环，无 guardrail）。两个前置桥
 （`ToolSpecAdapter`、`CallbackBridge`）已就位；本切片完成三桥组合证明，并确立"循环住在 host executor"
 的结构，为后续逐个吸收 guardrail 铺路。本轮纯新增（两个模块 + 核心一处 visibility 放宽），零既有调用点
-改动；生产路径 `handle_deepseek_turn` 不受影响。
+改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **`SessionChatHistory`**（`crates/agent-runtime/src/session_history.rs`，crate-root `pub mod`，镜像
   `callback_bridge`）：`impl ChatHistory for SessionChatHistory<'a>`，持 `&'a mut Session`，四方法纯委托
@@ -375,7 +375,7 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
   `AgentExecutorConfig`。`run_inner` **镜像 `DefaultAgentExecutor::run_inner`** 的裸循环，复用核心
   `codesmith_agent::executor::accumulate_stream`（pub 放宽后）做 stream 归约。循环标注四个 guardrail
   插入点（per-step pre-request / post-stream / per-tool / post-tool），后续切片增量填入。模块文档显式
-  声明：未接入 `handle_send_message`，生产 `handle_deepseek_turn` 仍是 live path；stream delta
+  声明：未接入 `handle_send_message`，生产 `handle_codesmith_turn` 仍是 live path；stream delta
   （`MessageDelta`/`ThinkingDelta`）将来由 inline 归约直发 `tx_event`（不经 `Callback`）。3 个单测。
 - **核心 visibility 放宽**：`crates/agent/src/executor/mod.rs` 的 `accumulate_stream` 由私有 `async fn` 改
   `pub async fn`——非行为变更，使 host executor 复用 ~100 行归约器而非复制。核心 `accumulate_stream` 作为
@@ -397,13 +397,13 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
   （含 5 新，原 1002）；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
 
 **下一聚焦工作：**
-- **guardrail 逐个吸收**：把 `handle_deepseek_turn` 的 10 个 guardrail 增量迁入 `HostAgentExecutor` 的四个
+- **guardrail 逐个吸收**：把 `handle_codesmith_turn` 的 10 个 guardrail 增量迁入 `HostAgentExecutor` 的四个
   插入点。优先级建议——先迁自包含、本地状态者（loop-guard、LSP flush），再迁需 `Engine` 可变状态者
   （compaction、capacity、approval、steer、transparent-retry、early-tool-start、subagent）。`&self` vs
   `&mut self` 阻抗在首个需 `Engine` 可变状态的 guardrail 切片解决（interior-mutability handles：
   `Arc<Mutex<...>>` / 通道）。
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message`
-  改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：所有 guardrail 吸收后，`handle_send_message`
+  改用 `HostAgentExecutor`，删 `handle_codesmith_turn`。
 - stream delta inline 归约 / `on_llm_*` 桥接 / wire tool-call id 透传——后续切片。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项（CLI flag / per-entry 写入 / 裸形式）、
   B3（`ApiProvider`→`ProviderKind`）仍低优先。
@@ -412,10 +412,10 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
 
 **进度（2026-07-09 §E loop-guard 吸收落地，首个 guardrail 进 HostAgentExecutor，`feat/pluggable-framework-core`）：**
 
-§E 的第五个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第一个（loop-guard）吸收进
+§E 的第五个切片落地——把生产 `handle_codesmith_turn` 的 10 个 guardrail 中的第一个（loop-guard）吸收进
 `HostAgentExecutor`。loop-guard 是最干净的入口：`LoopGuard`（`engine/loop_guard.rs`）是纯数据结构
 （`call_counts`/`failure_counts` 两个 HashMap），无 Engine 可变状态、无 `&mut self` 阻抗，是热身切片。
-本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_deepseek_turn` 不受影响。
+本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **`event_tx` 注入**：`HostAgentExecutor` 新增 `event_tx: Option<mpsc::Sender<Event>>` 字段 + 构造器参数 +
   `emit_status` helper。guardrail 状态 surfacing 走 host 的 `Event` 通道，**不**经框架 `Callback`（§E 明确
@@ -450,7 +450,7 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
   `client`，单 seam 为主）或 **LSP flush**（seam 1 pre-request；需 `pending_lsp_blocks`，是首个引入
   interior-mutability 的候选）。loop-guard 已证明 `&self` + 局部状态模式可行。
 - 其余 guardrail（compaction/capacity/approval/steer/early-tool-start/subagent/cycle）+ stream delta inline
-  归约 / `on_llm_*` 桥接 / wire tool-call id 透传 / `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——
+  归约 / `on_llm_*` 桥接 / wire tool-call id 透传 / `HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役——
   后续切片。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
@@ -458,11 +458,11 @@ production `Engine`/`turn_loop` 迁移仍 deferred（"接真引擎"步）。
 
 **进度（2026-07-09 §E LSP flush 吸收落地，首个 interior-mutability 切片，`feat/pluggable-framework-core`）：**
 
-§E 的第六个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第二个（LSP diagnostics flush）吸收进
+§E 的第六个切片落地——把生产 `handle_codesmith_turn` 的 10 个 guardrail 中的第二个（LSP diagnostics flush）吸收进
 `HostAgentExecutor`。这是首个需要 `Engine` 可变状态（`pending_lsp_blocks`）的 guardrail，因此首次引入
 interior-mutability（`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`），是继 loop-guard（本地状态热身）之后的
 「需共享可变状态 guardrail」的形状证明。本轮纯增量（`host_executor.rs` + `lsp_hooks.rs` 两文件 + 文档），零既有
-调用点改动；生产路径 `handle_deepseek_turn` 不受影响。
+调用点改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **`LspProbe` collaborator**：新增 `LspProbe { manager: Arc<dyn LspManagerApi>, workspace: PathBuf,
   pending: Arc<std::sync::Mutex<Vec<DiagnosticBlock>>> }`，作为 `HostAgentExecutor` 的 `lsp: Option<LspProbe>` 字段
@@ -507,7 +507,7 @@ interior-mutability（`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`），是继 
 
 **已知设计取舍（本轮缺口，by design）：**
 - **apply_patch 路径推导延后**：需 `HostServices::preflight_apply_patch_paths`（从 agent-runtime 不可达，循环依赖）；
-  本轮 apply_patch 在 collect 中返空 Vec，live `handle_deepseek_turn` 仍覆盖；待 executor 接真 `HostServices` 或
+  本轮 apply_patch 在 collect 中返空 Vec，live `handle_codesmith_turn` 仍覆盖；待 executor 接真 `HostServices` 或
   注入 resolver-closure 时补。
 - **合成 flush 消息无 `<turn_meta>`**：`user_text_message_with_turn_metadata` 仅读 session+config，但框架 executor 路径
   全无 turn_meta（跨切 host 侧富化，延后到自己的切片）——故 flush 用纯 user text 消息。
@@ -519,17 +519,17 @@ interior-mutability（`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`），是继 
   **steer/capacity**（需更多 `Engine` 可变状态，沿用本轮 `Arc<Mutex<…>>` 形状）。
 - **apply_patch 路径推导**延后（待 `HostServices` 可达或注入 resolver-closure）。
 - 其余 guardrail（compaction/approval/early-tool-start/subagent/cycle）+ stream delta inline 归约 / `on_llm_*` 桥接 /
-  wire tool-call id 透传 / `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——后续切片。
+  wire tool-call id 透传 / `HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役——后续切片。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-10 §E transparent-retry 吸收落地，首个 seam-2 guardrail，`feat/pluggable-framework-core`）：**
 
-§E 的第七个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第三个（transparent stream-retry）吸收进
+§E 的第七个切片落地——把生产 `handle_codesmith_turn` 的 10 个 guardrail 中的第三个（transparent stream-retry）吸收进
 `HostAgentExecutor`。这是首个 seam-2（post-stream）guardrail，也是继 loop-guard（本地状态热身）、LSP flush（interior-mutability）之后
 回到「本地状态」形状的切片——重试计数器是 per-run `u32`，沿用 loop-guard 的 `&self` + 局部变量模式。本轮纯增量
-（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_deepseek_turn` 不受影响。
+（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **吸收的是外层重试（seam 2 post-stream）**：生产有**两层**重试——内层（`transparent_stream_retries`，MAX=2）在流消费循环内，
   当流在产出任何内容前报错时立即重发 `create_message_stream`；外层（`stream_retry_attempts`，MAX=3）在流消费完之后，当「流带错误死亡且
@@ -573,19 +573,19 @@ interior-mutability（`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`），是继 
   （`MessageDelta`/`ThinkingDelta`）直发 `tx_event` + early-tool-start。是多个 guardrail 的共同前置。
 - **cancel-token 注入**：transparent-retry 短路 + loop 顶取消检查，在 wire-in 步或单独小切片接入。
 - 其余 guardrail（compaction/approval/subagent/cycle）+ `on_llm_*` 桥接 / wire tool-call id 透传 / `HostAgentExecutor` 接入 +
-  `handle_deepseek_turn` 退役——后续切片。
+  `handle_codesmith_turn` 退役——后续切片。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-10 §E steer 吸收落地，第四个 guardrail，seam-1 pre-request，`feat/pluggable-framework-core`）：**
 
-§E 的第八个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第四个（steer 输入排空）吸收进
+§E 的第八个切片落地——把生产 `handle_codesmith_turn` 的 10 个 guardrail 中的第四个（steer 输入排空）吸收进
 `HostAgentExecutor`。steer 让用户在 in-flight turn 中注入额外文本输入；生产在 `turn_loop.rs:300-317`（loop 顶部、
 LLM 请求之前）以 `try_recv` 非阻塞排空 `rx_steer`，每条 steer trim→skip-empty→push `user` 消息→发 status，使模型
 在本步请求中看到。本切片吸收的是**pre-request 排空（seam 1）**——生产另有三个流生命周期相关的次级排空点
 （mid-stream buffer、post-stream resume、subagent hold 阻塞 `recv`），需 inline 流归约 / subagent 支持，延后。
-本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_deepseek_turn` 不受影响。
+本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **`steer` 字段**：`HostAgentExecutor` 新增 `steer: Option<Arc<std::sync::Mutex<mpsc::Receiver<String>>>>`
   字段 + 构造器参数（非-steer embed/测试传 `None`——16 个既有测试构造器改传 `None`）。**interior-mutability**：
@@ -638,20 +638,20 @@ LLM 请求之前）以 `try_recv` 非阻塞排空 `rx_steer`，每条 steer trim
   是多个 guardrail / 次级排空点的共同前置。
 - **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + loop 顶取消检查，在 wire-in 步或单独小切片接入。
 - 其余 guardrail（compaction/approval/subagent/cycle）+ `on_llm_*` 桥接 / wire tool-call id 透传 /
-  `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——后续切片。
+  `HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役——后续切片。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-10 §E approval 吸收落地，第五个 guardrail，seam-3 per-tool，`feat/pluggable-framework-core`）：**
 
-§E 的第九个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第五个（工具调用用户审批）吸收进
+§E 的第九个切片落地——把生产 `handle_codesmith_turn` 的 10 个 guardrail 中的第五个（工具调用用户审批）吸收进
 `HostAgentExecutor`。审批把写文件 / 代码执行类工具挡在用户许可之后：运行此类工具前，执行器先发
 `Event::ApprovalRequired`（携带两个指纹 key 供 host 做 approve-for-session / deny-exact 去重，以及写工具的模型
-intent summary），再阻塞在审批决策 channel 上按 wire tool id 配对（stale id 丢弃）——镜像 `handle_deepseek_turn`
+intent summary），再阻塞在审批决策 channel 上按 wire tool id 配对（stale id 丢弃）——镜像 `handle_codesmith_turn`
 的 per-tool 审批流（`turn_loop.rs:2283-2371`）。拒绝时工具不运行，回灌 `permission_denied` 错误让模型反应
 （turn 继续）。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径
-`handle_deepseek_turn` 不受影响。
+`handle_codesmith_turn` 不受影响。
 
 - **`approval` 字段**：`HostAgentExecutor` 新增 `approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>`
   字段 + 构造器参数（非-审批 embed/测试传 `None`——21 个既有测试构造器改传第 8 个 `None`）。**首个用 `tokio::sync::Mutex`
@@ -702,20 +702,20 @@ intent summary），再阻塞在审批决策 channel 上按 wire tool id 配对�
 - **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + loop 顶取消检查，在 wire-in
   步或单独小切片接入。
 - 其余 guardrail（compaction/capacity/subagent/cycle）+ `on_llm_*` 桥接 / wire tool-call id 透传 /
-  `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——后续切片。
+  `HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役——后续切片。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-10 §E compaction 吸收落地，第六个 guardrail，seam-1 pre-request，`feat/pluggable-framework-core`）：**
 
-§E 的第十个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第六个（上下文 compaction）吸收进
+§E 的第十个切片落地——把生产 `handle_codesmith_turn` 的 10 个 guardrail 中的第六个（上下文 compaction）吸收进
 `HostAgentExecutor`。compaction 把 transcript 压在模型上下文窗内：每步顶部（steer 排空之后、LSP flush 之前）跑两段收缩，
-镜像 `handle_deepseek_turn` 的 pre-request compaction（`turn_loop.rs:378-440`）——(a) **micro-compaction**：累计 tool-result
+镜像 `handle_codesmith_turn` 的 pre-request compaction（`turn_loop.rs:378-440`）——(a) **micro-compaction**：累计 tool-result
 字节触 32KB cache trigger 即 `micro_compact_messages` 把旧 tool result 改写为 cleared placeholder（无 LLM 调用）；
 (b) **auto-compaction**：`should_compact` 过阈（keep-recent 窗外的可摘要消息够多）即 `compact_messages_safe` 调 LLM 出摘要、
 替换 transcript。两段皆经 `ChatHistory::clear()` + `push()` loop 整体替换（trait 无 bulk replace——复用其原语，同 "不动核心
-trait" 先例）。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+trait" 先例）。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径 `handle_codesmith_turn` 不受影响。
 选 compaction 先于 capacity：capacity 的 `recover_context_overflow` 恢复级联复用 `compact_messages_safe`/`micro_compact`，
 compaction 机制是 capacity 的前置；且 compaction 只 seam-1（capacity 需 seam 1+4+reactive seam 2，更重）。
 
@@ -780,19 +780,19 @@ compaction 机制是 capacity 的前置；且 compaction 只 seam-1（capacity �
 - **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins /
   `emit_session_updated` 随 wire-in 切片接入（`Session` 接通后 system prompt 可变 + working set 派生可达）。
 - 其余 guardrail（capacity/subagent/cycle）+ `on_llm_*` 桥接 / wire tool-call id 透传 /
-  `HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役——后续切片。
+  `HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役——后续切片。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-11 §E capacity 吸收落地，第七个 guardrail，seam-1 pre-request，`feat/pluggable-framework-core`）：**
 
-§E 的第十一个切片落地——把生产 `handle_deepseek_turn` 的 10 个 guardrail 中的第七个（硬 token-budget preflight + 紧急恢复）吸收进
+§E 的第十一个切片落地——把生产 `handle_codesmith_turn` 的 10 个 guardrail 中的第七个（硬 token-budget preflight + 紧急恢复）吸收进
 `HostAgentExecutor`。capacity 是迄今最重的 guardrail：生产 `recover_context_overflow`（`engine/mod.rs:1670-1893`）是三阶段级联
 （responsive compact → forced full compaction → hard trim），且有 preflight（seam 1）+ reactive（seam 2）+ post-tool checkpoint
 （seam 4）三个接入点。本切片吸收的是 **seam 1 preflight（Gate B，always-on 硬预算检查）+ 简化的恢复级联**——reactive seam-2 路径
 （provider context-length rejection → recovery）和 opt-in `CapacityController`（Gate A，off by default since v0.8.11）延后。
-本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **`CapacityProbe` collaborator**（新 `pub struct`，镜像 `CompactionProbe` 但**无状态**）：`api_provider: ApiProvider` +
   `model: String`（budget 计算用，`context_input_budget_for_provider`）+ `compaction_config: CompactionConfig`（forced compaction 路径
@@ -860,8 +860,8 @@ compaction 机制是 capacity 的前置；且 compaction 只 seam-1（capacity �
   在 wire-in 步或单独小切片接入。
 - **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins /
   `emit_session_updated` 随 wire-in 切片接入（`Session` 接通后 system prompt 可变 + working set 派生可达）。同样适用于 capacity recovery。
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删
-  `handle_deepseek_turn`。
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删
+  `handle_codesmith_turn`。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
@@ -871,7 +871,7 @@ compaction 机制是 capacity 的前置；且 compaction 只 seam-1（capacity �
 §E 的第十二个切片落地——把 `HostAgentExecutor` 的 `accumulate_stream` 调用替换为内联流归约器 `reduce_stream`，使流式 delta（text/thinking）实时发到 `Callback::on_stream_delta`（新 CORE trait 方法），并跟踪 `any_content_received`
 闭合 transparent-retry 的 bail-on-error 缺口（流死后部分内容不再丢弃——partial surfaced 不 retry，empty 才 retry）。这是多个 guardrail / 次级排空点的共同前置：early-tool-start（在流中检测 tool_use 起始）、steer mid-stream buffer、
 reactive capacity recovery（需 error message 供 `is_context_length_error_message` 分类）的前置。本轮跨 3 文件 2 crate（CORE `Callback` trait + `CallbackBridge` + `HostAgentExecutor`），纯增量（CORE trait 新方法有默认 no-op——
-所有既有 `Callback` impl 不受影响）；生产路径 `handle_deepseek_turn` 不受影响。
+所有既有 `Callback` impl 不受影响）；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **CORE `StreamDelta` + `on_stream_delta`**（`codesmith-agent/src/callback/mod.rs`）：新增 `pub enum StreamDelta { Text { index, content }, Thinking { index, content } }`——UI-relevant 流 delta（tool-input JSON delta 不在此——它 assemble 进
   `ContentBlock::ToolUse`，非用户可见直到 `on_llm_end`）。`Callback` trait 新增 `on_stream_delta(&self, delta: &StreamDelta)` 方法（默认 no-op，匹配既有 6 方法的 `noop()` 模式）。`CallbackSet` 扇出已补上。向后兼容：所有默认 no-op，
@@ -921,17 +921,17 @@ reactive capacity recovery（需 error message 供 `is_context_length_error_mess
 - **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片。
 - **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路 + loop 顶取消检查，在 wire-in 步或单独小切片接入。
 - **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery。
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_codesmith_turn`。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-11 §E reactive capacity recovery 落地，seam-2 前置闭合，`feat/pluggable-framework-core`）：**
 
-§E 的第十三个切片落地——把生产 `handle_deepseek_turn` 的 reactive context-length recovery（seam 2）吸收进 `HostAgentExecutor`。当 LLM provider 在流开起前以 context-length 错误拒绝请求时，执行器先用 `is_context_length_error_message` 分类该错误，命中即跑
+§E 的第十三个切片落地——把生产 `handle_codesmith_turn` 的 reactive context-length recovery（seam 2）吸收进 `HostAgentExecutor`。当 LLM provider 在流开起前以 context-length 错误拒绝请求时，执行器先用 `is_context_length_error_message` 分类该错误，命中即跑
 `recover_context_overflow`（已吸收的 capacity 恢复级联），成功则重启 step 使请求快照拾起压缩后的 transcript（镜像 `turn_loop.rs:620-633`）；非 context-length 错误或恢复失败则硬失败。这是 §E inline 流归约切片（第十二切片）落地的"前置价值兑现"——
 内联归约器已 surface 错误消息供分类，本切片接通 error-classification + recovery plumbing。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；
-生产路径 `handle_deepseek_turn` 不受影响。
+生产路径 `handle_codesmith_turn` 不受影响。
 
 - **`StreamRoundOutcome` 三态**（新 enum）：替换 `stream_with_transparent_retry` 的 binary `Result<(Vec<ContentBlock>, Option<String>)>`。`Content { content, stop_reason }`——流产出内容（clean completion 或 partial surfacing）；
 `RecoveredContextOverflow`——pre-stream context-length 拒绝经 emergency compaction 恢复成功，signal 调用者 `continue` 重启 step（请求快照拾起压缩后的 transcript，镜像 `turn_loop.rs:631-632`）。
@@ -970,14 +970,14 @@ reactive capacity recovery（需 error message 供 `is_context_length_error_mess
 - **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片，需完整 `CapacityController` 状态机。
 - **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路（preflight + reactive）+ loop 顶取消检查，在 wire-in 步或单独小切片接入。
 - **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery（preflight + reactive）。
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_codesmith_turn`。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-11 §E block-lifecycle 事件落地，seam-2 流式生命周期，`feat/pluggable-framework-core`）：**
 
-§E 的第十四个切片落地——把生产 `handle_deepseek_turn` 在流归约中合成、但内联归约器（第十二切片）留下为 no-op 的 block-lifecycle 事件接通：`reduce_stream` 现在 `ContentBlockStart`/`ContentBlockStop` 处合成 `MessageStarted`/`ThinkingStarted`/`ThinkingComplete`/`MessageComplete`，经 CORE `StreamDelta`（新增 4 lifecycle variant）→ `Callback::on_stream_delta` → `CallbackBridge` → 同名 `Event` variant 端到端流到 host UI 通道。这是 ROADMAP "early-tool-start" 焦点项的自包含子集——block-lifecycle 是 "可同期补上" 的部分，**不**需 `ToolDispatcher`（early-tool-start 的 speculative dispatch 仍需 `ToolDispatcher`，"可能随 wire-in 切片"），且是 early-tool-start 的前置（生产在 `ContentBlockStop` 发 `ToolCallStarted` 后才做 early dispatch）。本轮跨 3 文件 2 crate（CORE `StreamDelta` + `reduce_stream` + `CallbackBridge`），纯增量（新 `StreamDelta` variant 默认 no-op——所有既有 `Callback` impl 不受影响）；生产路径 `handle_deepseek_turn` 不受影响。
+§E 的第十四个切片落地——把生产 `handle_codesmith_turn` 在流归约中合成、但内联归约器（第十二切片）留下为 no-op 的 block-lifecycle 事件接通：`reduce_stream` 现在 `ContentBlockStart`/`ContentBlockStop` 处合成 `MessageStarted`/`ThinkingStarted`/`ThinkingComplete`/`MessageComplete`，经 CORE `StreamDelta`（新增 4 lifecycle variant）→ `Callback::on_stream_delta` → `CallbackBridge` → 同名 `Event` variant 端到端流到 host UI 通道。这是 ROADMAP "early-tool-start" 焦点项的自包含子集——block-lifecycle 是 "可同期补上" 的部分，**不**需 `ToolDispatcher`（early-tool-start 的 speculative dispatch 仍需 `ToolDispatcher`，"可能随 wire-in 切片"），且是 early-tool-start 的前置（生产在 `ContentBlockStop` 发 `ToolCallStarted` 后才做 early dispatch）。本轮跨 3 文件 2 crate（CORE `StreamDelta` + `reduce_stream` + `CallbackBridge`），纯增量（新 `StreamDelta` variant 默认 no-op——所有既有 `Callback` impl 不受影响）；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **CORE `StreamDelta` 扩展**（`crates/agent/src/callback/mod.rs`）：`StreamDelta` 从 2 variant（`Text`/`Thinking`）扩为 6——新增 `MessageStarted { index }` / `ThinkingStarted { index }` / `ThinkingComplete { index }` / `MessageComplete { index }`（各携带 `index: usize`，1:1 映射到既有 `Event` variant）。枚举文档重写为 "two families"（content delta + block-lifecycle marker）。`CallbackSet`/`NoopCallback` 无改动（按引用转发 / 默认 no-op）。`noop_callback_defaults_are_callable` 测试加 2 个 lifecycle variant 调用保覆盖。
 - **`reduce_stream` 合成**（`crates/agent-runtime/src/engine/host_executor.rs`）：
@@ -1002,14 +1002,14 @@ reactive capacity recovery（需 error message 供 `is_context_length_error_mess
 - **opt-in `CapacityController`**（Gate A + seam 4 post-tool checkpoint + error-escalation）：独立 opt-in 切片，需完整 `CapacityController` 状态机。
 - **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路（preflight + reactive）+ loop 顶取消检查，在 wire-in 步或单独小切片接入。
 - **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery（preflight + reactive）。
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_codesmith_turn`。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-11 §E early-tool-start speculative dispatch 落地，seam-2 提前 dispatch，`feat/pluggable-framework-core`）：**
 
-§E 的第十五个切片落地——把生产 `handle_deepseek_turn` 的 early-tool-start（seam 2）吸收进 `HostAgentExecutor`：内联归约器 `reduce_stream` 在 `ContentBlockStop`（tool 块）处 finalize input，若工具 `early_start_safe`（read-only + 无 approval + 无 code-exec/file-write）则 `tokio::spawn` 立即执行，使结果在执行器到达 tool loop 时就绪；tool loop 按 wire id pop 出任务，重验 name+input（模型可能在块关闭后修订 args），命中则 await `JoinHandle` 复用结果而非重跑工具（镜像 `turn_loop` 的 `early_tool_tasks` map + `early_tool_start_safe`，`turn_loop.rs:975-1135` spawn / `1598-1803` reuse）。args 不匹配 / loop-guard block / 审批拒绝 / `NotAvailable` 路径 pop + `Drop`-abort 孤儿任务。map 是 per-step 本地 `HashMap`（非 executor 字段——与 LSP/steer/approval/compaction/capacity 不同，此 guardrail 无跨 step 状态），故构造器签名不变。本轮纯增量（`host_executor.rs` 一个文件 + 模块文档），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+§E 的第十五个切片落地——把生产 `handle_codesmith_turn` 的 early-tool-start（seam 2）吸收进 `HostAgentExecutor`：内联归约器 `reduce_stream` 在 `ContentBlockStop`（tool 块）处 finalize input，若工具 `early_start_safe`（read-only + 无 approval + 无 code-exec/file-write）则 `tokio::spawn` 立即执行，使结果在执行器到达 tool loop 时就绪；tool loop 按 wire id pop 出任务，重验 name+input（模型可能在块关闭后修订 args），命中则 await `JoinHandle` 复用结果而非重跑工具（镜像 `turn_loop` 的 `early_tool_tasks` map + `early_tool_start_safe`，`turn_loop.rs:975-1135` spawn / `1598-1803` reuse）。args 不匹配 / loop-guard block / 审批拒绝 / `NotAvailable` 路径 pop + `Drop`-abort 孤儿任务。map 是 per-step 本地 `HashMap`（非 executor 字段——与 LSP/steer/approval/compaction/capacity 不同，此 guardrail 无跨 step 状态），故构造器签名不变。本轮纯增量（`host_executor.rs` 一个文件 + 模块文档），零既有调用点行为改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **`early_start_safe` free fn**（新）：镜像 `turn_loop::early_tool_start_safe` 的最终复合门控——`ReadOnly` present AND none of `{RequiresApproval, ExecutesCode, WritesFiles}`。框架 `Tool` trait 仅暴露 `capabilities()`，故这是**静态近似**：production 额外查 `metadata.is_read_only && supports_parallel && !interactive && validate_input().is_ok() && approval_requirement_for(...) == Auto` + tool-catalog allowlist（not-MCP / not-code-exec / not-tool-search），这些 per-input / per-metadata 面不可从框架 `Tool` 触达，延后到 wire-in 步（§E design note，同 `requires_approval` gap）。`Network`/`Sandboxable` 不 disqualify（read-only network fetch 可提前起）。
 - **`EarlyToolTask` struct + `Drop` abort**（新）：`{ name, input, handle: Option<JoinHandle<Result<ToolResult, ToolError>>> }`。`handle` 用 `Option` 包裹使 reuse 路径可 `Option::take` 出来 `.await`（实现 `Drop` 的类型不能让字段被 move out）。`Drop` abort `JoinHandle`——孤儿任务（未存活进 `tool_uses` 的块 / args 不匹配 / blocked / denied / NotAvailable）永不泄漏后台任务；abort 已完成任务是 no-op，故 reuse 路径的 await-then-drop 安全。
@@ -1046,28 +1046,28 @@ reactive capacity recovery（需 error message 供 `is_context_length_error_mess
 - **cancel-token 注入**：transparent-retry 短路 + steer stale-drain + approval 审批等待脱出 + capacity recovery 短路（preflight + reactive）+ early-tool-start spawn 短路 + loop 顶取消检查，在 wire-in 步或单独小切片接入。
 - **compaction 闭合项**：summary-prompt merge / attachment reinject / post-compact cleanup / enhancements / working-set pins / `emit_session_updated` 随 wire-in 切片接入。同样适用于 capacity recovery（preflight + reactive）。
 - **`ToolCallStarted` stream-time 合成 + bridge 去重**：需 `Callback::on_tool_start` 透传 wire id 或 bridge 层 name+input pairing——与 wire-in 耦合，可同期接入。
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_deepseek_turn`。
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：所有 guardrail 吸收后，`handle_send_message` 改用 `HostAgentExecutor`，删 `handle_codesmith_turn`。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
 ---
 
 **进度（2026-07-11 §E subagent post-stream completion drain 落地，第九个 guardrail，seam-2 非阻塞，`feat/pluggable-framework-core`）：**
 
-§E 的第十六个切片落地——把生产 `handle_deepseek_turn` 的 sub-agent completion handoff 吸收进
+§E 的第十六个切片落地——把生产 `handle_codesmith_turn` 的 sub-agent completion handoff 吸收进
 `HostAgentExecutor`。当模型在某步无 tool calls 结束时，执行器 `try_recv` 排空
 `rx_subagent_completion`，把已到达的子 agent 完成事件（queued during inference 或 turn 间到达）
 作为 `<codesmith:runtime_event kind="subagent_completion">` sentinel user 消息注入 transcript 并
 resume turn（而非结束 turn）——镜像 `turn_loop.rs:1317-1397` 的非阻塞 drain + late drain
 （`1501-1532`）。这兑现了 `prompts/base.md` 对模型的 sentinel 契约。本轮纯增量（`host_executor.rs` +
-`turn_loop.rs` 一处 visibility 放宽），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+`turn_loop.rs` 一处 visibility 放宽），零既有调用点行为改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **选型：subagent 先于 cycle。** ROADMAP 列剩余两 guardrail：subagent + cycle。经核实 **cycle
-  （`cycle_manager.rs`）不在 `handle_deepseek_turn` 内**——它是 768K-token 检查点重启，跑在
-  `handle_send_message` 里 `handle_deepseek_turn` 返回 `Completed` 之后（`engine/mod.rs:1199-1201`），
+  （`cycle_manager.rs`）不在 `handle_codesmith_turn` 内**——它是 768K-token 检查点重启，跑在
+  `handle_send_message` 里 `handle_codesmith_turn` 返回 `Completed` 之后（`engine/mod.rs:1199-1201`），
   是 post-turn / Session 级关注（swap `Session.messages` / `cycle_count` / `cycle_briefings`），不契合
   executor 的四 seam loop 模型，且其状态不经 `ChatHistory` 可达——**deferred 到 wire-in 步**（接
   `handle_send_message` 时自然落地）。subagent 是真正的 in-loop guardrail（seam-2 post-stream，
-  `turn_loop.rs:1296-1567`），是退役 `handle_deepseek_turn` 的阻塞项，故本轮吸收之。
+  `turn_loop.rs:1296-1567`），是退役 `handle_codesmith_turn` 的阻塞项，故本轮吸收之。
 - **吸收的是非阻塞 drain；阻塞 hold deferred。** 镜像 steer/capacity 的拆法。生产有两段 drain：
   非阻塞 `try_recv`（`turn_loop.rs:1318` + `1506`）+ 阻塞 hold（`biased select!` over cancel /
   completion `recv().await` / steer `recv().await`，`turn_loop.rs:1330-1368`）。本轮吸收非阻塞 drain；
@@ -1143,7 +1143,7 @@ test build 10 warning 均既有（零新 warning）；`cargo build --workspace` 
   的 `ContextPatch` apply。
 - **`ToolCallStarted` stream-time 合成 + bridge 去重**：需 `Callback::on_tool_start` 透传 wire id 或
   bridge 层 name+input pairing——与 wire-in 耦合，可同期接入。
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：剩余 in-loop guardrail 已吸收（九个——
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：剩余 in-loop guardrail 已吸收（九个——
   compaction/capacity/approval/steer/transparent-retry/early-tool-start/subagent/LSP/loop-guard）；cycle 是
   post-turn 非 in-loop。阻塞 hold + cancel-token + 闭合项就位后即可接入。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
@@ -1151,10 +1151,10 @@ test build 10 warning 均既有（零新 warning）；`cargo build --workspace` 
 **进度（2026-07-11 §E cancel-token 注入落地，第十个 guardrail，跨切面取消，`feat/pluggable-framework-core`）：**
 
 §E 的第十七个切片落地——把 `CancellationToken` 注入 `HostAgentExecutor`，镜像生产
-`handle_deepseek_turn` 的取消检查点：取消的 turn 短路 transparent-retry、脱出 approval 等待、
+`handle_codesmith_turn` 的取消检查点：取消的 turn 短路 transparent-retry、脱出 approval 等待、
 bound capacity-recovery `continue` 循环，并返回 `StopReason::Interrupted`（而非 `Error`）。本轮
 纯增量（一个新字段 + helper + 7 个检查点 + 模块文档 + 7 个新测试），零既有调用点行为改动；
-生产路径 `handle_deepseek_turn` 不受影响。起点是上一轮未提交的 `StopReason::Interrupted` 变体
+生产路径 `handle_codesmith_turn` 不受影响。起点是上一轮未提交的 `StopReason::Interrupted` 变体
 （`crates/agent/src/callback/mod.rs`）。
 
 - **`cancel_token: Option<CancellationToken>` 字段**（构造器第 12 参数——60 个既有测试构造器各加一个
@@ -1211,7 +1211,7 @@ host_executor` 67 通过（60 既有 + 7 新 cancel-token）；`cargo test -p co
 通过、0 失败、2 ignored；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
 
 **下一聚焦工作：**
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：剩余 in-loop guardrail 已吸收（十个——
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：剩余 in-loop guardrail 已吸收（十个——
   compaction/capacity/approval/steer/transparent-retry/early-tool-start/subagent/LSP/loop-guard/cancel-token）；
   cycle 是 post-turn 非 in-loop。阻塞 hold + 闭合项就位后即可接入。
 - **subagent 阻塞 hold**（`biased select!` for running children）：cancel-token 已就位（本轮吸收），仍需
@@ -1229,7 +1229,7 @@ host_executor` 67 通过（60 既有 + 7 新 cancel-token）；`cargo test -p co
 
 **进度（2026-07-11 §E subagent blocking hold 落地，第十一个 guardrail 收尾 + 最后一个 in-loop gap，seam-2 阻塞，`feat/pluggable-framework-core`）：**
 
-§E 的第十八个切片落地——当模型完成一步无工具调用、非阻塞 drain 为空、但子 agent 仍在运行时（`should_hold_turn_for_subagents(0, running_count)`），`run_inner` 在 seam-2（post-stream、drain 之后、inject+resume 之前）发起一个 `biased select!` 阻塞 hold：cancel arm（Checkpoint E）/ completion `recv().await` arm（push + `try_recv` 批量 drain → 注入 sentinel → resume）/ steer `recv().await` arm（trim → push user message → emit status → step+=1 → continue），镜像 `turn_loop.rs:1321-1397`。这是最后一个 in-loop guardrail gap，也是 `handle_deepseek_turn` 退役（wire-in）的直接前置——阻塞 hold + 闭合项就位后即可接入。本轮纯增量（`host_executor.rs` 单文件 + docs），零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+§E 的第十八个切片落地——当模型完成一步无工具调用、非阻塞 drain 为空、但子 agent 仍在运行时（`should_hold_turn_for_subagents(0, running_count)`），`run_inner` 在 seam-2（post-stream、drain 之后、inject+resume 之前）发起一个 `biased select!` 阻塞 hold：cancel arm（Checkpoint E）/ completion `recv().await` arm（push + `try_recv` 批量 drain → 注入 sentinel → resume）/ steer `recv().await` arm（trim → push user message → emit status → step+=1 → continue），镜像 `turn_loop.rs:1321-1397`。这是最后一个 in-loop guardrail gap，也是 `handle_codesmith_turn` 退役（wire-in）的直接前置——阻塞 hold + 闭合项就位后即可接入。本轮纯增量（`host_executor.rs` 单文件 + docs），零既有调用点行为改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **`should_hold_turn_for_subagents(queued, running)` free fn**（`host_executor.rs:676`）：`queued > 0 || running > 0`，镜像 `turn_loop.rs:2846-2848`。非阻塞 drain 已吸收（第十六切片）；本轮补上阻塞 hold 的判定。
 - **steer + subagent 字段迁移 `std::sync::Mutex` → `tokio::sync::Mutex`**：`biased select!` 的 `recv().await` arm 的 guard 必须 cross `await`（与 approval 字段同 rationale）。`drain_steers` / `drain_stale_steers`（`pub fn` → `pub async fn`）/ 非阻塞 subagent drain 的 `lock().expect("poisoned")` 改为 `lock().await`——机械改动，行为不变（无竞争单消费者锁）。
@@ -1253,7 +1253,7 @@ host_executor` 73 通过（67 既有 + 6 新 blocking-hold）；`cargo test -p c
 通过、0 失败、2 ignored；`cargo build --workspace` 全绿（tui 143 warning 均既有死代码，与本轮无关）。
 
 **下一聚焦工作：**
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**：全部十个 in-loop guardrail 已吸收
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**：全部十个 in-loop guardrail 已吸收
   （compaction/capacity/approval/steer/transparent-retry/early-tool-start/subagent/LSP/loop-guard/cancel-token）；
   **阻塞 hold 已就位**（本轮吸收），闭合项就位后即可接入。wire-in 是下一个主聚焦。
 - **wire-in 前置闭合项**：`ContextPatch` apply（tongten-only）、`<turn_meta>` enrichment、mid-stream buffer
@@ -1270,8 +1270,8 @@ host_executor` 73 通过（67 既有 + 6 新 blocking-hold）；`cargo test -p c
 
 **进度（2026-07-11 §E wire-in 机械前置项落地，UnboundedReceiver shape reconcile + TurnDispatchPlan.framework_tool_set，`feat/pluggable-framework-core`）：**
 
-§E 的第十九个切片落地——wire-in 的两个自包含机械前置项。十个 in-loop guardrail 已全部吸收（slice 18 收尾），wire-in（`HostAgentExecutor` 接入 `handle_send_message` + 退役 `handle_deepseek_turn`）是下一个主聚焦。
-用户决策"分阶段：先做机械前置项"——先把两个不碰 live path、不需 `Session` 可达的机械前置项落地，下一切片再做真正的 wire-in。本轮纯增量，零既有调用点行为改动；生产路径 `handle_deepseek_turn` 不受影响。
+§E 的第十九个切片落地——wire-in 的两个自包含机械前置项。十个 in-loop guardrail 已全部吸收（slice 18 收尾），wire-in（`HostAgentExecutor` 接入 `handle_send_message` + 退役 `handle_codesmith_turn`）是下一个主聚焦。
+用户决策"分阶段：先做机械前置项"——先把两个不碰 live path、不需 `Session` 可达的机械前置项落地，下一切片再做真正的 wire-in。本轮纯增量，零既有调用点行为改动；生产路径 `handle_codesmith_turn` 不受影响。
 
 - **Part A — `UnboundedReceiver` shape reconcile**（`host_executor.rs` 单文件）：executor 的 `subagent` 字段从 bounded
   `mpsc::Receiver<SubAgentCompletion>` 改为 `mpsc::UnboundedReceiver<SubAgentCompletion>`，对齐生产
@@ -1309,10 +1309,10 @@ host_executor` 73 通过（67 既有 + 6 新 blocking-hold）；`cargo test -p c
 无新测试——UnboundedReceiver 改动由既有 9 个 subagent 测试作回归；`framework_tool_set` 字段在 wire-in 前无行为面。
 
 **下一聚焦工作：**
-- **`HostAgentExecutor` 接入 + `handle_deepseek_turn` 退役**（wire-in 主切片）：机械前置项已就位
+- **`HostAgentExecutor` 接入 + `handle_codesmith_turn` 退役**（wire-in 主切片）：机械前置项已就位
   （`UnboundedReceiver` shape 对齐 + `TurnDispatchPlan.framework_tool_set` 可达）。构造 `HostAgentExecutor`（13 字段从
   Engine 状态映射）、在 `handle_send_message` 里路由到 `executor.run(&mut SessionChatHistory, user_text)`、map 返回
-  `(StopReason → TurnOutcomeStatus)`、退役 `handle_deepseek_turn`（~2434 行）。已知 wire-in gap（ContextPatch apply /
+  `(StopReason → TurnOutcomeStatus)`、退役 `handle_codesmith_turn`（~2434 行）。已知 wire-in gap（ContextPatch apply /
   `<turn_meta>` enrichment / mid-stream buffer steer drain / compaction 闭合项 / `ToolCallStarted` stream-time / per-input
   approval）在 wire-in 切片内按优先级接入或显式 defer。
 - **wire-in 前置闭合项（剩余两项）**：`ContextPatch` apply（tighten-only `auto_approve`/`trust_mode`，生产今天 hardcode
@@ -1327,9 +1327,9 @@ host_executor` 73 通过（67 既有 + 6 新 blocking-hold）；`cargo test -p c
   包进 `Arc<tokio::sync::Mutex<…>>` 交给 executor。
 - E4（声明式 `providers.toml` + lazy）、§D2 deferred 项、B3（`ApiProvider`→`ProviderKind`）仍低优先。
 
-**进度（2026-07-11 §E HostAgentExecutor wire-in + handle_deepseek_turn 退役，cutover 主切片，`feat/pluggable-framework-core`）：**
+**进度（2026-07-11 §E HostAgentExecutor wire-in + handle_codesmith_turn 退役，cutover 主切片，`feat/pluggable-framework-core`）：**
 
-§E 的第二十个切片落地——wire-in cutover：`HostAgentExecutor` 接入 `handle_send_message` 成为 live production path，`handle_deepseek_turn`
+§E 的第二十个切片落地——wire-in cutover：`HostAgentExecutor` 接入 `handle_send_message` 成为 live production path，`handle_codesmith_turn`
 （`turn_loop.rs`，~2400 行）整体退役。十个 in-loop guardrail 已全部吸收（slice 11–19），本轮是收口。用户决策"Priority wire-in"——接入
 cheap/moderate 行为 gap（`emit_session_updated` / per-input approval），退役 legacy turn loop；expensive gap（`ToolCallStarted` stream-time /
 post-compact cleanup / per-turn usage）显式 defer。cutover 单 commit，零既有调用点行为改动（生产路径语义不变：构造 executor → `drain_stale_steers` →
@@ -1339,12 +1339,12 @@ post-compact cleanup / per-turn usage）显式 defer。cutover 单 commit，零�
   `rx_steer` / `rx_subagent_completion` 三个字段从 bare `mpsc::Receiver`/`UnboundedReceiver` 改为
   `Arc<tokio::sync::Mutex<…>>`，对齐 executor 既有字段类型。`new_runtime` struct literal 内 wrap
   （`Arc::new(AsyncMutex::new(rx_approval))` 等），tui `build_engine` 传 bare receiver（`new_runtime` 内部 wrap）。
-  bare consumer `handle_deepseek_turn` 退役（删除耦合到 wrap）；stale-drain（`mod.rs:1023` `while self.rx_steer.try_recv().is_ok() {}`）
+  bare consumer `handle_codesmith_turn` 退役（删除耦合到 wrap）；stale-drain（`mod.rs:1023` `while self.rx_steer.try_recv().is_ok() {}`）
   移入 executor 的 `drain_stale_steers()`，在 `executor.run` 前调用。单 consumer：仅 executor 消费（legacy 路径退役）。
 - **Step 1b — `HostServices::lsp()` → `Arc<dyn LspManagerApi>`**（`host_services.rs` trait + `runtime_traits.rs` impl）：
   executor 的 `LspProbe` 需 capture `Arc<dyn LspManagerApi>`（生命周期独立于 `&self Engine` 借用），故 `lsp()` 返回 `Arc`
   而非 `&dyn`，对齐 `bg_registry`/`subagents`/`shell` 的既有 shape。`EngineHost` 持 `Arc<LspManager>`，clone coerces。
-- **Step 2 — `handle_send_message` 路由到 executor + StopReason map**（`mod.rs` ~1181-1190）：替换 `handle_deepseek_turn`
+- **Step 2 — `handle_send_message` 路由到 executor + StopReason map**（`mod.rs` ~1181-1190）：替换 `handle_codesmith_turn`
   调用为：构造 `HostAgentExecutor`（14 字段从 Engine/plan/Session 映射——`client`/`tools`/`callback`/`config`/`event_tx`/
   `lsp`/`steer`/`approval`/`compaction`/`capacity`/`subagent`/`cancel_token`/`subagent_api` + `with_tool_dispatcher`）→
   `drain_stale_steers().await` → `let mut history = SessionChatHistory::new_with_event_tx(&mut self.session, …);` →
@@ -1364,14 +1364,14 @@ post-compact cleanup / per-turn usage）显式 defer。cutover 单 commit，零�
   `with_tool_dispatcher(…)` builder（避免第 14 positional param 破 71 处 test）。`request_approval` 在静态
   `requires_approval(&tool.capabilities())` gate 前先 consult `tool_dispatcher.approval_requirement_for(name, input)`——
   `Some(req)` 用 `req != ApprovalRequirement::Auto`，`None` 回退静态 gate（镜像 turn_loop.rs:1704-1706 的 per-input override）。
-- **Step 6 — 删除 `handle_deepseek_turn` + 私有 helper**：`turn_loop.rs` 3374→83 行（删 `handle_deepseek_turn`
+- **Step 6 — 删除 `handle_codesmith_turn` + 私有 helper**：`turn_loop.rs` 3374→83 行（删 `handle_codesmith_turn`
   239-2671 + ~22 私有 helper + 22/23 test）。保留 `subagent_completion_runtime_message`（executor host_executor.rs:579 引用）+
   其 test + `messages_with_turn_metadata`（tui test 引用）+ `EarlyToolResult`/`EarlyToolTask`（dispatch.rs:61 type 引用）。
   `approval.rs` 173→45 行（删 `cancel_reason_suffix`/`await_tool_approval`/`await_user_input` 三个 orphan impl-Engine 方法 +
   整个 `impl Engine {}` block；保留 `ApprovalDecision`/`UserInputDecision` 跨 crate pub-reexport + use `UserInputResponse`）。
-  删 genuinely-orphan `ApprovalResult` enum + `CancelReason::describe` 方法（cargo-fix 删了 14 个 unused import——handle_deepseek_turn
+  删 genuinely-orphan `ApprovalResult` enum + `CancelReason::describe` 方法（cargo-fix 删了 14 个 unused import——handle_codesmith_turn
   的 sole-consumer imports）。
-- **Warning cleanup**（17 个 dead-code 全是 handle_deepseek_turn 孤儿）：module-level `#![allow(dead_code)]` 于
+- **Warning cleanup**（17 个 dead-code 全是 handle_codesmith_turn 孤儿）：module-level `#![allow(dead_code)]` 于
   `streaming.rs`（stream-reducer config cluster：`*_STREAM_CHUNK_TIMEOUT_SECS`/`stream_chunk_timeout_secs`/`ContentBlockKind`/
   `STREAM_MAX_*`——executor `reduce_stream` 自带 config，scrubber/retry-policy 仍 live）+ `turn_loop.rs`（residual
   `EarlyToolResult`/`EarlyToolTask` 字段 unread——dispatch.rs 仅 type 引用未构造，待 follow-up re-wire speculative dispatch）；
@@ -1424,7 +1424,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **进度（2026-07-12 §E per-turn usage tracking（token 计数器修复），slice 21，`feat/pluggable-framework-core`）：**
 
-§E 的第二十一个切片落地——修复 wire-in cutover（slice 20）丢的 token-usage 采集。cutover 后 `reduce_stream` 把 `MessageStart` 当 no-op（丢 `message.usage`）、`MessageDelta` 解构 `..` 丢 `usage: Option<Usage>`，致 `turn.usage` 恒零、`session.total_usage` 不累加（mod.rs:1306 add 空值）、`Event::TurnComplete.usage` 恒空（mod.rs:1313）——token 计数器停转。本轮按"不动核心 trait"约束，在 executor 内部用 interior-mutability 字段复刻退役 `handle_deepseek_turn` 的 usage 语义（经 `git show 42123572~1:turn_loop.rs` 核实）。零既有调用点行为改动（73 个 test 调用点不动——usage 字段在 `new()` Self literal 默认，镜像 slice 20 的 `tool_dispatcher: None` 模式）。
+§E 的第二十一个切片落地——修复 wire-in cutover（slice 20）丢的 token-usage 采集。cutover 后 `reduce_stream` 把 `MessageStart` 当 no-op（丢 `message.usage`）、`MessageDelta` 解构 `..` 丢 `usage: Option<Usage>`，致 `turn.usage` 恒零、`session.total_usage` 不累加（mod.rs:1306 add 空值）、`Event::TurnComplete.usage` 恒空（mod.rs:1313）——token 计数器停转。本轮按"不动核心 trait"约束，在 executor 内部用 interior-mutability 字段复刻退役 `handle_codesmith_turn` 的 usage 语义（经 `git show 42123572~1:turn_loop.rs` 核实）。零既有调用点行为改动（73 个 test 调用点不动——usage 字段在 `new()` Self literal 默认，镜像 slice 20 的 `tool_dispatcher: None` 模式）。
 
 - **Step 1 — usage 字段 + 采集 helper**（`host_executor.rs`）：加 `usage: std::sync::Mutex<Usage>` 字段（`std::sync` 非 tokio——累加是 sync 字段算术，锁不跨 `await`，镜像 LSP/steer/compaction 先例），`new()` Self literal 内 `usage: std::sync::Mutex::new(Usage::default())` 默认（无新构造器 param——73 test 不动）。加 `take_usage(&self) -> Usage`（lock+clone，executor 每轮 fresh 构造故无跨轮泄漏）+ `accumulate_usage(&self, &Usage)`（`input`/`output` saturating_add，`prompt_cache_hit`/`miss`/`reasoning_tokens` 经 `add_optional_usage`——镜像 `TurnContext::add_usage` 同 5 字段；`reasoning_replay_tokens`/`server_tool_use` 不累加，镜像 `add_usage` 亦不碰——faithful）。模块级 free fn `add_optional_usage`（`turn.rs` 同名 fn private 不可达，duplicate 注 "lift later"，同 `approval_intent_summary`/`block_tool_result` class）。
 - **Step 2 — `reduce_stream` 采集**（`host_executor.rs`）：local `let mut usage = Usage { input_tokens: 0, ..default };`。`MessageStart` arm `{ message } => { usage = message.usage; }`（REPLACE——镜像 `turn_loop.rs:838`）。`MessageDelta` arm bind `usage: delta_usage`，`if let Some(u) = delta_usage { usage = u; }`（REPLACE——latest cumulative wins，镜像 `turn_loop.rs:1137-1141`）。`StreamReduceOutcome`：`Complete` + `Partial` 加 `usage: Usage` 字段；`Empty` 不带（Empty→retry 丢 usage，镜像生产 `continue` before `turn.add_usage`——by-design divergence：失败轮的 partial MessageStart usage 丢，`total_usage` 仅反映成功 step）。
@@ -1450,7 +1450,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **进度（2026-07-12 §E `<turn_meta>` enrichment seam 落地，Arc-shared WorkingSet + TurnMetaProbe，slice 22，`feat/pluggable-framework-core`）：**
 
-§E 的第二十二个切片落地——闭合 steer/LSP push 在 `executor.run` 期间的 `<turn_meta>` 富化 + `working_set.observe_user_message` 缺口。根因：`executor.run(&mut SessionChatHistory)` 期间 `&mut self.session` 被 `SessionChatHistory` 借走（mod.rs:1187），host 无法触达 live `working_set`/`config` 富化 mid-run push 的 steer/LSP 消息（subagent sentinel 本就 plain，匹配生产）。本轮按"全 Arc-shared"方案（用户批准）：把 `Session.working_set` 从 `WorkingSet` 改为 `Arc<std::sync::Mutex<WorkingSet>>`（既有 probe 模式——LspProbe/CompactionProbe/CapacityProbe），host 在 executor 构造时（borrow 前）clone Arc 进新 `TurnMetaProbe`，故 probe 在 run 期间仍能 observe + 构建 `<turn_meta>`。零既有 test 行为改动（`with_turn_meta` 默认 `None`，78 个既有 test 调用点不动——镜像 slice 20/21 的 `tool_dispatcher`/`usage` 模式）。经 `git show 42123572~1:turn_loop.rs` 核实退役 `handle_deepseek_turn` 的 push 语义（steer observe+enrich / LSP enrich-only / subagent plain）。
+§E 的第二十二个切片落地——闭合 steer/LSP push 在 `executor.run` 期间的 `<turn_meta>` 富化 + `working_set.observe_user_message` 缺口。根因：`executor.run(&mut SessionChatHistory)` 期间 `&mut self.session` 被 `SessionChatHistory` 借走（mod.rs:1187），host 无法触达 live `working_set`/`config` 富化 mid-run push 的 steer/LSP 消息（subagent sentinel 本就 plain，匹配生产）。本轮按"全 Arc-shared"方案（用户批准）：把 `Session.working_set` 从 `WorkingSet` 改为 `Arc<std::sync::Mutex<WorkingSet>>`（既有 probe 模式——LspProbe/CompactionProbe/CapacityProbe），host 在 executor 构造时（borrow 前）clone Arc 进新 `TurnMetaProbe`，故 probe 在 run 期间仍能 observe + 构建 `<turn_meta>`。零既有 test 行为改动（`with_turn_meta` 默认 `None`，78 个既有 test 调用点不动——镜像 slice 20/21 的 `tool_dispatcher`/`usage` 模式）。经 `git show 42123572~1:turn_loop.rs` 核实退役 `handle_codesmith_turn` 的 push 语义（steer observe+enrich / LSP enrich-only / subagent plain）。
 
 - **Step 1 — WorkingSet → Arc<std::sync::Mutex>**（`session.rs` + ~12 访问点）：`pub working_set: WorkingSet` → `pub working_set: Arc<std::sync::Mutex<WorkingSet>>`（`WorkingSet` `Send+Sync`，纯 `HashMap`/`u64` 字段）。机械访问点全改 `…working_set.lock().expect("working_set poisoned").<method>()`：`engine/mod.rs`（observe_site/compaction_pins/paths/pinned/turn_meta wrappers）、`capacity_flow.rs`（4 处 top_paths/pinned）、`post_compact_cleanup.rs`（force_rebuild）、`session.rs rebuild_working_set`、`tui/tests.rs`（7 处 observe_user_message）。
 - **Step 2 — `&'a WorkingSet` borrow API 局部化**（保持 API 稳定）：`StructuredStateRequest.working_set: &'a WorkingSet` + `StructuredState::capture(working_set: &WorkingSet)` **不变**——cycle path 的 post-turn async 场景持有 std `MutexGuard` 跨 `.await` 非法（guard 非 Send）。3 处传 `&session.working_set` 的点改 clone-and-local：`engine/mod.rs` 2 处 + `tui/runtime_traits.rs:254` → `let ws = …lock()…clone(); … &ws …`（clone 是 point-in-time 快照，cycle restart 罕见故 HashMap clone 可忽略）。
@@ -1482,7 +1482,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **进度（2026-07-13 §E mid-stream steer buffer drain 落地，闭合最后一个 steer 次级排空点，`feat/pluggable-framework-core`）：**
 
-§E 的第二十三个切片落地——闭合 steer 的最后一个次级排空点：流式期间到达的 steer 现在由 `reduce_stream` 的 `try_recv` 捕获进 per-step `pending_steers` 缓冲，并在两个位置 flush（post-stream no-tools resume + post-tool-execution），镜像退役 `handle_deepseek_turn` 的 `pending_steers` 机制（`turn_loop.rs:683` 声明、`:721-731` 流内 `try_recv` + "queued" status、`:1297-1307` post-stream flush + resume、`:2632-2637` post-tool flush）。此前 steer 仅在 pre-request drain + blocking-hold arm 被处理——流式期间到达的 steer 要么等下一步 pre-request drain（若 turn 继续），要么被下一 turn 的 `drain_stale_steers` **丢弃**（若 turn 以 NoToolCalls 结束且无子 agent 运行）。本轮闭合该正确性缺口。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径不受影响。
+§E 的第二十三个切片落地——闭合 steer 的最后一个次级排空点：流式期间到达的 steer 现在由 `reduce_stream` 的 `try_recv` 捕获进 per-step `pending_steers` 缓冲，并在两个位置 flush（post-stream no-tools resume + post-tool-execution），镜像退役 `handle_codesmith_turn` 的 `pending_steers` 机制（`turn_loop.rs:683` 声明、`:721-731` 流内 `try_recv` + "queued" status、`:1297-1307` post-stream flush + resume、`:2632-2637` post-tool flush）。此前 steer 仅在 pre-request drain + blocking-hold arm 被处理——流式期间到达的 steer 要么等下一步 pre-request drain（若 turn 继续），要么被下一 turn 的 `drain_stale_steers` **丢弃**（若 turn 以 NoToolCalls 结束且无子 agent 运行）。本轮闭合该正确性缺口。本轮纯增量（`host_executor.rs` 一个文件 + 文档），零既有调用点行为改动；生产路径不受影响。
 
 - **`reduce_stream` 缓冲**（seam 2 内）：新增 `pending_steers: &mut Vec<String>` 参数（镜像 `early_tasks`）。在 `any_content_received` flip 之后、`match event` 之前，`try_recv` 循环排空 `self.steer`（lock tokio mutex → `try_recv` → trim → skip empty → `pending_steers.push` → `emit_status("Steer input queued: {summarize}")`）。guard 在 `{ }` 块内取/放，不跨 `emit_status().await`（匹配 `drain_steers` 先例）。每个 stream event 后都跑一次——`try_recv` 非阻塞、通常空，开销可忽略。
 - **`stream_with_transparent_retry` 透传**：新增 `pending_steers` 参数，透传给 `reduce_stream`。透明重试（Empty → retry）复用同一 `&mut` 引用，故失败流的缓冲 steer 保留（匹配生产 `pending_steers` 声明在 stream loop 之前）。`RecoveredContextOverflow` → `continue` 时 `pending_steers` 重新声明（per-step），但此时流未开起故缓冲为空——丢弃正确。`Interrupted` → return 时 `pending_steers` drop——取消的 turn 的 steer 丢弃正确（下一 turn 的 stale drain 也会丢）。
@@ -1573,7 +1573,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **进度（2026-07-13 §E read_file observe site 落地，闭合 25b 遗留子项，使 `recent_read_files` 生产填充，`feat/pluggable-framework-core`）：**
 
-§E 的第二十七个切片落地——闭合 slice 25b 的遗留子项："read-file observe site still deferred"。`Session::record_read_file_result` 此前**无生产调用方**（6 个 call site 全在 `#[cfg(test)]`），故 `recent_read_files` 仅 test 填充，compaction reinject 的 read_files 候选在生产仅 test 触发。退役 `handle_deepseek_turn` 的 observe site 在 `turn_loop.rs:2523-2525`（commit `42123572~1`）：tool 执行成功后，`compact_tool_result_for_context(&session.model, "read_file", &output)` 产出 sanitized/compacted 形态，`if output.success && name == "read_file" { session.record_read_file_result(&input, &output_for_context) }`。本切片把该 observe 搬进 `HostAgentExecutor::run_inner` 的 (3) per-tool seam（紧邻 LSP post-edit collect），经既有 `ReinjectProbe`（持有 `recent_read_files` `Arc` clone）写入共享队列。本轮纯增量（`session.rs` + `host_executor.rs` + `engine/mod.rs` + 文档），零既有调用点行为改动；生产路径不受影响。
+§E 的第二十七个切片落地——闭合 slice 25b 的遗留子项："read-file observe site still deferred"。`Session::record_read_file_result` 此前**无生产调用方**（6 个 call site 全在 `#[cfg(test)]`），故 `recent_read_files` 仅 test 填充，compaction reinject 的 read_files 候选在生产仅 test 触发。退役 `handle_codesmith_turn` 的 observe site 在 `turn_loop.rs:2523-2525`（commit `42123572~1`）：tool 执行成功后，`compact_tool_result_for_context(&session.model, "read_file", &output)` 产出 sanitized/compacted 形态，`if output.success && name == "read_file" { session.record_read_file_result(&input, &output_for_context) }`。本切片把该 observe 搬进 `HostAgentExecutor::run_inner` 的 (3) per-tool seam（紧邻 LSP post-edit collect），经既有 `ReinjectProbe`（持有 `recent_read_files` `Arc` clone）写入共享队列。本轮纯增量（`session.rs` + `host_executor.rs` + `engine/mod.rs` + 文档），零既有调用点行为改动；生产路径不受影响。
 
 - **free fn 提取（dedup）**（`session.rs`）：`Session::record_read_file_result` 的 body 提为 `pub(crate) fn record_read_file_result_into(files: &Arc<StdMutex<VecDeque<RecentReadFile>>>, input, output_for_context)`——`Session::record_read_file_result` 变 thin wrapper；新 `ReinjectProbe::record_read_file_result` 调同一 free fn。单一 observe 逻辑源（"lift now"，同 `edit_file_paths` / `summarize_subagents` 先例）。3 个既有 session.rs 单测不变通过。
 - **`ReinjectProbe` 扩展**（`host_executor.rs`）：新增 `model: String` 字段（供 `compact_tool_result_for_context` 的 model-dependent context limits——镜像退役 `turn_loop` 的 `&self.session.model`）+ `new()` 第 4 个参数 + `pub(crate) fn model(&self) -> &str` accessor + `pub fn record_read_file_result(&self, input, output_for_context)`（转发 free fn）。
@@ -1625,7 +1625,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **进度（2026-07-13 §E `ToolCallStarted` stream-time + bridge dedup 落地，wire id 透传 + `bridge-{n}` 退役，`feat/pluggable-framework-core`）：**
 
-§E 的第二十九个切片落地——关闭 ROADMAP "下一聚焦工作" 的 "`ToolCallStarted` stream-time + bridge 去重" 项。生产 `handle_deepseek_turn`（slice 20 退役）在流式 `ContentBlockStop`（tool 块）处发 `Event::ToolCallStarted { id, name, input }`（wire tool id），但 framework `HostAgentExecutor` 此前**不**——`reduce_stream` 的 `ContentBlockStop`（tool 块）只 spawn early-start task、不发 callback；`on_tool_start` 只在 execute-time（tool loop）fire，且 `CallbackBridge` 合成 `bridge-{n}` id（wire id 丢失）。UI 看到 "calling X" 延迟（流式完成后）、且 id 不可关联。本轮两处协同改动闭合该缺口：(1) CORE trait——`Callback::on_tool_start` 加 `id: &str` 首参（透传 wire id）+ `StreamDelta::ToolCallStarted { id, name, input }` variant；(2) bridge 去重——`CallbackBridge::on_stream_delta(ToolCallStarted)` 发 `Event::ToolCallStarted`（real wire id）+ 标 announced；`on_tool_start(id, ...)` 查 announced set——已宣布则跳过 `Event::ToolCallStarted`（dedup），未宣布则发（fallback for `DefaultAgentExecutor` + `accumulate_stream`）。`bridge-{n}` 合成退役。`on_tool_end` 签名不动——LIFO `pending` 栈 pop 出 `on_tool_start` push 的 real wire id。
+§E 的第二十九个切片落地——关闭 ROADMAP "下一聚焦工作" 的 "`ToolCallStarted` stream-time + bridge 去重" 项。生产 `handle_codesmith_turn`（slice 20 退役）在流式 `ContentBlockStop`（tool 块）处发 `Event::ToolCallStarted { id, name, input }`（wire tool id），但 framework `HostAgentExecutor` 此前**不**——`reduce_stream` 的 `ContentBlockStop`（tool 块）只 spawn early-start task、不发 callback；`on_tool_start` 只在 execute-time（tool loop）fire，且 `CallbackBridge` 合成 `bridge-{n}` id（wire id 丢失）。UI 看到 "calling X" 延迟（流式完成后）、且 id 不可关联。本轮两处协同改动闭合该缺口：(1) CORE trait——`Callback::on_tool_start` 加 `id: &str` 首参（透传 wire id）+ `StreamDelta::ToolCallStarted { id, name, input }` variant；(2) bridge 去重——`CallbackBridge::on_stream_delta(ToolCallStarted)` 发 `Event::ToolCallStarted`（real wire id）+ 标 announced；`on_tool_start(id, ...)` 查 announced set——已宣布则跳过 `Event::ToolCallStarted`（dedup），未宣布则发（fallback for `DefaultAgentExecutor` + `accumulate_stream`）。`bridge-{n}` 合成退役。`on_tool_end` 签名不动——LIFO `pending` 栈 pop 出 `on_tool_start` push 的 real wire id。
 
 - **Step 1 — CORE `StreamDelta` + `Callback::on_tool_start`**（`crates/agent/src/callback/mod.rs`）：`StreamDelta` 加 `ToolCallStarted { id: String, name: String, input: serde_json::Value }` variant（enum doc 更新——移除 "not here yet" 注、variant 列表 + dedup 说明）；`Callback::on_tool_start` 加 `id: &'a str` 首参（default impl `let _ = (id, name, input);`，doc 说明 wire id + dedup intent）；`CallbackSet::on_tool_start` forward `id`；`noop_callback_defaults_are_callable` 测试加 `on_tool_start("t1", "echo", &Value::Null)` + `on_stream_delta(&StreamDelta::ToolCallStarted{..})` 调用。纯增量——新 variant default no-op（所有既有 `Callback` impl 不受影响），新参有 default impl（既有 impl 不 break，仅需传 `id` 的两处调用点更新）。
 - **Step 2 — `RecordingCallback` + `DefaultAgentExecutor`**（`crates/agent/src/executor/mod.rs`）：`RecordingCallback::on_tool_start` 加 `id: &str`（log 格式 `"tool_start:{name}"` 不变——test double 忽略 `id`，最小化 test churn，既有 `tool_start:echo` 断言绿）；tool loop `callback.on_tool_start(&id, &name, &input)`（`id` 来自 `tool_uses` 元组解构，已就位）。
@@ -1692,7 +1692,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **进度（2026-07-14 §E dead-code deletion 落地，orphan 项删除，superseded 方法保留，slice 32，`feat/pluggable-framework-core`）：**
 
-§E 的第三十二个切片落地——关闭 slice 20（wire-in cutover）遗留的 "dead-code deletion 切片" 项。slice 20 退役 `handle_deepseek_turn` 后用 `#[allow(dead_code)]` / `#![allow(dead_code)]` 压制了 17 项孤儿代码。本切片删掉其中**真正 orphan**（零用法、无 deferred re-wire）的三组，**保留** superseded 方法（按 ROADMAP "superseded 方法按 re-wire 决策保留或删" 的判断——每个都持有 deferred re-wire 逻辑或 paired-lifetime，删了会丢参考实现）。本轮纯删除（4 文件），零既有调用点行为改动；生产路径不受影响。
+§E 的第三十二个切片落地——关闭 slice 20（wire-in cutover）遗留的 "dead-code deletion 切片" 项。slice 20 退役 `handle_codesmith_turn` 后用 `#[allow(dead_code)]` / `#![allow(dead_code)]` 压制了 17 项孤儿代码。本切片删掉其中**真正 orphan**（零用法、无 deferred re-wire）的三组，**保留** superseded 方法（按 ROADMAP "superseded 方法按 re-wire 决策保留或删" 的判断——每个都持有 deferred re-wire 逻辑或 paired-lifetime，删了会丢参考实现）。本轮纯删除（4 文件），零既有调用点行为改动；生产路径不受影响。
 
 经全量 liveness grep（`rg` 跨 `agent-runtime`/`tui`/`agent`）核实每个 `allow(dead_code)` 项的用法后划定边界：
 - **streaming.rs**：模块文档自己把模块分成 "orphan cluster"（`*_STREAM_CHUNK_TIMEOUT_SECS` / `stream_chunk_timeout_secs` / `ContentBlockKind` / `STREAM_MAX_*`）vs "remain live"（`filter_tool_call_delta` / `should_transparently_retry_stream` / `TOOL_CALL_*_MARKERS` / `ToolUseState`）。删除前核实：保留项全经 `pub use` re-export（`mod.rs:2827-2832`）或被 exported 项内部使用 → 删除 orphan cluster 后**不被 dead-code 标记** → 可安全 drop 模块级 `#![allow(dead_code)]`。`MAX_STREAM_ERRORS_BEFORE_FAIL` / `MAX_TRANSPARENT_STREAM_RETRIES` 归 "retry policy"（非 orphan cluster），保留——前者经 `pub use` re-export + tui regression-pin（`tests.rs:3282`），后者被 live `should_transparently_retry_stream` 使用。
@@ -1702,13 +1702,13 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 - **`streaming.rs` orphan config cluster**（10 项 + 1 test）→ drop 模块级 `#![allow(dead_code)]`：
   - `ContentBlockKind` enum（零用法）。
   - `DEFAULT_STREAM_CHUNK_TIMEOUT_SECS` / `MIN_STREAM_CHUNK_TIMEOUT_SECS` / `MAX_STREAM_CHUNK_TIMEOUT_SECS` / `STREAM_IDLE_TIMEOUT_ENV`（仅被下面两 fn 用）。
-  - `stream_chunk_timeout_secs()` / `stream_chunk_timeout_secs_from_env()`（sole consumer 是退役的 `handle_deepseek_turn`）+ 其 test `stream_chunk_timeout_defaults_and_clamps_env_values`（test module 唯一 test → 整个 `#[cfg(test)] mod tests` 移除）。
+  - `stream_chunk_timeout_secs()` / `stream_chunk_timeout_secs_from_env()`（sole consumer 是退役的 `handle_codesmith_turn`）+ 其 test `stream_chunk_timeout_defaults_and_clamps_env_values`（test module 唯一 test → 整个 `#[cfg(test)] mod tests` 移除）。
   - `STREAM_MAX_CONTENT_BYTES` / `STREAM_MAX_DURATION_SECS`（零用法）。
   - 模块文档改为 "slice 32 §E deleted that orphan cluster; the scrubbers / retry policy / `ToolUseState` remain live"。
 
 - **`mcp_tool_approval_description`**（`dispatch.rs:397`）：零用法（不 re-export、不调用——`rg` 跨 workspace 零命中）。删 fn + doc + `#[allow(dead_code)]`。re-wire 进 `CallbackBridge` 是后续切片（会写新代码，非复用此 fn）。`mcp_tool_is_read_only`（被此 fn 调用）经 `mod.rs:2823` re-export，不受影响。
 
-- **`emit_tool_audit` + 3 test**（`tool_execution.rs:128`）：production caller 随 `handle_deepseek_turn` 退役；仅其自身 `#[cfg(test)]` 的 3 个 test（`emit_tool_audit_writes_jsonl_line_when_env_var_set` / `_is_noop_when_env_var_unset` / `_creates_parent_directory`）调用。删 fn + doc + `#[allow(dead_code)]` + 3 test + `AUDIT_TEST_GUARD` static / `audit_test_guard()` fn（仅被这 3 test 用 → 同步删）。test module 的 `#![allow(unsafe_code)]`（仅 `set_var` unsafe 用）+ `use serde_json::json` + `use std::{sync::Mutex, ...}` 同步删（terminal-guard 2 test 不用它们）。非-test import `use std::{fs::OpenOptions, io::Write, ...}` → `use std::{sync::Arc, time::Duration}`（`OpenOptions`/`io::Write` 仅 `emit_tool_audit` 用；`Arc`/`Duration` 仍被非-test 代码用，核实 `Arc`@51 / `Duration`@59）。
+- **`emit_tool_audit` + 3 test**（`tool_execution.rs:128`）：production caller 随 `handle_codesmith_turn` 退役；仅其自身 `#[cfg(test)]` 的 3 个 test（`emit_tool_audit_writes_jsonl_line_when_env_var_set` / `_is_noop_when_env_var_unset` / `_creates_parent_directory`）调用。删 fn + doc + `#[allow(dead_code)]` + 3 test + `AUDIT_TEST_GUARD` static / `audit_test_guard()` fn（仅被这 3 test 用 → 同步删）。test module 的 `#![allow(unsafe_code)]`（仅 `set_var` unsafe 用）+ `use serde_json::json` + `use std::{sync::Mutex, ...}` 同步删（terminal-guard 2 test 不用它们）。非-test import `use std::{fs::OpenOptions, io::Write, ...}` → `use std::{sync::Arc, time::Duration}`（`OpenOptions`/`io::Write` 仅 `emit_tool_audit` 用；`Arc`/`Duration` 仍被非-test 代码用，核实 `Arc`@51 / `Duration`@59）。
 
 - **cascade cleanup**：删 `emit_tool_audit` 后 `mod.rs:12` 的 `use std::path::PathBuf` 变 unused（sole transitive consumer 经 `use super::*` 链是 `emit_tool_audit` 的 `PathBuf::from`）→ 同步删（lib build 零 warning 确认无其他消费者）。
 
@@ -1921,7 +1921,7 @@ override 专用 test 待补、Step 5 mid-stream-steer test 随 defer 略。
 
 **进度（2026-07-15 §E thinking-only handling（seam 2）落地，issue #1727 的 thinking-only 守卫吸收进 `HostAgentExecutor`，slice 39，`feat/pluggable-framework-core`）：**
 
-§E 的第三十九个切片落地——关闭 seam-2 "thinking-only handling still to come（after the stream resolves, before tool extraction / turn end）" 缺口（`host_executor.rs:271-273` 模块文档）。生产退役的 `handle_deepseek_turn`（`turn_loop.rs:1267-1293` + `:1549-1567` + pure helper `:2893-2901`，issue #1727）在 stream 解析后、`tool_uses.is_empty()` 尾巴前处理 "thinking-only" 回合：模型只产 `Thinking` block（无 `Text`、无 `ToolUse`，如 gpt-oss via ollama 的 harmony→OpenAI shim 映射到 `reasoning_content`）时，**不持久化**该 thinking-only assistant 消息（DeepSeek chat API 拒收只含 thinking block 的 assistant 消息），并在**干净回合尾**发一条 `Event::status("Model returned reasoning but no answer or tool call; turn ended without output. Send a follow-up to retry.")`。执行器此前在 `run_inner` 的 `callback.on_llm_end` 之后**无条件** `history.push(assistant)`（`:3877-3880`）、不算 thinking-only flag、在 `NoToolCalls` 尾巴直接 `on_complete` 无 status。本切片把生产守卫吸收：算 flag、guard 持久化、在干净尾发 status，闭合 slice 20 以来 seam-2 反复标记的 "thinking-only handling still to come"。
+§E 的第三十九个切片落地——关闭 seam-2 "thinking-only handling still to come（after the stream resolves, before tool extraction / turn end）" 缺口（`host_executor.rs:271-273` 模块文档）。生产退役的 `handle_codesmith_turn`（`turn_loop.rs:1267-1293` + `:1549-1567` + pure helper `:2893-2901`，issue #1727）在 stream 解析后、`tool_uses.is_empty()` 尾巴前处理 "thinking-only" 回合：模型只产 `Thinking` block（无 `Text`、无 `ToolUse`，如 gpt-oss via ollama 的 harmony→OpenAI shim 映射到 `reasoning_content`）时，**不持久化**该 thinking-only assistant 消息（DeepSeek chat API 拒收只含 thinking block 的 assistant 消息），并在**干净回合尾**发一条 `Event::status("Model returned reasoning but no answer or tool call; turn ended without output. Send a follow-up to retry.")`。执行器此前在 `run_inner` 的 `callback.on_llm_end` 之后**无条件** `history.push(assistant)`（`:3877-3880`）、不算 thinking-only flag、在 `NoToolCalls` 尾巴直接 `on_complete` 无 status。本切片把生产守卫吸收：算 flag、guard 持久化、在干净尾发 status，闭合 slice 20 以来 seam-2 反复标记的 "thinking-only handling still to come"。
 
 **关键设计洞察（deferred-decide）**：生产在持久化点（`turn_loop.rs:1283`）**capture** flag 但 **defer** 到 `tool_uses.is_empty()` 尾巴才 **decide**——中间还有 steer flush / subagent drain / goal-continuation / REPL 等 resume 分支；若在 capture 点即发 status，一个马上要 resume 的回合会先看到一条虚假 "turn ended" 提示。执行器侧同序：flag 在持久化前算（`on_llm_end` 后），status 在 no-tool-calls 尾巴发——steer flush（`flushed > 0` → `continue`）与 subagent blocking-hold（completion arm → `continue`；cancel arm → `return Interrupted`；steer arm → `continue`）均先于尾巴，故 resume 时尾巴不到、status 不发——faithful。
 
@@ -2159,7 +2159,7 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 接 slice 45（§E4 主线闭合，`:2120`）。slice 45 的 "下一聚焦工作" 列 §D2 残件 polish（CLI flag / per-entry `config set` / bare `provider=` 形）维持低优先；本切片闭合其中两项、第三项按设计拒绝收口。§D2（`9d47942c`）落了 `custom_provider` selector + `[[providers.custom]]` 表，`ARCHITECTURE.md:287` 标三残件 polish；本切片使 custom provider 可经 CLI flag 选 + 经 `config set` 管理单条目。纯增量（config 层 get/set/unset + masking + cli flag + tui env 消费），零既有调用点行为改动（builtin host 路径仍由 config 常量解析，custom 路径不变）。
 
 **关键设计决策：**
-- **CLI flag = 独立 `--custom-provider <id>`**（非扩展 `--provider`）：镜像 §D2 自己的 "dedicated `custom_provider` selector over bare `provider=`" 选择。保 `--provider ProviderArg` value_enum 校验完整（零回归）；`conflicts_with = "provider"`（builtin 与 custom 互斥）。经 env `CODESMITH_CUSTOM_PROVIDER`（legacy `DEEPSEEK_CUSTOM_PROVIDER` 经 `codesmith_env_var`）转发至 TUI，并行 `--provider` → `DEEPSEEK_PROVIDER`。builtin-id 碰撞在 cli parse 期拒（`ProviderKind::parse(id).is_some()` → bail 指 `--provider`）；entry-existence 延后至 TUI `validate`（镜像 `--provider` 的延后校验）。
+- **CLI flag = 独立 `--custom-provider <id>`**（非扩展 `--provider`）：镜像 §D2 自己的 "dedicated `custom_provider` selector over bare `provider=`" 选择。保 `--provider ProviderArg` value_enum 校验完整（零回归）；`conflicts_with = "provider"`（builtin 与 custom 互斥）。经 env `CODESMITH_CUSTOM_PROVIDER`（legacy `CODESMITH_CUSTOM_PROVIDER` 经 `codesmith_env_var`）转发至 TUI，并行 `--provider` → `CODESMITH_PROVIDER`。builtin-id 碰撞在 cli parse 期拒（`ProviderKind::parse(id).is_some()` → bail 指 `--provider`）；entry-existence 延后至 TUI `validate`（镜像 `--provider` 的延后校验）。
 - **per-entry `config set` = find-or-create by id**：键形 `providers.custom.<id>.<field>`。`split_custom_provider_key` 按**最后** `.` 切——尾段 ∈ {api_key/base_url/model/auth_mode/http_headers/id} 视为字段、其余为 id（dotted id 如 `my.co` 正确切：字段恒为末段）。set find-or-create 条目（缺则 push `CustomProviderToml{id, ..Default}`）置字段；`.id` 拒（id 是 key 非 value）；whole-array/whole-entry bail 指 hand-edit。unset 清字段 / 删条目（`retain`）/ 清全表；`.id` unset bail。get 返单条目（serialize）/ 单字段。镜像既有 per-builtin `providers.anthropic.<field>` 形。
 - **masking**：`is_sensitive_config_key` 扩——whole array（既有）+ whole entry（新，因 serialize 含 api_key）+ per-entry `.api_key`（既有 `.ends_with(".api_key")` 规则覆盖）；non-secret 字段（base_url/model/auth_mode/http_headers/id）不 mask（per-field get 可见，whole entry 则整体 redact 作 blob）。
 - **bare `provider=` form = by-design 拒绝收口**：`9d47942c` 已明确拒绝（closed `ProviderKind` enum 经 ConfigToml/Overrides/Env + 每 match 臂级联，破 layering）。`ARCHITECTURE.md:287` 原列其为 "deferred polish" 实为 stale；本切片改标 "by-design rejected (see 9d47942c)" 收 doc-debt，不实现。
@@ -2167,7 +2167,7 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **落地步骤：**
 1. `crates/config/src/lib.rs`：新增 `CUSTOM_PROVIDER_FIELDS` const + `split_custom_provider_key` helper（`fn(&str) -> (&str, Option<&str>)`，`rsplit_once('.')` + 字段集 contains）；`get_value` 的 `providers.custom` 精确臂改 guard 臂（`key == "providers.custom" || starts_with`），内分 whole-array / whole-entry（`toml::to_string(entry)`）/ per-field；`set_value` 同 guard 臂替换原 bail——find-or-create + 置字段（http_headers 走 `parse_http_headers`）+ `.id` 拒 + whole bail；`unset_value` 的 `providers.custom` 臂改 guard 臂——clear field / retain-remove entry / `.id` bail / clear all；`is_sensitive_config_key` 扩 whole-entry + 保留 non-secret 字段可见。
 2. `crates/cli/src/lib.rs`：`Cli` 加 `custom_provider: Option<String>`（`--custom-provider`/`value_name="ID"`/`conflicts_with="provider"`）；`build_tui_command` 在 `cli.provider` env 块后加 custom-provider 块——builtin 碰撞 guard（`ProviderKind::parse`）+ `cmd.env("CODESMITH_CUSTOM_PROVIDER", id)`。
-3. `crates/tui/src/config.rs`：`apply_env_overrides` 在 `CODESMITH_PROVIDER` 块后加 `CODESMITH_CUSTOM_PROVIDER`（legacy `DEEPSEEK_CUSTOM_PROVIDER`）读取 → trim → 非空置 `config.custom_provider`（env 胜 file，镜像 `DEEPSEEK_PROVIDER` > file `provider`）；既有 `validate`（`:1578`）已拒 builtin 碰撞 + 缺 entry，故 env 消费端保持简。
+3. `crates/tui/src/config.rs`：`apply_env_overrides` 在 `CODESMITH_PROVIDER` 块后加 `CODESMITH_CUSTOM_PROVIDER`（legacy `CODESMITH_CUSTOM_PROVIDER`）读取 → trim → 非空置 `config.custom_provider`（env 胜 file，镜像 `CODESMITH_PROVIDER` > file `provider`）；既有 `validate`（`:1578`）已拒 builtin 碰撞 + 缺 entry，故 env 消费端保持简。
 4. `ARCHITECTURE.md` + ROADMAP §D2：状态行更新（bare form by-design rejected + slice 46 closed CLI flag/per-entry set）。
 
 **测试：** config **10 新**（per-entry set 更新既有/创建缺失、`.id` 拒、whole-entry bail、http_headers 字段、get entry+field、unset field/entry/`.id` bail、is_sensitive masking per-entry api_key + whole-entry redacted + non-secret 字段可见）+ **1 既有改**（`..._is_readonly_and_secret` → `..._get_unset_and_secret`：whole-array set 仍 bail，per-entry set 不再拒——headline 反转）。cli **3 新**（`build_tui_command_forwards_custom_provider_env`、`build_tui_command_custom_provider_builtin_collision_bails`、`custom_provider_conflicts_with_provider_flag` clap conflict）。tui **3 新**（`apply_env_overrides_sets_custom_provider`、`apply_env_overrides_custom_provider_env_overrides_file_value` trim + env 胜 file、`apply_env_overrides_custom_provider_empty_is_noop` 空 env 不 clobber file）。
@@ -2177,18 +2177,18 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **By-design gaps（deferred，documented）：**
 - **id 含与字段同名尾段**（如 id "model"）歧义：`providers.custom.model.base_url` 切为 (id="model", field="base_url") 而非 whole-entry for id="model.base_url"；文档建议避开。
 - **`--custom-provider` 不在 cli parse 期校验 entry-existence**：延后至 TUI `validate`（镜像 `--provider` 延后校验）。
-- **`CODESMITH_CUSTOM_PROVIDER` env 优先级** = CLI-sourced env 胜 file `custom_provider`（镜像 `DEEPSEEK_PROVIDER` > file `provider`）。
-- §B3（`ApiProvider`→`ProviderKind`）不变——仍低优先。~~§A1（DeepSeekClient 抽取）不变——仍低优先/deferred~~ → slice 48 复核 stale：§A1 已 retirement+rig 完成（见 2026-07-07 §A1 checkpoint + slice 41/42）。
+- **`CODESMITH_CUSTOM_PROVIDER` env 优先级** = CLI-sourced env 胜 file `custom_provider`（镜像 `CODESMITH_PROVIDER` > file `provider`）。
+- §B3（`ApiProvider`→`ProviderKind`）不变——仍低优先。~~§A1（CodeSmithClient 抽取）不变——仍低优先/deferred~~ → slice 48 复核 stale：§A1 已 retirement+rig 完成（见 2026-07-07 §A1 checkpoint + slice 41/42）。
 
 **下一聚焦工作：**
 - §D2 残件 polish 全部收口（CLI flag + per-entry config set 落地，bare form by-design 拒绝收 doc-debt）。§D 主线闭合。
-- §B3（cosmetic `DeepseekCN` 折叠）仍低优先。~~§A1（DeepSeekClient 抽取，需 replay bridge）仍低优先/deferred~~ → slice 48 复核 stale：§A1 已 retirement+rig 完成（replay bridge 不必要）。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
+- §B3（cosmetic `DeepseekCN` 折叠）仍低优先。~~§A1（CodeSmithClient 抽取，需 replay bridge）仍低优先/deferred~~ → slice 48 复核 stale：§A1 已 retirement+rig 完成（replay bridge 不必要）。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
 
 ---
 
 **进度（2026-07-17 §E slice 47 residual dead-code deletion——`turn_loop::EarlyToolResult`/`EarlyToolTask` 死结构 + `ToolExecutionPlan.early_result` 死字段 + tui `prompt_zones` 死 shim，`feat/pluggable-framework-core`）：**
 
-接 slice 46（§D2 残件 polish 收口，`:2157`）。§E 主线（slice 43-45 §E4 providers.toml + slice 40 §E parallel dispatch）已闭合，本切片清 §E 框架核心迁移遗留的纯死代码——`turn_loop` 模块在 slice 20 §E（`handle_deepseek_turn` retirement）后已缩为两个 live helper（`messages_with_turn_metadata` + `subagent_completion_runtime_message`），但 `EarlyToolResult`/`EarlyToolTask` 两结构因 `dispatch.rs::ToolExecutionPlan.early_result` 字段的类型引用而保留、并加 `#![allow(dead_code)]` 静音。slice 15 §E early-tool-start + slice 40 §E parallel dispatch 把 speculative dispatch 重接到框架执行器（`HostAgentExecutor` 自带 distinct `EarlyToolTask` 类型 + `early_tasks` map），`turn_loop` 那份纯成死重。纯删除（2 结构 + 1 字段 + 1 shim + `#![allow(dead_code)]`），零既有调用点行为改动。
+接 slice 46（§D2 残件 polish 收口，`:2157`）。§E 主线（slice 43-45 §E4 providers.toml + slice 40 §E parallel dispatch）已闭合，本切片清 §E 框架核心迁移遗留的纯死代码——`turn_loop` 模块在 slice 20 §E（`handle_codesmith_turn` retirement）后已缩为两个 live helper（`messages_with_turn_metadata` + `subagent_completion_runtime_message`），但 `EarlyToolResult`/`EarlyToolTask` 两结构因 `dispatch.rs::ToolExecutionPlan.early_result` 字段的类型引用而保留、并加 `#![allow(dead_code)]` 静音。slice 15 §E early-tool-start + slice 40 §E parallel dispatch 把 speculative dispatch 重接到框架执行器（`HostAgentExecutor` 自带 distinct `EarlyToolTask` 类型 + `early_tasks` map），`turn_loop` 那份纯成死重。纯删除（2 结构 + 1 字段 + 1 shim + `#![allow(dead_code)]`），零既有调用点行为改动。
 
 **关键设计决策：**
 - **两个 distinct `EarlyToolTask` 类型**：框架执行器的（`host_executor.rs:1272`，`Drop` abort `JoinHandle` 防 orphan 任务泄漏 + `handle: Option<..>` 包裹使 reuse 路径可 `Option::take` 出来 `.await`）vs 删除的 `turn_loop::EarlyToolTask`（plain struct，字段从未被读，仅被死字段 `early_result` 引用占位）。删 turn_loop 份安全——框架执行器从不查 `plan.early_result`，它在自己的 `early_tasks: HashMap<String, EarlyToolTask>` side map（keyed by tool-call id）+ `early_for_plan` parallel array 里维护 speculative 任务。
@@ -2207,43 +2207,43 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **验证：** `cargo build -p codesmith-agent-runtime` **零 warning**；`cargo test -p codesmith-agent-runtime --lib host_executor` **162 通过**；`cargo test -p codesmith-agent-runtime --lib turn_loop` **1 通过**；`cargo build -p codesmith-tui` 绿（**142 warning**，baseline 143，-1 自 prompt_zones shim 删除）；`cargo test -p codesmith-tui --bin codesmith-tui core::engine::tests` **126 通过 + 1 ignored**；`cargo build --workspace` 全绿。stash-pop baseline 对照（HEAD slice 46 不含本改动）：总测试数 **1151**（1148+1 flaky MCP+2 ignored）两侧一致——零测试被删；flaky MCP 测试既有文档化、隔离跑过。
 
 **By-design gaps（deferred，documented）：**
-- **`turn_loop` 模块仍非 §E1 `AgentExecutor` 抽取**：模块现仅两 live helper（`messages_with_turn_metadata` test-referenced + `subagent_completion_runtime_message` consumed by `HostAgentExecutor`），~~production `Engine`/`turn_loop` 迁移仍 deferred（§E1 "接真引擎"步）~~ → slice 48 复核 stale：§E1 production 迁移经 slice 20 cutover 完成（`HostAgentExecutor` 为 live production path、`handle_deepseek_turn` 已删），`turn_loop` 仅余 2 live helper 是迁移后残件、非 pending。本切片只删死结构，不动 live 代码。
+- **`turn_loop` 模块仍非 §E1 `AgentExecutor` 抽取**：模块现仅两 live helper（`messages_with_turn_metadata` test-referenced + `subagent_completion_runtime_message` consumed by `HostAgentExecutor`），~~production `Engine`/`turn_loop` 迁移仍 deferred（§E1 "接真引擎"步）~~ → slice 48 复核 stale：§E1 production 迁移经 slice 20 cutover 完成（`HostAgentExecutor` 为 live production path、`handle_codesmith_turn` 已删），`turn_loop` 仅余 2 live helper 是迁移后残件、非 pending。本切片只删死结构，不动 live 代码。
 - **tui 142 既有 warning 均死代码**：与 baseline 对齐（仅 -1 自本切片删的 shim），零新增命中 agent-runtime/dispatch/tui main。
 
 **下一聚焦工作：**
-- §E 死代码清完（`turn_loop` 死结构 + `early_result` 死字段 + `prompt_zones` 死 shim 全删）。~~§E1 production `Engine`/`turn_loop`→`AgentExecutor` 迁移仍 deferred（需 replay bridge）~~ → slice 48 复核 stale：§E1 production 迁移经 slice 20 cutover 完成（`HostAgentExecutor` 为 live production path、`handle_deepseek_turn` 已删）；"replay bridge" 实为 §A1 阻塞且已解除（rig compat 层原生序列化 `reasoning_content`），非 §E1 阻塞。
-- §B3（cosmetic `DeepseekCN` 折叠）仍低优先。~~§A1（DeepSeekClient 抽取）仍低优先/deferred~~ → slice 48 复核 stale：§A1 经 retirement+rig 完成（非抽取；replay bridge 不必要），tui `client.rs`/`chat.rs` 已删（slice 41）。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
+- §E 死代码清完（`turn_loop` 死结构 + `early_result` 死字段 + `prompt_zones` 死 shim 全删）。~~§E1 production `Engine`/`turn_loop`→`AgentExecutor` 迁移仍 deferred（需 replay bridge）~~ → slice 48 复核 stale：§E1 production 迁移经 slice 20 cutover 完成（`HostAgentExecutor` 为 live production path、`handle_codesmith_turn` 已删）；"replay bridge" 实为 §A1 阻塞且已解除（rig compat 层原生序列化 `reasoning_content`），非 §E1 阻塞。
+- §B3（cosmetic `DeepseekCN` 折叠）仍低优先。~~§A1（CodeSmithClient 抽取）仍低优先/deferred~~ → slice 48 复核 stale：§A1 经 retirement+rig 完成（非抽取；replay bridge 不必要），tui `client.rs`/`chat.rs` 已删（slice 41）。§E4 follow-up（env override augment / flash-kimi-code 变体下沉）按需另开切片。
 
 ---
 
-**进度（2026-07-17 §A1/§E1 doc-debt cleanup slice 48——修正 "replay bridge deferred" stale 状态标记 + `handle_deepseek_turn remains live` / `DeepSeekClient` 死引用文档，`feat/pluggable-framework-core`）：**
+**进度（2026-07-17 §A1/§E1 doc-debt cleanup slice 48——修正 "replay bridge deferred" stale 状态标记 + `handle_codesmith_turn remains live` / `CodeSmithClient` 死引用文档，`feat/pluggable-framework-core`）：**
 
-接 slice 47（§E 死代码清完，`:2189`）。复查 slice 47 的 "下一聚焦工作" 列发现其依据已 stale：该列把 §A1（DeepSeekClient 抽取）与 §E1（production `Engine`/`turn_loop`→`AgentExecutor` 迁移）均标 "deferred（需 replay bridge）"，但经代码核实两者实际均已完成——"replay bridge" 阻塞属 §A1 且已解除（rig compat 层原生序列化 `reasoning_content`，2026-07-07 §A1 checkpoint 对照 rig-core 0.39.0 源码核实），§E1 production 迁移经 slice 20 §E cutover 完成（`HostAgentExecutor` 为 `handle_send_message` 的 live production path、`handle_deepseek_turn` 已删、`fn handle_deepseek_turn` 定义不存在）。本切片修正全部 stale 标记，纯文档、零行为改动（匹配 slice 32/42/47 的 cleanup-slice 惯例）。
+接 slice 47（§E 死代码清完，`:2189`）。复查 slice 47 的 "下一聚焦工作" 列发现其依据已 stale：该列把 §A1（CodeSmithClient 抽取）与 §E1（production `Engine`/`turn_loop`→`AgentExecutor` 迁移）均标 "deferred（需 replay bridge）"，但经代码核实两者实际均已完成——"replay bridge" 阻塞属 §A1 且已解除（rig compat 层原生序列化 `reasoning_content`，2026-07-07 §A1 checkpoint 对照 rig-core 0.39.0 源码核实），§E1 production 迁移经 slice 20 §E cutover 完成（`HostAgentExecutor` 为 `handle_send_message` 的 live production path、`handle_codesmith_turn` 已删、`fn handle_codesmith_turn` 定义不存在）。本切片修正全部 stale 标记，纯文档、零行为改动（匹配 slice 32/42/47 的 cleanup-slice 惯例）。
 
 **关键设计决策：**
-- **strawman "replay bridge" 是 §A1 阻塞、非 §E1 阻塞**：slice 47 的 "下一聚焦工作" 把 "需 replay bridge" 括注附在 §E1 行后（`:2214`），但 replay bridge 从来是 §A1（DeepSeek `reasoning_content` 回放协议搬迁）的阻塞。2026-07-07 §A1 checkpoint 核实 rig 的 compat 层原生把 `AssistantContent::Reasoning` 序列化为 `reasoning_content`，故回放桥接在 adapter 层即完成——阻塞解除，§A1 改走 retirement（DeepSeek 切 rig + 删 `DeepSeekClient`）而非抽取。§E1（production Engine→AgentExecutor 迁移）从未依赖 replay bridge；它依赖 guardrail 逐步吸收，slice 11–19 全部吸收、slice 20 cutover 上线。
+- **strawman "replay bridge" 是 §A1 阻塞、非 §E1 阻塞**：slice 47 的 "下一聚焦工作" 把 "需 replay bridge" 括注附在 §E1 行后（`:2214`），但 replay bridge 从来是 §A1（DeepSeek `reasoning_content` 回放协议搬迁）的阻塞。2026-07-07 §A1 checkpoint 核实 rig 的 compat 层原生把 `AssistantContent::Reasoning` 序列化为 `reasoning_content`，故回放桥接在 adapter 层即完成——阻塞解除，§A1 改走 retirement（DeepSeek 切 rig + 删 `CodeSmithClient`）而非抽取。§E1（production Engine→AgentExecutor 迁移）从未依赖 replay bridge；它依赖 guardrail 逐步吸收，slice 11–19 全部吸收、slice 20 cutover 上线。
 - **strkethrough-correct 而非改写历史条目**：slice 47 的 "下一聚焦工作" 与 "By-design gaps" 中 stale 的 §A1/§E1 断言用 `~~…~~ → slice 48 复核 stale：…` 收口（镜像 `:128` 的 `~~LlmClient trait 文档…~~ → §D2 已清理` 既有 pattern）。保历史记录（slice 47 当时认为 deferred）的同时就地标记纠正，避免下一读者被 "deferred — needs replay bridge" 误导。
 - **§A/§E1 section 用 Status 追加、非改写原计划**：§A1（`:2226`）与 §E1（`:2398`）的 deferred-work catalog 描述 "搬运/抽取/接真引擎" 原计划，实际经 retirement/cutover 完成（路径不同）。镜像 §D2 的 `**Status (9d47942c + slice 46):**` 追加 pattern——原计划文本作历史记录保留，追加 Status 段说明实际完成路径。
-- **ARCHITECTURE.md status table 是 current-status doc，直接改**：表行 277/278（tui-local `DeepSeekProviderFactory`/`DeepSeekClient::from_parts` 标 "✅ done"）描述 §D1 partial 期状态、§A1 后已退役；行 282（"seeds from default_registry for all non-DeepSeek"）描述 §D1 partial；行 285/288 标 deferred/in-progress。这些是 current-status 断言（非历史记录），直接改：retired 行改 "retired"（镜像行 283 `AnthropicClient retired` 的 template）、282 改 "all providers"、285/288 改 "done"。ASCII diagram（`:53`/`:77`）同步删 `DeepSeekProviderFactory`/`DeepSeekClient`。
-- **代码 doc comment assert current state，直接改**：`host_executor.rs` 模块 doc（"carries the real turn loop (handle_deepseek_turn)…will absorb…eventually replacing"）+ `:238` "not yet wired into handle_send_message; handle_deepseek_turn remains the live path" + `dispatch.rs:4` "high-level ordering still lives in Engine::handle_deepseek_turn" + `mod.rs:2757` "TUI-concrete types (… DeepSeekClient …)" + `tui/tests/README.md:28` "refactored to take Arc<dyn LlmClient> instead of Option<DeepSeekClient>" 均断言已不成立的状态，直接改 past-tense / 删死引用。`handle_deepseek_turn` 的**历史 provenance 引用**（guardrail doc 中 "mirroring handle_deepseek_turn's X"）保留——它们说明迁移出处、不断言当前 live。
-- **`tui/tests/README.md` 对齐 in-file comment**：`integration_mock_llm.rs:25-29` 的 in-file doc 已准确（engine holds `Option<LlmClientHandle>` = `Option<Arc<dyn LlmClient>>` since v0.8.48；tests remain ignored pending `EngineConfig`/`Config` harness），但 README 仍 stale（"unblock when Engine refactored to take Arc<dyn LlmClient> instead of Option<DeepSeekClient>"）。本切片把 README 改为对齐 in-file doc 的准确 framing——refactor 已落地、tests 仍 ignored 因 test-harness 缺口。
+- **ARCHITECTURE.md status table 是 current-status doc，直接改**：表行 277/278（tui-local `CodeSmithProviderFactory`/`CodeSmithClient::from_parts` 标 "✅ done"）描述 §D1 partial 期状态、§A1 后已退役；行 282（"seeds from default_registry for all non-DeepSeek"）描述 §D1 partial；行 285/288 标 deferred/in-progress。这些是 current-status 断言（非历史记录），直接改：retired 行改 "retired"（镜像行 283 `AnthropicClient retired` 的 template）、282 改 "all providers"、285/288 改 "done"。ASCII diagram（`:53`/`:77`）同步删 `CodeSmithProviderFactory`/`CodeSmithClient`。
+- **代码 doc comment assert current state，直接改**：`host_executor.rs` 模块 doc（"carries the real turn loop (handle_codesmith_turn)…will absorb…eventually replacing"）+ `:238` "not yet wired into handle_send_message; handle_codesmith_turn remains the live path" + `dispatch.rs:4` "high-level ordering still lives in Engine::handle_codesmith_turn" + `mod.rs:2757` "TUI-concrete types (… CodeSmithClient …)" + `tui/tests/README.md:28` "refactored to take Arc<dyn LlmClient> instead of Option<CodeSmithClient>" 均断言已不成立的状态，直接改 past-tense / 删死引用。`handle_codesmith_turn` 的**历史 provenance 引用**（guardrail doc 中 "mirroring handle_codesmith_turn's X"）保留——它们说明迁移出处、不断言当前 live。
+- **`tui/tests/README.md` 对齐 in-file comment**：`integration_mock_llm.rs:25-29` 的 in-file doc 已准确（engine holds `Option<LlmClientHandle>` = `Option<Arc<dyn LlmClient>>` since v0.8.48；tests remain ignored pending `EngineConfig`/`Config` harness），但 README 仍 stale（"unblock when Engine refactored to take Arc<dyn LlmClient> instead of Option<CodeSmithClient>"）。本切片把 README 改为对齐 in-file doc 的准确 framing——refactor 已落地、tests 仍 ignored 因 test-harness 缺口。
 
 **落地步骤：**
-1. `ARCHITECTURE.md` ASCII diagram：`:53` 删 "tui-local DeepSeekProviderFactory (wraps DeepSeekClient)" 行（status table 行 277/282 已显式说明 tui 不持 provider factory，diagram 无需重复）；`:77` "MockClient / RigLlmClient / DeepSeekClient / ..." → "MockClient / RigLlmClient / ..."。
-2. `ARCHITECTURE.md` status table：行 277/278 改 retired（"TUI-local DeepSeekProviderFactory retired — rig DeepSeekFactory replaces it (§A1)" / "DeepSeekClient retired — rig RigLlmClient replaces it (§A1); from_parts deleted"，where 列指向 deleted 文件）；行 282 改 "seeds from default_registry for all providers (§D1 partial → §A1 full cutover)"；行 285 改 "✅ done (superseded — retired, not extracted; replay bridge found unnecessary...)"；行 288 改 "HostAgentExecutor is the live production path (slice 20 cutover)... production Engine migration done"。
-3. `crates/agent-runtime/src/engine/host_executor.rs`：模块 doc（`:1-12`）改 past-tense（"replaced the retired handle_deepseek_turn in slice 20 cutover... handle_deepseek_turn is deleted"、"absorbed the production guardrails slice by slice"）；`:238-242` 改 "wired into handle_send_message (slice 20 §E cutover) and is the live production turn path; handle_deepseek_turn is deleted"。
-4. `crates/agent-runtime/src/engine/dispatch.rs:4`："high-level ordering still lives in Engine::handle_deepseek_turn" → "now lives in HostAgentExecutor (slice 20 §E cutover — handle_deepseek_turn retired/deleted)"。
-5. `crates/agent-runtime/src/engine/mod.rs:2757`："TUI-concrete types (Config, EngineHost, DeepSeekClient, …)" → "(Config, EngineHost, …)"。
+1. `ARCHITECTURE.md` ASCII diagram：`:53` 删 "tui-local CodeSmithProviderFactory (wraps CodeSmithClient)" 行（status table 行 277/282 已显式说明 tui 不持 provider factory，diagram 无需重复）；`:77` "MockClient / RigLlmClient / CodeSmithClient / ..." → "MockClient / RigLlmClient / ..."。
+2. `ARCHITECTURE.md` status table：行 277/278 改 retired（"TUI-local CodeSmithProviderFactory retired — rig DeepSeekFactory replaces it (§A1)" / "CodeSmithClient retired — rig RigLlmClient replaces it (§A1); from_parts deleted"，where 列指向 deleted 文件）；行 282 改 "seeds from default_registry for all providers (§D1 partial → §A1 full cutover)"；行 285 改 "✅ done (superseded — retired, not extracted; replay bridge found unnecessary...)"；行 288 改 "HostAgentExecutor is the live production path (slice 20 cutover)... production Engine migration done"。
+3. `crates/agent-runtime/src/engine/host_executor.rs`：模块 doc（`:1-12`）改 past-tense（"replaced the retired handle_codesmith_turn in slice 20 cutover... handle_codesmith_turn is deleted"、"absorbed the production guardrails slice by slice"）；`:238-242` 改 "wired into handle_send_message (slice 20 §E cutover) and is the live production turn path; handle_codesmith_turn is deleted"。
+4. `crates/agent-runtime/src/engine/dispatch.rs:4`："high-level ordering still lives in Engine::handle_codesmith_turn" → "now lives in HostAgentExecutor (slice 20 §E cutover — handle_codesmith_turn retired/deleted)"。
+5. `crates/agent-runtime/src/engine/mod.rs:2757`："TUI-concrete types (Config, EngineHost, CodeSmithClient, …)" → "(Config, EngineHost, …)"。
 6. `crates/tui/tests/README.md:26-29`：改对齐 in-file doc（refactor 已落地 v0.8.48、tests 仍 ignored pending `EngineConfig`/`Config` harness）。
 7. `ROADMAP.md`：slice 46 "下一聚焦工作"（`:2181`/`:2185`）+ slice 47 "By-design gaps" `:2210` + "下一聚焦工作" `:2214`/`:2215` 共五处 stale §A1/§E1 "deferred" 断言 strkethrough-correct（`~~…~~ → slice 48 复核 stale：…`）；§A1 section + §E1 section 各追加 `**Status:**` 段说明实际完成路径。
 
 **测试：** 零测试改动——纯文档（doc comment + markdown），无代码逻辑变更。doc comment 改动经 `cargo build` 核实仍编译。
 
-**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning（doc comment 改动不触 warning）；`cargo +1.90.0 build -p codesmith-tui` 绿（README/dispatch/host_executor/mod 改动均为 doc，零代码影响）；`cargo +1.90.0 build --workspace` 全绿；grep 核实 `replay bridge` 命中仅剩 slice 48 entry + §A1 Status 段（说明已解除）+ slice 46/47 strikethrough 纠正注（历史），零 current-status 断言；`handle_deepseek_turn remains the live path` / `not yet wired into handle_send_message` 零命中；`DeepSeekClient` 命中仅剩 §A1 历史进度条目（2026-07-07 checkpoint，记录 retirement 史）+ §A1 Status 段（说明 retired）+ §A deferred-work catalog（原计划记录）。
+**验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` 零新 warning（doc comment 改动不触 warning）；`cargo +1.90.0 build -p codesmith-tui` 绿（README/dispatch/host_executor/mod 改动均为 doc，零代码影响）；`cargo +1.90.0 build --workspace` 全绿；grep 核实 `replay bridge` 命中仅剩 slice 48 entry + §A1 Status 段（说明已解除）+ slice 46/47 strikethrough 纠正注（历史），零 current-status 断言；`handle_codesmith_turn remains the live path` / `not yet wired into handle_send_message` 零命中；`CodeSmithClient` 命中仅剩 §A1 历史进度条目（2026-07-07 checkpoint，记录 retirement 史）+ §A1 Status 段（说明 retired）+ §A deferred-work catalog（原计划记录）。
 
 **By-design gaps（deferred，documented）：**
 - **§A/§E deferred-work catalog 原计划文本保留**：§A1-A4 / §E1-E4 的 deferred-work catalog 描述原 "extract" / "接真引擎" 计划，实际经 retirement/cutover 完成（路径不同）。原文本作历史记录保留，仅追加 Status 段——不改写原计划（保 "考虑过的方案" 记录）。§A2-A4（AnthropicClient / 共享 helper / per-client helper 去重）原计划亦经 retirement（AnthropicClient 删、slice 42 dedup）完成，Status 段仅在 §A1（retirement 起点）+ §E1（迁移起点）追加——§A2-A4 不逐条追加（§A1 Status 段已涵盖 "retirement 而非 extraction" 全局路径，§A2 同型）。
-- **`handle_deepseek_turn` 历史 provenance 引用保留**：host_executor.rs 的 guardrail doc 中 "mirroring handle_deepseek_turn's X (turn_loop.rs:NNN)" 引用说明 guardrail 的迁移出处，不断言当前 live，保留（line refs 指向已删代码属已知 doc-debt，但 provenance value 高于 line 准确性）。
+- **`handle_codesmith_turn` 历史 provenance 引用保留**：host_executor.rs 的 guardrail doc 中 "mirroring handle_codesmith_turn's X (turn_loop.rs:NNN)" 引用说明 guardrail 的迁移出处，不断言当前 live，保留（line refs 指向已删代码属已知 doc-debt，但 provenance value 高于 line 准确性）。
 - **§B3 / §E4 follow-up 不变**：仍低优先 / 按需另开切片（slice 47 framing 不变，仅 §A1/§E1 从该列移除）。
 
 **下一聚焦工作：**
@@ -2252,12 +2252,12 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 
 **进度（2026-07-17 §E slice 49 `turn_loop` 模块收敛——删 `turn_loop.rs` + 2 live helper（`messages_with_turn_metadata` / `subagent_completion_runtime_message`）并入 `mod.rs`/`host_executor.rs`，`feat/pluggable-framework-core`）：**
 
-接 slice 48（§A1/§E1 doc-debt cleanup，`:2219`）。slice 48 的 "下一聚焦工作" 把 `turn_loop` 模块的进一步收敛列为非阻塞残项（"仅余 2 live helper，可考虑并入 host_executor 或保留"）。本切片执行该收敛——`turn_loop.rs` 是 retired `handle_deepseek_turn`（~2.4k 行，slice 20 §E cutover 删除）的原宿主文件，cutover 后仅余 2 live helper（80 行）。删该文件、把 2 helper 并入各自消费方模块，是 §E1 迁移的结构性收尾——retired 代码的原宿主文件不复存在。纯结构重构（文件内搬运 + 删除），零行为改动（匹配 slice 32/42/47/48 的 cleanup-slice 惯例）。
+接 slice 48（§A1/§E1 doc-debt cleanup，`:2219`）。slice 48 的 "下一聚焦工作" 把 `turn_loop` 模块的进一步收敛列为非阻塞残项（"仅余 2 live helper，可考虑并入 host_executor 或保留"）。本切片执行该收敛——`turn_loop.rs` 是 retired `handle_codesmith_turn`（~2.4k 行，slice 20 §E cutover 删除）的原宿主文件，cutover 后仅余 2 live helper（80 行）。删该文件、把 2 helper 并入各自消费方模块，是 §E1 迁移的结构性收尾——retired 代码的原宿主文件不复存在。纯结构重构（文件内搬运 + 删除），零行为改动（匹配 slice 32/42/47/48 的 cleanup-slice 惯例）。
 
 **关键设计决策：**
 - **逐 helper 选定并入目标、非整体并入 host_executor**：`messages_with_turn_metadata` 是 `impl Engine` 的 session 访问器、6 处调用点全在 tui 测试（跨 crate 的 `Engine` 方法调用），并入 `engine/mod.rs` 主 `impl Engine` 块——路径无关的方法调用使 6 调用点零改动；`subagent_completion_runtime_message` 是 free fn、唯一生产调用点在 `host_executor.rs:4146`，并入 `host_executor.rs` 作 module-private `fn`（drop `pub(crate)`——同模块内单一消费者，surface 收缩）。两 helper 各自并入 "最近消费方" 而非整体并入 host_executor，匹配 Rust "就近定义" 惯例。
 - **test 随 fn 走、保 1:1 搬运**：`subagent_completion_handoff_is_internal_user_message` 测试随 `subagent_completion_runtime_message` 搬入 `host_executor.rs` 的 `#[cfg(test)] mod tests`（"subagent post-stream completion drain" 节首，带 `// §E slice 49 — relocated from turn_loop.rs` 头注）。`messages_with_turn_metadata` 无专属单测（其 6 调用点本身就是 tui 测试的断言 fixture）。零测试逻辑改动。
-- **~104 历史 provenance 引用保留不重写**：`host_executor.rs` / `engine/mod.rs` / `crates/tui/src/tools/subagent/mod.rs:29` / `crates/tool-impls/src/tools/plan_mode.rs:132` 等共约 104 处 `turn_loop.rs:NNN` / `turn_loop::item` 注释引用（"mirroring turn_loop.rs:NNN" 之类），均指向已删 `handle_deepseek_turn` 代码、属 slice 48 已建档 doc-debt（provenance value 高于 line 准确性）。删 `turn_loop.rs` 使 `turn_loop.rs:` 前缀指向不存在的文件，但注释仍传达 "镜像 retired handle_deepseek_turn 的 X 行为" 的 provenance；重写 ~104 条注释属超范围 churn，未来 doc-debt 切片可另做（未来读者可经 `git show <pre-retire-commit>:crates/agent-runtime/src/engine/turn_loop.rs` 查历史代码）。
+- **~104 历史 provenance 引用保留不重写**：`host_executor.rs` / `engine/mod.rs` / `crates/tui/src/tools/subagent/mod.rs:29` / `crates/tool-impls/src/tools/plan_mode.rs:132` 等共约 104 处 `turn_loop.rs:NNN` / `turn_loop::item` 注释引用（"mirroring turn_loop.rs:NNN" 之类），均指向已删 `handle_codesmith_turn` 代码、属 slice 48 已建档 doc-debt（provenance value 高于 line 准确性）。删 `turn_loop.rs` 使 `turn_loop.rs:` 前缀指向不存在的文件，但注释仍传达 "镜像 retired handle_codesmith_turn 的 X 行为" 的 provenance；重写 ~104 条注释属超范围 churn，未来 doc-debt 切片可另做（未来读者可经 `git show <pre-retire-commit>:crates/agent-runtime/src/engine/turn_loop.rs` 查历史代码）。
 - **ARCHITECTURE.md:189 仅 1-line 可读性修**：该段 broader prose（"What is not here yet: absorbing guardrails"）是 pre-slice-11 framing 的 stale doc-debt（guardrails 已吸收），但全段重写超范围；本切片仅把 "`Engine`/`turn_loop.rs` guardrails" → "`Engine` guardrails (formerly in the now-deleted `turn_loop.rs`)" 保可读，status table（行 277/278/282/285/288，slice 48 更新）仍为 authoritative current-status doc。
 
 **落地步骤：**
@@ -2272,28 +2272,28 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 **验证：** `cargo +1.90.0 build -p codesmith-agent-runtime` **零 warning**（删文件 + crate 内搬运，无新 surface）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib host_executor` **163 通过**（relocated 测试现归 host_executor；pre-relocation 162 + 1 搬入）；`cargo +1.90.0 test -p codesmith-agent-runtime --lib` **1149 通过 + 2 ignored，0 failed**（测试模块间搬移、非删除，总数 1151 不变）；`cargo +1.90.0 test -p codesmith-tui --bin codesmith-tui core::engine::tests` **126 通过 + 1 ignored**（6 `messages_with_turn_metadata` 调用点不变）；`cargo +1.90.0 build --workspace` 全绿（`codesmith-tui` 142 warning 为 slice 47 baseline、非本切片新增）；grep 核实 `mod turn_loop` / `use ...turn_loop` **零命中**（仅余 1 处 `//!` doc comment provenance 引用 `turn_loop::early_tool_start_safe`，属 slice 48 已建档 doc-debt）。
 
 **By-design gaps（deferred，documented）：**
-- **~104 历史 provenance 引用保留**：见上 "关键设计决策"。删 `turn_loop.rs` 扩展 staleness 但 slice 48 policy 覆盖（provenance > line 准确性）。~~未来 dedicated doc-debt 切片可重写这 ~104 条注释 + ARCHITECTURE.md:189 broader 段——非阻塞。~~ → slice 50 完成：~106 `turn_loop.rs:NNN`/`turn_loop::item` provenance 注释全部重写为 durable `handle_deepseek_turn` fn-name + one-time `git show ab4f4fc5` pointer，ARCHITECTURE.md:189 broader 段 reframed 为 "What is here (§E cutover done)"。
-- **ARCHITECTURE.md:189 broader 段**：本切片仅修 `turn_loop.rs` mention 保可读，~~全段（pre-slice-11 "not here yet" framing）重写为单独 doc-debt。~~ → slice 50 完成：全段 reframed 为 "What is here (§E cutover done)"，header + L221-224 "remaining four guardrails... after which handle_deepseek_turn retires" + L236 "live handle_deepseek_turn still covers it" 三处 stale 一并修正。
+- **~104 历史 provenance 引用保留**：见上 "关键设计决策"。删 `turn_loop.rs` 扩展 staleness 但 slice 48 policy 覆盖（provenance > line 准确性）。~~未来 dedicated doc-debt 切片可重写这 ~104 条注释 + ARCHITECTURE.md:189 broader 段——非阻塞。~~ → slice 50 完成：~106 `turn_loop.rs:NNN`/`turn_loop::item` provenance 注释全部重写为 durable `handle_codesmith_turn` fn-name + one-time `git show ab4f4fc5` pointer，ARCHITECTURE.md:189 broader 段 reframed 为 "What is here (§E cutover done)"。
+- **ARCHITECTURE.md:189 broader 段**：本切片仅修 `turn_loop.rs` mention 保可读，~~全段（pre-slice-11 "not here yet" framing）重写为单独 doc-debt。~~ → slice 50 完成：全段 reframed 为 "What is here (§E cutover done)"，header + L221-224 "remaining four guardrails... after which handle_codesmith_turn retires" + L236 "live handle_codesmith_turn still covers it" 三处 stale 一并修正。
 - **§B3 / §E4 follow-up 不变**：仍低优先 / 按需另开切片（slice 48 framing 不变）。
 
 **下一聚焦工作：**
-- §A + §E 全部闭合并**结构性收敛**——`turn_loop` 残件清零、retired `handle_deepseek_turn` 原宿主文件已删，pluggable framework core 迁移的最后一个结构 loose end 收口。
+- §A + §E 全部闭合并**结构性收敛**——`turn_loop` 残件清零、retired `handle_codesmith_turn` 原宿主文件已删，pluggable framework core 迁移的最后一个结构 loose end 收口。
 - 残项仅余低优先 / by-design / 按需二项：§B3（cosmetic `DeepseekCN`→`Deepseek` 折叠，mitigated）、§E4 follow-up（env override augment / flash-kimi-code 变体下沉，按需）。
-- ~~未来可选 dedicated doc-debt 切片：重写 ~104 `turn_loop.rs:NNN` provenance 注释 + ARCHITECTURE.md:189 broader 段——非阻塞。~~ → slice 50 完成：~106 provenance 注释 → durable `handle_deepseek_turn` fn-name + ARCHITECTURE.md reframed + latent `protocol_recovery.rs` compile-break 修复（slice 49 漏过——验证跑 `--lib` 非 `--test`）。
+- ~~未来可选 dedicated doc-debt 切片：重写 ~104 `turn_loop.rs:NNN` provenance 注释 + ARCHITECTURE.md:189 broader 段——非阻塞。~~ → slice 50 完成：~106 provenance 注释 → durable `handle_codesmith_turn` fn-name + ARCHITECTURE.md reframed + latent `protocol_recovery.rs` compile-break 修复（slice 49 漏过——验证跑 `--lib` 非 `--test`）。
 
-**进度（2026-07-17 §E slice 50 `turn_loop` 删除 doc-debt cleanup——重写 ~106 `turn_loop.rs:NNN`/`turn_loop::item` provenance 引用 → durable `handle_deepseek_turn` fn-name + 修 latent `protocol_recovery.rs` compile-break，`feat/pluggable-framework-core`）：**
+**进度（2026-07-17 §E slice 50 `turn_loop` 删除 doc-debt cleanup——重写 ~106 `turn_loop.rs:NNN`/`turn_loop::item` provenance 引用 → durable `handle_codesmith_turn` fn-name + 修 latent `protocol_recovery.rs` compile-break，`feat/pluggable-framework-core`）：**
 
 接 slice 49（`turn_loop.rs` 删除 + 2 live helper 模块收敛，`:2253`）。slice 49 删 `turn_loop.rs` 后遗留 ~106 处 `turn_loop.rs:NNN`/`turn_loop::item` provenance 注释指向已删文件、ARCHITECTURE.md:189 stale "What is not here yet" 段、3 "is a later slice" framing 注释、3 stale path/caller refs，以及 1 处 latent compile-break（`protocol_recovery.rs:35` ungated `include_str!` of deleted `turn_loop.rs`——slice 49 验证跑 `--lib` 非 `--test protocol_recovery`，漏过）。本切片是 slice 49 "未来可选 dedicated doc-debt 切片" 预期的 cleanup 切片——重写全部 provenance 引用为 durable fn-name、修 compile-break、reframe stale doc。纯 doc + 1 test-source 行，零行为改动。
 
 **关键设计决策：**
-- **drop line numbers, use durable fn-name**：`turn_loop.rs:NNNN-NNNN` → `handle_deepseek_turn`；保 semantic label（spawn/reuse）若 present；drop redundant line-ref 当 `handle_deepseek_turn` 已在同注释内；simplify "retired"-qualified ref。
+- **drop line numbers, use durable fn-name**：`turn_loop.rs:NNNN-NNNN` → `handle_codesmith_turn`；保 semantic label（spawn/reuse）若 present；drop redundant line-ref 当 `handle_codesmith_turn` 已在同注释内；simplify "retired"-qualified ref。
 - **one-time `git show` pointer**：host_executor.rs module doc 加 `git show ab4f4fc5:crates/agent-runtime/src/engine/turn_loop.rs` pointer（verified ancestor of HEAD，3373-line full retired body）——给 provenance 指向已删代码一个 durable lookup 路径，免逐条注释加。
 - **relocated-single-source framing**：`turn_loop::MAX_APPROVAL_INTENT_SUMMARY_CHARS`/`turn_loop::approval_intent_summary` 的 "mirrors/duplicated/later cleanup can lift" framing → "the `turn_loop::` original was deleted in slice 49 — this is now the single source"（host_executor.rs:814/821）。
-- **ARCHITECTURE.md:189 broader 段 reframe**：header "not here yet: absorbing" → "What is here (§E cutover done): absorbed"；L221-224 "remaining four growing... after which handle_deepseek_turn retires" → "have since grown... retired in slice 20"；L236 "the live handle_deepseek_turn still covers it" → dropped（HostAgentExecutor 经 host_executor.rs:2658 明确 defer apply_patch path derivation，"still covers it" reassurance 不可验证/stale，drop 而非 over-claim "HostAgentExecutor covers it"）。status table（行 287）slice 48 已 authoritative-current，不动。
+- **ARCHITECTURE.md:189 broader 段 reframe**：header "not here yet: absorbing" → "What is here (§E cutover done): absorbed"；L221-224 "remaining four growing... after which handle_codesmith_turn retires" → "have since grown... retired in slice 20"；L236 "the live handle_codesmith_turn still covers it" → dropped（HostAgentExecutor 经 host_executor.rs:2658 明确 defer apply_patch path derivation，"still covers it" reassurance 不可验证/stale，drop 而非 over-claim "HostAgentExecutor covers it"）。status table（行 287）slice 48 已 authoritative-current，不动。
 
 **Landing steps：**
 1. `crates/agent-runtime/tests/protocol_recovery.rs:35`：删 `include_str!("../src/engine/turn_loop.rs")`（deleted file），替换为 `include_str!("../src/engine/host_executor.rs")`（restore coverage intent；经 `engine_source_file_still_exists_and_is_non_trivial` + `engine_marker_counts_stay_paired` 测试确认 marker pairing 仍 green）。
-2. `crates/agent-runtime/src/engine/host_executor.rs`：module doc 加 one-time `git show` pointer；perl pass 重写 99 `turn_loop.rs:NNN` → `handle_deepseek_turn`；targeted Edits 修 5 `turn_loop::item` refs + 2 split refs 的 "mirroring the retired handle_deepseek_turn" 冗余（L1575/L6329）+ L1030。
+2. `crates/agent-runtime/src/engine/host_executor.rs`：module doc 加 one-time `git show` pointer；perl pass 重写 99 `turn_loop.rs:NNN` → `handle_codesmith_turn`；targeted Edits 修 5 `turn_loop::item` refs + 2 split refs 的 "mirroring the retired handle_codesmith_turn" 冗余（L1575/L6329）+ L1030。
 3. `session.rs:255` + `engine/mod.rs:1187` + `session_history.rs:14-18` + `callback_bridge.rs:69-71` + `tools/framework_adapter.rs:12-13` + `tools/truncate.rs:25` + `tui/src/tools/subagent/mod.rs:29` + `tool-impls/src/tools/plan_mode.rs:132`：各 stale ref 重写（3 "is a later slice" framing → "done (slice 20 §E cutover)"；3 path/caller ref）。
 4. `ARCHITECTURE.md:189-268`：header reframe + L221-224 + L236 stale refs 修正。
 5. `ROADMAP.md`：slice 49 "未来可选 dedicated doc-debt 切片" note（`:2275`/`:2276`/`:2282`）strikethrough-correct；追加本 slice 50 进度条目。
@@ -2350,7 +2350,7 @@ slice 42 闭合 §A 后复查余项状态：§D2（custom provider config 逃逸
 - **Mirror `ProviderKind` alias pattern on `ApiProvider::Deepseek`**：删 `DeepseekCN` 变体（`config_types.rs:202`），在 `Deepseek` 加 `#[serde(alias = "deepseek-cn", alias = "deepseek_china", alias = "deepseekcn", alias = "deepseek-china", alias = "deepseek_cn")]`（末 alias 覆盖旧 snake_case rename → `ProviderCapability` JSON backward-compat）；`parse()` CN arm 折进 `"deepseek"` arm + 加 `"deepseek_cn"`（关闭 latent gap——serde 接受 `deepseek_cn` 但 `parse()` 之前拒绝）。
 - **Read-side fallback mitigates regression (a)**：`providers.deepseek_cn: ProviderConfig` field 保留为 deprecated read-only legacy sink（serde 仍反序列化 `[providers.deepseek_cn]` table——无 silent drop）；新增 private helper `Config::legacy_deepseek_cn_api_key()`（`config.rs:1762`）返回 `providers.deepseek_cn.api_key`；两 api_key-read predicates（`has_api_key_for` `:4484` + `active_provider_has_config_api_key` `:4327`）在 `Deepseek` branch `providers.deepseek.api_key` miss 后 consult fallback。Surgical——精准覆盖 documented `api_key`-storage regression；`base_url`/`model` default-const arms 已解析到 identical values（`DEFAULT_DEEPSEEKCN_BASE_URL == DEFAULT_DEEPSEEK_BASE_URL`），无需 fallback。
 - **`DEFAULT_DEEPSEEKCN_BASE_URL` const 删除**（`config.rs:116`，`== DEFAULT_DEEPSEEK_BASE_URL`）；2 arms repoint 到 `DEFAULT_DEEPSEEK_BASE_URL`。
-- **Env override repoint**（`:3140`）：`DEEPSEEK_HTTP_HEADERS` 写 `providers.deepseek_cn`（for `DeepseekCN`）→ 折进 `Deepseek => &mut providers.deepseek` arm。此后 `deepseek_cn` field 无任何 code path 写入（pure legacy read sink）——匹配已有 TUI save flow（`save_api_key_for` 对两 DeepSeek variant 均 bail）。
+- **Env override repoint**（`:3140`）：`CODESMITH_HTTP_HEADERS` 写 `providers.deepseek_cn`（for `DeepseekCN`）→ 折进 `Deepseek => &mut providers.deepseek` arm。此后 `deepseek_cn` field 无任何 code path 写入（pure legacy read sink）——匹配已有 TUI save flow（`save_api_key_for` 对两 DeepSeek variant 均 bail）。
 - **35 grouped match arms mechanical fold**：`Deepseek | DeepseekCN =>` / `matches!(... Deepseek | DeepseekCN)` 跨 `config_types.rs` + `tui/config.rs`（~25 sites）+ `tui/{core/engine.rs, tui/provider_picker.rs, tui/app.rs, tui/ui.rs, main.rs, commands/balance.rs}` + `provider_config_for`（separate CN arm 删除——`Deepseek` 返回 `&providers.deepseek`，fallback 在 key-read path per decision 2）。
 - **`codesmith-providers` `&str`-keyed allowlists `"deepseek-cn"` arms 保留**（`reasoning.rs:34/100/133/180`）：defensive——接受 input strings，保留 alias accepted 正确（其他 path 可能仍传 hyphen string）。Out of scope（matching slice 48/50 provenance-preserves policy）。
 - **`display_name()` 失 "(legacy alias)" 后缀**（`config_types.rs:279` 删 CN arm）：`Deepseek` display 仅 `"DeepSeek"`。documented regression (b)，接受。
@@ -2705,10 +2705,10 @@ gathered from `crates/tui/src/client/` (binary-only crate; the client module
 is carved out of `main.rs`).
 
 ### A1 — Extract the OpenAI-compatible client
-- Move `crates/tui/src/client.rs` (`DeepSeekClient`, ~1190 lines) +
+- Move `crates/tui/src/client.rs` (`CodeSmithClient`, ~1190 lines) +
   `crates/tui/src/client/chat.rs` (~2380 lines) into
   `crates/providers/src/openai_compat/`.
-- `DeepSeekClient::new(config: &Config)` cannot move with the struct (orphan
+- `CodeSmithClient::new(config: &Config)` cannot move with the struct (orphan
   rule: a tui-local inherent `impl` can't live on a `codesmith-providers`
   type). The 12 call sites (`ui.rs`, `main.rs`, `mcp_server.rs`,
   `acp_server.rs`, `commands/config.rs`, `core/engine/tests.rs`,
@@ -2717,13 +2717,13 @@ is carved out of `main.rs`).
 - Re-export the moved type from tui (`pub use codesmith_providers::...`) only
   if a shim is needed; prefer routing through the registry.
 
-**Status (2026-07-07 §A1 + slice 41/42):** superseded — `DeepSeekClient` was
+**Status (2026-07-07 §A1 + slice 41/42):** superseded — `CodeSmithClient` was
 **retired, not extracted.** The "needs DeepSeek replay bridge" blocker was
 found unnecessary: rig's OpenAI/DeepSeek compat layer natively serializes
 `AssistantContent::Reasoning` as the `reasoning_content` wire field (verified
 against rig-core 0.39.0, see the 2026-07-07 §A1 checkpoint). DeepSeek was
 switched onto the rig `DeepSeekFactory` via `default_registry()` and the
-tui-local `DeepSeekProviderFactory` + `DeepSeekClient` were deleted. Slice 41
+tui-local `CodeSmithProviderFactory` + `CodeSmithClient` were deleted. Slice 41
 then migrated the residual inspect/warmup cluster (`client.rs`/`chat.rs`) to
 `codesmith-agent-runtime` `prompt_inspect` and deleted those tui files; slice
 42 deduped the reasoning predicates (→ `codesmith-agent` core) and
@@ -2896,10 +2896,10 @@ were retained as defensive input-accept paths.
 
 ### D1 — TUI registers `codesmith-providers` factories
 - `resolve_llm_client` (`crates/tui/src/core/engine.rs`) currently builds a
-  fresh registry with only the tui-local `DeepSeekProviderFactory`. Extend it
+  fresh registry with only the tui-local `CodeSmithProviderFactory`. Extend it
   to seed from `codesmith_providers::default_registry()` (under a tui feature
   gate) so compiled-in providers are available, then register the
-  tui-local `DeepSeekProviderFactory` on top (it captures `ApiProvider`, so it
+  tui-local `CodeSmithProviderFactory` on top (it captures `ApiProvider`, so it
   can't live in `codesmith-providers` until B3).
 
 ### D2 — Config escape hatch for custom providers
@@ -2940,7 +2940,7 @@ trait + the host-agnostic `DefaultAgentExecutor` reference impl landed in
 absorbed the production guardrails across slices 11–40 and became the live
 production path in the slice 20 §E cutover — `Engine::handle_send_message`
 constructs a `HostAgentExecutor` and calls `executor.run(...)`; the tangled
-`handle_deepseek_turn` (~2.4k lines) is deleted. The "Today this lives tangled
+`handle_codesmith_turn` (~2.4k lines) is deleted. The "Today this lives tangled
 in Engine" framing above is the pre-migration state, kept as a record.
 
 ### E2 — Tool / message abstractions in core

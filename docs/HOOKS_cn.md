@@ -6,7 +6,7 @@ CodeSmith 可以在代理生命周期的明确定义节点上运行你的 shell 
 注入和提交前文本转换。
 
 钩子配置在 `~/.codesmith/config.toml` 的 `[hooks]` 表下（旧版
-`~/.deepseek/config.toml` 也会被解析）。项目级
+`~/.codesmith/config.toml` 也会被解析）。项目级
 `<workspace>/.codesmith/config.toml` 可以携带自己的 `[hooks]` 表——
 存在时它会**整体替换**用户级表，而不是合并（与 `instructions` 的规则
 相同）。如果两者都要，请在项目表内再次列出全局钩子。
@@ -149,32 +149,31 @@ condition = { type = "any", conditions = [ ... ] }
 
 ### 环境变量
 
-每个钩子都会收到一组描述事件上下文的 `DEEPSEEK_*` 环境变量。
-（`DEEPSEEK_` 前缀是历史遗留，适用于所有 CodeSmith 钩子。）未设置
+每个钩子都会收到一组描述事件上下文的 `CODESMITH_*` 环境变量。未设置
 的字段在环境中直接缺席。
 
 | 变量 | 出现于 | 内容 |
 |---|---|---|
-| `DEEPSEEK_TOOL_NAME` | 工具事件、`shell_env` | 工具名，例如 `exec_shell` |
-| `DEEPSEEK_TOOL_ARGS` | 工具事件 | 以 JSON 字符串表示的工具参数 |
-| `DEEPSEEK_TOOL_RESULT` | `tool_call_after` | 工具输出，截断至 10 KiB |
-| `DEEPSEEK_TOOL_EXIT_CODE` | `tool_call_after` | 适用时的退出码 |
-| `DEEPSEEK_TOOL_SUCCESS` | `tool_call_after` | `true` / `false` |
-| `DEEPSEEK_MODE` | 多数事件 | 当前模式（`plan` / `agent` / `yolo`） |
-| `DEEPSEEK_PREVIOUS_MODE` | `mode_change` | 切换前的模式 |
-| `DEEPSEEK_SESSION_ID` | 多数事件 | **临时**遥测 id，见下文 |
-| `DEEPSEEK_THREAD_ID` | 多数事件 | 持久线程 id，见下文 |
-| `DEEPSEEK_MESSAGE` | `message_submit` | 当前（可能已被转换的）文本，截断至 5 KiB |
-| `DEEPSEEK_ERROR` | `on_error` | 错误消息 |
-| `DEEPSEEK_WORKSPACE` | 多数事件 | 工作区路径 |
-| `DEEPSEEK_MODEL` | 多数事件 | 当前模型名 |
-| `DEEPSEEK_TOTAL_TOKENS` | 多数事件 | 目前已使用的总 token 数 |
-| `DEEPSEEK_SESSION_COST` | 多数事件 | 以美元计的会话成本 |
-| `DEEPSEEK_TASK_ID` / `DEEPSEEK_TASK_SUBJECT` / `DEEPSEEK_TASK_STATUS` | 任务事件 | 任务元数据 |
+| `CODESMITH_TOOL_NAME` | 工具事件、`shell_env` | 工具名，例如 `exec_shell` |
+| `CODESMITH_TOOL_ARGS` | 工具事件 | 以 JSON 字符串表示的工具参数 |
+| `CODESMITH_TOOL_RESULT` | `tool_call_after` | 工具输出，截断至 10 KiB |
+| `CODESMITH_TOOL_EXIT_CODE` | `tool_call_after` | 适用时的退出码 |
+| `CODESMITH_TOOL_SUCCESS` | `tool_call_after` | `true` / `false` |
+| `CODESMITH_MODE` | 多数事件 | 当前模式（`plan` / `agent` / `yolo`） |
+| `CODESMITH_PREVIOUS_MODE` | `mode_change` | 切换前的模式 |
+| `CODESMITH_SESSION_ID` | 多数事件 | **临时**遥测 id，见下文 |
+| `CODESMITH_THREAD_ID` | 多数事件 | 持久线程 id，见下文 |
+| `CODESMITH_MESSAGE` | `message_submit` | 当前（可能已被转换的）文本，截断至 5 KiB |
+| `CODESMITH_ERROR` | `on_error` | 错误消息 |
+| `CODESMITH_WORKSPACE` | 多数事件 | 工作区路径 |
+| `CODESMITH_MODEL` | 多数事件 | 当前模型名 |
+| `CODESMITH_TOTAL_TOKENS` | 多数事件 | 目前已使用的总 token 数 |
+| `CODESMITH_SESSION_COST` | 多数事件 | 以美元计的会话成本 |
+| `CODESMITH_TASK_ID` / `CODESMITH_TASK_SUBJECT` / `CODESMITH_TASK_STATUS` | 任务事件 | 任务元数据 |
 
-> **会话与线程标识。** `DEEPSEEK_SESSION_ID` 是每次会话启动时重新生成
+> **会话与线程标识。** `CODESMITH_SESSION_ID` 是每次会话启动时重新生成
 > 的临时 id——它**不**跨重启关联。若需要能在恢复后存活的相关性（审计
-> 追踪、容量记忆），请使用 `DEEPSEEK_THREAD_ID`，它携带持久的线程 id。
+> 追踪、容量记忆），请使用 `CODESMITH_THREAD_ID`，它携带持久的线程 id。
 
 ### stdin
 
@@ -278,7 +277,7 @@ stdout 上每行一个 `KEY=VALUE`；接受可选的 `export ` 前缀。变量�
   在不受信任的仓库中工作前请先审查项目配置。
 - `shell_env` 的值存在于进程环境中，在某些平台上可能出现在子进程
   列表里。审计日志只记录键名，绝不记录值。
-- 工具参数和结果（通过 `DEEPSEEK_TOOL_ARGS` / `DEEPSEEK_TOOL_RESULT`
+- 工具参数和结果（通过 `CODESMITH_TOOL_ARGS` / `CODESMITH_TOOL_RESULT`
   暴露）可能包含你仓库中的秘密；请据此对待钩子的 stdout/日志。
 
 ## 钩子不是什么
@@ -303,7 +302,7 @@ stdout 上每行一个 `KEY=VALUE`；接受可选的 `export ` 前缀。变量�
 [[hooks.hooks]]
 name = "shell-audit"
 event = "tool_call_after"
-command = "printf '%s\\t%s\\t%s\\n' \"$DEEPSEEK_THREAD_ID\" \"$DEEPSEEK_TOOL_NAME\" \"$DEEPSEEK_TOOL_EXIT_CODE\" >> ~/.codesmith/hooks/shell-audit.log"
+command = "printf '%s\\t%s\\t%s\\n' \"$CODESMITH_THREAD_ID\" \"$CODESMITH_TOOL_NAME\" \"$CODESMITH_TOOL_EXIT_CODE\" >> ~/.codesmith/hooks/shell-audit.log"
 condition = { type = "tool_name", name = "exec_shell" }
 ```
 

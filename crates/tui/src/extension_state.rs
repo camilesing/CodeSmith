@@ -233,7 +233,9 @@ mod tests {
     #[test]
     fn add_installed_persists_and_provenance_for_reads() {
         let (dir, mut store) = fresh();
-        store.add_installed("my-ext", "git:github.com/foo/bar@v1").unwrap();
+        store
+            .add_installed("my-ext", "git:github.com/foo/bar@v1")
+            .unwrap();
         assert_eq!(
             store.provenance_for("my-ext").as_deref(),
             Some("git:github.com/foo/bar@v1")

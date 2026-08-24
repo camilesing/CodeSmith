@@ -31,9 +31,10 @@ pub const REGISTER_SYMBOL: &[u8] = b"codesmith_register_extension";
 pub fn load_dylib(path: &Path) -> Result<(Library, Box<dyn Extension>), ExtensionError> {
     let library = unsafe { Library::new(path) }
         .map_err(|e| ExtensionError::Load(format!("open dylib {path:?}: {e}")))?;
-    let register: Symbol<unsafe extern "C" fn() -> *mut dyn Extension> =
-        unsafe { library.get(REGISTER_SYMBOL) }
-            .map_err(|e| ExtensionError::Load(format!("symbol {path:?}::{REGISTER_SYMBOL:?}: {e}")))?;
+    let register: Symbol<unsafe extern "C" fn() -> *mut dyn Extension> = unsafe {
+        library.get(REGISTER_SYMBOL)
+    }
+    .map_err(|e| ExtensionError::Load(format!("symbol {path:?}::{REGISTER_SYMBOL:?}: {e}")))?;
     let ptr = unsafe { register() };
     if ptr.is_null() {
         return Err(ExtensionError::Load(format!(
@@ -85,7 +86,10 @@ mod tests {
     fn load_dylib_missing_file_is_load_error() {
         let path = std::path::PathBuf::from("/nonexistent/ext-does-not-exist.dylib");
         let r = load_dylib(&path);
-        assert!(matches!(r, Err(ExtensionError::Load(_))), "expected ExtensionError::Load");
+        assert!(
+            matches!(r, Err(ExtensionError::Load(_))),
+            "expected ExtensionError::Load"
+        );
     }
 
     #[test]
@@ -94,7 +98,10 @@ mod tests {
         let path = dir.path().join("not-a-dylib");
         std::fs::write(&path, b"not a dylib").expect("write");
         let r = load_dylib(&path);
-        assert!(matches!(r, Err(ExtensionError::Load(_))), "expected ExtensionError::Load");
+        assert!(
+            matches!(r, Err(ExtensionError::Load(_))),
+            "expected ExtensionError::Load"
+        );
     }
 
     /// §F5b — the fixture cdylib is built as a dev-dep; `build.rs` emits its
@@ -113,19 +120,20 @@ mod tests {
         rt.block_on(runner.load_dylib(Path::new(path)))
             .expect("load fixture");
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
-        let tools: Vec<String> = runner
-            .bound_tools()
-            .into_iter()
-            .map(|(n, _)| n)
-            .collect();
+        let tools: Vec<String> = runner.bound_tools().into_iter().map(|(n, _)| n).collect();
         assert!(
             tools.iter().any(|n| n == "fixture_echo"),
             "fixture tool bound: {tools:?}"
         );
-        let out = rt.block_on(runner.emit(ExtensionEvent::TurnStart { turn_id: "t1".into() }));
+        let out = rt.block_on(runner.emit(ExtensionEvent::TurnStart {
+            turn_id: "t1".into(),
+        }));
         match out.event {
             ExtensionEvent::TurnStart { turn_id } => {
-                assert_eq!(turn_id, "fixture:t1", "fixture handler dispatched (transform proof)");
+                assert_eq!(
+                    turn_id, "fixture:t1",
+                    "fixture handler dispatched (transform proof)"
+                );
             }
             other => panic!("expected TurnStart, got {other:?}"),
         }

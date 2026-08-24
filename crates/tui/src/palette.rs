@@ -6,7 +6,7 @@
 //!    generation and runtime palette construction.
 //! 2. **Semantic `Color` constants** — pre-computed `ratatui::style::Color`
 //!    values mapped to UI roles (surface, text, accent, status, mode).
-//! 3. **Backward-compatible aliases** (`DEEPSEEK_*`) — legacy names that
+//! 3. **Backward-compatible aliases** (`CODESMITH_*`) — convenience names that
 //!    delegate to the current Whale palette constants.
 //!
 //! Some constants defined here are not yet referenced in production code
@@ -79,11 +79,11 @@ pub const WHALE_TOOL_SURFACE_RGB: (u8, u8, u8) = (28, 40, 62); // #1C283E
 pub const WHALE_TOOL_ACTIVE_RGB: (u8, u8, u8) = (38, 54, 80); // #263650
 
 // Backward-compatible aliases for existing call sites.
-pub const DEEPSEEK_BLUE_RGB: (u8, u8, u8) = WHALE_ACCENT_PRIMARY_RGB;
-pub const DEEPSEEK_SKY_RGB: (u8, u8, u8) = WHALE_INFO_RGB;
-pub const DEEPSEEK_INK_RGB: (u8, u8, u8) = WHALE_BG_RGB;
-pub const DEEPSEEK_SLATE_RGB: (u8, u8, u8) = WHALE_PANEL_RGB;
-pub const DEEPSEEK_RED_RGB: (u8, u8, u8) = WHALE_ERROR_RGB;
+pub const CODESMITH_BLUE_RGB: (u8, u8, u8) = WHALE_ACCENT_PRIMARY_RGB;
+pub const CODESMITH_SKY_RGB: (u8, u8, u8) = WHALE_INFO_RGB;
+pub const CODESMITH_INK_RGB: (u8, u8, u8) = WHALE_BG_RGB;
+pub const CODESMITH_SLATE_RGB: (u8, u8, u8) = WHALE_PANEL_RGB;
+pub const CODESMITH_RED_RGB: (u8, u8, u8) = WHALE_ERROR_RGB;
 
 pub const LIGHT_SURFACE_RGB: (u8, u8, u8) = (246, 248, 251); // #F6F8FB
 pub const LIGHT_PANEL_RGB: (u8, u8, u8) = (236, 242, 248); // #ECF2F8
@@ -217,23 +217,32 @@ pub const MATRIX_BORDER_RGB: (u8, u8, u8) = (0, 204, 0); // #00CC00
 // New semantic colors
 pub const BORDER_COLOR_RGB: (u8, u8, u8) = WHALE_BORDER_RGB; // #2A4A7F
 
-pub const DEEPSEEK_BLUE: Color = Color::Rgb(
-    DEEPSEEK_BLUE_RGB.0,
-    DEEPSEEK_BLUE_RGB.1,
-    DEEPSEEK_BLUE_RGB.2,
+pub const CODESMITH_BLUE: Color = Color::Rgb(
+    CODESMITH_BLUE_RGB.0,
+    CODESMITH_BLUE_RGB.1,
+    CODESMITH_BLUE_RGB.2,
 );
 /// Now maps to the secondary accent (Seafoam) for backward compat.
-pub const DEEPSEEK_SKY: Color =
-    Color::Rgb(DEEPSEEK_SKY_RGB.0, DEEPSEEK_SKY_RGB.1, DEEPSEEK_SKY_RGB.2);
-pub const DEEPSEEK_INK: Color =
-    Color::Rgb(DEEPSEEK_INK_RGB.0, DEEPSEEK_INK_RGB.1, DEEPSEEK_INK_RGB.2);
-pub const DEEPSEEK_SLATE: Color = Color::Rgb(
-    DEEPSEEK_SLATE_RGB.0,
-    DEEPSEEK_SLATE_RGB.1,
-    DEEPSEEK_SLATE_RGB.2,
+pub const CODESMITH_SKY: Color = Color::Rgb(
+    CODESMITH_SKY_RGB.0,
+    CODESMITH_SKY_RGB.1,
+    CODESMITH_SKY_RGB.2,
 );
-pub const DEEPSEEK_RED: Color =
-    Color::Rgb(DEEPSEEK_RED_RGB.0, DEEPSEEK_RED_RGB.1, DEEPSEEK_RED_RGB.2);
+pub const CODESMITH_INK: Color = Color::Rgb(
+    CODESMITH_INK_RGB.0,
+    CODESMITH_INK_RGB.1,
+    CODESMITH_INK_RGB.2,
+);
+pub const CODESMITH_SLATE: Color = Color::Rgb(
+    CODESMITH_SLATE_RGB.0,
+    CODESMITH_SLATE_RGB.1,
+    CODESMITH_SLATE_RGB.2,
+);
+pub const CODESMITH_RED: Color = Color::Rgb(
+    CODESMITH_RED_RGB.0,
+    CODESMITH_RED_RGB.1,
+    CODESMITH_RED_RGB.2,
+);
 
 pub const LIGHT_SURFACE: Color = Color::Rgb(
     LIGHT_SURFACE_RGB.0,
@@ -527,7 +536,7 @@ pub const SELECTION_BG: Color = Color::Rgb(
     WHALE_SELECTION_RGB.2,
 );
 #[allow(dead_code)]
-pub const COMPOSER_BG: Color = DEEPSEEK_SLATE;
+pub const COMPOSER_BG: Color = CODESMITH_SLATE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteMode {
@@ -656,13 +665,13 @@ pub struct UiTheme {
 pub const UI_THEME: UiTheme = UiTheme {
     name: "whale",
     mode: PaletteMode::Dark,
-    surface_bg: DEEPSEEK_INK,
-    panel_bg: DEEPSEEK_SLATE,
+    surface_bg: CODESMITH_INK,
+    panel_bg: CODESMITH_SLATE,
     elevated_bg: SURFACE_ELEVATED,
-    composer_bg: DEEPSEEK_SLATE,
+    composer_bg: CODESMITH_SLATE,
     selection_bg: SELECTION_BG,
-    header_bg: DEEPSEEK_INK,
-    footer_bg: DEEPSEEK_INK,
+    header_bg: CODESMITH_INK,
+    footer_bg: CODESMITH_INK,
     text_dim: TEXT_DIM,
     text_hint: TEXT_HINT,
     text_muted: TEXT_MUTED,
@@ -721,7 +730,7 @@ pub const UI_THEME: UiTheme = UiTheme {
     mode_plan: MODE_PLAN,
     mode_goal: MODE_GOAL,
     status_ready: TEXT_MUTED,
-    status_working: DEEPSEEK_SKY,
+    status_working: CODESMITH_SKY,
     status_warning: STATUS_WARNING,
     diff_added_fg: DIFF_ADDED,
     diff_deleted_fg: Color::Rgb(WHALE_ERROR_RGB.0, WHALE_ERROR_RGB.1, WHALE_ERROR_RGB.2),
@@ -1512,8 +1521,8 @@ fn adapt_fg_for_light_palette(color: Color) -> Color {
         LIGHT_TEXT_SOFT
     } else if color == BORDER_COLOR {
         LIGHT_BORDER
-    } else if color == TEXT_ACCENT || color == DEEPSEEK_SKY || color == ACCENT_TOOL_LIVE {
-        DEEPSEEK_BLUE
+    } else if color == TEXT_ACCENT || color == CODESMITH_SKY || color == ACCENT_TOOL_LIVE {
+        CODESMITH_BLUE
     } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
         Color::Rgb(146, 64, 14)
     } else if color == ACCENT_TOOL_ISSUE {
@@ -1528,9 +1537,9 @@ fn adapt_fg_for_light_palette(color: Color) -> Color {
 }
 
 fn adapt_bg_for_light_palette(color: Color) -> Color {
-    if color == DEEPSEEK_INK || color == BACKGROUND_DARK {
+    if color == CODESMITH_INK || color == BACKGROUND_DARK {
         LIGHT_SURFACE
-    } else if color == DEEPSEEK_SLATE
+    } else if color == CODESMITH_SLATE
         || color == COMPOSER_BG
         || color == SURFACE_PANEL
         || color == SURFACE_TOOL
@@ -1569,7 +1578,7 @@ fn adapt_fg_for_solarized_light_palette(color: Color) -> Color {
         SOLARIZED_TEXT_SOFT
     } else if color == BORDER_COLOR {
         SOLARIZED_BORDER
-    } else if color == TEXT_ACCENT || color == DEEPSEEK_SKY || color == ACCENT_TOOL_LIVE {
+    } else if color == TEXT_ACCENT || color == CODESMITH_SKY || color == ACCENT_TOOL_LIVE {
         SOLARIZED_BLUE
     } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
         SOLARIZED_ORANGE
@@ -1583,9 +1592,9 @@ fn adapt_fg_for_solarized_light_palette(color: Color) -> Color {
 }
 
 fn adapt_bg_for_solarized_light_palette(color: Color) -> Color {
-    if color == DEEPSEEK_INK || color == BACKGROUND_DARK {
+    if color == CODESMITH_INK || color == BACKGROUND_DARK {
         SOLARIZED_SURFACE
-    } else if color == DEEPSEEK_SLATE
+    } else if color == CODESMITH_SLATE
         || color == COMPOSER_BG
         || color == SURFACE_PANEL
         || color == SURFACE_TOOL
@@ -1614,7 +1623,7 @@ fn adapt_bg_for_solarized_light_palette(color: Color) -> Color {
 // === Community-theme remap ===
 //
 // The vast majority of render sites in this crate reach for `palette::TEXT_*`,
-// `palette::DEEPSEEK_INK`, `palette::BORDER_COLOR`, etc. directly rather than
+// `palette::CODESMITH_INK`, `palette::BORDER_COLOR`, etc. directly rather than
 // looking up `app.ui_theme`. To make community theme presets (Catppuccin,
 // Tokyo Night, …) actually move the needle visually we intercept colors at
 // the backend layer (see `tui::color_compat::ColorCompatBackend`) and remap
@@ -1695,7 +1704,7 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
         ui.text_soft
     } else if color == BORDER_COLOR {
         ui.border
-    } else if color == TEXT_ACCENT || color == DEEPSEEK_SKY || color == ACCENT_TOOL_LIVE {
+    } else if color == TEXT_ACCENT || color == CODESMITH_SKY || color == ACCENT_TOOL_LIVE {
         ui.status_working
     } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
         if theme == ThemeId::Matrix {
@@ -1707,11 +1716,11 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
         ui.mode_yolo
     } else if color == STATUS_WARNING {
         ui.warning
-    } else if color == STATUS_ERROR || color == DEEPSEEK_RED {
+    } else if color == STATUS_ERROR || color == CODESMITH_RED {
         ui.error_fg
     } else if color == DIFF_ADDED || color == USER_BODY {
         theme_green(ui)
-    } else if color == DEEPSEEK_BLUE {
+    } else if color == CODESMITH_BLUE {
         ui.mode_agent
     } else {
         color
@@ -1726,9 +1735,9 @@ pub fn adapt_bg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
         return color;
     }
 
-    if color == DEEPSEEK_INK || color == BACKGROUND_DARK {
+    if color == CODESMITH_INK || color == BACKGROUND_DARK {
         ui.surface_bg
-    } else if color == DEEPSEEK_SLATE
+    } else if color == CODESMITH_SLATE
         || color == COMPOSER_BG
         || color == SURFACE_PANEL
         || color == SURFACE_TOOL
@@ -1764,7 +1773,7 @@ fn adapt_fg_for_grayscale_palette(color: Color) -> Color {
         || color == SELECTION_TEXT
         || color == LIGHT_TEXT_BODY
         || color == Color::White
-        || color == DEEPSEEK_RED
+        || color == CODESMITH_RED
         || color == STATUS_ERROR
         || color == MODE_YOLO
     {
@@ -1773,8 +1782,8 @@ fn adapt_fg_for_grayscale_palette(color: Color) -> Color {
         || color == TEXT_TOOL_OUTPUT
         || color == LIGHT_TEXT_SOFT
         || color == TEXT_ACCENT
-        || color == DEEPSEEK_SKY
-        || color == DEEPSEEK_BLUE
+        || color == CODESMITH_SKY
+        || color == CODESMITH_BLUE
         || color == ACCENT_TOOL_LIVE
         || color == STATUS_SUCCESS
         || color == STATUS_INFO
@@ -1828,9 +1837,9 @@ fn adapt_bg_for_grayscale_palette(color: Color) -> Color {
     if color == Color::Reset {
         return color;
     }
-    if color == DEEPSEEK_INK || color == BACKGROUND_DARK || color == LIGHT_SURFACE {
+    if color == CODESMITH_INK || color == BACKGROUND_DARK || color == LIGHT_SURFACE {
         GRAYSCALE_SURFACE
-    } else if color == DEEPSEEK_SLATE
+    } else if color == CODESMITH_SLATE
         || color == COMPOSER_BG
         || color == SURFACE_PANEL
         || color == SURFACE_TOOL
@@ -2155,8 +2164,8 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        DEEPSEEK_SLATE, DIFF_ADDED, DIFF_ADDED_BG, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED,
+        ACCENT_REASONING_LIVE, CODESMITH_INK, CODESMITH_RED, CODESMITH_SKY, CODESMITH_SLATE,
+        ColorDepth, DIFF_ADDED, DIFF_ADDED_BG, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED,
         GRAYSCALE_PANEL, GRAYSCALE_REASONING, GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY,
         GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT, GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED,
         LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_BODY_RGB,
@@ -2276,7 +2285,7 @@ mod tests {
         assert_eq!(TERMINAL_UI_THEME.text_body, Color::Reset);
 
         assert_eq!(
-            adapt_bg_for_theme(DEEPSEEK_INK, ThemeId::Terminal, &TERMINAL_UI_THEME),
+            adapt_bg_for_theme(CODESMITH_INK, ThemeId::Terminal, &TERMINAL_UI_THEME),
             Color::Reset
         );
         assert_eq!(
@@ -2375,11 +2384,11 @@ mod tests {
     #[test]
     fn light_palette_maps_dark_surfaces_and_text() {
         assert_eq!(
-            adapt_bg_for_palette_mode(DEEPSEEK_INK, PaletteMode::Light),
+            adapt_bg_for_palette_mode(CODESMITH_INK, PaletteMode::Light),
             LIGHT_SURFACE
         );
         assert_eq!(
-            adapt_bg_for_palette_mode(DEEPSEEK_SLATE, PaletteMode::Light),
+            adapt_bg_for_palette_mode(CODESMITH_SLATE, PaletteMode::Light),
             LIGHT_PANEL
         );
         assert_eq!(
@@ -2395,11 +2404,11 @@ mod tests {
     #[test]
     fn solarized_light_palette_maps_dark_surfaces_and_text_to_solarized_roles() {
         assert_eq!(
-            adapt_bg_for_palette_mode(DEEPSEEK_INK, PaletteMode::SolarizedLight),
+            adapt_bg_for_palette_mode(CODESMITH_INK, PaletteMode::SolarizedLight),
             SOLARIZED_SURFACE
         );
         assert_eq!(
-            adapt_bg_for_palette_mode(DEEPSEEK_SLATE, PaletteMode::SolarizedLight),
+            adapt_bg_for_palette_mode(CODESMITH_SLATE, PaletteMode::SolarizedLight),
             SOLARIZED_PANEL
         );
         assert_eq!(
@@ -2415,11 +2424,11 @@ mod tests {
     #[test]
     fn grayscale_palette_maps_brand_hues_to_neutral_roles() {
         assert_eq!(
-            adapt_bg_for_palette_mode(DEEPSEEK_INK, PaletteMode::Grayscale),
+            adapt_bg_for_palette_mode(CODESMITH_INK, PaletteMode::Grayscale),
             GRAYSCALE_SURFACE
         );
         assert_eq!(
-            adapt_bg_for_palette_mode(DEEPSEEK_SLATE, PaletteMode::Grayscale),
+            adapt_bg_for_palette_mode(CODESMITH_SLATE, PaletteMode::Grayscale),
             GRAYSCALE_PANEL
         );
         assert_eq!(
@@ -2427,11 +2436,11 @@ mod tests {
             GRAYSCALE_REASONING
         );
         assert_eq!(
-            adapt_fg_for_palette_mode(DEEPSEEK_SKY, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
+            adapt_fg_for_palette_mode(CODESMITH_SKY, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
             GRAYSCALE_TEXT_SOFT
         );
         assert_eq!(
-            adapt_fg_for_palette_mode(DEEPSEEK_RED, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
+            adapt_fg_for_palette_mode(CODESMITH_RED, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
             GRAYSCALE_TEXT_BODY
         );
         assert_eq!(
@@ -2492,13 +2501,13 @@ mod tests {
     fn adapt_color_drops_to_named_on_ansi16() {
         // Sky: blue-dominant and bright → LightBlue, not terminal cyan.
         assert_eq!(
-            adapt_color(DEEPSEEK_SKY, ColorDepth::Ansi16),
+            adapt_color(CODESMITH_SKY, ColorDepth::Ansi16),
             Color::LightBlue
         );
         // Rose Red is intentionally bright enough to use the terminal's
         // bright red slot.
         assert_eq!(
-            adapt_color(DEEPSEEK_RED, ColorDepth::Ansi16),
+            adapt_color(CODESMITH_RED, ColorDepth::Ansi16),
             Color::LightRed
         );
     }
@@ -2612,6 +2621,6 @@ mod tests {
         // Don't try to pin the result — env may be anything in CI. Just
         // exercise the path so a panic would surface.
         let _ = ColorDepth::detect();
-        let _ = adapt_color(DEEPSEEK_INK, ColorDepth::detect());
+        let _ = adapt_color(CODESMITH_INK, ColorDepth::detect());
     }
 }

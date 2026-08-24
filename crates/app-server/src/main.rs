@@ -7,8 +7,8 @@ use codesmith_app_server::{AppServerOptions, run};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "deepseek-app-server",
-    about = "Run the DeepSeek app-server transport"
+    name = "codesmith-app-server",
+    about = "Run the CodeSmith app-server transport"
 )]
 struct Cli {
     #[arg(long, default_value = "127.0.0.1")]

@@ -65,7 +65,7 @@ CodeSmith 目前有三个相关但彼此不同的信任概念。
 - 通过 `is_workspace_trusted(workspace)` 读取。
 - 通过 `save_workspace_trust(workspace)` 和引导信任
   提示写入。
-- `.deepseek/` 下的旧版工作区本地标记仍被
+- `.codesmith/` 下的旧版工作区本地标记仍被
   `needs_trust(workspace)` 接受。
 
 这是一个启动/引导决策。它与运行时 `trust_mode` 相关，但不等同于
@@ -120,7 +120,7 @@ CodeSmith 文件工具可以访问该工作区之外的哪些具体路径？"
 | 日志设置 | `crates/tui/src/main.rs` | 命令分发之前 | 信任前安全 | 日志目的地可能包含来自用户配置的路径。 | 若仅来源于用户/CLI 配置则保持信任前。 |
 | 工作区解析 | `crates/tui/src/main.rs` | `run_interactive()` 早期 / 命令特定路径 | 信任前安全 | 决定信任状态所需。 | 保持信任前。 |
 | 工作区信任检查 | `crates/tui/src/config.rs`、`crates/tui/src/tui/onboarding/mod.rs` | App/引导状态构建期间 | 信任前安全 | 读取全局受信任工作区列表和旧版标记路径。旧版工作区标记是工作区本地输入。 | 为兼容性保留，但评审旧版标记是否应被视为充分的信任。 |
-| 来自 `$WORKSPACE/.codesmith/config.toml` 或旧版 `.deepseek/config.toml` 的项目配置覆盖 | `crates/tui/src/main.rs` | 仅当允许启动工作区初始化时在 `run_interactive()` 中 | 仅信任后 / 显式绕过 | 未受信任的交互式工作区不再在信任提示之前读取项目配置。现有的拒绝列表仍作为针对已受信任/已绕过项目配置的纵深防御检查。接受信任后的运行时重新加载在本切片中未实现。 | 决定在信任接受后重新加载项目配置，还是仅在下次启动时生效。更新文档以匹配拒绝列表。 |
+| 来自 `$WORKSPACE/.codesmith/config.toml` 或旧版 `.codesmith/config.toml` 的项目配置覆盖 | `crates/tui/src/main.rs` | 仅当允许启动工作区初始化时在 `run_interactive()` 中 | 仅信任后 / 显式绕过 | 未受信任的交互式工作区不再在信任提示之前读取项目配置。现有的拒绝列表仍作为针对已受信任/已绕过项目配置的纵深防御检查。接受信任后的运行时重新加载在本切片中未实现。 | 决定在信任接受后重新加载项目配置，还是仅在下次启动时生效。更新文档以匹配拒绝列表。 |
 | 配置文件创建/迁移 | `crates/tui/src/main.rs` | TUI 启动之前 | 若仅涉及用户状态则信任前安全 | 写入用户配置/状态并可能迁移旧版配置。 | 若不应用工作区控制的输入则保持信任前。 |
 | 系统技能安装 | `crates/tui/src/main.rs` | TUI 启动之前 | 若仅限捆绑/全局则信任前安全 | 将捆绑技能安装到用户状态不是工作区控制的，但工作区技能发现是独立的。 | 捆绑技能保持信任前；单独审计工作区本地技能发现。 |
 | 工作区快照清理 | `crates/tui/src/main.rs` | TUI 启动之前 | 不确定 / 需要评审 | 使用工作区路径并删除旧的快照元数据。它很可能影响 CodeSmith 管理的状态，但工作区信任影响应当被记录。 | 对确切的存储目标分类，并仅将 CodeSmith 拥有的缓存清理保留在信任前。 |

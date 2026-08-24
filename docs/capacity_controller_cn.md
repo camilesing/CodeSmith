@@ -111,14 +111,14 @@
 
 路径：
 
-- `DEEPSEEK_CAPACITY_MEMORY_DIR`（若已设置）
+- `CODESMITH_CAPACITY_MEMORY_DIR`（若已设置）
 - 否则为 `~/.codesmith/memory/<session_id>.jsonl`
-- 回退：已有的 `~/.deepseek/memory/<session_id>.jsonl`，或需要时使用工作区本地的 `.codesmith` / 旧版 `.deepseek` 记忆路径
+- 回退：已有的 `~/.codesmith/memory/<session_id>.jsonl`，或需要时使用工作区本地的 `.codesmith` / 旧版 `.codesmith` 记忆路径
 
 这些路径中的 `<session_id>` 是**持久线程 id**（`Session.id`，也以
-`DEEPSEEK_THREAD_ID` 的形式暴露给 hooks）——它在 resume 之后仍然存在，
+`CODESMITH_THREAD_ID` 的形式暴露给 hooks）——它在 resume 之后仍然存在，
 正是它让容量记忆具备跨会话连续性。它与临时的 `telemetry_session_id`
-（以 `DEEPSEEK_SESSION_ID` 的形式暴露给 hooks）是有意区分的：后者在每次
+（以 `CODESMITH_SESSION_ID` 的形式暴露给 hooks）是有意区分的：后者在每次
 构造会话时重新生成，从不写入磁盘。容量遥测事件携带临时 id；磁盘上的容量
 记忆文件则以持久 id 为键。
 

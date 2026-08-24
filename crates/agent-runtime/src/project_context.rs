@@ -7,8 +7,7 @@
 //! - `AGENTS.md` - Generic agent instructions (compatible with other agents)
 //! - `.claude/instructions.md` - Claude-style hidden instructions
 //! - `CLAUDE.md` - Claude-style instructions
-//! - `.codesmith/instructions.md` - Hidden instructions file (new)
-//! - `.deepseek/instructions.md` - Hidden instructions file (legacy)
+//! - `.codesmith/instructions.md` - Hidden instructions file
 //!
 //! The loaded content is injected into the system prompt to give the agent
 //! context about the project's conventions, structure, and requirements.
@@ -23,26 +22,22 @@ use thiserror::Error;
 /// Names of project context files to look for, in priority order.
 /// WHALE.md is the CodeSmith-native convention; AGENTS.md and CLAUDE.md
 /// provide compatibility with other coding agents. `.codesmith/` is the
-/// new config directory; `.deepseek/` is the legacy fallback.
+/// config directory.
 pub(crate) const PROJECT_CONTEXT_FILES: &[&str] = &[
     "WHALE.md",
     "AGENTS.md",
     ".claude/instructions.md",
     "CLAUDE.md",
     ".codesmith/instructions.md",
-    ".deepseek/instructions.md",
 ];
 
 /// User-level project instructions loaded as a fallback when the workspace and
 /// its parents do not define project context. `.codesmith/` takes priority
-/// over vendor-neutral `.agents/`, which takes priority over legacy
-/// `.deepseek/`, for both WHALE.md and AGENTS.md.
+/// over vendor-neutral `.agents/` for both WHALE.md and AGENTS.md.
 pub(crate) const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".codesmith", "AGENTS.md"];
 pub(crate) const GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "AGENTS.md"];
-pub(crate) const GLOBAL_AGENTS_LEGACY_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
 pub(crate) const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".codesmith", "WHALE.md"];
 pub(crate) const GLOBAL_WHALE_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "WHALE.md"];
-pub(crate) const GLOBAL_WHALE_LEGACY_PATH: &[&str] = &[".deepseek", "WHALE.md"];
 
 /// Maximum size for project context files (to prevent loading huge files)
 pub(crate) const MAX_CONTEXT_SIZE: usize = 100 * 1024; // 100KB
@@ -548,15 +543,11 @@ fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Opti
     // 2. ~/.codesmith/AGENTS.md     (new config directory)
     // 3. ~/.agents/WHALE.md         (vendor-neutral fallback)
     // 4. ~/.agents/AGENTS.md        (vendor-neutral fallback)
-    // 5. ~/.deepseek/WHALE.md       (legacy fallback)
-    // 6. ~/.deepseek/AGENTS.md      (legacy fallback)
     let candidates: &[&[&str]] = &[
         GLOBAL_WHALE_RELATIVE_PATH,
         GLOBAL_AGENTS_RELATIVE_PATH,
         GLOBAL_WHALE_VENDOR_NEUTRAL_PATH,
         GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH,
-        GLOBAL_WHALE_LEGACY_PATH,
-        GLOBAL_AGENTS_LEGACY_PATH,
     ];
 
     let mut warnings = Vec::new();
@@ -591,15 +582,13 @@ fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Opti
 }
 
 /// Generate a context file from project tree + summary and write it to
-/// `.codesmith/instructions.md` (or `.deepseek/instructions.md` as legacy
-/// fallback). Returns the generated content on success.
+/// `.codesmith/instructions.md`. Returns the generated content on success.
 fn auto_generate_context(workspace: &Path) -> Option<String> {
     let codesmith_dir = workspace.join(".codesmith");
     let instructions_path = codesmith_dir.join("instructions.md");
-    let legacy_instructions_path = workspace.join(".deepseek/instructions.md");
 
-    // Don't overwrite an existing file (check both locations)
-    if instructions_path.exists() || legacy_instructions_path.exists() {
+    // Don't overwrite an existing file
+    if instructions_path.exists() {
         return None;
     }
 
@@ -672,8 +661,8 @@ fn check_trust_status(workspace: &Path) -> bool {
 
     // Check for trust markers
     let trust_markers = [
-        workspace.join(".deepseek").join("trusted"),
-        workspace.join(".deepseek").join("trust.json"),
+        workspace.join(".codesmith").join("trusted"),
+        workspace.join(".codesmith").join("trust.json"),
     ];
 
     for marker in &trust_markers {
@@ -819,7 +808,7 @@ mod tests {
     #[test]
     fn test_load_project_context_hidden_dir() {
         let tmp = tempdir().expect("tempdir");
-        let hidden_dir = tmp.path().join(".deepseek");
+        let hidden_dir = tmp.path().join(".codesmith");
         fs::create_dir(&hidden_dir).expect("mkdir");
         fs::write(hidden_dir.join("instructions.md"), "Hidden instructions").expect("write");
 
@@ -868,9 +857,9 @@ mod tests {
         assert!(!check_trust_status(tmp.path()));
 
         // Create trust marker
-        let deepseek_dir = tmp.path().join(".deepseek");
-        fs::create_dir(&deepseek_dir).expect("mkdir");
-        fs::write(deepseek_dir.join("trusted"), "").expect("write");
+        let codesmith_dir = tmp.path().join(".codesmith");
+        fs::create_dir(&codesmith_dir).expect("mkdir");
+        fs::write(codesmith_dir.join("trusted"), "").expect("write");
 
         assert!(check_trust_status(tmp.path()));
     }
@@ -990,10 +979,10 @@ mod tests {
         fs::write(tmp.path().join("src").join("main.rs"), "fn main() {}").expect("write src");
         fs::write(tmp.path().join(".DS_Store"), "noise").expect("write ds store");
         fs::write(tmp.path().join("paper.pdf"), "not a real pdf").expect("write pdf");
-        fs::create_dir_all(tmp.path().join(".deepseek").join("state")).expect("mkdir state");
+        fs::create_dir_all(tmp.path().join(".codesmith").join("state")).expect("mkdir state");
         fs::write(
             tmp.path()
-                .join(".deepseek")
+                .join(".codesmith")
                 .join("state")
                 .join("subagents.v1.json"),
             "{}",
@@ -1028,7 +1017,7 @@ mod tests {
         assert!(pack.contains("\"src/main.rs\""), "{pack}");
         assert!(pack.contains("\".github/\""), "{pack}");
         assert!(pack.contains("\".github/workflows/ci.yml\""), "{pack}");
-        assert!(!pack.contains(".deepseek"), "{pack}");
+        assert!(!pack.contains(".codesmith"), "{pack}");
         assert!(!pack.contains(".playwright-mcp"), "{pack}");
         assert!(!pack.contains(".agents"), "{pack}");
         assert!(!pack.contains(".DS_Store"), "{pack}");
@@ -1112,8 +1101,8 @@ mod tests {
     fn test_load_global_agents_when_project_has_no_context() {
         let workspace = tempdir().expect("workspace tempdir");
         let home = tempdir().expect("home tempdir");
-        let global_dir = home.path().join(".deepseek");
-        fs::create_dir(&global_dir).expect("mkdir .deepseek");
+        let global_dir = home.path().join(".codesmith");
+        fs::create_dir(&global_dir).expect("mkdir .codesmith");
         let global_agents = global_dir.join("AGENTS.md");
         fs::write(&global_agents, "Global instructions").expect("write global agents");
 
@@ -1183,7 +1172,7 @@ mod tests {
 
     #[test]
     fn test_local_and_global_agents_merge_when_both_exist() {
-        // #1157: when both `~/.deepseek/AGENTS.md` and a project AGENTS.md
+        // #1157: when both `~/.codesmith/AGENTS.md` and a project AGENTS.md
         // exist, the prompt should carry user-wide preferences AND the
         // project's overrides — not silently drop the global file.
         let workspace = tempdir().expect("workspace tempdir");
@@ -1191,8 +1180,8 @@ mod tests {
             .expect("write local agents");
 
         let home = tempdir().expect("home tempdir");
-        let global_dir = home.path().join(".deepseek");
-        fs::create_dir(&global_dir).expect("mkdir .deepseek");
+        let global_dir = home.path().join(".codesmith");
+        fs::create_dir(&global_dir).expect("mkdir .codesmith");
         fs::write(global_dir.join("AGENTS.md"), "Global instructions")
             .expect("write global agents");
 
@@ -1238,8 +1227,8 @@ mod tests {
         // fallback behaviour is preserved — no merge framing leaks in.
         let workspace = tempdir().expect("workspace tempdir");
         let home = tempdir().expect("home tempdir");
-        let global_dir = home.path().join(".deepseek");
-        fs::create_dir(&global_dir).expect("mkdir .deepseek");
+        let global_dir = home.path().join(".codesmith");
+        fs::create_dir(&global_dir).expect("mkdir .codesmith");
         let global_agents = global_dir.join("AGENTS.md");
         fs::write(&global_agents, "Just the global instructions").expect("write global agents");
 
@@ -1266,8 +1255,8 @@ mod tests {
     fn test_invalid_global_agents_warns_and_falls_back_to_generated_context() {
         let workspace = tempdir().expect("workspace tempdir");
         let home = tempdir().expect("home tempdir");
-        let global_dir = home.path().join(".deepseek");
-        fs::create_dir(&global_dir).expect("mkdir .deepseek");
+        let global_dir = home.path().join(".codesmith");
+        fs::create_dir(&global_dir).expect("mkdir .codesmith");
         fs::write(global_dir.join("AGENTS.md"), "   \n  ").expect("write empty global agents");
 
         let ctx = load_project_context_with_parents_and_home(workspace.path(), Some(home.path()));

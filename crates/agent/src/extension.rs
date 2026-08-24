@@ -217,15 +217,26 @@ pub struct ToolExecutionUpdateEvent {
 #[derive(Debug, Clone)]
 pub enum ExtensionEvent {
     // --- §F1 minimal set (unchanged) ---
-    SessionStart { reason: SessionReason },
-    TurnStart { turn_id: String },
+    SessionStart {
+        reason: SessionReason,
+    },
+    TurnStart {
+        turn_id: String,
+    },
     ToolCall(ToolCallEvent),
     ToolResult(ToolResultEvent),
-    TurnEnd { turn_id: String, reason: TurnEndReason },
+    TurnEnd {
+        turn_id: String,
+        reason: TurnEndReason,
+    },
     SessionShutdown,
     // --- §F2a additions (spec §10.2 + §4) ---
-    ProjectTrust { reason: TrustReason },
-    ResourcesDiscover { reason: DiscoverReason },
+    ProjectTrust {
+        reason: TrustReason,
+    },
+    ResourcesDiscover {
+        reason: DiscoverReason,
+    },
     Input(InputEvent),
     BeforeAgentStart(AgentStartEvent),
     AgentStart,
@@ -544,11 +555,11 @@ mod tests {
 
     impl TestContext {
         fn new() -> Self {
-        Self {
-            cwd: PathBuf::from("."),
-            generation: 1,
-            signal: CancellationToken::new(),
-        }
+            Self {
+                cwd: PathBuf::from("."),
+                generation: 1,
+                signal: CancellationToken::new(),
+            }
         }
     }
 
@@ -740,10 +751,17 @@ mod tests {
         let _ = DiscoverReason::Startup;
         let input = InputEvent { text: "hi".into() };
         assert_eq!(input.text, "hi");
-        let start = AgentStartEvent { system_prompt: Some("s".into()), inject_message: None };
+        let start = AgentStartEvent {
+            system_prompt: Some("s".into()),
+            inject_message: None,
+        };
         assert!(start.system_prompt.is_some());
-        let req = BeforeProviderRequestEvent { messages: json!({}) };
-        let resp = AfterProviderResponseEvent { response: json!({}) };
+        let req = BeforeProviderRequestEvent {
+            messages: json!({}),
+        };
+        let resp = AfterProviderResponseEvent {
+            response: json!({}),
+        };
         let upd = ToolExecutionUpdateEvent {
             id: "c1".into(),
             name: "echo".into(),
@@ -757,28 +775,100 @@ mod tests {
     fn f2a_event_kind_round_trips_every_variant() {
         use ExtensionEventKind as K;
         let cases: Vec<(ExtensionEvent, ExtensionEventKind)> = vec![
-            (ExtensionEvent::ProjectTrust { reason: TrustReason::Trusted }, K::ProjectTrust),
-            (ExtensionEvent::SessionStart { reason: SessionReason::Startup }, K::SessionStart),
-            (ExtensionEvent::ResourcesDiscover { reason: DiscoverReason::Startup }, K::ResourcesDiscover),
-            (ExtensionEvent::Input(InputEvent { text: "x".into() }), K::Input),
-            (ExtensionEvent::BeforeAgentStart(AgentStartEvent { system_prompt: None, inject_message: None }), K::BeforeAgentStart),
+            (
+                ExtensionEvent::ProjectTrust {
+                    reason: TrustReason::Trusted,
+                },
+                K::ProjectTrust,
+            ),
+            (
+                ExtensionEvent::SessionStart {
+                    reason: SessionReason::Startup,
+                },
+                K::SessionStart,
+            ),
+            (
+                ExtensionEvent::ResourcesDiscover {
+                    reason: DiscoverReason::Startup,
+                },
+                K::ResourcesDiscover,
+            ),
+            (
+                ExtensionEvent::Input(InputEvent { text: "x".into() }),
+                K::Input,
+            ),
+            (
+                ExtensionEvent::BeforeAgentStart(AgentStartEvent {
+                    system_prompt: None,
+                    inject_message: None,
+                }),
+                K::BeforeAgentStart,
+            ),
             (ExtensionEvent::AgentStart, K::AgentStart),
-            (ExtensionEvent::TurnStart { turn_id: "t".into() }, K::TurnStart),
-            (ExtensionEvent::BeforeProviderHeaders, K::BeforeProviderHeaders),
-            (ExtensionEvent::BeforeProviderRequest(BeforeProviderRequestEvent { messages: json!({}) }), K::BeforeProviderRequest),
-            (ExtensionEvent::AfterProviderResponse(AfterProviderResponseEvent { response: json!({}) }), K::AfterProviderResponse),
+            (
+                ExtensionEvent::TurnStart {
+                    turn_id: "t".into(),
+                },
+                K::TurnStart,
+            ),
+            (
+                ExtensionEvent::BeforeProviderHeaders,
+                K::BeforeProviderHeaders,
+            ),
+            (
+                ExtensionEvent::BeforeProviderRequest(BeforeProviderRequestEvent {
+                    messages: json!({}),
+                }),
+                K::BeforeProviderRequest,
+            ),
+            (
+                ExtensionEvent::AfterProviderResponse(AfterProviderResponseEvent {
+                    response: json!({}),
+                }),
+                K::AfterProviderResponse,
+            ),
             (ExtensionEvent::ToolExecutionStart, K::ToolExecutionStart),
-            (ExtensionEvent::ToolCall(ToolCallEvent { id: "c".into(), name: "n".into(), input: json!({}) }), K::ToolCall),
-            (ExtensionEvent::ToolExecutionUpdate(ToolExecutionUpdateEvent { id: "c".into(), name: "n".into(), message: "m".into() }), K::ToolExecutionUpdate),
-            (ExtensionEvent::ToolResult(ToolResultEvent { id: "c".into(), name: "n".into(), result: Ok(ToolResult::success("ok")) }), K::ToolResult),
+            (
+                ExtensionEvent::ToolCall(ToolCallEvent {
+                    id: "c".into(),
+                    name: "n".into(),
+                    input: json!({}),
+                }),
+                K::ToolCall,
+            ),
+            (
+                ExtensionEvent::ToolExecutionUpdate(ToolExecutionUpdateEvent {
+                    id: "c".into(),
+                    name: "n".into(),
+                    message: "m".into(),
+                }),
+                K::ToolExecutionUpdate,
+            ),
+            (
+                ExtensionEvent::ToolResult(ToolResultEvent {
+                    id: "c".into(),
+                    name: "n".into(),
+                    result: Ok(ToolResult::success("ok")),
+                }),
+                K::ToolResult,
+            ),
             (ExtensionEvent::ToolExecutionEnd, K::ToolExecutionEnd),
-            (ExtensionEvent::TurnEnd { turn_id: "t".into(), reason: TurnEndReason::NoToolCalls }, K::TurnEnd),
+            (
+                ExtensionEvent::TurnEnd {
+                    turn_id: "t".into(),
+                    reason: TurnEndReason::NoToolCalls,
+                },
+                K::TurnEnd,
+            ),
             (ExtensionEvent::AgentEnd, K::AgentEnd),
             (ExtensionEvent::AgentSettled, K::AgentSettled),
             (ExtensionEvent::SessionBeforeSwitch, K::SessionBeforeSwitch),
             (ExtensionEvent::SessionBeforeFork, K::SessionBeforeFork),
             (ExtensionEvent::SessionShutdown, K::SessionShutdown),
-            (ExtensionEvent::SessionBeforeCompact, K::SessionBeforeCompact),
+            (
+                ExtensionEvent::SessionBeforeCompact,
+                K::SessionBeforeCompact,
+            ),
             (ExtensionEvent::SessionCompact, K::SessionCompact),
         ];
         assert_eq!(cases.len(), 23, "all variants covered");
@@ -790,8 +880,12 @@ mod tests {
     #[test]
     fn f2a_handler_outcome_constructs_each_variant() {
         let _ = HandlerOutcome::Continue;
-        let c = HandlerOutcome::Cancel { reason: "no".into() };
-        let b = HandlerOutcome::Block { reason: "denied".into() };
+        let c = HandlerOutcome::Cancel {
+            reason: "no".into(),
+        };
+        let b = HandlerOutcome::Block {
+            reason: "denied".into(),
+        };
         let t = HandlerOutcome::Transform(ExtensionEvent::SessionShutdown);
         let _ = format!("{c:?} {b:?} {t:?}");
     }

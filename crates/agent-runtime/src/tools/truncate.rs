@@ -86,7 +86,7 @@ pub fn spillover_root() -> Option<PathBuf> {
 
     let home = dirs::home_dir()?;
     let primary = home.join(".codesmith").join(SPILLOVER_DIR_NAME);
-    let legacy = home.join(".deepseek").join(SPILLOVER_DIR_NAME);
+    let legacy = home.join(".codesmith").join(SPILLOVER_DIR_NAME);
     if primary.exists() || !legacy.exists() {
         return Some(primary);
     }

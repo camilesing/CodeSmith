@@ -89,4 +89,3 @@ impl ProviderFactory for OpenAiCompatFactory {
         Ok(Arc::new(adapter) as LlmClientHandle)
     }
 }
-

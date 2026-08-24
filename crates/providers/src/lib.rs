@@ -53,12 +53,12 @@ pub mod mock;
 #[cfg(feature = "rig")]
 pub(crate) mod rig_adapter;
 
-#[cfg(feature = "openai")]
-pub mod openai;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 #[cfg(feature = "deepseek")]
 pub mod deepseek;
+#[cfg(feature = "openai")]
+pub mod openai;
 #[cfg(feature = "openai-compat")]
 pub mod openai_compat;
 
@@ -66,9 +66,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Result, bail};
 use codesmith_agent::llm_client::LlmClientHandle;
-use codesmith_agent::provider::{
-    ProviderConfig, ProviderFactory, ProviderId, ProviderRegistry,
-};
+use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId, ProviderRegistry};
 use codesmith_config::{FactoryBackend, ProvidersManifest};
 
 /// Process-wide cached [`ProviderRegistry`] built from the declarative
@@ -203,10 +201,7 @@ fn leak_str(s: &str) -> &'static str {
 /// rig-backed factory so the fallback rule lives in one place (ROADMAP §E4 —
 /// the manifest as a source of per-provider `base_url`/`model` defaults).
 #[cfg(feature = "rig")]
-pub(crate) fn resolve_with_manifest_default(
-    cfg_val: &str,
-    manifest: Option<&str>,
-) -> String {
+pub(crate) fn resolve_with_manifest_default(cfg_val: &str, manifest: Option<&str>) -> String {
     if !cfg_val.is_empty() {
         cfg_val.to_string()
     } else if let Some(m) = manifest {
@@ -396,7 +391,10 @@ mod manifest_tests {
             .iter()
             .find(|d| d.id == "mock")
             .expect("mock entry");
-        assert!(mock.base_url.is_none(), "mock should not declare a base_url");
+        assert!(
+            mock.base_url.is_none(),
+            "mock should not declare a base_url"
+        );
         assert!(mock.model.is_none(), "mock should not declare a model");
 
         // Spot-check across backends: the dedicated factories plus the head and
@@ -404,9 +402,21 @@ mod manifest_tests {
         #[allow(clippy::type_complexity)]
         let cases: &[(&str, &str, &str)] = &[
             ("openai", "https://api.openai.com/v1", "gpt-5"),
-            ("anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-5"),
-            ("deepseek", "https://api.deepseek.com/beta", "deepseek-v4-pro"),
-            ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4-pro"),
+            (
+                "anthropic",
+                "https://api.anthropic.com/v1",
+                "claude-sonnet-4-5",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/beta",
+                "deepseek-v4-pro",
+            ),
+            (
+                "openrouter",
+                "https://openrouter.ai/api/v1",
+                "deepseek/deepseek-v4-pro",
+            ),
             ("ollama", "http://localhost:11434/v1", "deepseek-coder:1.3b"),
         ];
         for &(id, expected_base_url, expected_model) in cases {
@@ -415,7 +425,11 @@ mod manifest_tests {
                 .iter()
                 .find(|d| d.id.as_str() == id)
                 .unwrap_or_else(|| panic!("missing entry '{id}'"));
-            assert_eq!(desc.base_url.as_deref(), Some(expected_base_url), "{id} base_url");
+            assert_eq!(
+                desc.base_url.as_deref(),
+                Some(expected_base_url),
+                "{id} base_url"
+            );
             assert_eq!(desc.model.as_deref(), Some(expected_model), "{id} model");
         }
     }
@@ -429,10 +443,8 @@ mod manifest_tests {
 
     #[test]
     fn uncompiled_backend_factory_errors_clearly() {
-        let factory = UncompiledBackendFactory::new(
-            ProviderId::from("deepseek"),
-            FactoryBackend::Deepseek,
-        );
+        let factory =
+            UncompiledBackendFactory::new(ProviderId::from("deepseek"), FactoryBackend::Deepseek);
         let err = factory
             .build(&cfg_for(ProviderId::from("deepseek")))
             .err()

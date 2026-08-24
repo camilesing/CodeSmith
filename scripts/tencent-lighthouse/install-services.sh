@@ -7,20 +7,20 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DEEPSEEK_USER="${DEEPSEEK_USER:-codesmith}"
-DEEPSEEK_ROOT="${DEEPSEEK_ROOT:-/opt/codesmith}"
+CODESMITH_USER="${CODESMITH_USER:-codesmith}"
+CODESMITH_ROOT="${CODESMITH_ROOT:-/opt/codesmith}"
 
-install -d -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" "${DEEPSEEK_ROOT}/bridge"
+install -d -o "${CODESMITH_USER}" -g "${CODESMITH_USER}" "${CODESMITH_ROOT}/bridge"
 rsync -a --delete \
   --exclude node_modules \
   "${REPO_ROOT}/integrations/feishu-bridge/" \
-  "${DEEPSEEK_ROOT}/bridge/"
-chown -R "${DEEPSEEK_USER}:${DEEPSEEK_USER}" "${DEEPSEEK_ROOT}/bridge"
+  "${CODESMITH_ROOT}/bridge/"
+chown -R "${CODESMITH_USER}:${CODESMITH_USER}" "${CODESMITH_ROOT}/bridge"
 
-if [[ -f "${DEEPSEEK_ROOT}/bridge/package-lock.json" ]]; then
-  sudo -u "${DEEPSEEK_USER}" npm --prefix "${DEEPSEEK_ROOT}/bridge" ci --omit=dev
+if [[ -f "${CODESMITH_ROOT}/bridge/package-lock.json" ]]; then
+  sudo -u "${CODESMITH_USER}" npm --prefix "${CODESMITH_ROOT}/bridge" ci --omit=dev
 else
-  sudo -u "${DEEPSEEK_USER}" npm --prefix "${DEEPSEEK_ROOT}/bridge" install --omit=dev
+  sudo -u "${CODESMITH_USER}" npm --prefix "${CODESMITH_ROOT}/bridge" install --omit=dev
 fi
 
 install -m 0644 "${REPO_ROOT}/deploy/tencent-lighthouse/systemd/codesmith-runtime.service" /etc/systemd/system/codesmith-runtime.service
@@ -33,9 +33,9 @@ cat <<'EOF'
 Services installed but not started.
 
 Before starting, verify:
-  /etc/deepseek/runtime.env
-  /etc/deepseek/feishu-bridge.env
-  sudo -u codesmith node /opt/codesmith/bridge/scripts/validate-config.mjs --env /etc/deepseek/feishu-bridge.env --runtime-env /etc/deepseek/runtime.env --workspace-root /opt/whalebro --check-filesystem
+  /etc/codesmith/runtime.env
+  /etc/codesmith/feishu-bridge.env
+  sudo -u codesmith node /opt/codesmith/bridge/scripts/validate-config.mjs --env /etc/codesmith/feishu-bridge.env --runtime-env /etc/codesmith/runtime.env --workspace-root /opt/whalebro --check-filesystem
 
 Then run:
   sudo systemctl start codesmith-runtime

@@ -113,10 +113,10 @@ mod tests {
     fn test_writable_root_with_exceptions() {
         let root = WritableRoot::with_exceptions(
             PathBuf::from("/project"),
-            vec![PathBuf::from("/project/.deepseek")],
+            vec![PathBuf::from("/project/.codesmith")],
         );
         assert!(root.is_path_writable(Path::new("/project/src/main.rs")));
-        assert!(!root.is_path_writable(Path::new("/project/.deepseek/config")));
+        assert!(!root.is_path_writable(Path::new("/project/.codesmith/config")));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Cross-session composer input history (#366).
 //!
-//! Persists user-typed prompts to `~/.deepseek/composer_history.txt` so
+//! Persists user-typed prompts to `~/.codesmith/composer_history.txt` so
 //! pressing Up-arrow at the composer recalls submissions from previous
 //! sessions, not just the current one. One entry per line, oldest first,
 //! capped at [`MAX_HISTORY_ENTRIES`] entries (older entries are pruned
@@ -35,7 +35,7 @@ pub const MAX_HISTORY_ENTRIES: usize = 1000;
 const HISTORY_FILE_NAME: &str = "composer_history.txt";
 
 fn default_history_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".deepseek").join(HISTORY_FILE_NAME))
+    dirs::home_dir().map(|home| home.join(".codesmith").join(HISTORY_FILE_NAME))
 }
 
 /// Read the persisted history into memory. Returns an empty vec if the

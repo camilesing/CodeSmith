@@ -194,7 +194,7 @@ RLM 现在同样是持久化的：
 
 ### 会话接力
 
-`/relay [focus]` 让当前代理将 `.deepseek/handoff.md` 写成一个紧凑的
+`/relay [focus]` 让当前代理将 `.codesmith/handoff.md` 写成一个紧凑的
 `# Session relay` 产物，交给下一个线程。文件名出于与现有提示加载和旧
 会话的兼容而保留；可见的心智模型是 relay / 接力。
 

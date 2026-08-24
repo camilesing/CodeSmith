@@ -87,7 +87,7 @@ export function isAllowed(identity, allowlist, allowUnlisted = false) {
 
 export function pairingRefusalText(identity) {
   return [
-    "This chat is not in DEEPSEEK_CHAT_ALLOWLIST.",
+    "This chat is not in CODESMITH_CHAT_ALLOWLIST.",
     `chat_id=${identity.chatId}`,
     identity.openId ? `open_id=${identity.openId}` : "",
     identity.unionId ? `union_id=${identity.unionId}` : "",
@@ -229,9 +229,9 @@ export function validateBridgeConfig(env, options = {}) {
   for (const key of [
     "FEISHU_APP_ID",
     "FEISHU_APP_SECRET",
-    "DEEPSEEK_RUNTIME_URL",
-    "DEEPSEEK_RUNTIME_TOKEN",
-    "DEEPSEEK_WORKSPACE",
+    "CODESMITH_RUNTIME_URL",
+    "CODESMITH_RUNTIME_TOKEN",
+    "CODESMITH_WORKSPACE",
     "FEISHU_THREAD_MAP_PATH"
   ]) {
     const value = cleanEnvValue(env[key]);
@@ -247,23 +247,23 @@ export function validateBridgeConfig(env, options = {}) {
     add(errors, "invalid_domain", "FEISHU_DOMAIN must be feishu, lark, or an https://open.* URL");
   }
 
-  const runtimeUrl = cleanEnvValue(env.DEEPSEEK_RUNTIME_URL || "http://127.0.0.1:7878");
+  const runtimeUrl = cleanEnvValue(env.CODESMITH_RUNTIME_URL || "http://127.0.0.1:7878");
   try {
     const parsed = new URL(runtimeUrl);
     const localHosts = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
     if (!["http:", "https:"].includes(parsed.protocol)) {
-      add(errors, "invalid_runtime_url", "DEEPSEEK_RUNTIME_URL must use http or https");
+      add(errors, "invalid_runtime_url", "CODESMITH_RUNTIME_URL must use http or https");
     }
     if (!localHosts.has(parsed.hostname)) {
-      add(errors, "remote_runtime_url", "DEEPSEEK_RUNTIME_URL must point at localhost on Lighthouse");
+      add(errors, "remote_runtime_url", "CODESMITH_RUNTIME_URL must point at localhost on Lighthouse");
     }
   } catch {
-    add(errors, "invalid_runtime_url", "DEEPSEEK_RUNTIME_URL is not a valid URL");
+    add(errors, "invalid_runtime_url", "CODESMITH_RUNTIME_URL is not a valid URL");
   }
 
-  const workspace = cleanEnvValue(env.DEEPSEEK_WORKSPACE);
+  const workspace = cleanEnvValue(env.CODESMITH_WORKSPACE);
   if (workspace && !workspace.startsWith("/")) {
-    add(errors, "relative_workspace", "DEEPSEEK_WORKSPACE must be an absolute path");
+    add(errors, "relative_workspace", "CODESMITH_WORKSPACE must be an absolute path");
   }
   if (
     workspace &&
@@ -271,7 +271,7 @@ export function validateBridgeConfig(env, options = {}) {
     workspace !== workspaceRoot &&
     !workspace.startsWith(`${workspaceRoot}/`)
   ) {
-    add(warnings, "workspace_root", `DEEPSEEK_WORKSPACE is outside ${workspaceRoot}`);
+    add(warnings, "workspace_root", `CODESMITH_WORKSPACE is outside ${workspaceRoot}`);
   }
 
   const threadMapPath = cleanEnvValue(env.FEISHU_THREAD_MAP_PATH);
@@ -281,13 +281,13 @@ export function validateBridgeConfig(env, options = {}) {
 
   const allowGroups = parseBool(env.FEISHU_ALLOW_GROUPS, false);
   const requirePrefix = parseBool(env.FEISHU_REQUIRE_PREFIX_IN_GROUP, true);
-  const allowUnlisted = parseBool(env.DEEPSEEK_ALLOW_UNLISTED, false);
-  const allowlist = parseList(env.DEEPSEEK_CHAT_ALLOWLIST);
+  const allowUnlisted = parseBool(env.CODESMITH_ALLOW_UNLISTED, false);
+  const allowlist = parseList(env.CODESMITH_CHAT_ALLOWLIST);
 
   if (!allowlist.length && allowUnlisted) {
-    add(warnings, "pairing_mode_open", "DEEPSEEK_ALLOW_UNLISTED=true leaves first-pairing mode open");
+    add(warnings, "pairing_mode_open", "CODESMITH_ALLOW_UNLISTED=true leaves first-pairing mode open");
   } else if (!allowlist.length) {
-    add(warnings, "not_paired", "DEEPSEEK_CHAT_ALLOWLIST is empty; all chats will be refused");
+    add(warnings, "not_paired", "CODESMITH_CHAT_ALLOWLIST is empty; all chats will be refused");
   }
   if (allowGroups && allowUnlisted) {
     add(errors, "open_group_control", "Group control cannot be enabled while unlisted chats are allowed");
@@ -303,20 +303,20 @@ export function validateBridgeConfig(env, options = {}) {
   if (!Number.isFinite(maxReplyChars) || maxReplyChars < 100) {
     add(errors, "invalid_max_reply_chars", "FEISHU_MAX_REPLY_CHARS must be at least 100");
   }
-  const turnTimeoutMs = Number(env.DEEPSEEK_TURN_TIMEOUT_MS || 900000);
+  const turnTimeoutMs = Number(env.CODESMITH_TURN_TIMEOUT_MS || 900000);
   if (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs < 1000) {
-    add(errors, "invalid_turn_timeout", "DEEPSEEK_TURN_TIMEOUT_MS must be at least 1000");
+    add(errors, "invalid_turn_timeout", "CODESMITH_TURN_TIMEOUT_MS must be at least 1000");
   }
 
   if (runtimeEnv) {
-    const runtimeToken = cleanEnvValue(runtimeEnv.DEEPSEEK_RUNTIME_TOKEN);
-    const bridgeToken = cleanEnvValue(env.DEEPSEEK_RUNTIME_TOKEN);
+    const runtimeToken = cleanEnvValue(runtimeEnv.CODESMITH_RUNTIME_TOKEN);
+    const bridgeToken = cleanEnvValue(env.CODESMITH_RUNTIME_TOKEN);
     if (!runtimeToken) {
-      add(errors, "missing_runtime_token", "runtime.env is missing DEEPSEEK_RUNTIME_TOKEN");
+      add(errors, "missing_runtime_token", "runtime.env is missing CODESMITH_RUNTIME_TOKEN");
     } else if (isPlaceholderValue(runtimeToken)) {
-      add(errors, "placeholder_runtime_token", "runtime.env DEEPSEEK_RUNTIME_TOKEN is still a placeholder");
+      add(errors, "placeholder_runtime_token", "runtime.env CODESMITH_RUNTIME_TOKEN is still a placeholder");
     } else if (bridgeToken && bridgeToken !== runtimeToken) {
-      add(errors, "token_mismatch", "Runtime and bridge DEEPSEEK_RUNTIME_TOKEN values do not match");
+      add(errors, "token_mismatch", "Runtime and bridge CODESMITH_RUNTIME_TOKEN values do not match");
     }
 
     const apiKey = cleanEnvValue(runtimeEnv.DEEPSEEK_API_KEY);
@@ -326,9 +326,9 @@ export function validateBridgeConfig(env, options = {}) {
       add(warnings, "placeholder_api_key", "runtime.env DEEPSEEK_API_KEY is still a placeholder");
     }
 
-    const runtimePort = Number(runtimeEnv.DEEPSEEK_RUNTIME_PORT || 7878);
+    const runtimePort = Number(runtimeEnv.CODESMITH_RUNTIME_PORT || 7878);
     if (!Number.isInteger(runtimePort) || runtimePort <= 0 || runtimePort > 65535) {
-      add(errors, "invalid_runtime_port", "DEEPSEEK_RUNTIME_PORT must be a valid TCP port");
+      add(errors, "invalid_runtime_port", "CODESMITH_RUNTIME_PORT must be a valid TCP port");
     }
   }
 

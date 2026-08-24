@@ -191,10 +191,7 @@ impl Callback for CallbackBridge {
 
             if let Some(hooks) = hooks.as_ref() {
                 if hooks.has_hooks_for_event(HookEvent::ToolCallBefore) {
-                    let ctx = template
-                        .clone()
-                        .with_tool_name(name)
-                        .with_tool_args(input);
+                    let ctx = template.clone().with_tool_name(name).with_tool_args(input);
                     let _ = hooks.execute(HookEvent::ToolCallBefore, &ctx);
                 }
             }
@@ -268,15 +265,11 @@ impl Callback for CallbackBridge {
                     content: content.clone(),
                 },
                 StreamDelta::MessageStarted { index } => Event::MessageStarted { index: *index },
-                StreamDelta::ThinkingStarted { index } => {
-                    Event::ThinkingStarted { index: *index }
-                }
+                StreamDelta::ThinkingStarted { index } => Event::ThinkingStarted { index: *index },
                 StreamDelta::ThinkingComplete { index } => {
                     Event::ThinkingComplete { index: *index }
                 }
-                StreamDelta::MessageComplete { index } => {
-                    Event::MessageComplete { index: *index }
-                }
+                StreamDelta::MessageComplete { index } => Event::MessageComplete { index: *index },
                 StreamDelta::ToolCallStarted { id, name, input } => {
                     // Mark this id as announced so the execute-time
                     // `on_tool_start` skips re-emitting `Event::ToolCallStarted`
@@ -336,10 +329,7 @@ mod tests {
 
     impl HookHost for RecordingHookHost {
         fn execute(&self, event: HookEvent, context: &HookContext) -> Vec<HookResult> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((event, context.clone()));
+            self.calls.lock().unwrap().push((event, context.clone()));
             Vec::new()
         }
         fn execute_pre_compact_hook(&self, _context: &HookContext) -> Option<String> {
@@ -414,8 +404,10 @@ mod tests {
             let next = self.calls.lock().unwrap().pop_front();
             Box::pin(async move {
                 let events = next.unwrap_or_default();
-                Ok(Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
-                    as StreamEventBox)
+                Ok(
+                    Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
+                        as StreamEventBox,
+                )
             })
         }
     }
@@ -555,10 +547,8 @@ mod tests {
         // After: tool_name + tool_args (replayed from stash) + tool_result.
         assert_eq!(after_ctx.tool_name.as_deref(), Some("echo"));
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(
-                after_ctx.tool_args.as_deref().unwrap_or("")
-            )
-            .unwrap(),
+            serde_json::from_str::<serde_json::Value>(after_ctx.tool_args.as_deref().unwrap_or(""))
+                .unwrap(),
             input
         );
         assert_eq!(after_ctx.tool_result.as_deref(), Some("echo:world"));
@@ -731,7 +721,9 @@ mod tests {
         // The ToolResult fed back carries the tool's output.
         assert_eq!(history.len(), 4);
         match &history.messages()[2].content[0] {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert_eq!(content, "echo:world");
                 assert_eq!(*is_error, Some(false));
             }

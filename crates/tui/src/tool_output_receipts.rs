@@ -434,7 +434,7 @@ mod tests {
             .unwrap_or_else(|err| err.into_inner());
         let tmp = tempdir().expect("tempdir");
         let prior = crate::tools::truncate::set_test_spillover_root(Some(
-            tmp.path().join(".deepseek").join("tool_outputs"),
+            tmp.path().join(".codesmith").join("tool_outputs"),
         ));
         struct Restore(Option<PathBuf>);
         impl Drop for Restore {

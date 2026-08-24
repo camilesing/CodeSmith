@@ -59,7 +59,7 @@ codesmith-tui mcp validate
 
 默认路径：
 
-- `~/.codesmith/mcp.json`（当 CodeSmith 文件不存在时，仍会读取 `~/.deepseek/mcp.json`）
+- `~/.codesmith/mcp.json`（当 CodeSmith 文件不存在时，仍会读取 `~/.codesmith/mcp.json`）
 
 覆盖方式：
 

@@ -17,13 +17,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use super::{
+    CompactionConfig, estimate_tokens, estimate_tokens_for_message, session_memory_compact,
+};
 use crate::hooks::{HookContext, HookHost};
 use crate::llm_client::LlmClient;
 use crate::models::{
     CacheControl, ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt,
     context_window_for_model,
 };
-use super::{CompactionConfig, estimate_tokens, estimate_tokens_for_message, session_memory_compact};
 
 pub const KEEP_RECENT_MESSAGES: usize = 4;
 pub const RECENT_WORKING_SET_WINDOW: usize = 12;
@@ -250,10 +252,7 @@ pub fn is_user_text_query(msg: &Message) -> bool {
             .any(|block| matches!(block, ContentBlock::Text { .. }))
 }
 
-pub fn extract_paths_from_message(
-    message: &Message,
-    workspace: Option<&Path>,
-) -> Vec<String> {
+pub fn extract_paths_from_message(message: &Message, workspace: Option<&Path>) -> Vec<String> {
     let mut paths = Vec::new();
     for block in &message.content {
         let candidates = match block {
@@ -514,15 +513,17 @@ pub fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeS
         }
     }
     if !converged {
-        tracing::warn!("{}", format!(
-            "enforce_tool_call_pairs did not converge after {max_iters} iterations \
+        tracing::warn!(
+            "{}",
+            format!(
+                "enforce_tool_call_pairs did not converge after {max_iters} iterations \
              ({} messages, {} pinned)",
-            messages.len(),
-            pinned_indices.len()
-        ));
+                messages.len(),
+                pinned_indices.len()
+            )
+        );
     }
 }
-
 
 pub fn should_compact(
     messages: &[Message],
@@ -945,9 +946,10 @@ pub async fn compact_messages_safe(
     }
 
     let compaction_input: &[Message] = if pruned_bytes > 0 {
-        tracing::info!("{}", format!(
-            "Local tool-result prune saved {pruned_bytes} bytes before LLM compaction"
-        ));
+        tracing::info!(
+            "{}",
+            format!("Local tool-result prune saved {pruned_bytes} bytes before LLM compaction")
+        );
         if was_over_threshold && now_under_threshold {
             return Ok(CompactionResult {
                 messages: pruned_messages,
@@ -986,10 +988,13 @@ pub async fn compact_messages_safe(
                     external_working_set_paths,
                 )
             {
-                tracing::info!("{}", format!(
-                    "Session-memory-first compaction removed {} messages without an LLM call",
-                    sm.removed_count
-                ));
+                tracing::info!(
+                    "{}",
+                    format!(
+                        "Session-memory-first compaction removed {} messages without an LLM call",
+                        sm.removed_count
+                    )
+                );
                 return Ok(CompactionResult {
                     messages: sm.messages,
                     summary_prompt: merge_preserve_context(
@@ -1054,7 +1059,7 @@ pub fn read_workspace_anchors(workspace: Option<&Path>) -> Vec<String> {
     let anchors_path = if primary.exists() {
         primary
     } else {
-        ws.join(".deepseek").join("anchors.md")
+        ws.join(".codesmith").join("anchors.md")
     };
     let Ok(content) = std::fs::read_to_string(anchors_path) else {
         return Vec::new();
@@ -1192,10 +1197,13 @@ pub async fn create_summary(
                 });
             }
             Err(err) if is_context_window_error(&err) => {
-                tracing::warn!("{}", format!(
-                    "Cache-aligned compaction summary exceeded the model context window ({err}); \
+                tracing::warn!(
+                    "{}",
+                    format!(
+                        "Cache-aligned compaction summary exceeded the model context window ({err}); \
                      retrying with bounded formatted summary input"
-                ));
+                    )
+                );
             }
             Err(err) => return Err(err),
         }
@@ -1240,13 +1248,16 @@ pub async fn create_formatted_summary_with_peel_retry(
                     return Err(err);
                 }
                 retries_used = retries_used.saturating_add(1);
-                tracing::warn!("{}", format!(
-                    "Formatted compaction summary exceeded the model context window ({err}); \
+                tracing::warn!(
+                    "{}",
+                    format!(
+                        "Formatted compaction summary exceeded the model context window ({err}); \
                      peeled old messages for retry {retries_used}/{} ({} -> {} messages)",
-                    SUMMARY_PROMPT_TOO_LONG_MAX_RETRIES,
-                    before,
-                    peeled.len()
-                ));
+                        SUMMARY_PROMPT_TOO_LONG_MAX_RETRIES,
+                        before,
+                        peeled.len()
+                    )
+                );
                 candidate_messages = peeled;
             }
             Err(err) => return Err(err),
@@ -1479,7 +1490,11 @@ pub fn build_formatted_summary_request(
                     // Skip thinking blocks in summary
                 }
                 ContentBlock::Image { source } => {
-                    let _ = write!(conversation_text, "{role}: [attached {}]\n\n", source.summary());
+                    let _ = write!(
+                        conversation_text,
+                        "{role}: [attached {}]\n\n",
+                        source.summary()
+                    );
                 }
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }

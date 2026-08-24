@@ -29,22 +29,22 @@ async function exists(file) {
 }
 
 async function withoutForcedDownload(callback) {
-  const previousTui = process.env.DEEPSEEK_TUI_FORCE_DOWNLOAD;
-  const previousLegacy = process.env.DEEPSEEK_FORCE_DOWNLOAD;
-  delete process.env.DEEPSEEK_TUI_FORCE_DOWNLOAD;
-  delete process.env.DEEPSEEK_FORCE_DOWNLOAD;
+  const previousTui = process.env.CODESMITH_FORCE_DOWNLOAD;
+  const previousLegacy = process.env.CODESMITH_FORCE_DOWNLOAD;
+  delete process.env.CODESMITH_FORCE_DOWNLOAD;
+  delete process.env.CODESMITH_FORCE_DOWNLOAD;
   try {
     return await callback();
   } finally {
     if (previousTui === undefined) {
-      delete process.env.DEEPSEEK_TUI_FORCE_DOWNLOAD;
+      delete process.env.CODESMITH_FORCE_DOWNLOAD;
     } else {
-      process.env.DEEPSEEK_TUI_FORCE_DOWNLOAD = previousTui;
+      process.env.CODESMITH_FORCE_DOWNLOAD = previousTui;
     }
     if (previousLegacy === undefined) {
-      delete process.env.DEEPSEEK_FORCE_DOWNLOAD;
+      delete process.env.CODESMITH_FORCE_DOWNLOAD;
     } else {
-      process.env.DEEPSEEK_FORCE_DOWNLOAD = previousLegacy;
+      process.env.CODESMITH_FORCE_DOWNLOAD = previousLegacy;
     }
   }
 }

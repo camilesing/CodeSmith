@@ -58,7 +58,7 @@ Run, in order, from the repo root:
 
 - [ ] `cargo build --release --locked -p codesmith-cli -p codesmith-tui`
 - [ ] `node scripts/release/npm-wrapper-smoke.js`
-      (Set `DEEPSEEK_TUI_KEEP_SMOKE_DIR=1` if you need to inspect the temp
+      (Set `CODESMITH_KEEP_SMOKE_DIR=1` if you need to inspect the temp
       install afterwards.)
 
 ## 5. Branch and PR

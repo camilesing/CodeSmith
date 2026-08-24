@@ -79,7 +79,7 @@ struct McpServer {
     registry: crate::tools::ToolRegistry,
     exposed_tools: Vec<ExposedTool>,
     require_approval: bool,
-    /// Thread-based conversation state for deepseek/deepseek-reply tools.
+    /// Thread-based conversation state for codesmith/codesmith-reply tools.
     /// Maps thread_id -> ordered list of messages in the conversation.
     threads: Arc<Mutex<HashMap<String, Vec<Message>>>>,
     /// Monotonic request counter for notification correlation.
@@ -172,16 +172,16 @@ impl McpServer {
                 continue;
             }
             match entry.internal.as_str() {
-                "deepseek" => {
+                "codesmith" => {
                     tools.push(json!({
-                        "name": "deepseek",
-                        "description": "Send a prompt to DeepSeek and get a response. Creates a new conversation thread.",
+                        "name": "codesmith",
+                        "description": "Send a prompt to CodeSmith and get a response. Creates a new conversation thread.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
                                 "prompt": {
                                     "type": "string",
-                                    "description": "The user prompt to send to DeepSeek"
+                                    "description": "The user prompt to send to CodeSmith"
                                 },
                                 "model": {
                                     "type": "string",
@@ -196,16 +196,16 @@ impl McpServer {
                         }
                     }));
                 }
-                "deepseek-reply" => {
+                "codesmith-reply" => {
                     tools.push(json!({
-                        "name": "deepseek-reply",
-                        "description": "Continue an existing conversation thread with DeepSeek. Requires a thread_id from a previous deepseek call.",
+                        "name": "codesmith-reply",
+                        "description": "Continue an existing conversation thread with CodeSmith. Requires a thread_id from a previous codesmith call.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
                                 "thread_id": {
                                     "type": "string",
-                                    "description": "Thread ID from a previous deepseek call"
+                                    "description": "Thread ID from a previous codesmith call"
                                 },
                                 "prompt": {
                                     "type": "string",
@@ -248,7 +248,7 @@ impl McpServer {
         {
             for session in sessions {
                 resources.push(json!({
-                    "uri": format!("deepseek://session/{}", session.id),
+                    "uri": format!("codesmith://session/{}", session.id),
                     "name": session.title,
                     "description": format!("{} messages", session.message_count),
                     "mimeType": "application/json",
@@ -299,13 +299,13 @@ impl McpServer {
                 message: format!("Tool not exposed: {name}"),
             })?;
 
-        // Handle deepseek and deepseek-reply natively
-        if internal == "deepseek" || internal == "deepseek-reply" {
+        // Handle codesmith and codesmith-reply natively
+        if internal == "codesmith" || internal == "codesmith-reply" {
             let arguments = params
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            return self.handle_deepseek_call(runtime, &internal, &arguments, request_id);
+            return self.handle_codesmith_call(runtime, &internal, &arguments, request_id);
         }
 
         let arguments = params
@@ -316,13 +316,13 @@ impl McpServer {
         Ok(tool_result_to_mcp(result))
     }
 
-    /// Handle a `deepseek` or `deepseek-reply` tool call.
+    /// Handle a `codesmith` or `codesmith-reply` tool call.
     ///
     /// Uses the resolved LLM client directly (not the full engine) to send a
-    /// prompt and return the response. For `deepseek` a new thread is created;
-    /// for `deepseek-reply` the caller supplies a `thread_id` to continue an
+    /// prompt and return the response. For `codesmith` a new thread is created;
+    /// for `codesmith-reply` the caller supplies a `thread_id` to continue an
     /// existing conversation.
-    fn handle_deepseek_call(
+    fn handle_codesmith_call(
         &mut self,
         runtime: &Runtime,
         internal_name: &str,
@@ -343,7 +343,7 @@ impl McpServer {
             .unwrap_or("deepseek-v4-pro");
 
         // Resolve thread_id
-        let thread_id = if internal_name == "deepseek" {
+        let thread_id = if internal_name == "codesmith" {
             // New thread
             Uuid::new_v4().to_string()
         } else {
@@ -352,7 +352,7 @@ impl McpServer {
                 .and_then(Value::as_str)
                 .ok_or_else(|| RpcError {
                     code: -32602,
-                    message: "Missing required argument: thread_id for deepseek-reply".to_string(),
+                    message: "Missing required argument: thread_id for codesmith-reply".to_string(),
                 })?
                 .to_string()
         };
@@ -364,7 +364,7 @@ impl McpServer {
         })?;
         let client = crate::core::engine::resolve_llm_client(&config).map_err(|e| RpcError {
             code: -32000,
-            message: format!("Failed to create DeepSeek client: {e}"),
+            message: format!("Failed to create LLM client: {e}"),
         })?;
 
         // Build message list
@@ -376,7 +376,7 @@ impl McpServer {
             }],
         };
 
-        let messages = if internal_name == "deepseek" {
+        let messages = if internal_name == "codesmith" {
             vec![user_message]
         } else {
             let thread = self.threads.lock().unwrap();
@@ -431,10 +431,10 @@ impl McpServer {
         {
             let mut thread = self.threads.lock().unwrap();
             let convo = thread.entry(thread_id.clone()).or_default();
-            // If deepseek, we already have just the user message; if deepseek-reply,
+            // If codesmith, we already have just the user message; if codesmith-reply,
             // the user message was appended to the cloned messages above but we need
             // to also append it to the stored thread and then the assistant response.
-            if internal_name == "deepseek" {
+            if internal_name == "codesmith" {
                 convo.push(Message {
                     role: "user".to_string(),
                     content: vec![ContentBlock::Text {
@@ -496,7 +496,7 @@ impl McpServer {
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".deepseek").join("mcp_server.toml"))
+    dirs::home_dir().map(|home| home.join(".codesmith").join("mcp_server.toml"))
 }
 
 fn default_expose_tools() -> Vec<String> {
@@ -506,8 +506,8 @@ fn default_expose_tools() -> Vec<String> {
         "search".to_string(),
         "apply_patch".to_string(),
         "shell".to_string(),
-        "deepseek".to_string(),
-        "deepseek-reply".to_string(),
+        "codesmith".to_string(),
+        "codesmith-reply".to_string(),
     ]
 }
 
@@ -526,8 +526,8 @@ fn build_exposed_tools(names: &[String]) -> Vec<ExposedTool> {
             "shell" => "exec_shell",
             "search" => "grep_files",
             "file_search" => "file_search",
-            // deepseek and deepseek-reply are handled natively in call_tool
-            "deepseek" | "deepseek-reply" => trimmed,
+            // codesmith and codesmith-reply are handled natively in call_tool
+            "codesmith" | "codesmith-reply" => trimmed,
             other => other,
         }
         .to_string();
@@ -559,7 +559,7 @@ fn initialize_response() -> Value {
     json!({
         "protocolVersion": "2024-11-05",
         "serverInfo": {
-            "name": "deepseek-mcp-server",
+            "name": "codesmith-mcp-server",
             "version": env!("CARGO_PKG_VERSION"),
         },
         "capabilities": {

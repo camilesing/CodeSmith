@@ -71,7 +71,7 @@ trust prompt again?"
 - Read through `is_workspace_trusted(workspace)`.
 - Written through `save_workspace_trust(workspace)` and the onboarding trust
   prompt.
-- Legacy workspace-local markers under `.deepseek/` are still accepted by
+- Legacy workspace-local markers under `.codesmith/` are still accepted by
   `needs_trust(workspace)`.
 
 This is a startup/onboarding decision. It is related to, but not identical to,
@@ -126,7 +126,7 @@ may CodeSmith file tools access while `trust_mode` is false?"
 | Logging setup | `crates/tui/src/main.rs` | Before command dispatch | Pre-trust safe | Logging sinks may include paths from user config. | Keep pre-trust if sourced only from user/CLI config. |
 | Workspace resolution | `crates/tui/src/main.rs` | Early `run_interactive()` / command-specific paths | Pre-trust safe | Needed to decide trust state. | Keep pre-trust. |
 | Workspace trust check | `crates/tui/src/config.rs`, `crates/tui/src/tui/onboarding/mod.rs` | During App/onboarding state construction | Pre-trust safe | Reads global trusted-workspace list and legacy marker paths. Legacy workspace markers are workspace-local inputs. | Keep for compatibility, but review whether legacy markers should be treated as sufficient trust. |
-| Project config overlay from `$WORKSPACE/.codesmith/config.toml` or legacy `.deepseek/config.toml` | `crates/tui/src/main.rs` | In `run_interactive()` only when startup workspace initialization is allowed | Post-trust only / explicit bypass | Untrusted interactive workspaces no longer read project config before the trust prompt. The existing denylist remains a defense-in-depth check for trusted/bypassed project config. Runtime reload after accepting trust is not implemented in this slice. | Decide whether to reload project config after trust acceptance or apply it only on next launch. Update docs to match the denylist. |
+| Project config overlay from `$WORKSPACE/.codesmith/config.toml` or legacy `.codesmith/config.toml` | `crates/tui/src/main.rs` | In `run_interactive()` only when startup workspace initialization is allowed | Post-trust only / explicit bypass | Untrusted interactive workspaces no longer read project config before the trust prompt. The existing denylist remains a defense-in-depth check for trusted/bypassed project config. Runtime reload after accepting trust is not implemented in this slice. | Decide whether to reload project config after trust acceptance or apply it only on next launch. Update docs to match the denylist. |
 | Config file creation/migration | `crates/tui/src/main.rs` | Before TUI launch | Pre-trust safe if user-state only | Writes user config/state and may migrate legacy config. | Keep pre-trust if no workspace-controlled input is applied. |
 | System skill installation | `crates/tui/src/main.rs` | Before TUI launch | Pre-trust safe if bundled/global only | Installing bundled skills into user state is not workspace-controlled, but workspace skill discovery is separate. | Keep pre-trust for bundled skills; audit workspace-local skill discovery separately. |
 | Workspace snapshot pruning | `crates/tui/src/main.rs` | Before TUI launch | Uncertain / requires review | Uses workspace path and deletes old snapshot metadata. It likely affects CodeSmith-managed state, but the workspace trust implication should be documented. | Classify exact storage target and keep only CodeSmith-owned cache cleanup pre-trust. |

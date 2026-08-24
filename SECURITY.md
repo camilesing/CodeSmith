@@ -17,10 +17,9 @@ Check the [releases page](https://github.com/Hmbown/CodeSmith/releases) for the 
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Report privately via one of:
+Report privately via:
 
 - **GitHub private advisory**: [github.com/Hmbown/CodeSmith/security/advisories/new](https://github.com/Hmbown/CodeSmith/security/advisories/new)
-- **Email**: [security@deepseek-tui.com](mailto:security@deepseek-tui.com) — include `[SECURITY]` in the subject line
 
 Include in your report:
 

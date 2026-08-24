@@ -47,11 +47,7 @@ pub fn anchor(app: &mut App, content: Option<&str>) -> CommandResult {
 }
 
 fn anchors_path(app: &App) -> std::path::PathBuf {
-    let primary = app.workspace.join(".codesmith").join("anchors.md");
-    if primary.exists() {
-        return primary;
-    }
-    app.workspace.join(".deepseek").join("anchors.md")
+    app.workspace.join(".codesmith").join("anchors.md")
 }
 
 /// Read and split anchors from the file. Each anchor is separated by "\n---\n".
@@ -215,7 +211,7 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.message.unwrap().contains("Anchor pinned"));
 
-        let path = tmpdir.path().join(".deepseek").join("anchors.md");
+        let path = tmpdir.path().join(".codesmith").join("anchors.md");
         assert!(path.exists());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("API status field is unreliable"));

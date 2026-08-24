@@ -86,8 +86,7 @@ function buildFromSourceHint() {
 function preflightGlibc(filePath) {
   if (!isLinux()) return;
   if (
-    process.env.DEEPSEEK_TUI_SKIP_GLIBC_CHECK === "1" ||
-    process.env.DEEPSEEK_SKIP_GLIBC_CHECK === "1"
+    process.env.CODESMITH_SKIP_GLIBC_CHECK === "1"
   ) {
     return;
   }
@@ -107,7 +106,7 @@ function preflightGlibc(filePath) {
         "",
         buildFromSourceHint(),
         "",
-        "Set DEEPSEEK_TUI_SKIP_GLIBC_CHECK=1 to bypass this check at your own risk.",
+        "Set CODESMITH_SKIP_GLIBC_CHECK=1 to bypass this check at your own risk.",
       ].join("\n"),
     );
   }
@@ -120,7 +119,7 @@ function preflightGlibc(filePath) {
         "",
         buildFromSourceHint(),
         "",
-        "Set DEEPSEEK_TUI_SKIP_GLIBC_CHECK=1 to bypass this check at your own risk.",
+        "Set CODESMITH_SKIP_GLIBC_CHECK=1 to bypass this check at your own risk.",
       ].join("\n"),
     );
   }

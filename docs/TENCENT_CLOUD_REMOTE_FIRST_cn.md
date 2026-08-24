@@ -39,8 +39,8 @@ EdgeOne is optional:
 2. 默认情况下，当分支或 tag 在 CNB 上存在时从 CNB 克隆：
 
    ```bash
-   export DEEPSEEK_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
-   git ls-remote "$DEEPSEEK_REPO_URL" refs/heads/main
+   export CODESMITH_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
+   git ls-remote "$CODESMITH_REPO_URL" refs/heads/main
    ```
 
    与 `work/v*-feishu-*` 或 `work/v*-lighthouse*` 匹配的 Tencent 设置分支由
@@ -50,17 +50,17 @@ EdgeOne is optional:
 3. 在服务器上引导 `/opt/whalebro`：
 
    ```bash
-   export DEEPSEEK_BRANCH=main
-   git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/codesmith
+   export CODESMITH_BRANCH=main
+   git clone --branch "$CODESMITH_BRANCH" "$CODESMITH_REPO_URL" /tmp/codesmith
    cd /tmp/codesmith
-   sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
-     DEEPSEEK_REPO_BRANCH="$DEEPSEEK_BRANCH" \
+   sudo CODESMITH_REPO_URL="$CODESMITH_REPO_URL" \
+     CODESMITH_REPO_BRANCH="$CODESMITH_BRANCH" \
      bash scripts/tencent-lighthouse/bootstrap-ubuntu.sh
    ```
 
 4. 为 `codesmith` 用户安装 Rust，构建两个二进制，并按照
    `docs/TENCENT_LIGHTHOUSE_HK.md` 安装 systemd 单元。
-5. 配置一个飞书/Lark 自建应用，填写 `/etc/deepseek/feishu-bridge.env`，
+5. 配置一个飞书/Lark 自建应用，填写 `/etc/codesmith/feishu-bridge.env`，
    先运行校验器，再运行 VPS doctor。
 6. 在手机私聊（DM）中验证 `/status`、一条无害的提示、`/interrupt`、
    `/threads`、`/resume`、审批允许/拒绝、服务重启以及重启后的持久性。
@@ -99,7 +99,7 @@ EdgeOne is optional:
 
 - `codesmith serve --http` 保持绑定在 `127.0.0.1`。
 - `/v1/*` 运行时端点永不公开。
-- `DEEPSEEK_RUNTIME_TOKEN` 绝不离开服务器 env 文件。
+- `CODESMITH_RUNTIME_TOKEN` 绝不离开服务器 env 文件。
 - 在设置具体的群白名单之前，飞书/Lark 群控制保持关闭。
 - 除非维护者明确接受风险，手机桥接的自动批准保持关闭。
 

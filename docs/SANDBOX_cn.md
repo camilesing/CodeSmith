@@ -125,7 +125,7 @@ CodeSmith 不会内置（vendor）bwrap。
 
 **回退：** 若未安装 bwrap，CodeSmith 回退到宽松模式下的 Landlock。
 设置 `[sandbox] fail_if_unavailable = true`（或
-`DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE=true`）可在请求的沙箱后端
+`CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE=true`）可在请求的沙箱后端
 不可用时选择失败关闭（fail closed），而不是不加沙箱继续运行。
 
 ### 5. Seatbelt（macOS）
@@ -234,16 +234,16 @@ sandbox_api_key = "YOUR_API_KEY"
 
 环境变量覆盖：
 
-- `DEEPSEEK_SANDBOX_MODE` → `sandbox_mode`
-- `DEEPSEEK_PREFER_BWRAP=true` → `prefer_bwrap`
-- `DEEPSEEK_SANDBOX_BACKEND` → `sandbox_backend`
-- `DEEPSEEK_SANDBOX_URL` → `sandbox_url`
-- `DEEPSEEK_SANDBOX_API_KEY` → `sandbox_api_key`
-- `DEEPSEEK_SANDBOX_ENABLED=true|false` → `[sandbox].enabled`
-- `DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE=true|false` → `[sandbox].fail_if_unavailable`
-- `DEEPSEEK_SANDBOX_ENABLED_PLATFORMS=macos,linux` → `[sandbox].enabled_platforms`
-- `DEEPSEEK_SANDBOX_EXCLUDED_COMMANDS=cmd1,cmd2` → `[sandbox].excluded_commands`
-- `DEEPSEEK_AUTO_ALLOW_BASH_IF_SANDBOXED=true|false` → `[sandbox].auto_allow_bash_if_sandboxed`
+- `CODESMITH_SANDBOX_MODE` → `sandbox_mode`
+- `CODESMITH_PREFER_BWRAP=true` → `prefer_bwrap`
+- `CODESMITH_SANDBOX_BACKEND` → `sandbox_backend`
+- `CODESMITH_SANDBOX_URL` → `sandbox_url`
+- `CODESMITH_SANDBOX_API_KEY` → `sandbox_api_key`
+- `CODESMITH_SANDBOX_ENABLED=true|false` → `[sandbox].enabled`
+- `CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE=true|false` → `[sandbox].fail_if_unavailable`
+- `CODESMITH_SANDBOX_ENABLED_PLATFORMS=macos,linux` → `[sandbox].enabled_platforms`
+- `CODESMITH_SANDBOX_EXCLUDED_COMMANDS=cmd1,cmd2` → `[sandbox].excluded_commands`
+- `CODESMITH_AUTO_ALLOW_BASH_IF_SANDBOXED=true|false` → `[sandbox].auto_allow_bash_if_sandboxed`
 
 ## 检测沙箱拒绝
 

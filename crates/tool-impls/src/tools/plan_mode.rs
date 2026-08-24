@@ -13,10 +13,10 @@ use tokio::sync::Mutex;
 
 use crate::tools::plan::SharedPlanState;
 use crate::tools::plan_file;
+pub use codesmith_agent_runtime::tool_state::plan_mode::*;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-pub use codesmith_agent_runtime::tool_state::plan_mode::*;
 
 /// 5-phase workflow instructions injected on EnterPlanMode.
 const PLAN_MODE_INSTRUCTIONS: &str = "\

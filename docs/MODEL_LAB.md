@@ -13,8 +13,8 @@ implemented today.
 ## Implemented Today
 
 - DeepSeek is the first-class default provider today, with `deepseek-v4-pro`,
-  `deepseek-v4-flash`, streaming thinking blocks, Fin routing, `DEEPSEEK_*`
-  environment variables, and `~/.deepseek` config compatibility.
+  `deepseek-v4-flash`, streaming thinking blocks, Fin routing, `CODESMITH_*`
+  environment variables, and `~/.codesmith` config compatibility.
 - OpenRouter, Novita, Fireworks, NVIDIA NIM, AtlasCloud, Wanjie Ark, generic
   OpenAI-compatible endpoints, SGLang, vLLM, and Ollama are supported provider
   paths where their IDs appear in `/provider`, `codesmith --provider`, or
@@ -138,7 +138,7 @@ Planned scope:
 - Local files, prompts, transcripts, traces, model outputs, eval results,
   adapters, datasets, and checkpoints should remain local unless the user
   explicitly chooses a provider or export destination.
-- Provider auth must remain explicit. `DEEPSEEK_*`, OpenRouter, Hugging Face,
+- Provider auth must remain explicit. `CODESMITH_*`, OpenRouter, Hugging Face,
   and self-hosted credentials should not be inferred from unrelated config.
 - Exportable artifacts should include provenance: source model, provider,
   route, tool policy, eval inputs, and redaction status.

@@ -7,7 +7,7 @@ Use hooks for audit logging, notifications, ephemeral credential injection,
 and pre-submit text transformation.
 
 Hooks are configured under the `[hooks]` table in `~/.codesmith/config.toml`
-(legacy `~/.deepseek/config.toml` also resolves). A project-level
+(legacy `~/.codesmith/config.toml` also resolves). A project-level
 `<workspace>/.codesmith/config.toml` may carry its own `[hooks]` table — when
 present it **replaces** the user-level table wholesale, it does not merge
 (the same rule as `instructions`). If you want both, list the global hooks
@@ -157,33 +157,32 @@ The `tool_category` matcher maps tool names to categories:
 
 ### Environment variables
 
-Every hook receives a set of `DEEPSEEK_*` environment variables describing
-the event context. (The `DEEPSEEK_` prefix is historical and applies to all
-CodeSmith hooks.) Unset fields are simply absent from the environment.
+Every hook receives a set of `CODESMITH_*` environment variables describing
+the event context. Unset fields are simply absent from the environment.
 
 | Variable | Present for | Content |
 |---|---|---|
-| `DEEPSEEK_TOOL_NAME` | tool events, `shell_env` | tool name, e.g. `exec_shell` |
-| `DEEPSEEK_TOOL_ARGS` | tool events | tool arguments as a JSON string |
-| `DEEPSEEK_TOOL_RESULT` | `tool_call_after` | tool output, truncated at 10 KiB |
-| `DEEPSEEK_TOOL_EXIT_CODE` | `tool_call_after` | exit code when applicable |
-| `DEEPSEEK_TOOL_SUCCESS` | `tool_call_after` | `true` / `false` |
-| `DEEPSEEK_MODE` | most events | current mode (`plan` / `agent` / `yolo`) |
-| `DEEPSEEK_PREVIOUS_MODE` | `mode_change` | mode before the transition |
-| `DEEPSEEK_SESSION_ID` | most events | **ephemeral** telemetry id, see below |
-| `DEEPSEEK_THREAD_ID` | most events | persistent thread id, see below |
-| `DEEPSEEK_MESSAGE` | `message_submit` | current (possibly already-transformed) text, truncated at 5 KiB |
-| `DEEPSEEK_ERROR` | `on_error` | error message |
-| `DEEPSEEK_WORKSPACE` | most events | workspace path |
-| `DEEPSEEK_MODEL` | most events | current model name |
-| `DEEPSEEK_TOTAL_TOKENS` | most events | total tokens used so far |
-| `DEEPSEEK_SESSION_COST` | most events | session cost in USD |
-| `DEEPSEEK_TASK_ID` / `DEEPSEEK_TASK_SUBJECT` / `DEEPSEEK_TASK_STATUS` | task events | task metadata |
+| `CODESMITH_TOOL_NAME` | tool events, `shell_env` | tool name, e.g. `exec_shell` |
+| `CODESMITH_TOOL_ARGS` | tool events | tool arguments as a JSON string |
+| `CODESMITH_TOOL_RESULT` | `tool_call_after` | tool output, truncated at 10 KiB |
+| `CODESMITH_TOOL_EXIT_CODE` | `tool_call_after` | exit code when applicable |
+| `CODESMITH_TOOL_SUCCESS` | `tool_call_after` | `true` / `false` |
+| `CODESMITH_MODE` | most events | current mode (`plan` / `agent` / `yolo`) |
+| `CODESMITH_PREVIOUS_MODE` | `mode_change` | mode before the transition |
+| `CODESMITH_SESSION_ID` | most events | **ephemeral** telemetry id, see below |
+| `CODESMITH_THREAD_ID` | most events | persistent thread id, see below |
+| `CODESMITH_MESSAGE` | `message_submit` | current (possibly already-transformed) text, truncated at 5 KiB |
+| `CODESMITH_ERROR` | `on_error` | error message |
+| `CODESMITH_WORKSPACE` | most events | workspace path |
+| `CODESMITH_MODEL` | most events | current model name |
+| `CODESMITH_TOTAL_TOKENS` | most events | total tokens used so far |
+| `CODESMITH_SESSION_COST` | most events | session cost in USD |
+| `CODESMITH_TASK_ID` / `CODESMITH_TASK_SUBJECT` / `CODESMITH_TASK_STATUS` | task events | task metadata |
 
-> **Session vs thread identity.** `DEEPSEEK_SESSION_ID` is an ephemeral id
+> **Session vs thread identity.** `CODESMITH_SESSION_ID` is an ephemeral id
 > regenerated on every session start — it does **not** correlate across
 > restarts. For correlation that survives resume (audit trails, capacity
-> memory), use `DEEPSEEK_THREAD_ID`, which carries the persistent thread id.
+> memory), use `CODESMITH_THREAD_ID`, which carries the persistent thread id.
 
 ### stdin
 
@@ -293,8 +292,8 @@ the facts you want to survive summarization.
 - `shell_env` values live in process environments and can appear in child
   process listings on some platforms. The audit log records key names only,
   never values.
-- Tool arguments and results (exposed via `DEEPSEEK_TOOL_ARGS` /
-  `DEEPSEEK_TOOL_RESULT`) may contain secrets from your repository; treat
+- Tool arguments and results (exposed via `CODESMITH_TOOL_ARGS` /
+  `CODESMITH_TOOL_RESULT`) may contain secrets from your repository; treat
   hook stdout/logs accordingly.
 
 ## What hooks are not
@@ -319,7 +318,7 @@ the facts you want to survive summarization.
 [[hooks.hooks]]
 name = "shell-audit"
 event = "tool_call_after"
-command = "printf '%s\\t%s\\t%s\\n' \"$DEEPSEEK_THREAD_ID\" \"$DEEPSEEK_TOOL_NAME\" \"$DEEPSEEK_TOOL_EXIT_CODE\" >> ~/.codesmith/hooks/shell-audit.log"
+command = "printf '%s\\t%s\\t%s\\n' \"$CODESMITH_THREAD_ID\" \"$CODESMITH_TOOL_NAME\" \"$CODESMITH_TOOL_EXIT_CODE\" >> ~/.codesmith/hooks/shell-audit.log"
 condition = { type = "tool_name", name = "exec_shell" }
 ```
 

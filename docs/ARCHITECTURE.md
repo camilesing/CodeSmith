@@ -8,7 +8,7 @@ Current boundary note (v0.8.6):
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.
 - The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's post-tool-execution path
   (`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
-- The swarm agent system was removed in v0.8.5. The active v0.8.35 orchestration surface is persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`).
+- The orchestration surface is persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`).
   No model-visible swarm tool remains in the active codebase.
 
 ## High-Level Overview
@@ -316,9 +316,9 @@ command = "echo 'Running tool: $TOOL_NAME'"
 
 ## Configuration Files
 
-- `~/.codesmith/config.toml` - Main configuration (`~/.deepseek/config.toml` is still read as a legacy fallback)
-- `/etc/deepseek/managed_config.toml` - Optional managed defaults layer (Unix)
-- `/etc/deepseek/requirements.toml` - Optional allowed-policy constraints (Unix)
+- `~/.codesmith/config.toml` - Main configuration (`~/.codesmith/config.toml` is still read as a legacy fallback)
+- `/etc/codesmith/managed_config.toml` - Optional managed defaults layer (Unix)
+- `/etc/codesmith/requirements.toml` - Optional allowed-policy constraints (Unix)
 - `~/.codesmith/mcp.json` - MCP server configuration
 - `~/.codesmith/skills/` - User skills directory
 - `~/.codesmith/sessions/` - Session history

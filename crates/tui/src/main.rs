@@ -22,6 +22,7 @@ mod auto_mode;
 pub use codesmith_agent_runtime::auto_reasoning;
 mod automation_manager;
 mod background_task;
+mod brand_theme;
 mod child_env;
 mod command_safety;
 mod commands;
@@ -33,7 +34,6 @@ mod config_ui;
 mod core;
 mod cost_status;
 mod cycle_manager;
-mod deepseek_theme;
 mod dependencies;
 mod error_taxonomy;
 mod eval;
@@ -664,12 +664,12 @@ struct ServeArgs {
     workers: usize,
     /// Additional CORS origin to allow (repeatable). Stacks on top of the
     /// built-in defaults (localhost:3000, localhost:1420, tauri://localhost).
-    /// Also reads `DEEPSEEK_CORS_ORIGINS` (comma-separated) and
+    /// Also reads `CODESMITH_CORS_ORIGINS` (comma-separated) and
     /// `[runtime_api] cors_origins` from `config.toml`. Whalescale#255.
     #[arg(long = "cors-origin", value_name = "URL")]
     cors_origin: Vec<String>,
     /// Require this bearer token for `/v1/*` runtime API routes. Also reads
-    /// `DEEPSEEK_RUNTIME_TOKEN` when omitted.
+    /// `CODESMITH_RUNTIME_TOKEN` when omitted.
     #[arg(long = "auth-token", value_name = "TOKEN")]
     auth_token: Option<String>,
     /// Disable runtime API auth when no token is configured. Only use on a trusted loopback.
@@ -860,7 +860,7 @@ async fn main() -> Result<()> {
     crate::sandbox::process_hardening::apply_process_hardening();
 
     // Set up process panic hook before anything else — writes crash dumps
-    // to ~/.deepseek/crashes/ even if the panic happens before tokio is up,
+    // to ~/.codesmith/crashes/ even if the panic happens before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's
     // shell stuck in alt-screen mode.
     let orig_hook = std::panic::take_hook();
@@ -886,7 +886,7 @@ async fn main() -> Result<()> {
         tracing::error!(target: "panic", "Process panicked at {location}: {msg}");
         // Write crash dump best-effort
         if let Some(home) = dirs::home_dir() {
-            let crash_dir = home.join(".deepseek").join("crashes");
+            let crash_dir = home.join(".codesmith").join("crashes");
             let _ = std::fs::create_dir_all(&crash_dir);
             use chrono::Utc;
             let ts = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
@@ -960,9 +960,8 @@ async fn main() -> Result<()> {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
                 let resume_session_id = resolve_exec_resume_session_id(&args, &workspace)?;
-                // The `deepseek` launcher forwards `--yolo` to this binary via
-                // the DEEPSEEK_YOLO env var (which the config loader folds into
-                // `config.yolo`), not as a CLI flag. Honour either source.
+                // `CODESMITH_YOLO` (which the config loader folds into
+                // `config.yolo`) is not a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
                 let system_prompt_override = resolve_exec_system_prompt_override(&config, &args)?;
                 let append_system_prompts = resolve_exec_append_system_prompts(&config, &args);
@@ -1338,8 +1337,6 @@ fn is_swebench_generated_artifact(path: &str) -> bool {
     let path = path.replace('\\', "/");
     path == ".codesmith"
         || path.starts_with(".codesmith/")
-        || path == ".deepseek"
-        || path.starts_with(".deepseek/")
         || path == ".pytest_cache"
         || path.starts_with(".pytest_cache/")
         || path.contains("/.pytest_cache/")
@@ -1359,7 +1356,6 @@ fn is_swebench_generated_artifact(path: &str) -> bool {
 fn swebench_diff_excludes(exclude_path: Option<&str>) -> Vec<String> {
     let mut excludes = vec![
         ":(exclude).codesmith/**".to_string(),
-        ":(exclude).deepseek/**".to_string(),
         ":(exclude).pytest_cache/**".to_string(),
         ":(exclude)**/.pytest_cache/**".to_string(),
         ":(exclude).mypy_cache/**".to_string(),
@@ -1694,7 +1690,7 @@ fn init_plugins_dir(
 ///
 /// Sources, in priority order (later sources extend earlier ones):
 /// 1. `--cors-origin URL` flags (repeatable)
-/// 2. `DEEPSEEK_CORS_ORIGINS` env var (comma-separated)
+/// 2. `CODESMITH_CORS_ORIGINS` env var (comma-separated)
 /// 3. `[runtime_api] cors_origins = [...]` in `config.toml`
 ///
 /// The runtime API always allows the built-in dev defaults
@@ -1730,7 +1726,7 @@ fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String>
     out
 }
 
-fn deepseek_home_dir() -> PathBuf {
+fn codesmith_state_home_dir() -> PathBuf {
     codesmith_config::codesmith_home().unwrap_or_else(|_| {
         dirs::home_dir().map_or_else(|| PathBuf::from(".codesmith"), |h| h.join(".codesmith"))
     })
@@ -1738,17 +1734,19 @@ fn deepseek_home_dir() -> PathBuf {
 
 /// Resolve the default tools directory. Mirrors `default_skills_dir` shape.
 fn default_tools_dir() -> PathBuf {
-    deepseek_home_dir().join("tools")
+    codesmith_state_home_dir().join("tools")
 }
 
 /// Resolve the default plugins directory.
 fn default_plugins_dir() -> PathBuf {
-    deepseek_home_dir().join("plugins")
+    codesmith_state_home_dir().join("plugins")
 }
 
 /// Default location for crash/offline-queue checkpoints managed by the TUI.
 fn default_checkpoints_dir() -> PathBuf {
-    deepseek_home_dir().join("sessions").join("checkpoints")
+    codesmith_state_home_dir()
+        .join("sessions")
+        .join("checkpoints")
 }
 
 /// Resolve the local telemetry jsonl sink path. Returns `None` when the home
@@ -1796,8 +1794,8 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
     use crate::palette;
     use colored::Colorize;
 
-    let (aqua_r, aqua_g, aqua_b) = palette::DEEPSEEK_SKY_RGB;
-    let (sky_r, sky_g, sky_b) = palette::DEEPSEEK_SKY_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
+    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
 
     let any_explicit = args.mcp || args.skills || args.tools || args.plugins;
     let run_mcp = args.mcp || args.all || !any_explicit;
@@ -1922,7 +1920,11 @@ enum ApiKeySource {
 }
 
 fn resolve_api_key_source(config: &Config) -> ApiKeySource {
-    if codesmith_config::codesmith_env("API_KEY").is_some() {
+    // `DEEPSEEK_API_KEY` is the official provider credential name, so it
+    // counts as an env-provided key alongside the `CODESMITH_API_KEY` knob.
+    let env_api_key_present = codesmith_config::codesmith_env("API_KEY").is_some()
+        || std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty());
+    if env_api_key_present {
         match codesmith_config::codesmith_env("API_KEY_SOURCE").as_deref() {
             Some("config") => return ApiKeySource::Config,
             Some("keyring") => return ApiKeySource::Keyring,
@@ -1940,7 +1942,7 @@ fn resolve_api_key_source(config: &Config) -> ApiKeySource {
             .is_some_and(|k| !k.trim().is_empty())
     {
         ApiKeySource::Config
-    } else if codesmith_config::codesmith_env("API_KEY").is_some() {
+    } else if env_api_key_present {
         ApiKeySource::Env
     } else {
         ApiKeySource::Missing
@@ -1964,9 +1966,9 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     use crate::palette;
     use colored::Colorize;
 
-    let (aqua_r, aqua_g, aqua_b) = palette::DEEPSEEK_SKY_RGB;
-    let (sky_r, sky_g, sky_b) = palette::DEEPSEEK_SKY_RGB;
-    let (red_r, red_g, red_b) = palette::DEEPSEEK_RED_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
+    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
+    let (red_r, red_g, red_b) = palette::CODESMITH_RED_RGB;
 
     println!(
         "{}",
@@ -2210,10 +2212,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     use crate::palette;
     use colored::Colorize;
 
-    let (blue_r, blue_g, blue_b) = palette::DEEPSEEK_BLUE_RGB;
-    let (sky_r, sky_g, sky_b) = palette::DEEPSEEK_SKY_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::DEEPSEEK_SKY_RGB;
-    let (red_r, red_g, red_b) = palette::DEEPSEEK_RED_RGB;
+    let (blue_r, blue_g, blue_b) = palette::CODESMITH_BLUE_RGB;
+    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
+    let (red_r, red_g, red_b) = palette::CODESMITH_RED_RGB;
 
     println!(
         "{}",
@@ -2305,29 +2307,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("{}", "State Root:".bold());
     let code_home =
         codesmith_config::codesmith_home().unwrap_or_else(|_| PathBuf::from("~/.codesmith"));
-    let legacy_home =
-        codesmith_config::legacy_deepseek_home().unwrap_or_else(|_| PathBuf::from("~/.deepseek"));
-    let active_root = if code_home.exists() {
-        &code_home
-    } else if legacy_home.exists() {
-        &legacy_home
-    } else {
-        &code_home
-    };
-    println!("  active: {}", crate::utils::display_path(active_root));
-    if active_root != &code_home {
-        println!(
-            "  note: legacy {} found; migrate with `codesmith setup --migrate`",
-            crate::utils::display_path(&legacy_home)
-        );
-    }
-    if legacy_home.exists() && code_home.exists() {
-        println!(
-            "  dual roots: {} (primary) + {} (legacy)",
-            crate::utils::display_path(&code_home),
-            crate::utils::display_path(&legacy_home)
-        );
-    }
+    println!("  active: {}", crate::utils::display_path(&code_home));
 
     // Check API keys
     println!();
@@ -3637,9 +3617,9 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
     use colored::Colorize;
     use session_manager::{SessionManager, format_session_line};
 
-    let (blue_r, blue_g, blue_b) = palette::DEEPSEEK_BLUE_RGB;
-    let (sky_r, sky_g, sky_b) = palette::DEEPSEEK_SKY_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::DEEPSEEK_SKY_RGB;
+    let (blue_r, blue_g, blue_b) = palette::CODESMITH_BLUE_RGB;
+    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
 
     let manager = SessionManager::default_location()?;
 
@@ -3703,9 +3683,9 @@ fn init_project() -> Result<()> {
     use colored::Colorize;
     use project_context::create_default_agents_md;
 
-    let (sky_r, sky_g, sky_b) = palette::DEEPSEEK_SKY_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::DEEPSEEK_SKY_RGB;
-    let (red_r, red_g, red_b) = palette::DEEPSEEK_RED_RGB;
+    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
+    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
+    let (red_r, red_g, red_b) = palette::CODESMITH_RED_RGB;
 
     let workspace = std::env::current_dir()?;
     let agents_path = workspace.join("AGENTS.md");
@@ -4957,9 +4937,8 @@ fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) 
     }
 }
 
-/// Load project-level config from `$WORKSPACE/.codesmith/config.toml`, with
-/// legacy `$WORKSPACE/.deepseek/config.toml` fallback, then apply its fields as
-/// overrides on top of the global config (#485).
+/// Load project-level config from `$WORKSPACE/.codesmith/config.toml`, then
+/// apply its fields as overrides on top of the global config (#485).
 /// Only explicitly set fields in the project file are applied; everything
 /// else falls back to the global value.
 fn merge_project_config(config: &mut Config, workspace: &Path) {
@@ -4977,21 +4956,12 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
         return;
     }
 
-    // v0.8.44: prefer .codesmith/config.toml, fall back to .deepseek/
     let path = workspace
         .join(codesmith_config::CODESMITH_APP_DIR)
         .join("config.toml");
     let raw = match std::fs::read_to_string(&path) {
         Ok(r) => r,
-        Err(_) => {
-            let legacy = workspace
-                .join(codesmith_config::LEGACY_APP_DIR)
-                .join("config.toml");
-            match std::fs::read_to_string(&legacy) {
-                Ok(r) => r,
-                Err(_) => return,
-            }
-        }
+        Err(_) => return,
     };
     let project: toml::Value = match toml::from_str(&raw) {
         Ok(v) => v,
@@ -5003,7 +4973,7 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
     };
 
     // #417: dangerous keys are denied at project scope. A malicious
-    // `<workspace>/.deepseek/config.toml` could otherwise:
+    // `<workspace>/.codesmith/config.toml` could otherwise:
     // * `api_key` / `base_url` / `provider` — exfiltrate prompts to a
     //   look-alike endpoint by swapping the user's credentials and
     //   target host with project-controlled values.
@@ -5135,7 +5105,7 @@ async fn run_interactive(
     };
 
     // Merge project-level config from $WORKSPACE/.codesmith/config.toml
-    // or legacy $WORKSPACE/.deepseek/config.toml only after startup is allowed
+    // only after startup is allowed
     // to read workspace-controlled initialization inputs (#485).
     let mut merged_config = config.clone();
     if should_load_project_config(cli.no_project_config, &boundary) {
@@ -5159,7 +5129,7 @@ async fn run_interactive(
         }
     }
 
-    // v0.8.44: migrate config from ~/.deepseek/ to ~/.codesmith/ on first
+    // v0.8.44+: migrate config from ~/.codewhale/ to ~/.codesmith/ on first
     // launch. Non-fatal — existing installs keep working either way.
     if let Err(err) = codesmith_config::migrate_config_if_needed() {
         logging::warn(format!("Config migration skipped: {err}"));
@@ -5215,8 +5185,7 @@ async fn run_interactive(
         let _ = manager.cleanup_old_sessions();
     }
 
-    // The `deepseek` launcher forwards `--yolo` to this binary via the
-    // DEEPSEEK_YOLO env var (config.yolo), not as a CLI flag. Honour either.
+    // `CODESMITH_YOLO` (config.yolo) is not a CLI flag. Honour either.
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
 
     tui::run_tui(
@@ -6563,14 +6532,14 @@ mod doctor_endpoint_tests {
     #[test]
     fn doctor_search_provider_line_includes_duckduckgo_default_source_and_switch_hint() {
         let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
+        let prev = std::env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") };
 
         let line = doctor_search_provider_line(&Config::default());
 
         match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
+            Some(value) => unsafe { std::env::set_var("CODESMITH_SEARCH_PROVIDER", value) },
+            None => unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") },
         }
         assert!(line.contains("search_provider: duckduckgo"));
         assert!(line.contains("source: default"));
@@ -6581,8 +6550,8 @@ mod doctor_endpoint_tests {
     #[test]
     fn doctor_search_provider_json_reports_config_source() {
         let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
+        let prev = std::env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") };
         let config = Config {
             search: Some(crate::config::SearchConfig {
                 provider: Some(crate::config::SearchProvider::DuckDuckGo),
@@ -6594,8 +6563,8 @@ mod doctor_endpoint_tests {
         let report = doctor_search_provider_json(&config);
 
         match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
+            Some(value) => unsafe { std::env::set_var("CODESMITH_SEARCH_PROVIDER", value) },
+            None => unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") },
         }
         assert_eq!(report["provider"], "duckduckgo");
         assert_eq!(report["source"], "config");
@@ -6604,14 +6573,14 @@ mod doctor_endpoint_tests {
     #[test]
     fn doctor_search_provider_json_reports_env_override_source() {
         let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", "tavily") };
+        let prev = std::env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { std::env::set_var("CODESMITH_SEARCH_PROVIDER", "tavily") };
 
         let report = doctor_search_provider_json(&Config::default());
 
         match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
+            Some(value) => unsafe { std::env::set_var("CODESMITH_SEARCH_PROVIDER", value) },
+            None => unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") },
         }
         assert_eq!(report["provider"], "tavily");
         assert_eq!(report["source"], "env override");
@@ -6620,8 +6589,8 @@ mod doctor_endpoint_tests {
     #[test]
     fn doctor_search_provider_line_omits_switch_hint_when_bing_is_configured() {
         let _guard = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
+        let prev = std::env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") };
         let config = Config {
             search: Some(crate::config::SearchConfig {
                 provider: Some(crate::config::SearchProvider::Bing),
@@ -6633,8 +6602,8 @@ mod doctor_endpoint_tests {
         let line = doctor_search_provider_line(&config);
 
         match prev {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_SEARCH_PROVIDER", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_SEARCH_PROVIDER") },
+            Some(value) => unsafe { std::env::set_var("CODESMITH_SEARCH_PROVIDER", value) },
+            None => unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") },
         }
         assert!(line.contains("search_provider: bing"));
         assert!(line.contains("source: config"));
@@ -7234,12 +7203,12 @@ mod project_config_tests {
     use std::fs;
     use tempfile::tempdir;
 
-    /// Write a `<workspace>/.deepseek/config.toml` and return the workspace
+    /// Write a `<workspace>/.codesmith/config.toml` and return the workspace
     /// root so the merge function can find it.
     fn workspace_with_project_config(body: &str) -> tempfile::TempDir {
         let tmp = tempdir().expect("tempdir");
-        let project_dir = tmp.path().join(".deepseek");
-        fs::create_dir_all(&project_dir).expect("mkdir .deepseek");
+        let project_dir = tmp.path().join(".codesmith");
+        fs::create_dir_all(&project_dir).expect("mkdir .codesmith");
         fs::write(project_dir.join("config.toml"), body).expect("write project config");
         tmp
     }
@@ -7280,9 +7249,9 @@ mod project_config_tests {
     #[test]
     fn startup_boundary_allows_workspace_initialization_for_trusted_workspace() {
         let tmp = tempdir().expect("tempdir");
-        let legacy_trust_dir = tmp.path().join(".deepseek");
-        fs::create_dir_all(&legacy_trust_dir).expect("mkdir trust marker dir");
-        fs::write(legacy_trust_dir.join("trusted"), "trusted\n").expect("write trust marker");
+        let trust_dir = tmp.path().join(".codesmith");
+        fs::create_dir_all(&trust_dir).expect("mkdir trust marker dir");
+        fs::write(trust_dir.join("trusted"), "trusted\n").expect("write trust marker");
 
         let boundary = resolve_workspace_init_boundary(tmp.path(), false, false);
 
@@ -8126,10 +8095,10 @@ mod setup_helper_tests {
     fn resolve_api_key_source_reports_env_when_set() {
         let _guard = crate::test_support::lock_test_env();
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
-        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
+        let prev_source = std::env::var("CODESMITH_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
-            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
+            std::env::remove_var("CODESMITH_API_KEY_SOURCE");
         }
         let cfg = Config::default();
         let source = resolve_api_key_source(&cfg);
@@ -8138,8 +8107,8 @@ mod setup_helper_tests {
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
         }
         match prev_source {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+            Some(value) => unsafe { std::env::set_var("CODESMITH_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("CODESMITH_API_KEY_SOURCE") },
         }
         assert_eq!(source, ApiKeySource::Env);
     }
@@ -8148,10 +8117,10 @@ mod setup_helper_tests {
     fn resolve_api_key_source_reports_dispatcher_keyring() {
         let _guard = crate::test_support::lock_test_env();
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
-        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
+        let prev_source = std::env::var("CODESMITH_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
-            std::env::set_var("DEEPSEEK_API_KEY_SOURCE", "keyring");
+            std::env::set_var("CODESMITH_API_KEY_SOURCE", "keyring");
         }
         let cfg = Config::default();
         let source = resolve_api_key_source(&cfg);
@@ -8160,8 +8129,8 @@ mod setup_helper_tests {
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
         }
         match prev_source {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+            Some(value) => unsafe { std::env::set_var("CODESMITH_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("CODESMITH_API_KEY_SOURCE") },
         }
         assert_eq!(source, ApiKeySource::Keyring);
     }
@@ -8170,10 +8139,10 @@ mod setup_helper_tests {
     fn resolve_api_key_source_prefers_config_over_env() {
         let _guard = crate::test_support::lock_test_env();
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
-        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
+        let prev_source = std::env::var("CODESMITH_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
-            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
+            std::env::remove_var("CODESMITH_API_KEY_SOURCE");
         }
         let cfg = Config {
             api_key: Some("fresh-config-key".to_string()),
@@ -8185,8 +8154,8 @@ mod setup_helper_tests {
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
         }
         match prev_source {
-            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
-            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+            Some(value) => unsafe { std::env::set_var("CODESMITH_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("CODESMITH_API_KEY_SOURCE") },
         }
         assert_eq!(source, ApiKeySource::Config);
     }

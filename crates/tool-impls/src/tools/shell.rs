@@ -14,7 +14,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use codesmith_agent_runtime::tools::shell_output::{summarize_output, truncate_with_meta};
 use codesmith_agent_runtime::sandbox::{
     CommandSpec,
     SandboxExecRequest,
@@ -23,6 +22,7 @@ use codesmith_agent_runtime::sandbox::{
     SandboxRuntimeConfig,
 };
 use codesmith_agent_runtime::tools::git_env::merge_git_scrub_env;
+use codesmith_agent_runtime::tools::shell_output::{summarize_output, truncate_with_meta};
 
 // Shell result/view data types live in the runtime crate so they can cross the
 // `Arc<dyn HostServices>` boundary once `ShellManager` is trait-erased.
@@ -66,7 +66,10 @@ fn command_would_be_sandboxed(context: &ToolContext, command: &str) -> bool {
 
 // === ToolSpec Implementations ===
 
-use codesmith_agent_runtime::command_safety::{SafetyLevel, analyze_command, extract_primary_command};
+use async_trait::async_trait;
+use codesmith_agent_runtime::command_safety::{
+    SafetyLevel, analyze_command, extract_primary_command,
+};
 use codesmith_agent_runtime::execpolicy::{ExecPolicyDecision, load_default_policy};
 use codesmith_agent_runtime::features::Feature;
 use codesmith_agent_runtime::tools::cargo_failure_summary::summarize_cargo_failure;
@@ -74,7 +77,6 @@ use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_u64, required_str,
 };
-use async_trait::async_trait;
 use serde_json::json;
 
 const FOREGROUND_TIMEOUT_RECOVERY_HINT: &str = "Foreground exec_shell is for bounded commands. \

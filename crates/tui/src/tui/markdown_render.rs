@@ -240,7 +240,7 @@ pub fn render_parsed_tagged(
         match &parsed.blocks[i] {
             Block::Heading { text, .. } => {
                 let style = Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
+                    .fg(palette::CODESMITH_SKY)
                     .add_modifier(Modifier::BOLD);
                 out.extend(render_wrapped_line_tagged(text, width, style, false, false));
             }
@@ -267,7 +267,7 @@ pub fn render_parsed_tagged(
                 });
             }
             Block::ListItem { bullet, text } => {
-                let bullet_style = Style::default().fg(palette::DEEPSEEK_SKY);
+                let bullet_style = Style::default().fg(palette::CODESMITH_SKY);
                 out.extend(render_list_line_tagged(
                     bullet,
                     text,
@@ -278,7 +278,7 @@ pub fn render_parsed_tagged(
             }
             Block::Code { line } => {
                 let code_style = Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
+                    .fg(palette::CODESMITH_SKY)
                     .add_modifier(Modifier::ITALIC);
                 out.extend(render_wrapped_line_tagged(
                     line, width, code_style, true, true,
@@ -286,7 +286,7 @@ pub fn render_parsed_tagged(
             }
             Block::Paragraph { text } => {
                 let link_style = Style::default()
-                    .fg(palette::DEEPSEEK_BLUE)
+                    .fg(palette::CODESMITH_BLUE)
                     .add_modifier(Modifier::UNDERLINED);
                 out.extend(render_line_with_links_tagged(
                     text, width, base_style, link_style,
@@ -1119,7 +1119,7 @@ fn render_table_group(blocks: &[Block], width: usize, base_style: Style) -> Vec<
 
 fn link_style() -> Style {
     Style::default()
-        .fg(palette::DEEPSEEK_BLUE)
+        .fg(palette::CODESMITH_BLUE)
         .add_modifier(Modifier::UNDERLINED)
 }
 
@@ -1526,7 +1526,7 @@ mod tests {
 
     #[test]
     fn wrapped_osc_8_url_chunks_keep_full_link_target() {
-        let url = "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json";
+        let url = "https://raw.githubusercontent.com/Hmbown/codesmith-skills/main/index.json";
         let joined = render_with_osc8_width(true, url, 34);
         let full_target = format!("\x1b]8;;{url}\x1b\\");
 
@@ -1536,7 +1536,7 @@ mod tests {
         );
         assert!(
             !joined.contains(
-                "\x1b]8;;https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/inde\x1b\\"
+                "\x1b]8;;https://raw.githubusercontent.com/Hmbown/codesmith-skills/main/inde\x1b\\"
             ),
             "wrapped link must not expose a truncated OSC 8 target: {joined:?}"
         );
@@ -1685,7 +1685,7 @@ mod tests {
     fn table_cell_wider_than_column_wraps_instead_of_truncating() {
         let src = "| Feature | How to verify |\n\
                    |---|---|\n\
-                   | Workspace-local commands | Drop a .deepseek/commands/foo.md in any project, run deepseek from there, type /foo — should dispatch |\n";
+                   | Workspace-local commands | Drop a .codesmith/commands/foo.md in any project, run deepseek from there, type /foo — should dispatch |\n";
         let lines = render_markdown(src, 80, Style::default());
         let combined: String = lines
             .iter()

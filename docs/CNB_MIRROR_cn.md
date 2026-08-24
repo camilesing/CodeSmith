@@ -173,10 +173,10 @@ Linux x64 资产。GitHub 仍然是权威的 macOS/Windows 发布矩阵。
   `codesmith-linux-x64`、`codesmith-tui-linux-x64` 和
   `codesmith-artifacts-sha256.txt`，然后根据清单校验二进制文件。
 
-- **`DEEPSEEK_TUI_RELEASE_BASE_URL`** 环境变量，适用于存在发布
+- **`CODESMITH_RELEASE_BASE_URL`** 环境变量，适用于存在发布
   资产 CDN 镜像的情况。npm 包装器安装器和 `codesmith update`
   会读取该变量来重定向二进制下载。对于 `codesmith update`，
-  还需设置 `DEEPSEEK_TUI_VERSION=X.Y.Z`，让更新器在不联系
+  还需设置 `CODESMITH_VERSION=X.Y.Z`，让更新器在不联系
   GitHub 的情况下为镜像发布打上标签。所指向的目录必须包含
   `codesmith-artifacts-sha256.txt` 和各平台二进制文件；格式与
   GitHub Release 资产目录一致。

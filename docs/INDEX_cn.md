@@ -39,8 +39,8 @@ backend = "none"
 
 环境变量覆盖（在配置解析时应用，括号内为旧版别名）：
 
-- `CODESMITH_INDEX_ENABLED`（`DEEPSEEK_INDEX_ENABLED`）— `true`/`false`
-- `CODESMITH_INDEX_SYMBOLS_BACKEND`（`DEEPSEEK_INDEX_SYMBOLS_BACKEND`）—
+- `CODESMITH_INDEX_ENABLED`（`CODESMITH_INDEX_ENABLED`）— `true`/`false`
+- `CODESMITH_INDEX_SYMBOLS_BACKEND`（`CODESMITH_INDEX_SYMBOLS_BACKEND`）—
   后端 id
 
 未知的后端 id 会快速失败，并在错误消息中列出已注册的 id。

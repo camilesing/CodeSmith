@@ -434,7 +434,7 @@ pub struct TuiConfig {
     /// empty `Some(vec![])` means "show nothing in the footer".
     ///
     /// Edited interactively via `/statusline`; persisted to `tui.status_items`
-    /// in `~/.deepseek/config.toml`.
+    /// in `~/.codesmith/config.toml`.
     #[serde(deserialize_with = "deser_status_items")]
     pub status_items: Option<Vec<StatusItem>>,
     /// Emit OSC 8 hyperlink escape sequences around URLs in the transcript so
@@ -584,7 +584,7 @@ impl Default for SnapshotsConfig {
 /// the composer append to it. The effective enablement is resolved by
 /// [`Config::memory_enabled`], which applies a five-level priority cascade
 /// (disable env > bare/simple > remote-without-storage > explicit setting >
-/// default on). Set `enabled = false` (or `DEEPSEEK_DISABLE_AUTO_MEMORY=1`) to
+/// default on). Set `enabled = false` (or `CODESMITH_DISABLE_AUTO_MEMORY=1`) to
 /// opt out.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MemoryConfig {
@@ -1156,7 +1156,7 @@ pub struct Config {
 
     /// User-level memory file (#489). Default behaviour is **opt-in**:
     /// loading + injection happens only when `[memory] enabled = true` or
-    /// `DEEPSEEK_MEMORY=on` is set.
+    /// `CODESMITH_MEMORY=on` is set.
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
 
@@ -1215,7 +1215,7 @@ pub struct RuntimeApiConfig {
     /// dev server port (e.g. Vite's default `:5173`).
     ///
     /// Resolution order (highest priority first): `--cors-origin` CLI flag,
-    /// `DEEPSEEK_CORS_ORIGINS` env var (comma-separated), this field. Whalescale#255 / #561.
+    /// `CODESMITH_CORS_ORIGINS` env var (comma-separated), this field. Whalescale#255 / #561.
     #[serde(default)]
     pub cors_origins: Option<Vec<String>>,
 }
@@ -1488,8 +1488,8 @@ impl Config {
 
     /// Effective `[index]` configuration: config table over built-in
     /// defaults, with env overrides applied at resolution time
-    /// (`CODESMITH_INDEX_ENABLED` / `DEEPSEEK_INDEX_ENABLED` and
-    /// `CODESMITH_INDEX_SYMBOLS_BACKEND` / `DEEPSEEK_INDEX_SYMBOLS_BACKEND`).
+    /// (`CODESMITH_INDEX_ENABLED` and
+    /// `CODESMITH_INDEX_SYMBOLS_BACKEND`).
     #[must_use]
     pub fn index_config(&self) -> codesmith_index::IndexConfig {
         let mut cfg = self.index.clone().unwrap_or_default();
@@ -1583,7 +1583,7 @@ impl Config {
     /// `base_url` field but their active provider is not DeepSeek (the only
     /// provider that actually reads that field, plus an NvidiaNim back-compat
     /// sniff). Common confusion: users add `base_url = "..."` at the top of
-    /// `~/.deepseek/config.toml` for ollama / vllm / openai-compat servers
+    /// `~/.codesmith/config.toml` for ollama / vllm / openai-compat servers
     /// and wonder why it's silently ignored (#1308).
     fn warn_on_misplaced_root_base_url(&self) {
         let Some(root_base) = self.base_url.as_deref().map(str::trim) else {
@@ -1769,9 +1769,9 @@ impl Config {
     /// the provider default, and their 403 (`model_access_denied`) gives the
     /// user nothing actionable. `exec_model` carries `codesmith exec --model`,
     /// which reaches this binary as a passthrough arg (only the top-level
-    /// `--model` is forwarded as `DEEPSEEK_MODEL` by the facade), so it must
+    /// `--model` is forwarded as `CODESMITH_MODEL` by the facade), so it must
     /// satisfy this check separately. Env sources (`OPENAI_MODEL`,
-    /// `DEEPSEEK_MODEL`) are already folded into the provider slot by
+    /// `CODESMITH_MODEL`) are already folded into the provider slot by
     /// `apply_env_overrides` before this runs.
     pub fn require_explicit_model_on_custom_gateway(&self, exec_model: Option<&str>) -> Result<()> {
         if self.custom_provider().is_some()
@@ -2419,13 +2419,13 @@ impl Config {
     /// Whether the user-memory feature is enabled, using a Claude Code-style
     /// priority cascade (highest precedence first):
     ///
-    /// 1. `DEEPSEEK_DISABLE_AUTO_MEMORY` env — truthy closes memory, a
+    /// 1. `CODESMITH_DISABLE_AUTO_MEMORY` env — truthy closes memory, a
     ///    defined-but-falsy value (e.g. `0`/`false`) explicitly opens it.
-    /// 2. bare/simple mode (`--bare` / `DEEPSEEK_SIMPLE` / `CODESMITH_SIMPLE`
+    /// 2. bare/simple mode (`--bare` / `CODESMITH_SIMPLE`
     ///    / `CODEWHALE_SIMPLE` truthy) — closes memory.
-    /// 3. remote mode (`DEEPSEEK_REMOTE` / `CODESMITH_REMOTE` truthy) without
-    ///    a `DEEPSEEK_REMOTE_MEMORY_DIR` — closes memory (no persistent store).
-    /// 4. `[memory] enabled` in `config.toml` or `DEEPSEEK_MEMORY` env — the
+    /// 3. remote mode (`CODESMITH_REMOTE` truthy) without
+    ///    a `CODESMITH_REMOTE_MEMORY_DIR` — closes memory (no persistent store).
+    /// 4. `[memory] enabled` in `config.toml` or `CODESMITH_MEMORY` env — the
     ///    explicit user setting.
     /// 5. default **on**.
     ///
@@ -2438,18 +2438,18 @@ impl Config {
             return !parse_env_bool(&value);
         }
         // 2. bare/simple mode -> off.
-        if env_flag_truthy_any(&["DEEPSEEK_SIMPLE", "CODESMITH_SIMPLE", "CODEWHALE_SIMPLE"]) {
+        if env_flag_truthy_any(&["CODESMITH_SIMPLE", "CODEWHALE_SIMPLE"]) {
             return false;
         }
         // 3. remote mode without a persistent memory dir -> off.
-        if env_flag_truthy_any(&["DEEPSEEK_REMOTE", "CODESMITH_REMOTE"])
+        if env_flag_truthy_any(&["CODESMITH_REMOTE"])
             && app_env("REMOTE_MEMORY_DIR")
                 .map(|v| v.trim().is_empty())
                 .unwrap_or(true)
         {
             return false;
         }
-        // 4. Explicit user setting (config.toml or DEEPSEEK_MEMORY, the latter
+        // 4. Explicit user setting (config.toml or CODESMITH_MEMORY, the latter
         //    folded into `memory.enabled` by `apply_env_overrides`).
         if let Some(enabled) = self.memory.as_ref().and_then(|m| m.enabled) {
             return enabled;
@@ -2911,34 +2911,22 @@ check_for_updates = true
 fn default_managed_config_path() -> Option<PathBuf> {
     #[cfg(unix)]
     {
-        Some(PathBuf::from("/etc/deepseek/managed_config.toml"))
+        Some(PathBuf::from("/etc/codesmith/managed_config.toml"))
     }
     #[cfg(not(unix))]
     {
-        effective_home_dir().map(|home| {
-            let primary = home.join(".codesmith").join("managed_config.toml");
-            if primary.exists() {
-                return primary;
-            }
-            home.join(".deepseek").join("managed_config.toml")
-        })
+        effective_home_dir().map(|home| home.join(".codesmith").join("managed_config.toml"))
     }
 }
 
 fn default_requirements_path() -> Option<PathBuf> {
     #[cfg(unix)]
     {
-        Some(PathBuf::from("/etc/deepseek/requirements.toml"))
+        Some(PathBuf::from("/etc/codesmith/requirements.toml"))
     }
     #[cfg(not(unix))]
     {
-        effective_home_dir().map(|home| {
-            let primary = home.join(".codesmith").join("requirements.toml");
-            if primary.exists() {
-                return primary;
-            }
-            home.join(".deepseek").join("requirements.toml")
-        })
+        effective_home_dir().map(|home| home.join(".codesmith").join("requirements.toml"))
     }
 }
 
@@ -2947,52 +2935,22 @@ fn default_skills_dir() -> Option<PathBuf> {
 }
 
 fn default_mcp_config_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codesmith").join("mcp.json");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("mcp.json");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
+    effective_home_dir().map(|home| home.join(".codesmith").join("mcp.json"))
 }
 
 fn default_notes_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codesmith").join("notes.txt");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("notes.txt");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
+    effective_home_dir().map(|home| home.join(".codesmith").join("notes.txt"))
 }
 
 fn default_memory_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codesmith").join("memory.md");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("memory.md");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
+    effective_home_dir().map(|home| home.join(".codesmith").join("memory.md"))
 }
 
 // === Environment Overrides ===
 
 /// Read an app-level env var by name suffix: `app_env("SANDBOX_MODE")` reads
 /// `CODESMITH_SANDBOX_MODE`, falling back to the legacy `CODEWHALE_` /
-/// `DEEPSEEK_` aliases. Empty values are skipped so a blank shell export does
+/// `CODEWHALE_` alias. Empty values are skipped so a blank shell export does
 /// not erase configured settings.
 fn index_parse_bool(raw: &str) -> std::result::Result<bool, ()> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -3006,13 +2964,10 @@ fn app_env(suffix: &str) -> Result<String, std::env::VarError> {
     codesmith_config::codesmith_env(suffix).ok_or(std::env::VarError::NotPresent)
 }
 
-/// Read a CodeSmith env var, preferring the `CODESMITH_*` form over legacy
-/// aliases. Empty values are ignored so a blank shell export does not erase
-/// configured provider settings.
-fn codesmith_env_var(
-    codesmith_name: &str,
-    _legacy_name: &str,
-) -> Result<String, std::env::VarError> {
+/// Read a CodeSmith env var by its `CODESMITH_*` name. Empty values are
+/// ignored so a blank shell export does not erase configured provider
+/// settings.
+fn codesmith_env_var(codesmith_name: &str) -> Result<String, std::env::VarError> {
     app_env(
         codesmith_name
             .strip_prefix("CODESMITH_")
@@ -3046,7 +3001,7 @@ fn parse_env_list(value: &str) -> Vec<String> {
 }
 
 fn apply_env_overrides(config: &mut Config) {
-    if let Ok(value) = codesmith_env_var("CODESMITH_PROVIDER", "DEEPSEEK_PROVIDER") {
+    if let Ok(value) = codesmith_env_var("CODESMITH_PROVIDER") {
         config.provider = Some(value);
     }
     // §D2 slice 46 — `--custom-provider <id>` (forwarded by the cli dispatcher
@@ -3054,13 +3009,13 @@ fn apply_env_overrides(config: &mut Config) {
     // overriding the config-file `custom_provider` selector. An empty value is
     // a no-op; builtin-collision and entry-existence are validated downstream
     // (`Config::validate`), matching `--provider`'s deferred validation.
-    if let Ok(value) = codesmith_env_var("CODESMITH_CUSTOM_PROVIDER", "DEEPSEEK_CUSTOM_PROVIDER") {
+    if let Ok(value) = codesmith_env_var("CODESMITH_CUSTOM_PROVIDER") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             config.custom_provider = Some(trimmed.to_string());
         }
     }
-    if let Ok(value) = codesmith_env_var("CODESMITH_BASE_URL", "DEEPSEEK_BASE_URL") {
+    if let Ok(value) = codesmith_env_var("CODESMITH_BASE_URL") {
         match config.api_provider() {
             ApiProvider::Deepseek => {
                 config.base_url = Some(value);
@@ -3425,7 +3380,7 @@ fn apply_env_overrides(config: &mut Config) {
             .siliconflow
             .model = Some(value);
     }
-    if let Ok(value) = codesmith_env_var("CODESMITH_UTILITY_MODEL", "DEEPSEEK_UTILITY_MODEL") {
+    if let Ok(value) = codesmith_env_var("CODESMITH_UTILITY_MODEL") {
         let utility = config
             .utility_model
             .get_or_insert_with(|| UtilityModelConfig {
@@ -3436,16 +3391,8 @@ fn apply_env_overrides(config: &mut Config) {
             });
         utility.model = value;
     }
-    if let Some(value) = codesmith_env_var("CODESMITH_MODEL", "DEEPSEEK_MODEL")
-        .ok()
-        .or_else(|| {
-            std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-    {
-        // The CLI `--model` handoff always sets CODESMITH_MODEL (legacy
-        // DEEPSEEK_MODEL), never the
+    if let Some(value) = codesmith_env_var("CODESMITH_MODEL").ok() {
+        // The CLI `--model` handoff always sets CODESMITH_MODEL, never the
         // provider-specific *_MODEL var. The legacy root `default_text_model`
         // is a DeepSeek-only slot (the validator rejects non-DeepSeek IDs
         // there). For a non-DeepSeek provider the explicit model must land in
@@ -4531,7 +4478,10 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
 #[must_use]
 pub fn active_provider_has_env_api_key(config: &Config) -> bool {
     match config.api_provider() {
-        ApiProvider::Deepseek => app_env("API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::Deepseek => {
+            app_env("API_KEY").is_ok_and(|k| !k.trim().is_empty())
+                || std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
         ApiProvider::NvidiaNim => {
             std::env::var("NVIDIA_API_KEY").is_ok_and(|k| !k.trim().is_empty())
                 || std::env::var("NVIDIA_NIM_API_KEY").is_ok_and(|k| !k.trim().is_empty())
@@ -5152,7 +5102,7 @@ mod tests {
         ));
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
-        let _knobs = KnobGuard::new(&["CODESMITH_UTILITY_MODEL", "DEEPSEEK_UTILITY_MODEL"]);
+        let _knobs = KnobGuard::new(&["CODESMITH_UTILITY_MODEL"]);
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
@@ -5277,7 +5227,7 @@ mod tests {
     #[test]
     fn index_config_defaults_to_enabled_tree_sitter() {
         let _guard = lock_test_env();
-        for var in ["CODESMITH_INDEX_ENABLED", "DEEPSEEK_INDEX_ENABLED"] {
+        for var in ["CODESMITH_INDEX_ENABLED"] {
             unsafe { env::remove_var(var) };
         }
         let config: Config = toml::from_str("").expect("empty config");
@@ -5293,7 +5243,7 @@ mod tests {
     #[test]
     fn index_config_parses_table_and_respects_switches() {
         let _guard = lock_test_env();
-        for var in ["CODESMITH_INDEX_ENABLED", "DEEPSEEK_INDEX_ENABLED"] {
+        for var in ["CODESMITH_INDEX_ENABLED"] {
             unsafe { env::remove_var(var) };
         }
         let config: Config = toml::from_str(
@@ -5345,12 +5295,12 @@ mod tests {
     #[test]
     fn search_provider_resolution_reports_default_source() {
         let _guard = lock_test_env();
-        let prev = env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
+        let prev = env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { env::remove_var("CODESMITH_SEARCH_PROVIDER") };
 
         let resolution = Config::default().search_provider_resolution();
 
-        unsafe { EnvGuard::restore_var("DEEPSEEK_SEARCH_PROVIDER", prev) };
+        unsafe { EnvGuard::restore_var("CODESMITH_SEARCH_PROVIDER", prev) };
         assert_eq!(resolution.provider, SearchProvider::DuckDuckGo);
         assert_eq!(resolution.source, SearchProviderSource::Default);
     }
@@ -5358,8 +5308,8 @@ mod tests {
     #[test]
     fn search_provider_resolution_reports_config_source() {
         let _guard = lock_test_env();
-        let prev = env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { env::remove_var("DEEPSEEK_SEARCH_PROVIDER") };
+        let prev = env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { env::remove_var("CODESMITH_SEARCH_PROVIDER") };
         let config: Config = toml::from_str(
             r#"
             [search]
@@ -5370,7 +5320,7 @@ mod tests {
 
         let resolution = config.search_provider_resolution();
 
-        unsafe { EnvGuard::restore_var("DEEPSEEK_SEARCH_PROVIDER", prev) };
+        unsafe { EnvGuard::restore_var("CODESMITH_SEARCH_PROVIDER", prev) };
         assert_eq!(resolution.provider, SearchProvider::Tavily);
         assert_eq!(resolution.source, SearchProviderSource::Config);
     }
@@ -5378,8 +5328,8 @@ mod tests {
     #[test]
     fn search_provider_resolution_reports_env_override_source() {
         let _guard = lock_test_env();
-        let prev = env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { env::set_var("DEEPSEEK_SEARCH_PROVIDER", "bocha") };
+        let prev = env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { env::set_var("CODESMITH_SEARCH_PROVIDER", "bocha") };
         let config: Config = toml::from_str(
             r#"
             [search]
@@ -5390,7 +5340,7 @@ mod tests {
 
         let resolution = config.search_provider_resolution();
 
-        unsafe { EnvGuard::restore_var("DEEPSEEK_SEARCH_PROVIDER", prev) };
+        unsafe { EnvGuard::restore_var("CODESMITH_SEARCH_PROVIDER", prev) };
         assert_eq!(resolution.provider, SearchProvider::Bocha);
         assert_eq!(resolution.source, SearchProviderSource::EnvOverride);
     }
@@ -5398,8 +5348,8 @@ mod tests {
     #[test]
     fn search_provider_env_override_accepts_baidu() {
         let _guard = lock_test_env();
-        let prev = env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { env::set_var("DEEPSEEK_SEARCH_PROVIDER", "baidu") };
+        let prev = env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { env::set_var("CODESMITH_SEARCH_PROVIDER", "baidu") };
         let config: Config = toml::from_str(
             r#"
             [search]
@@ -5410,7 +5360,7 @@ mod tests {
 
         let resolution = config.search_provider_resolution();
 
-        unsafe { EnvGuard::restore_var("DEEPSEEK_SEARCH_PROVIDER", prev) };
+        unsafe { EnvGuard::restore_var("CODESMITH_SEARCH_PROVIDER", prev) };
         assert_eq!(resolution.provider, SearchProvider::Baidu);
         assert_eq!(resolution.source, SearchProviderSource::EnvOverride);
     }
@@ -5418,13 +5368,13 @@ mod tests {
     #[test]
     fn apply_env_overrides_sets_search_api_key() {
         let _guard = lock_test_env();
-        let prev = env::var_os("DEEPSEEK_SEARCH_API_KEY");
-        unsafe { env::set_var("DEEPSEEK_SEARCH_API_KEY", "search-env-key") };
+        let prev = env::var_os("CODESMITH_SEARCH_API_KEY");
+        unsafe { env::set_var("CODESMITH_SEARCH_API_KEY", "search-env-key") };
         let mut config = Config::default();
 
         apply_env_overrides(&mut config);
 
-        unsafe { EnvGuard::restore_var("DEEPSEEK_SEARCH_API_KEY", prev) };
+        unsafe { EnvGuard::restore_var("CODESMITH_SEARCH_API_KEY", prev) };
         assert_eq!(
             config.search.and_then(|search| search.api_key),
             Some("search-env-key".to_string())
@@ -5488,8 +5438,8 @@ mod tests {
     #[test]
     fn search_provider_resolution_ignores_invalid_env_override() {
         let _guard = lock_test_env();
-        let prev = env::var_os("DEEPSEEK_SEARCH_PROVIDER");
-        unsafe { env::set_var("DEEPSEEK_SEARCH_PROVIDER", "not-a-provider") };
+        let prev = env::var_os("CODESMITH_SEARCH_PROVIDER");
+        unsafe { env::set_var("CODESMITH_SEARCH_PROVIDER", "not-a-provider") };
         let config: Config = toml::from_str(
             r#"
             [search]
@@ -5500,7 +5450,7 @@ mod tests {
 
         let resolution = config.search_provider_resolution();
 
-        unsafe { EnvGuard::restore_var("DEEPSEEK_SEARCH_PROVIDER", prev) };
+        unsafe { EnvGuard::restore_var("CODESMITH_SEARCH_PROVIDER", prev) };
         assert_eq!(resolution.provider, SearchProvider::Tavily);
         assert_eq!(resolution.source, SearchProviderSource::Config);
     }
@@ -5510,15 +5460,8 @@ mod tests {
         userprofile: Option<OsString>,
         codesmith_home: Option<OsString>,
         codesmith_config_path: Option<OsString>,
-        deepseek_config_path: Option<OsString>,
         codesmith_secret_backend: Option<OsString>,
-        deepseek_secret_backend: Option<OsString>,
-        deepseek_provider: Option<OsString>,
         deepseek_api_key: Option<OsString>,
-        deepseek_base_url: Option<OsString>,
-        deepseek_http_headers: Option<OsString>,
-        deepseek_model: Option<OsString>,
-        deepseek_default_text_model: Option<OsString>,
         codesmith_provider: Option<OsString>,
         codesmith_model: Option<OsString>,
         codesmith_base_url: Option<OsString>,
@@ -5584,21 +5527,14 @@ mod tests {
     impl EnvGuard {
         fn new(home: &Path) -> Self {
             let home_str = OsString::from(home.as_os_str());
-            let config_path = home.join(".deepseek").join("config.toml");
+            let config_path = home.join(".codesmith").join("config.toml");
             let config_str = OsString::from(config_path.as_os_str());
             let home_prev = env::var_os("HOME");
             let userprofile_prev = env::var_os("USERPROFILE");
             let codesmith_home_prev = env::var_os("CODESMITH_HOME");
             let codesmith_config_prev = env::var_os("CODESMITH_CONFIG_PATH");
-            let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
             let codesmith_secret_backend_prev = env::var_os("CODESMITH_SECRET_BACKEND");
-            let deepseek_secret_backend_prev = env::var_os("DEEPSEEK_SECRET_BACKEND");
-            let deepseek_provider_prev = env::var_os("DEEPSEEK_PROVIDER");
             let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
-            let base_url_prev = env::var_os("DEEPSEEK_BASE_URL");
-            let http_headers_prev = env::var_os("DEEPSEEK_HTTP_HEADERS");
-            let model_prev = env::var_os("DEEPSEEK_MODEL");
-            let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
             let codesmith_provider_prev = env::var_os("CODESMITH_PROVIDER");
             let codesmith_model_prev = env::var_os("CODESMITH_MODEL");
             let codesmith_base_url_prev = env::var_os("CODESMITH_BASE_URL");
@@ -5665,15 +5601,9 @@ mod tests {
                 env::set_var("USERPROFILE", &home_str);
                 env::remove_var("CODESMITH_HOME");
                 env::remove_var("CODESMITH_CONFIG_PATH");
-                env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
+                env::set_var("CODESMITH_CONFIG_PATH", &config_str);
                 env::remove_var("CODESMITH_SECRET_BACKEND");
-                env::remove_var("DEEPSEEK_SECRET_BACKEND");
-                env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("DEEPSEEK_API_KEY");
-                env::remove_var("DEEPSEEK_BASE_URL");
-                env::remove_var("DEEPSEEK_HTTP_HEADERS");
-                env::remove_var("DEEPSEEK_MODEL");
-                env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
                 env::remove_var("CODESMITH_PROVIDER");
                 env::remove_var("CODESMITH_MODEL");
                 env::remove_var("CODESMITH_BASE_URL");
@@ -5740,15 +5670,8 @@ mod tests {
                 userprofile: userprofile_prev,
                 codesmith_home: codesmith_home_prev,
                 codesmith_config_path: codesmith_config_prev,
-                deepseek_config_path: deepseek_config_prev,
                 codesmith_secret_backend: codesmith_secret_backend_prev,
-                deepseek_secret_backend: deepseek_secret_backend_prev,
-                deepseek_provider: deepseek_provider_prev,
                 deepseek_api_key: api_key_prev,
-                deepseek_base_url: base_url_prev,
-                deepseek_http_headers: http_headers_prev,
-                deepseek_model: model_prev,
-                deepseek_default_text_model: default_text_model_prev,
                 codesmith_provider: codesmith_provider_prev,
                 codesmith_model: codesmith_model_prev,
                 codesmith_base_url: codesmith_base_url_prev,
@@ -5821,24 +5744,11 @@ mod tests {
                 Self::restore_var("USERPROFILE", self.userprofile.take());
                 Self::restore_var("CODESMITH_HOME", self.codesmith_home.take());
                 Self::restore_var("CODESMITH_CONFIG_PATH", self.codesmith_config_path.take());
-                Self::restore_var("DEEPSEEK_CONFIG_PATH", self.deepseek_config_path.take());
                 Self::restore_var(
                     "CODESMITH_SECRET_BACKEND",
                     self.codesmith_secret_backend.take(),
                 );
-                Self::restore_var(
-                    "DEEPSEEK_SECRET_BACKEND",
-                    self.deepseek_secret_backend.take(),
-                );
-                Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
-                Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
-                Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
-                Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
-                Self::restore_var(
-                    "DEEPSEEK_DEFAULT_TEXT_MODEL",
-                    self.deepseek_default_text_model.take(),
-                );
                 Self::restore_var("CODESMITH_PROVIDER", self.codesmith_provider.take());
                 Self::restore_var("CODESMITH_MODEL", self.codesmith_model.take());
                 Self::restore_var("CODESMITH_BASE_URL", self.codesmith_base_url.take());
@@ -6054,7 +5964,7 @@ mod tests {
         let _guard = EnvGuard::new(&temp_root);
 
         let saved = save_api_key("test-key")?;
-        let expected = temp_root.join(".deepseek").join("config.toml");
+        let expected = temp_root.join(".codesmith").join("config.toml");
         assert_eq!(saved, SavedCredential::ConfigFile(expected.clone()));
         assert_eq!(saved.describe(), expected.display().to_string());
 
@@ -6092,7 +6002,7 @@ mod tests {
         let created = ensure_config_file_exists(None)?.expect("should create config");
         let content = fs::read_to_string(&created)?;
 
-        assert_eq!(created, temp_root.join(".deepseek").join("config.toml"));
+        assert_eq!(created, temp_root.join(".codesmith").join("config.toml"));
         assert!(content.contains("default_text_model = \"deepseek-v4-pro\""));
         assert!(content.contains("reasoning_effort = \"auto\""));
         assert!(!content.contains("api_key ="));
@@ -6120,12 +6030,12 @@ mod tests {
         assert!(!is_workspace_trusted(&workspace));
         let saved = save_workspace_trust(&workspace)?;
 
-        assert_eq!(saved, temp_root.join(".deepseek").join("config.toml"));
+        assert_eq!(saved, temp_root.join(".codesmith").join("config.toml"));
         assert!(is_workspace_trusted(&workspace));
         assert!(!crate::tui::onboarding::needs_trust(&workspace));
         assert!(
-            !workspace.join(".deepseek").exists(),
-            "trust persistence must not create a project-local .deepseek directory"
+            !workspace.join(".codesmith").exists(),
+            "trust persistence must not create a project-local .codesmith directory"
         );
 
         let parsed: toml::Value = toml::from_str(&fs::read_to_string(saved)?)?;
@@ -6152,7 +6062,7 @@ mod tests {
         let _guard = EnvGuard::new(&temp_root);
         let workspace = temp_root.join("project");
         fs::create_dir_all(&workspace)?;
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         fs::create_dir_all(config_path.parent().unwrap())?;
         fs::write(
             &config_path,
@@ -6365,7 +6275,7 @@ mod tests {
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_dir = temp_root.join(".deepseek");
+        let config_dir = temp_root.join(".codesmith");
         fs::create_dir_all(&config_dir)?;
         let config_path = config_dir.join("config.toml");
         fs::write(
@@ -6530,12 +6440,6 @@ api_key = "old-openrouter-key"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        // EnvGuard pins DEEPSEEK_CONFIG_PATH for older tests; this test wants
-        // the no-explicit-path startup behavior.
-        unsafe {
-            env::remove_var("DEEPSEEK_CONFIG_PATH");
-        }
-
         let config = Config::default();
         assert_eq!(
             default_config_path().unwrap(),
@@ -6558,45 +6462,9 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
-    fn default_user_paths_preserve_existing_legacy_files() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-legacy-home-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        let legacy_home = temp_root.join(".deepseek");
-        fs::create_dir_all(&legacy_home)?;
-        for name in ["config.toml", "mcp.json", "notes.txt", "memory.md"] {
-            fs::write(legacy_home.join(name), "")?;
-        }
-        let _guard = EnvGuard::new(&temp_root);
-
-        unsafe {
-            env::remove_var("DEEPSEEK_CONFIG_PATH");
-        }
-
-        let config = Config::default();
-        assert_eq!(
-            default_config_path().unwrap(),
-            legacy_home.join("config.toml")
-        );
-        assert_eq!(config.mcp_config_path(), legacy_home.join("mcp.json"));
-        assert_eq!(config.notes_path(), legacy_home.join("notes.txt"));
-        assert_eq!(config.memory_path(), legacy_home.join("memory.md"));
-
-        Ok(())
-    }
-
-    #[test]
-    fn codesmith_config_path_env_wins_over_legacy_env() -> Result<()> {
+    fn codesmith_config_path_env_overrides_default() -> Result<()> {
         let _lock = lock_test_env();
         let prev_codesmith = env::var_os("CODESMITH_CONFIG_PATH");
-        let prev_deepseek = env::var_os("DEEPSEEK_CONFIG_PATH");
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -6607,18 +6475,15 @@ api_key = "old-openrouter-key"
             nanos
         ));
         let preferred = temp_root.join("preferred.toml");
-        let legacy = temp_root.join("legacy.toml");
 
         unsafe {
             env::set_var("CODESMITH_CONFIG_PATH", &preferred);
-            env::set_var("DEEPSEEK_CONFIG_PATH", &legacy);
         }
 
         assert_eq!(env_config_path().unwrap(), preferred);
 
         unsafe {
             EnvGuard::restore_var("CODESMITH_CONFIG_PATH", prev_codesmith);
-            EnvGuard::restore_var("DEEPSEEK_CONFIG_PATH", prev_deepseek);
         }
 
         Ok(())
@@ -6640,10 +6505,10 @@ api_key = "old-openrouter-key"
         let _guard = EnvGuard::new(&temp_root);
 
         let config = Config {
-            skills_dir: Some("~/.deepseek/skills".to_string()),
+            skills_dir: Some("~/.codesmith/skills".to_string()),
             ..Default::default()
         };
-        let expected_skills = temp_root.join(".deepseek").join("skills");
+        let expected_skills = temp_root.join(".codesmith").join("skills");
         let actual_skills = config.skills_dir();
         assert_eq!(
             actual_skills.components().collect::<Vec<_>>(),
@@ -6654,7 +6519,7 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
-    fn test_load_uses_tilde_expanded_deepseek_config_path() -> Result<()> {
+    fn test_load_uses_tilde_expanded_codesmith_config_path() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -6668,13 +6533,13 @@ api_key = "old-openrouter-key"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".custom-deepseek").join("config.toml");
+        let config_path = temp_root.join(".custom-codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(&config_path, "api_key = \"test-key\"\n")?;
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_CONFIG_PATH", "~/.custom-deepseek/config.toml");
+            env::set_var("CODESMITH_CONFIG_PATH", "~/.custom-codesmith/config.toml");
         }
 
         let config = Config::load(None, None)?;
@@ -6697,14 +6562,14 @@ api_key = "old-openrouter-key"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let home_config = temp_root.join(".deepseek").join("config.toml");
+        let home_config = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&home_config)?;
         fs::write(&home_config, "api_key = \"home-key\"\n")?;
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
             env::set_var(
-                "DEEPSEEK_CONFIG_PATH",
+                "CODESMITH_CONFIG_PATH",
                 temp_root.join("missing-config.toml").as_os_str(),
             );
         }
@@ -6756,7 +6621,7 @@ api_key = "old-openrouter-key"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -7219,7 +7084,7 @@ api_key = "old-openrouter-key"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_MODEL", "deepseek-v4-flash-20260423");
+            env::set_var("CODESMITH_MODEL", "deepseek-v4-flash-20260423");
         }
 
         let config = Config::load(None, None)?;
@@ -7246,7 +7111,7 @@ api_key = "old-openrouter-key"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -7310,7 +7175,7 @@ http_headers = { "X-Model-Provider-Id" = "tongyi" }
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -7321,7 +7186,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
         )?;
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
+            env::set_var("CODESMITH_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
         }
 
         let config = Config::load(None, None)?;
@@ -7332,6 +7197,9 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
                 .map(String::as_str),
             Some("from-env")
         );
+        unsafe {
+            env::remove_var("CODESMITH_HTTP_HEADERS");
+        }
         Ok(())
     }
 
@@ -7364,7 +7232,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -7410,7 +7278,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
             env::set_var("NVIDIA_API_KEY", "nim-env-key");
             env::set_var("NVIDIA_NIM_MODEL", "deepseek-ai/deepseek-v4-pro");
         }
@@ -7439,7 +7307,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
             env::set_var("NIM_BASE_URL", "https://short-nim.example/v1");
         }
 
@@ -7496,17 +7364,13 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
         let _guard = EnvGuard::new(&temp_root);
         let _knobs = KnobGuard::new(&[
             "CODESMITH_APPROVAL_POLICY",
-            "DEEPSEEK_APPROVAL_POLICY",
             "CODESMITH_SANDBOX_MODE",
-            "DEEPSEEK_SANDBOX_MODE",
             "CODESMITH_SKILLS_DIR",
         ]);
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_APPROVAL_POLICY", "never");
             env::set_var("CODESMITH_APPROVAL_POLICY", "on-request");
-            env::set_var("DEEPSEEK_SANDBOX_MODE", "danger-full-access");
             env::set_var("CODESMITH_SANDBOX_MODE", "workspace-write");
             env::set_var("CODESMITH_SKILLS_DIR", "/tmp/codesmith-skills");
         }
@@ -7515,34 +7379,6 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
         assert_eq!(config.approval_policy.as_deref(), Some("on-request"));
         assert_eq!(config.sandbox_mode.as_deref(), Some("workspace-write"));
         assert_eq!(config.skills_dir.as_deref(), Some("/tmp/codesmith-skills"));
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_deepseek_env_knobs_still_apply_in_tui_overrides() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-legacy-knobs-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-        let _knobs = KnobGuard::new(&["DEEPSEEK_YOLO", "DEEPSEEK_ALLOW_SHELL"]);
-
-        // Safety: test-only environment mutation guarded by a global mutex.
-        unsafe {
-            env::set_var("DEEPSEEK_YOLO", "true");
-            env::set_var("DEEPSEEK_ALLOW_SHELL", "1");
-        }
-
-        let config = Config::load(None, None)?;
-        assert_eq!(config.yolo, Some(true));
-        assert_eq!(config.allow_shell, Some(true));
         Ok(())
     }
 
@@ -7563,8 +7399,8 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
-            env::set_var("DEEPSEEK_BASE_URL", "https://forwarded-nim.example/v1");
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
+            env::set_var("CODESMITH_BASE_URL", "https://forwarded-nim.example/v1");
         }
 
         let config = Config::load(None, None)?;
@@ -7621,7 +7457,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "mimo");
+            env::set_var("CODESMITH_PROVIDER", "mimo");
             env::set_var("MIMO_API_KEY", "mimo-env-key");
             env::set_var("MIMO_BASE_URL", "https://mimo-gateway.example/v1");
             env::set_var("MIMO_MODEL", "mimo-v2.5");
@@ -7668,7 +7504,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
         let _guard = EnvGuard::new(&temp_root);
 
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "atlascloud");
+            env::set_var("CODESMITH_PROVIDER", "atlascloud");
             env::set_var("ATLASCLOUD_API_KEY", "atlascloud-env-key");
             env::set_var("ATLASCLOUD_BASE_URL", "https://api.atlascloud.ai/v1");
             env::set_var("ATLASCLOUD_MODEL", "deepseek-ai/deepseek-v4-flash");
@@ -7712,7 +7548,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
         let _guard = EnvGuard::new(&temp_root);
 
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "ark-wanjie");
+            env::set_var("CODESMITH_PROVIDER", "ark-wanjie");
             env::set_var("WANJIE_ARK_API_KEY", "wanjie-env-key");
             env::set_var("WANJIE_ARK_BASE_URL", "https://wanjie.example/api/v1");
             env::set_var("WANJIE_ARK_MODEL", "wanjie-model-id");
@@ -7741,7 +7577,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -7782,7 +7618,7 @@ model = "account-model-id"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "anthropic");
+            env::set_var("CODESMITH_PROVIDER", "anthropic");
             env::set_var("ANTHROPIC_API_KEY", "anthropic-env-key");
             env::set_var(
                 "ANTHROPIC_BASE_URL",
@@ -7815,7 +7651,7 @@ model = "account-model-id"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -7864,9 +7700,9 @@ model = "glm-5"
             let _guard = EnvGuard::new(&temp_root);
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
-                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("CODESMITH_PROVIDER", "openai");
                 env::set_var("OPENAI_API_KEY", "openai-env-key");
-                env::set_var("DEEPSEEK_MODEL", "MiniMax-M2.7");
+                env::set_var("CODESMITH_MODEL", "MiniMax-M2.7");
             }
 
             let config = Config::load(None, None)?;
@@ -7882,9 +7718,9 @@ model = "glm-5"
             let _guard = EnvGuard::new(&temp_root);
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
-                env::set_var("DEEPSEEK_PROVIDER", "novita");
+                env::set_var("CODESMITH_PROVIDER", "novita");
                 env::set_var("NOVITA_API_KEY", "novita-env-key");
-                env::set_var("DEEPSEEK_MODEL", "MiniMax-M2.7");
+                env::set_var("CODESMITH_MODEL", "MiniMax-M2.7");
             }
 
             let config = Config::load(None, None)?;
@@ -7914,7 +7750,7 @@ model = "glm-5"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "openai");
+            env::set_var("CODESMITH_PROVIDER", "openai");
             env::set_var("OPENAI_API_KEY", "openai-env-key");
             env::set_var("OPENAI_BASE_URL", "https://openai-compatible.example/v4");
             env::set_var("OPENAI_MODEL", "glm-5");
@@ -7955,7 +7791,7 @@ model = "glm-5"
             let _guard = EnvGuard::new(&temp_root);
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
-                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("CODESMITH_PROVIDER", "openai");
                 env::set_var("OPENAI_API_KEY", "openai-env-key");
                 env::set_var("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/v1");
             }
@@ -7980,7 +7816,7 @@ model = "glm-5"
             let _guard = EnvGuard::new(&temp_root);
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
-                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("CODESMITH_PROVIDER", "openai");
                 env::set_var("OPENAI_API_KEY", "openai-env-key");
             }
 
@@ -8013,10 +7849,10 @@ model = "glm-5"
             let _guard = EnvGuard::new(&temp_root);
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
-                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("CODESMITH_PROVIDER", "openai");
                 env::set_var("OPENAI_API_KEY", "openai-env-key");
                 env::set_var("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/v1");
-                env::set_var("DEEPSEEK_MODEL", "glm-4.6");
+                env::set_var("CODESMITH_MODEL", "glm-4.6");
             }
 
             let config = Config::load(None, None)?;
@@ -8031,7 +7867,7 @@ model = "glm-5"
             let _guard = EnvGuard::new(&temp_root);
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
-                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("CODESMITH_PROVIDER", "openai");
                 env::set_var("OPENAI_API_KEY", "openai-env-key");
                 env::set_var("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/v1");
             }
@@ -8060,10 +7896,10 @@ model = "glm-5"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "openai");
+            env::set_var("CODESMITH_PROVIDER", "openai");
             env::set_var("OPENAI_API_KEY", "forwarded-openai-key");
-            env::set_var("DEEPSEEK_BASE_URL", "https://forwarded-openai.example/v4");
-            env::set_var("DEEPSEEK_MODEL", "glm-5");
+            env::set_var("CODESMITH_BASE_URL", "https://forwarded-openai.example/v4");
+            env::set_var("CODESMITH_MODEL", "glm-5");
         }
 
         let config = Config::load(None, None)?;
@@ -8256,7 +8092,7 @@ model = "glm-5"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8292,8 +8128,8 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "ollama");
-            env::set_var("DEEPSEEK_BASE_URL", "http://ollama.remote:11434/v1");
+            env::set_var("CODESMITH_PROVIDER", "ollama");
+            env::set_var("CODESMITH_BASE_URL", "http://ollama.remote:11434/v1");
         }
         let config = Config::load(None, None)?;
         assert_eq!(config.api_provider(), ApiProvider::Ollama);
@@ -8301,8 +8137,8 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "vllm");
-            env::set_var("DEEPSEEK_BASE_URL", "http://vllm.remote:8000/v1");
+            env::set_var("CODESMITH_PROVIDER", "vllm");
+            env::set_var("CODESMITH_BASE_URL", "http://vllm.remote:8000/v1");
         }
         let config = Config::load(None, None)?;
         assert_eq!(config.api_provider(), ApiProvider::Vllm);
@@ -8327,9 +8163,9 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "vllm");
+            env::set_var("CODESMITH_PROVIDER", "vllm");
             env::set_var("VLLM_BASE_URL", "http://192.168.0.110:8000/v1");
-            env::set_var("DEEPSEEK_MODEL", "deepseek-v4-flash");
+            env::set_var("CODESMITH_MODEL", "deepseek-v4-flash");
         }
 
         let config = Config::load(None, None)?;
@@ -8356,7 +8192,7 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "ollama-local");
+            env::set_var("CODESMITH_PROVIDER", "ollama-local");
             env::set_var("OLLAMA_BASE_URL", "http://ollama.example/v1");
             env::set_var("OLLAMA_MODEL", "deepseek-coder-v2:16b");
         }
@@ -8385,7 +8221,7 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "openrouter");
+            env::set_var("CODESMITH_PROVIDER", "openrouter");
             env::set_var("OPENROUTER_API_KEY", "or-env-key");
         }
 
@@ -8412,7 +8248,7 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "novita");
+            env::set_var("CODESMITH_PROVIDER", "novita");
             env::set_var("NOVITA_API_KEY", "novita-env-key");
         }
 
@@ -8501,7 +8337,7 @@ model = "qwen2.5-coder:7b"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_PROVIDER", "openrouter");
+            env::set_var("CODESMITH_PROVIDER", "openrouter");
             env::set_var("OPENROUTER_BASE_URL", "https://or-mirror.example/v1");
         }
 
@@ -8526,7 +8362,7 @@ model = "qwen2.5-coder:7b"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8560,7 +8396,7 @@ base_url = "https://or-table.example/v1"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8595,7 +8431,7 @@ model = "deepseek-v4-flash"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8631,7 +8467,7 @@ model = "DeepSeek-V4-Pro"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8686,7 +8522,7 @@ api_key = "novita-table-key"
             serde_json::to_string(&credential)?,
         )?;
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8722,7 +8558,7 @@ api_key = "stale-api-key"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8761,7 +8597,7 @@ base_url = "https://api.kimi.com/coding/v1"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8805,7 +8641,7 @@ api_key = "kimi-code-env-key"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8818,7 +8654,7 @@ base_url = "https://api.kimi.com/coding/v1"
 "#,
         )?;
         // Safety: test-only env mutation guarded by lock_test_env().
-        unsafe { env::set_var("DEEPSEEK_PROVIDER", "moonshot") };
+        unsafe { env::set_var("CODESMITH_PROVIDER", "moonshot") };
 
         let config = Config::load(None, None)?;
         assert_eq!(config.api_provider(), ApiProvider::Moonshot);
@@ -8847,7 +8683,7 @@ base_url = "https://api.kimi.com/coding/v1"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -8866,38 +8702,6 @@ base_url = "https://api.kimi.com/coding/v1"
         assert_eq!(config.api_provider(), ApiProvider::Moonshot);
         assert_eq!(config.deepseek_base_url(), DEFAULT_KIMI_CODE_BASE_URL);
         assert_eq!(config.default_model(), DEFAULT_KIMI_CODE_MODEL);
-        Ok(())
-    }
-
-    /// `CODESMITH_PROVIDER` wins when both it and the legacy
-    /// `DEEPSEEK_PROVIDER` are set, so a user adding the new alias to their
-    /// shell isn't surprised by a stale legacy export.
-    #[test]
-    fn codesmith_provider_env_takes_precedence_over_deepseek_provider() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-cw-vs-ds-provider-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-
-        let config_path = temp_root.join(".deepseek").join("config.toml");
-        ensure_parent_dir(&config_path)?;
-        fs::write(&config_path, "provider = \"deepseek\"\n")?;
-        // Safety: test-only env mutation guarded by lock_test_env().
-        unsafe {
-            env::set_var("CODESMITH_PROVIDER", "moonshot");
-            env::set_var("DEEPSEEK_PROVIDER", "openrouter");
-        }
-
-        let config = Config::load(None, None)?;
-        assert_eq!(config.api_provider(), ApiProvider::Moonshot);
         Ok(())
     }
 
@@ -8921,7 +8725,7 @@ base_url = "https://api.kimi.com/coding/v1"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -9196,7 +9000,7 @@ api_key = "moonshot-platform-key"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -9235,7 +9039,7 @@ model = "deepseek-v4-pro"
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -9463,7 +9267,7 @@ model = "deepseek-ai/deepseek-v4-pro"
         let _guard = EnvGuard::new(&temp_root);
 
         // Default DeepSeek (text-only matrix) reports false.
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
@@ -9746,11 +9550,11 @@ vision = true
     /// them on drop. Callers must hold `lock_test_env()` for the guard lifetime.
     fn clear_memory_env() -> [EnvVarGuard; 5] {
         [
-            EnvVarGuard::remove("DEEPSEEK_DISABLE_AUTO_MEMORY"),
-            EnvVarGuard::remove("DEEPSEEK_SIMPLE"),
+            EnvVarGuard::remove("CODESMITH_DISABLE_AUTO_MEMORY"),
             EnvVarGuard::remove("CODESMITH_SIMPLE"),
-            EnvVarGuard::remove("DEEPSEEK_REMOTE"),
-            EnvVarGuard::remove("DEEPSEEK_REMOTE_MEMORY_DIR"),
+            EnvVarGuard::remove("CODESMITH_SIMPLE"),
+            EnvVarGuard::remove("CODESMITH_REMOTE"),
+            EnvVarGuard::remove("CODESMITH_REMOTE_MEMORY_DIR"),
         ]
     }
 
@@ -9765,7 +9569,7 @@ vision = true
     fn memory_enabled_disable_env_closes() {
         let _guard = lock_test_env();
         let _env = clear_memory_env();
-        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "1");
+        let _d = EnvVarGuard::set("CODESMITH_DISABLE_AUTO_MEMORY", "1");
         assert!(!Config::default().memory_enabled());
     }
 
@@ -9773,7 +9577,7 @@ vision = true
     fn memory_enabled_disable_env_falsy_opens() {
         let _guard = lock_test_env();
         let _env = clear_memory_env();
-        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "false");
+        let _d = EnvVarGuard::set("CODESMITH_DISABLE_AUTO_MEMORY", "false");
         assert!(Config::default().memory_enabled());
     }
 
@@ -9781,7 +9585,7 @@ vision = true
     fn memory_enabled_bare_mode_closes() {
         let _guard = lock_test_env();
         let _env = clear_memory_env();
-        let _s = EnvVarGuard::set("DEEPSEEK_SIMPLE", "true");
+        let _s = EnvVarGuard::set("CODESMITH_SIMPLE", "true");
         assert!(!Config::default().memory_enabled());
     }
 
@@ -9797,8 +9601,8 @@ vision = true
     fn memory_enabled_remote_without_dir_closes() {
         let _guard = lock_test_env();
         let _env = clear_memory_env();
-        let _r = EnvVarGuard::set("DEEPSEEK_REMOTE", "true");
-        let _dir = EnvVarGuard::remove("DEEPSEEK_REMOTE_MEMORY_DIR");
+        let _r = EnvVarGuard::set("CODESMITH_REMOTE", "true");
+        let _dir = EnvVarGuard::remove("CODESMITH_REMOTE_MEMORY_DIR");
         assert!(!Config::default().memory_enabled());
     }
 
@@ -9806,8 +9610,8 @@ vision = true
     fn memory_enabled_remote_with_dir_stays_open() {
         let _guard = lock_test_env();
         let _env = clear_memory_env();
-        let _r = EnvVarGuard::set("DEEPSEEK_REMOTE", "true");
-        let _dir = EnvVarGuard::set("DEEPSEEK_REMOTE_MEMORY_DIR", "/tmp/mem");
+        let _r = EnvVarGuard::set("CODESMITH_REMOTE", "true");
+        let _dir = EnvVarGuard::set("CODESMITH_REMOTE_MEMORY_DIR", "/tmp/mem");
         assert!(Config::default().memory_enabled());
     }
 
@@ -9838,7 +9642,7 @@ vision = true
     fn memory_enabled_disable_env_beats_explicit_enable() {
         let _guard = lock_test_env();
         let _env = clear_memory_env();
-        let _d = EnvVarGuard::set("DEEPSEEK_DISABLE_AUTO_MEMORY", "1");
+        let _d = EnvVarGuard::set("CODESMITH_DISABLE_AUTO_MEMORY", "1");
         let on = Config {
             memory: Some(MemoryConfig {
                 enabled: Some(true),
@@ -9854,7 +9658,7 @@ vision = true
     fn memory_enabled_bare_beats_explicit_enable() {
         let _guard = lock_test_env();
         let _env = clear_memory_env();
-        let _s = EnvVarGuard::set("DEEPSEEK_SIMPLE", "true");
+        let _s = EnvVarGuard::set("CODESMITH_SIMPLE", "true");
         let on = Config {
             memory: Some(MemoryConfig {
                 enabled: Some(true),

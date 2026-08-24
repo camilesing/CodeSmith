@@ -226,10 +226,8 @@ impl RedactedAnalyticsMetadata {
         let path_re = PATH_RE.get_or_init(|| {
             // unix absolute, home-relative, and windows drive paths; stop at
             // whitespace, quotes, or angle brackets.
-            regex::Regex::new(
-                r#"(?:/[^\s"'<>`]+)|(?:~[^\s"'<>`]+)|(?:[A-Za-z]:\\[^\s"'<>`]+)"#,
-            )
-            .expect("path regex is a compile-time constant")
+            regex::Regex::new(r#"(?:/[^\s"'<>`]+)|(?:~[^\s"'<>`]+)|(?:[A-Za-z]:\\[^\s"'<>`]+)"#)
+                .expect("path regex is a compile-time constant")
         });
         let quote_re = QUOTE_RE.get_or_init(|| {
             // any double/single/backtick quoted span (may span newlines,
@@ -286,10 +284,8 @@ mod tests {
     use serde_json::json;
 
     fn tmp_sink_path() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "codesmith-telemetry-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("codesmith-telemetry-test-{}", uuid::Uuid::new_v4()));
         dir.join("events.jsonl")
     }
 
@@ -408,7 +404,10 @@ mod tests {
         assert!(!s.contains("unexpected token"), "quoted span leaked: {s}");
         assert!(!s.contains("parser"), "backtick span leaked: {s}");
         assert!(s.contains("<path>"), "expected <path> placeholder: {s}");
-        assert!(s.contains("<redacted>"), "expected <redacted> placeholder: {s}");
+        assert!(
+            s.contains("<redacted>"),
+            "expected <redacted> placeholder: {s}"
+        );
 
         // Truncation cap (redact caps at MAX_LEN chars + ellipsis).
         let long = "a".repeat(600);

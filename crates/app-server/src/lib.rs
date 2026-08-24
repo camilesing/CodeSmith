@@ -226,7 +226,7 @@ async fn healthz() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "protocol": "v2",
-        "service": "deepseek-app-server"
+        "service": "codesmith-app-server"
     }))
 }
 
@@ -326,7 +326,7 @@ fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Resu
     let hook_log_path = config_path
         .as_ref()
         .and_then(|p| p.parent().map(|parent| parent.join("events.jsonl")))
-        .unwrap_or_else(|| PathBuf::from(".deepseek/events.jsonl"));
+        .unwrap_or_else(|| PathBuf::from(".codesmith/events.jsonl"));
     hooks.add_sink(Arc::new(JsonlHookSink::new(hook_log_path)));
 
     if let Some(socket_path) = config
@@ -543,7 +543,7 @@ async fn dispatch_stdio_request(
         "healthz" | "app/healthz" => StdioDispatchResult {
             result: json!({
                 "status": "ok",
-                "service": "deepseek-app-server",
+                "service": "codesmith-app-server",
                 "transport": "stdio"
             }),
             should_exit: false,
@@ -959,7 +959,7 @@ mod tests {
     fn app_with_config(auth_token: Option<&str>) -> (Router, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("config.toml");
-        fs::write(&config_path, "api_key = \"sk-deepseek-secret\"\n").expect("write config");
+        fs::write(&config_path, "api_key = \"sk-codesmith-test-secret\"\n").expect("write config");
         let state = build_state(
             Some(config_path),
             auth_token.map(std::string::ToString::to_string),
@@ -1021,7 +1021,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body_json(response).await;
-        assert_eq!(body["data"]["value"], "sk-d***cret");
+        assert_eq!(body["data"]["value"], "sk-c***cret");
     }
 
     #[tokio::test]
@@ -1070,7 +1070,7 @@ mod tests {
         let state = build_state(None, None).expect("state");
         {
             let mut cfg = state.config.write().await;
-            cfg.api_key = Some("sk-deepseek-secret".to_string());
+            cfg.api_key = Some("sk-codesmith-test-secret".to_string());
         }
 
         let response = process_app_request(
@@ -1082,7 +1082,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.data["value"], "sk-deepseek-secret");
+        assert_eq!(response.data["value"], "sk-codesmith-test-secret");
     }
 
     // ── resolve_auth_token ─────────────────────────────────────────────

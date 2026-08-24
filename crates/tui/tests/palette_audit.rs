@@ -1,8 +1,8 @@
 //! Palette audit tests to prevent color drift.
 //!
 //! These tests ensure that deprecated colors are not used directly in
-//! user-visible code. Backward-compatible DeepSeek aliases should point
-//! at the current CodeSmith semantic tokens instead of stale brand RGBs.
+//! user-visible code. The CodeSmith brand aliases should point
+//! at the current semantic tokens instead of stale brand RGBs.
 
 use ratatui::style::Color;
 
@@ -65,7 +65,7 @@ fn assert_min_contrast(label: &str, foreground: Color, background: Color, min_ra
     );
 }
 
-// NOTE: The deprecated color audit (DEEPSEEK_AQUA) was removed because
+// NOTE: A deprecated color audit (a legacy AQUA token) was removed because
 // the deprecated constant no longer exists in the palette.
 
 #[test]
@@ -81,7 +81,7 @@ fn verify_status_success_uses_success_token() {
     );
     assert_ne!(
         palette::STATUS_SUCCESS,
-        palette::DEEPSEEK_BLUE,
+        palette::CODESMITH_BLUE,
         "STATUS_SUCCESS should not regress to deprecated blue"
     );
 }
@@ -93,11 +93,11 @@ fn verify_brand_aliases_follow_whale_tokens() {
     assert_eq!(palette::WHALE_ERROR_RGB, (255, 92, 122));
 
     assert_eq!(
-        palette::DEEPSEEK_BLUE_RGB,
+        palette::CODESMITH_BLUE_RGB,
         palette::WHALE_ACCENT_PRIMARY_RGB
     );
-    assert_eq!(palette::DEEPSEEK_SKY_RGB, palette::WHALE_INFO_RGB);
-    assert_eq!(palette::DEEPSEEK_RED_RGB, palette::WHALE_ERROR_RGB);
+    assert_eq!(palette::CODESMITH_SKY_RGB, palette::WHALE_INFO_RGB);
+    assert_eq!(palette::CODESMITH_RED_RGB, palette::WHALE_ERROR_RGB);
 }
 
 #[test]
@@ -105,33 +105,33 @@ fn contrast_guardrails_for_key_ui_pairs() {
     let min_readable = 4.5;
 
     assert_min_contrast(
-        "TEXT_BODY on DEEPSEEK_INK",
+        "TEXT_BODY on CODESMITH_INK",
         palette::TEXT_BODY,
-        palette::DEEPSEEK_INK,
+        palette::CODESMITH_INK,
         min_readable,
     );
     assert_min_contrast(
-        "TEXT_SECONDARY on DEEPSEEK_INK",
+        "TEXT_SECONDARY on CODESMITH_INK",
         palette::TEXT_SECONDARY,
-        palette::DEEPSEEK_INK,
+        palette::CODESMITH_INK,
         min_readable,
     );
     assert_min_contrast(
-        "TEXT_HINT on DEEPSEEK_INK",
+        "TEXT_HINT on CODESMITH_INK",
         palette::TEXT_HINT,
-        palette::DEEPSEEK_INK,
+        palette::CODESMITH_INK,
         min_readable,
     );
     assert_min_contrast(
-        "STATUS_WARNING on DEEPSEEK_INK",
+        "STATUS_WARNING on CODESMITH_INK",
         palette::STATUS_WARNING,
-        palette::DEEPSEEK_INK,
+        palette::CODESMITH_INK,
         min_readable,
     );
     assert_min_contrast(
-        "STATUS_ERROR on DEEPSEEK_INK",
+        "STATUS_ERROR on CODESMITH_INK",
         palette::STATUS_ERROR,
-        palette::DEEPSEEK_INK,
+        palette::CODESMITH_INK,
         min_readable,
     );
 }

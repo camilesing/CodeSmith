@@ -8,10 +8,10 @@
 //! around so the engine compatibility dispatcher and historical sessions
 //! still resolve it cleanly.
 
+use async_trait::async_trait;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 #[allow(dead_code)]

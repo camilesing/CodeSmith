@@ -107,7 +107,9 @@ impl SourceSpec {
             ExtensionError::Install("missing source spec (expected `<kind>:<body>[@<ref>]`)".into())
         })?;
         let (kind_str, rest) = spec_token.split_once(':').ok_or_else(|| {
-            ExtensionError::Install(format!("source spec must be `<kind>:<body>`; got {spec_token:?}"))
+            ExtensionError::Install(format!(
+                "source spec must be `<kind>:<body>`; got {spec_token:?}"
+            ))
         })?;
         let kind = match kind_str {
             "git" => SourceKind::Git,
@@ -117,7 +119,7 @@ impl SourceSpec {
             other => {
                 return Err(ExtensionError::Install(format!(
                     "unknown source kind {other:?}; expected git|path|crate|prebuilt"
-                )))
+                )));
             }
         };
         // §F5e sub-choice B: kind-dependent @-split. git/crate split
@@ -230,8 +232,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), ExtensionError> {
     for entry in std::fs::read_dir(src)
         .map_err(|e| ExtensionError::Install(format!("read_dir {}: {e}", src.display())))?
     {
-        let entry =
-            entry.map_err(|e| ExtensionError::Install(format!("dir entry: {e}")))?;
+        let entry = entry.map_err(|e| ExtensionError::Install(format!("dir entry: {e}")))?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
         if from.is_dir() {
@@ -387,28 +388,27 @@ impl ExtensionSource for CratesIoSource {
                 .iter()
                 .find(|e| e.vers == *v && !e.yanked)
                 .ok_or_else(|| {
-                    ExtensionError::Install(format!("version {v} of {} not found or yanked", self.name))
+                    ExtensionError::Install(format!(
+                        "version {v} of {} not found or yanked",
+                        self.name
+                    ))
                 })?,
-            None => entries
-                .iter()
-                .rev()
-                .find(|e| !e.yanked)
-                .ok_or_else(|| {
-                    ExtensionError::Install(format!("no non-yanked version for {}", self.name))
-                })?,
+            None => entries.iter().rev().find(|e| !e.yanked).ok_or_else(|| {
+                ExtensionError::Install(format!("no non-yanked version for {}", self.name))
+            })?,
         }
         .clone();
         // 4. download .crate
-        let crate_file =
-            dest.join(format!("{}-{}.crate", self.name, entry.vers));
+        let crate_file = dest.join(format!("{}-{}.crate", self.name, entry.vers));
         let crate_url = format!(
             "https://static.crates.io/crates/{}/{}-{}.crate",
             self.name, self.name, entry.vers
         );
         self.http.fetch_to(&crate_url, &crate_file)?;
         // 5. sha256 verify (registry cksum is mandatory; free integrity)
-        let bytes = std::fs::read(&crate_file)
-            .map_err(|e| ExtensionError::Install(format!("read crate {}: {e}", crate_file.display())))?;
+        let bytes = std::fs::read(&crate_file).map_err(|e| {
+            ExtensionError::Install(format!("read crate {}: {e}", crate_file.display()))
+        })?;
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let actual = format!("{:x}", hasher.finalize());
@@ -512,8 +512,9 @@ impl ExtensionSource for PrebuiltDylibSource {
         // 3. optional checksum verify (warn-absent is tui's job; source errors
         //    only on supplied+mismatch)
         if let Some(expected) = &self.checksum {
-            let bytes = std::fs::read(&dest_file)
-                .map_err(|e| ExtensionError::Install(format!("read dylib {}: {e}", dest_file.display())))?;
+            let bytes = std::fs::read(&dest_file).map_err(|e| {
+                ExtensionError::Install(format!("read dylib {}: {e}", dest_file.display()))
+            })?;
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
             let actual = format!("{:x}", hasher.finalize());
@@ -566,8 +567,9 @@ impl ExtensionPlacer for Placer {
         std::fs::create_dir_all(&dir)
             .map_err(|e| ExtensionError::Install(format!("mkdir {}: {e}", dir.display())))?;
         let dest = dir.join(crate::discovery::default_dylib_filename(&self.id));
-        std::fs::copy(artifact, &dest)
-            .map_err(|e| ExtensionError::Install(format!("copy dylib to {}: {e}", dest.display())))?;
+        std::fs::copy(artifact, &dest).map_err(|e| {
+            ExtensionError::Install(format!("copy dylib to {}: {e}", dest.display()))
+        })?;
         Ok(dest)
     }
 }
@@ -682,20 +684,18 @@ impl Default for FakeHttpFetcher {
 #[cfg(test)]
 impl HttpFetcher for FakeHttpFetcher {
     fn fetch_to(&self, url: &str, dest: &Path) -> Result<(), ExtensionError> {
-        let body = self
-            .responses
-            .get(url)
-            .ok_or_else(|| ExtensionError::Install(format!("FakeHttp: no canned response for {url}")))?;
+        let body = self.responses.get(url).ok_or_else(|| {
+            ExtensionError::Install(format!("FakeHttp: no canned response for {url}"))
+        })?;
         std::fs::write(dest, body)
             .map_err(|e| ExtensionError::Install(format!("FakeHttp write {url}: {e}")))?;
         Ok(())
     }
 
     fn fetch_text(&self, url: &str) -> Result<String, ExtensionError> {
-        let body = self
-            .responses
-            .get(url)
-            .ok_or_else(|| ExtensionError::Install(format!("FakeHttp: no canned response for {url}")))?;
+        let body = self.responses.get(url).ok_or_else(|| {
+            ExtensionError::Install(format!("FakeHttp: no canned response for {url}"))
+        })?;
         Ok(String::from_utf8_lossy(body).into_owned())
     }
 }
@@ -793,7 +793,10 @@ mod source_spec_tests {
         let r = SourceSpec::parse(
             "prebuilt:x --checksum D1BB2D9926B9BD18E51FC8EDD663E311FF3B1FB96C9D4689854F8686F7C6C216",
         );
-        assert!(matches!(r, Err(ExtensionError::Install(_))), "uppercase rejected: {r:?}");
+        assert!(
+            matches!(r, Err(ExtensionError::Install(_))),
+            "uppercase rejected: {r:?}"
+        );
     }
 
     #[test]
@@ -885,7 +888,11 @@ mod source_impl_tests {
         let art = s.fetch(dst.path()).unwrap();
         assert!(dst.path().join("Cargo.toml").exists(), "Cargo.toml copied");
         assert!(dst.path().join("src/lib.rs").exists(), "src/lib.rs copied");
-        assert!(art.provenance.starts_with("path:"), "provenance: {}", art.provenance);
+        assert!(
+            art.provenance.starts_with("path:"),
+            "provenance: {}",
+            art.provenance
+        );
         assert_eq!(art.path, dst.path());
     }
 
@@ -906,7 +913,10 @@ mod source_impl_tests {
         let s = LocalPathSource::new(src.path().to_path_buf());
         s.fetch(dst.path()).unwrap();
         assert!(dst.path().join("a/b/c.txt").is_file());
-        assert_eq!(std::fs::read(dst.path().join("a/b/c.txt")).unwrap(), b"deep");
+        assert_eq!(
+            std::fs::read(dst.path().join("a/b/c.txt")).unwrap(),
+            b"deep"
+        );
     }
 }
 
@@ -980,10 +990,10 @@ mod placer_tests {
         std::fs::write(&artifact, b"binary").unwrap();
         let placer = Placer::new("my-ext", root.path().to_path_buf());
         let dest = placer.place(&artifact).unwrap();
-        let expected =
-            root.path()
-                .join("my-ext")
-                .join(crate::discovery::default_dylib_filename("my-ext"));
+        let expected = root
+            .path()
+            .join("my-ext")
+            .join(crate::discovery::default_dylib_filename("my-ext"));
         assert_eq!(dest, expected, "placed at default filename");
         assert!(dest.is_file(), "placed file exists");
         assert_eq!(std::fs::read(&dest).unwrap(), b"binary", "content copied");
@@ -1089,7 +1099,11 @@ mod crates_io_source_tests {
     /// `<name>-<vers>/Cargo.toml` then `tar -czf`. Returns `(bytes, sha256_hex)`.
     /// Returns `None` (skips the test) if `tar` not on PATH.
     fn make_crate_fixture(name: &str, vers: &str) -> Option<(Vec<u8>, String)> {
-        if std::process::Command::new("tar").arg("--version").output().is_err() {
+        if std::process::Command::new("tar")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             eprintln!("tar not on PATH; skipping");
             return None;
         }
@@ -1110,7 +1124,11 @@ mod crates_io_source_tests {
             .arg(format!("{name}-{vers}"))
             .output()
             .ok()?;
-        assert!(out.status.success(), "tar: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "tar: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let bytes = std::fs::read(&crate_file).ok()?;
         let mut h = sha2::Sha256::new();
         sha2::Digest::update(&mut h, &bytes);
@@ -1208,7 +1226,9 @@ mod crates_io_source_tests {
             .with(crate_url010.as_str(), bytes010);
         let src = CratesIoSource::new(name.to_string(), None, Arc::new(http));
         let dest = tempfile::tempdir().unwrap();
-        let art = src.fetch(dest.path()).expect("fetch picks 0.1.0 (non-yanked)");
+        let art = src
+            .fetch(dest.path())
+            .expect("fetch picks 0.1.0 (non-yanked)");
         assert!(art.provenance.ends_with("@0.1.0"));
     }
 
@@ -1248,14 +1268,13 @@ mod prebuilt_source_tests {
 
     #[test]
     fn prebuilt_refuses_http_url() {
-        let src = PrebuiltDylibSource::new(
-            "http://x/y.dylib",
-            None,
-            Arc::new(FakeHttpFetcher::new()),
-        );
+        let src =
+            PrebuiltDylibSource::new("http://x/y.dylib", None, Arc::new(FakeHttpFetcher::new()));
         let dest = tempfile::tempdir().unwrap();
         let r = src.fetch(dest.path());
-        let Err(ExtensionError::Install(m)) = &r else { panic!("{r:?}") };
+        let Err(ExtensionError::Install(m)) = &r else {
+            panic!("{r:?}")
+        };
         assert!(m.contains("HTTPS"), "{m}");
     }
 

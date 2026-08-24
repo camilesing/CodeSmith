@@ -1,7 +1,7 @@
 //! `/memory` slash command — inspect and edit the user memory file.
 //!
 //! When the user-memory feature is opted-in (`[memory] enabled = true` in
-//! config or `DEEPSEEK_MEMORY=on` in the environment), `/memory` shows
+//! config or `CODESMITH_MEMORY=on` in the environment), `/memory` shows
 //! the current memory file path and contents inline. Subcommands let the
 //! user clear or open the file:
 //!
@@ -363,7 +363,7 @@ pub fn memory(app: &mut App, arg: Option<&str>) -> CommandResult {
 
     if !app.use_memory {
         return CommandResult::error(
-            "user memory is disabled. Enable with `[memory] enabled = true` in `~/.codesmith/config.toml` or `DEEPSEEK_MEMORY=on` in your environment, then restart the TUI. Agent memory can still be inspected with `/memory agent <type> [scope]`.",
+            "user memory is disabled. Enable with `[memory] enabled = true` in `~/.codesmith/config.toml` or `CODESMITH_MEMORY=on` in your environment, then restart the TUI. Agent memory can still be inspected with `/memory agent <type> [scope]`.",
         );
     }
 
@@ -452,7 +452,7 @@ mod tests {
         let result = memory(&mut app, None);
         let msg = result.message.expect("disabled memory should return text");
         assert!(msg.contains("user memory is disabled"));
-        assert!(msg.contains("DEEPSEEK_MEMORY=on"));
+        assert!(msg.contains("CODESMITH_MEMORY=on"));
         assert!(msg.contains("/memory agent <type>"));
     }
 

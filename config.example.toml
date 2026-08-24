@@ -90,7 +90,7 @@ check_for_updates = true
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────────
-# New installs write product state under ~/.codesmith/. Existing ~/.deepseek/
+# New installs write product state under ~/.codesmith/. Existing ~/.codesmith/
 # files are still read as compatibility fallbacks when the .codesmith file is
 # absent.
 skills_dir = "~/.codesmith/skills"
@@ -141,7 +141,7 @@ memory_path = "~/.codesmith/memory.md"
 # <user_memory> block, intercepts `# foo` typed in the composer to append
 # the line as a timestamped bullet, and registers a `remember` tool the
 # model can call to add durable notes itself. Opt out with
-# enabled = false or DEEPSEEK_DISABLE_AUTO_MEMORY=1 (bare/simple and
+# enabled = false or CODESMITH_DISABLE_AUTO_MEMORY=1 (bare/simple and
 # storage-less remote sessions also disable it automatically).
 # ─────────────────────────────────────────────────────────────────────────────────
 [memory]
@@ -246,9 +246,9 @@ max_subagents = 10 # optional (1-20)
 # worker = "deepseek-v4-pro"
 # explore = "deepseek-v4-flash"
 
-# Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):
-# managed_config_path = "/etc/deepseek/managed_config.toml"
-# requirements_path = "/etc/deepseek/requirements.toml"
+# Optional managed policy paths (defaults to /etc/codesmith/*.toml on unix):
+# managed_config_path = "/etc/codesmith/managed_config.toml"
+# requirements_path = "/etc/codesmith/requirements.toml"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Structured sandbox controls ([sandbox] + [sandbox.filesystem] / [sandbox.network])
@@ -291,8 +291,7 @@ max_subagents = 10 # optional (1-20)
 # `--provider wanjie-ark` / `/provider volcengine` / `/provider fireworks` /
 # `--provider siliconflow` / `/provider moonshot`
 # switches between them without having to re-enter keys. Env vars override anything set here:
-#   DeepSeek: CODESMITH_API_KEY, CODESMITH_BASE_URL, CODESMITH_MODEL
-#             (legacy DEEPSEEK_* aliases also work)
+#   DeepSeek: DEEPSEEK_API_KEY, CODESMITH_BASE_URL, CODESMITH_MODEL
 #   NIM:      NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY), NIM_BASE_URL
 #             (or NVIDIA_NIM_BASE_URL / NVIDIA_BASE_URL), NVIDIA_NIM_MODEL
 #   OpenAI-compatible: OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
@@ -558,7 +557,7 @@ max_subagents = 10 # optional (1-20)
 # be asked once and can persist) before running it.
 #
 # [skills]
-# registry_url = "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json"
+# registry_url = "https://raw.githubusercontent.com/Hmbown/codesmith-skills/main/index.json"
 # max_install_size_bytes = 5_242_880
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -630,7 +629,7 @@ exec_policy = true
 # client (e.g. main = anthropic, utility = deepseek) and then needs its own
 # api_key — one vendor's key is never sent to another.
 # The model id can also be set via CODESMITH_UTILITY_MODEL (legacy alias:
-# DEEPSEEK_UTILITY_MODEL).
+# CODESMITH_UTILITY_MODEL).
 #
 # [utility_model]
 # model = "deepseek-v4-flash"        # Required: enables the utility model
@@ -871,7 +870,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # # condition = { type = "tool_category", category = "shell" }
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Runtime API (`deepseek serve --http`) (#561)
+# Runtime API (`codesmith serve --http`) (#561)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Tuning knobs for the local HTTP/SSE daemon. The server binds to 127.0.0.1
 # by default and is intended for local UIs (whalescale-desktop, dashboards,

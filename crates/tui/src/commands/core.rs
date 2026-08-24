@@ -409,11 +409,11 @@ pub fn translate(app: &mut App) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codesmith_agent_runtime::prompt_inspect::PromptInspection;
     use crate::config::Config;
     use crate::models::Message;
     use crate::tui::app::{App, AppMode, TuiOptions, TurnCacheRecord};
     use crate::tui::history::HistoryCell;
+    use codesmith_agent_runtime::prompt_inspect::PromptInspection;
     use std::path::PathBuf;
     use std::time::Instant;
     use tempfile::tempdir;

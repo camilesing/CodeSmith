@@ -51,8 +51,6 @@
         node scripts/release/npm-wrapper-smoke.js
         ./target/release/codesmith --version
         ./target/release/codesmith-tui --version
-        ./target/release/deepseek --version
-        ./target/release/deepseek-tui --version
 
 .linux_release_preflight: &linux_release_preflight
   name: linux release preflight
@@ -93,8 +91,6 @@
         node scripts/release/npm-wrapper-smoke.js
         ./target/release/codesmith --version
         ./target/release/codesmith-tui --version
-        ./target/release/deepseek --version
-        ./target/release/deepseek-tui --version
 
 main:
   push:
@@ -128,13 +124,9 @@ $:
             mkdir -p target/cnb-release
             cp target/release/codesmith target/cnb-release/codesmith-linux-x64
             cp target/release/codesmith-tui target/cnb-release/codesmith-tui-linux-x64
-            cp target/release/deepseek target/cnb-release/deepseek-linux-x64
-            cp target/release/deepseek-tui target/cnb-release/deepseek-tui-linux-x64
             strip \
               target/cnb-release/codesmith-linux-x64 \
               target/cnb-release/codesmith-tui-linux-x64 \
-              target/cnb-release/deepseek-linux-x64 \
-              target/cnb-release/deepseek-tui-linux-x64 \
               || true
 
             (
@@ -142,10 +134,7 @@ $:
               sha256sum \
                 codesmith-linux-x64 \
                 codesmith-tui-linux-x64 \
-                deepseek-linux-x64 \
-                deepseek-tui-linux-x64 \
                 > codesmith-artifacts-sha256.txt
-              cp codesmith-artifacts-sha256.txt deepseek-artifacts-sha256.txt
             )
 
             tag_name="${CNB_BRANCH:-}"
@@ -169,9 +158,6 @@ $:
               echo "- codesmith-linux-x64"
               echo "- codesmith-tui-linux-x64"
               echo "- codesmith-artifacts-sha256.txt"
-              echo "- deepseek-linux-x64"
-              echo "- deepseek-tui-linux-x64"
-              echo "- deepseek-artifacts-sha256.txt"
             } > target/cnb-release/CNB_RELEASE.md
 
         - name: create cnb release
@@ -187,6 +173,3 @@ $:
               - target/cnb-release/codesmith-linux-x64
               - target/cnb-release/codesmith-tui-linux-x64
               - target/cnb-release/codesmith-artifacts-sha256.txt
-              - target/cnb-release/deepseek-linux-x64
-              - target/cnb-release/deepseek-tui-linux-x64
-              - target/cnb-release/deepseek-artifacts-sha256.txt

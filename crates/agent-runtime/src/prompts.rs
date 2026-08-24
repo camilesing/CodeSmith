@@ -126,8 +126,6 @@ impl Default for PromptSessionContext<'_> {
 /// it back on startup and prepends it to the system prompt so a fresh agent
 /// doesn't have to re-discover open blockers from scratch.
 pub const HANDOFF_RELATIVE_PATH: &str = ".codesmith/handoff.md";
-/// Legacy handoff path for reading from existing installs.
-pub const LEGACY_HANDOFF_RELATIVE_PATH: &str = ".deepseek/handoff.md";
 
 /// Per-file size cap for `instructions = [...]` entries (#454). Mirrors
 /// the existing project-context cap in `project_context::load_context_file`
@@ -209,7 +207,7 @@ for the current turn."
 /// guess from the user's first message. `locale_tag` is resolved by
 /// the caller from `Settings` so this function stays I/O-free.
 pub fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
-    let deepseek_version = env!("CARGO_PKG_VERSION");
+    let codesmith_version = env!("CARGO_PKG_VERSION");
     let platform = std::env::consts::OS;
     let shell = crate::shell_dispatcher::global_dispatcher()
         .kind()
@@ -221,7 +219,7 @@ pub fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
         "## Environment\n\
          \n\
          - lang: {locale_tag}\n\
-         - deepseek_version: {deepseek_version}\n\
+         - codesmith_version: {codesmith_version}\n\
          - platform: {platform}\n\
          - shell: {shell}\n\
          - pwd: {pwd}"
@@ -279,12 +277,7 @@ pub fn render_instructions_block(sources: &[InstructionSource]) -> Option<String
 /// system-prompt block. Returns `None` when the file is absent or empty so
 /// callers can keep the default-uncluttered prompt for fresh workspaces.
 pub fn load_handoff_block(workspace: &Path) -> Option<String> {
-    let primary = workspace.join(HANDOFF_RELATIVE_PATH);
-    let path = if primary.exists() {
-        primary
-    } else {
-        workspace.join(LEGACY_HANDOFF_RELATIVE_PATH)
-    };
+    let path = workspace.join(HANDOFF_RELATIVE_PATH);
     let raw = std::fs::read_to_string(&path).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {

@@ -1,7 +1,7 @@
 //! Per-workspace trust list of external paths the agent may read/write
 //! without triggering a `PathEscape` error (#29).
 //!
-//! Storage: `~/.deepseek/workspace-trust.json`. The file is a JSON object
+//! Storage: `~/.codesmith/workspace-trust.json`. The file is a JSON object
 //! mapping each workspace's canonical path to a sorted list of canonical
 //! paths the user has explicitly trusted from that workspace. Trust granted
 //! in workspace A does not apply when running from workspace B.
@@ -186,13 +186,13 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Set up an isolated fake `~/.deepseek/workspace-trust.json` location.
+    /// Set up an isolated fake `~/.codesmith/workspace-trust.json` location.
     /// Returns the tmpdir (kept alive for the test) plus the explicit trust
     /// file path passed to the `*_at` helpers — avoids touching `$HOME` so
     /// tests run safely in parallel.
     fn isolated_trust_path() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("tempdir");
-        let trust_path = tmp.path().join(".deepseek").join("workspace-trust.json");
+        let trust_path = tmp.path().join(".codesmith").join("workspace-trust.json");
         (tmp, trust_path)
     }
 

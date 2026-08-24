@@ -149,7 +149,7 @@ backend = "none"
   them through its existing dependency.
 - TUI `Config` gains an `[index]` section: `merge_config` branch, env
   overrides (`CODESMITH_INDEX_ENABLED`, `CODESMITH_INDEX_SYMBOLS_BACKEND`,
-  with legacy `DEEPSEEK_*` aliases per the ef9d70a3 convention), and
+  via `codesmith_config::codesmith_env`), and
   `validate()` fast-fail for unknown backends (listing registered ids) and
   inconsistent semantic settings.
 

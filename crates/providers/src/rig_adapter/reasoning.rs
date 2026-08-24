@@ -223,24 +223,68 @@ mod tests {
     #[test]
     fn replay_truth_table() {
         // generic model + provider-rejects-field → strip
-        assert!(!should_replay_reasoning_content_for_provider("openai", "gpt-4o", Some("high")));
-        assert!(!should_replay_reasoning_content_for_provider("vllm", "qwen3-235b", Some("high")));
+        assert!(!should_replay_reasoning_content_for_provider(
+            "openai",
+            "gpt-4o",
+            Some("high")
+        ));
+        assert!(!should_replay_reasoning_content_for_provider(
+            "vllm",
+            "qwen3-235b",
+            Some("high")
+        ));
         // generic model + provider-accepts-field → still strip (model is not reasoning)
         assert!(!should_replay_reasoning_content_for_provider(
-            "openrouter", "qwen3-235b", Some("high"
-        )));
+            "openrouter",
+            "qwen3-235b",
+            Some("high")
+        ));
         // DeepSeek reasoning model on ANY provider → attach
-        assert!(should_replay_reasoning_content_for_provider("openrouter", "deepseek-chat", Some("high")));
-        assert!(should_replay_reasoning_content_for_provider("openai", "deepseek-r1", Some("medium")));
-        assert!(should_replay_reasoning_content_for_provider("deepseek", "deepseek-v4-pro", Some("high")));
+        assert!(should_replay_reasoning_content_for_provider(
+            "openrouter",
+            "deepseek-chat",
+            Some("high")
+        ));
+        assert!(should_replay_reasoning_content_for_provider(
+            "openai",
+            "deepseek-r1",
+            Some("medium")
+        ));
+        assert!(should_replay_reasoning_content_for_provider(
+            "deepseek",
+            "deepseek-v4-pro",
+            Some("high")
+        ));
         // effort off overrides everything
-        assert!(!should_replay_reasoning_content_for_provider("deepseek", "deepseek-chat", Some("off")));
-        assert!(!should_replay_reasoning_content_for_provider("deepseek", "deepseek-chat", Some("disabled")));
-        assert!(!should_replay_reasoning_content_for_provider("deepseek", "deepseek-chat", Some("none")));
-        assert!(!should_replay_reasoning_content_for_provider("deepseek", "deepseek-chat", Some("false")));
+        assert!(!should_replay_reasoning_content_for_provider(
+            "deepseek",
+            "deepseek-chat",
+            Some("off")
+        ));
+        assert!(!should_replay_reasoning_content_for_provider(
+            "deepseek",
+            "deepseek-chat",
+            Some("disabled")
+        ));
+        assert!(!should_replay_reasoning_content_for_provider(
+            "deepseek",
+            "deepseek-chat",
+            Some("none")
+        ));
+        assert!(!should_replay_reasoning_content_for_provider(
+            "deepseek",
+            "deepseek-chat",
+            Some("false")
+        ));
         // effort None → model-driven
-        assert!(should_replay_reasoning_content_for_provider("deepseek", "deepseek-chat", None));
-        assert!(!should_replay_reasoning_content_for_provider("openai", "gpt-4o", None));
+        assert!(should_replay_reasoning_content_for_provider(
+            "deepseek",
+            "deepseek-chat",
+            None
+        ));
+        assert!(!should_replay_reasoning_content_for_provider(
+            "openai", "gpt-4o", None
+        ));
     }
 
     // --- apply_reasoning_effort ---------------------------------------------
@@ -305,10 +349,16 @@ mod tests {
     #[test]
     fn vllm_uses_enable_thinking() {
         let m = params_for(Some("high"), "vllm");
-        assert_eq!(m["chat_template_kwargs"], json!({ "enable_thinking": true }));
+        assert_eq!(
+            m["chat_template_kwargs"],
+            json!({ "enable_thinking": true })
+        );
         assert_eq!(m["reasoning_effort"], json!("high"));
         let off = params_for(Some("off"), "vllm");
-        assert_eq!(off["chat_template_kwargs"], json!({ "enable_thinking": false }));
+        assert_eq!(
+            off["chat_template_kwargs"],
+            json!({ "enable_thinking": false })
+        );
         // max downgraded to high
         let max = params_for(Some("max"), "vllm");
         assert_eq!(max["reasoning_effort"], json!("high"));

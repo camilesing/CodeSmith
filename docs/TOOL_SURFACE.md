@@ -212,7 +212,7 @@ handles that `handle_read` can project with JSONPath.
 
 ### Session relay
 
-`/relay [focus]` asks the current agent to write `.deepseek/handoff.md` as a
+`/relay [focus]` asks the current agent to write `.codesmith/handoff.md` as a
 compact `# Session relay` artifact for the next thread. The filename remains
 for compatibility with existing prompt loading and older sessions; the visible
 mental model is relay / 接力.

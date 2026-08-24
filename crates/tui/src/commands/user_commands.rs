@@ -14,11 +14,9 @@
 //! Workspace-local directories shadow user-global by name:
 //!
 //! 1. `<workspace>/.codesmith/commands/` (project-local, highest)
-//! 2. `<workspace>/.deepseek/commands/`  (legacy project-local)
-//! 3. `<workspace>/.claude/commands/`    (Claude Code interop)
-//! 4. `<workspace>/.cursor/commands/`    (Cursor interop)
-//! 5. `~/.codesmith/commands/`           (user-global)
-//! 6. `~/.deepseek/commands/`            (legacy user-global)
+//! 2. `<workspace>/.claude/commands/`    (Claude Code interop)
+//! 3. `<workspace>/.cursor/commands/`    (Cursor interop)
+//! 4. `~/.codesmith/commands/`           (user-global)
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -33,22 +31,15 @@ fn global_commands_dir() -> PathBuf {
     home.join(".codesmith").join("commands")
 }
 
-fn legacy_global_commands_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".deepseek").join("commands")
-}
-
 /// Return all candidate commands directories in precedence order.
 fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(ws) = workspace {
         dirs.push(ws.join(".codesmith").join("commands"));
-        dirs.push(ws.join(".deepseek").join("commands"));
         dirs.push(ws.join(".claude").join("commands"));
         dirs.push(ws.join(".cursor").join("commands"));
     }
     dirs.push(global_commands_dir());
-    dirs.push(legacy_global_commands_dir());
     dirs
 }
 
@@ -430,7 +421,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().to_path_buf();
         write_command(
-            &ws.join(".deepseek").join("commands"),
+            &ws.join(".codesmith").join("commands"),
             "hello",
             "Hello, $ARGUMENTS!",
         );
@@ -473,7 +464,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path();
         write_command(
-            &ws.join(".deepseek").join("commands"),
+            &ws.join(".codesmith").join("commands"),
             "project-cmd",
             "body",
         );
@@ -492,7 +483,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().to_path_buf();
         write_command(
-            &ws.join(".deepseek").join("commands"),
+            &ws.join(".codesmith").join("commands"),
             "secure",
             "---\ndescription: Secure scan\nallowed-tools: Bash, Read\n---\nRun $ARGUMENTS",
         );
@@ -548,7 +539,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().to_path_buf();
         write_command(
-            &ws.join(".deepseek").join("commands"),
+            &ws.join(".codesmith").join("commands"),
             "secure",
             "---\nallowed-tools: Bash, Grep\n---\nrun tests",
         );
@@ -568,7 +559,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().to_path_buf();
         write_command(
-            &ws.join(".deepseek").join("commands"),
+            &ws.join(".codesmith").join("commands"),
             "locked",
             "---\nallowed-tools: \"\"\n---\nrun nothing",
         );
@@ -585,7 +576,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().to_path_buf();
         write_command(
-            &ws.join(".deepseek").join("commands"),
+            &ws.join(".codesmith").join("commands"),
             "quoted",
             "---\nallowed-tools: \"exec_shell\", 'read_file'\n---\nrun quoted tools",
         );
@@ -604,7 +595,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().to_path_buf();
-        let commands_dir = ws.join(".deepseek").join("commands");
+        let commands_dir = ws.join(".codesmith").join("commands");
         write_command(
             &commands_dir,
             "described",
@@ -637,7 +628,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().to_path_buf();
         write_command(
-            &ws.join(".deepseek").join("commands"),
+            &ws.join(".codesmith").join("commands"),
             "git-scan",
             "---\ndescription: Scan nested git repositories\nargument-hint: <root>\n---\nscan",
         );

@@ -7,8 +7,8 @@ mode, so the first version does not need a public webhook URL.
 Security model:
 
 - `codesmith serve --http` stays bound to `127.0.0.1`.
-- `/v1/*` runtime calls use `DEEPSEEK_RUNTIME_TOKEN`.
-- Feishu/Lark chats must be allowlisted unless `DEEPSEEK_ALLOW_UNLISTED=true`
+- `/v1/*` runtime calls use `CODESMITH_RUNTIME_TOKEN`.
+- Feishu/Lark chats must be allowlisted unless `CODESMITH_ALLOW_UNLISTED=true`
   is set for first pairing.
 - Direct messages are the intended MVP control surface. Group chat control is
   disabled unless `FEISHU_ALLOW_GROUPS=true`.
@@ -19,8 +19,8 @@ Security model:
 ```bash
 cd /opt/codesmith/bridge
 npm install --omit=dev
-cp .env.example /etc/deepseek/feishu-bridge.env
-sudoedit /etc/deepseek/feishu-bridge.env
+cp .env.example /etc/codesmith/feishu-bridge.env
+sudoedit /etc/codesmith/feishu-bridge.env
 node src/index.mjs
 ```
 
@@ -28,8 +28,8 @@ Validate the env files before starting the service:
 
 ```bash
 npm run validate:config -- \
-  --env /etc/deepseek/feishu-bridge.env \
-  --runtime-env /etc/deepseek/runtime.env \
+  --env /etc/codesmith/feishu-bridge.env \
+  --runtime-env /etc/codesmith/runtime.env \
   --workspace-root /opt/whalebro \
   --check-filesystem
 ```

@@ -960,7 +960,7 @@ fn redact_exported_text(text: &mut String) {
 
     // Normalise secrets directory paths.
     if let Some(home) = dirs::home_dir() {
-        for leaf in [".codesmith/secrets", ".deepseek/secrets"] {
+        for leaf in [".codesmith/secrets"] {
             let dir = home.join(leaf);
             let prefix = dir.to_string_lossy().to_string();
             result = result.replace(&prefix, "~/.codesmith/secrets");

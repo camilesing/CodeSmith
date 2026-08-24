@@ -11,14 +11,14 @@ Memory is **on by default** (mirrors Claude Code's auto-memory). When
 enabled, the memory file is loaded, `# ` quick-adds append to it, and
 the `remember` tool is surfaced to the model. Bare/simple sessions and
 storage-less remote sessions disable it automatically; opt out
-entirely with `enabled = false` or `DEEPSEEK_DISABLE_AUTO_MEMORY=1`.
+entirely with `enabled = false` or `CODESMITH_DISABLE_AUTO_MEMORY=1`.
 
 ## Enabling memory
 
 The env var equivalent toggles it too:
 
 ```bash
-export DEEPSEEK_MEMORY=on
+export CODESMITH_MEMORY=on
 ```
 
 Accepted truthy values are `1`, `on`, `true`, `yes`, `y`, and
@@ -34,9 +34,9 @@ enabled = true
 Restart the TUI after toggling. Disabling is the same in reverse.
 
 The memory file lives at `~/.codesmith/memory.md` by default; override
-with `memory_path` in `config.toml` or `DEEPSEEK_MEMORY_PATH` in
-the environment. `DEEPSEEK_MEMORY_PATH` wins over the config file when
-both are set. Existing `~/.deepseek/memory.md` files remain supported as a
+with `memory_path` in `config.toml` or `CODESMITH_MEMORY_PATH` in
+the environment. `CODESMITH_MEMORY_PATH` wins over the config file when
+both are set. Existing `~/.codesmith/memory.md` files remain supported as a
 legacy fallback when no `.codesmith` memory file exists.
 
 ## Quick examples
@@ -190,9 +190,9 @@ can tell which level a rule came from when two disagree.
 
 | Tier    | Source                                                                                              | Label     |
 |---------|-----------------------------------------------------------------------------------------------------|-----------|
-| Managed | `/etc/deepseek/CLAUDE.md`, then `/etc/codesmith/CLAUDE.md` (org policy)                             | `managed` |
-| User    | `~/.codesmith/{WHALE,AGENTS}.md`, then `.agents/`, then legacy `.deepseek/`                         | `user`    |
-| Project | First of `WHALE.md`, `AGENTS.md`, `.claude/instructions.md`, `CLAUDE.md`, `.codesmith/instructions.md`, `.deepseek/instructions.md` in `{cwd}`, then a parent-directory walk | `project` |
+| Managed | `/etc/codesmith/CLAUDE.md`, then `/etc/codesmith/CLAUDE.md` (org policy)                             | `managed` |
+| User    | `~/.codesmith/{WHALE,AGENTS}.md`, then `.agents/`, then legacy `.codesmith/`                         | `user`    |
+| Project | First of `WHALE.md`, `AGENTS.md`, `.claude/instructions.md`, `CLAUDE.md`, `.codesmith/instructions.md`, `.codesmith/instructions.md` in `{cwd}`, then a parent-directory walk | `project` |
 | Local   | `*.md` snippets in `.claude/rules/` and `.codesmith/rules/` (sorted)                                | `local`   |
 
 CodeSmith previously loaded only the Project and User tiers; the
@@ -284,7 +284,7 @@ loaded by `project_context` and live in the repo (or wherever you commit them).
 ```toml
 # ~/.codesmith/config.toml
 [memory]
-enabled = true                    # default true (on); or set DEEPSEEK_MEMORY=on
+enabled = true                    # default true (on); or set CODESMITH_MEMORY=on
 excludes = ["~/work/secret/CLAUDE.md"]  # skip these paths in the tier merge
 # Path is configured at the top-level (next to skills_dir, notes_path):
 memory_path = "~/.codesmith/memory.md"
@@ -292,8 +292,8 @@ memory_path = "~/.codesmith/memory.md"
 
 | Setting               | Default                       | Override                              |
 |-----------------------|-------------------------------|---------------------------------------|
-| Memory enabled        | `true`                        | `[memory] enabled = false` or `DEEPSEEK_DISABLE_AUTO_MEMORY=1` |
-| Memory file path      | `~/.codesmith/memory.md`       | `memory_path = "..."` or `DEEPSEEK_MEMORY_PATH=`  |
+| Memory enabled        | `true`                        | `[memory] enabled = false` or `CODESMITH_DISABLE_AUTO_MEMORY=1` |
+| Memory file path      | `~/.codesmith/memory.md`       | `memory_path = "..."` or `CODESMITH_MEMORY_PATH=`  |
 | Memory excludes       | (none)                        | `[memory] excludes = ["..."]` or `CODESMITH_MEMORY_EXCLUDES=` (colon-separated) |
 | Max file size         | 100 KiB                       | (none today; truncation marker shows the cut)     |
 

@@ -42,11 +42,11 @@ struct ScopedCapacityMemoryDir {
 
 impl ScopedCapacityMemoryDir {
     fn set(path: &Path) -> Self {
-        let previous = std::env::var_os("DEEPSEEK_CAPACITY_MEMORY_DIR");
+        let previous = std::env::var_os("CODESMITH_CAPACITY_MEMORY_DIR");
         // Safety: capacity-memory tests serialize access with CAPACITY_MEMORY_ENV_LOCK
         // and restore the original value in Drop.
         unsafe {
-            std::env::set_var("DEEPSEEK_CAPACITY_MEMORY_DIR", path);
+            std::env::set_var("CODESMITH_CAPACITY_MEMORY_DIR", path);
         }
         Self { previous }
     }
@@ -57,9 +57,9 @@ impl Drop for ScopedCapacityMemoryDir {
         // Safety: capacity-memory tests serialize access with CAPACITY_MEMORY_ENV_LOCK.
         unsafe {
             if let Some(previous) = self.previous.take() {
-                std::env::set_var("DEEPSEEK_CAPACITY_MEMORY_DIR", previous);
+                std::env::set_var("CODESMITH_CAPACITY_MEMORY_DIR", previous);
             } else {
-                std::env::remove_var("DEEPSEEK_CAPACITY_MEMORY_DIR");
+                std::env::remove_var("CODESMITH_CAPACITY_MEMORY_DIR");
             }
         }
     }
@@ -1941,29 +1941,11 @@ impl Drop for ScopedMaxOutputTokens {
     }
 }
 
-struct ScopedDeepSeekMaxOutputTokens {
-    _inner: ScopedMaxOutputTokens,
-}
-
-impl ScopedDeepSeekMaxOutputTokens {
-    fn set(value: &str) -> Self {
-        Self {
-            _inner: ScopedMaxOutputTokens::set("DEEPSEEK_MAX_OUTPUT_TOKENS", value),
-        }
-    }
-
-    fn unset() -> Self {
-        Self {
-            _inner: ScopedMaxOutputTokens::unset("DEEPSEEK_MAX_OUTPUT_TOKENS"),
-        }
-    }
-}
-
 #[test]
 fn effective_max_output_tokens_env_override_returns_positive_value() {
     let _lock = lock_test_env();
     let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
-    let _guard = ScopedDeepSeekMaxOutputTokens::set("16384");
+    let _guard = ScopedMaxOutputTokens::set("CODESMITH_MAX_OUTPUT_TOKENS", "16384");
 
     // Legacy override applies regardless of model — V4 hosted, V4 flash,
     // sub-500K self-hosted all return the env value verbatim.
@@ -1973,26 +1955,9 @@ fn effective_max_output_tokens_env_override_returns_positive_value() {
 }
 
 #[test]
-fn codesmith_max_output_tokens_takes_priority_over_legacy_override() {
-    let _lock = lock_test_env();
-    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::set("16384");
-    let _codesmith_guard = ScopedMaxOutputTokens::set("CODESMITH_MAX_OUTPUT_TOKENS", "32768");
-
-    assert_eq!(effective_max_output_tokens("deepseek-v4-pro"), 32_768);
-    assert_eq!(
-        effective_max_output_tokens_for_provider(
-            ApiProvider::Anthropic,
-            "claude-sonnet-4-20250514"
-        ),
-        32_768
-    );
-}
-
-#[test]
 fn effective_max_output_tokens_for_provider_uses_anthropic_cap() {
     let _lock = lock_test_env();
     let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
-    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::unset();
 
     assert_eq!(
         effective_max_output_tokens_for_provider(
@@ -2004,36 +1969,18 @@ fn effective_max_output_tokens_for_provider_uses_anthropic_cap() {
 }
 
 #[test]
-fn effective_max_output_tokens_legacy_env_override_still_works_for_provider_helper() {
-    let _lock = lock_test_env();
-    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
-    let _legacy_guard = ScopedDeepSeekMaxOutputTokens::set("12288");
-
-    assert_eq!(
-        effective_max_output_tokens_for_provider(
-            ApiProvider::Anthropic,
-            "claude-sonnet-4-20250514"
-        ),
-        12_288
-    );
-}
-
-#[test]
 fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
     let _lock = lock_test_env();
     let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
     // Establish the heuristic baseline with the env unset.
-    let baseline = {
-        let _guard = ScopedDeepSeekMaxOutputTokens::unset();
-        effective_max_output_tokens("deepseek-v4-pro")
-    };
+    let baseline = effective_max_output_tokens("deepseek-v4-pro");
     assert!(baseline > 0);
 
     // 0, non-numeric, and empty values must all fall through to the heuristic
     // rather than producing a zero/garbage cap that would silently break
     // request budgeting.
     for raw in ["0", "abc", "", "  ", "-1"] {
-        let _guard = ScopedDeepSeekMaxOutputTokens::set(raw);
+        let _guard = ScopedMaxOutputTokens::set("CODESMITH_MAX_OUTPUT_TOKENS", raw);
         assert_eq!(
             effective_max_output_tokens("deepseek-v4-pro"),
             baseline,

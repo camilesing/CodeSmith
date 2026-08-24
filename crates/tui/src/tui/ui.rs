@@ -4923,7 +4923,7 @@ async fn drain_web_config_events(
 
 /// Apply the choice made in the `/model` picker (#39): mutate App state so
 /// the next turn uses the new model/effort, persist the selection to
-/// `~/.deepseek/settings.toml` so it survives a restart, push the change to
+/// `~/.codesmith/settings.toml` so it survives a restart, push the change to
 /// the running engine via `Op::SetModel`/`Op::SetCompaction`, and surface
 /// a one-line status describing what changed.
 async fn apply_model_picker_choice(
@@ -7769,7 +7769,7 @@ fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
 
 pub(crate) fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
     match level {
-        StatusToastLevel::Info => palette::DEEPSEEK_SKY,
+        StatusToastLevel::Info => palette::CODESMITH_SKY,
         StatusToastLevel::Success => palette::STATUS_SUCCESS,
         StatusToastLevel::Warning => palette::STATUS_WARNING,
         StatusToastLevel::Error => palette::STATUS_ERROR,

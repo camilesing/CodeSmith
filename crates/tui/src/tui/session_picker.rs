@@ -27,7 +27,7 @@ fn modal_block(title: &str) -> Block<'static> {
         .title(Line::from(vec![Span::styled(
             title.to_string(),
             Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
+                .fg(palette::CODESMITH_BLUE)
                 .add_modifier(Modifier::BOLD),
         )]))
         .borders(Borders::ALL)
@@ -644,7 +644,7 @@ fn build_list_lines(
     } else if let Some(status) = status {
         lines.push(Line::from(Span::styled(
             truncate(status, width),
-            Style::default().fg(palette::DEEPSEEK_SKY),
+            Style::default().fg(palette::CODESMITH_SKY),
         )));
     }
 
@@ -668,7 +668,7 @@ fn build_list_lines(
         let style = if idx == selected {
             Style::default()
                 .fg(palette::SELECTION_TEXT)
-                .bg(palette::DEEPSEEK_BLUE)
+                .bg(palette::CODESMITH_BLUE)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(palette::TEXT_PRIMARY)
@@ -1110,7 +1110,7 @@ mod tests {
             .expect("selected row should have a span");
 
         assert_eq!(span.style.fg, Some(palette::SELECTION_TEXT));
-        assert_eq!(span.style.bg, Some(palette::DEEPSEEK_BLUE));
+        assert_eq!(span.style.bg, Some(palette::CODESMITH_BLUE));
         assert!(span.style.add_modifier.contains(Modifier::BOLD));
     }
 

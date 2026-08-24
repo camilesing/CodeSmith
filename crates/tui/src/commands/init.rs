@@ -12,8 +12,8 @@ use super::CommandResult;
 pub fn init(app: &mut App) -> CommandResult {
     let workspace = &app.workspace;
 
-    // Ensure .deepseek/ is gitignored if we're inside a git repo.
-    ensure_deepseek_gitignored(workspace);
+    // Ensure .codesmith/ is gitignored if we're inside a git repo.
+    ensure_codesmith_gitignored(workspace);
 
     // Check if AGENTS.md already exists — update it in place rather than refusing.
     let agents_path = workspace.join("AGENTS.md");
@@ -36,16 +36,16 @@ pub fn init(app: &mut App) -> CommandResult {
 }
 
 /// If `workspace` is inside a git repository, ensure `.codesmith/` and
-/// `.deepseek/` are listed in the nearest `.gitignore` so that snapshots,
+/// `.codesmith/` is listed in the nearest `.gitignore` so that snapshots,
 /// instructions, and other workspace-local state are not accidentally committed.
-fn ensure_deepseek_gitignored(workspace: &Path) {
+fn ensure_codesmith_gitignored(workspace: &Path) {
     // Only act if this workspace is a git repo.
     if !workspace.join(".git").exists() {
         return;
     }
 
     let gitignore = workspace.join(".gitignore");
-    let entries = [".codesmith/", ".deepseek/"];
+    let entries = [".codesmith/"];
 
     // Read existing contents once.
     let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
@@ -385,81 +385,81 @@ version = "1.0.0"
     }
 
     #[test]
-    fn ensure_deepseek_gitignored_creates_gitignore() {
+    fn ensure_codesmith_gitignored_creates_gitignore() {
         let tmpdir = TempDir::new().unwrap();
         // Simulate a git repo.
         std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
 
-        ensure_deepseek_gitignored(tmpdir.path());
+        ensure_codesmith_gitignored(tmpdir.path());
 
         let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
-        assert!(content.contains(".deepseek/"));
+        assert!(content.contains(".codesmith/"));
     }
 
     #[test]
-    fn ensure_deepseek_gitignored_appends_to_existing() {
+    fn ensure_codesmith_gitignored_appends_to_existing() {
         let tmpdir = TempDir::new().unwrap();
         std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
         std::fs::write(tmpdir.path().join(".gitignore"), "target/\n").unwrap();
 
-        ensure_deepseek_gitignored(tmpdir.path());
+        ensure_codesmith_gitignored(tmpdir.path());
 
         let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
         assert!(content.contains("target/"));
-        assert!(content.contains(".deepseek/"));
+        assert!(content.contains(".codesmith/"));
     }
 
     #[test]
-    fn ensure_deepseek_gitignored_idempotent() {
+    fn ensure_codesmith_gitignored_idempotent() {
         let tmpdir = TempDir::new().unwrap();
         std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
 
-        ensure_deepseek_gitignored(tmpdir.path());
-        ensure_deepseek_gitignored(tmpdir.path());
+        ensure_codesmith_gitignored(tmpdir.path());
+        ensure_codesmith_gitignored(tmpdir.path());
 
         let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
-        assert_eq!(content.matches(".deepseek/").count(), 1);
+        assert_eq!(content.matches(".codesmith/").count(), 1);
     }
 
     #[test]
-    fn ensure_deepseek_gitignored_skips_non_git_repo() {
+    fn ensure_codesmith_gitignored_skips_non_git_repo() {
         let tmpdir = TempDir::new().unwrap();
         // No .git directory — not a git repo.
 
-        ensure_deepseek_gitignored(tmpdir.path());
+        ensure_codesmith_gitignored(tmpdir.path());
 
         assert!(!tmpdir.path().join(".gitignore").exists());
     }
 
     #[test]
-    fn ensure_deepseek_gitignored_handles_no_trailing_newline() {
+    fn ensure_codesmith_gitignored_handles_no_trailing_newline() {
         let tmpdir = TempDir::new().unwrap();
         std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
         // Write a file that does NOT end with a newline.
         std::fs::write(tmpdir.path().join(".gitignore"), "target/").unwrap();
 
-        ensure_deepseek_gitignored(tmpdir.path());
+        ensure_codesmith_gitignored(tmpdir.path());
 
         let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
         // Must have both entries on separate lines.
         assert!(content.contains("target/"));
-        assert!(content.contains(".deepseek/"));
+        assert!(content.contains(".codesmith/"));
         // The entries should be on different lines.
         let lines: Vec<&str> = content.lines().collect();
         assert!(lines.len() >= 2);
     }
 
     #[test]
-    fn ensure_deepseek_gitignored_detects_variant_without_slash() {
+    fn ensure_codesmith_gitignored_detects_variant_without_slash() {
         let tmpdir = TempDir::new().unwrap();
         std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
-        // Write .deepseek without trailing slash.
-        std::fs::write(tmpdir.path().join(".gitignore"), ".deepseek\n").unwrap();
+        // Write .codesmith without trailing slash.
+        std::fs::write(tmpdir.path().join(".gitignore"), ".codesmith\n").unwrap();
 
-        ensure_deepseek_gitignored(tmpdir.path());
+        ensure_codesmith_gitignored(tmpdir.path());
 
         let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
         // Should NOT add a duplicate entry.
-        assert_eq!(content.matches(".deepseek").count(), 1);
+        assert_eq!(content.matches(".codesmith").count(), 1);
     }
 }

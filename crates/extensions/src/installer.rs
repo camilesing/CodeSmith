@@ -212,27 +212,23 @@ mod e2e_tests {
             manifest_text.contains("id = \"fixture-dylib\""),
             "manifest id: {manifest_text}"
         );
-        assert!(manifest_text.contains("[source]"), "manifest source: {manifest_text}");
+        assert!(
+            manifest_text.contains("[source]"),
+            "manifest source: {manifest_text}"
+        );
         assert_eq!(report.provenance, "test:fake");
 
         let found = crate::discover_dylib(&[root.path().to_path_buf()], &[]);
         assert_eq!(found.len(), 1, "discover finds 1: {found:?}");
         assert_eq!(found[0].id, "fixture-dylib");
-        assert!(
-            found[0].config_path.is_some(),
-            "manifest-subdir (not bare)"
-        );
+        assert!(found[0].config_path.is_some(), "manifest-subdir (not bare)");
 
         let runner = crate::ExtensionRunner::new();
         let rt = tokio::runtime::Runtime::new().expect("rt");
         rt.block_on(runner.load_dylib(&found[0].dylib_path))
             .expect("load placed dylib");
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
-        let tools: Vec<String> = runner
-            .bound_tools()
-            .into_iter()
-            .map(|(n, _)| n)
-            .collect();
+        let tools: Vec<String> = runner.bound_tools().into_iter().map(|(n, _)| n).collect();
         assert!(
             tools.iter().any(|n| n == "fixture_echo"),
             "fixture_echo bound: {tools:?}"
@@ -247,12 +243,10 @@ mod e2e_tests {
         std::fs::write(&artifact, b"x").unwrap();
         placer.place(&artifact).unwrap();
         assert!(root.path().join("gone").exists());
-        let report =
-            Installer::uninstall_files("gone", &[root.path().to_path_buf()]).unwrap();
+        let report = Installer::uninstall_files("gone", &[root.path().to_path_buf()]).unwrap();
         assert!(report.removed);
         assert!(!root.path().join("gone").exists());
-        let report2 =
-            Installer::uninstall_files("absent", &[root.path().to_path_buf()]).unwrap();
+        let report2 = Installer::uninstall_files("absent", &[root.path().to_path_buf()]).unwrap();
         assert!(!report2.removed);
     }
 }

@@ -85,12 +85,12 @@ SSH 登录 Lighthouse 实例并运行：
 ```bash
 sudo apt-get update
 sudo apt-get install -y git
-export DEEPSEEK_BRANCH=main
-export DEEPSEEK_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
-git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/codesmith
+export CODESMITH_BRANCH=main
+export CODESMITH_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
+git clone --branch "$CODESMITH_BRANCH" "$CODESMITH_REPO_URL" /tmp/codesmith
 cd /tmp/codesmith
-sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
-  DEEPSEEK_REPO_BRANCH="$DEEPSEEK_BRANCH" \
+sudo CODESMITH_REPO_URL="$CODESMITH_REPO_URL" \
+  CODESMITH_REPO_BRANCH="$CODESMITH_BRANCH" \
   bash scripts/tencent-lighthouse/bootstrap-ubuntu.sh
 ```
 
@@ -98,15 +98,15 @@ sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
 镜像不可用，回退到：
 
 ```bash
-export DEEPSEEK_REPO_URL=https://github.com/Hmbown/CodeSmith.git
+export CODESMITH_REPO_URL=https://github.com/Hmbown/CodeSmith.git
 ```
 
 对于稳定的发布文档，在使用前请确认 CNB 镜像已有所需的分支或
 tag：
 
 ```bash
-export DEEPSEEK_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
-git ls-remote "$DEEPSEEK_REPO_URL" \
+export CODESMITH_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
+git ls-remote "$CODESMITH_REPO_URL" \
   refs/heads/main \
   refs/tags/v0.8.37
 ```
@@ -145,8 +145,8 @@ sudo bash scripts/tencent-lighthouse/install-services.sh
 
 ```bash
 sudo -u codesmith node /opt/codesmith/bridge/scripts/validate-config.mjs \
-  --env /etc/deepseek/feishu-bridge.env \
-  --runtime-env /etc/deepseek/runtime.env \
+  --env /etc/codesmith/feishu-bridge.env \
+  --runtime-env /etc/codesmith/runtime.env \
   --workspace-root /opt/whalebro \
   --check-filesystem
 ```
@@ -157,26 +157,26 @@ sudo -u codesmith node /opt/codesmith/bridge/scripts/validate-config.mjs \
 
 ```bash
 openssl rand -hex 32
-sudoedit /etc/deepseek/runtime.env
-sudoedit /etc/deepseek/feishu-bridge.env
+sudoedit /etc/codesmith/runtime.env
+sudoedit /etc/codesmith/feishu-bridge.env
 ```
 
 必需的值：
 
-- `/etc/deepseek/runtime.env`
+- `/etc/codesmith/runtime.env`
   - `DEEPSEEK_API_KEY`
-  - `DEEPSEEK_RUNTIME_TOKEN`
-- `/etc/deepseek/feishu-bridge.env`
+  - `CODESMITH_RUNTIME_TOKEN`
+- `/etc/codesmith/feishu-bridge.env`
   - `FEISHU_APP_ID`
   - `FEISHU_APP_SECRET`
   - 飞书设为 `FEISHU_DOMAIN=feishu`，Lark 设为 `lark`
-  - `DEEPSEEK_RUNTIME_TOKEN`
+  - `CODESMITH_RUNTIME_TOKEN`
   - 首次部署设为 `FEISHU_ALLOW_GROUPS=false`
 
 首次配对时，二选一：
 
-1. 临时设置 `DEEPSEEK_ALLOW_UNLISTED=true`，给机器人发消息，复制
-   返回的 `chat_id`，然后设置 `DEEPSEEK_CHAT_ALLOWLIST=<chat_id>`
+1. 临时设置 `CODESMITH_ALLOW_UNLISTED=true`，给机器人发消息，复制
+   返回的 `chat_id`，然后设置 `CODESMITH_CHAT_ALLOWLIST=<chat_id>`
    并重新关闭未列名单访问。
 2. 或者从飞书/Lark 事件日志获取 chat ID，并在首次启动之前设置
    白名单。
@@ -264,7 +264,7 @@ EdgeOne 的良好用途：
 
 - `http://127.0.0.1:7878`
 - `/v1/*` 运行时端点
-- 任何接受 `DEEPSEEK_RUNTIME_TOKEN` 的端点
+- 任何接受 `CODESMITH_RUNTIME_TOKEN` 的端点
 
 ## 端到端验证
 

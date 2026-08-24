@@ -98,7 +98,8 @@ impl ToolSpec for KnowledgeRetrievalTool {
         let mut output = String::new();
         for header in matching.iter().take(3) {
             if let Some(content) = std::fs::read_to_string(&header.file_path).ok() {
-                let (_fm, body) = codesmith_agent_runtime::knowledge::scan::parse_frontmatter(&content);
+                let (_fm, body) =
+                    codesmith_agent_runtime::knowledge::scan::parse_frontmatter(&content);
                 let age_label = memory_age_label(header.mtime_ms);
                 let freshness = memory_freshness_text(header.mtime_ms);
 
@@ -110,10 +111,11 @@ impl ToolSpec for KnowledgeRetrievalTool {
                 }
                 let mut body_text = lines.join("\n");
                 if body_text.len() > MAX_BYTES_PER_MEMORY {
-                    let cutoff = codesmith_agent_runtime::knowledge::entrypoint::previous_char_boundary(
-                        &body_text,
-                        MAX_BYTES_PER_MEMORY,
-                    );
+                    let cutoff =
+                        codesmith_agent_runtime::knowledge::entrypoint::previous_char_boundary(
+                            &body_text,
+                            MAX_BYTES_PER_MEMORY,
+                        );
                     body_text = format!("{}[truncated]", &body_text[..cutoff]);
                 }
 

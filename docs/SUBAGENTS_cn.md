@@ -192,7 +192,7 @@ BLOCKERS:   what stopped you; "None." if you finished cleanly
 ## 记忆与 `remember` 工具 (#489)
 
 当启用记忆功能（`[memory] enabled = true` 或
-`DEEPSEEK_MEMORY=on`）时，子代理继承父代理的记忆文件。它们可以
+`CODESMITH_MEMORY=on`）时，子代理继承父代理的记忆文件。它们可以
 通过 `remember` 工具追加持久化笔记——这对于发现了值得跨会话
 传承的项目约定的探索者，或者学到"这个测试不稳定"的验证者来说
 非常方便。

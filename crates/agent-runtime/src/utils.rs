@@ -352,17 +352,8 @@ fn write_panic_dump(
     let home = dirs::home_dir().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found")
     })?;
-    // Prefer .codesmith, fall back to .deepseek
     let crash_dir = home.join(".codesmith").join("crashes");
-    if !crash_dir.exists() {
-        // Try legacy path for reading, but prefer new for writing
-        let _ = std::fs::create_dir_all(&crash_dir);
-    }
-    let crash_dir = if crash_dir.exists() {
-        crash_dir
-    } else {
-        home.join(".deepseek").join("crashes")
-    };
+    let _ = std::fs::create_dir_all(&crash_dir);
     write_panic_dump_to(&crash_dir, name, location, message)
 }
 

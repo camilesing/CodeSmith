@@ -30,7 +30,7 @@ cargo install codesmith-tui     --locked   # `codesmith-tui` (TUI binary)
 # 3. Homebrew — macOS package manager.
 #    The tap/formula name is legacy; it installs codesmith and codesmith-tui.
 brew tap Hmbown/deepseek-tui
-brew install deepseek-tui
+brew install codesmith
 
 # 4. Direct download — platform archive from GitHub Releases.
 #    https://github.com/Hmbown/CodeSmith/releases
@@ -61,7 +61,7 @@ Already installed? Use the updater that matches the install path:
 ```bash
 codesmith update                         # release-binary updater
 npm install -g codesmith@latest      # npm wrapper
-brew update && brew upgrade deepseek-tui
+brew update && brew upgrade codesmith
 cargo install codesmith-cli --locked --force
 cargo install codesmith-tui     --locked --force
 ```
@@ -182,7 +182,7 @@ codesmith --model auto
 
 Prebuilt binary pairs and platform archives are published for **Linux x64**, **Linux ARM64** (v0.8.8+), **macOS x64**, **macOS ARM64**, and **Windows x64**. For other targets (musl, riscv64, FreeBSD, etc.), see [Install from source](#install-from-source) or [docs/INSTALL.md](docs/INSTALL.md).
 
-On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is saved to `~/.codesmith/config.toml` (legacy `~/.deepseek/config.toml` also supported) so it works from any directory without OS credential prompts.
+On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is saved to `~/.codesmith/config.toml` (legacy `~/.codesmith/config.toml` also supported) so it works from any directory without OS credential prompts.
 
 You can also set it ahead of time:
 
@@ -434,13 +434,13 @@ volume ownership notes, and non-interactive pipeline usage.
 
 ### Zed / ACP
 
-DeepSeek can run as a custom Agent Client Protocol server for editors that
+CodeSmith can run as a custom Agent Client Protocol server for editors that
 spawn local ACP agents over stdio. In Zed, add a custom agent server:
 
 ```json
 {
   "agent_servers": {
-    "DeepSeek": {
+    "CodeSmith": {
       "type": "custom",
       "command": "codesmith",
       "args": ["serve", "--acp"],
@@ -451,7 +451,7 @@ spawn local ACP agents over stdio. In Zed, add a custom agent server:
 ```
 
 The first ACP slice supports new sessions and prompt responses through your
-existing DeepSeek config/API key. Tool-backed editing and checkpoint replay are
+existing CodeSmith config/API key. Tool-backed editing and checkpoint replay are
 not exposed through ACP yet.
 
 Community-maintained adapter: [acp-codesmith-adapter](https://github.com/rockeverm3m/acp-codesmith-adapter)
@@ -489,7 +489,7 @@ Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 ## Configuration
 
-User config: `~/.codesmith/config.toml` (legacy `~/.deepseek/config.toml` fallback). Project overlay: `<workspace>/.codesmith/config.toml` (legacy `<workspace>/.deepseek/config.toml`) (denied: `api_key`, `base_url`, `provider`, `mcp_config_path`). [config.example.toml](config.example.toml) has every option.
+User config: `~/.codesmith/config.toml` (legacy `~/.codesmith/config.toml` fallback). Project overlay: `<workspace>/.codesmith/config.toml` (legacy `<workspace>/.codesmith/config.toml`) (denied: `api_key`, `base_url`, `provider`, `mcp_config_path`). [config.example.toml](config.example.toml) has every option.
 
 Custom DeepSeek-compatible endpoints usually do not need a new provider. Keep
 `provider = "deepseek"` and set `[providers.deepseek].base_url` / `model`, or
@@ -505,7 +505,7 @@ Key environment variables:
 | `CODESMITH_BASE_URL` | API base URL |
 | `CODESMITH_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `CODESMITH_MODEL` | Default model |
-| `CODESMITH_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
+| `CODESMITH_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
 | `CODESMITH_PROFILE` | Config profile name |
 | `CODESMITH_MEMORY` | Set to `on` to enable user memory |
 | `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `VOLCENGINE_API_KEY` / `OPENROUTER_API_KEY` / `XIAOMI_MIMO_API_KEY` / `XIAOMI_API_KEY` / `MIMO_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SILICONFLOW_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
@@ -548,7 +548,7 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` still map to `deepseek-v4-f
 
 ## Publishing Your Own Skill
 
-codesmith discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills` → `.codesmith/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
+codesmith discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills` → `.codesmith/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.codesmith/skills`). Each skill is a directory with a `SKILL.md` file:
 
 ```text
 ~/.agents/skills/my-skill/
@@ -560,7 +560,7 @@ Frontmatter required:
 ```markdown
 ---
 name: my-skill
-description: Use this when DeepSeek should follow my custom workflow.
+description: Use this when CodeSmith should follow my custom workflow.
 ---
 
 # My Skill
@@ -575,7 +575,7 @@ First launch also installs bundled system skills for common workflows:
 `skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`,
 `skill-installer`, `mcp-builder`, `documents`, `presentations`,
 `spreadsheets`, `pdf`, and `feishu`. These live under
-`~/.codesmith/skills` (or legacy `~/.deepseek/skills`) and are versioned so new bundles are added on upgrade
+`~/.codesmith/skills` (or legacy `~/.codesmith/skills`) and are versioned so new bundles are added on upgrade
 without recreating skills the user deliberately deleted.
 
 ---

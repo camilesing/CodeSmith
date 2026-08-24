@@ -81,19 +81,19 @@ cargo build --release --locked -p codesmith-cli -p codesmith-tui
 node scripts/release/npm-wrapper-smoke.js
 ```
 
-设置 `DEEPSEEK_TUI_KEEP_SMOKE_DIR=1` 可以保留临时的打包/安装
+设置 `CODESMITH_KEEP_SMOKE_DIR=1` 可以保留临时的打包/安装
 目录以供检查。
 
 若还要在本地演练 `npm run release:check`，请在启动服务器之前，
 使用完整的资产矩阵夹具重新生成本地资产目录：
 
 ```bash
-DEEPSEEK_TUI_PREPARE_ALL_ASSETS=1 node scripts/release/prepare-local-release-assets.js
+CODESMITH_PREPARE_ALL_ASSETS=1 node scripts/release/prepare-local-release-assets.js
 cd npm/codesmith
-DEEPSEEK_TUI_VERSION=X.Y.Z DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm run release:check
+CODESMITH_VERSION=X.Y.Z CODESMITH_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm run release:check
 ```
 
-将该次本地运行中 `DEEPSEEK_TUI_VERSION` 设置为你要验证的 npm
+将该次本地运行中 `CODESMITH_VERSION` 设置为你要验证的 npm
 包版本。
 
 CNB 工作流运行 Linux tarball 安装 + 委托入口点冒烟测试；

@@ -48,7 +48,7 @@ cargo install codesmith-tui --locked
 # Homebrew
 # The tap/formula name is legacy; it installs codesmith and codesmith-tui.
 brew tap Hmbown/deepseek-tui
-brew install deepseek-tui
+brew install codesmith
 ```
 
 当你需要隔离的运行时时，也可以使用 Docker：
@@ -82,7 +82,7 @@ export DEEPSEEK_API_KEY="your-key"
 codesmith
 ```
 
-新的 CodeSmith 配置存储在 `~/.codesmith/config.toml`。为从旧名称迁移的用户，旧的 `~/.deepseek/config.toml` 文件仍受支持。
+新的 CodeSmith 配置存储在 `~/.codesmith/config.toml`。为从旧名称迁移的用户，旧的 `~/.codesmith/config.toml` 文件仍受支持。
 
 配置完成后，运行一次 doctor 检查：
 
@@ -396,7 +396,7 @@ python3 your_file.py
 
 ### 我的配置存储在哪里？
 
-新的 CodeSmith 配置使用 `~/.codesmith/config.toml`。旧的 `~/.deepseek/config.toml` 仍受支持以保持兼容。当存在工作区配置时，项目覆盖层也会影响行为。
+新的 CodeSmith 配置使用 `~/.codesmith/config.toml`。旧的 `~/.codesmith/config.toml` 仍受支持以保持兼容。当存在工作区配置时，项目覆盖层也会影响行为。
 
 ### 如何保持成本可预测？
 

@@ -108,9 +108,7 @@ impl ToolSpec for NotifyTool {
         // the 1s elapsed gate that the TUI impl applied are host-side
         // concerns now.
         let notifier = ctx.runtime.notifier.as_ref().ok_or_else(|| {
-            ToolError::execution_failed(
-                "notify tool is not available: no notifier attached",
-            )
+            ToolError::execution_failed("notify tool is not available: no notifier attached")
         })?;
         notifier.notify_done(&msg);
 
@@ -188,10 +186,7 @@ mod tests {
             .execute(json!({"title": "done"}), &ctx())
             .await
             .unwrap_err();
-        assert!(
-            err.to_string().to_lowercase().contains("notifier"),
-            "{err}"
-        );
+        assert!(err.to_string().to_lowercase().contains("notifier"), "{err}");
     }
 
     #[tokio::test]

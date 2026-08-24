@@ -86,7 +86,8 @@ impl ToolSpec for DiagnosticsTool {
         };
 
         let git = probe_git(&context.workspace);
-        let sandbox_type = codesmith_agent_runtime::sandbox::get_platform_sandbox().map(|s| s.to_string());
+        let sandbox_type =
+            codesmith_agent_runtime::sandbox::get_platform_sandbox().map(|s| s.to_string());
         let sandbox_available = sandbox_type.is_some();
 
         // Bubblewrap availability (#2184).
@@ -239,7 +240,8 @@ mod tests {
 
     fn init_git_repo(root: &Path) {
         let run = |args: &[&str]| {
-            let status = codesmith_agent_runtime::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codesmith_agent_runtime::dependencies::Git::status(args, root)
+                .expect("git should spawn");
             assert!(status.success(), "git {args:?} failed");
         };
         run(&["init", "-q"]);

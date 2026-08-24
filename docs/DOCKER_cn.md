@@ -220,8 +220,8 @@ Docker Hub 发布未配置；GHCR 是受支持的预构建镜像
 | 变量                 | 必需     | 描述                                            |
 |----------------------|----------|--------------------------------------------------|
 | `DEEPSEEK_API_KEY`    | 是      | DeepSeek API 密钥                                |
-| `DEEPSEEK_BASE_URL`   | 否      | 自定义 API base URL（例如 `https://api.deepseek.com`） |
-| `DEEPSEEK_NO_COLOR`   | 否      | 设置为 `1` 以禁用终端彩色输出                    |
+| `CODESMITH_BASE_URL`   | 否      | 自定义 API base URL（例如 `https://api.deepseek.com`） |
+| `NO_COLOR`            | 否      | 设置为 `1` 以禁用终端彩色输出                    |
 
 ## 卷
 

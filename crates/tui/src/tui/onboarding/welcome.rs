@@ -10,7 +10,7 @@ pub fn lines() -> Vec<Line<'static>> {
         Line::from(Span::styled(
             "codesmith",
             Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
+                .fg(palette::CODESMITH_BLUE)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(

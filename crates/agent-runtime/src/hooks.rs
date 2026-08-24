@@ -82,12 +82,12 @@ pub struct HookContext {
     /// Previous mode (for `ModeChange`).
     pub previous_mode: Option<String>,
     /// Ephemeral per-construction telemetry session id (finding 5c). Emitted
-    /// to hooks as `DEEPSEEK_SESSION_ID`. Regenerated on each engine
+    /// to hooks as `CODESMITH_SESSION_ID`. Regenerated on each engine
     /// construction and **not** correlatable across restarts — use
     /// [`thread_id`](Self::thread_id) for that.
     pub session_id: Option<String>,
     /// Persistent conversation thread id (the durable resume id). Emitted to
-    /// hooks as `DEEPSEEK_THREAD_ID` so hook authors can correlate events
+    /// hooks as `CODESMITH_THREAD_ID` so hook authors can correlate events
     /// across restarts, unlike the ephemeral [`session_id`](Self::session_id).
     pub thread_id: Option<String>,
     /// User message content.
@@ -213,10 +213,10 @@ impl HookContext {
         let mut env = HashMap::new();
 
         if let Some(ref name) = self.tool_name {
-            env.insert("DEEPSEEK_TOOL_NAME".to_string(), name.clone());
+            env.insert("CODESMITH_TOOL_NAME".to_string(), name.clone());
         }
         if let Some(ref args) = self.tool_args {
-            env.insert("DEEPSEEK_TOOL_ARGS".to_string(), args.clone());
+            env.insert("CODESMITH_TOOL_ARGS".to_string(), args.clone());
         }
         if let Some(ref result) = self.tool_result {
             // Truncate result to 10KB to avoid environment variable size limits.
@@ -231,25 +231,25 @@ impl HookContext {
             } else {
                 result.clone()
             };
-            env.insert("DEEPSEEK_TOOL_RESULT".to_string(), truncated);
+            env.insert("CODESMITH_TOOL_RESULT".to_string(), truncated);
         }
         if let Some(code) = self.tool_exit_code {
-            env.insert("DEEPSEEK_TOOL_EXIT_CODE".to_string(), code.to_string());
+            env.insert("CODESMITH_TOOL_EXIT_CODE".to_string(), code.to_string());
         }
         if let Some(success) = self.tool_success {
-            env.insert("DEEPSEEK_TOOL_SUCCESS".to_string(), success.to_string());
+            env.insert("CODESMITH_TOOL_SUCCESS".to_string(), success.to_string());
         }
         if let Some(ref mode) = self.mode {
-            env.insert("DEEPSEEK_MODE".to_string(), mode.clone());
+            env.insert("CODESMITH_MODE".to_string(), mode.clone());
         }
         if let Some(ref prev) = self.previous_mode {
-            env.insert("DEEPSEEK_PREVIOUS_MODE".to_string(), prev.clone());
+            env.insert("CODESMITH_PREVIOUS_MODE".to_string(), prev.clone());
         }
         if let Some(ref session_id) = self.session_id {
-            env.insert("DEEPSEEK_SESSION_ID".to_string(), session_id.clone());
+            env.insert("CODESMITH_SESSION_ID".to_string(), session_id.clone());
         }
         if let Some(ref thread_id) = self.thread_id {
-            env.insert("DEEPSEEK_THREAD_ID".to_string(), thread_id.clone());
+            env.insert("CODESMITH_THREAD_ID".to_string(), thread_id.clone());
         }
         if let Some(ref message) = self.message {
             let truncated = if message.len() > 5000 {
@@ -263,31 +263,31 @@ impl HookContext {
             } else {
                 message.clone()
             };
-            env.insert("DEEPSEEK_MESSAGE".to_string(), truncated);
+            env.insert("CODESMITH_MESSAGE".to_string(), truncated);
         }
         if let Some(ref error) = self.error_message {
-            env.insert("DEEPSEEK_ERROR".to_string(), error.clone());
+            env.insert("CODESMITH_ERROR".to_string(), error.clone());
         }
         if let Some(ref ws) = self.workspace {
-            env.insert("DEEPSEEK_WORKSPACE".to_string(), ws.display().to_string());
+            env.insert("CODESMITH_WORKSPACE".to_string(), ws.display().to_string());
         }
         if let Some(ref model) = self.model {
-            env.insert("DEEPSEEK_MODEL".to_string(), model.clone());
+            env.insert("CODESMITH_MODEL".to_string(), model.clone());
         }
         if let Some(tokens) = self.total_tokens {
-            env.insert("DEEPSEEK_TOTAL_TOKENS".to_string(), tokens.to_string());
+            env.insert("CODESMITH_TOTAL_TOKENS".to_string(), tokens.to_string());
         }
         if let Some(cost) = self.session_cost {
-            env.insert("DEEPSEEK_SESSION_COST".to_string(), format!("{cost:.6}"));
+            env.insert("CODESMITH_SESSION_COST".to_string(), format!("{cost:.6}"));
         }
         if let Some(ref task_id) = self.task_id {
-            env.insert("DEEPSEEK_TASK_ID".to_string(), task_id.clone());
+            env.insert("CODESMITH_TASK_ID".to_string(), task_id.clone());
         }
         if let Some(ref task_subject) = self.task_subject {
-            env.insert("DEEPSEEK_TASK_SUBJECT".to_string(), task_subject.clone());
+            env.insert("CODESMITH_TASK_SUBJECT".to_string(), task_subject.clone());
         }
         if let Some(ref task_status) = self.task_status {
-            env.insert("DEEPSEEK_TASK_STATUS".to_string(), task_status.clone());
+            env.insert("CODESMITH_TASK_STATUS".to_string(), task_status.clone());
         }
 
         env
@@ -394,17 +394,26 @@ mod tests {
             .with_session_id("ephemeral-123")
             .with_thread_id("thread-abc");
         let env = ctx.to_env_vars();
-        // DEEPSEEK_SESSION_ID carries the ephemeral telemetry id.
-        assert_eq!(env.get("DEEPSEEK_SESSION_ID"), Some(&"ephemeral-123".to_string()));
-        // DEEPSEEK_THREAD_ID carries the persistent resume thread id.
-        assert_eq!(env.get("DEEPSEEK_THREAD_ID"), Some(&"thread-abc".to_string()));
+        // CODESMITH_SESSION_ID carries the ephemeral telemetry id.
+        assert_eq!(
+            env.get("CODESMITH_SESSION_ID"),
+            Some(&"ephemeral-123".to_string())
+        );
+        // CODESMITH_THREAD_ID carries the persistent resume thread id.
+        assert_eq!(
+            env.get("CODESMITH_THREAD_ID"),
+            Some(&"thread-abc".to_string())
+        );
     }
 
     #[test]
     fn thread_id_env_var_omitted_when_unset() {
         let ctx = HookContext::new().with_session_id("ephemeral-only");
         let env = ctx.to_env_vars();
-        assert_eq!(env.get("DEEPSEEK_SESSION_ID"), Some(&"ephemeral-only".to_string()));
-        assert!(!env.contains_key("DEEPSEEK_THREAD_ID"));
+        assert_eq!(
+            env.get("CODESMITH_SESSION_ID"),
+            Some(&"ephemeral-only".to_string())
+        );
+        assert!(!env.contains_key("CODESMITH_THREAD_ID"));
     }
 }

@@ -1,4 +1,4 @@
-# 提供商注册表
+ # 提供商注册表
 
 本注册表描述已接入当前 CodeSmith 代码库的提供商行为。它刻意保持保守：
 已交付的条目仅限于代码已知的提供商 ID、配置键、认证路径、base URL、
@@ -35,7 +35,7 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 
 - CLI：`codesmith --provider <id>`
 - TUI：`/provider <id>` 或提供商选择器
-- 环境变量：`CODESMITH_PROVIDER=<id>`；`DEEPSEEK_PROVIDER=<id>` 是旧版别名
+- 环境变量：`CODESMITH_PROVIDER=<id>`；`CODESMITH_PROVIDER=<id>` 是旧版别名
 - 配置：`provider = "<id>"`
 
 `deepseek-cn`、`deepseek_china`、`deepseekcn` 和 `deepseek-china` 被接受为
@@ -43,7 +43,7 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 DeepSeek 在全球使用相同的官方 API 主机。
 
 新建的共享配置写入 `~/.codesmith/config.toml`。已有的
-`~/.deepseek/config.toml` 文件出于兼容性仍会被读取。
+`~/.codesmith/config.toml` 文件出于兼容性仍会被读取。
 
 ## 认证与环境变量规则
 
@@ -55,11 +55,11 @@ API 密钥。API 密钥环境变量是排在已保存配置和密钥环凭据之
 
 - `CODESMITH_BASE_URL` / `CODESMITH_MODEL`，作用于当前活跃提供商。
 - 下文列出的提供商特定 base URL/模型环境变量。
-- `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_DEFAULT_TEXT_MODEL` 作为
+- `CODESMITH_BASE_URL`、`CODESMITH_MODEL` 和 `CODESMITH_DEFAULT_TEXT_MODEL` 作为
   旧版别名。
 
 非本地的 `http://` base URL 会被拒绝，除非设置了
-`DEEPSEEK_ALLOW_INSECURE_HTTP=1`。环回 HTTP URL 被允许用于
+`CODESMITH_ALLOW_INSECURE_HTTP=1`。环回 HTTP URL 被允许用于
 自托管运行时。
 
 ## 自定义 DeepSeek 兼容端点
@@ -70,7 +70,7 @@ API 密钥。API 密钥环境变量是排在已保存配置和密钥环凭据之
 
 - DeepSeek 兼容的托管 API：保持 `provider = "deepseek"` 并设置
   `[providers.deepseek].base_url` 和 `[providers.deepseek].model`，或使用
-  `DEEPSEEK_BASE_URL` 和 `DEEPSEEK_MODEL` 启动。
+  `CODESMITH_BASE_URL` 和 `CODESMITH_MODEL` 启动。
 - 通用 OpenAI 兼容网关：使用 `provider = "openai"` 并设置
   `[providers.openai].base_url` 和 `[providers.openai].model`，或使用
   `OPENAI_BASE_URL` 和 `OPENAI_MODEL` 启动。自定义网关 URL 若未指定任何
@@ -110,7 +110,7 @@ model = "your-deepseek-compatible-model"
 
 | 提供商 ID | TOML 表 | 认证环境变量 | Base URL 环境变量与默认值 | 默认或静态模型 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL` / `DEEPSEEK_BASE_URL`；默认 `https://api.deepseek.com/beta` | `deepseek-v4-pro`、`deepseek-v4-flash`；兼容别名 `deepseek-chat`、`deepseek-reasoner` | 一等默认提供商。Beta URL 启用 strict tool mode、chat prefix completion 和 FIM completion。显式设置 `https://api.deepseek.com` 或 `/v1` 可退出仅限 beta 的功能。 |
+| `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL` / `CODESMITH_BASE_URL`；默认 `https://api.deepseek.com/beta` | `deepseek-v4-pro`、`deepseek-v4-flash`；兼容别名 `deepseek-chat`、`deepseek-reasoner` | 一等默认提供商。Beta URL 启用 strict tool mode、chat prefix completion 和 FIM completion。显式设置 `https://api.deepseek.com` 或 `/v1` 可退出仅限 beta 的功能。 |
 | `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`、`NVIDIA_NIM_API_KEY`、回退 `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`、`NIM_BASE_URL`、`NVIDIA_BASE_URL`；默认 `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`、`deepseek-ai/deepseek-v4-flash` | 通过 NVIDIA NIM 托管的 DeepSeek V4。TUI 配置路径接受 `NVIDIA_NIM_MODEL`。 |
 | `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`；默认 `https://api.openai.com/v1` | 注册表条目：`gpt-5`、`deepseek-v4-pro`、`deepseek-v4-flash`；默认配置模型 `gpt-5` | 用于网关和自定义端点的通用 OpenAI 兼容路由。对显式的第三方 OpenAI 兼容路由请使用它，而不是发明新的提供商 ID。接受 `OPENAI_MODEL`。自定义 `OPENAI_BASE_URL` 若未指定显式模型，会在启动时快速失败。 |
 | `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`；默认 `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`、`deepseek-ai/deepseek-v4-pro` | OpenAI 兼容的托管路由。TUI 配置路径接受 `ATLASCLOUD_MODEL`，静态 `ModelRegistry` 中包含用于 CLI 模型解析的 AtlasCloud 回退行。 |
@@ -118,8 +118,8 @@ model = "your-deepseek-compatible-model"
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`、`VOLCENGINE_ARK_API_KEY`、`ARK_API_KEY` | `VOLCENGINE_BASE_URL`、`VOLCENGINE_ARK_BASE_URL`、`ARK_BASE_URL`；默认 `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`、`DeepSeek-V4-Flash` | Volcengine/火山引擎 Ark OpenAI 兼容编码端点。接受 `VOLCENGINE_MODEL` 和 `VOLCENGINE_ARK_MODEL`。 |
 | `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`；默认 `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash`；近期大型 ID 包括 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it`、`z-ai/glm-5.1`、`moonshotai/kimi-k2.6` | 附加的开源模型路由层。它不替代 DeepSeek；它让用户在选择时可以通过 OpenRouter 路由受支持的模型 ID。 |
 | `xiaomi-mimo` | `[providers.xiaomi_mimo]` | `XIAOMI_MIMO_API_KEY`、`XIAOMI_API_KEY`、`MIMO_API_KEY` | `XIAOMI_MIMO_BASE_URL`、`MIMO_BASE_URL`；默认 `https://api.xiaomimimo.com/v1` | `mimo-v2.5-pro`、`mimo-v2.5` | 小米 MiMo OpenAI 兼容 chat completions 路由。它发送 `max_completion_tokens` 并使用 MiMo 的 `thinking` 字段进行推理控制。 |
-| `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`；默认 `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash` | 用于 DeepSeek 模型 ID 的 OpenAI 兼容托管路由。使用配置或 `CODESMITH_MODEL` / `DEEPSEEK_MODEL` 进行模型覆盖。 |
-| `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`；默认 `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI 兼容的托管路由。使用配置或 `CODESMITH_MODEL` / `DEEPSEEK_MODEL` 进行模型覆盖。 |
+| `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`；默认 `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash` | 用于 DeepSeek 模型 ID 的 OpenAI 兼容托管路由。使用配置或 `CODESMITH_MODEL` / `CODESMITH_MODEL` 进行模型覆盖。 |
+| `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`；默认 `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI 兼容的托管路由。使用配置或 `CODESMITH_MODEL` / `CODESMITH_MODEL` 进行模型覆盖。 |
 | `siliconflow` | `[providers.siliconflow]` | `SILICONFLOW_API_KEY` | `SILICONFLOW_BASE_URL`；默认 `https://api.siliconflow.com/v1` | `deepseek-ai/DeepSeek-V4-Pro`、`deepseek-ai/DeepSeek-V4-Flash` | OpenAI 兼容的托管路由。官方文档使用 `.com` 端点；需要区域端点的用户可显式设置 `https://api.siliconflow.cn/v1`。接受 `SILICONFLOW_MODEL`。推理别名 `deepseek-reasoner` 和 `deepseek-r1` 映射到 Pro；`deepseek-chat` 和 `deepseek-v3` 映射到 Flash。 |
 | `moonshot` | `[providers.moonshot]` | `MOONSHOT_API_KEY`、`KIMI_API_KEY` | `MOONSHOT_BASE_URL`、`KIMI_BASE_URL`；默认 `https://api.moonshot.ai/v1` | `kimi-k2.6`；Kimi Code 路径在 `https://api.kimi.com/coding/v1` 使用 `kimi-for-coding` | Moonshot/Kimi 路由。接受 `MOONSHOT_MODEL`、`KIMI_MODEL_NAME` 和 `KIMI_MODEL`。`[providers.moonshot] auth_mode = "kimi_oauth"` 会在存在时读取 Kimi CLI OAuth 凭据。 |
 | `sglang` | `[providers.sglang]` | 可选 `SGLANG_API_KEY` | `SGLANG_BASE_URL`；默认 `http://localhost:30000/v1` | `deepseek-ai/DeepSeek-V4-Pro`、`deepseek-ai/DeepSeek-V4-Flash` | 自托管 OpenAI 兼容路由。localhost 部署通常省略认证。接受 `SGLANG_MODEL`。 |

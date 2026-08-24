@@ -81,8 +81,6 @@ class DownloadTimeoutError extends Error {
 function resolvePackageVersion() {
   const configuredVersion =
     process.env.CODESMITH_VERSION ||
-    process.env.DEEPSEEK_TUI_VERSION ||
-    process.env.DEEPSEEK_VERSION ||
     pkg.codesmithBinaryVersion ||
     pkg.deepseekBinaryVersion ||
     pkg.version;
@@ -90,15 +88,13 @@ function resolvePackageVersion() {
 }
 
 function resolveRepo() {
-  return process.env.CODESMITH_GITHUB_REPO || process.env.DEEPSEEK_TUI_GITHUB_REPO || process.env.DEEPSEEK_GITHUB_REPO || "Hmbown/CodeSmith";
+  return process.env.CODESMITH_GITHUB_REPO || "Hmbown/CodeSmith";
 }
 
 function isOptionalInstall(argv = process.argv.slice(2), env = process.env) {
   return (
     argv.includes("--optional") ||
-    env.CODESMITH_OPTIONAL_INSTALL === "1" ||
-    env.DEEPSEEK_TUI_OPTIONAL_INSTALL === "1" ||
-    env.DEEPSEEK_OPTIONAL_INSTALL === "1"
+    env.CODESMITH_OPTIONAL_INSTALL === "1"
   );
 }
 
@@ -158,7 +154,7 @@ function binaryPaths() {
 // ────────────────────────────────────────────────────────────────────────────
 
 function isQuietInstall() {
-  if (process.env.CODESMITH_QUIET_INSTALL === "1" || process.env.DEEPSEEK_TUI_QUIET_INSTALL === "1") {
+  if (process.env.CODESMITH_QUIET_INSTALL === "1") {
     return true;
   }
   const level = (process.env.npm_config_loglevel || "").toLowerCase();
@@ -176,9 +172,7 @@ function installFailureHint(error) {
   const message = error && error.message ? String(error.message) : "";
   const code = error && error.code ? String(error.code) : "";
   const releaseBase =
-    process.env.CODESMITH_RELEASE_BASE_URL ||
-    process.env.DEEPSEEK_TUI_RELEASE_BASE_URL ||
-    process.env.DEEPSEEK_RELEASE_BASE_URL;
+    process.env.CODESMITH_RELEASE_BASE_URL;
   const networkMarkers = [
     "github.com",
     "ENOTFOUND",
@@ -228,23 +222,11 @@ function envInt(name, fallback) {
 }
 
 function downloadTimeoutMs(context = "runtime") {
-  return envInt(
-    "CODESMITH_DOWNLOAD_TIMEOUT_MS",
-    envInt(
-      "DEEPSEEK_TUI_DOWNLOAD_TIMEOUT_MS",
-      envInt("DEEPSEEK_DOWNLOAD_TIMEOUT_MS", defaultTimeoutMs(context)),
-    ),
-  );
+  return envInt("CODESMITH_DOWNLOAD_TIMEOUT_MS", defaultTimeoutMs(context));
 }
 
 function downloadStallMs(context = "runtime") {
-  return envInt(
-    "CODESMITH_DOWNLOAD_STALL_MS",
-    envInt(
-      "DEEPSEEK_TUI_DOWNLOAD_STALL_MS",
-      envInt("DEEPSEEK_DOWNLOAD_STALL_MS", defaultStallMs(context)),
-    ),
-  );
+  return envInt("CODESMITH_DOWNLOAD_STALL_MS", defaultStallMs(context));
 }
 
 function formatMb(bytes) {
@@ -1065,7 +1047,7 @@ async function adoptExistingBinaryIfValid(targetPath, assetName, version, getChe
 async function ensureBinary(targetPath, assetName, version, repo, getChecksums, options = {}) {
   const marker = `${targetPath}.version`;
   const downloadIfNeeded =
-    process.env.CODESMITH_FORCE_DOWNLOAD === "1" || process.env.DEEPSEEK_TUI_FORCE_DOWNLOAD === "1" || process.env.DEEPSEEK_FORCE_DOWNLOAD === "1";
+    process.env.CODESMITH_FORCE_DOWNLOAD === "1";
   if (!downloadIfNeeded) {
     const existing = await fileExists(targetPath);
     if (existing) {
@@ -1112,7 +1094,7 @@ function shouldIgnoreInstallFailure(
 async function run(options = {}) {
   const context =
     options.context === undefined || options.context === null ? "runtime" : options.context;
-  if (process.env.CODESMITH_DISABLE_INSTALL === "1" || process.env.DEEPSEEK_TUI_DISABLE_INSTALL === "1" || process.env.DEEPSEEK_DISABLE_INSTALL === "1") {
+  if (process.env.CODESMITH_DISABLE_INSTALL === "1") {
     return;
   }
   if (shouldSkipOptionalPostinstall(context)) {

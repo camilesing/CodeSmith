@@ -60,8 +60,8 @@
 
 pub mod callback;
 // §F — extension system framework traits (pi-mono `Extension` model port).
-pub mod extension;
 pub mod executor;
+pub mod extension;
 pub mod llm_client;
 pub mod memory;
 pub mod models;

@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aliases.
 - **Custom `OPENAI_BASE_URL` without an explicit model now fails fast.**
   Config validation rejects `provider = "openai"` with a custom gateway URL
-  and no model (`OPENAI_MODEL`, `--model` / `DEEPSEEK_MODEL`,
+  and no model (`OPENAI_MODEL`, `--model` / `CODESMITH_MODEL`,
   `[providers.openai].model`, or `default_text_model`), printing an
   actionable error at startup instead of forwarding the provider default and
   surfacing an opaque upstream 403. The official endpoint keeps the `gpt-5`
@@ -37,14 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`SubAgentType::allowed_tools` deprecation note** updated to reflect the
   subset posture (full when the parent is unrestricted, a subset under
   `restrictToSubset` when narrowed).
-- **`DEEPSEEK_SESSION_ID` is now ephemeral (Plan 05 / 5c).** The hook env var
+- **`CODESMITH_SESSION_ID` is now ephemeral (Plan 05 / 5c).** The hook env var
   now carries a per-construction telemetry id regenerated on every session
   start — it no longer correlates across restarts. The persistent thread id
   (the one that survives resume and keys on-disk session / capacity-memory
-  files) is exposed separately as `DEEPSEEK_THREAD_ID` and as a `thread_id`
+  files) is exposed separately as `CODESMITH_THREAD_ID` and as a `thread_id`
   field in structured hook payloads (`message_submit`, `pre_compact`). Hook
   authors who need cross-restart correlation must switch to
-  `DEEPSEEK_THREAD_ID`.
+  `CODESMITH_THREAD_ID`.
 
 ### Added
 
@@ -233,7 +233,7 @@ Thanks to contributors credited in the v0.8.47 GitHub Release, including
 
 - **`CODESMITH_*` env aliases.** `CODESMITH_PROVIDER`, `CODESMITH_MODEL`,
   and `CODESMITH_BASE_URL` are public product-scoped aliases that take
-  precedence over the legacy `DEEPSEEK_*` forms. The `DEEPSEEK_*` names
+  precedence over the legacy `DEEPSEEK_*` forms (aliases since removed). Those names
   remain accepted for back-compat.
 - **Platform archive bundles.** Release artifacts now ship as per-platform
   archives (`tar.gz` for Linux/macOS, `.zip` for Windows) containing both
@@ -412,12 +412,12 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
 
 - **App state migrates to `~/.codesmith/`.** New installs write product-owned
   state (config, sessions, tasks, skills, logs, etc.) under `~/.codesmith/`.
-  `~/.deepseek/` continues to work as a compatibility fallback — no data loss,
+  `~/.codesmith/` continues to work as a compatibility fallback — no data loss,
   no forced migration. `CODESMITH_HOME` and `CODESMITH_CONFIG_PATH` env vars
-  are now supported alongside existing `DEEPSEEK_*` vars (#2011).
+  names are now supported for app-level variables (#2011).
 - **Project config overlay prefers `.codesmith/config.toml`** before
-  `.deepseek/config.toml`. Both are read; the CodeSmith root takes precedence.
-- **Doctor reports active state root** and whether legacy `~/.deepseek/`
+  `.codesmith/config.toml`. Both are read; the CodeSmith root takes precedence.
+- **Doctor reports active state root** and whether legacy `~/.codesmith/`
   state is also present.
 - **README contributor acknowledgements are current for this release.**
   Thanks @jeoor, @LING71671, and @ousamabenyounes for the fixes and reports
@@ -449,7 +449,7 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   Explicit `/save path/to/file.json` exports still work as before (#2010).
 - **Boot-time session prune** caps managed sessions at 50 on every startup,
   preventing unbounded growth of `~/.codesmith/sessions/`.
-- **Checkpoint path resolution** no longer hardcodes `~/.deepseek/` — uses
+- **Checkpoint path resolution** no longer hardcodes `~/.codesmith/` — uses
   the resolved session directory instead.
 - **Plain startup no longer auto-opens the session picker.** `codesmith` and
   `codew` start in a fresh composer again even when saved sessions exist.
@@ -532,7 +532,7 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   appearing in the following turn (#1961).
 - **`codesmith doctor` now referenced correctly in SSE timeout errors.**
   The error message shown when SSE streams fail to connect now points users to
-  `codesmith doctor` (not the legacy `deepseek doctor`).
+  `codesmith doctor` (not the legacy `codesmith doctor`).
 
 ## [0.8.42] - 2026-05-24
 
@@ -610,20 +610,20 @@ and selection fix in #1964.
   `deepseek-*` / `deepseek-tui-*` to `codesmith-*` / `codesmith-tui-*`.
   The npm wrapper package is now `codesmith` (was `deepseek-tui`). See
   [docs/REBRAND.md](docs/REBRAND.md) for migration notes.
-- **DeepSeek provider integration is unchanged.** `DEEPSEEK_*` env vars,
+- **DeepSeek provider integration is unchanged.** Legacy `DEEPSEEK_*` env aliases,
   model IDs (`deepseek-v4-pro`, `deepseek-v4-flash`, the legacy
   `deepseek-chat` / `deepseek-reasoner` aliases), the
-  `https://api.deepseek.com` host, and the `~/.deepseek/` config
+  `https://api.deepseek.com` host, and the `~/.codesmith/` config
   directory are all preserved.
 
 ### Deprecated
 
-- The `deepseek` and `deepseek-tui` binary names continue to ship as
-  tiny shims that print a one-line warning and forward argv to the
-  renamed binaries. They will be removed in v0.9.0.
-- The `deepseek-tui` npm package continues to publish for one release
-  cycle as a no-`bin` deprecation shim whose postinstall directs users
-  to `npm install -g codesmith`. It will be removed in v0.9.0.
+- The `deepseek` and `deepseek-tui` binary names shipped through the v0.8.x
+  transition as tiny shims that printed a one-line warning and forwarded
+  argv to the renamed binaries (since removed).
+- A deprecated `deepseek-tui` npm placeholder published during the transition
+  cycle as a no-`bin` deprecation shim whose postinstall directed users
+  to `npm install -g codesmith` (since removed).
 
 ### Fixed
 
@@ -667,8 +667,8 @@ documentation lineage now preserved through the rename.
 ### Added
 
 - **Configurable sub-agent per-step API timeout.** A new
-  `[subagents] api_timeout_secs` setting in `~/.deepseek/config.toml`
-  controls how long each sub-agent step will wait on a DeepSeek
+  `[subagents] api_timeout_secs` setting in `~/.codesmith/config.toml`
+  controls how long each sub-agent step will wait on an LLM
   `create_message` response before falling back. The value is clamped to
   `1..=1800`; `0` or unset preserves the legacy 120-second default, so
   existing installs see no behavior change. Long-thinking children (e.g.
@@ -703,7 +703,7 @@ documentation lineage now preserved through the rename.
   providers now pass explicit model names through instead of rewriting them to
   a DeepSeek default (#1714, #1740).
 - **Wanjie Ark is a first-class provider.** `--provider wanjie-ark`, the TUI
-  provider picker, `deepseek auth`, doctor, and config files now target
+  provider picker, `codesmith auth`, doctor, and config files now target
   Wanjie's OpenAI-compatible MaaS endpoint with pass-through model IDs and
   Wanjie-specific env vars.
 - **DeepSeek reasoning replay works through OpenAI-compatible endpoints.**
@@ -730,7 +730,7 @@ documentation lineage now preserved through the rename.
   and canceled child agents now store the full child message transcript behind
   `transcript_handle`, so the parent can inspect details with `handle_read`
   instead of relying only on a lossy summary (#1738).
-- **Forked saved sessions now keep visible lineage.** `deepseek fork` records
+- **Forked saved sessions now keep visible lineage.** `codesmith fork` records
   the parent session id and fork-time message count in additive metadata, and
   session listings mark forked paths with their source id. This gives users a
   bounded branchable-conversation workflow while the larger visual tree browser
@@ -745,9 +745,9 @@ documentation lineage now preserved through the rename.
   of deleting legitimate draft text such as `commit -m` or numeric prompts
   (#1778).
 - **TUI runtime logs are separated per process and pruned on startup.** Each
-  session now writes `~/.deepseek/logs/tui-YYYY-MM-DD-PID.log`, and startup
+  session now writes `~/.codesmith/logs/tui-YYYY-MM-DD-PID.log`, and startup
   removes stale TUI logs older than seven days by default. Set
-  `DEEPSEEK_LOG_RETENTION_DAYS` to a positive day count to adjust retention
+  `CODESMITH_LOG_RETENTION_DAYS` to a positive day count to adjust retention
   (#1782, #1784).
 - **The offline eval harness preserves quoted Windows shell payloads.** Its
   `exec_shell` step now uses the same single-payload shape as the runtime shell
@@ -783,7 +783,7 @@ documentation lineage now preserved through the rename.
 - **Screenshots are readable without extra setup on macOS.** `image_ocr` now
   uses the native Vision framework on macOS when Tesseract is absent, and
   `read_file` routes screenshot/image reads through the same OCR path. Pasted
-  clipboard screenshots saved under `~/.deepseek/clipboard-images` are trusted
+  clipboard screenshots saved under `~/.codesmith/clipboard-images` are trusted
   automatically for read-only tools.
 - **Auto-routing context no longer leaks hidden thinking.** The model/router
   context summary now excludes `ContentBlock::Thinking`, so prior internal
@@ -915,7 +915,7 @@ compatibility report in #1696.
 ### Changed
 
 - **Update guidance is clearer on the website.** The homepage and install page
-  now surface `deepseek update` while keeping package-manager update paths
+  now surface `codesmith update` while keeping package-manager update paths
   visible for Homebrew, npm, and Cargo installs.
 - **README setup docs are current again.** The English, Simplified Chinese,
   and Japanese READMEs now use the current Docker volume/workspace invocation,
@@ -1038,9 +1038,9 @@ key work harvested from #1624.
   bridge now ships a package lock, installs with `npm ci` on Lighthouse when
   available, and overrides the Lark SDK's transitive `axios` dependency to a
   patched line.
-- **China-friendly update fallback.** `deepseek update` now supports mirrored
-  release assets through `DEEPSEEK_TUI_RELEASE_BASE_URL` plus
-  `DEEPSEEK_TUI_VERSION`, and its network-failure hints point users behind
+- **China-friendly update fallback.** `codesmith update` now supports mirrored
+  release assets through `CODESMITH_RELEASE_BASE_URL` plus
+  `CODESMITH_VERSION`, and its network-failure hints point users behind
   GitHub-blocking networks to the CNB `cargo install --git` path for both
   shipped binaries.
 - **CNB is the default Tencent release-candidate mirror.** The CNB sync
@@ -1108,7 +1108,7 @@ already-published v0.8.34 tag.
   balances top-level directories before descending, and `/context`
   shows named prompt layers instead of a single opaque system blob.
 - **Model-visible prompt policy de-conflicted.** The base and mode
-  prompts no longer forbid useful `deepseek` CLI diagnostics, no
+  prompts no longer forbid useful `codesmith` CLI diagnostics, no
   longer require checklists for simple one-step work, and align
   long-session compaction guidance around the 60% suggestion threshold.
 - **Context-pressure guidance now has one split rule.** Manual
@@ -1242,7 +1242,7 @@ that the model reads back explicitly with `handle_read`.
 - **Slash-command routing for the new surface.** `/rlm [N] ...` and
   `/agent [N] ...` now prompt the assistant to use the persistent tools
   instead of the removed foreground RLM operation.
-- **Harness-friendly non-interactive exec sessions.** `deepseek exec`
+- **Harness-friendly non-interactive exec sessions.** `codesmith exec`
   now supports `--resume`, `--session-id`, `--continue`, and
   `--output-format stream-json` so backend wrappers such as ClawBench can
   keep conversation state and parse one JSON event per line without running
@@ -1433,7 +1433,7 @@ the TUI on multi-hundred-GB project directories.
   namespace, so `retrieve_tool_result` finds what the model was
   pointed at.** Two systems used to mint reference blocks
   independently — disk spillover keyed by tool-call id
-  (`~/.deepseek/tool_outputs/<id>.txt`, only above 100 KB) and the
+  (`~/.codesmith/tool_outputs/<id>.txt`, only above 100 KB) and the
   Chat-Completions wire compactor that replaced repeated tool
   results with `<TOOL_RESULT_REF sha="…"/>` (any size, keyed by
   SHA256 of the content). The SHA refs were impossible to
@@ -1448,7 +1448,7 @@ the TUI on multi-hundred-GB project directories.
   "spilled tool result was not found" 4–5 times per session while
   polling CI runs.
   - The wire compactor now persists deduped content to
-    `~/.deepseek/tool_outputs/sha_<sha>.txt` on first sighting,
+    `~/.codesmith/tool_outputs/sha_<sha>.txt` on first sighting,
     and only dedupes outputs ≥ 1 KiB — tiny results stay inline
     on both occurrences instead of becoming a ref the model has
     to chase. The `<TOOL_RESULT_REF>` block grew a
@@ -1732,7 +1732,7 @@ the TUI on multi-hundred-GB project directories.
   Registration is gated on `dependencies::resolve_tesseract()`;
   when tesseract is missing the tool isn't advertised, so the
   model never tries to call an OCR engine the host can't run.
-  `deepseek doctor` reports tesseract status alongside the other
+  `codesmith doctor` reports tesseract status alongside the other
   external-binary dependencies with platform-aware install hints
   (`brew install tesseract` / `apt install tesseract-ocr` /
   `winget install UB-Mannheim.TesseractOCR`). For non-default
@@ -1752,7 +1752,7 @@ the TUI on multi-hundred-GB project directories.
   epub) require an `output_path`; text targets can return the
   converted text inline. Approval routes through the WritesFiles
   / Suggest tier on every call. Registration is gated on
-  `dependencies::resolve_pandoc()`; `deepseek doctor` surfaces
+  `dependencies::resolve_pandoc()`; `codesmith doctor` surfaces
   the binary's status with platform-aware install hints.
 - **`js_execution` tool — execute model-provided JavaScript via a
   local Node.js runtime.** Mirrors `code_execution` (Python) so
@@ -1763,7 +1763,7 @@ the TUI on multi-hundred-GB project directories.
   layouts that cover one tool also cover the other. Registration
   is gated on `crate::dependencies::resolve_node()`: when Node is
   missing the tool is simply not advertised, so the model never
-  sees a runtime it can't actually use. `deepseek doctor` reports
+  sees a runtime it can't actually use. `codesmith doctor` reports
   Node availability under "Tool Dependencies" with platform-aware
   install hints (`brew install node` / `apt install nodejs` /
   `winget install OpenJS.NodeJS`). Approval routes through the
@@ -1792,8 +1792,8 @@ the TUI on multi-hundred-GB project directories.
   `https://api.atlascloud.ai/v1`, and several contributors had
   been running it through the OpenAI-compatible passthrough with
   manual `base_url` / model overrides. Selecting
-  `provider = "atlascloud"` in `~/.deepseek/config.toml` (or via
-  `DEEPSEEK_PROVIDER=atlascloud`) now wires up the documented
+  `provider = "atlascloud"` in `~/.codesmith/config.toml` (or via
+  `CODESMITH_PROVIDER=atlascloud`) now wires up the documented
   defaults, a `[providers.atlascloud]` config block for per-user
   api_key / base_url / model / http_headers overrides, the
   `ATLASCLOUD_API_KEY` env var path, and the
@@ -1807,7 +1807,7 @@ the TUI on multi-hundred-GB project directories.
   but users in regions where those scrapers are unreliable can now
   set `[search] provider = "tavily" | "bocha"` plus
   `api_key = "..."` in `config.toml` (or via the
-  `DEEPSEEK_SEARCH_PROVIDER` / `DEEPSEEK_SEARCH_API_KEY` env vars)
+  `CODESMITH_SEARCH_PROVIDER` / `CODESMITH_SEARCH_API_KEY` env vars)
   to route every `web_search` call through the chosen API. Tavily
   is an AI-search API targeted at general use; Bocha is the
   mainland-China-friendly equivalent. Trust-boundary pins: an
@@ -1829,7 +1829,7 @@ the TUI on multi-hundred-GB project directories.
 
 ### Fixed
 
-- **`deepseek update` now refreshes the companion TUI binary
+- **`codesmith update` now refreshes the companion TUI binary
   alongside the dispatcher** (harvested from PR #1492 by
   **@NorethSea**). Closes the documented two-binary footgun:
   `~/.cargo/bin/deepseek` would update to the latest dispatcher,
@@ -1862,7 +1862,7 @@ the TUI on multi-hundred-GB project directories.
   external path with `prefer_external_pdftotext = true` in
   `~/.config/deepseek/settings.toml` — when set, the previous
   Poppler dispatch (and the `binary_unavailable` install hint when
-  the binary is missing) returns. `deepseek doctor` now reports
+  the binary is missing) returns. `codesmith doctor` now reports
   `pdftotext` as optional and explains how to opt in instead of
   framing it as a missing dependency.
 
@@ -1881,7 +1881,7 @@ A "tools that actually work" release. `code_execution` no longer
 fails on Windows hosts where `python3` isn't on `PATH` — we probe
 for the interpreter at catalog-build time and only advertise the
 tool when one resolves, so the model never sees a runtime it can't
-actually use. The new `deepseek doctor` "Tool Dependencies" and
+actually use. The new `codesmith doctor` "Tool Dependencies" and
 "Terminal Quirks" sections surface external-binary status and
 active env-driven overrides so flicker / motion / missing-tool
 puzzles answer themselves before a bug report gets filed. Ptyxis
@@ -1889,7 +1889,7 @@ puzzles answer themselves before a bug report gets filed. Ptyxis
 knob plus auto-detection that opts them out of the DEC 2026
 synchronized-output wrap their VTE 0.84 mishandles. The CNB Cool
 mirror workflow is rewritten with concurrency and scoped pushes so
-release tags reliably reach `cnb.cool/deepseek-tui.com/DeepSeek-TUI`
+release tags reliably reach `cnb.cool/codesmith.net/codesmith`
 for users behind GitHub-blocking networks. Plus a new auto-close
 workflow that closes contributor PRs whose code has been harvested
 into `main`, so credit lands at the same moment the fix does.
@@ -1918,7 +1918,7 @@ into `main`, so credit lands at the same moment the fix does.
   — the model never sees a tool it can't actually run. Reported by a
   Windows contributor; resolver lives at
   `crates/tui/src/dependencies.rs` and is also surfaced by
-  `deepseek doctor`. Folds in the contributor's "write code to a
+  `codesmith doctor`. Folds in the contributor's "write code to a
   tempfile and run the file" suggestion at the same time, so multiline
   code with quote nesting no longer round-trips through `python3 -c`.
 - **Termius and every SSH session auto-enable low-motion**
@@ -1951,7 +1951,7 @@ into `main`, so credit lands at the same moment the fix does.
 
 ### Added
 
-- **`deepseek doctor` now reports tool-dependency status.** A new
+- **`codesmith doctor` now reports tool-dependency status.** A new
   "Tool Dependencies" section lists which external binaries the
   registered tools rely on, with ✓ when present and ✗ + an
   install hint when missing. Today this covers the Python
@@ -1997,7 +1997,7 @@ into `main`, so credit lands at the same moment the fix does.
   `headers` field that Claude Code, Codex, and OpenCode already
   accept in their MCP config — add e.g.
   `"headers": { "Authorization": "Bearer ${HF_TOKEN}" }` under any
-  HTTP server entry in `~/.deepseek/mcp.json` and the headers are
+  HTTP server entry in `~/.codesmith/mcp.json` and the headers are
   sent on every Streamable HTTP request. Headers are sent
   literally — env-var interpolation is a follow-up, so tokens
   pasted directly into mcp.json live there as plain text. The
@@ -2113,7 +2113,7 @@ coverage additions.
   scrolled the alt-screen up by one row while ratatui's diff
   renderer remained convinced its model matched reality. Three
   layers of defence now ship together: a `tracing-subscriber`
-  writing to `~/.deepseek/logs/tui-YYYY-MM-DD.log`, an fd-level
+  writing to `~/.codesmith/logs/tui-YYYY-MM-DD.log`, an fd-level
   `dup2` stderr redirect for the alt-screen lifetime (Unix only;
   Windows follow-up tracked), and module-level
   `#![deny(clippy::print_stdout, clippy::print_stderr)]` on
@@ -2125,7 +2125,7 @@ coverage additions.
 - **`Ctrl+R` session-restore picker is workspace-scoped** (#1395,
   PR #1397 from **@linzhiqin2003**). `SessionPickerView::new`
   previously listed every saved session on disk sorted globally —
-  so opening DeepSeek-TUI in Project B and pressing `Ctrl+R` could
+  so opening CodeSmith in Project B and pressing `Ctrl+R` could
   hand back Project A's last conversation. The picker now filters
   by current workspace, with a fallback hint when no in-workspace
   sessions exist.
@@ -2233,13 +2233,13 @@ coverage additions.
 - **Note management slash commands** (PR #1407 from
   **@reidliu41**). `/note add`, `/note list`, and friends for
   persistent maintainer-style notes inside the TUI, backed by
-  `~/.deepseek/notes/`.
+  `~/.codesmith/notes/`.
 - **Header surfaces the runtime version chip.** A `v0.8.29` tag
   sits in the header's right cluster after the provider / effort /
   Live / context chips. Styled with `palette::TEXT_HINT` so it
   reads behind the streaming indicators. Drops first under tight
   terminal width.
-- **Global `~/.deepseek/AGENTS.md` now merges with project
+- **Global `~/.codesmith/AGENTS.md` now merges with project
   AGENTS.md** (#1157, PR #1399 from **@linzhiqin2003**) instead of
   being shadowed when a workspace ships its own.
 - **Auto-routing recognises CJK debug / search keywords** (PRs
@@ -2281,9 +2281,9 @@ coverage additions.
   **@reidliu41**). Git-root detection ignores invalid parent `.git`
   markers, env-mutating tests share the crate-wide test lock, and
   the streamable HTTP MCP mock server stays alive for the full test.
-- **Config-mutating smoke tests now isolate `DEEPSEEK_CONFIG_PATH`.**
+- **Config-mutating smoke tests now isolate `CODESMITH_CONFIG_PATH`.**
   The command registry and web-config commit tests no longer rewrite
-  the developer's real `~/.deepseek/config.toml` while validating
+  the developer's real `~/.codesmith/config.toml` while validating
   release candidates locally.
 
 ## [0.8.28] - 2026-05-10
@@ -2299,7 +2299,7 @@ stabilization for parallel-test environment races.
 
 - **CNB mirror workflow** (PR #1373 from **@Anyexyz**) — a
   GitHub Actions workflow (`sync-cnb.yml`) mirrors every push to
-  the `cnb.cool/deepseek-tui.com/DeepSeek-TUI` repository,
+  the `cnb.cool/codesmith.net/codesmith` repository,
   closing out the long-standing China-mirror request. Requires the
   `CNB_GIT_TOKEN` repo secret.
 - **Cmux desktop notification support via `LC_TERMINAL`** (#1281,
@@ -2380,7 +2380,7 @@ stabilization for parallel-test environment races.
 - **Ctrl+Enter content lost when engine is idle** (#1331, PR #1347
   from **@Oliver-ZPLiu**) — when no turn was active, `Ctrl+Enter`
   routed the message to `rx_steer` (only monitored inside
-  `handle_deepseek_turn`), so the user saw their message in the
+  `handle_codesmith_turn`), so the user saw their message in the
   transcript via the local mirror but the LLM never received it —
   the next regular Enter would drain it as a "stale steer". The
   idle path now sends through the standard `handle_send_message`
@@ -2391,10 +2391,10 @@ stabilization for parallel-test environment races.
   v0.8.27 but never wired it into `Workspace::completions()` or
   `build_file_index`. The two regression tests were ignored with
   a "v0.8.28 follow-up" marker. This release wires the helper
-  into both entry points so `@.deepseek/commands/start-task.md`
+  into both entry points so `@.codesmith/commands/start-task.md`
   and `@.generated/specs/device-layout.md` (and the basename
   fuzzy-resolve equivalent) now surface from gitignored
-  user-folders while `.deepseekignore` entries stay blocked.
+  user-folders while `.codesmithignore` entries stay blocked.
   Both tests un-ignored.
 
 ### Changed
@@ -2486,12 +2486,12 @@ Big thanks to every contributor below.
   or `list_dir` before claiming success. Thanks **@THINKER-ONLY**.
 - **Global AGENTS.md fallback** (#1197) — when the workspace and its
   parents don't provide project instructions, the TUI now loads
-  `~/.deepseek/AGENTS.md` before falling back to auto-generated
+  `~/.codesmith/AGENTS.md` before falling back to auto-generated
   instructions. Repo-local context still takes priority.
   Thanks **@manaskarra**.
 - **`--yolo` forwarded from CLI to TUI** (#1233) — the `deepseek --yolo`
   flag now propagates through the dispatcher to the TUI binary via
-  `DEEPSEEK_YOLO=true`. Previously the flag set `yolo` in the CLI
+  `CODESMITH_YOLO=true`. Previously the flag set `yolo` in the CLI
   process but the TUI session started in its default mode.
   Thanks **@fuleinist**.
 - **`composer_arrows_scroll` config** (#1211) — a new
@@ -2505,7 +2505,7 @@ Big thanks to every contributor below.
   (#244) holds across restarts. Thanks **@lbcheng888**.
 - **Provider-aware model picker and provider persistence** (#1320) —
   switching providers now persists the choice to
-  `~/.deepseek/settings.toml` so it survives restarts. The model
+  `~/.codesmith/settings.toml` so it survives restarts. The model
   picker hides DeepSeek-specific models when a non-DeepSeek provider
   is active. `OPENAI_MODEL` env var now overrides the per-provider
   model rather than the global `default_text_model`. Bailian / ZhiPu
@@ -2592,7 +2592,7 @@ Big thanks to every contributor below.
 - **Lazy auto-reload of MCP pool on config-file change** (#1267 part 2) —
   v0.8.26 surfaced the underlying spawn errors; v0.8.27 closes the
   loop on the second half of the report (manual `/mcp reload` after
-  `~/.deepseek/mcp.json` edits). `McpPool::get_or_connect` now does a
+  `~/.codesmith/mcp.json` edits). `McpPool::get_or_connect` now does a
   cheap `stat` + content-hash check before each connection lookup. If
   the on-disk file's mtime moved AND its content hash changed since
   the pool was loaded, all live connections are dropped so the next
@@ -2604,7 +2604,7 @@ Big thanks to every contributor below.
   filesystems with coarse mtime granularity won't churn the pool.
 - **Paste consolidation now happens at paste time, not submit time** —
   large bracketed pastes that exceed the 16 000-char safety cap are
-  now folded into a workspace `.deepseek/pastes/paste-…md` file and
+  now folded into a workspace `.codesmith/pastes/paste-…md` file and
   swapped for an `@`-mention immediately on paste, instead of waiting
   until the user presses Enter. The user sees the `@`-mention in the
   composer (and the "consolidated → @mention" toast) before deciding
@@ -2653,9 +2653,9 @@ Big thanks to every contributor below.
   These are now classified as retryable `RateLimited` errors.
   Thanks **@dst1213**.
 - **Explicit hidden/ignored file completions** (#1270) — when the user
-  types an explicit path starting with `.` (e.g., `.deepseek/commands/`),
+  types an explicit path starting with `.` (e.g., `.codesmith/commands/`),
   the file-completion system now surfaces hidden and gitignored entries
-  while still respecting `.deepseekignore`. Thanks **@SamhandsomeLee**.
+  while still respecting `.codesmithignore`. Thanks **@SamhandsomeLee**.
 
 ### Changed
 
@@ -2702,7 +2702,7 @@ published.
 - **Insecure base-URL error message is more discoverable (#1303)** —
   the rejection now spells out which env var to set (with underscores
   visible), notes that loopback hosts are auto-allowed, and shows a
-  one-line `DEEPSEEK_ALLOW_INSECURE_HTTP=1 deepseek` example.
+  one-line `CODESMITH_ALLOW_INSECURE_HTTP=1 deepseek` example.
 - **Workspace skills survive prompt truncation** — when the skill
   catalog needs trimming to fit the prompt budget, workspace-local
   skills now keep precedence over global ones rather than being
@@ -2718,7 +2718,7 @@ published.
   snapshot step so a slow snapshot on WSL2's `/mnt/*` volumes doesn't
   push past the runtime watchdog and surface a spurious "engine may
   have stopped" error. Thanks **@michaeltse321**.
-- **`/init` auto-adds `.deepseek/` to `.gitignore` (#1326)** when the
+- **`/init` auto-adds `.codesmith/` to `.gitignore` (#1326)** when the
   workspace is a git repo, so workspace-local snapshots, instructions,
   and pastes don't get accidentally committed. Idempotent on repeated
   runs. Thanks **@Giggitycountless**.
@@ -2755,7 +2755,7 @@ published.
   Selection now clamps to the transcript region instead of the
   terminal painting native selection across the sidebar.
 - The build script now invalidates its cache on `.git/HEAD` changes, so
-  the embedded short-SHA in `deepseek --version` stays current after
+  the embedded short-SHA in `codesmith --version` stays current after
   commits and branch switches without needing `cargo clean`. Both
   regular checkouts and `git worktree` layouts are handled.
 - The release-time `changelog_entry_exists_for_current_package_version`
@@ -2802,11 +2802,11 @@ contributions below.
   transports. Stdio, SSE, and the new Streamable HTTP transport share a
   single protocol layer instead of each maintaining its own copy of the
   framing code.
-- **Self-update is curl-free and verifies SHA-256** — `deepseek update`
+- **Self-update is curl-free and verifies SHA-256** — `codesmith update`
   no longer shells out to system `curl` (and no longer needs the
   Schannel `--ssl-no-revoke` Windows hack from v0.8.23). Downloads now
   use `reqwest::blocking` with rustls, and the aggregated
-  `deepseek-artifacts-sha256.txt` manifest is parsed and checked
+  `codesmith-artifacts-sha256.txt` manifest is parsed and checked
   against each downloaded asset before it is installed. Verification
   status is surfaced in the update output.
 - **Terminal-mode recovery unified in `recover_terminal_modes()`** —
@@ -2892,13 +2892,13 @@ the bugs fixed below.
   existing keyboard-mode recapture, so wheel events keep flowing after a
   focus round-trip.
 - **Workspace-local slash commands are now loaded (#1259)** — user command
-  files placed in `<workspace>/.deepseek/commands/`,
+  files placed in `<workspace>/.codesmith/commands/`,
   `<workspace>/.claude/commands/`, and `<workspace>/.cursor/commands/` are
-  now discovered alongside the existing global `~/.deepseek/commands/`.
+  now discovered alongside the existing global `~/.codesmith/commands/`.
   Workspace-local commands shadow global by name, matching the precedence
   model already used for skills. Reported by **@SamhandsomeLee**.
 - **`@`-mention completion finds AI-tool dot-directories** — files inside
-  `.deepseek/`, `.cursor/`, `.claude/`, and `.agents/` are now discoverable
+  `.codesmith/`, `.cursor/`, `.claude/`, and `.agents/` are now discoverable
   in `@`-mention Tab-completion even when those directories are excluded by
   `.gitignore`. The fix also applies to the Ctrl+P file picker and fuzzy
   file resolution.
@@ -2935,7 +2935,7 @@ the bugs fixed below.
     400 entries, README excerpt up to 4 KB, config + key source file
     lists). Adds **~1–10 KB to every prompt depending on repo size**, in
     exchange for a much more cacheable prefix. **Default ON**; disable
-    with `[context] project_pack = false` in `~/.deepseek/config.toml`
+    with `[context] project_pack = false` in `~/.codesmith/config.toml`
     if you'd rather keep prompts minimal.
   - Wire-payload optimization: large tool outputs are budgeted, repeated
     identical tool outputs and `<turn_meta>` blocks are deduplicated
@@ -2992,7 +2992,7 @@ fixes uncovered during follow-up review.
 - **Path and output handling tightened** - several tools that build paths
   from model output now reject `..` segments and absolute paths outside the
   workspace.
-- **Runtime API requires authentication by default** - `deepseek serve --http`
+- **Runtime API requires authentication by default** - `codesmith serve --http`
   no longer accepts unauthenticated requests in its default configuration.
 - **Security-sensitive dependencies bumped** - routine bump pass for crates
   with recent advisories.
@@ -3005,7 +3005,7 @@ fixes uncovered during follow-up review.
 
 - **macOS Keychain prompt at startup** - the file-backed secret store is now
   the default. The OS keyring is opt-in via
-  `DEEPSEEK_SECRET_BACKEND=system|keyring`, and the auth status surface
+  `CODESMITH_SECRET_BACKEND=system|keyring`, and the auth status surface
   refers to "secret store" rather than "keyring" where appropriate.
 - **MCP stdio spawn errors are now visible (#1244)** - when spawning a stdio
   MCP server fails (e.g., `npx` not on `PATH`), the underlying OS error is
@@ -3146,8 +3146,8 @@ TUI, runtime, and docs. Big thanks to **Reid (@reidliu41)**,
 
 ### Added
 - **Global AGENTS.md fallback** - when a workspace and its parents do not
-  provide project instructions, DeepSeek TUI now loads `~/.deepseek/AGENTS.md`
-  before falling back to auto-generated `.deepseek/instructions.md`, keeping
+  provide project instructions, CodeSmith now loads `~/.codesmith/AGENTS.md`
+  before falling back to auto-generated `.codesmith/instructions.md`, keeping
   repo-local instructions higher priority while supporting shared defaults.
 
 ### Fixed
@@ -3178,7 +3178,7 @@ Feishu/Lark/mobile companion work remain out of scope for this release.
 
 ### Added
 - **Prebuilt Docker images on GHCR** - release builds now publish
-  `ghcr.io/hmbown/deepseek-tui` with `latest`, semver, and `vX.Y.Z` tags, and
+  `ghcr.io/hmbown/codesmith` with `latest`, semver, and `vX.Y.Z` tags, and
   the GitHub release notes include a Docker install snippet. Docker publishing
   is now a release gate rather than a best-effort check.
 - **Draggable transcript scrollbar** (#1075, #1076) - when mouse capture is
@@ -3316,7 +3316,7 @@ next round of TUI fixes can be verified against real terminal behaviour.
   longer rewritten by provider-specific normalization. Lets OpenAI-compatible
   gateways accept bare IDs like `deepseek/deepseek-v4-pro`,
   `accounts/fireworks/models/...`, or `glm-5`. Thanks @THINKER-ONLY.
-- **Auto-generated `.deepseek/instructions.md` stabilizes the KV prefix
+- **Auto-generated `.codesmith/instructions.md` stabilizes the KV prefix
   cache** (#1080) — replaces the per-turn filesystem-scan fallback in
   `prompts.rs` with a real on-disk artifact when no context file exists, so
   the system prompt's prefix stays byte-stable across turns and prefix-cache
@@ -3334,7 +3334,7 @@ next round of TUI fixes can be verified against real terminal behaviour.
   diagnosis.
 - **npm installs explain the release-mirror escape hatch when GitHub Releases
   are blocked** (#1051, #1056) — network/DNS failures now point at the
-  existing `DEEPSEEK_TUI_RELEASE_BASE_URL` override and the required checksum
+  existing `CODESMITH_RELEASE_BASE_URL` override and the required checksum
   manifest / binary layout instead of stopping at a raw `ENOTFOUND github.com`.
   Thanks @axobase001.
 
@@ -3397,7 +3397,7 @@ community fixes that make first-run setup, terminal behavior, skills, cost
 display, and recovery paths easier to trust.
 
 ### Added
-- **ACP stdio adapter for Zed/custom agents** (#782) — `deepseek serve --acp`
+- **ACP stdio adapter for Zed/custom agents** (#782) — `codesmith serve --acp`
   starts a local Agent Client Protocol server over stdio. The first slice
   supports new sessions and prompt responses through the user's existing
   DeepSeek config/API key; tool-backed editing and checkpoint replay remain
@@ -3414,7 +3414,7 @@ display, and recovery paths easier to trust.
 - **Current local date in turn metadata** (#893, closes #865) — real user turns
   now include the current local date in `<turn_meta>`, without changing the
   stable system prompt/cache prefix.
-- **Doctor endpoint diagnostics** (#823) — `deepseek doctor` shows the resolved
+- **Doctor endpoint diagnostics** (#823) — `codesmith doctor` shows the resolved
   provider/API endpoint to make proxy, China endpoint, and inherited-env
   debugging more concrete.
 - **More conservative request sizing** (#826) — API requests cap `max_tokens`
@@ -3425,7 +3425,7 @@ display, and recovery paths easier to trust.
 ### Fixed
 - **Env-only API key failure recovery** (#892) — runtime auth failures now say
   when the rejected key came from inherited `DEEPSEEK_API_KEY` and no saved
-  config key is present, matching the clearer `deepseek doctor` guidance.
+  config key is present, matching the clearer `codesmith doctor` guidance.
 - **Windows Unicode output** (#887, closes #872) — TUI startup now best-effort
   switches the Windows console input/output codepages to UTF-8, improving
   Chinese and other non-ASCII rendering.
@@ -3442,7 +3442,7 @@ display, and recovery paths easier to trust.
 - **Workspace-scoped latest resume** (#830, closes #779) — `resume --last`,
   `--continue`, and fork/resume helpers choose the latest session for the
   current workspace/repo rather than the newest saved session globally.
-- **Npm wrapper version fallback** (#885) — `deepseek --version` / `-v` can
+- **Npm wrapper version fallback** (#885) — `codesmith --version` / `-v` can
   report the package version when the native binary has not been downloaded
   yet.
 - **TUI exit resume hint** (#863, closes #682) — exiting the TUI now points
@@ -3513,7 +3513,7 @@ out of this release.
 - **Stale `working...` state after failed dispatch** (#738) — if the UI fails
   to send a message to the engine before a turn starts, the composer loading
   state is cleared instead of trapping later input in pending state.
-- **Prompt-free doctor key checks** — `deepseek doctor` no longer reads the OS
+- **Prompt-free doctor key checks** — `codesmith doctor` no longer reads the OS
   keyring, avoiding macOS Keychain prompts during diagnostics.
 - **macOS Terminal color compatibility** — `xterm-256color` sessions now
   receive 256-color palette indexes instead of truecolor SGR, preventing
@@ -3556,11 +3556,11 @@ out of this release.
   postinstall binary fetch from GitHub Releases now retries on transient
   errors (5 attempts, 1-16 s exponential backoff with jitter), enforces a
   per-attempt timeout (default 5 min, configurable via
-  `DEEPSEEK_TUI_DOWNLOAD_TIMEOUT_MS`) plus a 30 s stall detector, honors
+  `CODESMITH_DOWNLOAD_TIMEOUT_MS`) plus a 30 s stall detector, honors
   `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` env vars (pure-Node CONNECT
   tunneling, no new dependencies), and prints a download-progress line
   to stderr so users know it isn't hung. Suppressible with
-  `DEEPSEEK_TUI_QUIET_INSTALL=1`. Reported by a community user from China
+  `CODESMITH_QUIET_INSTALL=1`. Reported by a community user from China
   whose install through a CN npm mirror took 18 minutes — the bottleneck
   was the GitHub fetch, which CN npm mirrors do not proxy.
 - **YOLO sandbox dropped to DangerFullAccess** — YOLO mode was still
@@ -3616,7 +3616,7 @@ resident sub-agents. No breaking changes.
   structure for git, cargo, npm, yarn, pnpm, docker, kubectl, aws, make, and
   others. Legacy flat prefix matching still works for unlisted commands.
 - **Unified slash-command namespace** (#661) — user-defined commands in
-  `~/.deepseek/commands/` support `$1`, `$2`, `$ARGUMENTS` template
+  `~/.codesmith/commands/` support `$1`, `$2`, `$ARGUMENTS` template
   substitution. User commands override built-in commands.
 - **Skill registry sync** (#654) — `/skills sync` fetches the community skill
   registry and installs/updates all listed skills. Network-gated by the
@@ -3625,7 +3625,7 @@ resident sub-agents. No breaking changes.
   settings enable modal editing in the message composer with standard Vim
   keybindings.
 - **Separate tui.toml** (#657) — theme colors and keybind overrides can live in
-  `~/.deepseek/tui.toml` alongside the main `config.toml`. *Note: file format
+  `~/.codesmith/tui.toml` alongside the main `config.toml`. *Note: file format
   is defined but not yet loaded at startup — wiring deferred to v0.8.13.*
 - **Large-tool-output routing** (#658) — tool results exceeding a configurable
   token threshold are routed through a workshop with truncated previews,
@@ -3644,7 +3644,7 @@ resident sub-agents. No breaking changes.
   a resident lease on the same file simultaneously. Leases are released on
   agent completion.
 - **Context-limit handoff** (#667) — engine-level support for replacing
-  routine compaction with a `.deepseek/handoff.md` file write when context
+  routine compaction with a `.codesmith/handoff.md` file write when context
   pressure triggers. *Note: config knob removed pending implementation.*
 - **LSP auto-attach diagnostics** (#656) — edit results now include post-edit
   diagnostics via the engine-level LSP hooks path.
@@ -3683,7 +3683,7 @@ resident sub-agents. No breaking changes.
   session's workspace to `std::env::current_dir()` (canonicalised, with a
   strict-equality fallback when canonicalisation fails) and only auto-recovers
   on a match. On a mismatch the checkpoint is persisted as a regular session
-  (so the user can find it via `deepseek sessions` / `deepseek resume <id>`)
+  (so the user can find it via `codesmith sessions` / `deepseek resume <id>`)
   and cleared, and the new launch starts fresh — no data is lost. Hotfixed
   to `main` ahead of the v0.8.12 tag.
 - **`cargo install` on stable Rust** — the language-picker match guard at
@@ -3755,14 +3755,14 @@ runtime API additions. No breaking changes.
 - **Stacked toast overlay** (#439) — status toasts can queue and render
   together instead of overwriting each other.
 - **File @-mention frecency** (#441) — file mention suggestions learn
-  from recent selections via `~/.deepseek/file-frecency.jsonl`.
+  from recent selections via `~/.codesmith/file-frecency.jsonl`.
 - **Durable keybinding catalog** (#559) — `docs/KEYBINDINGS.md` is now
   the source-of-truth audit for current shortcuts and the future
   configurable-keymap registry.
 - **Runtime API quartet for whalescale-desktop integration** (#561, #562, #563,
   #564, #567) — addresses whalescale#255/256/260/261:
   - `[runtime_api] cors_origins` config / `--cors-origin URL` flag (repeatable) /
-    `DEEPSEEK_CORS_ORIGINS` env var, all stacking on top of the built-in
+    `CODESMITH_CORS_ORIGINS` env var, all stacking on top of the built-in
     dev-origin defaults (#561 / whalescale#255).
   - `PATCH /v1/threads/{id}` extended from `archived`-only to the full
     editable field set: `allow_shell`, `trust_mode`, `auto_approve`, `model`,
@@ -3781,7 +3781,7 @@ runtime API additions. No breaking changes.
   `zh-Hans` / `pt-BR`) with the native name (日本語, 简体中文, …) plus an
   English label so the target language is reachable without already
   speaking it. Hotkeys 1-5 select; persists immediately to
-  `~/.deepseek/settings.toml`.
+  `~/.codesmith/settings.toml`.
 - **Windows + China install documentation** (#578) — expanded
   `docs/INSTALL.md` with Windows source-build setup, Visual Studio Build
   Tools / MSVC environment notes, rustup and Cargo mirror guidance, and
@@ -3799,7 +3799,7 @@ runtime API additions. No breaking changes.
 - **User memory docs + help polish** (#497, #569) — `/memory` is now
   listed in slash-command help, supports `/memory help`, and the README
   / configuration docs now point at the full `docs/MEMORY.md` guide and
-  document both `[memory].enabled` and `DEEPSEEK_MEMORY`. *Thanks to
+  document both `[memory].enabled` and `CODESMITH_MEMORY`. *Thanks to
   [@20bytes](https://github.com/20bytes) for this PR.*
 
 ### Fixed
@@ -3885,12 +3885,12 @@ Welcome — and thank you.
   - `remember` model-callable tool so the agent can capture
     durable preferences itself; auto-approved because writes are
     scoped to the user's own file (#489).
-  - Hierarchy loader pulls `~/.deepseek/memory.md` (path
-    configurable via `memory_path` / `DEEPSEEK_MEMORY_PATH`) and
+  - Hierarchy loader pulls `~/.codesmith/memory.md` (path
+    configurable via `memory_path` / `CODESMITH_MEMORY_PATH`) and
     injects above the volatile-content boundary in the prompt
     (#490).
   - Default off; enable with `[memory] enabled = true` or
-    `DEEPSEEK_MEMORY=on` (#493).
+    `CODESMITH_MEMORY=on` (#493).
   - Full feature documentation in `docs/MEMORY.md`.
 - **Inline diff rendering for `edit_file` / `write_file`** (#505) —
   tool results now emit a unified diff at the head of the body,
@@ -3907,7 +3907,7 @@ Welcome — and thank you.
 - **MCP server health chip** (#502) — colour-coded `MCP M/N` in the
   footer's right-cluster: success / warning / error / muted by
   reachability. Hidden when zero MCP servers are configured.
-- **Per-project config overlay** (#485) — `<workspace>/.deepseek/config.toml`
+- **Per-project config overlay** (#485) — `<workspace>/.codesmith/config.toml`
   overlays a curated set of fields on top of the user-global config:
   `model`, `reasoning_effort`, `approval_policy`, `sandbox_mode`,
   `notes_path`, `max_subagents`, `allow_shell`, plus the
@@ -3916,7 +3916,7 @@ Welcome — and thank you.
 - **Project-scope deny-list for credentials/redirects** (#417) —
   `api_key`, `base_url`, `provider`, and `mcp_config_path` are
   refused at project scope. A malicious
-  `<workspace>/.deepseek/config.toml` would otherwise be able to
+  `<workspace>/.codesmith/config.toml` would otherwise be able to
   exfiltrate prompts to an attacker-controlled endpoint by
   swapping the user's credentials and target host with
   project-controlled values, or redirect the MCP loader at a
@@ -3962,16 +3962,16 @@ Welcome — and thank you.
   catalogues capability matrix vs OpenCode and Codex CLI.
 - **Session prune helper + `/sessions prune <days>`** (#406 phase-1) —
   drops persisted sessions older than N days from
-  `~/.deepseek/sessions/`. Skips the checkpoint subdirectory and
+  `~/.codesmith/sessions/`. Skips the checkpoint subdirectory and
   compares against metadata `updated_at` (not fs mtime, which can
   lie after an rsync). 10 total tests cover the helper's contract
   and the slash-command dispatch surface. Phase 2 (boot-prune +
   retention policy) stays v0.8.9 work.
-- **`deepseek doctor --json`** now surfaces a `memory` block
+- **`codesmith doctor --json`** now surfaces a `memory` block
   (`enabled` / `path` / `file_present`) so operators can verify
   memory configuration without booting the TUI.
 - **Tool-output spillover** (#422 + #423 + #500) — tool outputs over
-  100 KiB now spill to `~/.deepseek/tool_outputs/<id>.txt` from the
+  100 KiB now spill to `~/.codesmith/tool_outputs/<id>.txt` from the
   engine's tool-execution path. The model receives a 32 KiB head plus
   a footer pointing at the spillover file (`Use read_file path=…`),
   the tool cell renders an inline `full output: <path>` annotation in
@@ -4044,7 +4044,7 @@ Welcome — and thank you.
   pattern) so render stays pure for tests.
 - **`instructions = [...]` config array** (#454) — declare
   additional instruction files (`./AGENTS.md`,
-  `~/.deepseek/global.md`, …) and they're concatenated into the
+  `~/.codesmith/global.md`, …) and they're concatenated into the
   system prompt in declared order, above the skills block. Each
   file is capped at 100 KiB; missing files log a warning and are
   skipped instead of failing the launch. Project config replaces
@@ -4066,7 +4066,7 @@ Welcome — and thank you.
   description as a quote block at the head so a single tool
   result is self-contained. Resolves the skills directory with
   the same hierarchy `App::new` uses (`.agents/skills` →
-  `skills` → `~/.deepseek/skills`). Available in Plan and
+  `skills` → `~/.codesmith/skills`). Available in Plan and
   Agent/Yolo modes.
 - **Kitty keyboard protocol opt-in** (#442) — pushes
   `DISAMBIGUATE_ESCAPE_CODES` at startup so terminals that
@@ -4084,7 +4084,7 @@ Welcome — and thank you.
   walk every candidate directory in the workspace plus the
   global default: `<workspace>/.agents/skills` →
   `<workspace>/skills` → `<workspace>/.opencode/skills` →
-  `<workspace>/.claude/skills` → `~/.deepseek/skills`. Skills
+  `<workspace>/.claude/skills` → `~/.codesmith/skills`. Skills
   installed for any AI-tool convention show up in the same
   catalogue. Name conflicts resolve first-match-wins per the
   precedence order so workspace-local skills shadow user/global
@@ -4094,12 +4094,12 @@ Welcome — and thank you.
 - **`tool.spillover` audit event** (#500 polish) — emit a
   discrete audit-log entry whenever `apply_spillover` writes a
   spillover file, so operators tailing
-  `~/.deepseek/audit.log` can correlate large-output episodes
-  with disk-usage growth in `~/.deepseek/tool_outputs/`. Fires
+  `~/.codesmith/audit.log` can correlate large-output episodes
+  with disk-usage growth in `~/.codesmith/tool_outputs/`. Fires
   in both the sequential and parallel tool paths.
 - **Prompt stash** (#440) — Ctrl+S in the composer parks the
   current draft to a JSONL-backed stash at
-  `~/.deepseek/composer_stash.jsonl` (no-op on empty composer).
+  `~/.codesmith/composer_stash.jsonl` (no-op on empty composer).
   `/stash list` shows parked drafts (oldest first, with one-line
   previews and timestamps); `/stash pop` restores the most
   recently parked draft into the composer (LIFO). Self-healing
@@ -4126,12 +4126,12 @@ Welcome — and thank you.
   enumerates configured lifecycle hooks grouped by event,
   showing each hook's name, command preview, timeout, and
   condition. Notes the global `[hooks].enabled` flag's state.
-  No more `cat ~/.deepseek/config.toml` to debug "did my hook
+  No more `cat ~/.codesmith/config.toml` to debug "did my hook
   actually load". The picker / persisted enable-disable
   surface from #460 stays as v0.8.9 follow-up. Available via
   `/hooks` or `/hooks list`; aliased to `/hook`. Localized in
   en/ja/zh-Hans/pt-BR.
-- **`deepseek doctor` reports cross-tool skill dirs** (#432
+- **`codesmith doctor` reports cross-tool skill dirs** (#432
   follow-up) — both the human-readable and JSON outputs now
   surface `.opencode/skills/` and `.claude/skills/` presence /
   count, so operators can confirm at a glance whether any
@@ -4140,14 +4140,14 @@ Welcome — and thank you.
   output to keep the report scannable; JSON always emits all
   five slots (`global`, `agents`, `local`, `opencode`,
   `claude`) for stable machine consumption.
-- **`deepseek doctor` reports storage surfaces** (#422 / #440 /
+- **`codesmith doctor` reports storage surfaces** (#422 / #440 /
   #500 follow-up) — new `Storage:` section surfaces the
   tool-output spillover dir
-  (`~/.deepseek/tool_outputs/`) with file count and the
+  (`~/.codesmith/tool_outputs/`) with file count and the
   composer stash file
-  (`~/.deepseek/composer_stash.jsonl`) with parked-draft
+  (`~/.codesmith/composer_stash.jsonl`) with parked-draft
   count. Mirrored under `storage.{spillover,stash}` in the
-  JSON output so `deepseek doctor --json` keeps a stable
+  JSON output so `codesmith doctor --json` keeps a stable
   schema.
 - **`/hooks events` subcommand** (#460 polish) — lists every
   supported `HookEvent` value with a short blurb so users can
@@ -4162,7 +4162,7 @@ Welcome — and thank you.
   Next step. The richer Progress sub-bullets help long
   resumed sessions distinguish "what's verified done" from
   "what's mid-flight" — useful when the model writes
-  `.deepseek/handoff.md` before a long break. Backwards-
+  `.codesmith/handoff.md` before a long break. Backwards-
   compat: existing handoff.md files continue to render fine
   because the loader injects them as plain markdown (the
   template only guides what NEW handoffs look like). The
@@ -4253,7 +4253,7 @@ Welcome — and thank you.
   the host's `os.platform() / os.arch()` combo, the wrapper now prints the
   full `cargo install` fallback recipe and a link to
   [`docs/INSTALL.md`](docs/INSTALL.md) instead of just the bare error.
-- **`DEEPSEEK_TUI_OPTIONAL_INSTALL=1`** — new env knob that downgrades a
+- **`CODESMITH_OPTIONAL_INSTALL=1`** — new env knob that downgrades a
   postinstall failure to a warning + `exit 0`, so CI matrices that include
   unsupported platforms don't fail the whole `npm install`.
 
@@ -4264,7 +4264,7 @@ Welcome — and thank you.
   covering the common `Unsupported architecture`, `MISSING_COMPANION_BINARY`,
   and self-update mismatch errors.
 - README and `README.zh-CN.md` now have an explicit **Linux ARM64** quickstart
-  pointing ARM64 users at `cargo install deepseek-tui-cli deepseek-tui --locked`
+  pointing ARM64 users at `cargo install codesmith-cli deepseek-tui --locked`
   for v0.8.7 and at `npm i -g deepseek-tui` for v0.8.8+.
 
 ### Releases
@@ -4367,14 +4367,14 @@ Welcome — and thank you.
   real path captured at discovery and renders that.
 - **Missing-companion error was hostile to direct GitHub Release downloaders**
   (#258) — replaced "Build workspace default members to install it" wall of
-  text with a concrete three-path checklist: `npm install -g deepseek-tui`,
-  `cargo install deepseek-tui-cli deepseek-tui --locked`, or downloading both
+  text with a concrete three-path checklist: `npm install -g codesmith`,
+  `cargo install codesmith-cli deepseek-tui --locked`, or downloading both
   `deepseek-<platform>` AND `deepseek-tui-<platform>` from the same Release
-  page. `DEEPSEEK_TUI_BIN` stays as a power-user fallback.
+  page. `CODESMITH_TUI_BIN` stays as a power-user fallback.
 
 ### Added
 - **Privacy: `$HOME` contracts to `~` in viewer-visible paths** — the TUI,
-  `deepseek doctor`, `deepseek setup`, and onboarding now contract the home
+  `codesmith doctor`, `deepseek setup`, and onboarding now contract the home
   directory to `~` in every path shown on screen, so screenshots, screencasts,
   and pasted help output do not leak the OS account name. Persisted state,
   audit log, session checkpoints, and LLM-bound system prompts intentionally
@@ -4407,7 +4407,7 @@ Welcome — and thank you.
 - **Windows release build (LNK1104)** — drop the `deepseek` shim binary in
   `crates/tui` that 0.8.1 introduced for the bundled `cargo install`. It
   produced a second `target/release/deepseek.exe` that collided with the
-  `deepseek-tui-cli` artifact during workspace builds; the second linker
+  `codesmith-cli` artifact during workspace builds; the second linker
   invocation hit `LNK1104: cannot open file deepseek.exe` on Windows. The
   cli crate is now the single source of `deepseek`; workspace default
   members still produce both binaries (one per crate).
@@ -4415,7 +4415,7 @@ Welcome — and thank you.
   re-fetches the GitHub-hosted SHA-256 checksum manifest on every invocation.
   When the binary is already installed and its `.version` marker matches the
   package version, the wrapper trusts the local file. The manifest is fetched
-  lazily on actual download (first install or `DEEPSEEK_TUI_FORCE_DOWNLOAD=1`),
+  lazily on actual download (first install or `CODESMITH_FORCE_DOWNLOAD=1`),
   so GitHub flakes, captive portals, corporate proxies, and offline state no
   longer break every command.
 
@@ -4431,8 +4431,8 @@ Welcome — and thank you.
   English README.
 
 ### Changed
-- **`cargo install` UX** — to install the canonical `deepseek` command,
-  `cargo install deepseek-tui-cli` (the historical path). The 0.8.1
+- **`cargo install` UX** — to install the canonical `codesmith` command,
+  `cargo install codesmith-cli` (the historical path). The 0.8.1
   one-command flow (`cargo install deepseek-tui` providing both binaries) is
   reverted because it broke Windows release builds; install both packages
   separately if you want the TUI binary too.
@@ -4443,8 +4443,8 @@ Welcome — and thank you.
 - **One-command Cargo install** — `cargo install deepseek-tui --locked` now
   provides both the canonical `deepseek` dispatcher and the `deepseek-tui`
   companion binary from the main `deepseek-tui` package, so dispatcher
-  subcommands such as `deepseek doctor --json` work without installing
-  `deepseek-tui-cli` separately.
+  subcommands such as `codesmith doctor --json` work without installing
+  `codesmith-cli` separately.
 
 ## [0.8.0] - 2026-05-01
 
@@ -4511,7 +4511,7 @@ Welcome — and thank you.
 ### Added
 - **Checklist card rendering** — `checklist_write` / `todo_*` results now render as a purpose-built card with completed/total + percent header, per-item status markers (✅ / `●` / `○`), and a collapsing affordance for long lists. Plumbed through `GenericToolCell` so no new variant threading is needed. (#241)
 - **Context menu for transcript operations** — right-click or `Ctrl+M` opens a context-sensitive menu with Copy, Copy All, and selection-aware actions. (`crates/tui/src/tui/context_menu.rs`)
-- **Windows .exe sibling lookup** — `locate_sibling_tui_binary` in the CLI dispatcher finds `deepseek-tui.exe` on Windows, honours `DEEPSEEK_TUI_BIN` override, and falls back to suffix-less lookup. Tests lock in platform-correct name resolution and env override. (#247)
+- **Windows .exe sibling lookup** — `locate_sibling_tui_binary` in the CLI dispatcher finds `deepseek-tui.exe` on Windows, honours `CODESMITH_TUI_BIN` override, and falls back to suffix-less lookup. Tests lock in platform-correct name resolution and env override. (#247)
 
 ### Changed
 - **Swarm/sub-agent canonical data model** — `SwarmTaskOutcome` and `SwarmOutcome` are now the single source of truth. Every UI surface (sidebar, transcript FanoutCard, footer) reads from `swarm_jobs` rather than maintaining parallel projections. (#236, #238)
@@ -4668,7 +4668,7 @@ Welcome — and thank you.
 ## [0.5.2] - 2026-04-25
 
 ### Added
-- **`/model` opens a Pro/Flash + thinking-effort picker (#39).** Typing `/model` with no argument now pops a two-pane modal: model on the left (`deepseek-v4-pro` flagship, `deepseek-v4-flash` fast/cheap, plus a "current (custom)" row when the active id isn't one of the listed defaults), and thinking effort on the right. Tab/←/→ swaps panes, ↑/↓ moves within the focused pane, Enter applies both selections, Esc cancels. The effort pane intentionally exposes only **Off / High / Max** because [DeepSeek's Thinking Mode docs](https://api-docs.deepseek.com/guides/reasoning_model) state `low`/`medium` are mapped to `high` server-side and `xhigh` is mapped to `max` — the legacy variants stay valid in `~/.deepseek/settings.toml` for back-compat, the picker just doesn't surface them. Apply path persists `default_model` and `reasoning_effort` to settings, forwards `Op::SetModel` + `Op::SetCompaction` to the running engine so the next turn picks up the change without a restart, and resets the per-turn token gauges (cache, replay) so the footer numbers reflect the new model. `/model <id>` keeps working unchanged for power users.
+- **`/model` opens a Pro/Flash + thinking-effort picker (#39).** Typing `/model` with no argument now pops a two-pane modal: model on the left (`deepseek-v4-pro` flagship, `deepseek-v4-flash` fast/cheap, plus a "current (custom)" row when the active id isn't one of the listed defaults), and thinking effort on the right. Tab/←/→ swaps panes, ↑/↓ moves within the focused pane, Enter applies both selections, Esc cancels. The effort pane intentionally exposes only **Off / High / Max** because [DeepSeek's Thinking Mode docs](https://api-docs.deepseek.com/guides/reasoning_model) state `low`/`medium` are mapped to `high` server-side and `xhigh` is mapped to `max` — the legacy variants stay valid in `~/.codesmith/settings.toml` for back-compat, the picker just doesn't surface them. Apply path persists `default_model` and `reasoning_effort` to settings, forwards `Op::SetModel` + `Op::SetCompaction` to the running engine so the next turn picks up the change without a restart, and resets the per-turn token gauges (cache, replay) so the footer numbers reflect the new model. `/model <id>` keeps working unchanged for power users.
 
 ## [0.5.1] - 2026-04-25
 
@@ -4677,7 +4677,7 @@ Welcome — and thank you.
 - **PDF support in `read_file`.** PDFs are auto-detected by extension or `%PDF-` magic bytes and extracted via `pdftotext -layout` (poppler) when available. New optional `pages` arg (`"5"` or `"1-10"`) reads page slices. Without `pdftotext`, returns a structured `{type: "binary_unavailable", kind: "pdf", reason, hint}` with install commands for macOS/Debian. (#34)
 - **Reasoning-content replay telemetry, end-to-end (#30).** The chat-completions sanitizer now estimates replayed `reasoning_content` tokens (~4 chars/token), threads the value through the streaming `Usage` payload, stores it on the App, and renders an `rsn N.Nk` chip in the footer next to the cache hit-rate. The chip turns warning-coloured when replay tokens exceed 50% of the input budget, so users on long thinking-mode loops can see at a glance how much of their context window is going to V4's "Interleaved Thinking" replay (paper §5.1.1). Logged at `RUST_LOG=deepseek_tui=info` for tail-friendly diagnosis.
 - **`@file` Tab-completion (#28).** Typing `@<partial>` and pressing Tab now resolves the mention against the workspace using the existing `ignore::WalkBuilder`. A unique match is spliced into the input; multiple matches with a longer common prefix extend the partial; remaining ambiguity is surfaced via the status line. The mention-expansion path that ships file contents to the model is unchanged — this is purely a discovery aid for typing the path. Inline-contents and a fuzzy popup picker are queued for v0.5.2.
-- **Per-workspace external trust list (#29).** `~/.deepseek/workspace-trust.json` now records, for each workspace, the absolute paths the user has opted into reading/writing from outside that workspace. The new `/trust` slash command supports `add <path>`, `remove <path>`, `list`, `on`, `off`, and a status read with no args; the engine consults the list when constructing every `ToolContext` so changes apply on the next tool call without restart. `/diagnostics` surfaces the list. The interactive "Allow once / Always allow / Deny" approval prompt is deferred — for now grant access ahead of the turn with `/trust add <path>`.
+- **Per-workspace external trust list (#29).** `~/.codesmith/workspace-trust.json` now records, for each workspace, the absolute paths the user has opted into reading/writing from outside that workspace. The new `/trust` slash command supports `add <path>`, `remove <path>`, `list`, `on`, `off`, and a status read with no args; the engine consults the list when constructing every `ToolContext` so changes apply on the next tool call without restart. `/diagnostics` surfaces the list. The interactive "Allow once / Always allow / Deny" approval prompt is deferred — for now grant access ahead of the turn with `/trust add <path>`.
 
 ### Fixed
 - **TUI sidebar gutter bleed regression test (#36).** Snapshot tests now lock in that long single-line tool results — including a `todo_write` echo of a multi-kilobyte JSON payload — never write any cells outside `chat_area` at the widths reported in the bug (80, 120, 165, 200 cols). A second test verifies the scrollbar coexists with content along the right edge instead of overdrawing the penultimate column.
@@ -4915,11 +4915,11 @@ Welcome — and thank you.
 ## [0.3.17] - 2026-02-16
 
 ### Fixed
-- Config loading now expands `~` in `DEEPSEEK_CONFIG_PATH` and `--config` paths.
-- When `DEEPSEEK_CONFIG_PATH` points to a missing file, config loading now falls back to `~/.deepseek/config.toml` if it exists.
+- Config loading now expands `~` in `CODESMITH_CONFIG_PATH` and `--config` paths.
+- When `CODESMITH_CONFIG_PATH` points to a missing file, config loading now falls back to `~/.codesmith/config.toml` if it exists.
 
 ### Changed
-- Removed committed transient runtime artifacts (`session_*.json`, `.deepseek/trusted`) and added ignore rules to prevent re-commit.
+- Removed committed transient runtime artifacts (`session_*.json`, `.codesmith/trusted`) and added ignore rules to prevent re-commit.
 
 ## [0.3.16] - 2026-02-15
 
@@ -4930,7 +4930,7 @@ Welcome — and thank you.
 - Command palette modal (`Ctrl+K`) for quick insertion of slash commands and skills.
 - Persistent right sidebar in wide terminals showing live plan/todo/sub-agent state.
 - Expandable tool payload views (`v` in transcript, `v` in approval modal) for full params/output inspection.
-- Runtime HTTP/SSE API (`deepseek serve --http`) with durable thread/turn/item lifecycle, interrupt/steer, and replayable event timeline.
+- Runtime HTTP/SSE API (`codesmith serve --http`) with durable thread/turn/item lifecycle, interrupt/steer, and replayable event timeline.
 - Background task queue (`/task add|list|show|cancel` and `POST /v1/tasks`) with persistent storage, bounded worker pool, and timeline/artifact tracking.
 
 ### Changed
@@ -5006,7 +5006,7 @@ Welcome — and thank you.
 ## [0.3.6] - 2026-02-02
 
 ### Added
-- New welcome banner on startup showing "Welcome to DeepSeek TUI!" with directory, session ID, and model info
+- New welcome banner on startup showing "Welcome to CodeSmith!" with directory, session ID, and model info
 - Visual context progress bar in footer showing usage with block characters [████░░░░░░] and percentage
 
 ### Changed
@@ -5060,10 +5060,10 @@ Welcome — and thank you.
 
 ### Added
 - `deepseek setup` to bootstrap MCP config and skills directories
-- `deepseek mcp init` to generate a template `mcp.json` at the configured path
+- `codesmith mcp init` to generate a template `mcp.json` at the configured path
 
 ### Changed
-- `deepseek doctor` now follows the resolved config path and config-derived MCP/skills locations
+- `codesmith doctor` now follows the resolved config path and config-derived MCP/skills locations
 
 ### Fixed
 - Doctor no longer reports missing MCP/skills when paths are overridden via config or env
@@ -5120,7 +5120,7 @@ Welcome — and thank you.
 - DeepSeek blue branding refresh + whale indicator
 - Responses API proxy subcommand for key-isolated forwarding
 - Execpolicy check tooling and feature flag CLI
-- Agentic exec mode (`deepseek exec --auto`) with auto-approvals
+- Agentic exec mode (`codesmith exec --auto`) with auto-approvals
 
 ### Changed
 - Removed multimedia tooling and aligned prompts/docs for text-only DeepSeek API
@@ -5128,7 +5128,7 @@ Welcome — and thank you.
 ## [0.1.9] - 2026-01-17
 
 ### Added
-- API connectivity test in `deepseek doctor` command
+- API connectivity test in `codesmith doctor` command
 - Helpful error diagnostics for common API failures (invalid key, timeout, network issues)
 
 ## [0.1.8] - 2026-01-16
@@ -5177,7 +5177,7 @@ Welcome — and thank you.
 ## [0.1.0] - 2026-01-12
 
 ### Added
-- Initial alpha release of DeepSeek TUI
+- Initial alpha release of CodeSmith
 - Interactive TUI chat interface
 - DeepSeek API integration (OpenAI-compatible Responses API)
 - Tool execution (shell, file ops)

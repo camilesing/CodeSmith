@@ -23,9 +23,9 @@ use super::convert;
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 use super::reasoning;
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
-use rig_core::completion::message::AssistantContent;
-#[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 use rig_core::OneOrMany;
+#[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
+use rig_core::completion::message::AssistantContent;
 
 /// Strategy for folding CodeSmith's provider-specific request fields into rig's
 /// provider-agnostic `CompletionRequest`.
@@ -179,14 +179,14 @@ impl RequestShaper for GenericShaper {
                         // — this only injects the placeholder when a tool-call
                         // turn has none (session restored from disk, sub-agent
                         // injection, …).
-                        let has_toolcall =
-                            items.iter().any(|i| matches!(i, AssistantContent::ToolCall(_)));
-                        let has_reasoning =
-                            items.iter().any(|i| matches!(i, AssistantContent::Reasoning(_)));
+                        let has_toolcall = items
+                            .iter()
+                            .any(|i| matches!(i, AssistantContent::ToolCall(_)));
+                        let has_reasoning = items
+                            .iter()
+                            .any(|i| matches!(i, AssistantContent::Reasoning(_)));
                         if has_toolcall && !has_reasoning {
-                            items.push(AssistantContent::reasoning(
-                                "(reasoning omitted)",
-                            ));
+                            items.push(AssistantContent::reasoning("(reasoning omitted)"));
                         }
                         Some(RigMessage::Assistant {
                             id,
@@ -232,8 +232,7 @@ impl RequestShaper for GenericShaper {
 /// empty text block only as an unreachable fallback (rig requires non-empty).
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 fn one_or_many_assistant(items: Vec<AssistantContent>) -> OneOrMany<AssistantContent> {
-    OneOrMany::many(items)
-        .unwrap_or_else(|_| OneOrMany::one(AssistantContent::text(String::new())))
+    OneOrMany::many(items).unwrap_or_else(|_| OneOrMany::one(AssistantContent::text(String::new())))
 }
 
 /// Anthropic shaper: forwards the structured `system` prompt (with per-block
@@ -296,13 +295,14 @@ impl RequestShaper for AnthropicShaper {
     }
 }
 
-#[cfg(all(test, any(feature = "openai", feature = "deepseek", feature = "openai-compat")))]
+#[cfg(all(
+    test,
+    any(feature = "openai", feature = "deepseek", feature = "openai-compat")
+))]
 mod tests {
     use super::*;
     use codesmith_agent::models::MessageRequest;
-    use rig_core::completion::message::{
-        AssistantContent, ToolCall as RigToolCall, ToolFunction,
-    };
+    use rig_core::completion::message::{AssistantContent, ToolCall as RigToolCall, ToolFunction};
     use serde_json::json;
 
     /// Minimal `MessageRequest` carrying only the fields `shape_messages` and
@@ -396,7 +396,9 @@ mod tests {
         shaper.shape_messages(&mut messages, &req_for("deepseek-reasoner", None));
         let items = assistant_items(&messages[0]);
         assert!(
-            items.iter().any(|c| matches!(c, AssistantContent::ToolCall(_))),
+            items
+                .iter()
+                .any(|c| matches!(c, AssistantContent::ToolCall(_))),
             "tool call must be kept"
         );
         assert!(
@@ -428,7 +430,9 @@ mod tests {
             "existing reasoning must survive (not stripped), with no duplicate placeholder"
         );
         assert!(
-            items.iter().any(|c| matches!(c, AssistantContent::ToolCall(_))),
+            items
+                .iter()
+                .any(|c| matches!(c, AssistantContent::ToolCall(_))),
             "tool call must be kept"
         );
     }

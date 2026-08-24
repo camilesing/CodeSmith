@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn anchor_summary_section_parses_anchor_file_into_bullets() {
         let tmpdir = tempfile::TempDir::new().unwrap();
-        let deepseek_dir = tmpdir.path().join(".deepseek");
+        let deepseek_dir = tmpdir.path().join(".codesmith");
         std::fs::create_dir_all(&deepseek_dir).unwrap();
         std::fs::write(
             deepseek_dir.join("anchors.md"),

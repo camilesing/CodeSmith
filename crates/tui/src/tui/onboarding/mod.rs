@@ -19,7 +19,7 @@ use crate::palette;
 use crate::tui::app::{App, OnboardingState};
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default().style(Style::default().bg(palette::DEEPSEEK_INK));
+    let block = Block::default().style(Style::default().bg(palette::CODESMITH_INK));
     f.render_widget(block, area);
 
     const TOP_MARGIN: u16 = 2;
@@ -46,12 +46,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .title(Line::from(Span::styled(
                 " CodeSmith ",
                 Style::default()
-                    .fg(palette::DEEPSEEK_BLUE)
+                    .fg(palette::CODESMITH_BLUE)
                     .add_modifier(Modifier::BOLD),
             )))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_SLATE))
+            .style(Style::default().bg(palette::CODESMITH_SLATE))
             .padding(Padding::new(2, 2, 1, 1));
         if !app.onboarding_workspace_trust_gate {
             let (step, total) = onboarding_step(app);
@@ -104,7 +104,7 @@ pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
         Line::from(Span::styled(
             app.tr(MessageId::OnboardTipsTitle).to_string(),
             Style::default()
-                .fg(palette::DEEPSEEK_SKY)
+                .fg(palette::CODESMITH_SKY)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -128,13 +128,7 @@ pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
 }
 
 pub fn default_marker_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| {
-        let primary = home.join(".codesmith").join(".onboarded");
-        if primary.exists() {
-            return primary;
-        }
-        home.join(".deepseek").join(".onboarded")
-    })
+    dirs::home_dir().map(|home| home.join(".codesmith").join(".onboarded"))
 }
 
 pub fn is_onboarded() -> bool {
@@ -158,8 +152,8 @@ pub fn needs_trust(workspace: &Path) -> bool {
     }
 
     let markers = [
-        workspace.join(".deepseek").join("trusted"),
-        workspace.join(".deepseek").join("trust.json"),
+        workspace.join(".codesmith").join("trusted"),
+        workspace.join(".codesmith").join("trust.json"),
     ];
     !markers.iter().any(|path| path.exists())
 }

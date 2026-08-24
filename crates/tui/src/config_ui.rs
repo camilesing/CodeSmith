@@ -1092,21 +1092,21 @@ mod tests {
             std::process::id(),
             nanos
         ));
-        fs::create_dir_all(temp_root.join(".deepseek")).expect("config dir");
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(temp_root.join(".codesmith")).expect("config dir");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         fs::write(&config_path, "").expect("seed config");
         fs::write(
-            temp_root.join(".deepseek").join("settings.toml"),
+            temp_root.join(".codesmith").join("settings.toml"),
             r#"
 cost_currency = "cny"
 "#,
         )
         .expect("seed settings");
 
-        let old_config_path = std::env::var_os("DEEPSEEK_CONFIG_PATH");
+        let old_config_path = std::env::var_os("CODESMITH_CONFIG_PATH");
         // Safety: test-only environment mutation guarded by a module mutex.
         unsafe {
-            std::env::set_var("DEEPSEEK_CONFIG_PATH", &config_path);
+            std::env::set_var("CODESMITH_CONFIG_PATH", &config_path);
         }
 
         let app = app();
@@ -1117,9 +1117,9 @@ cost_currency = "cny"
         // Safety: restore the guarded test-only environment mutation above.
         unsafe {
             if let Some(value) = old_config_path {
-                std::env::set_var("DEEPSEEK_CONFIG_PATH", value);
+                std::env::set_var("CODESMITH_CONFIG_PATH", value);
             } else {
-                std::env::remove_var("DEEPSEEK_CONFIG_PATH");
+                std::env::remove_var("CODESMITH_CONFIG_PATH");
             }
         }
     }
@@ -1136,20 +1136,20 @@ cost_currency = "cny"
             std::process::id(),
             nanos
         ));
-        fs::create_dir_all(temp_root.join(".deepseek")).expect("config dir");
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(temp_root.join(".codesmith")).expect("config dir");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         fs::write(&config_path, "").expect("seed config");
         fs::write(
-            temp_root.join(".deepseek").join("settings.toml"),
+            temp_root.join(".codesmith").join("settings.toml"),
             r##"
 background_color = "#1A1B26"
 "##,
         )
         .expect("seed settings");
 
-        let old_config_path = std::env::var_os("DEEPSEEK_CONFIG_PATH");
+        let old_config_path = std::env::var_os("CODESMITH_CONFIG_PATH");
         unsafe {
-            std::env::set_var("DEEPSEEK_CONFIG_PATH", &config_path);
+            std::env::set_var("CODESMITH_CONFIG_PATH", &config_path);
         }
 
         let app = app();
@@ -1159,9 +1159,9 @@ background_color = "#1A1B26"
         assert_eq!(doc.settings.background_color.as_deref(), Some("#1a1b26"));
         unsafe {
             if let Some(value) = old_config_path {
-                std::env::set_var("DEEPSEEK_CONFIG_PATH", value);
+                std::env::set_var("CODESMITH_CONFIG_PATH", value);
             } else {
-                std::env::remove_var("DEEPSEEK_CONFIG_PATH");
+                std::env::remove_var("CODESMITH_CONFIG_PATH");
             }
         }
     }
@@ -1219,8 +1219,8 @@ background_color = "#1A1B26"
             std::process::id(),
             nanos
         ));
-        fs::create_dir_all(temp_root.join(".deepseek")).expect("config dir");
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(temp_root.join(".codesmith")).expect("config dir");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         fs::write(
             &config_path,
             r#"

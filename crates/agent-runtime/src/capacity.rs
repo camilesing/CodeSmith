@@ -37,7 +37,7 @@ impl Default for CapacityControllerConfig {
             // Auto-managing the prefix on the user's behalf works against
             // that posture. Power users who want the controller can opt
             // in via `capacity.enabled = true` in
-            // `~/.deepseek/config.toml`.
+            // `~/.codesmith/config.toml`.
             enabled: false,
             // Thresholds retained for the opt-in path; tuning notes live
             // in git history (#63 follow-up).

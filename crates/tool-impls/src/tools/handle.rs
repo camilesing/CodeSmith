@@ -231,7 +231,9 @@ fn looks_like_tool_result_ref(raw: &str) -> bool {
         || trimmed.starts_with("call_")
         || trimmed.starts_with("tool_result:")
         || trimmed.ends_with(".txt")
-        || codesmith_agent_runtime::tools::truncate::is_valid_sha256(&sha_candidate.to_ascii_lowercase())
+        || codesmith_agent_runtime::tools::truncate::is_valid_sha256(
+            &sha_candidate.to_ascii_lowercase(),
+        )
 }
 
 fn parse_projection(input: &Value) -> Result<Projection, ToolError> {

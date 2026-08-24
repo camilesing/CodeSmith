@@ -93,7 +93,7 @@ pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             label = format!("{label}  ({reason})");
         }
         props.state_label = label;
-        props.state_color = palette::DEEPSEEK_SKY;
+        props.state_color = palette::CODESMITH_SKY;
 
         // Water-spout frame source: wall-clock milliseconds. The sine-wave
         // math in `footer_working_strip_glyph_at` was tuned for this cadence
@@ -712,7 +712,7 @@ pub(crate) fn footer_coherence_spans(app: &App) -> Vec<Span<'static>> {
     let (label, color) = match app.coherence_state {
         CoherenceState::Healthy | CoherenceState::GettingCrowded => return Vec::new(),
         CoherenceState::RefreshingContext => ("refreshing context", palette::STATUS_WARNING),
-        CoherenceState::VerifyingRecentWork => ("verifying", palette::DEEPSEEK_SKY),
+        CoherenceState::VerifyingRecentWork => ("verifying", palette::CODESMITH_SKY),
         CoherenceState::ResettingPlan => ("resetting plan", palette::STATUS_ERROR),
     };
 

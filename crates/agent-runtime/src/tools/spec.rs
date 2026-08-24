@@ -182,7 +182,7 @@ pub struct ToolContext {
     /// Namespace for tool state that should be scoped to the current session/thread.
     pub state_namespace: String,
     /// User-trusted external paths the agent may read/write even when they
-    /// fall outside `workspace`. Loaded from `~/.deepseek/workspace-trust.json`
+    /// fall outside `workspace`. Loaded from `~/.codesmith/workspace-trust.json`
     /// and refreshed when the user runs `/trust add <path>`. Distinct from
     /// `trust_mode`, which is the all-or-nothing legacy switch (#29).
     pub trusted_external_paths: Vec<PathBuf>,
@@ -435,7 +435,7 @@ impl ToolContext {
     }
 
     /// Set the user's trusted external paths (loaded from
-    /// `~/.deepseek/workspace-trust.json`). See [`Self::resolve_path`] for
+    /// `~/.codesmith/workspace-trust.json`). See [`Self::resolve_path`] for
     /// how the list is consulted.
     #[must_use]
     pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
@@ -565,7 +565,7 @@ impl ToolContext {
 
         // Validate it's under workspace, OR is under a user-trusted external
         // path (`/trust add <path>` from the slash command, persisted in
-        // `~/.deepseek/workspace-trust.json`).
+        // `~/.codesmith/workspace-trust.json`).
         if !canonical.starts_with(&workspace_canonical)
             && !canonical.starts_with(&workspace_normalized)
             && !self.is_trusted_external_path(&canonical)

@@ -8,7 +8,7 @@
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。
 - LSP 子系统（`crates/tui/src/lsp/`）已完全接入引擎的工具执行后路径
   （`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`），在每次 edit_file/apply_patch/write_file 之后提供内联诊断。
-- swarm agent 系统已在 v0.8.5 中移除。当前活跃的 v0.8.35 编排面是持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`）。
+- 编排面是持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`）。
   活跃代码库中不再保留任何模型可见的 swarm 工具。
 
 ## 高层概览
@@ -315,9 +315,9 @@ command = "echo 'Running tool: $TOOL_NAME'"
 
 ## 配置文件
 
-- `~/.codesmith/config.toml` - 主配置（`~/.deepseek/config.toml` 仍作为旧版回退被读取）
-- `/etc/deepseek/managed_config.toml` - 可选的托管默认值层（Unix）
-- `/etc/deepseek/requirements.toml` - 可选的允许策略约束（Unix）
+- `~/.codesmith/config.toml` - 主配置（`~/.codesmith/config.toml` 仍作为旧版回退被读取）
+- `/etc/codesmith/managed_config.toml` - 可选的托管默认值层（Unix）
+- `/etc/codesmith/requirements.toml` - 可选的允许策略约束（Unix）
 - `~/.codesmith/mcp.json` - MCP 服务器配置
 - `~/.codesmith/skills/` - 用户技能目录
 - `~/.codesmith/sessions/` - 会话历史

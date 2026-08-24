@@ -591,7 +591,7 @@ impl Renderable for ComposerWidget<'_> {
                         if queue_count > 0 {
                             (
                                 Some(format!("↵ send ({queue_count} queued)")),
-                                palette::DEEPSEEK_SKY,
+                                palette::CODESMITH_SKY,
                             )
                         } else {
                             (None, palette::TEXT_MUTED)
@@ -612,7 +612,7 @@ impl Renderable for ComposerWidget<'_> {
                     // Steer and QueueFollowUp are now only reached via Ctrl+Enter override.
                     SubmitDisposition::Steer => (
                         Some("↵ steering (Ctrl+Enter)".to_string()),
-                        palette::DEEPSEEK_SKY,
+                        palette::CODESMITH_SKY,
                     ),
                     SubmitDisposition::QueueFollowUp => (
                         Some("↵ queued (Ctrl+Enter to steer)".to_string()),
@@ -891,7 +891,7 @@ impl Renderable for ComposerWidget<'_> {
 
                 // Name column
                 let name_style = if entry.is_skill && !is_selected {
-                    Style::default().fg(palette::DEEPSEEK_SKY)
+                    Style::default().fg(palette::CODESMITH_SKY)
                 } else {
                     sel_style
                 };
@@ -1096,7 +1096,7 @@ impl Renderable for ApprovalWidget<'_> {
             let line = Line::from(Span::styled(
                 summary,
                 Style::default()
-                    .fg(palette::DEEPSEEK_INK)
+                    .fg(palette::CODESMITH_INK)
                     .bg(palette_colors.accent)
                     .add_modifier(Modifier::BOLD),
             ));
@@ -1120,7 +1120,7 @@ impl Renderable for ApprovalWidget<'_> {
             Span::styled(
                 format!(" {} ", risk_badge_text(risk, locale)),
                 Style::default()
-                    .fg(palette::DEEPSEEK_INK)
+                    .fg(palette::CODESMITH_INK)
                     .bg(palette_colors.accent)
                     .add_modifier(Modifier::BOLD),
             ),
@@ -1128,7 +1128,7 @@ impl Renderable for ApprovalWidget<'_> {
             Span::styled(
                 self.request.tool_name.clone(),
                 Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
+                    .fg(palette::CODESMITH_SKY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -1280,7 +1280,7 @@ impl Renderable for ApprovalWidget<'_> {
             .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette_colors.border))
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .style(Style::default().bg(palette::CODESMITH_INK))
             .padding(Padding::uniform(1));
 
         // Render the card body inside the block, then paint the warm
@@ -1340,7 +1340,7 @@ fn paint_left_rail(card: Rect, buf: &mut Buffer, color: Color) {
         }
         let cell = &mut buf[(rail_x, y)];
         cell.set_char('\u{2503}'); // ┃ — heavy bar so the warning reads at a glance
-        cell.set_style(Style::default().fg(color).bg(palette::DEEPSEEK_INK));
+        cell.set_style(Style::default().fg(color).bg(palette::CODESMITH_INK));
     }
 }
 
@@ -1355,12 +1355,12 @@ fn approval_palette(risk: RiskLevel) -> ApprovalColors {
     match risk {
         RiskLevel::Benign => ApprovalColors {
             border: palette::BORDER_COLOR,
-            accent: palette::DEEPSEEK_SKY,
-            shortcut: palette::DEEPSEEK_SKY,
+            accent: palette::CODESMITH_SKY,
+            shortcut: palette::CODESMITH_SKY,
         },
         RiskLevel::Destructive => ApprovalColors {
-            border: palette::DEEPSEEK_RED,
-            accent: palette::DEEPSEEK_RED,
+            border: palette::CODESMITH_RED,
+            accent: palette::CODESMITH_RED,
             shortcut: palette::STATUS_WARNING,
         },
     }
@@ -1369,7 +1369,7 @@ fn approval_palette(risk: RiskLevel) -> ApprovalColors {
 fn approval_selected_style() -> Style {
     Style::default()
         .fg(palette::SELECTION_TEXT)
-        .bg(palette::DEEPSEEK_BLUE)
+        .bg(palette::CODESMITH_BLUE)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -1396,14 +1396,14 @@ fn category_label_for(category: ToolCategory, locale: Locale) -> (&'static str, 
         (Locale::ZhHans, ToolCategory::FileWrite) => ("文件写入", palette::STATUS_WARNING),
         (Locale::ZhHans, ToolCategory::Shell) => ("Shell 命令", palette::STATUS_ERROR),
         (Locale::ZhHans, ToolCategory::Network) => ("网络", palette::STATUS_WARNING),
-        (Locale::ZhHans, ToolCategory::McpRead) => ("MCP 读取", palette::DEEPSEEK_SKY),
+        (Locale::ZhHans, ToolCategory::McpRead) => ("MCP 读取", palette::CODESMITH_SKY),
         (Locale::ZhHans, ToolCategory::McpAction) => ("MCP 操作", palette::STATUS_WARNING),
         (Locale::ZhHans, ToolCategory::Unknown) => ("未知", palette::STATUS_ERROR),
         (_, ToolCategory::Safe) => ("Safe", palette::STATUS_SUCCESS),
         (_, ToolCategory::FileWrite) => ("File Write", palette::STATUS_WARNING),
         (_, ToolCategory::Shell) => ("Shell Command", palette::STATUS_ERROR),
         (_, ToolCategory::Network) => ("Network", palette::STATUS_WARNING),
-        (_, ToolCategory::McpRead) => ("MCP Read", palette::DEEPSEEK_SKY),
+        (_, ToolCategory::McpRead) => ("MCP Read", palette::CODESMITH_SKY),
         (_, ToolCategory::McpAction) => ("MCP Action", palette::STATUS_WARNING),
         (_, ToolCategory::Unknown) => ("Unknown", palette::STATUS_ERROR),
     }
@@ -1563,7 +1563,7 @@ impl Renderable for ElevationWidget<'_> {
                 Span::styled(
                     &self.request.tool_name,
                     Style::default()
-                        .fg(palette::DEEPSEEK_SKY)
+                        .fg(palette::CODESMITH_SKY)
                         .add_modifier(Modifier::BOLD),
                 ),
             ]),
@@ -1671,7 +1671,7 @@ impl Renderable for ElevationWidget<'_> {
             .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .style(Style::default().bg(palette::CODESMITH_INK))
             .padding(Padding::uniform(1));
 
         let paragraph = Paragraph::new(lines)
@@ -1884,7 +1884,7 @@ fn truncate_display_width(text: &str, max_width: usize) -> String {
 fn vim_mode_style(mode: VimMode) -> Style {
     let color = match mode {
         VimMode::Normal => palette::TEXT_MUTED,
-        VimMode::Insert => palette::DEEPSEEK_SKY,
+        VimMode::Insert => palette::CODESMITH_SKY,
         VimMode::Visual => palette::MODE_PLAN,
     };
     Style::default().fg(color).bold()
@@ -1980,7 +1980,7 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let body = vec![
         Line::from(Span::styled(
             format!("{inset}>_ codesmith (v{})", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+            Style::default().fg(palette::CODESMITH_BLUE).bold(),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -2879,7 +2879,7 @@ mod tests {
     #[test]
     fn slash_completion_hints_use_user_command_frontmatter_description() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let commands_dir = tmp.path().join(".deepseek").join("commands");
+        let commands_dir = tmp.path().join(".codesmith").join("commands");
         std::fs::create_dir_all(&commands_dir).unwrap();
         std::fs::write(
             commands_dir.join("git-scan.md"),
@@ -2905,7 +2905,7 @@ mod tests {
     #[test]
     fn slash_completion_hints_use_user_command_argument_hint() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let commands_dir = tmp.path().join(".deepseek").join("commands");
+        let commands_dir = tmp.path().join(".codesmith").join("commands");
         std::fs::create_dir_all(&commands_dir).unwrap();
         std::fs::write(
             commands_dir.join("deploy.md"),
@@ -3809,14 +3809,14 @@ mod tests {
         let selected_row = (area.y..area.y.saturating_add(area.height))
             .find(|&y| {
                 (area.x..area.x.saturating_add(area.width))
-                    .any(|x| buf[(x, y)].bg == palette::DEEPSEEK_BLUE)
+                    .any(|x| buf[(x, y)].bg == palette::CODESMITH_BLUE)
             })
             .expect("selected approval row should use blue background");
         let highlighted_cells = (area.x..area.x.saturating_add(area.width))
             .filter(|&x| {
                 let cell = &buf[(x, selected_row)];
                 !cell.symbol().trim().is_empty()
-                    && cell.bg == palette::DEEPSEEK_BLUE
+                    && cell.bg == palette::CODESMITH_BLUE
                     && cell.fg == palette::SELECTION_TEXT
             })
             .count();

@@ -25,7 +25,7 @@ cargo install codesmith-tui     --locked   # cài đặt `codesmith-tui` (giao d
 # 3. Homebrew — trình quản lý gói dành cho macOS.
 #    Tên tap/formula là tên cũ (legacy); nó sẽ cài đặt cả codesmith và codesmith-tui.
 brew tap Hmbown/deepseek-tui
-brew install deepseek-tui
+brew install codesmith
 
 # 4. Tải xuống trực tiếp — các gói lưu trữ theo nền tảng từ GitHub Releases.
 #    https://github.com/Hmbown/CodeSmith/releases
@@ -56,7 +56,7 @@ docker run --rm -it \
 ```bash
 codesmith update                         # trình cập nhật binary phát hành trực tiếp
 npm install -g codesmith@latest      # thông qua trình bao bọc npm
-brew update && brew upgrade deepseek-tui
+brew update && brew upgrade codesmith
 cargo install codesmith-cli --locked --force
 cargo install codesmith-tui     --locked --force
 ```
@@ -139,7 +139,7 @@ codesmith --model auto
 
 Cặp binary dựng sẵn và gói nén nền tảng được phát hành cho các kiến trúc **Linux x64**, **Linux ARM64** (từ v0.8.8 trở lên), **macOS x64**, **macOS ARM64**, và **Windows x64**. Đối với các mục tiêu khác (musl, riscv64, FreeBSD, v.v.), xem phần [Cài đặt từ nguồn](#install-from-source) hoặc tài liệu [docs/INSTALL.md](docs/INSTALL.md).
 
-Trong lần chạy đầu tiên, bạn sẽ được nhắc nhập [API key của DeepSeek](https://platform.deepseek.com/api_keys). Khóa này được lưu vào tệp cấu hình `~/.codesmith/config.toml` (tương thích cả tệp cũ `~/.deepseek/config.toml`) để nó hoạt động từ bất kỳ thư mục nào mà không cần nhắc thông tin đăng nhập của hệ điều hành.
+Trong lần chạy đầu tiên, bạn sẽ được nhắc nhập [API key của DeepSeek](https://platform.deepseek.com/api_keys). Khóa này được lưu vào tệp cấu hình `~/.codesmith/config.toml` (tương thích cả tệp cũ `~/.codesmith/config.toml`) để nó hoạt động từ bất kỳ thư mục nào mà không cần nhắc thông tin đăng nhập của hệ điều hành.
 
 Bạn cũng có thể thiết lập trước:
 
@@ -203,7 +203,7 @@ cargo install codesmith-tui     --locked   # cung cấp giao diện `codesmith-t
 codesmith --version
 ```
 
-Các binary dựng sẵn cũng có thể được tải từ [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases). Thiết lập biến `DEEPSEEK_TUI_RELEASE_BASE_URL` để sử dụng mirror tải các tệp tài nguyên phát hành.
+Các binary dựng sẵn cũng có thể được tải từ [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases). Thiết lập biến `CODESMITH_RELEASE_BASE_URL` để sử dụng mirror tải các tệp tài nguyên phát hành.
 
 ### Windows (Scoop)
 
@@ -277,7 +277,7 @@ SGLANG_BASE_URL="http://localhost:30000/v1" codesmith --provider sglang --model 
 # Tự host bằng vLLM
 VLLM_BASE_URL="http://localhost:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 # Sử dụng vLLM qua kết nối HTTP trong mạng LAN đáng tin cậy
-DEEPSEEK_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
+CODESMITH_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
 
 # Tự host bằng Ollama
 ollama pull codesmith-coder:1.3b
@@ -346,12 +346,12 @@ Xem tài liệu [docs/DOCKER.md](docs/DOCKER.md) để biết thêm thông tin v
 
 ### Zed / ACP
 
-DeepSeek có thể chạy dưới dạng một máy chủ Agent Client Protocol (ACP) cục bộ cho các trình soạn thảo mã nguồn hỗ trợ giao tiếp ACP qua cổng stdio. Trong trình soạn thảo Zed, bạn hãy thêm cấu hình máy chủ agent tùy chỉnh sau:
+CodeSmith có thể chạy dưới dạng một máy chủ Agent Client Protocol (ACP) cục bộ cho các trình soạn thảo mã nguồn hỗ trợ giao tiếp ACP qua cổng stdio. Trong trình soạn thảo Zed, bạn hãy thêm cấu hình máy chủ agent tùy chỉnh sau:
 
 ```json
 {
   "agent_servers": {
-    "DeepSeek": {
+    "CodeSmith": {
       "type": "custom",
       "command": "codesmith",
       "args": ["serve", "--acp"],
@@ -361,7 +361,7 @@ DeepSeek có thể chạy dưới dạng một máy chủ Agent Client Protocol 
 }
 ```
 
-Phân hệ ACP ban đầu hỗ trợ khởi tạo phiên làm việc mới và nhận phản hồi prompt qua cấu hình và API key hiện tại của DeepSeek. Tính năng chỉnh sửa tích hợp công cụ và phát lại checkpoint hiện chưa được hỗ trợ qua giao diện ACP.
+Phân hệ ACP ban đầu hỗ trợ khởi tạo phiên làm việc mới và nhận phản hồi prompt qua cấu hình và API key hiện tại của CodeSmith. Tính năng chỉnh sửa tích hợp công cụ và phát lại checkpoint hiện chưa được hỗ trợ qua giao diện ACP.
 
 Adapter do cộng đồng phát triển: [acp-codesmith-adapter](https://github.com/rockeverm3m/acp-codesmith-adapter) hỗ trợ cầu nối lệnh `codesmith exec --auto` với `cc-connect` cho người dùng cần quy trình làm việc ACP có tích hợp công cụ bên ngoài trình soạn thảo Zed.
 
@@ -396,21 +396,21 @@ Xem danh sách phím tắt đầy đủ tại: [docs/KEYBINDINGS.md](docs/KEYBIN
 
 ## Cấu hình
 
-Cấu hình của người dùng lưu tại: `~/.codesmith/config.toml` (tự động fallback về tệp cũ `~/.deepseek/config.toml` nếu có). Cấu hình riêng của dự án ghi đè tại: `<workspace>/.codesmith/config.toml` (hoặc `<workspace>/.deepseek/config.toml`) (lưu ý các trường sau bị cấm ghi đè ở cấp dự án: `api_key`, `base_url`, `provider`, `mcp_config_path`). Tham khảo tệp [config.example.toml](config.example.toml) để xem đầy đủ tất cả cấu hình mẫu.
+Cấu hình của người dùng lưu tại: `~/.codesmith/config.toml` (tự động fallback về tệp cũ `~/.codesmith/config.toml` nếu có). Cấu hình riêng của dự án ghi đè tại: `<workspace>/.codesmith/config.toml` (hoặc `<workspace>/.codesmith/config.toml`) (lưu ý các trường sau bị cấm ghi đè ở cấp dự án: `api_key`, `base_url`, `provider`, `mcp_config_path`). Tham khảo tệp [config.example.toml](config.example.toml) để xem đầy đủ tất cả cấu hình mẫu.
 
 Các biến môi trường chính:
 
 | Biến môi trường | Mục đích sử dụng |
 |---|---|
 | `DEEPSEEK_API_KEY` | Khóa API key chính |
-| `DEEPSEEK_BASE_URL` | Địa chỉ URL cơ sở của máy chủ API |
-| `DEEPSEEK_HTTP_HEADERS` | Các header tùy chỉnh gửi kèm yêu cầu API, ví dụ `X-Model-Provider-Id=your-model-provider` |
-| `DEEPSEEK_MODEL` | Mô hình mặc định |
-| `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Thời gian chờ tối đa khi stream bị rảnh (giây), mặc định là `300`, giới hạn trong khoảng `1..=3600` |
-| `CODESMITH_PROVIDER` / `DEEPSEEK_PROVIDER` | Các nhà cung cấp: `deepseek` (mặc định), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
-| `DEEPSEEK_PROFILE` | Tên cấu hình profile sử dụng |
-| `DEEPSEEK_MEMORY` | Thiết lập là `on` để kích hoạt tính năng tự ghi nhớ thông tin người dùng |
-| `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Cho phép sử dụng các đường dẫn API dạng `http://` không mã hóa trong các mạng LAN tin cậy |
+| `CODESMITH_BASE_URL` | Địa chỉ URL cơ sở của máy chủ API |
+| `CODESMITH_HTTP_HEADERS` | Các header tùy chỉnh gửi kèm yêu cầu API, ví dụ `X-Model-Provider-Id=your-model-provider` |
+| `CODESMITH_MODEL` | Mô hình mặc định |
+| `CODESMITH_STREAM_IDLE_TIMEOUT_SECS` | Thời gian chờ tối đa khi stream bị rảnh (giây), mặc định là `300`, giới hạn trong khoảng `1..=3600` |
+| `CODESMITH_PROVIDER` | Các nhà cung cấp: `deepseek` (mặc định), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
+| `CODESMITH_PROFILE` | Tên cấu hình profile sử dụng |
+| `CODESMITH_MEMORY` | Thiết lập là `on` để kích hoạt tính năng tự ghi nhớ thông tin người dùng |
+| `CODESMITH_ALLOW_INSECURE_HTTP=1` | Cho phép sử dụng các đường dẫn API dạng `http://` không mã hóa trong các mạng LAN tin cậy |
 | `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `VOLCENGINE_API_KEY` / `ARK_API_KEY` / `OPENROUTER_API_KEY` / `XIAOMI_MIMO_API_KEY` / `MIMO_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SILICONFLOW_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Thông tin đăng nhập theo từng nhà cung cấp tương ứng |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | Điểm cuối (endpoint) và mã mô hình cho nhà cung cấp tương thích định dạng OpenAI chung |
 | `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | Endpoint và mô hình ghi đè cho AtlasCloud |
@@ -453,7 +453,7 @@ Các tên định danh cũ `deepseek-chat` / `deepseek-reasoner` sẽ được t
 
 ## Chia Sẻ Skill Tự Viết
 
-CodeSmith sẽ tự động quét và tìm kiếm các skill được định nghĩa từ các thư mục của dự án (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) và các thư mục cấu hình toàn cục (`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.deepseek/skills`). Mỗi skill là một thư mục chứa một tệp tin `SKILL.md`:
+CodeSmith sẽ tự động quét và tìm kiếm các skill được định nghĩa từ các thư mục của dự án (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) và các thư mục cấu hình toàn cục (`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.codesmith/skills`). Mỗi skill là một thư mục chứa một tệp tin `SKILL.md`:
 
 ```text
 ~/.agents/skills/my-skill/
@@ -465,7 +465,7 @@ Yêu cầu định nghĩa phần Frontmatter ở đầu file:
 ```markdown
 ---
 name: my-skill
-description: Sử dụng skill này khi bạn muốn DeepSeek tuân thủ theo quy trình làm việc tùy chỉnh của tôi.
+description: Sử dụng skill này khi bạn muốn CodeSmith tuân thủ theo quy trình làm việc tùy chỉnh của tôi.
 ---
 
 # My Skill
@@ -475,7 +475,7 @@ Các hướng dẫn chi tiết dành cho agent được viết tại đây.
 Các lệnh tương tác: `/skills` (liệt kê), `/skill <name>` (kích hoạt), `/skill new` (tạo khung mẫu), `/skill install github:<owner>/<repo>` (cài đặt từ cộng đồng GitHub), `/skill update` / `uninstall` / `trust` để quản lý. Cài đặt các skill từ cộng đồng GitHub không yêu cầu chạy thêm bất kỳ dịch vụ nền nào. Các skill sau khi cài đặt sẽ hiển thị trong phần ngữ cảnh phiên làm việc mà mô hình AI có thể đọc được; agent có thể tự chọn skill phù hợp qua công cụ `load_skill` khi nhiệm vụ của bạn khớp với phần mô tả của skill.
 
 Trong lần chạy đầu tiên, chương trình cũng tự động cài đặt sẵn một số skill hệ thống cho các quy trình phổ biến:
-`skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`, `skill-installer`, `mcp-builder`, `documents`, `presentations`, `spreadsheets`, `pdf`, và `feishu`. Các skill này nằm trong thư mục `~/.codesmith/skills` (hoặc thư mục cũ `~/.deepseek/skills`) và được quản lý phiên bản để các bản nâng cấp mới được cài đặt tự động mà không làm ảnh hưởng đến các skill do người dùng tự chủ động xóa trước đó.
+`skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`, `skill-installer`, `mcp-builder`, `documents`, `presentations`, `spreadsheets`, `pdf`, và `feishu`. Các skill này nằm trong thư mục `~/.codesmith/skills` (hoặc thư mục cũ `~/.codesmith/skills`) và được quản lý phiên bản để các bản nâng cấp mới được cài đặt tự động mà không làm ảnh hưởng đến các skill do người dùng tự chủ động xóa trước đó.
 
 ---
 

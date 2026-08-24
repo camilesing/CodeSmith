@@ -180,7 +180,7 @@ impl EvalHarness {
     pub fn run(&self) -> Result<EvalRun> {
         let started_at = Instant::now();
         let workspace = tempfile::Builder::new()
-            .prefix("deepseek-eval-")
+            .prefix("codesmith-eval-")
             .tempdir()
             .context("failed to create evaluation workspace")?;
 

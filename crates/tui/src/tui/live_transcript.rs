@@ -570,7 +570,7 @@ impl ModalView for LiveTranscriptOverlay {
             .title_bottom(footer)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .style(Style::default().bg(palette::CODESMITH_INK))
             .padding(Padding::uniform(1));
 
         let paragraph = Paragraph::new(visible_lines)

@@ -372,7 +372,7 @@ mod tests {
         assert!(block.starts_with("## Environment"));
         assert!(block.contains("- lang: zh-Hans"));
         assert!(block.contains(&format!(
-            "- deepseek_version: {}",
+            "- codesmith_version: {}",
             env!("CARGO_PKG_VERSION")
         )));
         assert!(block.contains(&format!("- pwd: {}", tmp.path().display())));
@@ -785,7 +785,7 @@ mod tests {
         };
         assert!(prompt.contains("## Environment"));
         assert!(prompt.contains("- lang: ja"));
-        assert!(prompt.contains("- deepseek_version:"));
+        assert!(prompt.contains("- codesmith_version:"));
     }
 
     #[test]
@@ -926,8 +926,8 @@ mod tests {
     fn project_context_pack_is_before_dynamic_tail() {
         let tmp = tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("README.md"), "# Pack test").expect("write readme");
-        std::fs::create_dir_all(tmp.path().join(".deepseek")).expect("mkdir");
-        std::fs::write(tmp.path().join(".deepseek").join("handoff.md"), "handoff")
+        std::fs::create_dir_all(tmp.path().join(".codesmith")).expect("mkdir");
+        std::fs::write(tmp.path().join(".codesmith").join("handoff.md"), "handoff")
             .expect("handoff");
         let prompt = match system_prompt_for_mode_with_context_skills_and_session(
             AppMode::Agent,
@@ -963,7 +963,7 @@ mod tests {
     fn handoff_artifact_is_prepended_to_system_prompt_when_present() {
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
-        let handoff_dir = workspace.join(".deepseek");
+        let handoff_dir = workspace.join(".codesmith");
         std::fs::create_dir_all(&handoff_dir).unwrap();
         std::fs::write(
             handoff_dir.join("handoff.md"),
@@ -994,7 +994,7 @@ mod tests {
     #[test]
     fn empty_handoff_file_does_not_inject_block() {
         let tmp = tempdir().expect("tempdir");
-        let dir = tmp.path().join(".deepseek");
+        let dir = tmp.path().join(".codesmith");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("handoff.md"), "   \n\n  ").unwrap();
         let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
@@ -1336,7 +1336,7 @@ mod tests {
     /// config field (rather than via the four hard-coded path conventions)
     /// get their files classified by path — and since those embedder-supplied
     /// paths aren't `AGENTS.md` / `CLAUDE.md` / `.codesmith/instructions.md` /
-    /// `.deepseek/instructions.md`, the model defaults to treating their
+    /// `.codesmith/instructions.md`, the model defaults to treating their
     /// imperatives as Tier 7 Memory (the lowest tier per Article VII),
     /// overridable by a single user sentence.
     #[test]
@@ -1517,13 +1517,13 @@ mod tests {
 
     #[test]
     fn system_prompt_with_handoff_file_is_byte_stable_when_file_is_unchanged() {
-        // If `.deepseek/handoff.md` hasn't moved between two builds, the
+        // If `.codesmith/handoff.md` hasn't moved between two builds, the
         // rendered prompt must produce identical bytes. The relay block
         // lands below the static boundary in
         // `system_prompt_for_mode_with_context_and_skills`.
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
-        let handoff_dir = workspace.join(".deepseek");
+        let handoff_dir = workspace.join(".codesmith");
         std::fs::create_dir_all(&handoff_dir).unwrap();
         std::fs::write(
             handoff_dir.join("handoff.md"),
@@ -1556,7 +1556,7 @@ mod tests {
         // metadata now, not a system-prompt tail block.
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
-        let handoff_dir = workspace.join(".deepseek");
+        let handoff_dir = workspace.join(".codesmith");
         std::fs::create_dir_all(&handoff_dir).unwrap();
         std::fs::write(handoff_dir.join("handoff.md"), "# handoff body\n").unwrap();
 

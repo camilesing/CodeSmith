@@ -5,7 +5,7 @@
 pub const THRESHOLDS: [(f32, &str); 3] = [
     (
         0.9,
-        "Context at 90%: stop and write relay to .deepseek/handoff.md now",
+        "Context at 90%: stop and write relay to .codesmith/handoff.md now",
     ),
     (
         0.8,

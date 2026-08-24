@@ -45,8 +45,8 @@ EdgeOne is optional:
 2. Clone from CNB by default when the branch or tag exists there:
 
    ```bash
-   export DEEPSEEK_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
-   git ls-remote "$DEEPSEEK_REPO_URL" refs/heads/main
+   export CODESMITH_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
+   git ls-remote "$CODESMITH_REPO_URL" refs/heads/main
    ```
 
    Tencent setup branches matching `work/v*-feishu-*` or
@@ -56,18 +56,18 @@ EdgeOne is optional:
 3. Bootstrap `/opt/whalebro` on the server:
 
    ```bash
-   export DEEPSEEK_BRANCH=main
-   git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/codesmith
+   export CODESMITH_BRANCH=main
+   git clone --branch "$CODESMITH_BRANCH" "$CODESMITH_REPO_URL" /tmp/codesmith
    cd /tmp/codesmith
-   sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
-     DEEPSEEK_REPO_BRANCH="$DEEPSEEK_BRANCH" \
+   sudo CODESMITH_REPO_URL="$CODESMITH_REPO_URL" \
+     CODESMITH_REPO_BRANCH="$CODESMITH_BRANCH" \
      bash scripts/tencent-lighthouse/bootstrap-ubuntu.sh
    ```
 
 4. Install Rust for the `codesmith` user, build both binaries, and install the
    systemd units using `docs/TENCENT_LIGHTHOUSE_HK.md`.
 5. Configure a Feishu/Lark self-built app, fill
-   `/etc/deepseek/feishu-bridge.env`, run the validator, then run the VPS
+   `/etc/codesmith/feishu-bridge.env`, run the validator, then run the VPS
    doctor.
 6. From your phone DM, validate `/status`, a harmless prompt, `/interrupt`,
    `/threads`, `/resume`, approval allow/deny, service restart, and reboot
@@ -107,7 +107,7 @@ Keep these rules:
 
 - `codesmith serve --http` stays bound to `127.0.0.1`.
 - `/v1/*` runtime endpoints are never public.
-- `DEEPSEEK_RUNTIME_TOKEN` never leaves the server env files.
+- `CODESMITH_RUNTIME_TOKEN` never leaves the server env files.
 - Feishu/Lark group control stays off until a specific group allowlist is set.
 - Auto-approval stays off for the phone bridge unless a maintainer explicitly
   accepts the risk.

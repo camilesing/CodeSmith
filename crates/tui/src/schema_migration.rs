@@ -1,4 +1,4 @@
-//! Schema migration framework for `~/.deepseek/` persisted records.
+//! Schema migration framework for `~/.codesmith/` persisted records.
 //!
 //! Every persistence layer in `crates/tui/src/` (sessions, threads,
 //! tasks, automations, offline queue) gates `schema_version > CURRENT_*`
@@ -208,8 +208,8 @@ pub fn backup_before_migrate(path: &Path, domain: &str) -> PathBuf {
 pub mod registry {
     use super::{MigrationFn, SchemaMigration};
 
-    /// Sessions: `~/.deepseek/sessions/<id>.json` and the latest
-    /// checkpoint at `~/.deepseek/sessions/checkpoints/latest.json`.
+    /// Sessions: `~/.codesmith/sessions/<id>.json` and the latest
+    /// checkpoint at `~/.codesmith/sessions/checkpoints/latest.json`.
     pub struct SessionMigration;
     impl SchemaMigration for SessionMigration {
         const CURRENT_VERSION: u32 = 1;
@@ -217,7 +217,7 @@ pub mod registry {
         const MIGRATIONS: &'static [MigrationFn] = &[];
     }
 
-    /// Offline queue: `~/.deepseek/sessions/checkpoints/offline_queue.json`.
+    /// Offline queue: `~/.codesmith/sessions/checkpoints/offline_queue.json`.
     pub struct OfflineQueueMigration;
     impl SchemaMigration for OfflineQueueMigration {
         const CURRENT_VERSION: u32 = 1;
@@ -234,7 +234,7 @@ pub mod registry {
         const MIGRATIONS: &'static [MigrationFn] = &[];
     }
 
-    /// Durable tasks under `~/.deepseek/tasks/`.
+    /// Durable tasks under `~/.codesmith/tasks/`.
     pub struct TaskMigration;
     impl SchemaMigration for TaskMigration {
         const CURRENT_VERSION: u32 = 2;

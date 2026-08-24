@@ -14,9 +14,9 @@
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::path::Path;
 
 use codesmith_agent::extension::*;
 use futures_util::FutureExt;
@@ -307,7 +307,12 @@ impl ExtensionRunner {
     pub async fn emit(&self, event: ExtensionEvent) -> EmitOutcome {
         let ctx = match self.context.lock().unwrap().clone() {
             Some(ctx) => ctx,
-            None => return EmitOutcome { event, outcome: HandlerOutcome::Continue },
+            None => {
+                return EmitOutcome {
+                    event,
+                    outcome: HandlerOutcome::Continue,
+                };
+            }
         };
         // Snapshot the matching handlers under a short lock; dispatch outside
         // the lock so a long-running handler doesn't hold it.
@@ -367,11 +372,7 @@ impl ExtensionRunner {
     /// Look up a registered command by name (exact match; `:N` conflict
     /// suffixing is §F2 — slice 1 uses first-wins via HashMap insert). Used
     /// by the tui `extension_commands::try_dispatch` (Task 8).
-    pub async fn try_dispatch_command(
-        &self,
-        name: &str,
-        args: &str,
-    ) -> Option<CommandOutput> {
+    pub async fn try_dispatch_command(&self, name: &str, args: &str) -> Option<CommandOutput> {
         let cmd = self.commands.lock().unwrap().get(name).cloned()?;
         let ctx = self.context.lock().unwrap().clone()?;
         cmd.run(&*ctx, args).await.ok()
@@ -415,16 +416,8 @@ impl ExtensionRunner {
 impl std::fmt::Debug for ExtensionRunner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let tools = self.tools.lock().expect("tools mutex poisoned").len();
-        let commands = self
-            .commands
-            .lock()
-            .expect("commands mutex poisoned")
-            .len();
-        let handlers = self
-            .handlers
-            .lock()
-            .expect("handlers mutex poisoned")
-            .len();
+        let commands = self.commands.lock().expect("commands mutex poisoned").len();
+        let handlers = self.handlers.lock().expect("handlers mutex poisoned").len();
         let libraries = self
             .libraries
             .lock()
@@ -435,7 +428,11 @@ impl std::fmt::Debug for ExtensionRunner {
             .lock()
             .expect("pending_drop mutex poisoned")
             .len();
-        let bound = self.context.lock().expect("context mutex poisoned").is_some();
+        let bound = self
+            .context
+            .lock()
+            .expect("context mutex poisoned")
+            .is_some();
         f.debug_struct("ExtensionRunner")
             .field("generation", &self.generation.load(Ordering::Acquire))
             .field("bound", &bound)
@@ -467,11 +464,21 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl ExtensionContext for Ctx {
-        fn cwd(&self) -> &Path { Path::new(".") }
-        fn mode(&self) -> ExtensionMode { ExtensionMode::Tui }
-        fn is_idle(&self) -> bool { true }
-        fn signal(&self) -> CancellationToken { CancellationToken::new() }
-        fn generation(&self) -> u64 { self.generation }
+        fn cwd(&self) -> &Path {
+            Path::new(".")
+        }
+        fn mode(&self) -> ExtensionMode {
+            ExtensionMode::Tui
+        }
+        fn is_idle(&self) -> bool {
+            true
+        }
+        fn signal(&self) -> CancellationToken {
+            CancellationToken::new()
+        }
+        fn generation(&self) -> u64 {
+            self.generation
+        }
     }
 
     // `bind_core` holds `Arc<dyn ExtensionCommandContext>`; the test Ctx must
@@ -488,7 +495,9 @@ mod tests {
             &M
         }
         async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
-            api.on(Arc::new(RecHandler { seen: self.seen.clone() }))?;
+            api.on(Arc::new(RecHandler {
+                seen: self.seen.clone(),
+            }))?;
             Ok(())
         }
     }
@@ -529,7 +538,9 @@ mod tests {
         runner.load(&RecExt { seen: seen.clone() }).await.unwrap();
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
         let _ = runner
-            .emit(ExtensionEvent::TurnStart { turn_id: "t1".into() })
+            .emit(ExtensionEvent::TurnStart {
+                turn_id: "t1".into(),
+            })
             .await;
         let _ = runner.emit(ExtensionEvent::SessionShutdown).await;
         let s = seen.lock().unwrap();
@@ -613,7 +624,10 @@ mod tests {
         let transform: Arc<dyn Handler> = Arc::new(TransformResultHandler);
         let observer: Arc<dyn Handler> = Arc::new(ObserveResultHandler { seen: seen.clone() });
         runner
-            .load(&TwoHandlerExt { first: transform, second: observer })
+            .load(&TwoHandlerExt {
+                first: transform,
+                second: observer,
+            })
             .await
             .unwrap();
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
@@ -647,7 +661,9 @@ mod tests {
             _ctx: &dyn ExtensionContext,
         ) -> Result<HandlerOutcome, ExtensionError> {
             if matches!(event, ExtensionEvent::SessionBeforeCompact) {
-                Ok(HandlerOutcome::Cancel { reason: "user aborted".into() })
+                Ok(HandlerOutcome::Cancel {
+                    reason: "user aborted".into(),
+                })
             } else {
                 Ok(HandlerOutcome::Continue)
             }
@@ -682,7 +698,9 @@ mod tests {
             _ctx: &dyn ExtensionContext,
         ) -> Result<HandlerOutcome, ExtensionError> {
             if matches!(event, ExtensionEvent::ToolCall(_)) {
-                Ok(HandlerOutcome::Block { reason: "policy".into() })
+                Ok(HandlerOutcome::Block {
+                    reason: "policy".into(),
+                })
             } else {
                 Ok(HandlerOutcome::Continue)
             }
@@ -725,7 +743,9 @@ mod tests {
         async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
             api.on_variant(
                 ExtensionEventKind::ToolCall,
-                Arc::new(RecHandler { seen: self.seen.clone() }),
+                Arc::new(RecHandler {
+                    seen: self.seen.clone(),
+                }),
             )?;
             Ok(())
         }
@@ -735,7 +755,10 @@ mod tests {
     async fn f2a_on_variant_dispatches_only_matching_kind() {
         let runner = ExtensionRunner::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
-        runner.load(&VariantExt { seen: seen.clone() }).await.unwrap();
+        runner
+            .load(&VariantExt { seen: seen.clone() })
+            .await
+            .unwrap();
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
         // ToolCall fires the per-variant handler (RecHandler pushes "other").
         let _ = runner
@@ -747,7 +770,9 @@ mod tests {
             .await;
         // TurnStart does NOT fire the per-variant handler.
         let _ = runner
-            .emit(ExtensionEvent::TurnStart { turn_id: "t1".into() })
+            .emit(ExtensionEvent::TurnStart {
+                turn_id: "t1".into(),
+            })
             .await;
         let s = seen.lock().unwrap();
         assert_eq!(*s, vec!["other"]);
@@ -789,7 +814,9 @@ mod tests {
                 .unwrap();
             runner.bind_core(Arc::new(Ctx { generation: 1 }));
             let out = runner
-                .emit(ExtensionEvent::TurnStart { turn_id: "t1".into() })
+                .emit(ExtensionEvent::TurnStart {
+                    turn_id: "t1".into(),
+                })
                 .await;
             // Observer after the panicking handler still fired.
             assert_eq!(*seen.lock().unwrap(), vec!["TurnStart"]);
@@ -816,7 +843,10 @@ mod tests {
         let runner = runner_with_fixture_dylib();
 
         assert!(
-            runner.bound_tools().iter().any(|(n, _)| n == "fixture_echo"),
+            runner
+                .bound_tools()
+                .iter()
+                .any(|(n, _)| n == "fixture_echo"),
             "fixture_echo bound before clear"
         );
 
@@ -824,7 +854,11 @@ mod tests {
         assert!(
             runner.bound_tools().is_empty(),
             "tools cleared: {:?}",
-            runner.bound_tools().iter().map(|(n, _)| n).collect::<Vec<_>>()
+            runner
+                .bound_tools()
+                .iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>()
         );
 
         // clear_commands: safe on whatever the fixture registered (tool-only →
@@ -839,7 +873,10 @@ mod tests {
             .expect("reload");
         runner.bind_core(Arc::new(Ctx { generation: 2 }));
         assert!(
-            runner.bound_tools().iter().any(|(n, _)| n == "fixture_echo"),
+            runner
+                .bound_tools()
+                .iter()
+                .any(|(n, _)| n == "fixture_echo"),
             "fixture_echo re-bound after reload"
         );
     }

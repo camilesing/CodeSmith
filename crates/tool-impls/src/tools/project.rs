@@ -1,8 +1,8 @@
 //! Project mapping tool for understanding codebase structure.
 
-use codesmith_agent_runtime::utils::{is_key_file, project_tree, summarize_project};
 use anyhow::Result;
 use async_trait::async_trait;
+use codesmith_agent_runtime::utils::{is_key_file, project_tree, summarize_project};
 use serde::Serialize;
 use serde_json::{Value, json};
 

@@ -1354,8 +1354,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .with_context(|| format!("Failed to write {}", path.display()))
 }
 
-/// Default task manager data location (`~/.codesmith/tasks`, or legacy
-/// `~/.deepseek/tasks` when only the legacy directory exists).
+/// Default task manager data location (`~/.codesmith/tasks`).
 #[must_use]
 pub fn default_tasks_dir() -> PathBuf {
     if let Some(path) = codesmith_config::codesmith_env("TASKS_DIR") {
@@ -1367,15 +1366,7 @@ pub fn default_tasks_dir() -> PathBuf {
 }
 
 fn default_tasks_dir_for_home(home: &Path) -> PathBuf {
-    let primary = home.join(".codesmith").join("tasks");
-    if primary.is_dir() {
-        return primary;
-    }
-    let legacy = home.join(".deepseek").join("tasks");
-    if legacy.is_dir() {
-        return legacy;
-    }
-    primary
+    home.join(".codesmith").join("tasks")
 }
 
 /// Wait for a task to reach a terminal status (tests and API helpers).
@@ -1682,38 +1673,13 @@ mod tests {
     }
 
     #[test]
-    fn default_tasks_dir_falls_back_to_legacy_deepseek_tasks() {
-        let temp_home = tempfile::tempdir().unwrap();
-        let home = temp_home.path();
-        let legacy_tasks = home.join(".deepseek").join("tasks");
-        std::fs::create_dir_all(&legacy_tasks).unwrap();
-
-        assert_eq!(default_tasks_dir_for_home(home), legacy_tasks);
-    }
-
-    #[test]
     fn default_tasks_dir_prefers_existing_codesmith_tasks() {
         let temp_home = tempfile::tempdir().unwrap();
         let home = temp_home.path();
         let primary_tasks = home.join(".codesmith").join("tasks");
-        let legacy_tasks = home.join(".deepseek").join("tasks");
         std::fs::create_dir_all(&primary_tasks).unwrap();
-        std::fs::create_dir_all(&legacy_tasks).unwrap();
 
         assert_eq!(default_tasks_dir_for_home(home), primary_tasks);
-    }
-
-    #[test]
-    fn default_tasks_dir_falls_back_to_legacy_when_primary_is_file() {
-        let temp_home = tempfile::tempdir().unwrap();
-        let home = temp_home.path();
-        let primary_tasks = home.join(".codesmith").join("tasks");
-        let legacy_tasks = home.join(".deepseek").join("tasks");
-        std::fs::create_dir_all(primary_tasks.parent().unwrap()).unwrap();
-        std::fs::write(&primary_tasks, "not a directory").unwrap();
-        std::fs::create_dir_all(&legacy_tasks).unwrap();
-
-        assert_eq!(default_tasks_dir_for_home(home), legacy_tasks);
     }
 
     #[test]
@@ -1721,9 +1687,6 @@ mod tests {
         let temp_home = tempfile::tempdir().unwrap();
         let home = temp_home.path();
         let primary_tasks = home.join(".codesmith").join("tasks");
-        let legacy_tasks = home.join(".deepseek").join("tasks");
-        std::fs::create_dir_all(legacy_tasks.parent().unwrap()).unwrap();
-        std::fs::write(&legacy_tasks, "not a directory").unwrap();
 
         assert_eq!(default_tasks_dir_for_home(home), primary_tasks);
     }

@@ -26,7 +26,7 @@
 
 - `#[allow(dead_code)]` 孤儿字段（`engine/mod.rs` 的 `tool_exec_lock`、
   `rx_user_input` 等）：确认无引用后删除。
-- "retired with handle_deepseek_turn" 类指向已删代码的注释：成批清理。
+- "retired with handle_codesmith_turn" 类指向已删代码的注释：成批清理。
 - TUI 侧镜像模块（`tui/src/compaction/`、`tui/src/prompts.rs`、`tui/src/mcp.rs`、
   `tui/src/sandbox/`、`tui/src/execpolicy/`）：逐个确认为纯 re-export 后合并/删除
   （`tui/src/prompts.rs` 已是 re-export shim，可作模板）。
@@ -45,7 +45,7 @@
 
 ## 4. Rebrand 收尾
 
-现状：代码内仍有 "DeepSeek CLI" 模块文档、`~/.deepseek` 路径
+现状：代码内仍有 "DeepSeek CLI" 模块文档、`~/.codesmith` 路径
 （如 `crates/agent-runtime/src/tools/spec.rs:185` 的 workspace-trust 注释）、
 legacy `deepseek-tui` npm 包与 shim（`crates/tui/src/bin/*legacy_shim.rs`，
 计划 v0.9.0 移除）。

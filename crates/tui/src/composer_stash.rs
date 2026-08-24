@@ -52,14 +52,7 @@ pub struct StashedDraft {
 }
 
 fn default_stash_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| {
-        let primary = home.join(".codesmith").join(STASH_FILE_NAME);
-        let legacy = home.join(".deepseek").join(STASH_FILE_NAME);
-        if primary.exists() || !legacy.exists() {
-            return primary;
-        }
-        legacy
-    })
+    dirs::home_dir().map(|home| home.join(".codesmith").join(STASH_FILE_NAME))
 }
 
 /// Load every stashed draft from disk in the order they were

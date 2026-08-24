@@ -301,7 +301,7 @@ impl FanoutCard {
             Span::styled(
                 self.dot_grid(),
                 Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
+                    .fg(palette::CODESMITH_SKY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));

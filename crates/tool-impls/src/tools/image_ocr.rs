@@ -22,7 +22,9 @@ use std::process::{Command, Stdio};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use codesmith_agent_runtime::tools::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str};
+use codesmith_agent_runtime::tools::spec::{
+    ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
+};
 
 /// Tool implementing `image_ocr`. Runs a local OCR backend and returns the
 /// extracted text on success.

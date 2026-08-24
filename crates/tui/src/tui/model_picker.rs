@@ -199,7 +199,7 @@ impl ModelPickerView {
         focused: bool,
     ) {
         let border_style = if focused {
-            Style::default().fg(palette::DEEPSEEK_SKY)
+            Style::default().fg(palette::CODESMITH_SKY)
         } else {
             Style::default().fg(palette::BORDER_COLOR)
         };
@@ -301,7 +301,7 @@ impl ModelPickerView {
             .title(Line::from(Span::styled(
                 " Model & thinking ",
                 Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
+                    .fg(palette::CODESMITH_SKY)
                     .add_modifier(Modifier::BOLD),
             )))
             .title_bottom(Line::from(vec![

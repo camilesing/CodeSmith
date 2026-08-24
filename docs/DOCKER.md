@@ -220,14 +220,13 @@ registry.
 | Variable              | Required | Description                                      |
 |-----------------------|----------|--------------------------------------------------|
 | `DEEPSEEK_API_KEY`    | yes      | DeepSeek API key                                 |
-| `DEEPSEEK_BASE_URL`   | no       | Custom API base URL (e.g. `https://api.deepseek.com`) |
-| `DEEPSEEK_NO_COLOR`   | no       | Set to `1` to disable terminal colour output     |
+| `CODESMITH_BASE_URL`   | no       | Custom API base URL (e.g. `https://api.deepseek.com`) |
+| `NO_COLOR`            | no       | Set to `1` to disable terminal colour output     |
 
 ## Volumes
 
 Mount `/home/codesmith/.codesmith` to persist sessions, config, skills, memory,
-and the offline queue across container restarts. The image also keeps
-`/home/codesmith/.deepseek` available for legacy compatibility. A
+and the offline queue across container restarts. A
 Docker-managed named volume is the safest default because Docker creates it with
 ownership the container can write:
 

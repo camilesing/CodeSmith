@@ -18,7 +18,7 @@ use ratatui::{
     widgets::{Block, Paragraph, Wrap},
 };
 
-use crate::deepseek_theme::Theme;
+use crate::brand_theme::Theme;
 use crate::palette;
 use crate::tools::plan::StepStatus;
 use crate::tools::subagent::SubAgentStatus;
@@ -619,13 +619,13 @@ fn task_panel_lines(app: &App, content_width: usize, max_rows: usize) -> Vec<Lin
                 &format!("turn {turn_prefix} ({status})",),
                 content_width.max(1),
             ),
-            Style::default().fg(palette::DEEPSEEK_SKY),
+            Style::default().fg(palette::CODESMITH_SKY),
         )));
     }
 
     let active_rows = active_tool_rows(app);
     if !active_rows.is_empty() && lines.len() < max_rows {
-        push_sidebar_label(&mut lines, "Live tools", palette::DEEPSEEK_SKY);
+        push_sidebar_label(&mut lines, "Live tools", palette::CODESMITH_SKY);
         push_tool_rows(&mut lines, &active_rows, content_width, max_rows);
     }
 
@@ -645,7 +645,7 @@ fn task_panel_lines(app: &App, content_width: usize, max_rows: usize) -> Vec<Lin
         };
         lines.push(Line::from(Span::styled(
             label,
-            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            Style::default().fg(palette::CODESMITH_SKY).bold(),
         )));
 
         let max_items = max_rows.saturating_sub(lines.len());
@@ -1635,7 +1635,7 @@ pub fn subagent_panel_lines(
         vec![
             Span::styled(
                 format!("{live_running} running"),
-                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+                Style::default().fg(palette::CODESMITH_SKY).bold(),
             ),
             Span::styled(
                 format!(" / {total}"),
@@ -1710,7 +1710,7 @@ pub fn subagent_panel_lines(
 
     if summary.foreground_rlm_running {
         lines.push(Line::from(vec![
-            Span::styled("RLM", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            Span::styled("RLM", Style::default().fg(palette::CODESMITH_SKY).bold()),
             Span::styled(
                 " foreground work active",
                 Style::default().fg(palette::TEXT_DIM),
@@ -1755,7 +1755,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &mut App) {
     lines.push(Line::from(vec![
         Span::styled(
             truncate_line_to_width(&ws_name, content_width.max(1)),
-            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            Style::default().fg(palette::CODESMITH_SKY).bold(),
         ),
         Span::styled(
             format!("  {}", app.workspace_context.as_deref().unwrap_or("")),

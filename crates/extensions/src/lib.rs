@@ -37,8 +37,8 @@ pub mod bus;
 pub mod discovery;
 pub mod install_source;
 pub mod installer;
-pub mod manifest;
 pub mod loader;
+pub mod manifest;
 pub mod runner;
 pub mod sample_scratchpad;
 pub mod state;
@@ -46,15 +46,17 @@ pub mod state;
 // Slice-1 runtime re-exports.
 pub use api::{RealExtensionApi, StubExtensionApi};
 pub use bus::EventBus;
-pub use discovery::{apply_trust_gate, discover_dylib, discover_static, DiscoveredSource, ExtensionRegistration};
+pub use discovery::{
+    DiscoveredSource, ExtensionRegistration, apply_trust_gate, discover_dylib, discover_static,
+};
 pub use install_source::{
     CargoBuilder, CratesIoSource, CurlHttpFetcher, ExtensionBuilder, ExtensionPlacer,
     ExtensionSource, GitSource, HttpFetcher, IdentityBuilder, InstallScope, LocalPathSource,
     Placer, PrebuiltDylibSource, SourceArtifact, SourceKind, SourceSpec,
 };
 pub use installer::{InstallReport, Installer, UninstallReport};
-pub use manifest::ExtensionManifest;
 pub use loader::load_dylib;
+pub use manifest::ExtensionManifest;
 pub use runner::{EmitOutcome, ExtensionRunner};
 pub use state::HostExtensionContext;
 

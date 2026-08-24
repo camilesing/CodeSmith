@@ -27,7 +27,7 @@ cargo install codesmith-tui     --locked   # `codesmith-tui` TUI 二进制
 # 3. Homebrew —— macOS 包管理器。
 #    tap/formula 名称仍是旧名；实际安装 codesmith 和 codesmith-tui。
 brew tap Hmbown/deepseek-tui
-brew install deepseek-tui
+brew install codesmith
 
 # 4. 直接下载 —— GitHub Releases 的平台压缩包。
 #    https://github.com/Hmbown/CodeSmith/releases
@@ -57,7 +57,7 @@ docker run --rm -it \
 ```bash
 codesmith update                         # release 二进制更新器
 npm install -g codesmith@latest      # npm 包装器
-brew update && brew upgrade deepseek-tui
+brew update && brew upgrade codesmith
 cargo install codesmith-cli --locked --force
 cargo install codesmith-tui     --locked --force
 ```
@@ -140,7 +140,7 @@ codesmith --model auto
 
 预构建二进制对和平台压缩包覆盖 **Linux x64**、**Linux ARM64**（v0.8.8 起）、**macOS x64**、**macOS ARM64** 和 **Windows x64**。其他目标平台（musl、riscv64、FreeBSD 等）请见下方的[从源码安装](#从源码安装)或 [docs/INSTALL.md](docs/INSTALL.md)。
 
-首次启动时会提示输入 [DeepSeek API key](https://platform.deepseek.com/api_keys)。密钥保存到 `~/.codesmith/config.toml`（同时兼容旧版 `~/.deepseek/config.toml`），在任意目录、IDE 终端和脚本中都能使用，不会触发系统密钥环弹窗。
+首次启动时会提示输入 [DeepSeek API key](https://platform.deepseek.com/api_keys)。密钥保存到 `~/.codesmith/config.toml`（同时兼容旧版 `~/.codesmith/config.toml`），在任意目录、IDE 终端和脚本中都能使用，不会触发系统密钥环弹窗。
 
 也可以提前配置：
 
@@ -206,7 +206,7 @@ cargo install codesmith-tui     --locked   # 提供交互式 TUI 伴随二进制
 codesmith --version
 ```
 
-也可以直接从 [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases) 下载预编译二进制。`DEEPSEEK_TUI_RELEASE_BASE_URL` 可用于镜像后的 release 资产。
+也可以直接从 [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases) 下载预编译二进制。`CODESMITH_RELEASE_BASE_URL` 可用于镜像后的 release 资产。
 
 ### Windows (Scoop)
 
@@ -356,12 +356,12 @@ docker run --rm -it \
 
 ### Zed / ACP
 
-DeepSeek 可作为自定义 Agent Client Protocol 服务器运行，供 Zed 等编辑器通过 stdio 调用本地 ACP 智能体。在 Zed 中添加自定义智能体服务器：
+CodeSmith 可作为自定义 Agent Client Protocol 服务器运行，供 Zed 等编辑器通过 stdio 调用本地 ACP 智能体。在 Zed 中添加自定义智能体服务器：
 
 ```json
 {
   "agent_servers": {
-    "DeepSeek": {
+    "CodeSmith": {
       "type": "custom",
       "command": "codesmith",
       "args": ["serve", "--acp"],
@@ -371,7 +371,7 @@ DeepSeek 可作为自定义 Agent Client Protocol 服务器运行，供 Zed 等�
 }
 ```
 
-首个 ACP 切片支持通过现有 DeepSeek 配置/API 密钥创建新会话和提示响应。工具支持的编辑和检查点回放尚未通过 ACP 暴露。
+首个 ACP 切片支持通过现有 CodeSmith 配置/API 密钥创建新会话和提示响应。工具支持的编辑和检查点回放尚未通过 ACP 暴露。
 
 ### 常用快捷键
 
@@ -404,21 +404,21 @@ DeepSeek 可作为自定义 Agent Client Protocol 服务器运行，供 Zed 等�
 
 ## 配置
 
-用户配置：`~/.codesmith/config.toml`（兼容旧版 `~/.deepseek/config.toml`）。项目覆盖：`<workspace>/.codesmith/config.toml`（兼容 `<workspace>/.deepseek/config.toml`）（以下密钥被拒绝：`api_key`、`base_url`、`provider`、`mcp_config_path`）。完整选项见 [config.example.toml](config.example.toml)。
+用户配置：`~/.codesmith/config.toml`（兼容旧版 `~/.codesmith/config.toml`）。项目覆盖：`<workspace>/.codesmith/config.toml`（兼容 `<workspace>/.codesmith/config.toml`）（以下密钥被拒绝：`api_key`、`base_url`、`provider`、`mcp_config_path`）。完整选项见 [config.example.toml](config.example.toml)。
 
 常用环境变量：
 
 | 变量 | 用途 |
 |---|---|
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
-| `DEEPSEEK_BASE_URL` | API base URL |
-| `DEEPSEEK_HTTP_HEADERS` | 可选模型请求头，例如 `X-Model-Provider-Id=your-model-provider` |
-| `DEEPSEEK_MODEL` | 默认模型 |
-| `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | 流式响应空闲超时秒数，默认 `300`，限制在 `1..=3600` |
-| `CODESMITH_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek`（默认）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`volcengine`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm`、`ollama` |
-| `DEEPSEEK_PROFILE` | 配置 profile 名称 |
-| `DEEPSEEK_MEMORY` | 设为 `on` 启用用户记忆 |
-| `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | 在可信网络上允许非本机 `http://` API base URL |
+| `CODESMITH_BASE_URL` | API base URL |
+| `CODESMITH_HTTP_HEADERS` | 可选模型请求头，例如 `X-Model-Provider-Id=your-model-provider` |
+| `CODESMITH_MODEL` | 默认模型 |
+| `CODESMITH_STREAM_IDLE_TIMEOUT_SECS` | 流式响应空闲超时秒数，默认 `300`，限制在 `1..=3600` |
+| `CODESMITH_PROVIDER` | `deepseek`（默认）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`volcengine`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm`、`ollama` |
+| `CODESMITH_PROFILE` | 配置 profile 名称 |
+| `CODESMITH_MEMORY` | 设为 `on` 启用用户记忆 |
+| `CODESMITH_ALLOW_INSECURE_HTTP=1` | 在可信网络上允许非本机 `http://` API base URL |
 | `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `VOLCENGINE_API_KEY` / `ARK_API_KEY` / `OPENROUTER_API_KEY` / `XIAOMI_MIMO_API_KEY` / `MIMO_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SILICONFLOW_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | 提供商认证 |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | 通用 OpenAI 兼容端点和模型 ID |
 | `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | AtlasCloud 端点和模型覆盖 |
@@ -481,7 +481,7 @@ LANG=zh_CN.UTF-8 codesmith run
 
 ## 创建和安装技能
 
-codesmith 从工作区目录（`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills` → `.codesmith/skills`）和全局目录（`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.deepseek/skills`）发现技能。每个技能是一个包含 `SKILL.md` 的目录：
+codesmith 从工作区目录（`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills` → `.codesmith/skills`）和全局目录（`~/.agents/skills` → `~/.claude/skills` → `~/.codesmith/skills` → `~/.codesmith/skills`）发现技能。每个技能是一个包含 `SKILL.md` 的目录：
 
 ```text
 ~/.codesmith/skills/my-skill/
@@ -493,7 +493,7 @@ codesmith 从工作区目录（`.agents/skills` → `skills` → `.opencode/skil
 ```markdown
 ---
 name: my-skill
-description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技能。
+description: 当 CodeSmith 需要遵循我的自定义工作流时使用这个技能。
 ---
 
 # My Skill

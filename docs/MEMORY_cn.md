@@ -8,14 +8,14 @@ pytest 而不是 unittest"、"这个代码库使用 4 空格缩进"、"提交前
 记忆**默认开启**（与 Claude Code 的自动记忆保持一致）。启用时，
 记忆文件会被加载、`# ` 快速添加会追加到该文件、`remember` 工具会
 呈现给模型。bare/simple 会话和无持久存储的远程会话会自动禁用该功能；
-通过 `enabled = false` 或 `DEEPSEEK_DISABLE_AUTO_MEMORY=1` 可完全退出。
+通过 `enabled = false` 或 `CODESMITH_DISABLE_AUTO_MEMORY=1` 可完全退出。
 
 ## 启用记忆
 
 等价的环境变量也可以切换该功能：
 
 ```bash
-export DEEPSEEK_MEMORY=on
+export CODESMITH_MEMORY=on
 ```
 
 被接受为真的值有 `1`、`on`、`true`、`yes`、`y` 和 `enabled`。
@@ -30,9 +30,9 @@ enabled = true
 切换后重启 TUI。禁用方式与之相反。
 
 记忆文件默认位于 `~/.codesmith/memory.md`；可通过 `config.toml` 中的
-`memory_path` 或环境中的 `DEEPSEEK_MEMORY_PATH` 覆盖。两者都设置时
-`DEEPSEEK_MEMORY_PATH` 优先于配置文件。当不存在 `.codesmith` 记忆
-文件时，已有的 `~/.deepseek/memory.md` 文件仍作为旧版回退被支持。
+`memory_path` 或环境中的 `CODESMITH_MEMORY_PATH` 覆盖。两者都设置时
+`CODESMITH_MEMORY_PATH` 优先于配置文件。当不存在 `.codesmith` 记忆
+文件时，已有的 `~/.codesmith/memory.md` 文件仍作为旧版回退被支持。
 
 ## 快速示例
 
@@ -166,8 +166,8 @@ Markdown 标题。
 
 | 层级   | 来源                                                                                                | 标签      |
 |--------|-----------------------------------------------------------------------------------------------------|-----------|
-| Managed | `/etc/deepseek/CLAUDE.md`，然后 `/etc/codesmith/CLAUDE.md`（组织策略）                            | `managed` |
-| User    | `~/.codesmith/{WHALE,AGENTS}.md`，然后 `.agents/`，然后旧版 `.deepseek/`                          | `user`    |
+| Managed | `/etc/codesmith/CLAUDE.md`，然后 `/etc/codesmith/CLAUDE.md`（组织策略）                            | `managed` |
+| User    | `~/.codesmith/{WHALE,AGENTS}.md`，然后 `.agents/`，然后旧版 `.codesmith/`                          | `user`    |
 | Project | `{cwd}` 中 `WHALE.md`、`AGENTS.md`、`.claude/instructions.md`、`CLAUDE.md`、`.codesmith/instructions.md`、`.deepseek/instructions.md` 的第一个命中者，然后向父目录遍历 | `project` |
 | Local   | `.claude/rules/` 和 `.codesmith/rules/` 中的 `*.md` 片段（已排序）                                 | `local`   |
 
@@ -249,7 +249,7 @@ export CODESMITH_MEMORY_EXCLUDES=~/work/secret/CLAUDE.md:/etc/sandbox-override.m
 ```toml
 # ~/.codesmith/config.toml
 [memory]
-enabled = true                    # 默认 true（开启）；也可用 DEEPSEEK_MEMORY=on
+enabled = true                    # 默认 true（开启）；也可用 CODESMITH_MEMORY=on
 excludes = ["~/work/secret/CLAUDE.md"]  # skip these paths in the tier merge
 # Path is configured at the top-level (next to skills_dir, notes_path):
 memory_path = "~/.codesmith/memory.md"
@@ -257,8 +257,8 @@ memory_path = "~/.codesmith/memory.md"
 
 | 设置          | 默认值                        | 覆盖方式                                           |
 |---------------|-------------------------------|----------------------------------------------------|
-| 启用记忆      | `true`                        | `[memory] enabled = false` 或 `DEEPSEEK_DISABLE_AUTO_MEMORY=1` |
-| 记忆文件路径  | `~/.codesmith/memory.md`      | `memory_path = "..."` 或 `DEEPSEEK_MEMORY_PATH=`  |
+| 启用记忆      | `true`                        | `[memory] enabled = false` 或 `CODESMITH_DISABLE_AUTO_MEMORY=1` |
+| 记忆文件路径  | `~/.codesmith/memory.md`      | `memory_path = "..."` 或 `CODESMITH_MEMORY_PATH=`  |
 | 记忆排除项    | （无）                        | `[memory] excludes = ["..."]` 或 `CODESMITH_MEMORY_EXCLUDES=`（冒号分隔） |
 | 文件大小上限  | 100 KiB                       | （目前无；截断标记会显示切割位置）                 |
 

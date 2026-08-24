@@ -387,8 +387,8 @@ mod tests {
 
     #[tokio::test]
     async fn callback_set_fans_out() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         struct Counter(StdArc<AtomicU32>);
         impl Callback for Counter {
@@ -414,8 +414,8 @@ mod tests {
     /// `CallbackSet` fan-out so the surface stays wired.
     #[tokio::test]
     async fn on_tool_progress_default_is_noop_and_fans_out() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         struct ProgressCounter(StdArc<AtomicU32>);
         impl Callback for ProgressCounter {

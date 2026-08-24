@@ -3,7 +3,7 @@
 #
 # Expected environment:
 #   TAG       – git tag, e.g. "v0.8.31"
-#   MANIFEST  – path to deepseek-artifacts-sha256.txt
+#   MANIFEST  – path to codesmith-artifacts-sha256.txt
 #   TAP_REPO  – owner/repo of the Homebrew tap
 #   TOKEN     – PAT with contents:write on TAP_REPO (optional; skips if unset)
 
@@ -43,15 +43,6 @@ readonly SHA_COD_LINUX_ARM="$(sha codesmith-linux-arm64)"
 readonly SHA_TUI_LINUX_ARM="$(sha codesmith-tui-linux-arm64)"
 readonly SHA_COD_LINUX_X64="$(sha codesmith-linux-x64)"
 readonly SHA_TUI_LINUX_X64="$(sha codesmith-tui-linux-x64)"
-# Legacy shims (removed in v0.9.0)
-readonly SHA_LEG_MACOS_ARM="$(sha deepseek-macos-arm64)"
-readonly SHA_LEG_TUI_MACOS_ARM="$(sha deepseek-tui-macos-arm64)"
-readonly SHA_LEG_MACOS_X64="$(sha deepseek-macos-x64)"
-readonly SHA_LEG_TUI_MACOS_X64="$(sha deepseek-tui-macos-x64)"
-readonly SHA_LEG_LINUX_ARM="$(sha deepseek-linux-arm64)"
-readonly SHA_LEG_TUI_LINUX_ARM="$(sha deepseek-tui-linux-arm64)"
-readonly SHA_LEG_LINUX_X64="$(sha deepseek-linux-x64)"
-readonly SHA_LEG_TUI_LINUX_X64="$(sha deepseek-tui-linux-x64)"
 
 # --- temp dirs --------------------------------------------------------
 
@@ -64,7 +55,7 @@ trap 'rm -rf "${TAP_DIR}" "${FORMULA_FILE}"' EXIT
 readonly BASE_URL="https://github.com/Hmbown/CodeSmith/releases/download/${TAG}"
 
 cat > "${FORMULA_FILE}" << EOF
-class DeepseekTui < Formula
+class Codesmith < Formula
   desc "Terminal-native coding agent for DeepSeek V4"
   homepage "https://github.com/Hmbown/CodeSmith"
   version "${VERSION}"
@@ -78,28 +69,12 @@ class DeepseekTui < Formula
         url "${BASE_URL}/codesmith-tui-macos-arm64", using: :nounzip
         sha256 "${SHA_TUI_MACOS_ARM}"
       end
-      resource "legacy-shim" do
-        url "${BASE_URL}/deepseek-macos-arm64", using: :nounzip
-        sha256 "${SHA_LEG_MACOS_ARM}"
-      end
-      resource "legacy-tui-shim" do
-        url "${BASE_URL}/deepseek-tui-macos-arm64", using: :nounzip
-        sha256 "${SHA_LEG_TUI_MACOS_ARM}"
-      end
     else
       url "${BASE_URL}/codesmith-macos-x64", using: :nounzip
       sha256 "${SHA_COD_MACOS_X64}"
       resource "tui" do
         url "${BASE_URL}/codesmith-tui-macos-x64", using: :nounzip
         sha256 "${SHA_TUI_MACOS_X64}"
-      end
-      resource "legacy-shim" do
-        url "${BASE_URL}/deepseek-macos-x64", using: :nounzip
-        sha256 "${SHA_LEG_MACOS_X64}"
-      end
-      resource "legacy-tui-shim" do
-        url "${BASE_URL}/deepseek-tui-macos-x64", using: :nounzip
-        sha256 "${SHA_LEG_TUI_MACOS_X64}"
       end
     end
   end
@@ -112,14 +87,6 @@ class DeepseekTui < Formula
         url "${BASE_URL}/codesmith-tui-linux-arm64", using: :nounzip
         sha256 "${SHA_TUI_LINUX_ARM}"
       end
-      resource "legacy-shim" do
-        url "${BASE_URL}/deepseek-linux-arm64", using: :nounzip
-        sha256 "${SHA_LEG_LINUX_ARM}"
-      end
-      resource "legacy-tui-shim" do
-        url "${BASE_URL}/deepseek-tui-linux-arm64", using: :nounzip
-        sha256 "${SHA_LEG_TUI_LINUX_ARM}"
-      end
     else
       url "${BASE_URL}/codesmith-linux-x64", using: :nounzip
       sha256 "${SHA_COD_LINUX_X64}"
@@ -127,22 +94,12 @@ class DeepseekTui < Formula
         url "${BASE_URL}/codesmith-tui-linux-x64", using: :nounzip
         sha256 "${SHA_TUI_LINUX_X64}"
       end
-      resource "legacy-shim" do
-        url "${BASE_URL}/deepseek-linux-x64", using: :nounzip
-        sha256 "${SHA_LEG_LINUX_X64}"
-      end
-      resource "legacy-tui-shim" do
-        url "${BASE_URL}/deepseek-tui-linux-x64", using: :nounzip
-        sha256 "${SHA_LEG_TUI_LINUX_X64}"
-      end
     end
   end
 
   def install
     bin.install Dir["*"].first => "codesmith"
     resource("tui").stage { bin.install Dir["*"].first => "codesmith-tui" }
-    resource("legacy-shim").stage { bin.install Dir["*"].first => "deepseek" }
-    resource("legacy-tui-shim").stage { bin.install Dir["*"].first => "deepseek-tui" }
   end
 
   test do
@@ -158,14 +115,17 @@ TAP_URL="https://x-access-token:${ENCODED_TOKEN}@github.com/${TAP_REPO}.git"
 
 git clone --depth 1 "${TAP_URL}" "${TAP_DIR}"
 
+# The canonical formula lives at Formula/codesmith.rb; remove the legacy
+# deepseek-tui.rb formula from an earlier revision of the tap, if present.
+rm -f "${TAP_DIR}/Formula/deepseek-tui.rb"
 mkdir -p "${TAP_DIR}/Formula"
-cp "${FORMULA_FILE}" "${TAP_DIR}/Formula/deepseek-tui.rb"
+cp "${FORMULA_FILE}" "${TAP_DIR}/Formula/codesmith.rb"
 
 cd "${TAP_DIR}"
 git config user.name  "github-actions[bot]"
 git config user.email "github-actions[bot]@users.noreply.github.com"
 
-git add Formula/deepseek-tui.rb
+git add -A Formula/
 
 if git diff --cached --quiet; then
   echo "Formula unchanged (already at ${VERSION}); nothing to push."

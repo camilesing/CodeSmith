@@ -96,12 +96,12 @@ Useful environment variables:
 
 | Variable                            | Purpose                                                                                |
 | ----------------------------------- | -------------------------------------------------------------------------------------- |
-| `DEEPSEEK_TUI_VERSION`              | Pin which release the wrapper downloads (defaults to `deepseekBinaryVersion`)          |
-| `DEEPSEEK_TUI_GITHUB_REPO`          | Point the downloader at a fork (`owner/repo`)                                          |
-| `DEEPSEEK_TUI_RELEASE_BASE_URL`     | Override the download root (e.g. an internal mirror or release-asset proxy)            |
-| `DEEPSEEK_TUI_FORCE_DOWNLOAD=1`     | Re-download even if a cached binary marker matches                                     |
-| `DEEPSEEK_TUI_DISABLE_INSTALL=1`    | Skip the `postinstall` download entirely (CI smoke, vendored binaries)                 |
-| `DEEPSEEK_TUI_OPTIONAL_INSTALL=1`   | Don't fail `npm install` on download/extract errors — useful in CI matrices            |
+| `CODESMITH_VERSION`              | Pin which release the wrapper downloads (defaults to `deepseekBinaryVersion`)          |
+| `CODESMITH_GITHUB_REPO`          | Point the downloader at a fork (`owner/repo`)                                          |
+| `CODESMITH_RELEASE_BASE_URL`     | Override the download root (e.g. an internal mirror or release-asset proxy)            |
+| `CODESMITH_FORCE_DOWNLOAD=1`     | Re-download even if a cached binary marker matches                                     |
+| `CODESMITH_DISABLE_INSTALL=1`    | Skip the `postinstall` download entirely (CI smoke, vendored binaries)                 |
+| `CODESMITH_OPTIONAL_INSTALL=1`   | Don't fail `npm install` on download/extract errors — useful in CI matrices            |
 
 > **Slow npm download from mainland China?** If `npm install` itself is slow
 > (not just the postinstall binary download), use an npm registry mirror:
@@ -471,7 +471,7 @@ cargo install codesmith-cli --locked
 
 ### npm download is slow or times out from mainland China
 
-Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to a mirrored release-asset directory
+Set `CODESMITH_RELEASE_BASE_URL` to a mirrored release-asset directory
 (rsproxy, TUNA, Tencent COS, Aliyun OSS), or skip npm entirely and use the
 Cargo mirror setup in [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
@@ -492,8 +492,8 @@ cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesm
 If you operate a binary asset mirror, `codesmith update` can use it directly:
 
 ```bash
-DEEPSEEK_TUI_VERSION=X.Y.Z \
-DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/vX.Y.Z/ \
+CODESMITH_VERSION=X.Y.Z \
+CODESMITH_RELEASE_BASE_URL=https://your-mirror.example.com/CodeSmith/vX.Y.Z/ \
 codesmith update
 ```
 
@@ -617,10 +617,10 @@ Use one of these paths:
    codesmith
    ```
 
-2. Mirror the release assets internally and set `DEEPSEEK_TUI_RELEASE_BASE_URL`:
+2. Mirror the release assets internally and set `CODESMITH_RELEASE_BASE_URL`:
 
    ```bash
-   export DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/
+   export CODESMITH_RELEASE_BASE_URL=https://your-mirror.example.com/CodeSmith/
    codesmith
    ```
 

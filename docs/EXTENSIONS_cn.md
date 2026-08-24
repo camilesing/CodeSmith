@@ -1,6 +1,6 @@
 # 扩展
 
-CodeSmith 扩展是编译内置（slice 1，§F1）或待加载（phase 2，§F5）的模块，它们向 agent 循环贡献**工具**、**斜杠命令**和**生命周期事件处理器**。它们是移植到 §E framework-core trait 之上的 pi-mono `Extension` 模型。
+CodeSmith 扩展是编译内置（slice 1，§F1）或待加载（phase 2，§F5）的模块，它们向 agent 循环贡献**工具**、**斜杠命令**和**生命周期事件处理器**。它们是移植到 §E framework-core trait 之上的类似 pi-mono `Extension` 模型。
 
 扩展是一个工厂（`impl Extension`），它在 `configure` 期间向 `ExtensionApi` 注册自己的贡献项。宿主在启动时通过 `inventory` 发现编译内置的扩展，与磁盘上的 `ExtensionStateStore` 对账（跳过已禁用的），针对一个 stub api 逐个加载并配置，然后 `bind_core` 宿主上下文 —— 之后 runner 将生命周期事件分发给已注册的处理器。根据 §F5d（T1+T2），扩展贡献的工具 + 斜杠命令按轮（per-turn）实时接入宿主：工具通过 `EngineHost::build_turn_dispatcher` 中的 `register_extension_tools` 注册到每轮的 `ToolRegistry`，斜杠命令通过 `commands::execute` 中的 `try_dispatch_extension_command` 分发 —— 因此 agent 循环将扩展工具视为普通的 `ToolSpec`（仅限主轮；不会被子代理继承 —— 见"沙箱立场"一节）。
 

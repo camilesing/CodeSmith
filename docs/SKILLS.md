@@ -65,7 +65,7 @@ same frontmatter `name`, the first match wins.
 | 7 | global | `~/.agents/skills` |
 | 8 | global | `~/.claude/skills` |
 | 9 | global | `~/.codesmith/skills` |
-| 10 | global | `~/.deepseek/skills` (legacy fallback) |
+| 10 | global | `~/.codesmith/skills` (legacy fallback) |
 
 The cross-tool locations (`.agents`, `.opencode`, `.claude`, `.cursor`) mean
 skills you already maintain for other agents are reused as-is — no
@@ -206,7 +206,7 @@ Related configuration, under the `[skills]` table in
 
 ```toml
 [skills]
-registry_url = "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json"
+registry_url = "https://raw.githubusercontent.com/Hmbown/codesmith-skills/main/index.json"
 max_install_size_bytes = 5_242_880   # 5 MiB default
 ```
 
@@ -248,7 +248,7 @@ my-skill/
 ## Bundled system skills
 
 First launch installs a set of bundled skills into `~/.codesmith/skills`
-(or legacy `~/.deepseek/skills`): `skill-creator`, `delegate`,
+(or legacy `~/.codesmith/skills`): `skill-creator`, `delegate`,
 `v4-best-practices`, `plugin-creator`, `skill-installer`, `mcp-builder`,
 `documents`, `presentations`, `spreadsheets`, `pdf`, and `feishu`. The
 bundles are versioned: upgrades add newly introduced skills but never

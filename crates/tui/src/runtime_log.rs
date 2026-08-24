@@ -192,17 +192,7 @@ pub fn init() -> Result<TuiLogGuard> {
 }
 
 pub(crate) fn log_directory() -> Option<PathBuf> {
-    let resolve = |base: PathBuf| -> Option<PathBuf> {
-        let primary = base.join(".codesmith").join("logs");
-        if primary.exists() {
-            return Some(primary);
-        }
-        let legacy = base.join(".deepseek").join("logs");
-        if legacy.exists() {
-            return Some(legacy);
-        }
-        Some(primary)
-    };
+    let resolve = |base: PathBuf| -> Option<PathBuf> { Some(base.join(".codesmith").join("logs")) };
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
         && !home.as_os_str().is_empty()
     {
@@ -381,7 +371,7 @@ mod tests {
     fn log_directory_uses_existing_legacy_deepseek_logs() {
         let _lock = crate::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
-        let legacy = tmp.path().join(".deepseek").join("logs");
+        let legacy = tmp.path().join(".codesmith").join("logs");
         fs::create_dir_all(&legacy).unwrap();
         let prev_home = std::env::var_os("HOME");
         let prev_userprofile = std::env::var_os("USERPROFILE");

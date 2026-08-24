@@ -151,7 +151,7 @@ const TOOL_RESULT_DEDUP_MIN_CHARS: usize = 1_024;
 /// Tool results shorter than this are also exempt from disk persistence —
 /// no SHA file is written. The wire-dedup path won't fire for them
 /// anyway (see `TOOL_RESULT_DEDUP_MIN_CHARS`), so there's no retrieval
-/// burden to satisfy. Keeps `~/.deepseek/tool_outputs/` from filling
+/// burden to satisfy. Keeps `~/.codesmith/tool_outputs/` from filling
 /// up with tiny `gh auth status` and `cat package.json` files.
 const TOOL_RESULT_SHA_PERSIST_MIN_CHARS: usize = 1_024;
 
@@ -553,7 +553,7 @@ fn prompt_layer(
 }
 
 /// Persist a SHA-addressed copy of `content` to
-/// `~/.deepseek/tool_outputs/sha_<sha>.txt` so the model can retrieve
+/// `~/.codesmith/tool_outputs/sha_<sha>.txt` so the model can retrieve
 /// the original bytes after the wire-dedup compactor has replaced
 /// later occurrences with a `<TOOL_RESULT_REF sha="..." />` block.
 ///
@@ -1231,7 +1231,7 @@ mod stream_decoder_tests {
             .unwrap_or_else(|err| err.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let prior = crate::tools::truncate::set_test_spillover_root(Some(
-            tmp.path().join(".deepseek").join("tool_outputs"),
+            tmp.path().join(".codesmith").join("tool_outputs"),
         ));
         struct Restore(Option<std::path::PathBuf>);
         impl Drop for Restore {
@@ -1347,7 +1347,7 @@ mod inspect_entry_tests {
     //! former tui `client` module (ROADMAP §A slice 41).
     use super::*;
     use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn test_tool(name: &str) -> Tool {
         Tool {

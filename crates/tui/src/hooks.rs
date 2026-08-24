@@ -289,7 +289,7 @@ impl HookExecutor {
     /// Get the session ID
     /// Read-only access to the underlying configuration. Used by
     /// `/hooks` (#460 read-only MVP) so the user can list configured
-    /// hooks without reaching for `cat ~/.deepseek/config.toml`.
+    /// hooks without reaching for `cat ~/.codesmith/config.toml`.
     pub fn config(&self) -> &HooksConfig {
         &self.config
     }
@@ -1074,11 +1074,11 @@ NOEQUAL line dropped
         let env = ctx.to_env_vars();
 
         assert_eq!(
-            env.get("DEEPSEEK_TOOL_NAME"),
+            env.get("CODESMITH_TOOL_NAME"),
             Some(&"exec_shell".to_string())
         );
-        assert_eq!(env.get("DEEPSEEK_MODE"), Some(&"agent".to_string()));
-        assert_eq!(env.get("DEEPSEEK_WORKSPACE"), Some(&"/tmp".to_string()));
+        assert_eq!(env.get("CODESMITH_MODE"), Some(&"agent".to_string()));
+        assert_eq!(env.get("CODESMITH_WORKSPACE"), Some(&"/tmp".to_string()));
     }
 
     #[test]

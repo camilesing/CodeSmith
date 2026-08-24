@@ -64,15 +64,11 @@ else
   fail=1
 fi
 
-# `codesmithBinaryVersion` is the new internal version-pin field. Fall back
-# to the legacy `deepseekBinaryVersion` field for old/transition packages.
+# `codesmithBinaryVersion` is the internal version-pin field.
 binary_field=""
 npm_binary_version=""
 if value="$(npm view "codesmith@${version}" codesmithBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
   binary_field="codesmithBinaryVersion"
-  npm_binary_version="${value}"
-elif value="$(npm view "codesmith@${version}" deepseekBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
-  binary_field="deepseekBinaryVersion"
   npm_binary_version="${value}"
 fi
 
@@ -90,12 +86,6 @@ elif [[ "${allow_npm_binary_mismatch}" == "1" ]]; then
 else
   echo "npm codesmithBinaryVersion is absent for codesmith@${version}." >&2
   fail=1
-fi
-
-# Legacy `deepseek-tui` deprecation shim package. Best-effort check —
-# absence after the transition release is expected and not fatal.
-if legacy_version="$(npm view "deepseek-tui@${version}" version 2>/dev/null)"; then
-  echo "npm deepseek-tui@${legacy_version} (deprecation shim) is published."
 fi
 
 for crate in "${release_crates[@]}"; do

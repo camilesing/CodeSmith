@@ -20,8 +20,7 @@ async function sha256(filePath) {
 
 async function main() {
   const prepareAllAssets =
-    process.env.DEEPSEEK_TUI_PREPARE_ALL_ASSETS === "1" ||
-    process.env.DEEPSEEK_PREPARE_ALL_ASSETS === "1";
+    process.env.CODESMITH_PREPARE_ALL_ASSETS === "1";
   const outputDir = path.resolve(
     process.argv[2] || path.join("target", "npm-release-assets"),
   );

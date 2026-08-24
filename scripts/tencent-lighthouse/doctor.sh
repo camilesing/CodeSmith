@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEEPSEEK_USER="${DEEPSEEK_USER:-codesmith}"
-DEEPSEEK_ROOT="${DEEPSEEK_ROOT:-/opt/codesmith}"
+CODESMITH_USER="${CODESMITH_USER:-codesmith}"
+CODESMITH_ROOT="${CODESMITH_ROOT:-/opt/codesmith}"
 WHALEBRO_ROOT="${WHALEBRO_ROOT:-/opt/whalebro}"
-RUNTIME_ENV="${RUNTIME_ENV:-/etc/deepseek/runtime.env}"
-BRIDGE_ENV="${BRIDGE_ENV:-/etc/deepseek/feishu-bridge.env}"
-BRIDGE_DIR="${BRIDGE_DIR:-${DEEPSEEK_ROOT}/bridge}"
+RUNTIME_ENV="${RUNTIME_ENV:-/etc/codesmith/runtime.env}"
+BRIDGE_ENV="${BRIDGE_ENV:-/etc/codesmith/feishu-bridge.env}"
+BRIDGE_DIR="${BRIDGE_DIR:-${CODESMITH_ROOT}/bridge}"
 REPO_ROOT="${REPO_ROOT:-${WHALEBRO_ROOT}/codesmith}"
 
 failures=0
@@ -98,7 +98,7 @@ check_workspace() {
 
 check_binaries() {
   section "CodeSmith binaries"
-  local cargo_bin="/home/${DEEPSEEK_USER}/.cargo/bin"
+  local cargo_bin="/home/${CODESMITH_USER}/.cargo/bin"
   local codesmith="${cargo_bin}/codesmith"
   local tui="${cargo_bin}/codesmith-tui"
   if [[ -x "${codesmith}" ]]; then
@@ -139,21 +139,21 @@ check_env() {
   check_env_file "${BRIDGE_ENV}" "bridge"
 
   local runtime_token bridge_token api_key workspace domain allow_groups allow_unlisted
-  runtime_token="$(env_value "${RUNTIME_ENV}" DEEPSEEK_RUNTIME_TOKEN)"
-  bridge_token="$(env_value "${BRIDGE_ENV}" DEEPSEEK_RUNTIME_TOKEN)"
+  runtime_token="$(env_value "${RUNTIME_ENV}" CODESMITH_RUNTIME_TOKEN)"
+  bridge_token="$(env_value "${BRIDGE_ENV}" CODESMITH_RUNTIME_TOKEN)"
   api_key="$(env_value "${RUNTIME_ENV}" DEEPSEEK_API_KEY)"
-  workspace="$(env_value "${BRIDGE_ENV}" DEEPSEEK_WORKSPACE)"
+  workspace="$(env_value "${BRIDGE_ENV}" CODESMITH_WORKSPACE)"
   domain="$(env_value "${BRIDGE_ENV}" FEISHU_DOMAIN)"
   allow_groups="$(env_value "${BRIDGE_ENV}" FEISHU_ALLOW_GROUPS)"
-  allow_unlisted="$(env_value "${BRIDGE_ENV}" DEEPSEEK_ALLOW_UNLISTED)"
+  allow_unlisted="$(env_value "${BRIDGE_ENV}" CODESMITH_ALLOW_UNLISTED)"
 
   if is_placeholder "${runtime_token}"; then
-    fail "runtime DEEPSEEK_RUNTIME_TOKEN is missing or still a placeholder"
+    fail "runtime CODESMITH_RUNTIME_TOKEN is missing or still a placeholder"
   else
     pass "runtime token is set"
   fi
   if is_placeholder "${bridge_token}"; then
-    fail "bridge DEEPSEEK_RUNTIME_TOKEN is missing or still a placeholder"
+    fail "bridge CODESMITH_RUNTIME_TOKEN is missing or still a placeholder"
   else
     pass "bridge token is set"
   fi
@@ -174,7 +174,7 @@ check_env() {
     && pass "FEISHU_DOMAIN is ${domain:-feishu}" \
     || fail "FEISHU_DOMAIN must be feishu, lark, or an https://open.* URL"
   [[ "${allow_groups:-false}" == "true" && "${allow_unlisted:-false}" == "true" ]] \
-    && fail "group control cannot run with DEEPSEEK_ALLOW_UNLISTED=true" \
+    && fail "group control cannot run with CODESMITH_ALLOW_UNLISTED=true" \
     || pass "group/unlisted mode is not openly combined"
 }
 
@@ -189,8 +189,8 @@ check_validator() {
     return
   fi
   local runner=(node)
-  if [[ "${EUID}" -eq 0 ]] && id -u "${DEEPSEEK_USER}" >/dev/null 2>&1 && have_command sudo; then
-    runner=(sudo -u "${DEEPSEEK_USER}" node)
+  if [[ "${EUID}" -eq 0 ]] && id -u "${CODESMITH_USER}" >/dev/null 2>&1 && have_command sudo; then
+    runner=(sudo -u "${CODESMITH_USER}" node)
   fi
   if "${runner[@]}" "${validator}" --env "${BRIDGE_ENV}" --runtime-env "${RUNTIME_ENV}" --workspace-root "${WHALEBRO_ROOT}" --check-filesystem; then
     pass "bridge config validator passed"
@@ -232,9 +232,9 @@ check_bridge_install() {
 check_localhost_health() {
   section "Localhost health"
   local port token
-  port="$(env_value "${RUNTIME_ENV}" DEEPSEEK_RUNTIME_PORT)"
+  port="$(env_value "${RUNTIME_ENV}" CODESMITH_RUNTIME_PORT)"
   port="${port:-7878}"
-  token="$(env_value "${BRIDGE_ENV}" DEEPSEEK_RUNTIME_TOKEN)"
+  token="$(env_value "${BRIDGE_ENV}" CODESMITH_RUNTIME_TOKEN)"
 
   if have_command ss; then
     local listeners

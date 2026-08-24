@@ -313,7 +313,7 @@ impl ModalView for FilePickerView {
         let title = Line::from(vec![Span::styled(
             " File Picker ",
             Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
+                .fg(palette::CODESMITH_BLUE)
                 .add_modifier(Modifier::BOLD),
         )]);
         let footer_text = format!(
@@ -329,7 +329,7 @@ impl ModalView for FilePickerView {
             )))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .style(Style::default().bg(palette::CODESMITH_INK))
             .padding(Padding::uniform(1));
 
         let inner = block.inner(popup_area);
@@ -338,13 +338,13 @@ impl ModalView for FilePickerView {
         let mut lines: Vec<Line<'static>> = Vec::new();
         // Query line.
         lines.push(Line::from(vec![
-            Span::styled("> ", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            Span::styled("> ", Style::default().fg(palette::CODESMITH_SKY).bold()),
             Span::raw(self.query.clone()),
             Span::styled(
                 " ",
                 Style::default()
-                    .fg(palette::DEEPSEEK_INK)
-                    .bg(palette::DEEPSEEK_SKY),
+                    .fg(palette::CODESMITH_INK)
+                    .bg(palette::CODESMITH_SKY),
             ),
         ]));
         lines.push(Line::from(""));
@@ -451,7 +451,7 @@ fn collect_candidates(root: &Path) -> Vec<String> {
             .ignore(false)
             .max_depth(Some(WALK_DEPTH.saturating_sub(1)));
         for entry in dot_builder.build().flatten() {
-            // Exclude machine-generated bulk (e.g. .deepseek/snapshots/).
+            // Exclude machine-generated bulk (e.g. .codesmith/snapshots/).
             if path_is_excluded_from_discovery(root, entry.path()) {
                 continue;
             }
@@ -742,11 +742,11 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
 
-        fs::create_dir_all(root.join(".deepseek/commands")).unwrap();
-        fs::write(root.join(".deepseek/commands/build.md"), "build").unwrap();
-        fs::create_dir_all(root.join(".deepseek/snapshots/deadbeef/.git/objects")).unwrap();
+        fs::create_dir_all(root.join(".codesmith/commands")).unwrap();
+        fs::write(root.join(".codesmith/commands/build.md"), "build").unwrap();
+        fs::create_dir_all(root.join(".codesmith/snapshots/deadbeef/.git/objects")).unwrap();
         fs::write(
-            root.join(".deepseek/snapshots/deadbeef/.git/objects/snapshot.pack"),
+            root.join(".codesmith/snapshots/deadbeef/.git/objects/snapshot.pack"),
             "pack",
         )
         .unwrap();
@@ -766,8 +766,8 @@ mod tests {
         assert!(
             candidates
                 .iter()
-                .any(|path| path == ".deepseek/commands/build.md"),
-            "normal .deepseek command files should stay discoverable: {candidates:?}",
+                .any(|path| path == ".codesmith/commands/build.md"),
+            "normal .codesmith command files should stay discoverable: {candidates:?}",
         );
         assert!(
             candidates
@@ -778,7 +778,7 @@ mod tests {
         assert!(
             candidates
                 .iter()
-                .all(|path| !path.starts_with(".deepseek/snapshots/")),
+                .all(|path| !path.starts_with(".codesmith/snapshots/")),
             "snapshot side repo files must not enter picker candidates: {candidates:?}",
         );
         assert!(

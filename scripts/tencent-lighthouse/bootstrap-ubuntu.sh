@@ -6,15 +6,15 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-DEEPSEEK_USER="${DEEPSEEK_USER:-codesmith}"
-DEEPSEEK_ROOT="${DEEPSEEK_ROOT:-/opt/codesmith}"
+CODESMITH_USER="${CODESMITH_USER:-codesmith}"
+CODESMITH_ROOT="${CODESMITH_ROOT:-/opt/codesmith}"
 WHALEBRO_ROOT="${WHALEBRO_ROOT:-/opt/whalebro}"
-REPO_URL="${DEEPSEEK_REPO_URL:-https://github.com/Hmbown/CodeSmith.git}"
+REPO_URL="${CODESMITH_REPO_URL:-https://github.com/Hmbown/CodeSmith.git}"
 WHALEBRO_EXTRA_REPOS="${WHALEBRO_EXTRA_REPOS:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SOURCE_BRANCH="$(git -C "${SOURCE_ROOT}" branch --show-current 2>/dev/null || true)"
-REPO_BRANCH="${DEEPSEEK_REPO_BRANCH:-${SOURCE_BRANCH:-main}}"
+REPO_BRANCH="${CODESMITH_REPO_BRANCH:-${SOURCE_BRANCH:-main}}"
 
 apt-get update
 apt-get install -y \
@@ -38,19 +38,19 @@ if (( node_major < 18 )); then
   echo "Node.js 18+ is required for the Feishu bridge; install a newer Node.js before running install-services.sh." >&2
 fi
 
-if ! id -u "${DEEPSEEK_USER}" >/dev/null 2>&1; then
-  useradd --create-home --shell /bin/bash "${DEEPSEEK_USER}"
+if ! id -u "${CODESMITH_USER}" >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash "${CODESMITH_USER}"
 fi
 
-install -d -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" "${DEEPSEEK_ROOT}"
-install -d -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" "${DEEPSEEK_ROOT}/bridge"
-install -d -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" "${WHALEBRO_ROOT}"
-install -d -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" "${WHALEBRO_ROOT}/worktrees"
-install -d -m 0750 -o root -g "${DEEPSEEK_USER}" /etc/deepseek
-install -d -m 0700 -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" /var/lib/codesmith-feishu-bridge
+install -d -o "${CODESMITH_USER}" -g "${CODESMITH_USER}" "${CODESMITH_ROOT}"
+install -d -o "${CODESMITH_USER}" -g "${CODESMITH_USER}" "${CODESMITH_ROOT}/bridge"
+install -d -o "${CODESMITH_USER}" -g "${CODESMITH_USER}" "${WHALEBRO_ROOT}"
+install -d -o "${CODESMITH_USER}" -g "${CODESMITH_USER}" "${WHALEBRO_ROOT}/worktrees"
+install -d -m 0750 -o root -g "${CODESMITH_USER}" /etc/codesmith
+install -d -m 0700 -o "${CODESMITH_USER}" -g "${CODESMITH_USER}" /var/lib/codesmith-feishu-bridge
 
 if [[ ! -d "${WHALEBRO_ROOT}/codesmith/.git" ]]; then
-  sudo -u "${DEEPSEEK_USER}" git clone --branch "${REPO_BRANCH}" "${REPO_URL}" "${WHALEBRO_ROOT}/codesmith"
+  sudo -u "${CODESMITH_USER}" git clone --branch "${REPO_BRANCH}" "${REPO_URL}" "${WHALEBRO_ROOT}/codesmith"
 fi
 
 for repo_spec in ${WHALEBRO_EXTRA_REPOS}; do
@@ -61,31 +61,31 @@ for repo_spec in ${WHALEBRO_EXTRA_REPOS}; do
     continue
   fi
   if [[ ! -d "${WHALEBRO_ROOT}/${repo_name}/.git" ]]; then
-    sudo -u "${DEEPSEEK_USER}" git clone "${repo_url}" "${WHALEBRO_ROOT}/${repo_name}" || {
+    sudo -u "${CODESMITH_USER}" git clone "${repo_url}" "${WHALEBRO_ROOT}/${repo_name}" || {
       echo "Warning: failed to clone optional repo ${repo_name} from ${repo_url}" >&2
     }
   fi
 done
 
-if [[ ! -f /etc/deepseek/runtime.env ]]; then
-  cat >/etc/deepseek/runtime.env <<'EOF'
-DEEPSEEK_RUNTIME_TOKEN=replace-with-long-random-token
-DEEPSEEK_RUNTIME_PORT=7878
-DEEPSEEK_RUNTIME_WORKERS=2
+if [[ ! -f /etc/codesmith/runtime.env ]]; then
+  cat >/etc/codesmith/runtime.env <<'EOF'
+CODESMITH_RUNTIME_TOKEN=replace-with-long-random-token
+CODESMITH_RUNTIME_PORT=7878
+CODESMITH_RUNTIME_WORKERS=2
 DEEPSEEK_API_KEY=replace-with-deepseek-platform-key
 RUST_LOG=info
 EOF
-  chown root:"${DEEPSEEK_USER}" /etc/deepseek/runtime.env
-  chmod 0640 /etc/deepseek/runtime.env
+  chown root:"${CODESMITH_USER}" /etc/codesmith/runtime.env
+  chmod 0640 /etc/codesmith/runtime.env
 fi
 
-if [[ ! -f /etc/deepseek/feishu-bridge.env ]]; then
-  cat >/etc/deepseek/feishu-bridge.env <<'EOF'
+if [[ ! -f /etc/codesmith/feishu-bridge.env ]]; then
+  cat >/etc/codesmith/feishu-bridge.env <<'EOF'
 FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
 FEISHU_APP_SECRET=replace-with-app-secret
 FEISHU_DOMAIN=feishu
 DEEPSEEK_RUNTIME_URL=http://127.0.0.1:7878
-DEEPSEEK_RUNTIME_TOKEN=replace-with-same-token-as-runtime-env
+CODESMITH_RUNTIME_TOKEN=replace-with-same-token-as-runtime-env
 DEEPSEEK_WORKSPACE=/opt/whalebro
 DEEPSEEK_MODEL=auto
 DEEPSEEK_MODE=agent
@@ -101,8 +101,8 @@ FEISHU_GROUP_PREFIX=/ds
 FEISHU_MAX_REPLY_CHARS=3500
 DEEPSEEK_TURN_TIMEOUT_MS=900000
 EOF
-  chown root:"${DEEPSEEK_USER}" /etc/deepseek/feishu-bridge.env
-  chmod 0640 /etc/deepseek/feishu-bridge.env
+  chown root:"${CODESMITH_USER}" /etc/codesmith/feishu-bridge.env
+  chmod 0640 /etc/codesmith/feishu-bridge.env
 fi
 
 ufw allow OpenSSH
@@ -113,14 +113,14 @@ cat <<EOF
 Base server setup complete.
 
 Next:
-1. Install Rust 1.88+ for ${DEEPSEEK_USER}; rustup is the usual path.
+1. Install Rust 1.88+ for ${CODESMITH_USER}; rustup is the usual path.
 2. Build/install both binaries:
-   sudo -iu ${DEEPSEEK_USER}
+   sudo -iu ${CODESMITH_USER}
    cd ${WHALEBRO_ROOT}/codesmith
    cargo install --path crates/cli --locked --force
    cargo install --path crates/tui --locked --force
-3. Copy integrations/feishu-bridge to ${DEEPSEEK_ROOT}/bridge and run npm install.
-4. Edit /etc/deepseek/runtime.env and /etc/deepseek/feishu-bridge.env.
+3. Copy integrations/feishu-bridge to ${CODESMITH_ROOT}/bridge and run npm install.
+4. Edit /etc/codesmith/runtime.env and /etc/codesmith/feishu-bridge.env.
 5. Install systemd units with scripts/tencent-lighthouse/install-services.sh.
 6. After the env files are edited and services are started, run:
    sudo bash scripts/tencent-lighthouse/doctor.sh

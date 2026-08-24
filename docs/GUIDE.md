@@ -59,7 +59,7 @@ cargo install codesmith-tui --locked
 # Homebrew
 # The tap/formula name is legacy; it installs codesmith and codesmith-tui.
 brew tap Hmbown/deepseek-tui
-brew install deepseek-tui
+brew install codesmith
 ```
 
 Docker is also available when you want an isolated runtime:
@@ -95,7 +95,7 @@ codesmith
 ```
 
 New CodeSmith config is stored under `~/.codesmith/config.toml`. Legacy
-`~/.deepseek/config.toml` files are still supported for users migrating from
+`~/.codesmith/config.toml` files are still supported for users migrating from
 the old name.
 
 After setup, run a doctor check:
@@ -485,7 +485,7 @@ python3 your_file.py
 ### Where is my config stored?
 
 New CodeSmith config uses `~/.codesmith/config.toml`. Legacy
-`~/.deepseek/config.toml` remains supported for compatibility. Project overlays
+`~/.codesmith/config.toml` remains supported for compatibility. Project overlays
 can also affect behavior when a workspace config exists.
 
 ### How do I keep costs predictable?

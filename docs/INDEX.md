@@ -53,8 +53,8 @@ backend = "none"
 Environment overrides (applied at resolution time, legacy aliases in
 parentheses):
 
-- `CODESMITH_INDEX_ENABLED` (`DEEPSEEK_INDEX_ENABLED`) — `true`/`false`
-- `CODESMITH_INDEX_SYMBOLS_BACKEND` (`DEEPSEEK_INDEX_SYMBOLS_BACKEND`) —
+- `CODESMITH_INDEX_ENABLED` (`CODESMITH_INDEX_ENABLED`) — `true`/`false`
+- `CODESMITH_INDEX_SYMBOLS_BACKEND` (`CODESMITH_INDEX_SYMBOLS_BACKEND`) —
   backend id
 
 Unknown backend ids fail fast with a message listing the registered ids.

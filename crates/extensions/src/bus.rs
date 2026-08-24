@@ -29,7 +29,9 @@ impl EventBus {
 
     /// §F3: subscribe a callback to `channel`. Slice 1: unimplemented.
     pub fn subscribe(&self, _channel: &Channel) -> Result<(), ExtensionError> {
-        Err(ExtensionError::Unimplemented("EventBus.subscribe (§F3)".into()))
+        Err(ExtensionError::Unimplemented(
+            "EventBus.subscribe (§F3)".into(),
+        ))
     }
 
     /// §F3: publish `payload` to `channel`. Slice 1: unimplemented.
@@ -38,6 +40,8 @@ impl EventBus {
         _channel: &Channel,
         _payload: serde_json::Value,
     ) -> Result<(), ExtensionError> {
-        Err(ExtensionError::Unimplemented("EventBus.publish (§F3)".into()))
+        Err(ExtensionError::Unimplemented(
+            "EventBus.publish (§F3)".into(),
+        ))
     }
 }

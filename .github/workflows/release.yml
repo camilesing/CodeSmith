@@ -156,48 +156,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: codesmith-tui.exe
             artifact_name: codesmith-tui-windows-x64.exe
-          # --- deepseek (legacy dispatcher shim; removed in v0.9.0) ---
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-x64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: deepseek.exe
-            artifact_name: deepseek-windows-x64.exe
-          # --- deepseek-tui (legacy TUI shim; removed in v0.9.0) ---
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-linux-x64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-linux-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-macos-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: deepseek-tui.exe
-            artifact_name: deepseek-tui-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -241,7 +199,7 @@ jobs:
       - name: Build
         shell: bash
         env:
-          DEEPSEEK_BUILD_SHA: ${{ needs.resolve.outputs.sha }}
+          CODESMITH_BUILD_SHA: ${{ needs.resolve.outputs.sha }}
           CC_riscv64gc_unknown_linux_gnu: riscv64-linux-gnu-gcc
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
           PKG_CONFIG_ALLOW_CROSS: 1
@@ -425,7 +383,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            DEEPSEEK_BUILD_SHA=${{ needs.resolve.outputs.sha }}
+            CODESMITH_BUILD_SHA=${{ needs.resolve.outputs.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -441,8 +399,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          # Match both the canonical `codesmith*` artifacts and the legacy
-          # `deepseek*` shim artifacts that ship for the transition release.
           pattern: '*'
       - name: List artifacts
         run: find artifacts -type f
@@ -458,10 +414,6 @@ jobs:
             base="$(basename "${file}")"
             printf '%s  %s\n' "${hash}" "${base}" >> "${manifest}"
           done < <(find artifacts -type f ! -path 'artifacts/checksums/*' -print0 | sort -z)
-          # Legacy alias manifest so v0.8.40 `deepseek update` clients can
-          # still find a manifest by their hardcoded name. Same content; will
-          # be removed once the legacy shim binaries are retired in v0.9.0.
-          cp "${manifest}" "artifacts/checksums/deepseek-artifacts-sha256.txt"
           cat "${manifest}"
       - uses: softprops/action-gh-release@v1
         with:
@@ -469,13 +421,6 @@ jobs:
           files: artifacts/*/*
           prerelease: false
           body: |
-            > This release renames the project to **CodeSmith**. The legacy
-            > `deepseek` and `deepseek-tui` binaries continue to ship as
-            > deprecation shims for one release cycle; they print a one-line
-            > warning and forward to `codesmith` / `codesmith-tui`. They will
-            > be removed in v0.9.0. See `docs/REBRAND.md` for the full
-            > migration story.
-
             ## Install
 
             ### Recommended — npm (one command, both binaries)
@@ -491,11 +436,11 @@ jobs:
             ```bash
             docker run --rm -it \
               -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-              -v ~/.deepseek:/home/codesmith/.deepseek \
+              -v ~/.codesmith:/home/codesmith/.codesmith \
               ghcr.io/hmbown/codesmith:${{ needs.resolve.outputs.tag }}
             ```
 
-            The image ships the `codesmith` dispatcher and `codesmith-tui` runtime (plus the legacy `deepseek` / `deepseek-tui` shims during the transition). The `latest` tag is also updated on release.
+            The image ships the `codesmith` dispatcher and `codesmith-tui` runtime. The `latest` tag is also updated on release.
 
             ### Cargo (Linux / macOS)
 
@@ -533,7 +478,7 @@ jobs:
 
             The **portable** Windows archive skips the install script — extract and run from any directory.
 
-            Individual binaries are also attached below for scripting and the npm wrapper. Legacy `deepseek-*` and `deepseek-tui-*` assets ship for one release cycle so that existing `deepseek update` invocations on v0.8.40 keep working; they install the deprecation shims, which forward to the canonical binaries.
+            Individual binaries are also attached below for scripting and the npm wrapper.
 
             ### Verify (recommended)
 
@@ -550,8 +495,6 @@ jobs:
             shasum -a 256 -c codesmith-bundles-sha256.txt
             shasum -a 256 -c codesmith-artifacts-sha256.txt
             ```
-
-            The legacy `deepseek-artifacts-sha256.txt` is also attached for backward compatibility and contains the same hashes as the canonical manifest.
 
             ## Changelog
 
@@ -588,13 +531,13 @@ jobs:
         run: |
           gh release download ${{ needs.resolve.outputs.tag }} \
             --repo ${{ github.repository }} \
-            --pattern 'deepseek-artifacts-sha256.txt' \
+            --pattern 'codesmith-artifacts-sha256.txt' \
             --dir /tmp
       - name: Update Homebrew tap
         if: steps.homebrew-token.outputs.available == 'true'
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
-          MANIFEST: /tmp/deepseek-artifacts-sha256.txt
+          MANIFEST: /tmp/codesmith-artifacts-sha256.txt
           TAP_REPO: Hmbown/homebrew-deepseek-tui
           TOKEN: ${{ secrets.HOMEBREW_TAP_PAT || secrets.RELEASE_TAG_PAT }}
         run: bash .github/scripts/update-homebrew-tap.sh

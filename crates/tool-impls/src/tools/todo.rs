@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+pub use codesmith_agent_runtime::tool_state::todo::*;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-pub use codesmith_agent_runtime::tool_state::todo::*;
 
 // === Types ===
 

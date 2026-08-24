@@ -7,16 +7,13 @@ codesmith 从一个 TOML 文件加上环境变量中读取配置。
 
 ## 配置查找位置
 
-默认配置路径：
+默认配置路径：`~/.codesmith/config.toml`
 
-- `~/.codesmith/config.toml`
-- 旧版回退：`~/.deepseek/config.toml`
 
 覆盖方式：
 
 - CLI：`codesmith --config /path/to/config.toml`
 - 环境变量：`CODESMITH_CONFIG_PATH=/path/to/config.toml`
-- 旧版环境变量别名：`DEEPSEEK_CONFIG_PATH=/path/to/config.toml`
 
 如果两者都设置了，`--config` 优先。环境变量覆盖在文件加载之后应用。
 
@@ -24,7 +21,7 @@ codesmith 从一个 TOML 文件加上环境变量中读取配置。
 
 当 TUI 在包含 `<workspace>/.codesmith/config.toml` 文件的工作区中启动时，
 该文件中声明的值会合并到全局配置之上。当 CodeSmith 路径不存在时，
-仍会读取旧版 `<workspace>/.deepseek/config.toml` 文件。这使得仓库可以
+仍会读取旧版 `<workspace>/.codesmith/config.toml` 文件。这使得仓库可以
 锁定自己的 provider、模型、沙箱策略或审批策略，而无需改动用户的
 `~/.codesmith/config.toml`。传入 `--no-project-config` 可在单次启动时
 跳过该叠加。
@@ -55,8 +52,8 @@ codesmith 从一个 TOML 文件加上环境变量中读取配置。
 用于 DeepSeek 认证和模型默认值。`codesmith auth set --provider deepseek`
 （以及旧版别名 `codesmith login --api-key ...`）将密钥保存到
 `~/.codesmith/config.toml`（必要时会在首次启动时迁移旧版
-`~/.deepseek/config.toml`），而 `codesmith --model deepseek-v4-flash`
-会作为 `DEEPSEEK_MODEL` 转发给 TUI。
+`~/.codesmith/config.toml`），而 `codesmith --model deepseek-v4-flash`
+会作为 `CODESMITH_MODEL` 转发给 TUI。
 
 凭证查找在任何显式 CLI `--api-key` 之后按 `config -> keyring -> env`
 的顺序进行。运行 `codesmith auth status` 可以查看当前活跃 provider 的
@@ -124,17 +121,17 @@ provider 专属的覆盖值。
 
 当 Ollama、SGLang 和 vLLM 等本地 HTTP 端点使用 localhost 或环回地址时，
 默认是允许的。对于非本地 `http://` 网关，仅在可信网络上使用
-`DEEPSEEK_ALLOW_INSECURE_HTTP=1` 启动：
+`CODESMITH_ALLOW_INSECURE_HTTP=1` 启动：
 
 ```bash
-DEEPSEEK_ALLOW_INSECURE_HTTP=1 codesmith
+CODESMITH_ALLOW_INSECURE_HTTP=1 codesmith
 ```
 
 需要额外请求头的第三方 OpenAI 兼容网关，可以在顶层或 provider 表
 （如 `[providers.deepseek]`）下设置
 `http_headers = { "X-Model-Provider-Id" = "your-model-provider" }`。
 配置后，codesmith 会在模型 API 请求中发送这些自定义请求头。等价的
-环境变量覆盖是 `DEEPSEEK_HTTP_HEADERS`，使用逗号分隔的 `name=value`
+环境变量覆盖是 `CODESMITH_HTTP_HEADERS`，使用逗号分隔的 `name=value`
 对，例如 `X-Model-Provider-Id=your-model-provider,X-Gateway-Route=dev`。
 `Authorization` 和 `Content-Type` 由客户端管理，不会被此设置覆盖。
 
@@ -184,7 +181,7 @@ model = "deepseek-v4-flash"        # required: setting the table enables it
 `provider` 则会构建一个专门的第二个客户端（例如主模型 = anthropic，
 辅助模型 = deepseek），此时需要自己的 `api_key`——一家厂商的密钥
 永远不会被发送给另一家。模型 id 也可以通过 `CODESMITH_UTILITY_MODEL`
-（旧版别名 `DEEPSEEK_UTILITY_MODEL`）设置。
+（旧版别名 `CODESMITH_UTILITY_MODEL`）设置。
 
 ### 代码索引
 
@@ -318,19 +315,19 @@ default_text_model = "codesmith-coder:1.3b"
 密钥环凭证之后作为回退。
 
 每个应用级变量都接受 `CODESMITH_*` 名称（首选），并以其旧版
-`DEEPSEEK_*`（以及更早的 `CODEWHALE_*`）别名作为回退。当两种形式
+`CODEWHALE_*` 别名作为回退。当两种形式
 都设置时，`CODESMITH_*` 的值优先：
 
-- `CODESMITH_PROVIDER`（首选）/ `DEEPSEEK_PROVIDER`（旧版别名）—
+- `CODESMITH_PROVIDER`（首选）/ `CODESMITH_PROVIDER`（旧版别名）—
   `deepseek|nvidia-nim|openai|atlascloud|wanjie-ark|openrouter|xiaomi-mimo|novita|fireworks|siliconflow|moonshot|sglang|vllm|ollama`
-- `CODESMITH_MODEL`（首选）/ `DEEPSEEK_MODEL`（旧版别名）— 当前活跃 provider 的默认模型
-- `CODESMITH_BASE_URL`（首选）/ `DEEPSEEK_BASE_URL`（旧版别名）— 当前活跃 provider 的 base URL
+- `CODESMITH_MODEL`（首选）/ `CODESMITH_MODEL`（旧版别名）— 当前活跃 provider 的默认模型
+- `CODESMITH_BASE_URL`（首选）/ `CODESMITH_BASE_URL`（旧版别名）— 当前活跃 provider 的 base URL
 
-其余应用级变量（每个也响应其 `DEEPSEEK_*` 别名）：
+其余应用级变量：
 
 - `CODESMITH_API_KEY`
 - `CODESMITH_HTTP_HEADERS`（自定义模型请求头，逗号分隔的 `name=value` 对）
-- `DEEPSEEK_DEFAULT_TEXT_MODEL`（`CODESMITH_MODEL` 的额外旧版别名）
+- `CODESMITH_DEFAULT_TEXT_MODEL`（`CODESMITH_MODEL` 的额外旧版别名）
 - `NVIDIA_API_KEY` 或 `NVIDIA_NIM_API_KEY`（当 provider 为 `nvidia-nim` 时首选；回退到 `CODESMITH_API_KEY` / `DEEPSEEK_API_KEY`）
 - `NVIDIA_NIM_BASE_URL`、`NIM_BASE_URL` 或 `NVIDIA_BASE_URL`
 - `NVIDIA_NIM_MODEL`
@@ -384,7 +381,7 @@ default_text_model = "codesmith-coder:1.3b"
 - `CODESMITH_MAX_SUBAGENTS`（钳制在 `1..=20`）
 - `CODESMITH_TASKS_DIR`（运行时任务队列/产物存储，默认为
   `~/.codesmith/tasks`，当仅存在旧版目录时回退到
-  `~/.deepseek/tasks`）
+  `~/.codesmith/tasks`）
 - `CODESMITH_HOME`（覆盖基础数据目录；默认为 `~/.codesmith`）。
   如果你之前导出过 `DEEPSEEK_HOME`，请将其改名为 `CODESMITH_HOME`；
   新的 CodeSmith 状态路径不再使用旧的环境变量。
@@ -393,7 +390,7 @@ default_text_model = "codesmith-coder:1.3b"
   或在该配置的 URI 无法获取时作为回退）
 - `CODESMITH_AUTOMATIONS_DIR`（覆盖 automations 存储目录；默认使用
   `~/.codesmith/automations`，当仅存在旧版目录时回退到
-  `~/.deepseek/automations`）
+  `~/.codesmith/automations`）
 - `CODESMITH_CAPACITY_ENABLED`
 - `CODESMITH_CAPACITY_LOW_RISK_MAX`
 - `CODESMITH_CAPACITY_MEDIUM_RISK_MAX`
@@ -437,7 +434,7 @@ instructions = [
 - 缺失的文件会被跳过并记录一条 tracing 警告，因此过期的条目
   不会导致启动失败。
 - 项目配置（`<workspace>/.codesmith/config.toml`，或旧版
-  `<workspace>/.deepseek/config.toml`）会整体**替换**用户数组而不是
+  `<workspace>/.codesmith/config.toml`）会整体**替换**用户数组而不是
   合并。如果两者都想要，请在项目数组中列出 `~/global.md`。在项目
   中设置 `instructions = []` 可为该仓库清空用户列表。
 
@@ -535,10 +532,10 @@ stderr 或 stdout 可以提供在 TUI 中显示的状态消息。其他非零退
 阻止消息。现有环境变量仍然可用。`shell_env` 钩子保持其现有的
 `KEY=VALUE` stdout 契约；JSON stdout 契约仅适用于 `message_submit`。
 
-`session_id` 字段（以及 `DEEPSEEK_SESSION_ID` 环境变量）携带的是
+`session_id` 字段（以及 `CODESMITH_SESSION_ID` 环境变量）携带的是
 **临时性**的按构建遥测 id——它在每次会话启动时都会变化，不会跨
 重启关联。要跨重启关联（resume、capacity 记忆连续性），请使用
-`DEEPSEEK_THREAD_ID`，它携带持久线程 id，并且在结构化钩子载荷中也
+`CODESMITH_THREAD_ID`，它携带持久线程 id，并且在结构化钩子载荷中也
 以 `thread_id` 字段提供。
 
 ### 输入框暂存（`/stash`，Ctrl+S）
@@ -564,7 +561,7 @@ codesmith 还将用户偏好存储在：
 
 - `theme`（`system`、`dark`、`light`、`grayscale`、`catppuccin-mocha`、
   `tokyo-night`、`dracula`、`gruvbox-dark`；默认 `system`）：`system`
-  跟随终端背景检测，`dark`/`light` 使用 DeepSeek 调色板，`grayscale`
+  跟随终端背景检测，`dark`/`light` 使用内置深色调色板，`grayscale`
   是极简的黑/白主题，具名社区预设则应用于整个 TUI。接受诸如 `whale`、
   `mono`、`black-white`、`tokyonight` 和 `gruvbox` 之类的别名。
 - `auto_compact`（开/关，默认关）
@@ -661,7 +658,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `provider`（字符串，可选）：`deepseek`（默认）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm` 或 `ollama`。旧版 `deepseek-cn` 配置仍被接受，作为 `deepseek` 的别名；DeepSeek 在全球使用相同的官方主机 [`https://api.deepseek.com`](https://api-docs.deepseek.com/)。`nvidia-nim` 通过 `https://integrate.api.nvidia.com/v1` 指向 NVIDIA NIM 托管的 DeepSeek 端点；`openai` 指向通用 OpenAI 兼容端点，默认为 `https://api.openai.com/v1`；`atlascloud` 指向 AtlasCloud 的 OpenAI 兼容端点 `https://api.atlascloud.ai/v1`；`wanjie-ark` 指向 Wanjie Ark 的 OpenAI 兼容端点 `https://maas-openapi.wanjiedata.com/api/v1`；`openrouter` 指向 `https://openrouter.ai/api/v1`；`xiaomi-mimo` 指向小米 MiMo 的 OpenAI 兼容端点 `https://api.xiaomimimo.com/v1`；`novita` 指向 `https://api.novita.ai/v1`；`fireworks` 指向 `https://api.fireworks.ai/inference/v1`；`siliconflow` 指向 SiliconFlow，默认为 `https://api.siliconflow.com/v1`；`moonshot` 指向 Moonshot/Kimi，默认为 `https://api.moonshot.ai/v1`；`sglang` 指向自托管的 OpenAI 兼容端点，默认为 `http://localhost:30000/v1`；`vllm` 指向自托管的 vLLM OpenAI 兼容端点，默认为 `http://localhost:8000/v1`；`ollama` 指向 Ollama 的 OpenAI 兼容端点，默认为 `http://localhost:11434/v1`。
 - `api_key`（字符串，托管 provider 必填）：对 DeepSeek/托管 provider 必须非空（或设置该 provider 的 API 密钥环境变量）。自托管的 SGLang、vLLM 和 Ollama 可以省略。
 - `base_url`（字符串，可选）：对 DeepSeek 的 OpenAI 兼容 Chat Completions API 默认为 `https://api.deepseek.com/beta`，包括旧版 `provider = "deepseek-cn"` 配置。其他默认值：`nvidia-nim` 为 `https://integrate.api.nvidia.com/v1`，`openai` 为 `https://api.openai.com/v1`，`atlascloud` 为 `https://api.atlascloud.ai/v1`，`wanjie-ark` 为 `https://maas-openapi.wanjiedata.com/api/v1`，`openrouter` 为 `https://openrouter.ai/api/v1`，`xiaomi-mimo` 为 `https://api.xiaomimimo.com/v1`，`novita` 为 `https://api.novita.ai/v1`，`fireworks` 为 `https://api.fireworks.ai/inference/v1`，`siliconflow` 为 `https://api.siliconflow.com/v1`，`moonshot` 为 `https://api.moonshot.ai/v1`，`sglang` 为 `http://localhost:30000/v1`，`vllm` 为 `http://localhost:8000/v1`，`ollama` 为 `http://localhost:11434/v1`。显式设置 `https://api.deepseek.com` 或 `https://api.deepseek.com/v1` 可退出 DeepSeek beta 功能。
-- `default_text_model`（字符串，可选）：DeepSeek 和通用 OpenAI 兼容端点默认为 `deepseek-v4-pro`，NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。旧版 `deepseek-chat` 和 `deepseek-reasoner` 仍作为 `deepseek-v4-flash` 的兼容别名解析（移除已列入计划，但未承诺具体日期），但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项；`DEEPSEEK_MODEL` 是旧版别名。
+- `default_text_model`（字符串，可选）：DeepSeek 和通用 OpenAI 兼容端点默认为 `deepseek-v4-pro`，NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。旧版 `deepseek-chat` 和 `deepseek-reasoner` 仍作为 `deepseek-v4-flash` 的兼容别名解析（移除已列入计划，但未承诺具体日期），但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项；`CODESMITH_MODEL` 是旧版别名。
 - `reasoning_effort`（字符串，可选）：`off`、`low`、`medium`、`high` 或 `max`；默认为已配置的 UI 档位。DeepSeek 平台通过顶层 `thinking` / `reasoning_effort` 字段接收。NVIDIA NIM 通过 `chat_template_kwargs` 接收等价设置。
 - `allow_shell`（布尔，可选）：默认为 `true`（受沙箱保护）。
 - `telemetry`（布尔，可选，默认 `false`）：可选择加入的**仅本地**遥测。当为 `true` 时，容量决策分析事件会在通过工作区信任边界后写入 `~/.codesmith/telemetry/events.jsonl`。绝不联网；接收器在信任前在内存中排队，仅在信任后才附加（写入），因此在获得同意之前不会有任何工作区控制的数据落盘。事件携带临时的按会话 id，而不是持久线程 id。
@@ -707,11 +704,11 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   覆盖常见工作流，包括 skill 创建、委派、MCP/插件脚手架、文档、
   演示文稿、电子表格、PDF 以及飞书/Lark。
 - `mcp_config_path`（字符串，可选）：默认为 `~/.codesmith/mcp.json`，
-  当 CodeSmith 路径不存在时回退到旧版 `~/.deepseek/mcp.json`。它显示
+  当 CodeSmith 路径不存在时回退到旧版 `~/.codesmith/mcp.json`。它显示
   在 `/config` 中，可以从 TUI 修改。新路径会被 `/mcp` 立即使用，但
   重建模型可见的 MCP 工具池需要重启 TUI。
 - `notes_path`（字符串，可选）：默认为 `~/.codesmith/notes.txt`，
-  当 CodeSmith 路径不存在时回退到旧版 `~/.deepseek/notes.txt`，
+  当 CodeSmith 路径不存在时回退到旧版 `~/.codesmith/notes.txt`，
   由模型可见的 `note` 工具使用。
 - `personality`（字符串，可选）：`calm`（默认）或 `playful`——
   系统提示词中的语气与风格叠加层。不区分大小写；其他值会导致启动
@@ -729,9 +726,9 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `[memory].enabled`（布尔，可选）：默认为 `false`。当为 `true` 时，
   TUI 将用户记忆文件加载到 `<user_memory>` 提示词块中，在输入框中
   启用 `# foo` 快速记录，显示 `/memory` 斜杠命令，并注册 `remember`
-  工具。同样的开关可通过 `DEEPSEEK_MEMORY=on` 使用。
+  工具。同样的开关可通过 `CODESMITH_MEMORY=on` 使用。
 - `memory_path`（字符串，可选）：默认为 `~/.codesmith/memory.md`，
-  当 CodeSmith 路径不存在时回退到旧版 `~/.deepseek/memory.md`。
+  当 CodeSmith 路径不存在时回退到旧版 `~/.codesmith/memory.md`。
   启用后由用户记忆功能使用——完整功能面请参阅
   [`MEMORY.md`](MEMORY.md)（`# foo` 输入框前缀、`/memory` 斜杠命令、
   `remember` 工具、可选开关）。
@@ -740,7 +737,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   - `[snapshots].max_age_days`（整数，默认 `7`）
   - 快照位于
     `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`，
-    当仅存在旧版状态时回退到 `~/.deepseek/snapshots/...`，并且绝不
+    当仅存在旧版状态时回退到 `~/.codesmith/snapshots/...`，并且绝不
     使用工作区自身的 `.git` 目录
 - `context.*`（可选）：只增不减的 Fin seam 管理器，目前为可选。
   Fin 是关闭思考的快速 `deepseek-v4-flash` 路径，用于协调工作，
@@ -817,7 +814,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 
 ### 工作区笔记
 
-`/note` 管理当前工作区 `.deepseek/notes.md` 中的一个简单笔记文件。
+`/note` 管理当前工作区 `.codesmith/notes.md` 中的一个简单笔记文件。
 现有的 `/note <text>` 用法仍然会追加笔记。管理形式如下：
 
 | 命令 | 操作 |
@@ -850,9 +847,9 @@ enabled = true
 - `memory_path` 与 `notes_path` 和 `skills_dir` 一样位于顶层；
   它不嵌套在 `[memory]` 之下。
 - `CODESMITH_MEMORY_PATH` 从环境中覆盖文件路径。
-- `DEEPSEEK_MEMORY=on`（也接受 `1`、`true`、`yes`、`y` 或 `enabled`）
+- `CODESMITH_MEMORY=on`（也接受 `1`、`true`、`yes`、`y` 或 `enabled`）
   无需编辑 `config.toml` 即可开启该功能；
-  `DEEPSEEK_DISABLE_AUTO_MEMORY=1`（或 `enabled = false`）可退出。
+  `CODESMITH_DISABLE_AUTO_MEMORY=1`（或 `enabled = false`）可退出。
 - bare/simple 会话和无持久存储的远程会话会自动禁用记忆。
 - 禁用时该功能不起作用：不注入任何文件，`# foo` 按普通消息提交处理，
   模型看不到 `remember` 工具。
@@ -974,8 +971,8 @@ codesmith 支持策略分层模型：
 3. requirements 校验（如果存在）
 
 在 Unix 上默认为：
-- 托管配置：`/etc/deepseek/managed_config.toml`
-- requirements：`/etc/deepseek/requirements.toml`
+- 托管配置：`/etc/codesmith/managed_config.toml`
+- requirements：`/etc/codesmith/requirements.toml`
 
 requirements 文件的形式：
 
@@ -991,7 +988,7 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 ## 关于 `codesmith-tui doctor` 的说明
 
 `codesmith-tui doctor` 遵循与 TUI 其余部分相同的配置解析规则。也就是
-说 `--config`、`CODESMITH_CONFIG_PATH` 和旧版 `DEEPSEEK_CONFIG_PATH`
+说 `--config`、`CODESMITH_CONFIG_PATH` 和旧版 `CODESMITH_CONFIG_PATH`
 都会被尊重，MCP/skills 检查使用解析后的 `mcp_config_path` /
 `skills_dir`（包括环境变量覆盖）。
 
@@ -1036,8 +1033,8 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 - `--all` —— 现在一起搭建 MCP + skills + tools + plugins。
 - `--clean` —— 列出 `~/.codesmith/sessions/checkpoints/latest.json` 和
   `offline_queue.json`（如果存在）。旧版
-  `~/.deepseek/sessions/checkpoints/` 文件不会被自动扫描；设置
-  `CODESMITH_HOME=~/.deepseek` 可进行一次性的旧版清理。传入
+  `~/.codesmith/sessions/checkpoints/` 文件不会被自动扫描；设置
+  `CODESMITH_HOME=~/.codesmith` 可进行一次性的旧版清理。传入
   `--force` 才会实际删除匹配的文件。这绝不会触碰真实的会话历史或
   任务队列。
 

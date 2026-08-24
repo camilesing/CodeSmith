@@ -63,7 +63,7 @@ fn validated_record_id<'a>(id: &'a str, label: &str) -> Result<&'a str> {
 /// Bumped to 2 for v0.6.6 — see issue #124. The persisted thread/turn/item
 /// records didn't change shape, but the live engine semantics did: cycle
 /// boundaries advance the `Session.cycle_count` and produce archived JSONL
-/// files at `~/.deepseek/sessions/<id>/cycles/<n>.jsonl`. A v1 reader on a
+/// files at `~/.codesmith/sessions/<id>/cycles/<n>.jsonl`. A v1 reader on a
 /// session written by v2 wouldn't know about the cycle archive directory and
 /// might misinterpret message counts; bumping is the safe choice.
 const CURRENT_RUNTIME_SCHEMA_VERSION: u32 = 2;

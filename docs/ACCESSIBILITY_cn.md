@@ -1,6 +1,6 @@
 # 无障碍
 
-DeepSeek-TUI 运行于终端，因此平台自身的无障碍栈（屏幕阅读器、放大镜、
+TUI 运行于终端，因此平台自身的无障碍栈（屏幕阅读器、放大镜、
 终端级主题）承担了大部分工作。TUI 提供一小组开关，为屏幕阅读器和低动效
 用户降低视觉运动与密度。
 
@@ -44,7 +44,7 @@ export NO_COLOR=1            # honored by the underlying ratatui backend
 * `/settings set calm_mode on`
 * `/settings set status_indicator off`
 
-以这种方式写入的设置会持久化到 `~/.config/deepseek/settings.toml`。
+以这种方式写入的设置会持久化到 `~/.config/codesmith/settings.toml`。
 如果设置了 `NO_ANIMATIONS` 环境变量，它在启动时仍然优先，因此只有取消该
 环境变量才能让你保存的选择生效。
 

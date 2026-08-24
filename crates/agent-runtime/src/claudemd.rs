@@ -25,9 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::project_context::{
-    GLOBAL_AGENTS_LEGACY_PATH, GLOBAL_AGENTS_RELATIVE_PATH, GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH,
-    GLOBAL_WHALE_LEGACY_PATH, GLOBAL_WHALE_RELATIVE_PATH, GLOBAL_WHALE_VENDOR_NEUTRAL_PATH,
-    PROJECT_CONTEXT_FILES, load_context_file,
+    GLOBAL_AGENTS_RELATIVE_PATH, GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH, GLOBAL_WHALE_RELATIVE_PATH,
+    GLOBAL_WHALE_VENDOR_NEUTRAL_PATH, PROJECT_CONTEXT_FILES, load_context_file,
 };
 use crate::workspace_trust::{canonicalize_or_keep, expand_path};
 
@@ -224,7 +223,7 @@ fn load_managed_tier(
 }
 
 /// User tier: reuse the `project_context` global candidate list (`.codesmith`
-/// → `.agents` → `.deepseek`, for both `WHALE.md` and `AGENTS.md`).
+/// → `.agents`, for both `WHALE.md` and `AGENTS.md`).
 fn load_user_tier(
     home: &Path,
     excludes: &[PathBuf],
@@ -235,8 +234,6 @@ fn load_user_tier(
         GLOBAL_AGENTS_RELATIVE_PATH,
         GLOBAL_WHALE_VENDOR_NEUTRAL_PATH,
         GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH,
-        GLOBAL_WHALE_LEGACY_PATH,
-        GLOBAL_AGENTS_LEGACY_PATH,
     ];
     for candidate in candidates {
         let mut path = home.to_path_buf();
@@ -319,9 +316,7 @@ fn load_local_tier(
     files.sort();
     let mut out = Vec::new();
     for file in files {
-        if let Some(found) =
-            process_memory_file(&file, MemoryTier::Local, processed, excludes, 0)
-        {
+        if let Some(found) = process_memory_file(&file, MemoryTier::Local, processed, excludes, 0) {
             out.push(found);
         }
     }
@@ -337,11 +332,7 @@ fn load_local_tier(
 /// canonicalized internally); entries that don't resolve to a real file are
 /// simply never matched.
 #[must_use]
-pub fn load_all_memory_tiers(
-    workspace: &Path,
-    home: Option<&Path>,
-    excludes: &[String],
-) -> String {
+pub fn load_all_memory_tiers(workspace: &Path, home: Option<&Path>, excludes: &[String]) -> String {
     let exclude_paths: Vec<PathBuf> = excludes
         .iter()
         .map(|s| canonicalize_or_keep(&expand_path(s)))
@@ -398,7 +389,10 @@ mod tests {
         // User tier (fake home).
         let home = tmp.path().join("home");
         fs::create_dir_all(home.join(".codesmith")).unwrap();
-        write(&home.join(".codesmith").join("AGENTS.md"), "# User rules\nuser-only");
+        write(
+            &home.join(".codesmith").join("AGENTS.md"),
+            "# User rules\nuser-only",
+        );
 
         // Project tier.
         write(&ws.join("AGENTS.md"), "# Project rules\nproject-only");
@@ -432,10 +426,7 @@ mod tests {
         let ws = tmp.path();
         let included = ws.join("extra.md");
         write(&included, "INCLUDED_BODY");
-        write(
-            &ws.join("AGENTS.md"),
-            "before\n@include extra.md\nafter",
-        );
+        write(&ws.join("AGENTS.md"), "before\n@include extra.md\nafter");
 
         let merged = load_all_memory_tiers(ws, None, &[]);
         let before = merged.find("before").unwrap();
@@ -468,7 +459,10 @@ mod tests {
         assert!(merged.contains("root"), "root (depth 0) should load");
         // Five include levels (depth 1..=5) load.
         for i in 1..=5 {
-            assert!(merged.contains(&format!("L{i}")), "include level {i} (depth {i}) should load");
+            assert!(
+                merged.contains(&format!("L{i}")),
+                "include level {i} (depth {i}) should load"
+            );
         }
         // The sixth include level (depth 6) is truncated.
         assert!(
@@ -525,10 +519,7 @@ mod tests {
         let ws = tmp.path();
         let secret = ws.join("secret.md");
         write(&secret, "SECRET_BODY");
-        write(
-            &ws.join("AGENTS.md"),
-            "@include secret.md\nroot",
-        );
+        write(&ws.join("AGENTS.md"), "@include secret.md\nroot");
 
         let excluded = vec![secret.to_string_lossy().to_string()];
         let merged = load_all_memory_tiers(ws, None, &excluded);
@@ -573,8 +564,14 @@ mod tests {
     #[test]
     fn match_include_directive_extracts_targets() {
         // Directive with relative + home-anchored targets.
-        assert_eq!(match_include_directive("@include ../other.md"), Some("../other.md"));
-        assert_eq!(match_include_directive("  @include ~/notes.md"), Some("~/notes.md"));
+        assert_eq!(
+            match_include_directive("@include ../other.md"),
+            Some("../other.md")
+        );
+        assert_eq!(
+            match_include_directive("  @include ~/notes.md"),
+            Some("~/notes.md")
+        );
         // Prose / no-separator / empty target are not directives.
         assert_eq!(match_include_directive("see @include in the docs"), None);
         assert_eq!(match_include_directive("@includex"), None);

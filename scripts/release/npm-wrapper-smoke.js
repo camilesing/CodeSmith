@@ -137,7 +137,7 @@ async function main() {
   const releaseAssetsDir = path.join(tempRoot, "release-assets");
   const packDir = path.join(tempRoot, "pack");
   const installDir = path.join(tempRoot, "install");
-  let keepTemp = process.env.DEEPSEEK_TUI_KEEP_SMOKE_DIR === "1";
+  let keepTemp = process.env.CODESMITH_KEEP_SMOKE_DIR === "1";
   let server;
 
   try {
@@ -149,8 +149,8 @@ async function main() {
     server = served.server;
 
     const env = {
-      DEEPSEEK_TUI_FORCE_DOWNLOAD: "1",
-      DEEPSEEK_TUI_RELEASE_BASE_URL: served.baseUrl,
+      CODESMITH_FORCE_DOWNLOAD: "1",
+      CODESMITH_RELEASE_BASE_URL: served.baseUrl,
     };
     const pack = await runCommand(
       "npm",

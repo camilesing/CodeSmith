@@ -776,7 +776,7 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 ///
 /// Precedence (first match wins on name conflicts):
 ///
-/// 1. `<workspace>/.agents/skills` — deepseek-native convention.
+/// 1. `<workspace>/.agents/skills` — agent-native convention.
 /// 2. `<workspace>/skills` — flat, project-local.
 /// 3. `<workspace>/.opencode/skills` — OpenCode interop.
 /// 4. `<workspace>/.claude/skills` — Claude Code interop.
@@ -785,7 +785,6 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// 7. [`agents_global_skills_dir`] — agentskills.io global.
 /// 8. [`claude_global_skills_dir`] — Claude-ecosystem global (#902).
 /// 9. `~/.codesmith/skills` — CodeSmith global, primary install target.
-/// 10. `~/.deepseek/skills` — legacy DeepSeek global fallback.
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
@@ -809,7 +808,6 @@ fn skills_directories_with_home(workspace: &Path, home_dir: Option<&Path>) -> Ve
         candidates.push(home.join(".agents").join("skills"));
         candidates.push(home.join(".claude").join("skills"));
         candidates.push(home.join(".codesmith").join("skills"));
-        candidates.push(home.join(".deepseek").join("skills"));
     } else {
         candidates.push(PathBuf::from("/tmp/codesmith/skills"));
     }
@@ -1256,7 +1254,7 @@ mod tests {
             );
             skill.path = tmpdir
                 .path()
-                .join(".deepseek")
+                .join(".codesmith")
                 .join("skills")
                 .join(format!("aaa-global-{i:03}"))
                 .join("SKILL.md");
@@ -1352,7 +1350,7 @@ mod tests {
         let tmpdir = TempDir::new().unwrap();
         let agents_global = tmpdir.path().join(".agents").join("skills");
         let claude_global = tmpdir.path().join(".claude").join("skills");
-        let deepseek_global = tmpdir.path().join(".deepseek").join("skills");
+        let deepseek_global = tmpdir.path().join(".codesmith").join("skills");
         std::fs::create_dir_all(&agents_global).unwrap();
         std::fs::create_dir_all(&claude_global).unwrap();
         std::fs::create_dir_all(&deepseek_global).unwrap();
@@ -1370,7 +1368,7 @@ mod tests {
     fn existing_skill_dirs_keeps_agents_global_before_deepseek_global() {
         let tmpdir = TempDir::new().unwrap();
         let agents_global = tmpdir.path().join(".agents").join("skills");
-        let deepseek_global = tmpdir.path().join(".deepseek").join("skills");
+        let deepseek_global = tmpdir.path().join(".codesmith").join("skills");
         let missing = tmpdir.path().join("missing").join("skills");
         std::fs::create_dir_all(&agents_global).unwrap();
         std::fs::create_dir_all(&deepseek_global).unwrap();
@@ -1583,7 +1581,7 @@ mod tests {
     fn discover_follows_symlinked_skill_directories() {
         let tmpdir = TempDir::new().unwrap();
         let source_root = tmpdir.path().join("claude-skills");
-        let skills_root = tmpdir.path().join(".deepseek").join("skills");
+        let skills_root = tmpdir.path().join(".codesmith").join("skills");
         write_skill(&source_root, "agent-browser", "browser automation", "body");
         std::fs::create_dir_all(&skills_root).unwrap();
         let link_path = skills_root.join("agent-browser");
@@ -1728,7 +1726,7 @@ mod tests {
             "body",
         );
         write_skill(
-            &home.join(".deepseek").join("skills"),
+            &home.join(".codesmith").join("skills"),
             "global-alpha",
             "Global alpha skill",
             "body",
@@ -1745,7 +1743,7 @@ mod tests {
         );
         assert!(
             names.contains(&"global-alpha"),
-            "global-alpha from ~/.deepseek/skills must be discovered: {names:?}",
+            "global-alpha from ~/.codesmith/skills must be discovered: {names:?}",
         );
     }
 

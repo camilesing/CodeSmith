@@ -9,7 +9,7 @@
 
 Plan 05 landed the telemetry scaffolding: a local-only `TelemetrySink`
 (`~/.codesmith/telemetry/events.jsonl`), a `VerifiedAnalyticsMetadata` type
-barrier, an ephemeral `telemetry_session_id` + `DEEPSEEK_THREAD_ID` split, a
+barrier, an ephemeral `telemetry_session_id` + `CODESMITH_THREAD_ID` split, a
 `telemetry` config flag, and a trust-timed `attach()` in `run_interactive`.
 
 Three deviations were recorded in Plan 05's Implementation notes and are

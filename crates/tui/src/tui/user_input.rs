@@ -15,7 +15,7 @@ fn modal_block(title: &str) -> Block<'static> {
     Block::default()
         .title(Line::from(vec![Span::styled(
             title.to_string(),
-            Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+            Style::default().fg(palette::CODESMITH_BLUE).bold(),
         )]))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(palette::BORDER_COLOR))
@@ -267,7 +267,7 @@ impl ModalView for UserInputView {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
             "Action required",
-            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            Style::default().fg(palette::CODESMITH_SKY).bold(),
         )]));
         lines.push(Line::from(vec![
             Span::styled(
@@ -321,7 +321,7 @@ impl ModalView for UserInputView {
                     } else {
                         self.other_input.clone()
                     },
-                    Style::default().fg(palette::DEEPSEEK_BLUE),
+                    Style::default().fg(palette::CODESMITH_BLUE),
                 ),
             ]));
         }
@@ -329,10 +329,10 @@ impl ModalView for UserInputView {
         lines.push(Line::from(""));
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(vec![
-                Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled("Enter", Style::default().fg(palette::CODESMITH_SKY).bold()),
                 Span::styled(" submit", Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
-                Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled("Esc", Style::default().fg(palette::CODESMITH_SKY).bold()),
                 Span::styled(" back", Style::default().fg(palette::TEXT_MUTED)),
             ]));
         } else {
@@ -345,17 +345,20 @@ impl ModalView for UserInputView {
             lines.push(Line::from(vec![
                 Span::styled(
                     quick_pick_label,
-                    Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+                    Style::default().fg(palette::CODESMITH_SKY).bold(),
                 ),
                 Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
-                Span::styled("Up/Down", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(
+                    "Up/Down",
+                    Style::default().fg(palette::CODESMITH_SKY).bold(),
+                ),
                 Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
-                Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled("Enter", Style::default().fg(palette::CODESMITH_SKY).bold()),
                 Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
-                Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled("Esc", Style::default().fg(palette::CODESMITH_SKY).bold()),
                 Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
             ]));
         }

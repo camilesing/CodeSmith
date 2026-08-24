@@ -42,7 +42,7 @@ impl ConfigPathEnvGuard {
     fn new() -> Self {
         let lock = crate::test_support::lock_test_env();
         let tmp = TempDir::new().expect("config tempdir");
-        let config_path = tmp.path().join(".deepseek").join("config.toml");
+        let config_path = tmp.path().join(".codesmith").join("config.toml");
         std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("config dir");
         let previous = std::env::var_os("DEEPSEEK_CONFIG_PATH");
         // Safety: test-only environment mutation guarded by a global mutex.
@@ -1494,7 +1494,7 @@ async fn tool_result_api_content_receipts_large_live_output() {
         .unwrap_or_else(|err| err.into_inner());
     let tmp = TempDir::new().expect("spillover tempdir");
     let prior = crate::tools::truncate::set_test_spillover_root(Some(
-        tmp.path().join(".deepseek").join("tool_outputs"),
+        tmp.path().join(".codesmith").join("tool_outputs"),
     ));
     struct Restore(Option<PathBuf>);
     impl Drop for Restore {
@@ -7513,7 +7513,7 @@ fn toast_stack_overlay_respects_composer_boundary() {
 
 // === Bug #1913: Work sidebar should hide stale completed tasks ============
 //
-// The Work sidebar reads `~/.deepseek/tasks/` on startup, which holds every
+// The Work sidebar reads `~/.codesmith/tasks/` on startup, which holds every
 // durable task the user has ever run. Without filtering, completed tasks
 // from prior sessions persist indefinitely. The projection helper keeps
 // active tasks, keeps tasks that finished during this session, keeps tasks

@@ -3,7 +3,7 @@
 //!
 //! Kept intentionally small: a dozen languages, a hard-coded executable name
 //! per language, an optional list of args. Users can override the defaults
-//! via `[lsp.servers]` in `~/.deepseek/config.toml` (handled by
+//! via `[lsp.servers]` in `~/.codesmith/config.toml` (handled by
 //! [`crate::lsp_config::LspConfig`], not this file).
 
 use std::path::Path;

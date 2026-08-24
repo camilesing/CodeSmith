@@ -268,13 +268,13 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
 
 fn render_header_line(line: &str, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
-        .fg(palette::DEEPSEEK_SKY)
+        .fg(palette::CODESMITH_SKY)
         .add_modifier(Modifier::BOLD);
     wrap_with_style(line, style, width)
 }
 
 fn render_hunk_header(line: &str, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().fg(palette::DEEPSEEK_BLUE);
+    let style = Style::default().fg(palette::CODESMITH_BLUE);
     wrap_with_style(line, style, width)
 }
 

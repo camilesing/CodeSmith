@@ -3,7 +3,7 @@
 //! Settings are stored at ~/.config/deepseek/settings.toml
 //!
 //! TUI-specific preferences (theme, keybinds, font_size) that survive project
-//! switches are stored separately at ~/.deepseek/tui.toml. See [`TuiPrefs`].
+//! switches are stored separately at ~/.codesmith/tui.toml. See [`TuiPrefs`].
 
 use std::path::PathBuf;
 
@@ -15,17 +15,17 @@ use crate::localization::normalize_configured_locale;
 use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
 
 // ============================================================================
-// TuiPrefs — ~/.deepseek/tui.toml
+// TuiPrefs — ~/.codesmith/tui.toml
 // ============================================================================
 
 /// TUI-specific preferences that are decoupled from agent/project config so
 /// they survive project switches (issue #437).
 ///
-/// Stored at `~/.deepseek/tui.toml`. When the file is absent the values fall
+/// Stored at `~/.codesmith/tui.toml`. When the file is absent the values fall
 /// back to the `[tui]` section of the normal `config.toml` (via
 /// [`TuiPrefs::load`]), and then to the struct's own defaults.
 ///
-/// # Example `~/.deepseek/tui.toml`
+/// # Example `~/.codesmith/tui.toml`
 ///
 /// ```toml
 /// theme    = "dark"        # "system" | "dark" | "light" | "grayscale" | "catppuccin-mocha" | ...
@@ -89,12 +89,12 @@ pub struct KeybindPrefs {
 #[allow(dead_code)] // see TuiPrefs note above; deferred to a later settings pass (#657).
 impl TuiPrefs {
     /// Return the canonical path of the TUI preferences file:
-    /// `~/.deepseek/tui.toml`.
+    /// `~/.codesmith/tui.toml`.
     ///
     /// Tests may override the home directory through the
     /// `CODESMITH_CONFIG_PATH` environment variable (the parent directory of
-    /// the pointed-to config is used instead of `~/.deepseek`; the legacy
-    /// `DEEPSEEK_CONFIG_PATH` alias still works).
+    /// the pointed-to config is used instead of `~/.codesmith`; the legacy
+    /// `CODESMITH_CONFIG_PATH` alias still works).
     pub fn path() -> Result<PathBuf> {
         // Honour the same env-var escape hatch used by Settings::path so that
         // integration tests can redirect all config I/O to a temp directory.
@@ -110,14 +110,10 @@ impl TuiPrefs {
 
         let home = dirs::home_dir()
             .context("Failed to resolve home directory: cannot determine tui.toml path.")?;
-        let primary = home.join(".codesmith").join("tui.toml");
-        if primary.exists() {
-            return Ok(primary);
-        }
-        Ok(home.join(".deepseek").join("tui.toml"))
+        Ok(home.join(".codesmith").join("tui.toml"))
     }
 
-    /// Load TUI preferences from `~/.deepseek/tui.toml`.
+    /// Load TUI preferences from `~/.codesmith/tui.toml`.
     ///
     /// If the file does not exist the struct defaults are returned — no error
     /// is produced. Parse errors surface as `Err` so the caller can warn the
@@ -134,8 +130,8 @@ impl TuiPrefs {
         Ok(prefs)
     }
 
-    /// Save TUI preferences to `~/.deepseek/tui.toml`, creating the
-    /// `~/.deepseek` directory if needed.
+    /// Save TUI preferences to `~/.codesmith/tui.toml`, creating the
+    /// `~/.codesmith` directory if needed.
     pub fn save(&self) -> Result<()> {
         let path = Self::path()?;
         if let Some(parent) = path.parent() {
@@ -1122,7 +1118,9 @@ mod tests {
     fn simple_conversation_style_defaults_off_and_is_togglable() {
         let mut settings = Settings::default();
         assert!(!settings.is_simple);
-        settings.set("is_simple", "on").expect("enable simple style");
+        settings
+            .set("is_simple", "on")
+            .expect("enable simple style");
         assert!(settings.is_simple);
         settings.set("simple", "off").expect("disable via alias");
         assert!(!settings.is_simple);
@@ -2094,7 +2092,7 @@ mod tests {
     // TuiPrefs tests
     // ────────────────────────────────────────────────────────────────────────
 
-    /// Serialise tests that mutate `DEEPSEEK_CONFIG_PATH` through this guard
+    /// Serialise tests that mutate `CODESMITH_CONFIG_PATH` through this guard
     /// so the parallel test runner doesn't observe interleaved env values.
     fn config_path_test_guard() -> std::sync::MutexGuard<'static, ()> {
         crate::test_support::lock_test_env()
@@ -2191,7 +2189,7 @@ mod tests {
         // SAFETY: test-only env mutation guarded by config_path_test_guard.
         unsafe {
             std::env::set_var(
-                "DEEPSEEK_CONFIG_PATH",
+                "CODESMITH_CONFIG_PATH",
                 tmp.join("config.toml").to_str().unwrap(),
             );
         }
@@ -2199,7 +2197,7 @@ mod tests {
         assert_eq!(prefs.theme, "dark", "should fall back to default theme");
         // SAFETY: cleanup under the guard.
         unsafe {
-            std::env::remove_var("DEEPSEEK_CONFIG_PATH");
+            std::env::remove_var("CODESMITH_CONFIG_PATH");
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -2212,7 +2210,7 @@ mod tests {
         // SAFETY: test-only env mutation guarded by config_path_test_guard.
         unsafe {
             std::env::set_var(
-                "DEEPSEEK_CONFIG_PATH",
+                "CODESMITH_CONFIG_PATH",
                 tmp.join("config.toml").to_str().unwrap(),
             );
         }
@@ -2234,7 +2232,7 @@ mod tests {
 
         // SAFETY: cleanup under the guard.
         unsafe {
-            std::env::remove_var("DEEPSEEK_CONFIG_PATH");
+            std::env::remove_var("CODESMITH_CONFIG_PATH");
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -2242,13 +2240,13 @@ mod tests {
     #[test]
     fn tui_prefs_path_uses_home_deepseek_subdir_by_default() {
         let _g = config_path_test_guard();
-        // Without DEEPSEEK_CONFIG_PATH the path should end with
-        // .deepseek/tui.toml relative to the home directory.
+        // Without CODESMITH_CONFIG_PATH the path should end with
+        // .codesmith/tui.toml relative to the home directory.
         // We skip this check if home_dir() is unavailable (CI without HOME).
         if let Some(home) = dirs::home_dir() {
-            let expected = home.join(".deepseek").join("tui.toml");
+            let expected = home.join(".codesmith").join("tui.toml");
             // Only compare when no env override is active.
-            if std::env::var("DEEPSEEK_CONFIG_PATH").is_err() {
+            if std::env::var("CODESMITH_CONFIG_PATH").is_err() {
                 let got = TuiPrefs::path().expect("path should resolve");
                 assert_eq!(got, expected);
             }

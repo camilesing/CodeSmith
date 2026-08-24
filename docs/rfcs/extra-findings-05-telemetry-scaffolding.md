@@ -79,9 +79,9 @@ in-process capacity events (`crates/agent-runtime/src/events.rs:165-202`
   at construction via `Uuid::new_v4()`. **Not persisted.**
 - Sink events' `session_id` field = `telemetry_session_id` (not the resume
   thread id).
-- `crates/agent-runtime/src/hooks.rs:237`: `DEEPSEEK_SESSION_ID` now carries
+- `crates/agent-runtime/src/hooks.rs:237`: `CODESMITH_SESSION_ID` now carries
   the **ephemeral** id (behavior change — hooks can no longer correlate across
-  restarts via this var). **Also expose `DEEPSEEK_THREAD_ID`** carrying the
+  restarts via this var). **Also expose `CODESMITH_THREAD_ID`** carrying the
   persistent thread id so hook authors can choose.
 - `crates/agent-runtime/src/engine/capacity_flow.rs:323/365/953`: the `Event`
   fields use `telemetry_session_id`.
@@ -118,10 +118,10 @@ The sink `attach()` happens inside `init_project_post_trust()` (post-trust).
 
 ## Risk
 
-`DEEPSEEK_SESSION_ID` becoming ephemeral is a hook-author behavior change.
+`CODESMITH_SESSION_ID` becoming ephemeral is a hook-author behavior change.
 Mitigations:
 
-- Also expose `DEEPSEEK_THREAD_ID` (persistent) alongside.
+- Also expose `CODESMITH_THREAD_ID` (persistent) alongside.
 - Document the split in `docs/MEMORY.md`, `docs/OPERATIONS_RUNBOOK.md`, and
   the hooks reference.
 
@@ -176,7 +176,7 @@ sketch above; they are recorded here so the doc matches the code.
   trait method and its `HookExecutor` impl were left intact (still exercised
   by a TUI test). The engine's two call sites were rewired to read
   `session.telemetry_session_id` / `session.id` directly, so
-  `DEEPSEEK_SESSION_ID` carries the ephemeral id without changing the trait
+  `CODESMITH_SESSION_ID` carries the ephemeral id without changing the trait
   surface.
 - **5.4 (TUI `telemetry` config flag).** The `telemetry: Option<bool>` flag
   already existed in `codesmith_config` per-provider options but was not
@@ -211,7 +211,7 @@ sketch above; they are recorded here so the doc matches the code.
   → `VerifiedAnalyticsMetadata`; `replay_outcome`/`error` left `String`
   (5.2-apply).
 - `crates/agent-runtime/src/hooks.rs` — `HookContext.thread_id` +
-  `DEEPSEEK_THREAD_ID`; `session_id` doc updated to ephemeral (5.3).
+  `CODESMITH_THREAD_ID`; `session_id` doc updated to ephemeral (5.3).
 - `crates/tui/src/hooks.rs` — `pre_compact` + `message_submit` payloads
   carry `thread_id` (5.3).
 - `crates/tui/src/config.rs` — top-level `telemetry: Option<bool>` +

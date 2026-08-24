@@ -19,7 +19,6 @@ on:
     paths:
       - 'Cargo.toml'
       - 'npm/codesmith/package.json'
-      - 'npm/deepseek-tui/package.json'
   workflow_dispatch:
 
 permissions:

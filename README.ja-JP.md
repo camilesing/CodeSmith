@@ -24,7 +24,7 @@ cargo install codesmith-tui     --locked   # `codesmith-tui` (TUI バイナリ)
 # 3. Homebrew — macOS パッケージマネージャ。
 #    tap/formula 名は旧名のままですが、codesmith と codesmith-tui をインストールします。
 brew tap Hmbown/deepseek-tui
-brew install deepseek-tui
+brew install codesmith
 
 # 4. 直接ダウンロード — GitHub Releases のプラットフォームアーカイブ。
 #    https://github.com/Hmbown/CodeSmith/releases
@@ -48,7 +48,7 @@ docker run --rm -it \
 ```bash
 codesmith update
 npm install -g codesmith@latest
-brew update && brew upgrade deepseek-tui
+brew update && brew upgrade codesmith
 cargo install codesmith-cli --locked --force
 cargo install codesmith-tui     --locked --force
 ```
@@ -123,7 +123,7 @@ codesmith --model auto
 
 ビルド済みバイナリペアとプラットフォームアーカイブは **Linux x64**、**Linux ARM64**（v0.8.8 以降）、**macOS x64**、**macOS ARM64**、**Windows x64** 向けに公開されています。その他のターゲット（musl、riscv64、FreeBSD など）は [ソースからのインストール](#install-from-source) または [docs/INSTALL.md](docs/INSTALL.md) を参照してください。
 
-初回起動時に [DeepSeek API キー](https://platform.deepseek.com/api_keys) の入力を求められます。キーは `~/.codesmith/config.toml`（旧 `~/.deepseek/config.toml` も互換性維持）に保存されるため、OS のクレデンシャルプロンプトなしに任意のディレクトリから利用できます。
+初回起動時に [DeepSeek API キー](https://platform.deepseek.com/api_keys) の入力を求められます。キーは `~/.codesmith/config.toml`（旧 `~/.codesmith/config.toml` も互換性維持）に保存されるため、OS のクレデンシャルプロンプトなしに任意のディレクトリから利用できます。
 
 事前に設定することもできます:
 
@@ -163,7 +163,7 @@ cargo install codesmith-tui     --locked   # `codesmith-tui` を提供
 codesmith --version
 ```
 
-ビルド済みバイナリは [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases) からもダウンロードできます。ミラーされたリリースアセットには `DEEPSEEK_TUI_RELEASE_BASE_URL` を使ってください。
+ビルド済みバイナリは [GitHub Releases](https://github.com/Hmbown/CodeSmith/releases) からもダウンロードできます。ミラーされたリリースアセットには `CODESMITH_RELEASE_BASE_URL` を使ってください。
 
 ### Windows（Scoop）
 
@@ -319,21 +319,21 @@ codesmith update                                  # バイナリ更新の確認�
 
 ## 設定
 
-ユーザー設定: `~/.codesmith/config.toml`（旧 `~/.deepseek/config.toml` も互換性維持）。プロジェクトオーバーレイ: `<workspace>/.codesmith/config.toml`（旧 `<workspace>/.deepseek/config.toml`）（拒否される項目: `api_key`、`base_url`、`provider`、`mcp_config_path`）。すべてのオプションは [config.example.toml](config.example.toml) にあります。
+ユーザー設定: `~/.codesmith/config.toml`（旧 `~/.codesmith/config.toml` も互換性維持）。プロジェクトオーバーレイ: `<workspace>/.codesmith/config.toml`（旧 `<workspace>/.codesmith/config.toml`）（拒否される項目: `api_key`、`base_url`、`provider`、`mcp_config_path`）。すべてのオプションは [config.example.toml](config.example.toml) にあります。
 
 主な環境変数:
 
 | 変数 | 用途 |
 |---|---|
 | `DEEPSEEK_API_KEY` | API キー |
-| `DEEPSEEK_BASE_URL` | API ベース URL |
-| `DEEPSEEK_HTTP_HEADERS` | 任意のモデルリクエストヘッダー |
-| `DEEPSEEK_MODEL` | デフォルトモデル |
-| `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | ストリームのアイドルタイムアウト秒数 |
-| `CODESMITH_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek`（デフォルト）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`volcengine`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm`、`ollama` |
-| `DEEPSEEK_PROFILE` | 設定プロファイル名 |
-| `DEEPSEEK_MEMORY` | `on` に設定するとユーザーメモリを有効化 |
-| `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | 信頼できるネットワークで非ローカル `http://` API ベース URL を許可 |
+| `CODESMITH_BASE_URL` | API ベース URL |
+| `CODESMITH_HTTP_HEADERS` | 任意のモデルリクエストヘッダー |
+| `CODESMITH_MODEL` | デフォルトモデル |
+| `CODESMITH_STREAM_IDLE_TIMEOUT_SECS` | ストリームのアイドルタイムアウト秒数 |
+| `CODESMITH_PROVIDER` | `deepseek`（デフォルト）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`volcengine`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm`、`ollama` |
+| `CODESMITH_PROFILE` | 設定プロファイル名 |
+| `CODESMITH_MEMORY` | `on` に設定するとユーザーメモリを有効化 |
+| `CODESMITH_ALLOW_INSECURE_HTTP=1` | 信頼できるネットワークで非ローカル `http://` API ベース URL を許可 |
 | `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `VOLCENGINE_API_KEY` / `ARK_API_KEY` / `OPENROUTER_API_KEY` / `XIAOMI_MIMO_API_KEY` / `MIMO_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SILICONFLOW_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | プロバイダー認証 |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | 汎用 OpenAI 互換エンドポイントとモデル ID |
 | `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | AtlasCloud エンドポイントとモデル上書き |
@@ -374,7 +374,7 @@ UI のロケールはモデルの言語とは別です。`settings.toml` で `lo
 
 ## 自分のスキルを公開する
 
-codesmith はワークスペースのディレクトリ（`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills`）とグローバルな `~/.codesmith/skills`（旧 `~/.deepseek/skills` も互換性維持）からスキルを発見します。各スキルは `SKILL.md` ファイルを持つディレクトリです:
+codesmith はワークスペースのディレクトリ（`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills`）とグローバルな `~/.codesmith/skills`（旧 `~/.codesmith/skills` も互換性維持）からスキルを発見します。各スキルは `SKILL.md` ファイルを持つディレクトリです:
 
 ```text
 ~/.codesmith/skills/my-skill/
@@ -386,7 +386,7 @@ codesmith はワークスペースのディレクトリ（`.agents/skills` → `
 ```markdown
 ---
 name: my-skill
-description: DeepSeek にカスタムワークフローを実行させたいときに利用する。
+description: CodeSmith にカスタムワークフローを実行させたいときに利用する。
 ---
 
 # My Skill

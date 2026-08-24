@@ -11,17 +11,16 @@ test("postinstall opts into optional install mode", () => {
 test("optional install can be enabled by command-line flag or env", () => {
   assert.equal(_internal.isOptionalInstall(["--optional"], {}), true);
   assert.equal(_internal.isOptionalInstall([], {}), false);
-  assert.equal(_internal.isOptionalInstall([], { DEEPSEEK_TUI_OPTIONAL_INSTALL: "1" }), true);
-  assert.equal(_internal.isOptionalInstall([], { DEEPSEEK_OPTIONAL_INSTALL: "1" }), true);
+  assert.equal(_internal.isOptionalInstall([], { CODESMITH_OPTIONAL_INSTALL: "1" }), true);
 });
 
 test("optional mode only changes install-time defaults", () => {
-  assert.equal(_internal.maxAttempts("install", { DEEPSEEK_TUI_OPTIONAL_INSTALL: "1" }), 1);
-  assert.equal(_internal.maxAttempts("runtime", { DEEPSEEK_TUI_OPTIONAL_INSTALL: "1" }), 5);
-  assert.equal(_internal.defaultTimeoutMs("install", { DEEPSEEK_TUI_OPTIONAL_INSTALL: "1" }), 15_000);
-  assert.equal(_internal.defaultTimeoutMs("runtime", { DEEPSEEK_TUI_OPTIONAL_INSTALL: "1" }), 300_000);
-  assert.equal(_internal.defaultStallMs("install", { DEEPSEEK_TUI_OPTIONAL_INSTALL: "1" }), 5_000);
-  assert.equal(_internal.defaultStallMs("runtime", { DEEPSEEK_TUI_OPTIONAL_INSTALL: "1" }), 30_000);
+  assert.equal(_internal.maxAttempts("install", { CODESMITH_OPTIONAL_INSTALL: "1" }), 1);
+  assert.equal(_internal.maxAttempts("runtime", { CODESMITH_OPTIONAL_INSTALL: "1" }), 5);
+  assert.equal(_internal.defaultTimeoutMs("install", { CODESMITH_OPTIONAL_INSTALL: "1" }), 15_000);
+  assert.equal(_internal.defaultTimeoutMs("runtime", { CODESMITH_OPTIONAL_INSTALL: "1" }), 300_000);
+  assert.equal(_internal.defaultStallMs("install", { CODESMITH_OPTIONAL_INSTALL: "1" }), 5_000);
+  assert.equal(_internal.defaultStallMs("runtime", { CODESMITH_OPTIONAL_INSTALL: "1" }), 30_000);
 });
 
 test("pnpm optional postinstall skips install-time download", () => {
@@ -87,8 +86,8 @@ test("optional install only swallows retryable download failures", () => {
 });
 
 test("optional install still swallows wrapped http 5xx failures", async () => {
-  const previous = process.env.DEEPSEEK_TUI_OPTIONAL_INSTALL;
-  process.env.DEEPSEEK_TUI_OPTIONAL_INSTALL = "1";
+  const previous = process.env.CODESMITH_OPTIONAL_INSTALL;
+  process.env.CODESMITH_OPTIONAL_INSTALL = "1";
   const http5xx = new Error("Request failed with status 502: https://example.invalid");
   http5xx.name = "HttpStatusError";
   http5xx.status = 502;
@@ -110,9 +109,9 @@ test("optional install still swallows wrapped http 5xx failures", async () => {
     );
   } finally {
     if (previous === undefined) {
-      delete process.env.DEEPSEEK_TUI_OPTIONAL_INSTALL;
+      delete process.env.CODESMITH_OPTIONAL_INSTALL;
     } else {
-      process.env.DEEPSEEK_TUI_OPTIONAL_INSTALL = previous;
+      process.env.CODESMITH_OPTIONAL_INSTALL = previous;
     }
   }
 });

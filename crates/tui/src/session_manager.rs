@@ -514,7 +514,7 @@ impl SessionManager {
     ///
     /// `max_age` is checked against the metadata's `updated_at`
     /// timestamp embedded in the JSON, not the filesystem mtime — the
-    /// user may have rsynced their `~/.deepseek` between machines and
+    /// user may have rsynced their `~/.codesmith` between machines and
     /// fs mtimes can lie.
     pub fn prune_sessions_older_than(
         &self,
@@ -617,8 +617,8 @@ fn is_git_metadata_entry(path: &Path) -> bool {
 
 /// Resolve the default session directory path.
 ///
-/// v0.8.44: prefers `~/.codesmith/sessions`, falls back to
-/// `~/.deepseek/sessions` for existing installs.
+/// v0.8.44+: prefers `~/.codesmith/sessions`, falling back to the legacy
+/// `~/.codewhale/sessions` root for existing installs.
 pub fn default_sessions_dir() -> std::io::Result<PathBuf> {
     codesmith_config::resolve_state_dir("sessions")
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))

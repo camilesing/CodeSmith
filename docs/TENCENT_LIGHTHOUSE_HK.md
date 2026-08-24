@@ -86,12 +86,12 @@ SSH into the Lighthouse instance and run:
 ```bash
 sudo apt-get update
 sudo apt-get install -y git
-export DEEPSEEK_BRANCH=main
-export DEEPSEEK_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
-git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/codesmith
+export CODESMITH_BRANCH=main
+export CODESMITH_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
+git clone --branch "$CODESMITH_BRANCH" "$CODESMITH_REPO_URL" /tmp/codesmith
 cd /tmp/codesmith
-sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
-  DEEPSEEK_REPO_BRANCH="$DEEPSEEK_BRANCH" \
+sudo CODESMITH_REPO_URL="$CODESMITH_REPO_URL" \
+  CODESMITH_REPO_BRANCH="$CODESMITH_BRANCH" \
   bash scripts/tencent-lighthouse/bootstrap-ubuntu.sh
 ```
 
@@ -99,15 +99,15 @@ Use an SSH repo URL instead if you want push access from the VPS. If the CNB
 mirror is unavailable, fall back to:
 
 ```bash
-export DEEPSEEK_REPO_URL=https://github.com/Hmbown/CodeSmith.git
+export CODESMITH_REPO_URL=https://github.com/Hmbown/CodeSmith.git
 ```
 
 For stable release docs, confirm the CNB mirror has the branch or tag before
 using it:
 
 ```bash
-export DEEPSEEK_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
-git ls-remote "$DEEPSEEK_REPO_URL" \
+export CODESMITH_REPO_URL=https://cnb.cool/codesmith.net/codesmith.git
+git ls-remote "$CODESMITH_REPO_URL" \
   refs/heads/main \
   refs/tags/v0.8.37
 ```
@@ -146,8 +146,8 @@ After editing both env files, validate the bridge/runtime pairing:
 
 ```bash
 sudo -u codesmith node /opt/codesmith/bridge/scripts/validate-config.mjs \
-  --env /etc/deepseek/feishu-bridge.env \
-  --runtime-env /etc/deepseek/runtime.env \
+  --env /etc/codesmith/feishu-bridge.env \
+  --runtime-env /etc/codesmith/runtime.env \
   --workspace-root /opt/whalebro \
   --check-filesystem
 ```
@@ -158,26 +158,26 @@ Generate one runtime token and put the same value in both env files:
 
 ```bash
 openssl rand -hex 32
-sudoedit /etc/deepseek/runtime.env
-sudoedit /etc/deepseek/feishu-bridge.env
+sudoedit /etc/codesmith/runtime.env
+sudoedit /etc/codesmith/feishu-bridge.env
 ```
 
 Required values:
 
-- `/etc/deepseek/runtime.env`
+- `/etc/codesmith/runtime.env`
   - `DEEPSEEK_API_KEY`
-  - `DEEPSEEK_RUNTIME_TOKEN`
-- `/etc/deepseek/feishu-bridge.env`
+  - `CODESMITH_RUNTIME_TOKEN`
+- `/etc/codesmith/feishu-bridge.env`
   - `FEISHU_APP_ID`
   - `FEISHU_APP_SECRET`
   - `FEISHU_DOMAIN=feishu` for Feishu, `lark` for Lark
-  - `DEEPSEEK_RUNTIME_TOKEN`
+  - `CODESMITH_RUNTIME_TOKEN`
   - `FEISHU_ALLOW_GROUPS=false` for the first deployment
 
 For first pairing, either:
 
-1. Temporarily set `DEEPSEEK_ALLOW_UNLISTED=true`, message the bot, copy the
-   returned `chat_id`, then set `DEEPSEEK_CHAT_ALLOWLIST=<chat_id>` and turn
+1. Temporarily set `CODESMITH_ALLOW_UNLISTED=true`, message the bot, copy the
+   returned `chat_id`, then set `CODESMITH_CHAT_ALLOWLIST=<chat_id>` and turn
    unlisted access back off.
 2. Or obtain the chat ID from Feishu/Lark event logs and set the allowlist
    before first start.
@@ -266,7 +266,7 @@ Do not use EdgeOne to expose:
 
 - `http://127.0.0.1:7878`
 - `/v1/*` runtime endpoints
-- any endpoint that accepts `DEEPSEEK_RUNTIME_TOKEN`
+- any endpoint that accepts `CODESMITH_RUNTIME_TOKEN`
 
 ## End-to-End Validation
 

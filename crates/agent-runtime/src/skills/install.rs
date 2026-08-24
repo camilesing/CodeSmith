@@ -59,7 +59,7 @@ pub fn default_cache_skills_dir() -> PathBuf {
 /// Default registry. Falls back to a community-curated `index.json` hosted on
 /// GitHub raw; users can override via `[skills] registry_url` in config.toml.
 pub const DEFAULT_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json";
+    "https://raw.githubusercontent.com/Hmbown/codesmith-skills/main/index.json";
 
 /// Default per-skill size cap (5 MiB). Honored at unpack time so a malicious
 /// gzip bomb can't blow up RAM.

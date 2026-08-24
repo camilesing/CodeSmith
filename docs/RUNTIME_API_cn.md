@@ -4,7 +4,7 @@ codesmith 通过 `codesmith serve --http` 暴露本地运行时 API，并通过
 `codesmith doctor --json` 提供机器可读的健康状态。它还提供
 `codesmith serve --acp`，供通过 stdio 使用 Agent Client Protocol 的
 编辑器客户端使用。本文档是原生 macOS 工作台应用（以及其他本地监督者）
-在不抓取终端屏幕输出的情况下嵌入 DeepSeek
+在不抓取终端屏幕输出的情况下嵌入 CodeSmith
 引擎的稳定集成契约。
 
 ## 架构
@@ -32,13 +32,13 @@ macOS workbench (or any local supervisor)
 - `session/prompt`
 - `session/cancel`
 
-提示请求通过已配置的 DeepSeek 客户端和当前默认模型进行路由。
+提示请求通过已配置的 LLM 客户端和当前默认模型进行路由。
 响应以 `session/update` agent 消息分块的形式发出，
 随后是带有 `stopReason: "end_turn"` 的 `session/prompt` 响应。
 
 该适配器刻意保持保守：它尚未通过 ACP 暴露 shell 工具、
 文件写入工具、检查点重放或会话加载。需要完整的本地运行时 API 时
-请使用 `codesmith serve --http`，当其他客户端需要将 DeepSeek 的工具
+请使用 `codesmith serve --http`，当其他客户端需要将 CodeSmith 的工具
 作为 MCP 工具使用时请使用 `codesmith serve --mcp`。
 
 ## 能力端点：`codesmith doctor --json`
@@ -68,7 +68,7 @@ codesmith doctor --json
 | `mcp.present` | bool | MCP 配置是否存在 |
 | `mcp.servers` | array | 每个服务器的健康状态：`{name, enabled, status, detail}` |
 | `skills.selected` | string | 已解析的技能目录 |
-| `skills.global.path` / `.present` / `.count` | — | CodeSmith 全局技能目录（`~/.codesmith/skills`，支持旧版 `~/.deepseek/skills`） |
+| `skills.global.path` / `.present` / `.count` | — | CodeSmith 全局技能目录（`~/.codesmith/skills`，支持旧版 `~/.codesmith/skills`） |
 | `skills.agents.path` / `.present` / `.count` | — | 工作区 `.agents/skills/` 目录 |
 | `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io 全局技能目录（`~/.agents/skills`） |
 | `skills.local.path` / `.present` / `.count` | — | `skills/` 目录 |
@@ -127,14 +127,14 @@ codesmith serve --mobile [--host 0.0.0.0] [--port 7878] [--auth-token TOKEN]
 
 除非显式设置 `--insecure`，`/v1/*` 路由需要 bearer 令牌。
 传入 `--auth-token TOKEN`，或在启动服务器之前设置
-`DEEPSEEK_RUNTIME_TOKEN=TOKEN`。如果两者都未设置，进程会生成
+`CODESMITH_RUNTIME_TOKEN=TOKEN`。如果两者都未设置，进程会生成
 一次性令牌并在启动时打印。`/health` 和 `/v1/runtime/info` 保持公开，
 用于本地监督和引导。当移动模式被禁用时 `/mobile` 返回 404；
 当移动模式启用且认证启用时，若请求未提供运行时令牌，
 `/mobile` 返回 401。
 
 已认证的客户端可以通过 `Authorization: Bearer TOKEN`、
-`X-DeepSeek-Runtime-Token: TOKEN` 或 `?token=TOKEN` 提供令牌，
+`X-CodeSmith-Runtime-Token: TOKEN` 或 `?token=TOKEN` 提供令牌，
 最后一种方式适用于无法设置自定义标头的 EventSource 风格
 客户端。
 
@@ -358,7 +358,7 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
   传入 `--host 127.0.0.1` 可获得仅环回的移动页。仅当你信任
   网络路径或拥有经过认证的反向代理 / VPN 时才设置非环回主机。
   运行时不提供用户隔离或 TLS。
-- **可选的令牌守卫**。`--auth-token` 或 `DEEPSEEK_RUNTIME_TOKEN`
+- **可选的令牌守卫**。`--auth-token` 或 `CODESMITH_RUNTIME_TOKEN`
   要求 `/v1/*` 路由提供匹配的 bearer 令牌。这是一个本地
   便利性守卫，不能替代公共网络上的 TLS、VPN 或受信任的
   反向代理。
@@ -378,7 +378,7 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 在 Vite 默认的 `:5173` 上开发 UI 时），可使用以下任一方式：
 
 - CLI 标志（可重复）：`codesmith serve --http --cors-origin http://localhost:5173`
-- 环境变量（逗号分隔）：`DEEPSEEK_CORS_ORIGINS="http://localhost:5173,http://localhost:8080"`
+- 环境变量（逗号分隔）：`CODESMITH_CORS_ORIGINS="http://localhost:5173,http://localhost:8080"`
 - 配置（`~/.codesmith/config.toml`）：
   ```toml
   [runtime_api]

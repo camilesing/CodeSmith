@@ -102,7 +102,7 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// stuck API call from blocking the sub-agent indefinitely.
 /// Legacy fallback for the per-step DeepSeek API timeout. The active timeout
 /// now travels on `SubAgentRuntime::step_api_timeout` so users can override
-/// it via `[subagents] api_timeout_secs` in `~/.deepseek/config.toml`. The
+/// it via `[subagents] api_timeout_secs` in `~/.codesmith/config.toml`. The
 /// constant only exists for tests/stub runtimes that need a hard-coded
 /// default; production runtimes set the field explicitly (#1806, #1808).
 const DEFAULT_STEP_API_TIMEOUT: Duration =
@@ -1799,13 +1799,8 @@ async fn subagent_session_projection(
 }
 
 fn default_state_path(workspace: &Path) -> PathBuf {
-    // Prefer .codesmith, fall back to .deepseek for project-local state
-    let primary = workspace.join(".codesmith").join("state");
-    if primary.exists() {
-        return primary.join(SUBAGENT_STATE_FILE);
-    }
     workspace
-        .join(".deepseek")
+        .join(".codesmith")
         .join("state")
         .join(SUBAGENT_STATE_FILE)
 }
@@ -4260,7 +4255,7 @@ impl ToolSpec for DelegateToAgentTool {
 ///
 /// Starts with the per-type prompt (`SubAgentType::system_prompt`) and
 /// appends a one-line role overlay when `assignment.role` is set. The
-/// full role library — TOML overlays from `~/.deepseek/roles/`, the
+/// full role library — TOML overlays from `~/.codesmith/roles/`, the
 /// `/roles` slash command, model overrides per role — lands in 0.6.7.
 /// For 0.6.6 we just don't drop the role on the floor: the model sees
 /// "You are operating in the role of `{name}`." as a final line so its

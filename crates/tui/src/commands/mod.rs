@@ -749,7 +749,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
     config::set_config_value(app, key, value, persist)
 }
 
-/// Persist the user's chosen footer items to `~/.deepseek/config.toml` under
+/// Persist the user's chosen footer items to `~/.codesmith/config.toml` under
 /// `tui.status_items`. See [`config::persist_status_items`] for details.
 pub fn persist_status_items(
     items: &[crate::config::StatusItem],
@@ -844,13 +844,13 @@ pub fn agent(_app: &mut App, arg: Option<&str>) -> CommandResult {
 /// Ask the active model to write a compact relay artifact for the next thread.
 ///
 /// The visible command is `/relay` (with `/接力` for Chinese users), but the
-/// durable file path remains `.deepseek/handoff.md` for compatibility with
+/// durable file path remains `.codesmith/handoff.md` for compatibility with
 /// existing sessions and startup prompt loading.
 pub fn relay(app: &mut App, arg: Option<&str>) -> CommandResult {
     let focus = arg.map(str::trim).filter(|value| !value.is_empty());
     let message = build_relay_instruction(app, focus);
     CommandResult::with_message_and_action(
-        "Preparing session relay at .deepseek/handoff.md...",
+        "Preparing session relay at .codesmith/handoff.md...",
         AppAction::SendMessage(message),
     )
 }
@@ -862,7 +862,7 @@ fn build_relay_instruction(app: &App, focus: Option<&str>) -> String {
         "Create a compact session relay (接力) for a future CodeSmith thread."
     );
     let _ = writeln!(out);
-    let _ = writeln!(out, "Write or update `.deepseek/handoff.md`.");
+    let _ = writeln!(out, "Write or update `.codesmith/handoff.md`.");
     let _ = writeln!(
         out,
         "Keep the existing file path for compatibility, but title the artifact `# Session relay`."
@@ -1240,14 +1240,14 @@ mod tests {
                 .message
                 .as_deref()
                 .unwrap_or_default()
-                .contains(".deepseek/handoff.md")
+                .contains(".codesmith/handoff.md")
         );
         let Some(AppAction::SendMessage(message)) = result.action else {
             panic!("expected SendMessage action");
         };
         assert!(message.contains("session relay"));
         assert!(message.contains("接力"));
-        assert!(message.contains("Write or update `.deepseek/handoff.md`"));
+        assert!(message.contains("Write or update `.codesmith/handoff.md`"));
         assert!(message.contains("# Session relay"));
         assert!(message.contains("Requested relay focus: verify install"));
         assert!(message.contains("Hunt quarry: Unify the work surface"));
@@ -1448,7 +1448,7 @@ mod tests {
     fn create_isolated_test_app() -> (App, tempfile::TempDir, ConfigPathGuard) {
         let tmpdir = tempfile::TempDir::new().expect("tempdir for smoke test");
         let workspace = tmpdir.path().to_path_buf();
-        let config_path = workspace.join(".deepseek").join("config.toml");
+        let config_path = workspace.join(".codesmith").join("config.toml");
         std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("config dir");
         let guard = ConfigPathGuard::new(&config_path);
         let options = TuiOptions {

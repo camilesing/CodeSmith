@@ -805,9 +805,9 @@ mod tests {
     // working after the module migrated into `codesmith-agent-runtime`.
     use crate::llm_client::StreamEventBox;
     use crate::models::{MessageResponse, Usage};
+    use anyhow::Result;
     use std::future::Future;
     use std::pin::Pin;
-    use anyhow::Result;
 
     struct MockLlmClient {
         canned: std::sync::Mutex<std::collections::VecDeque<MessageResponse>>,

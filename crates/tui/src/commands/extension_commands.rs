@@ -110,8 +110,8 @@ fn list(app: &App) -> CommandResult {
     }
 
     // §F5b — dylib-discovered (global + project; configured paths → §F5c).
-    let global_dir = crate::config::effective_home_dir()
-        .map(|home| home.join(".codesmith").join("extensions"));
+    let global_dir =
+        crate::config::effective_home_dir().map(|home| home.join(".codesmith").join("extensions"));
     let project_dir = app.workspace.join(".codesmith").join("extensions");
     let global_roots: Vec<std::path::PathBuf> = global_dir.into_iter().collect();
     let project_roots = vec![project_dir];
@@ -151,8 +151,8 @@ fn info(app: &App, arg: &str) -> CommandResult {
         ));
     }
     // §F5b — dylib lookup.
-    let global_dir = crate::config::effective_home_dir()
-        .map(|home| home.join(".codesmith").join("extensions"));
+    let global_dir =
+        crate::config::effective_home_dir().map(|home| home.join(".codesmith").join("extensions"));
     let project_dir = app.workspace.join(".codesmith").join("extensions");
     let global_roots: Vec<std::path::PathBuf> = global_dir.into_iter().collect();
     let project_roots = vec![project_dir];
@@ -281,26 +281,27 @@ fn install(app: &mut App, arg: &str) -> CommandResult {
     let http: std::sync::Arc<dyn codesmith_extensions::HttpFetcher> =
         std::sync::Arc::new(codesmith_extensions::CurlHttpFetcher::new());
     let source: Box<dyn codesmith_extensions::ExtensionSource> = match spec.kind {
-        codesmith_extensions::SourceKind::Git => Box::new(
-            codesmith_extensions::GitSource::new(spec.body.clone(), spec.ref_.clone()),
-        ),
+        codesmith_extensions::SourceKind::Git => Box::new(codesmith_extensions::GitSource::new(
+            spec.body.clone(),
+            spec.ref_.clone(),
+        )),
         codesmith_extensions::SourceKind::Path => Box::new(
             codesmith_extensions::LocalPathSource::new(spec.body.clone()),
         ),
-        codesmith_extensions::SourceKind::CratesIo => Box::new(
-            codesmith_extensions::CratesIoSource::new(
+        codesmith_extensions::SourceKind::CratesIo => {
+            Box::new(codesmith_extensions::CratesIoSource::new(
                 spec.body.clone(),
                 spec.ref_.clone(),
                 http.clone(),
-            ),
-        ),
-        codesmith_extensions::SourceKind::Prebuilt => Box::new(
-            codesmith_extensions::PrebuiltDylibSource::new(
+            ))
+        }
+        codesmith_extensions::SourceKind::Prebuilt => {
+            Box::new(codesmith_extensions::PrebuiltDylibSource::new(
                 spec.body.clone(),
                 spec.checksum.clone(),
                 http.clone(),
-            ),
-        ),
+            ))
+        }
     };
     // CargoBuilder needs a temp target-dir whose TempDir guard outlives
     // install() (kept alive to fn end). IdentityBuilder for prebuilt (no build).
@@ -323,7 +324,10 @@ fn install(app: &mut App, arg: &str) -> CommandResult {
         Err(e) => return CommandResult::error(format!("install failed: {e}")),
     };
     // Record provenance (tui-side state mutator; R1).
-    if let Err(e) = app.extension_state.add_installed(&report.id, &report.provenance) {
+    if let Err(e) = app
+        .extension_state
+        .add_installed(&report.id, &report.provenance)
+    {
         return CommandResult::error(format!("installed but state write failed: {e}"));
     }
     // Trust-warn (R1: install is trust-agnostic; warn if project + untrusted).
@@ -426,11 +430,13 @@ mod tests {
         // §F5e: prebuilt: now proceeds (real PrebuiltDylibSource impl).
         assert!(install_precheck("prebuilt:https://x/y.dylib").is_none());
         // with --checksum (valid 64-hex) also proceeds
-        assert!(install_precheck(
-            "prebuilt:https://x/y.dylib --checksum \
+        assert!(
+            install_precheck(
+                "prebuilt:https://x/y.dylib --checksum \
              d1bb2d9926b9bd18e51fc8edd663e311ff3b1fb96c9d4689854f8686f7c6c216"
-        )
-        .is_none());
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -664,10 +670,17 @@ mod tests {
         assert!(res.is_some(), "send_cmd dispatched");
         let res = res.unwrap();
         assert!(!res.is_error, "command succeeded");
-        assert!(res.message.is_none(), "SendMessage maps to action, not message");
+        assert!(
+            res.message.is_none(),
+            "SendMessage maps to action, not message"
+        );
         match res.action {
             Some(AppAction::SendMessage(s)) => {
-                assert_eq!(s.as_str(), "send:ping", "arg forwarded into SendMessage action");
+                assert_eq!(
+                    s.as_str(),
+                    "send:ping",
+                    "arg forwarded into SendMessage action"
+                );
             }
             other => panic!("expected AppAction::SendMessage, got {other:?}"),
         }

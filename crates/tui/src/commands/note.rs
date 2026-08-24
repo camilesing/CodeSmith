@@ -39,11 +39,7 @@ pub fn note(app: &mut App, content: Option<&str>) -> CommandResult {
 }
 
 fn notes_path(app: &App) -> PathBuf {
-    let primary = app.workspace.join(".codesmith").join("notes.md");
-    if primary.exists() {
-        return primary;
-    }
-    app.workspace.join(".deepseek").join("notes.md")
+    app.workspace.join(".codesmith").join("notes.md")
 }
 
 fn split_command(input: &str) -> (&str, Option<&str>) {
@@ -300,7 +296,7 @@ mod tests {
     }
 
     fn notes_path(tmpdir: &TempDir) -> PathBuf {
-        tmpdir.path().join(".deepseek").join("notes.md")
+        tmpdir.path().join(".codesmith").join("notes.md")
     }
 
     fn message(result: CommandResult) -> String {
@@ -432,7 +428,7 @@ mod tests {
         let mut app = create_test_app_with_tmpdir(&tmpdir);
 
         let path = message(note(&mut app, Some("path")));
-        assert!(path.contains(".deepseek"));
+        assert!(path.contains(".codesmith"));
         assert!(path.contains("notes.md"));
     }
 

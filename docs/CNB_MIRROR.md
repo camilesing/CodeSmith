@@ -175,11 +175,11 @@ behind GitHub-blocking networks should use one of these paths:
   `codesmith-tui-linux-x64`, and `codesmith-artifacts-sha256.txt` from the CNB
   release for `vX.Y.Z`, then verify the binaries against the manifest.
 
-- **`DEEPSEEK_TUI_RELEASE_BASE_URL`** environment variable, if a
+- **`CODESMITH_RELEASE_BASE_URL`** environment variable, if a
   CDN mirror of release assets exists. The npm
   wrapper installer and `codesmith update` read this variable to redirect
   binary downloads. For `codesmith update`, also set
-  `DEEPSEEK_TUI_VERSION=X.Y.Z` so the updater can label the mirrored
+  `CODESMITH_VERSION=X.Y.Z` so the updater can label the mirrored
   release without contacting GitHub. The directory pointed to must contain
   `codesmith-artifacts-sha256.txt` and the platform binaries; format matches
   a GitHub Release asset directory.

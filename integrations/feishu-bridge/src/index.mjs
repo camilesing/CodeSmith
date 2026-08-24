@@ -88,16 +88,16 @@ const config = {
   appId: requiredEnv("FEISHU_APP_ID"),
   appSecret: requiredEnv("FEISHU_APP_SECRET"),
   domain: process.env.FEISHU_DOMAIN || "feishu",
-  runtimeUrl: (process.env.DEEPSEEK_RUNTIME_URL || "http://127.0.0.1:7878").replace(/\/+$/, ""),
-  runtimeToken: requiredEnv("DEEPSEEK_RUNTIME_TOKEN"),
-  workspace: process.env.DEEPSEEK_WORKSPACE || process.cwd(),
-  model: process.env.DEEPSEEK_MODEL || "auto",
-  mode: process.env.DEEPSEEK_MODE || "agent",
-  allowShell: parseBool(process.env.DEEPSEEK_ALLOW_SHELL, true),
-  trustMode: parseBool(process.env.DEEPSEEK_TRUST_MODE, false),
-  autoApprove: parseBool(process.env.DEEPSEEK_AUTO_APPROVE, false),
-  allowlist: parseList(process.env.DEEPSEEK_CHAT_ALLOWLIST),
-  allowUnlisted: parseBool(process.env.DEEPSEEK_ALLOW_UNLISTED, false),
+  runtimeUrl: (process.env.CODESMITH_RUNTIME_URL || "http://127.0.0.1:7878").replace(/\/+$/, ""),
+  runtimeToken: requiredEnv("CODESMITH_RUNTIME_TOKEN"),
+  workspace: process.env.CODESMITH_WORKSPACE || process.cwd(),
+  model: process.env.CODESMITH_MODEL || "auto",
+  mode: process.env.CODESMITH_MODE || "agent",
+  allowShell: parseBool(process.env.CODESMITH_ALLOW_SHELL, true),
+  trustMode: parseBool(process.env.CODESMITH_TRUST_MODE, false),
+  autoApprove: parseBool(process.env.CODESMITH_AUTO_APPROVE, false),
+  allowlist: parseList(process.env.CODESMITH_CHAT_ALLOWLIST),
+  allowUnlisted: parseBool(process.env.CODESMITH_ALLOW_UNLISTED, false),
   threadMapPath:
     process.env.FEISHU_THREAD_MAP_PATH ||
     "/var/lib/codesmith-feishu-bridge/thread-map.json",
@@ -105,7 +105,7 @@ const config = {
   requirePrefixInGroup: parseBool(process.env.FEISHU_REQUIRE_PREFIX_IN_GROUP, true),
   groupPrefix: process.env.FEISHU_GROUP_PREFIX || "/ds",
   maxReplyChars: Number(process.env.FEISHU_MAX_REPLY_CHARS || 3500),
-  turnTimeoutMs: Number(process.env.DEEPSEEK_TURN_TIMEOUT_MS || 900000)
+  turnTimeoutMs: Number(process.env.CODESMITH_TURN_TIMEOUT_MS || 900000)
 };
 
 const sdkConfig = {

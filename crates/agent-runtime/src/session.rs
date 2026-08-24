@@ -101,7 +101,7 @@ pub struct Session {
 
     /// Ephemeral per-construction telemetry id (finding 5c). Minted once in
     /// [`Session::new`] via `Uuid::new_v4` and **never persisted**. Telemetry
-    /// events (capacity decisions, hook env var `DEEPSEEK_SESSION_ID`) carry
+    /// events (capacity decisions, hook env var `CODESMITH_SESSION_ID`) carry
     /// this id rather than the resume [`id`](Self::id), so telemetry cannot be
     /// trivially joined back to a persisted conversation thread. The durable
     /// [`id`](Self::id) is still used for capacity-memory filenames and resume.
@@ -383,7 +383,13 @@ mod tests {
         );
 
         assert_eq!(session.recent_read_files.lock().unwrap().len(), 1);
-        let entry = session.recent_read_files.lock().unwrap().back().unwrap().clone();
+        let entry = session
+            .recent_read_files
+            .lock()
+            .unwrap()
+            .back()
+            .unwrap()
+            .clone();
         assert_eq!(entry.path, "src/lib.rs");
         assert_eq!(entry.input["offset"], 10);
         assert_eq!(entry.output_preview, "new contents");
@@ -429,21 +435,10 @@ mod tests {
         assert_eq!(files.front().unwrap().path, "src/file_2.rs");
         assert_eq!(files.back().unwrap().path, "src/file_13.rs");
         assert_eq!(
-            files
-                .back()
-                .unwrap()
-                .output_preview
-                .chars()
-                .count(),
+            files.back().unwrap().output_preview.chars().count(),
             RECENT_READ_FILE_SNIPPET_CHARS
         );
-        assert!(
-            files
-                .back()
-                .unwrap()
-                .output_preview
-                .ends_with("...")
-        );
+        assert!(files.back().unwrap().output_preview.ends_with("..."));
     }
 
     fn new_test_session() -> Session {

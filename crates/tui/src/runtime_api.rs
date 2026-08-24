@@ -74,11 +74,11 @@ pub struct RuntimeApiOptions {
     /// Additional CORS origins to allow on top of the built-in defaults
     /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
     /// `tauri://localhost`). Populated by `--cors-origin` (repeatable),
-    /// `DEEPSEEK_CORS_ORIGINS` (comma-separated), and `[runtime_api]
+    /// `CODESMITH_CORS_ORIGINS` (comma-separated), and `[runtime_api]
     /// cors_origins` in `config.toml`. Whalescale#255 / #561.
     pub cors_origins: Vec<String>,
     /// Optional bearer token required for `/v1/*` routes. If omitted here,
-    /// `run_http_server` also checks `DEEPSEEK_RUNTIME_TOKEN`.
+    /// `run_http_server` also checks `CODESMITH_RUNTIME_TOKEN`.
     pub auth_token: Option<String>,
     /// Allow `/v1/*` routes without auth when no token is configured.
     pub insecure_no_auth: bool,
@@ -430,8 +430,8 @@ pub async fn run_http_server(
 
     let sessions_dir = default_sessions_dir().unwrap_or_else(|_| {
         dirs::home_dir()
-            .map(|h| h.join(".deepseek").join("sessions"))
-            .unwrap_or_else(|| PathBuf::from(".deepseek").join("sessions"))
+            .map(|h| h.join(".codesmith").join("sessions"))
+            .unwrap_or_else(|| PathBuf::from(".codesmith").join("sessions"))
     });
     let resolved_auth = resolve_runtime_auth(
         options.auth_token.clone(),
@@ -477,7 +477,7 @@ pub async fn run_http_server(
         if let Some(token) = runtime_token.as_deref() {
             println!("Runtime API auth: generated bearer token for this process.");
             println!("  Authorization: Bearer {token}");
-            println!("  Set DEEPSEEK_RUNTIME_TOKEN or pass --auth-token for a stable token.");
+            println!("  Set CODESMITH_RUNTIME_TOKEN or pass --auth-token for a stable token.");
         }
     } else if auth_enabled {
         println!("Runtime API auth: bearer token required for /v1/* routes.");
@@ -613,7 +613,7 @@ fn request_has_runtime_token(req: &Request, expected: &str) -> bool {
         .is_some_and(|token| token == expected)
         || req
             .headers()
-            .get("x-deepseek-runtime-token")
+            .get("x-codesmith-runtime-token")
             .and_then(|value| value.to_str().ok())
             .is_some_and(|token| token == expected)
         || token_from_query(req.uri().query()).is_some_and(|token| token == expected)

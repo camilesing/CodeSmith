@@ -365,7 +365,7 @@ pub fn persist_root_string_key(
 }
 
 /// Resolve the path to `~/.codesmith/config.toml` (or
-/// `$CODESMITH_CONFIG_PATH` / `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
+/// `$CODESMITH_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
 pub(super) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
@@ -378,23 +378,9 @@ pub(super) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<Pat
             return Ok(PathBuf::from(trimmed));
         }
     }
-    if let Ok(env) = std::env::var("DEEPSEEK_CONFIG_PATH") {
-        let trimmed = env.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
     let home =
         effective_home_dir().context("failed to resolve home directory for config.toml path")?;
-    let primary = home.join(".codesmith").join("config.toml");
-    if primary.exists() {
-        return Ok(primary);
-    }
-    let legacy = home.join(".deepseek").join("config.toml");
-    if legacy.exists() {
-        return Ok(legacy);
-    }
-    Ok(primary)
+    Ok(home.join(".codesmith").join("config.toml"))
 }
 
 /// Modify a setting at runtime
@@ -1385,7 +1371,7 @@ mod tests {
         home: Option<OsString>,
         userprofile: Option<OsString>,
         codesmith_config_path: Option<OsString>,
-        deepseek_config_path: Option<OsString>,
+        pinned_config_path: Option<OsString>,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
@@ -1393,26 +1379,26 @@ mod tests {
         fn new(home: &Path) -> Self {
             let lock = crate::test_support::lock_test_env();
             let home_str = OsString::from(home.as_os_str());
-            let config_path = home.join(".deepseek").join("config.toml");
+            let config_path = home.join(".codesmith").join("config.toml");
             let config_str = OsString::from(config_path.as_os_str());
             let home_prev = env::var_os("HOME");
             let userprofile_prev = env::var_os("USERPROFILE");
             let codesmith_config_prev = env::var_os("CODESMITH_CONFIG_PATH");
-            let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
+            let pinned_config_prev = env::var_os("CODESMITH_CONFIG_PATH");
 
             // Safety: test-only environment mutation guarded by process-wide mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
                 env::remove_var("CODESMITH_CONFIG_PATH");
-                env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
+                env::set_var("CODESMITH_CONFIG_PATH", &config_str);
             }
 
             Self {
                 home: home_prev,
                 userprofile: userprofile_prev,
                 codesmith_config_path: codesmith_config_prev,
-                deepseek_config_path: deepseek_config_prev,
+                pinned_config_path: pinned_config_prev,
                 _lock: lock,
             }
         }
@@ -1456,15 +1442,15 @@ mod tests {
                 }
             }
 
-            if let Some(value) = self.deepseek_config_path.take() {
+            if let Some(value) = self.pinned_config_path.take() {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::set_var("DEEPSEEK_CONFIG_PATH", value);
+                    env::set_var("CODESMITH_CONFIG_PATH", value);
                 }
             } else {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::remove_var("DEEPSEEK_CONFIG_PATH");
+                    env::remove_var("CODESMITH_CONFIG_PATH");
                 }
             }
         }
@@ -1893,7 +1879,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "deepseek-tui-base-url-test-{}-{}",
+            "codesmith-tui-base-url-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -1940,14 +1926,14 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "deepseek-tui-base-url-show-test-{}-{}",
+            "codesmith-tui-base-url-show-test-{}-{}",
             std::process::id(),
             nanos
         ));
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         fs::write(
             &config_path,
@@ -2155,7 +2141,7 @@ mod tests {
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
-        let config_path = temp_root.join(".deepseek").join("config.toml");
+        let config_path = temp_root.join(".codesmith").join("config.toml");
         fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         fs::write(&config_path, "api_key = \"test-key\"\n").unwrap();
 
@@ -2236,7 +2222,7 @@ mod tests {
         let _guard = EnvGuard::new(&temp_root);
 
         unsafe {
-            env::remove_var("DEEPSEEK_CONFIG_PATH");
+            env::remove_var("CODESMITH_CONFIG_PATH");
         }
 
         assert_eq!(
@@ -2256,20 +2242,20 @@ mod tests {
             std::process::id(),
             nanos
         ));
-        let legacy_config = temp_root.join(".deepseek").join("config.toml");
+        let legacy_config = temp_root.join(".codesmith").join("config.toml");
         fs::create_dir_all(legacy_config.parent().unwrap()).unwrap();
         fs::write(&legacy_config, "").unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
         unsafe {
-            env::remove_var("DEEPSEEK_CONFIG_PATH");
+            env::remove_var("CODESMITH_CONFIG_PATH");
         }
 
         assert_eq!(config_toml_path(None).unwrap(), legacy_config);
     }
 
     #[test]
-    fn config_toml_path_prefers_codesmith_env_over_legacy_env() {
+    fn config_toml_path_prefers_codesmith_env() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -2282,11 +2268,9 @@ mod tests {
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
         let preferred = temp_root.join("preferred.toml");
-        let legacy = temp_root.join("legacy.toml");
 
         unsafe {
             env::set_var("CODESMITH_CONFIG_PATH", &preferred);
-            env::set_var("DEEPSEEK_CONFIG_PATH", &legacy);
         }
 
         assert_eq!(config_toml_path(None).unwrap(), preferred);
@@ -2306,7 +2290,7 @@ mod tests {
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
-        let path = temp_root.join(".deepseek").join("config.toml");
+        let path = temp_root.join(".codesmith").join("config.toml");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         // Seed the config with a sentinel key the picker MUST NOT clobber.
         fs::write(

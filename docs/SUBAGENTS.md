@@ -207,7 +207,7 @@ explorers and reviewers should be precise here.
 ## Memory and the `remember` tool (#489)
 
 Sub-agents inherit the parent's memory file when memory is enabled
-(`[memory] enabled = true` or `DEEPSEEK_MEMORY=on`). They can
+(`[memory] enabled = true` or `CODESMITH_MEMORY=on`). They can
 append durable notes via the `remember` tool — handy for an
 explorer that discovers a project convention worth carrying across
 sessions, or a verifier that learns "this test is flaky".

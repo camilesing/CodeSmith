@@ -2,7 +2,7 @@
 
 CodeSmith extensions are compiled-in (slice 1, §F1) or to-be-loaded
 (phase 2, §F5) modules that contribute **tools**, **slash commands**, and
-**lifecycle event handlers** to the agent loop. They are the pi-mono
+**lifecycle event handlers** to the agent loop. They are like the pi-mono
 `Extension` model ported onto the §E framework-core traits.
 
 An extension is a factory (`impl Extension`) that, during `configure`,

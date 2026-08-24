@@ -1,4 +1,4 @@
-//! Whale/DeepSeek terminal theme tokens.
+//! CodeSmith terminal theme tokens.
 //!
 //! A small, deliberately flat module that names the color, border, and
 //! padding choices the TUI is already making. All values match the dark
@@ -65,8 +65,8 @@ impl Theme {
             section_borders: Borders::ALL,
             section_border_type: BorderType::Plain,
             section_border_color: palette::BORDER_COLOR,
-            section_bg: palette::DEEPSEEK_INK,
-            section_title_color: palette::DEEPSEEK_BLUE,
+            section_bg: palette::CODESMITH_INK,
+            section_title_color: palette::CODESMITH_BLUE,
             // Horizontal padding only. `Padding::uniform(1)` ate two rows of
             // each sidebar panel — for compact terminals where Work/Tasks/Agents
             // get ~3 rows total via the 25% layout split, that left zero rows
@@ -97,20 +97,20 @@ impl Theme {
             section_border_type: BorderType::Plain,
             section_border_color: palette::LIGHT_BORDER,
             section_bg: palette::LIGHT_PANEL,
-            section_title_color: palette::DEEPSEEK_BLUE,
+            section_title_color: palette::CODESMITH_BLUE,
             section_padding: Padding::horizontal(1),
             tool_title_color: palette::LIGHT_TEXT_SOFT,
             tool_value_color: palette::LIGHT_TEXT_MUTED,
             tool_label_color: palette::LIGHT_TEXT_HINT,
-            tool_running_accent: palette::DEEPSEEK_BLUE,
+            tool_running_accent: palette::CODESMITH_BLUE,
             tool_success_accent: palette::LIGHT_TEXT_HINT,
-            tool_failed_accent: palette::DEEPSEEK_RED,
-            plan_progress_color: palette::DEEPSEEK_BLUE,
+            tool_failed_accent: palette::CODESMITH_RED,
+            plan_progress_color: palette::CODESMITH_BLUE,
             plan_summary_color: palette::LIGHT_TEXT_MUTED,
             plan_explanation_color: palette::LIGHT_TEXT_HINT,
             plan_pending_color: palette::LIGHT_TEXT_MUTED,
             plan_in_progress_color: Color::Rgb(180, 83, 9),
-            plan_completed_color: palette::DEEPSEEK_BLUE,
+            plan_completed_color: palette::CODESMITH_BLUE,
         }
     }
 
@@ -235,8 +235,8 @@ mod tests {
         let theme = Theme::dark();
         assert_eq!(theme.variant, Variant::Dark);
         assert_eq!(theme.section_border_color, palette::BORDER_COLOR);
-        assert_eq!(theme.section_bg, palette::DEEPSEEK_INK);
-        assert_eq!(theme.section_title_color, palette::DEEPSEEK_BLUE);
+        assert_eq!(theme.section_bg, palette::CODESMITH_INK);
+        assert_eq!(theme.section_title_color, palette::CODESMITH_BLUE);
         assert_eq!(theme.tool_title_color, palette::TEXT_SOFT);
         assert_eq!(theme.tool_value_color, palette::TEXT_MUTED);
         assert_eq!(theme.tool_label_color, palette::TEXT_DIM);

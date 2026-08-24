@@ -120,7 +120,7 @@ pub struct EngineConfig {
     pub worktree_state: SharedWorktreeSessionState,
     /// Maximum sub-agent recursion depth (default 3). See
     /// `SubAgentRuntime::max_spawn_depth`. Override via
-    /// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
+    /// `[runtime] max_spawn_depth = N` in `~/.codesmith/config.toml`.
     pub max_spawn_depth: u32,
     /// Per-domain network policy decider (#135). Shared across the session so
     /// session-scoped approvals (`/network allow <host>`) persist for the

@@ -5,15 +5,15 @@
 use std::time::Instant;
 
 use super::CommandResult;
-use codesmith_agent_runtime::prompt_inspect::{
-    CacheWarmupKey, PromptInspection, inspect_prompt_for_request,
-};
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::dependencies::{ExternalTool, Git};
 use crate::localization::{Locale, MessageId, tr};
 use crate::models::{ContentBlock, MessageRequest, SystemPrompt, context_window_for_model};
 use crate::tui::app::{App, AppAction, TurnCacheRecord};
 use crate::tui::history::HistoryCell;
+use codesmith_agent_runtime::prompt_inspect::{
+    CacheWarmupKey, PromptInspection, inspect_prompt_for_request,
+};
 
 fn token_count(value: Option<u32>, locale: Locale) -> String {
     value.map_or_else(

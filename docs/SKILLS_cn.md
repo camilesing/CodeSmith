@@ -62,7 +62,7 @@ CodeSmith 按顺序扫描以下目录，并合并找到的一切。只扫描实�
 | 7 | global | `~/.agents/skills` |
 | 8 | global | `~/.claude/skills` |
 | 9 | global | `~/.codesmith/skills` |
-| 10 | global | `~/.deepseek/skills`（旧版回退） |
+| 10 | global | `~/.codesmith/skills`（旧版回退） |
 
 这些跨工具位置（`.agents`、`.opencode`、`.claude`、`.cursor`）意味着
 你已为其他代理维护的技能可原样复用——无需复制或建立符号链接。
@@ -191,7 +191,7 @@ Instructions for the agent go here.
 
 ```toml
 [skills]
-registry_url = "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json"
+registry_url = "https://raw.githubusercontent.com/Hmbown/codesmith-skills/main/index.json"
 max_install_size_bytes = 5_242_880   # 5 MiB default
 ```
 
@@ -229,7 +229,7 @@ my-skill/
 ## 内置系统技能
 
 首次启动会把一组内置技能安装到 `~/.codesmith/skills`（或旧版
-`~/.deepseek/skills`）：`skill-creator`、`delegate`、
+`~/.codesmith/skills`）：`skill-creator`、`delegate`、
 `v4-best-practices`、`plugin-creator`、`skill-installer`、
 `mcp-builder`、`documents`、`presentations`、`spreadsheets`、`pdf`
 和 `feishu`。内置集合带版本：升级会新增引入的技能，但绝不会重建你

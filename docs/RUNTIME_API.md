@@ -4,7 +4,7 @@ codesmith exposes a local runtime API through `codesmith serve --http` and
 machine-readable health via `codesmith doctor --json`. It also exposes
 `codesmith serve --acp` for editor clients that speak the Agent Client Protocol
 over stdio. This document is the stable integration contract for native macOS
-workbench applications (and other local supervisors) that embed the DeepSeek
+workbench applications (and other local supervisors) that embed the CodeSmith
 engine without screen-scraping terminal output.
 
 ## Architecture
@@ -32,14 +32,14 @@ ACP-compatible editor clients. The initial adapter implements the ACP baseline:
 - `session/prompt`
 - `session/cancel`
 
-Prompt requests are routed through the configured DeepSeek client and current
+Prompt requests are routed through the configured LLM client and current
 default model. Responses are emitted as `session/update` agent message chunks
 followed by a `session/prompt` response with `stopReason: "end_turn"`.
 
 The adapter is intentionally conservative: it does not yet expose shell tools,
 file-write tools, checkpoint replay, or session loading through ACP. Use
 `codesmith serve --http` for the full local runtime API and `codesmith serve --mcp`
-when another client needs DeepSeek's tools as MCP tools.
+when another client needs CodeSmith's tools as MCP tools.
 
 ## Capability endpoint: `codesmith doctor --json`
 
@@ -68,7 +68,7 @@ codesmith doctor --json
 | `mcp.present` | bool | Whether MCP config exists |
 | `mcp.servers` | array | Per-server health: `{name, enabled, status, detail}` |
 | `skills.selected` | string | Resolved skills directory |
-| `skills.global.path` / `.present` / `.count` | — | CodeSmith global skills dir (`~/.codesmith/skills`, with legacy `~/.deepseek/skills` support) |
+| `skills.global.path` / `.present` / `.count` | — | CodeSmith global skills dir (`~/.codesmith/skills`, with legacy `~/.codesmith/skills` support) |
 | `skills.agents.path` / `.present` / `.count` | — | Workspace `.agents/skills/` dir |
 | `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io global skills dir (`~/.agents/skills`) |
 | `skills.local.path` / `.present` / `.count` | — | `skills/` dir |
@@ -126,7 +126,7 @@ The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
 
 `/v1/*` routes require a bearer token unless `--insecure` is explicitly set.
-Pass `--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting
+Pass `--auth-token TOKEN` or set `CODESMITH_RUNTIME_TOKEN=TOKEN` before starting
 the server. If neither is set, the process generates a one-time token and prints
 it at startup. `/health` and `/v1/runtime/info` remain public for local
 supervision and bootstrap. `/mobile` returns 404 when mobile mode is disabled;
@@ -134,7 +134,7 @@ when mobile mode is enabled and auth is enabled, `/mobile` returns 401 unless
 the request supplies the runtime token.
 
 Authenticated clients can provide the token as `Authorization: Bearer TOKEN`,
-`X-DeepSeek-Runtime-Token: TOKEN`, or `?token=TOKEN` for EventSource-style
+`X-CodeSmith-Runtime-Token: TOKEN`, or `?token=TOKEN` for EventSource-style
 clients that cannot set custom headers.
 
 ### Mobile control page
@@ -356,7 +356,7 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
   `--host 127.0.0.1` for a loopback-only mobile page. Set a non-loopback host
   only when you trust the network path or have a reverse-proxy / VPN that
   authenticates. The runtime does not provide user isolation or TLS.
-- **Optional token guard**. `--auth-token` or `DEEPSEEK_RUNTIME_TOKEN`
+- **Optional token guard**. `--auth-token` or `CODESMITH_RUNTIME_TOKEN`
   requires a matching bearer token for `/v1/*` routes. This is a local
   convenience guard, not a replacement for TLS, VPN, or a trusted reverse
   proxy on public networks.
@@ -376,7 +376,7 @@ The runtime API ships with a built-in dev-origin allow-list:
 when developing a UI on Vite's default `:5173`), use any of:
 
 - CLI flag (repeatable): `codesmith serve --http --cors-origin http://localhost:5173`
-- Env var (comma-separated): `DEEPSEEK_CORS_ORIGINS="http://localhost:5173,http://localhost:8080"`
+- Env var (comma-separated): `CODESMITH_CORS_ORIGINS="http://localhost:5173,http://localhost:8080"`
 - Config (`~/.codesmith/config.toml`):
   ```toml
   [runtime_api]

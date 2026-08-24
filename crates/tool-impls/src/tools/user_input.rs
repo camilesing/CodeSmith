@@ -7,10 +7,10 @@
 //! [`RequestUserInputTool`] [`ToolSpec`](codesmith_agent_runtime::tools::spec::ToolSpec) implementation
 //! stays in the TUI because it is bound to the TUI-local tool trait.
 
+use async_trait::async_trait;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 pub use codesmith_agent_runtime::user_input::*;

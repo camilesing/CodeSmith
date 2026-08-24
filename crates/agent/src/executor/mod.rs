@@ -179,7 +179,9 @@ impl DefaultAgentExecutor {
             let tool_uses: Vec<(String, String, serde_json::Value)> = content
                 .into_iter()
                 .filter_map(|block| match block {
-                    ContentBlock::ToolUse { id, name, input, .. } => Some((id, name, input)),
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => Some((id, name, input)),
                     _ => None,
                 })
                 .collect();
@@ -309,7 +311,9 @@ pub async fn accumulate_stream(
             }
             StreamEvent::ContentBlockStop { .. } => {}
             StreamEvent::MessageDelta {
-                delta: MessageDelta { stop_reason: sr, .. },
+                delta: MessageDelta {
+                    stop_reason: sr, ..
+                },
                 ..
             } => {
                 if sr.is_some() {
@@ -399,9 +403,7 @@ mod tests {
             _request: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = Result<crate::models::MessageResponse>> + Send + '_>>
         {
-            Box::pin(async {
-                Err(anyhow::anyhow!("mock does not implement create_message"))
-            })
+            Box::pin(async { Err(anyhow::anyhow!("mock does not implement create_message")) })
         }
         fn create_message_stream(
             &self,
@@ -506,7 +508,9 @@ mod tests {
                 Err(e) => format!("err:{e}"),
             };
             Box::pin(async move {
-                log.lock().unwrap().push(format!("tool_end:{name}:{outcome}"));
+                log.lock()
+                    .unwrap()
+                    .push(format!("tool_end:{name}:{outcome}"));
             })
         }
         fn on_step(&self, step: u32) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
@@ -515,7 +519,10 @@ mod tests {
                 log.lock().unwrap().push(format!("step:{step}"));
             })
         }
-        fn on_complete(&self, reason: &StopReason) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        fn on_complete(
+            &self,
+            reason: &StopReason,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
             let log = self.log.clone();
             let reason = format!("{reason:?}");
             Box::pin(async move {
@@ -628,7 +635,10 @@ mod tests {
         let recorder = Arc::new(RecordingCallback::new());
         let ex = executor(vec![call1, call2], 10, recorder.clone());
         let mut history = VecChatHistory::new();
-        let reason = ex.run(&mut history, "echo world".to_string()).await.unwrap();
+        let reason = ex
+            .run(&mut history, "echo world".to_string())
+            .await
+            .unwrap();
         assert_eq!(reason, StopReason::NoToolCalls);
 
         // user, assistant(text+tooluse), user(toolresult), assistant(text) = 4
@@ -636,9 +646,7 @@ mod tests {
         assert_eq!(history.messages()[2].role, "user");
         match &history.messages()[2].content[0] {
             ContentBlock::ToolResult {
-                content,
-                is_error,
-                ..
+                content, is_error, ..
             } => {
                 assert_eq!(content, "echo:world");
                 assert_eq!(*is_error, Some(false));
@@ -648,16 +656,10 @@ mod tests {
 
         // Callback ordering.
         let lines = recorder.lines();
-        assert!(lines
-            .iter()
-            .any(|l| l == "tool_start:echo"));
-        assert!(lines
-            .iter()
-            .any(|l| l == "tool_end:echo:ok:echo:world"));
+        assert!(lines.iter().any(|l| l == "tool_start:echo"));
+        assert!(lines.iter().any(|l| l == "tool_end:echo:ok:echo:world"));
         assert!(lines.iter().any(|l| l == "step:0"));
-        assert!(lines
-            .iter()
-            .any(|l| l == "complete:NoToolCalls"));
+        assert!(lines.iter().any(|l| l == "complete:NoToolCalls"));
     }
 
     #[tokio::test]
@@ -669,7 +671,11 @@ mod tests {
             c.extend(finish("tool_use"));
             c
         };
-        let ex = executor(vec![make_call(), make_call(), make_call()], 2, Arc::new(NoopCallback));
+        let ex = executor(
+            vec![make_call(), make_call(), make_call()],
+            2,
+            Arc::new(NoopCallback),
+        );
         let mut history = VecChatHistory::new();
         let reason = ex.run(&mut history, "go".to_string()).await.unwrap();
         assert_eq!(reason, StopReason::MaxSteps);
@@ -695,19 +701,19 @@ mod tests {
 
         match &history.messages()[2].content[0] {
             ContentBlock::ToolResult {
-                content,
-                is_error,
-                ..
+                content, is_error, ..
             } => {
                 assert!(content.starts_with("Error:"));
                 assert_eq!(*is_error, Some(true));
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
-        assert!(recorder
-            .lines()
-            .iter()
-            .any(|l| l.starts_with("tool_end:ghost:err:")));
+        assert!(
+            recorder
+                .lines()
+                .iter()
+                .any(|l| l.starts_with("tool_end:ghost:err:"))
+        );
     }
 
     #[tokio::test]
@@ -727,7 +733,8 @@ mod tests {
             v.extend(finish("tool_use"));
             v
         };
-        let stream: StreamEventBox = Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)));
+        let stream: StreamEventBox =
+            Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)));
         let (content, stop) = accumulate_stream(stream).await.unwrap();
         assert_eq!(stop.as_deref(), Some("tool_use"));
         assert_eq!(content.len(), 2);

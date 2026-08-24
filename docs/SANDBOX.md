@@ -125,7 +125,7 @@ CodeSmith does NOT vendor bwrap.
 
 **Fallback:** If bwrap is not installed, CodeSmith falls back to Landlock in
 permissive mode. Set `[sandbox] fail_if_unavailable = true` (or
-`DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE=true`) to fail closed instead of running
+`CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE=true`) to fail closed instead of running
 without the requested sandbox backend.
 
 ### 5. Seatbelt (macOS)
@@ -235,16 +235,16 @@ sandbox_api_key = "YOUR_API_KEY"
 
 Environment variable overrides:
 
-- `DEEPSEEK_SANDBOX_MODE` → `sandbox_mode`
-- `DEEPSEEK_PREFER_BWRAP=true` → `prefer_bwrap`
-- `DEEPSEEK_SANDBOX_BACKEND` → `sandbox_backend`
-- `DEEPSEEK_SANDBOX_URL` → `sandbox_url`
-- `DEEPSEEK_SANDBOX_API_KEY` → `sandbox_api_key`
-- `DEEPSEEK_SANDBOX_ENABLED=true|false` → `[sandbox].enabled`
-- `DEEPSEEK_SANDBOX_FAIL_IF_UNAVAILABLE=true|false` → `[sandbox].fail_if_unavailable`
-- `DEEPSEEK_SANDBOX_ENABLED_PLATFORMS=macos,linux` → `[sandbox].enabled_platforms`
-- `DEEPSEEK_SANDBOX_EXCLUDED_COMMANDS=cmd1,cmd2` → `[sandbox].excluded_commands`
-- `DEEPSEEK_AUTO_ALLOW_BASH_IF_SANDBOXED=true|false` → `[sandbox].auto_allow_bash_if_sandboxed`
+- `CODESMITH_SANDBOX_MODE` → `sandbox_mode`
+- `CODESMITH_PREFER_BWRAP=true` → `prefer_bwrap`
+- `CODESMITH_SANDBOX_BACKEND` → `sandbox_backend`
+- `CODESMITH_SANDBOX_URL` → `sandbox_url`
+- `CODESMITH_SANDBOX_API_KEY` → `sandbox_api_key`
+- `CODESMITH_SANDBOX_ENABLED=true|false` → `[sandbox].enabled`
+- `CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE=true|false` → `[sandbox].fail_if_unavailable`
+- `CODESMITH_SANDBOX_ENABLED_PLATFORMS=macos,linux` → `[sandbox].enabled_platforms`
+- `CODESMITH_SANDBOX_EXCLUDED_COMMANDS=cmd1,cmd2` → `[sandbox].excluded_commands`
+- `CODESMITH_AUTO_ALLOW_BASH_IF_SANDBOXED=true|false` → `[sandbox].auto_allow_bash_if_sandboxed`
 
 ## Detecting sandbox denials
 

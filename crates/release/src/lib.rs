@@ -23,20 +23,11 @@ pub const CNB_REPO_URL: &str = "https://cnb.cool/codesmith.net/codesmith";
 /// Environment variable that overrides the base URL for release asset downloads.
 pub const RELEASE_BASE_URL_ENV: &str = "CODESMITH_RELEASE_BASE_URL";
 
-/// Legacy environment variable (alias for [`RELEASE_BASE_URL_ENV`]).
-pub const LEGACY_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_TUI_RELEASE_BASE_URL";
-
-/// Legacy environment variable (alias for [`RELEASE_BASE_URL_ENV`]).
-pub const DEEPSEEK_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_RELEASE_BASE_URL";
-
 /// Environment variable that, when set, enables the CNB mirror for downloads.
 pub const CNB_MIRROR_ENV: &str = "CODESMITH_USE_CNB_MIRROR";
 
 /// Environment variable that pins the update target version.
-pub const UPDATE_VERSION_ENV: &str = "DEEPSEEK_TUI_VERSION";
-
-/// Legacy environment variable (alias for [`UPDATE_VERSION_ENV`]).
-pub const LEGACY_UPDATE_VERSION_ENV: &str = "DEEPSEEK_VERSION";
+pub const UPDATE_VERSION_ENV: &str = "CODESMITH_VERSION";
 
 /// User-Agent header sent with release metadata requests.
 pub const UPDATE_USER_AGENT: &str = "codesmith-updater";
@@ -99,11 +90,7 @@ pub fn resolve_release_query(channel: ReleaseChannel) -> ReleaseQuery {
 /// CNB mirror if `CODESMITH_USE_CNB_MIRROR` is set. Returns `None` when no
 /// override is configured.
 pub fn release_base_url_from_env(version: &str) -> Option<String> {
-    for env_name in [
-        RELEASE_BASE_URL_ENV,
-        LEGACY_RELEASE_BASE_URL_ENV,
-        DEEPSEEK_RELEASE_BASE_URL_ENV,
-    ] {
+    for env_name in [RELEASE_BASE_URL_ENV] {
         if let Ok(value) = std::env::var(env_name) {
             let trimmed = value.trim().to_string();
             if !trimmed.is_empty() {
@@ -127,12 +114,11 @@ pub fn cnb_release_base_url(version: &str) -> String {
     )
 }
 
-/// Returns the pinned update version from environment variables, or `None`
-/// if neither `DEEPSEEK_TUI_VERSION` nor `DEEPSEEK_VERSION` is set.
+/// Returns the pinned update version from the `CODESMITH_VERSION` environment
+/// variable, or `None` when unset.
 pub fn update_version_from_env() -> Option<String> {
     std::env::var(UPDATE_VERSION_ENV)
         .ok()
-        .or_else(|| std::env::var(LEGACY_UPDATE_VERSION_ENV).ok())
         .map(|value| value.trim().trim_start_matches('v').to_string())
         .filter(|value| !value.is_empty())
 }

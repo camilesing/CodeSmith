@@ -11,14 +11,14 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::tools::fetch_url::FetchUrlTool;
+use crate::tools::handle::VarHandle;
 use codesmith_agent_runtime::llm_client::LlmClientHandle;
 use codesmith_agent_runtime::repl::PythonRuntime;
 use codesmith_agent_runtime::rlm::RlmBridge;
 use codesmith_agent_runtime::rlm::session::{
     ContextMeta, OutputFeedback, RlmSession, derive_session_name, write_context_file,
 };
-use crate::tools::fetch_url::FetchUrlTool;
-use crate::tools::handle::VarHandle;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
@@ -634,9 +634,9 @@ fn _assert_var_handle_shape(_: Option<VarHandle>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::handle::HandleReadTool;
     use codesmith_agent_runtime::models::{ContentBlock, Message, SystemPrompt};
     use codesmith_agent_runtime::rlm::session::SessionObjectSnapshot;
-    use crate::tools::handle::HandleReadTool;
     use codesmith_agent_runtime::tools::spec::ToolContext;
     use std::path::PathBuf;
 

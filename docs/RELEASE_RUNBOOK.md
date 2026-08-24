@@ -81,19 +81,19 @@ cargo build --release --locked -p codesmith-cli -p codesmith-tui
 node scripts/release/npm-wrapper-smoke.js
 ```
 
-Set `DEEPSEEK_TUI_KEEP_SMOKE_DIR=1` to keep the temporary pack/install
+Set `CODESMITH_KEEP_SMOKE_DIR=1` to keep the temporary pack/install
 directory for inspection.
 
 To exercise `npm run release:check` locally as well, regenerate the local asset
 directory with a full asset matrix fixture before starting the server:
 
 ```bash
-DEEPSEEK_TUI_PREPARE_ALL_ASSETS=1 node scripts/release/prepare-local-release-assets.js
+CODESMITH_PREPARE_ALL_ASSETS=1 node scripts/release/prepare-local-release-assets.js
 cd npm/codesmith
-DEEPSEEK_TUI_VERSION=X.Y.Z DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm run release:check
+CODESMITH_VERSION=X.Y.Z CODESMITH_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm run release:check
 ```
 
-Set `DEEPSEEK_TUI_VERSION` to the npm package version you are verifying for that local run.
+Set `CODESMITH_VERSION` to the npm package version you are verifying for that local run.
 
 The CNB workflow runs the Linux tarball install + delegated-entrypoint smoke
 test; GitHub Actions keeps macOS and Windows smoke coverage.

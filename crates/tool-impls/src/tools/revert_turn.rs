@@ -11,10 +11,10 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use codesmith_agent_runtime::snapshot::SnapshotRepo;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
-use codesmith_agent_runtime::snapshot::SnapshotRepo;
 
 /// Default offset: revert the most-recent turn (i.e. the last `pre-turn:*`
 /// snapshot in history).

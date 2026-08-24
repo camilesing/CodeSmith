@@ -91,7 +91,7 @@ MCP 工具以 `mcp__<server>__<tool>` 的形式暴露（双下划线；旧的单
 - `codesmith exec --continue <PROMPT>`：以非交互方式继续该工作区最近保存的会话
 - `codesmith swebench run --instance-id <ID> --issue-file <PATH>`：在一个 SWE-bench 任务上运行带工具的智能体，并写入/更新一行预测 JSONL
 - `codesmith fork <ID|PREFIX>` / `codesmith fork --last`：把已保存的会话复制为新的同级会话；fork 出的会话保留可叠加的父会话元数据，并在会话列表中显示该谱系
-- `--model <MODEL>`：使用 `codesmith` 门面时，将 DeepSeek 模型覆盖转发给 TUI
+- `--model <MODEL>`：使用 `codesmith` 门面时，将模型覆盖转发给 TUI
 - `--workspace <DIR>`：文件工具的工作区根目录
 - `--yolo`：以 YOLO 模式启动
 - `-r, --resume <ID|PREFIX|latest>`：恢复一个已保存的会话
@@ -104,7 +104,7 @@ MCP 工具以 `mcp__<server>__<tool>` 的形式暴露（双下划线；旧的单
 
 ## 分支与回滚
 
-DeepSeek-TUI 有三条相关但刻意分开的恢复路径：
+CodeSmith 有三条相关但刻意分开的恢复路径：
 
 - `codesmith fork <ID>` 从一个已保存的对话创建新的已保存会话，并记录源会话 id。
   这是在不覆盖原会话的情况下探索另一条答案路径的安全方式。

@@ -10,11 +10,11 @@ use std::process::Output;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use codesmith_agent_runtime::dependencies::ExternalTool;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
-use codesmith_agent_runtime::dependencies::ExternalTool;
 
 const MAX_OUTPUT_CHARS: usize = 40_000;
 const DEFAULT_LOG_MAX_COUNT: u64 = 20;
@@ -512,7 +512,8 @@ mod tests {
     }
 
     fn run_git(root: &Path, args: &[&str]) {
-        let status = codesmith_agent_runtime::dependencies::Git::status(args, root).expect("git should spawn");
+        let status = codesmith_agent_runtime::dependencies::Git::status(args, root)
+            .expect("git should spawn");
         assert!(status.success(), "git {:?} failed", args);
     }
 

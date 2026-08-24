@@ -44,7 +44,11 @@ impl StubExtensionApi {
     /// makes subsequent `register_*`/`on` calls return `StaleContext`.
     pub(crate) fn new(generation: Arc<AtomicU64>, pending: Arc<Mutex<Pending>>) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
-        Self { generation, captured_gen, pending }
+        Self {
+            generation,
+            captured_gen,
+            pending,
+        }
     }
 }
 
@@ -55,20 +59,32 @@ impl ExtensionApi for StubExtensionApi {
     }
     fn register_tool(&self, tool: Box<dyn ToolDefinition>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending.lock().unwrap().tools.push(crate::runner::PendingTool { tool });
+        self.pending
+            .lock()
+            .unwrap()
+            .tools
+            .push(crate::runner::PendingTool { tool });
         Ok(())
     }
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending.lock().unwrap().commands.push(crate::runner::PendingCommand { command });
+        self.pending
+            .lock()
+            .unwrap()
+            .commands
+            .push(crate::runner::PendingCommand { command });
         Ok(())
     }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending.lock().unwrap().handlers.push(crate::runner::PendingHandler {
-            handler,
-            kind_filter: None,
-        });
+        self.pending
+            .lock()
+            .unwrap()
+            .handlers
+            .push(crate::runner::PendingHandler {
+                handler,
+                kind_filter: None,
+            });
         Ok(())
     }
     fn on_variant(
@@ -77,10 +93,14 @@ impl ExtensionApi for StubExtensionApi {
         handler: Arc<dyn Handler>,
     ) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending.lock().unwrap().handlers.push(crate::runner::PendingHandler {
-            handler,
-            kind_filter: Some(kind),
-        });
+        self.pending
+            .lock()
+            .unwrap()
+            .handlers
+            .push(crate::runner::PendingHandler {
+                handler,
+                kind_filter: Some(kind),
+            });
         Ok(())
     }
 }
@@ -107,7 +127,13 @@ impl RealExtensionApi {
         handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
     ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
-        Self { generation, captured_gen, tools, commands, handlers }
+        Self {
+            generation,
+            captured_gen,
+            tools,
+            commands,
+            handlers,
+        }
     }
 }
 
@@ -132,10 +158,13 @@ impl ExtensionApi for RealExtensionApi {
     }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
-        self.handlers.lock().unwrap().push(crate::runner::RegisteredHandler {
-            handler,
-            kind_filter: None,
-        });
+        self.handlers
+            .lock()
+            .unwrap()
+            .push(crate::runner::RegisteredHandler {
+                handler,
+                kind_filter: None,
+            });
         Ok(())
     }
     fn on_variant(
@@ -144,10 +173,13 @@ impl ExtensionApi for RealExtensionApi {
         handler: Arc<dyn Handler>,
     ) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
-        self.handlers.lock().unwrap().push(crate::runner::RegisteredHandler {
-            handler,
-            kind_filter: Some(kind),
-        });
+        self.handlers
+            .lock()
+            .unwrap()
+            .push(crate::runner::RegisteredHandler {
+                handler,
+                kind_filter: Some(kind),
+            });
         Ok(())
     }
 }
@@ -199,6 +231,9 @@ mod tests {
             .unwrap();
         let p = pending.lock().unwrap();
         assert_eq!(p.handlers.len(), 1);
-        assert_eq!(p.handlers[0].kind_filter, Some(ExtensionEventKind::ToolCall));
+        assert_eq!(
+            p.handlers[0].kind_filter,
+            Some(ExtensionEventKind::ToolCall)
+        );
     }
 }

@@ -151,7 +151,7 @@ impl Workspace {
                 if total >= FILE_INDEX_MAX_ENTRIES {
                     break;
                 }
-                // Exclude machine-generated bulk (e.g. .deepseek/snapshots/).
+                // Exclude machine-generated bulk (e.g. .codesmith/snapshots/).
                 if path_is_excluded_from_discovery(&self.root, entry.path()) {
                     continue;
                 }
@@ -172,7 +172,7 @@ impl Workspace {
         // Beyond the curated dot-dir whitelist above, also index any explicit
         // hidden/ignored path the user might `@`-mention (e.g. a project's
         // own `.generated/specs/`). `local_reference_paths` walks with
-        // gitignore disabled but still honors `.deepseekignore`.
+        // gitignore disabled but still honors `.codesmithignore`.
         for path in local_reference_paths(
             &self.root,
             LOCAL_REFERENCE_SCAN_LIMIT,
@@ -206,7 +206,7 @@ impl Workspace {
     /// Tab-completes matches what their shell would have shown them.
     ///
     /// Honors `.gitignore`, `.git/info/exclude`, `.ignore`, and
-    /// `.deepseekignore`. Capped at `limit` results.
+    /// `.codesmithignore`. Capped at `limit` results.
     #[must_use]
     pub fn completions(&self, partial: &str, limit: usize) -> Vec<String> {
         if limit == 0 {
@@ -299,7 +299,7 @@ fn child_completion_walk_depth(depth: Option<usize>) -> Option<usize> {
 const FILE_INDEX_MAX_ENTRIES: usize = 50_000;
 
 /// Configure a `WalkBuilder` for workspace discovery: hidden files, no
-/// symlink following, depth-limited, custom `.deepseekignore` honored,
+/// symlink following, depth-limited, custom `.codesmithignore` honored,
 /// and gitignore overrides for AI-tool dot-directories so `@`-completion
 /// finds them even when they're gitignored.
 fn discovery_walk_builder(root: &Path, max_depth: Option<usize>) -> WalkBuilder {
@@ -308,11 +308,11 @@ fn discovery_walk_builder(root: &Path, max_depth: Option<usize>) -> WalkBuilder 
     if let Some(depth) = max_depth {
         builder.max_depth(Some(depth));
     }
-    let _ = builder.add_custom_ignore_filename(".deepseekignore");
+    let _ = builder.add_custom_ignore_filename(".codesmithignore");
     builder
 }
 
-/// Walk the AI-tool dot-directories (`.deepseek/`, `.cursor/`, `.claude/`,
+/// Walk the AI-tool dot-directories (`.codesmith/`, `.cursor/`, `.claude/`,
 /// `.agents/`) with gitignore disabled so their contents are discoverable
 /// even when the project's `.gitignore` / `.ignore` excludes them.
 #[allow(clippy::too_many_arguments)]
@@ -345,7 +345,7 @@ fn walk_always_discoverable_dirs(
                 break;
             }
             let path = entry.path();
-            // Exclude machine-generated bulk (e.g. .deepseek/snapshots/)
+            // Exclude machine-generated bulk (e.g. .codesmith/snapshots/)
             // even though gitignore is disabled for this walk.
             if path_is_excluded_from_discovery(walk_root, path) {
                 continue;
@@ -423,7 +423,7 @@ fn walk_for_completions(
     }
 
     // Also walk the AI-tool dot-directories with gitignore disabled so
-    // `.deepseek/`, `.cursor/`, etc. are always discoverable.
+    // `.codesmith/`, `.cursor/`, etc. are always discoverable.
     walk_always_discoverable_dirs(
         walk_root,
         display_root,
@@ -500,7 +500,7 @@ fn local_reference_paths(root: &Path, limit: usize, max_depth: Option<usize>) ->
     if let Some(depth) = max_depth {
         builder.max_depth(Some(depth));
     }
-    let _ = builder.add_custom_ignore_filename(".deepseekignore");
+    let _ = builder.add_custom_ignore_filename(".codesmithignore");
     let root_for_filter = root.to_path_buf();
     builder.filter_entry(move |entry| {
         !should_skip_unignored_discovery_entry(&root_for_filter, entry.path())
@@ -1521,13 +1521,13 @@ mod tests {
     #[test]
     fn workspace_completions_surface_explicit_hidden_and_ignored_paths() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(".gitignore"), ".deepseek/\n.generated/\n").unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), ".codesmith/\n.generated/\n").unwrap();
         std::fs::write(
-            tmp.path().join(".deepseekignore"),
+            tmp.path().join(".codesmithignore"),
             ".generated/specs/secrets.env\n",
         )
         .unwrap();
-        let deepseek_commands = tmp.path().join(".deepseek").join("commands");
+        let deepseek_commands = tmp.path().join(".codesmith").join("commands");
         let generated_specs = tmp.path().join(".generated").join("specs");
         std::fs::create_dir_all(&deepseek_commands).unwrap();
         std::fs::create_dir_all(&generated_specs).unwrap();
@@ -1537,11 +1537,11 @@ mod tests {
 
         let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()));
 
-        let start_entries = ws.completions(".deepseek/commands", 16);
+        let start_entries = ws.completions(".codesmith/commands", 16);
         assert!(
             start_entries
                 .iter()
-                .any(|e| e == ".deepseek/commands/start-task.md"),
+                .any(|e| e == ".codesmith/commands/start-task.md"),
             "expected explicitly addressed hidden command file in completions: {start_entries:?}",
         );
 
@@ -1556,7 +1556,7 @@ mod tests {
             !generated_entries
                 .iter()
                 .any(|e| e == ".generated/specs/secrets.env"),
-            ".deepseekignore entries must not be reintroduced by local fallback: {generated_entries:?}",
+            ".codesmithignore entries must not be reintroduced by local fallback: {generated_entries:?}",
         );
     }
 
@@ -1637,11 +1637,11 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_index_resolves_hidden_and_ignored_files_except_deepseekignored() {
+    fn fuzzy_index_resolves_hidden_and_ignored_files_except_codesmithignored() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join(".gitignore"), ".generated/\n").unwrap();
         std::fs::write(
-            tmp.path().join(".deepseekignore"),
+            tmp.path().join(".codesmithignore"),
             ".generated/specs/secrets.env\n",
         )
         .unwrap();
@@ -1656,7 +1656,7 @@ mod tests {
         assert!(resolved.ends_with(".generated/specs/device-layout.md"));
         assert!(
             ws.resolve("secrets.env").is_err(),
-            "basename fuzzy resolution must honor .deepseekignore"
+            "basename fuzzy resolution must honor .codesmithignore"
         );
         assert!(
             ws.resolve(".generated/specs/secrets.env").is_ok(),
@@ -1683,7 +1683,7 @@ mod tests {
     }
 
     /// Regression: `@`-mention completion must discover files inside
-    /// `.deepseek/`, `.cursor/`, `.claude/`, `.agents/` even when
+    /// `.codesmith/`, `.cursor/`, `.claude/`, `.agents/` even when
     /// those directories are excluded by `.gitignore` (or `.ignore`).
     /// The `discovery_walk_builder` override un-ignores them.
     #[test]
@@ -1695,13 +1695,13 @@ mod tests {
         // a project that gitignores its AI-tool dot-directories.
         std::fs::write(
             root.join(".ignore"),
-            ".deepseek/\n.cursor/\n.claude/\n.agents/\n",
+            ".codesmith/\n.cursor/\n.claude/\n.agents/\n",
         )
         .unwrap();
 
         // Create files inside each dot-dir.
-        std::fs::create_dir_all(root.join(".deepseek/commands")).unwrap();
-        std::fs::write(root.join(".deepseek/commands/build.md"), "build cmd").unwrap();
+        std::fs::create_dir_all(root.join(".codesmith/commands")).unwrap();
+        std::fs::write(root.join(".codesmith/commands/build.md"), "build cmd").unwrap();
         std::fs::create_dir_all(root.join(".cursor/commands")).unwrap();
         std::fs::write(root.join(".cursor/commands/run.md"), "run cmd").unwrap();
         std::fs::create_dir_all(root.join(".claude/commands")).unwrap();
@@ -1720,7 +1720,7 @@ mod tests {
             let entries = ws.completions("build", 16);
             assert!(
                 entries.iter().any(|e| e.contains("build.md")),
-                "expected build.md in completions although .deepseek/ is ignored; got: {entries:?}"
+                "expected build.md in completions although .codesmith/ is ignored; got: {entries:?}"
             );
         }
         {
@@ -1745,7 +1745,7 @@ mod tests {
         assert!(f2.ends_with("SKILL.md"));
     }
 
-    /// Regression: the dot-dir walk must NOT index `.deepseek/snapshots/`,
+    /// Regression: the dot-dir walk must NOT index `.codesmith/snapshots/`,
     /// which is the snapshot side repo that can grow to hundreds of GB.
     /// Indexing it would re-create the same OOM/hang that #1112 was built
     /// to prevent.
@@ -1755,16 +1755,16 @@ mod tests {
         let root = tmp.path();
 
         // Create a snapshot-like directory tree.
-        std::fs::create_dir_all(root.join(".deepseek/snapshots/deadbeef/deadbeef/.git/objects"))
+        std::fs::create_dir_all(root.join(".codesmith/snapshots/deadbeef/deadbeef/.git/objects"))
             .unwrap();
         std::fs::write(
-            root.join(".deepseek/snapshots/deadbeef/deadbeef/.git/objects/snapshot.pack"),
+            root.join(".codesmith/snapshots/deadbeef/deadbeef/.git/objects/snapshot.pack"),
             b"fake pack data",
         )
         .unwrap();
-        // Also create a legitimate file in .deepseek/ that should be found.
-        std::fs::create_dir_all(root.join(".deepseek/commands")).unwrap();
-        std::fs::write(root.join(".deepseek/commands/build.md"), "build cmd").unwrap();
+        // Also create a legitimate file in .codesmith/ that should be found.
+        std::fs::create_dir_all(root.join(".codesmith/commands")).unwrap();
+        std::fs::write(root.join(".codesmith/commands/build.md"), "build cmd").unwrap();
 
         let ws = Workspace::with_cwd(root.to_path_buf(), None);
 

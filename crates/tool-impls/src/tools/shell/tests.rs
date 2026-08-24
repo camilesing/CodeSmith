@@ -1167,7 +1167,10 @@ fn issue_1691_quoted_commit_message_round_trips() {
                 format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {cmd}")
             ]
         );
-    } else if matches!(dispatcher.kind(), codesmith_agent_runtime::shell_dispatcher::ShellKind::Cmd) {
+    } else if matches!(
+        dispatcher.kind(),
+        codesmith_agent_runtime::shell_dispatcher::ShellKind::Cmd
+    ) {
         assert_eq!(
             spec.args,
             ["/C".to_string(), format!("chcp 65001 >NUL & {cmd}")]

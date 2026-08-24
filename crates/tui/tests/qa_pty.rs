@@ -1,6 +1,6 @@
 //! End-to-end TUI scenarios driven through a real pseudo-terminal.
 //!
-//! Each scenario boots `deepseek-tui` in a sealed workspace + sealed `$HOME`,
+//! Each scenario boots `codesmith-tui` in a sealed workspace + sealed `$HOME`,
 //! sends scripted input through the PTY, and asserts on the parsed terminal
 //! frame and on the workspace filesystem. See `support/qa_harness/README.md`
 //! for design + how-to.
@@ -37,7 +37,7 @@ fn boot_minimal() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harne
 fn boot_minimal_without_retry() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
     let ws = make_sealed_workspace()?;
     std::fs::write(
-        ws.home().join(".deepseek").join("config.toml"),
+        ws.home().join(".codesmith").join("config.toml"),
         "[retry]\nenabled = false\n",
     )?;
     spawn_minimal(ws)
@@ -55,7 +55,7 @@ fn spawn_minimal(
         .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
         // Force a known base URL so the doctor / model probe never escapes
         // the box. 127.0.0.1:1 will refuse instantly.
-        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+        .env("CODESMITH_BASE_URL", "http://127.0.0.1:1")
         .env("RUST_LOG", "warn")
         .args([
             "--workspace",
@@ -93,7 +93,7 @@ fn assert_viewport_starts_at_top(frame: &qa_harness::Frame) {
         frame.row(0).contains("Plan")
             || frame.row(0).contains("Agent")
             || frame.row(0).contains("Yolo")
-            || frame.row(0).contains("DeepSeek"),
+            || frame.row(0).contains("CodeSmith"),
         "expected header content on row 0:\n{dump}"
     );
 }
@@ -181,7 +181,7 @@ fn skills_menu_shows_local_and_global_skills() -> anyhow::Result<()> {
         .cwd(ws.workspace())
         .seal_home(ws.home())
         .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
-        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+        .env("CODESMITH_BASE_URL", "http://127.0.0.1:1")
         .env("RUST_LOG", "warn")
         .args([
             "--workspace",

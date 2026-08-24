@@ -44,38 +44,20 @@ pub fn expand_pathbuf(path: PathBuf) -> PathBuf {
     path
 }
 
-/// Resolve the active config file path: `$CODESMITH_CONFIG_PATH` /
-/// `$DEEPSEEK_CONFIG_PATH` first, then the home-directory default.
+/// Resolve the active config file path: `$CODESMITH_CONFIG_PATH` first, then
+/// the home-directory default.
 pub fn default_config_path() -> Option<PathBuf> {
     env_config_path().or_else(home_config_path)
 }
 
-/// Home-directory config path (`~/.codesmith/config.toml`, falling back to the
-/// legacy `~/.deepseek/config.toml`).
+/// Home-directory config path (`~/.codesmith/config.toml`).
 pub fn home_config_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codesmith").join("config.toml");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("config.toml");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
+    effective_home_dir().map(|home| home.join(".codesmith").join("config.toml"))
 }
 
-/// Config path overridden via the `CODESMITH_CONFIG_PATH` / `DEEPSEEK_CONFIG_PATH`
-/// environment variables.
+/// Config path overridden via the `CODESMITH_CONFIG_PATH` environment variable.
 pub fn env_config_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("CODESMITH_CONFIG_PATH") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Some(expand_path(trimmed));
-        }
-    }
-    if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             return Some(expand_path(trimmed));

@@ -48,7 +48,7 @@ fn process_memory_file(
     depth: usize,
 ) -> Vec<(MemoryTier, String)>
 
-/// /etc/deepseek/CLAUDE.md on unix; home fallback mirroring
+/// /etc/codesmith/CLAUDE.md on unix; home fallback mirroring
 /// tui/config.rs:2532-2547 default_managed_config_path.
 fn load_managed_tier() -> Option<(MemoryTier, String)>
 

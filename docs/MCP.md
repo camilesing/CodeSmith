@@ -65,12 +65,12 @@ restart-required until the TUI is restarted.
 
 Default path:
 
-- `~/.codesmith/mcp.json` (`~/.deepseek/mcp.json` is still read when the CodeSmith file is absent)
+- `~/.codesmith/mcp.json` (`~/.codesmith/mcp.json` is still read when the CodeSmith file is absent)
 
 Overrides:
 
 - Config: `mcp_config_path = "/path/to/mcp.json"`
-- Env: `CODESMITH_MCP_CONFIG=/path/to/mcp.json` (legacy aliases `CODEWHALE_MCP_CONFIG` and `DEEPSEEK_MCP_CONFIG` are still accepted)
+- Env: `CODESMITH_MCP_CONFIG=/path/to/mcp.json` (the `CODEWHALE_MCP_CONFIG` alias is also accepted)
 
 `codesmith-tui mcp init` (and `codesmith-tui setup --mcp`) writes to this resolved path.
 

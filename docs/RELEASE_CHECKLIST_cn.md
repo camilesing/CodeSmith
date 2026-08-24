@@ -57,7 +57,7 @@ v0.8.21/v0.8.22 之间 CHANGELOG 的空档证明我们需要这样一份打标�
 
 - [ ] `cargo build --release --locked -p codesmith-cli -p codesmith-tui`
 - [ ] `node scripts/release/npm-wrapper-smoke.js`
-      （如需事后检查临时安装目录，请设置 `DEEPSEEK_TUI_KEEP_SMOKE_DIR=1`。）
+      （如需事后检查临时安装目录，请设置 `CODESMITH_KEEP_SMOKE_DIR=1`。）
 
 ## 5. 分支与 PR
 

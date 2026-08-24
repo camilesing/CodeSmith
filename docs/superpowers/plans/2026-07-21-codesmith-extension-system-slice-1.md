@@ -1954,7 +1954,7 @@ mod extension_seam_tests {
         // TurnEnd in order.
         // (Use the existing test helpers in host_executor.rs's test module
         // for mock client + tool construction — mirror the existing
-        // handle_deepseek_turn tests.)
+        // handle_codesmith_turn tests.)
         todo!("mirror existing mock-client test harness; assert seen == [ToolCall, ToolResult, TurnEnd]")
     }
 }

@@ -328,7 +328,8 @@ mod tests {
 
     fn init_git_repo(root: &Path) {
         let run = |args: &[&str]| {
-            let status = codesmith_agent_runtime::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codesmith_agent_runtime::dependencies::Git::status(args, root)
+                .expect("git should spawn");
             assert!(status.success(), "git {:?} failed", args);
         };
 
@@ -339,7 +340,8 @@ mod tests {
 
     fn commit_all(root: &Path, message: &str) {
         let run = |args: &[&str]| {
-            let status = codesmith_agent_runtime::dependencies::Git::status(args, root).expect("git should spawn");
+            let status = codesmith_agent_runtime::dependencies::Git::status(args, root)
+                .expect("git should spawn");
             assert!(status.success(), "git {:?} failed", args);
         };
         run(&["add", "."]);
@@ -428,7 +430,8 @@ mod tests {
         assert!(uncached.content.contains("lib.rs"));
 
         let _ =
-            codesmith_agent_runtime::dependencies::Git::status(&["add", "src/lib.rs"], tmp.path()).expect("git add");
+            codesmith_agent_runtime::dependencies::Git::status(&["add", "src/lib.rs"], tmp.path())
+                .expect("git add");
 
         let cached = tool
             .execute(json!({ "path": "src", "cached": true }), &ctx)

@@ -292,9 +292,11 @@ mod tests {
         registry.register(Arc::new(EchoFactory {
             id: ProviderId::from("deepseek"),
         }));
-        assert!(registry
-            .resolve(&ProviderId::Builtin(ProviderKind::Deepseek))
-            .is_some());
+        assert!(
+            registry
+                .resolve(&ProviderId::Builtin(ProviderKind::Deepseek))
+                .is_some()
+        );
     }
 
     #[test]
@@ -303,9 +305,11 @@ mod tests {
         registry.register(Arc::new(EchoFactory {
             id: ProviderId::from("acme-llm"),
         }));
-        assert!(registry
-            .resolve(&ProviderId::Custom("acme-llm".to_string()))
-            .is_some());
+        assert!(
+            registry
+                .resolve(&ProviderId::Custom("acme-llm".to_string()))
+                .is_some()
+        );
     }
 
     #[test]

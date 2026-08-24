@@ -249,8 +249,10 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
         .or_else(|| stripped.strip_prefix("sha_"))
         .unwrap_or(stripped)
         .trim();
-    if codesmith_agent_runtime::tools::truncate::is_valid_sha256(&sha_candidate.to_ascii_lowercase())
-        && let Some(p) = codesmith_agent_runtime::tools::truncate::sha_spillover_path(sha_candidate)
+    if codesmith_agent_runtime::tools::truncate::is_valid_sha256(
+        &sha_candidate.to_ascii_lowercase(),
+    ) && let Some(p) =
+        codesmith_agent_runtime::tools::truncate::sha_spillover_path(sha_candidate)
         && let Some(found) = try_path(p, &mut tried)
     {
         return Ok(found);
@@ -760,7 +762,8 @@ mod tests {
         let tmp = tempdir().unwrap();
         let root = tmp.path().join("tool_outputs");
         let _guard = set_spillover_root(root.clone());
-        codesmith_agent_runtime::tools::truncate::write_spillover("call-lines", "a\nb\nc\nd").unwrap();
+        codesmith_agent_runtime::tools::truncate::write_spillover("call-lines", "a\nb\nc\nd")
+            .unwrap();
 
         let result = execute_tool(json!({
             "ref": "call-lines.txt",
@@ -834,7 +837,11 @@ mod tests {
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
-        codesmith_agent_runtime::tools::truncate::write_spillover("call_xyz", "line1\nline2\nline3").unwrap();
+        codesmith_agent_runtime::tools::truncate::write_spillover(
+            "call_xyz",
+            "line1\nline2\nline3",
+        )
+        .unwrap();
 
         let result = execute_tool(json!({"ref": "art_call_xyz"})).unwrap();
         assert!(result.success, "art_ prefix should resolve to legacy id");
@@ -881,7 +888,12 @@ mod tests {
         };
         let session_id = "session-abc";
         let body = "this is the canonical session artifact body, not a legacy file";
-        codesmith_agent_runtime::artifacts::write_session_artifact(session_id, "art_call_real", body).unwrap();
+        codesmith_agent_runtime::artifacts::write_session_artifact(
+            session_id,
+            "art_call_real",
+            body,
+        )
+        .unwrap();
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

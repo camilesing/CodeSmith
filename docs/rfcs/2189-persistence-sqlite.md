@@ -4,7 +4,7 @@
 ### 1.1 `crates/state` — partial SQLite (rusqlite)
 
 **Backend**: SQLite via `rusqlite` (not sqlx).  
-**Path**: `~/.deepseek/state.db`  
+**Path**: `~/.codesmith/state.db`  
 **Tables**: `threads`, `thread_dynamic_tools`, `messages`, `checkpoints`, `jobs`  
 **Also**: `session_index.jsonl` — append-only JSONL for thread-name lookups.  
 **Schema versioning**: none — table shape is versioned implicitly by the binary.
@@ -13,9 +13,9 @@
 
 **Backend**: individual JSON files + atomic writes via `write_atomic`.  
 **Paths**:
-- `~/.codesmith/sessions/{id}.json` (preferred, v0.8.44+) or `~/.deepseek/sessions/{id}.json` (fallback)
-- `~/.deepseek/sessions/checkpoints/latest.json` — crash-recovery checkpoint
-- `~/.deepseek/sessions/checkpoints/offline_queue.json` — offline/degraded-mode queue
+- `~/.codesmith/sessions/{id}.json` (preferred, v0.8.44+) or `~/.codesmith/sessions/{id}.json` (fallback)
+- `~/.codesmith/sessions/checkpoints/latest.json` — crash-recovery checkpoint
+- `~/.codesmith/sessions/checkpoints/offline_queue.json` — offline/degraded-mode queue
 
 **Schema constants**:
 - `CURRENT_SESSION_SCHEMA_VERSION: u32 = 1` (`SavedSession`)
@@ -26,7 +26,7 @@
 ### 1.3 `crates/tui/src/runtime_threads.rs` — JSON runtime store
 
 **Backend**: per-record JSON files + append-only JSONL for events.  
-**Paths** (under `~/.deepseek/tasks/runtime/` or `DEEPSEEK_RUNTIME_DIR`):
+**Paths** (under `~/.codesmith/tasks/runtime/` or `CODESMITH_RUNTIME_DIR`):
 - `threads/{id}.json`
 - `turns/{id}.json`
 - `items/{id}.json`
@@ -41,7 +41,7 @@
 ### 1.4 `crates/tui/src/task_manager.rs` — JSON task store
 
 **Backend**: per-record JSON files + atomic writes.  
-**Paths** (under `~/.deepseek/tasks/` or `DEEPSEEK_TASKS_DIR`):
+**Paths** (under `~/.codesmith/tasks/` or `CODESMITH_TASKS_DIR`):
 - `{id}.json` — per-task records
 - `queue.json` — queue state
 
@@ -53,7 +53,7 @@
 ### 1.5 `crates/tui/src/automation_manager.rs` — JSON automation store
 
 **Backend**: per-record JSON files.  
-**Paths** (under `~/.deepseek/automations/` or `DEEPSEEK_AUTOMATIONS_DIR`):
+**Paths** (under `~/.codesmith/automations/` or `CODESMITH_AUTOMATIONS_DIR`):
 - `{id}.json`
 
 **Schema constants**:
@@ -62,7 +62,7 @@
 ### 1.6 `crates/tui/src/audit.rs` — JSONL audit log
 
 **Backend**: append-only JSONL with fsync after each event.  
-**Path**: `~/.deepseek/audit.log`  
+**Path**: `~/.codesmith/audit.log`  
 **Schema**: no version field — each line is a `{"ts", "event", "details"}` blob.
 
 ### 1.7 Summary of issues

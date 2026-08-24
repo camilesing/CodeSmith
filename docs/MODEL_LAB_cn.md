@@ -6,7 +6,7 @@ Model Lab 是 CodeSmith 规划中的开放模型工作台。北极星目标很�
 
 ## 当前已实现
 
-- DeepSeek 是当前的一等默认 provider，提供 `deepseek-v4-pro`、`deepseek-v4-flash`、流式思考块、Fin 路由、`DEEPSEEK_*` 环境变量以及 `~/.deepseek` 配置兼容。
+- DeepSeek 是当前的一等默认 provider，提供 `deepseek-v4-pro`、`deepseek-v4-flash`、流式思考块、Fin 路由、`CODESMITH_*` 环境变量以及 `~/.codesmith` 配置兼容。
 - OpenRouter、Novita、Fireworks、NVIDIA NIM、AtlasCloud、万界方舟（Wanjie Ark）、通用 OpenAI 兼容端点、SGLang、vLLM 和 Ollama 是受支持的 provider 路径，前提是它们的 ID 出现在 `/provider`、`codesmith --provider` 或 `codesmith models` 中。
 - 模型自动路由会为每个对话轮选择具体的 DeepSeek 模型和思考级别。它不是 TUI 模式。
 - Fin 是快速的 `deepseek-v4-flash` 关闭思考路径，用于路由、摘要、廉价检查、RLM 子调用、唤醒验证和二进制完成检查。
@@ -105,7 +105,7 @@ Model Lab 应当帮助用户回答这些实际问题：
 
 - 本地文件、提示词、对话记录、trace、模型输出、评测结果、adapter、数据集和
   checkpoint 应保持本地，除非用户显式选择某个 provider 或导出目的地。
-- Provider 认证必须保持显式。`DEEPSEEK_*`、OpenRouter、Hugging Face 和自托管
+- Provider 认证必须保持显式。`CODESMITH_*`、OpenRouter、Hugging Face 和自托管
   的凭据不应从无关的配置中推断。
 - 可导出的产物应包含来源信息：源模型、provider、路由、工具策略、评测输入和
   脱敏状态。

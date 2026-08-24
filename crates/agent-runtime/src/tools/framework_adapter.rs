@@ -249,8 +249,10 @@ mod tests {
             let next = self.calls.lock().unwrap().pop_front();
             Box::pin(async move {
                 let events = next.unwrap_or_default();
-                Ok(Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
-                    as StreamEventBox)
+                Ok(
+                    Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
+                        as StreamEventBox,
+                )
             })
         }
     }
@@ -343,9 +345,7 @@ mod tests {
         assert_eq!(history.len(), 4);
         match &history.messages()[2].content[0] {
             ContentBlock::ToolResult {
-                content,
-                is_error,
-                ..
+                content, is_error, ..
             } => {
                 assert!(
                     content.starts_with(&workspace_stamp),

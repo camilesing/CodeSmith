@@ -75,7 +75,7 @@ impl<'a> PtySessionBuilder<'a> {
 
     /// Wipe the inherited environment before applying explicit `env(..)`
     /// overrides. Use for sealed scenarios that must not see the developer's
-    /// real `~/.deepseek/`, `$HOME`, or API keys.
+    /// real `~/.codesmith/`, `$HOME`, or API keys.
     pub fn clear_env(mut self, yes: bool) -> Self {
         self.clear_env = yes;
         self

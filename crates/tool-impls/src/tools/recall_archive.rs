@@ -21,12 +21,12 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use codesmith_agent_runtime::cycle_manager::open_archive;
+use codesmith_agent_runtime::models::{ContentBlock, Message};
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_u64, required_str,
 };
-use codesmith_agent_runtime::cycle_manager::open_archive;
-use codesmith_agent_runtime::models::{ContentBlock, Message};
 
 const DEFAULT_MAX_RESULTS: usize = 3;
 const HARD_MAX_RESULTS: usize = 10;
@@ -406,9 +406,9 @@ fn align_char_boundary(text: &str, mut idx: usize, walk_right: bool) -> usize {
 mod tests {
     #![allow(unsafe_code)]
     use super::*;
+    use chrono::Utc;
     use codesmith_agent_runtime::cycle_manager::archive_cycle;
     use codesmith_agent_runtime::models::{ContentBlock, Message};
-    use chrono::Utc;
     use tempfile::TempDir;
 
     fn user_msg(text: &str) -> Message {

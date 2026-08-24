@@ -38,11 +38,11 @@ test("parseEnvText handles comments, export, and quoted values", () => {
     parseEnvText(`
       # ignored
       export FEISHU_DOMAIN="lark"
-      DEEPSEEK_WORKSPACE='/opt/whalebro'
+      CODESMITH_WORKSPACE='/opt/whalebro'
     `),
     {
       FEISHU_DOMAIN: "lark",
-      DEEPSEEK_WORKSPACE: "/opt/whalebro"
+      CODESMITH_WORKSPACE: "/opt/whalebro"
     }
   );
 });
@@ -181,11 +181,11 @@ test("validateBridgeConfig accepts locked-down whalebro DM config", () => {
       FEISHU_APP_ID: "cli_valid",
       FEISHU_APP_SECRET: "secret",
       FEISHU_DOMAIN: "lark",
-      DEEPSEEK_RUNTIME_URL: "http://127.0.0.1:7878",
-      DEEPSEEK_RUNTIME_TOKEN: "token-a",
-      DEEPSEEK_WORKSPACE: "/opt/whalebro",
-      DEEPSEEK_CHAT_ALLOWLIST: "oc_allowed",
-      DEEPSEEK_ALLOW_UNLISTED: "false",
+      CODESMITH_RUNTIME_URL: "http://127.0.0.1:7878",
+      CODESMITH_RUNTIME_TOKEN: "token-a",
+      CODESMITH_WORKSPACE: "/opt/whalebro",
+      CODESMITH_CHAT_ALLOWLIST: "oc_allowed",
+      CODESMITH_ALLOW_UNLISTED: "false",
       FEISHU_THREAD_MAP_PATH: "/var/lib/codesmith-feishu-bridge/thread-map.json",
       FEISHU_ALLOW_GROUPS: "false",
       FEISHU_REQUIRE_PREFIX_IN_GROUP: "true"
@@ -193,9 +193,9 @@ test("validateBridgeConfig accepts locked-down whalebro DM config", () => {
     {
       workspaceRoot: "/opt/whalebro",
       runtimeEnv: {
-        DEEPSEEK_RUNTIME_TOKEN: "token-a",
+        CODESMITH_RUNTIME_TOKEN: "token-a",
         DEEPSEEK_API_KEY: "sk-valid",
-        DEEPSEEK_RUNTIME_PORT: "7878"
+        CODESMITH_RUNTIME_PORT: "7878"
       }
     }
   );
@@ -209,10 +209,10 @@ test("validateBridgeConfig rejects unsafe group pairing and token mismatch", () 
       FEISHU_APP_ID: "cli_valid",
       FEISHU_APP_SECRET: "secret",
       FEISHU_DOMAIN: "feishu",
-      DEEPSEEK_RUNTIME_URL: "http://127.0.0.1:7878",
-      DEEPSEEK_RUNTIME_TOKEN: "bridge-token",
-      DEEPSEEK_WORKSPACE: "/opt/whalebro",
-      DEEPSEEK_ALLOW_UNLISTED: "true",
+      CODESMITH_RUNTIME_URL: "http://127.0.0.1:7878",
+      CODESMITH_RUNTIME_TOKEN: "bridge-token",
+      CODESMITH_WORKSPACE: "/opt/whalebro",
+      CODESMITH_ALLOW_UNLISTED: "true",
       FEISHU_THREAD_MAP_PATH: "/var/lib/codesmith-feishu-bridge/thread-map.json",
       FEISHU_ALLOW_GROUPS: "true",
       FEISHU_REQUIRE_PREFIX_IN_GROUP: "false"
@@ -220,7 +220,7 @@ test("validateBridgeConfig rejects unsafe group pairing and token mismatch", () 
     {
       workspaceRoot: "/opt/whalebro",
       runtimeEnv: {
-        DEEPSEEK_RUNTIME_TOKEN: "runtime-token",
+        CODESMITH_RUNTIME_TOKEN: "runtime-token",
         DEEPSEEK_API_KEY: "replace-with-deepseek-platform-key"
       }
     }
