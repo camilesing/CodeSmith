@@ -49,15 +49,15 @@ reqwest = { version = "0.13.1", default-features = false, features = ["json", "r
 # unifies with the workspace `reqwest 0.13.x` (Cargo merges features into one
 # build). `derive` is off — CodeSmith keeps its own `Tool`/`LlmClient` traits
 # (Strategy A: rig is one swappable impl, not the framework vocabulary).
-rig-core = { version = "0.39", default-features = false, features = ["reqwest", "rustls"] }
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rig-core = { version = "0.42", default-features = false, features = ["reqwest", "rustls"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 semver = "1.0.28"
 thiserror = "2.0"
 tokio = { version = "1.49.0", features = ["full"] }
-toml = "0.9.7"
-sha2 = "0.10"
+toml = "1.0.6"
+sha2 = "0.11"
 ignore = "0.4"
 # ripgrep engine crates: `grep_files` walks with `ignore` and matches with
 # `grep-regex`/`grep-matcher` so tool search gets ripgrep semantics
@@ -67,13 +67,13 @@ grep-matcher = "0.1"
 # tree-sitter: grammars bundle their own C sources and depend only on the
 # stable `tree-sitter-language` ABI crate, so grammar versions float
 # independently of the core crate pinned here.
-tree-sitter = "0.25"
+tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
 tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-go = "0.25"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
