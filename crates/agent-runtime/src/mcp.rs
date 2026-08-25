@@ -3442,6 +3442,7 @@ fn mcp_template_json() -> Result<String> {
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
+            oauth: None,
         },
     );
     serde_json::to_string_pretty(&cfg).context("Failed to render MCP template JSON")
@@ -3497,6 +3498,7 @@ pub fn add_server_config(
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
+            oauth: None,
         },
     );
     save_config(path, &cfg)
@@ -3913,6 +3915,7 @@ mod tests {
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
+            oauth: None,
         };
         let serialized = serde_json::to_string(&cfg).unwrap();
         assert!(
@@ -4007,6 +4010,7 @@ mod tests {
             client,
             "https://example.invalid/mcp".to_string(),
             headers.clone(),
+            None,
         );
         assert_eq!(transport.headers, headers);
     }
@@ -4156,6 +4160,7 @@ mod tests {
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
+            oauth: None,
         };
 
         assert_eq!(server_with_override.effective_connect_timeout(&global), 20);
@@ -4269,6 +4274,7 @@ mod tests {
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
+            oauth: None,
         }
     }
 
@@ -4439,6 +4445,7 @@ mod tests {
                 enabled_tools: Vec::new(),
                 disabled_tools: Vec::new(),
                 headers: HashMap::new(),
+            oauth: None,
             },
         );
         assert_ne!(
@@ -5064,6 +5071,7 @@ mod tests {
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: HashMap::new(),
+            oauth: None,
         };
 
         let conn = McpConnection::connect_with_policy(
@@ -5328,6 +5336,7 @@ mod tests {
             HashMap::new(),
             cancel_token.clone(),
             Duration::from_secs(2),
+            None,
         )
         .await
         .unwrap();
@@ -5419,6 +5428,7 @@ mod tests {
             HashMap::new(),
             cancel_token.clone(),
             Duration::from_secs(2),
+            None,
         )
         .await
         .unwrap();
@@ -5521,6 +5531,7 @@ mod tests {
             headers,
             cancel_token.clone(),
             Duration::from_secs(2),
+            None,
         )
         .await
         .unwrap();
@@ -5610,6 +5621,7 @@ mod tests {
             HashMap::new(),
             cancel_token.clone(),
             Duration::from_secs(2),
+            None,
         )
         .await
         .unwrap();
@@ -5786,6 +5798,7 @@ mod tests {
                 enabled_tools: Vec::new(),
                 disabled_tools: Vec::new(),
                 headers: HashMap::new(),
+            oauth: None,
             },
         );
         let mut pool = McpPool::new(cfg);
@@ -5848,6 +5861,7 @@ mod tests {
             client: reqwest::Client::new(),
             base_url: format!("http://{addr}/sse"),
             headers: HashMap::new(),
+            oauth: None,
             endpoint_url: Some(format!("http://{addr}/messages")),
             receiver,
             pending_messages: VecDeque::new(),
@@ -6043,6 +6057,7 @@ mod tests {
                 enabled_tools: Vec::new(),
                 disabled_tools: Vec::new(),
                 headers: HashMap::new(),
+            oauth: None,
             },
         );
         let mut pool = McpPool::new(cfg);
@@ -6072,6 +6087,7 @@ mod tests {
             reqwest::Client::new(),
             "https://example.invalid/mcp".to_string(),
             HashMap::new(),
+            None,
         );
         assert!(transport.session_id.is_none());
     }
@@ -6120,7 +6136,8 @@ mod tests {
 
         let client = reqwest::Client::new();
         let url = format!("http://{addr}/mcp");
-        let mut transport = StreamableHttpTransport::new(client, url, HashMap::new());
+        let mut transport =
+            StreamableHttpTransport::new(client, url, HashMap::new(), None);
 
         // First send: server returns Mcp-Session-Id.
         transport
@@ -6196,6 +6213,7 @@ mod tests {
             headers,
             tokio_util::sync::CancellationToken::new(),
             Duration::from_secs(10),
+            None,
         );
 
         transport.try_establish_session().await.unwrap();

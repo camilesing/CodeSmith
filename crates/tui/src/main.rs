@@ -731,6 +731,15 @@ enum McpCommand {
         #[arg(value_name = "SERVER")]
         server: Option<String>,
     },
+    /// Run the OAuth device flow for a server and store the token
+    #[command(
+        long_about = "Authorize an MCP server via the OAuth device flow.\n\nRequires an `oauth` table on the server entry in mcp.json (provider, client_id, optional scopes).\nThe token is stored in the system keyring (or the permissioned-file fallback) and injected as the\nAuthorization header on every request to that server."
+    )]
+    Auth {
+        /// Server name in mcp.json
+        #[arg(value_name = "SERVER")]
+        server: String,
+    },
     /// List tools discovered from MCP servers
     Tools {
         /// Optional server name to list tools for
@@ -1561,6 +1570,7 @@ fn mcp_template_json() -> Result<String> {
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: std::collections::HashMap::new(),
+oauth: None,
         },
     );
     serde_json::to_string_pretty(&cfg)
@@ -4366,6 +4376,27 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
             }
             Ok(())
         }
+        McpCommand::Auth { server } => {
+            let cfg = load_mcp_config(&config_path)?;
+            let Some(entry) = cfg.servers.get(&server) else {
+                anyhow::bail!(
+                    "MCP server '{server}' not found in {}",
+                    config_path.display()
+                );
+            };
+            let Some(oauth) = &entry.oauth else {
+                anyhow::bail!(
+                    "MCP server '{server}' has no `oauth` table in {}; add provider/client_id first",
+                    config_path.display()
+                );
+            };
+            let client = reqwest::Client::new();
+            let secrets = codesmith_agent_runtime::mcp_oauth::default_secrets();
+            codesmith_agent_runtime::mcp_oauth::run_device_flow(&client, &secrets, &server, oauth)
+                .await?;
+            println!("Reconnect with `codesmith mcp connect {server}` to use it.");
+            Ok(())
+        }
         McpCommand::Tools { server } => {
             let mut pool = McpPool::from_config_path(&config_path)?;
             if let Some(name) = server {
@@ -4435,6 +4466,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                     enabled_tools: Vec::new(),
                     disabled_tools: Vec::new(),
                     headers: std::collections::HashMap::new(),
+oauth: None,
                 },
             );
             save_mcp_config(&config_path, &cfg)?;
@@ -4522,6 +4554,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                     enabled_tools: Vec::new(),
                     disabled_tools: Vec::new(),
                     headers: std::collections::HashMap::new(),
+oauth: None,
                 },
             );
             save_mcp_config(&config_path, &cfg)?;
@@ -7686,6 +7719,7 @@ mod doctor_mcp_tests {
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
             headers: std::collections::HashMap::new(),
+oauth: None,
         }
     }
 

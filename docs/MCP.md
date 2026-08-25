@@ -214,6 +214,63 @@ Per-server settings:
 - `required` (bool, optional): startup/connect validation fails if this server cannot initialize.
 - `enabled_tools` (array, optional): allowlist of tool names for this server.
 - `disabled_tools` (array, optional): denylist applied after `enabled_tools`.
+- `oauth` (object, optional): OAuth device-flow configuration for URL servers; see [OAuth](#oauth) below.
+
+## OAuth
+
+URL-based MCP servers that require user OAuth (e.g. GitHub) can be authorized
+with a device flow instead of pasting a long-lived token into `headers`.
+
+Add an `oauth` table to the server entry in `mcp.json`:
+
+```jsonc
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "oauth": {
+        "provider": "github",
+        "client_id": "<your OAuth app client id>",
+        "scopes": ["repo"]
+      }
+    }
+  }
+}
+```
+
+Fields:
+
+- `provider` (string, required): `github` fills the standard GitHub device-code
+  and token endpoints. Any other value is treated as a custom provider and
+  requires explicit `device_code_url` and `token_url`.
+- `client_id` (string, required).
+- `scopes` (array of strings, optional): space-joined into the device-flow
+  `scope` parameter.
+- `device_code_url` / `token_url` (string, optional): custom endpoints for
+  non-GitHub providers.
+
+Then authorize once:
+
+```console
+$ codesmith mcp auth github
+Authorization required for MCP server `github` (github).
+  1. Open:  https://github.com/login/device
+  2. Code:  ABCD-1234   (expires in 900s)
+Waiting for authorization…
+Authorization stored for MCP server `github`.
+```
+
+Behavior:
+
+- The token is stored via `codesmith-secrets` — the system keyring when
+  available, otherwise the permissioned-file fallback under
+  `~/.codesmith/secrets/`. It never lands in `mcp.json`.
+- On connect, the stored token is injected as the `Authorization: Bearer`
+  header unless `headers` already carries one. The HTTP transports refresh it
+  once via the refresh-token grant when the server answers 401. A
+  user-configured `headers.Authorization` always wins and is never overwritten.
+- Stdio servers ignore `oauth` — pass credentials via their `env` table.
+- Out of scope: PKCE/redirect flows and client-credentials grants.
 
 ## Feature Flag
 
