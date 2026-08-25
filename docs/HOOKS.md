@@ -89,6 +89,9 @@ Field notes:
 | `task_created` | — | when the task manager creates a task | observer |
 | `task_completed` | — | when a tracked task completes | observer |
 | `pre_compact` | — | before context compaction (manual, auto, or emergency) | **stdout is preserved context** |
+| `turn_end` | — | after a turn completes (completed / interrupted / failed) | observer |
+| `subagent_spawn` | — | when a sub-agent starts | observer |
+| `subagent_complete` | — | when a sub-agent finishes | observer |
 
 Details per group:
 
@@ -114,6 +117,15 @@ Details per group:
   non-background hook's stdout is concatenated (separated by `---` rules)
   and merged into the compaction summary, so material you print survives
   summarization. Failures are non-blocking: compaction always proceeds.
+- **`turn_end`** fires from the TUI's turn-complete handler after app state,
+  usage, cost, notifications, and receipt state have been updated. The
+  stdin payload carries the turn status (`completed` / `interrupted` /
+  `failed`) and usage. Failures are warn-only; the hook cannot alter turn
+  state. `stop_hook_active` is always `false` today.
+- **Sub-agents.** `subagent_spawn` / `subagent_complete` fire when a
+  sub-agent starts or finishes. The payload carries `agent_id` and a
+  bounded `summary` — never the full prompt/result. Failures are warn-only
+  and never affect the sub-agent lifecycle.
 
 ## Conditions
 
@@ -186,8 +198,9 @@ the event context. Unset fields are simply absent from the environment.
 
 ### stdin
 
-Only two events deliver structured JSON on stdin; all other events run with
-no stdin.
+Only structured-stdin events (`message_submit`, `pre_compact`, `turn_end`,
+`subagent_spawn`, `subagent_complete`) receive JSON on stdin; all other
+events run with no stdin.
 
 `message_submit` receives:
 
@@ -215,6 +228,42 @@ event key and no `text` field:
   "workspace": "/path/to/workspace",
   "model": "deepseek-chat",
   "total_tokens": 1234
+}
+```
+
+`turn_end` receives the same envelope plus turn status and usage:
+
+```json
+{
+  "hook_event_name": "turn_end",
+  "session_id": "sess_12345678",
+  "thread_id": "thread-abc",
+  "workspace": "/path/to/workspace",
+  "mode": "agent",
+  "model": "deepseek-chat",
+  "status": "completed",
+  "input_tokens": 120,
+  "output_tokens": 80,
+  "total_tokens": 1234,
+  "session_cost": 0.0123,
+  "duration_secs": 14.5,
+  "stop_hook_active": false
+}
+```
+
+`subagent_spawn` / `subagent_complete` receive the same envelope plus the
+agent id and a bounded summary (truncated, never the full prompt/result):
+
+```json
+{
+  "hook_event_name": "subagent_spawn",
+  "session_id": "sess_12345678",
+  "thread_id": "thread-abc",
+  "workspace": "/path/to/workspace",
+  "mode": "agent",
+  "model": "deepseek-chat",
+  "agent_id": "agent_7",
+  "summary": "research the repo for RFC references"
 }
 ```
 
@@ -306,9 +355,6 @@ the facts you want to survive summarization.
   for the HTTP API server). Lifecycle hooks live under `[hooks]` only.
 - **Not the extension system.** For in-process Rust extensions with an
   event bus, see [docs/EXTENSIONS.md](EXTENSIONS.md).
-- `turn_end`, `subagent_spawn`, and `subagent_complete` hook events are
-  drafted in [docs/rfcs/1364-hooks-lifecycle.md](rfcs/1364-hooks-lifecycle.md)
-  but not yet implemented.
 
 ## Recipes
 

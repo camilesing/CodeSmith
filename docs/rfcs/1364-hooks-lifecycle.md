@@ -1,7 +1,7 @@
 # RFC: Hook Lifecycle Data Flow
 
 **Issue:** #1364
-**Status:** Draft
+**Status:** Implemented (PR1 2026-06, PR2 + PR3 2026-08)
 **Date:** 2026-05-28
 
 ## 1. Problem

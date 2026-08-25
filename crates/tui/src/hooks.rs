@@ -476,6 +476,137 @@ impl HookExecutor {
         preserved
     }
 
+    /// Run configured `turn_end` hooks as observers (#1364 PR2).
+    ///
+    /// Fires from the TUI's `EngineEvent::TurnComplete` branch after core app
+    /// state, usage, cost, notifications, and receipt state have been updated.
+    /// Hooks receive the turn metadata on stdin as JSON; their stdout is
+    /// ignored and failures are warn-only — a hook can never alter turn
+    /// state. `stop_hook_active` is always `false` today; the field reserves
+    /// the re-entry-protection contract should `turn_end` ever gain the
+    /// ability to resume a turn.
+    pub fn execute_turn_end_hook(
+        &self,
+        context: &HookContext,
+        status: &str,
+        input_tokens: u32,
+        output_tokens: u32,
+        duration_secs: f64,
+    ) {
+        if !self.config.enabled {
+            return;
+        }
+        let hooks = self.config.hooks_for_event(HookEvent::TurnEnd);
+        if hooks.is_empty() {
+            return;
+        }
+
+        for hook in hooks {
+            if !self.matches_condition(hook, context) {
+                continue;
+            }
+            let env_vars = context.to_env_vars();
+            if hook.background {
+                let _ = self.execute_background(hook, &env_vars);
+                continue;
+            }
+
+            let payload = serde_json::json!({
+                "hook_event_name": "turn_end",
+                "session_id": context.session_id,
+                "thread_id": context.thread_id,
+                "workspace": context.workspace.as_ref().map(|p| p.display().to_string()),
+                "mode": context.mode,
+                "model": context.model,
+                "status": status,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": context.total_tokens,
+                "session_cost": context.session_cost,
+                "duration_secs": duration_secs,
+                "stop_hook_active": false,
+            });
+            let result = self.execute_sync_with_stdin(hook, &env_vars, &payload);
+
+            if !result.success {
+                tracing::warn!(
+                    target: "hooks",
+                    hook = result.name.as_deref().unwrap_or("(unnamed)"),
+                    event = "turn_end",
+                    exit_code = ?result.exit_code,
+                    duration_ms = result.duration.as_millis() as u64,
+                    error = result.error.as_deref().unwrap_or(""),
+                    stderr_head = %result.stderr.lines().next().unwrap_or(""),
+                    "turn_end hook failed; ignored (observer-only)"
+                );
+            }
+        }
+    }
+
+    /// Run a subagent lifecycle hook (`subagent_spawn` / `subagent_complete`)
+    /// as an observer (#1364 PR3).
+    ///
+    /// Fires from the TUI's `EngineEvent::AgentSpawned` / `AgentComplete`
+    /// branches. The payload carries the agent id and a bounded summary —
+    /// never the full prompt/result, which can contain unbounded or secret
+    /// content. Failures are warn-only and never affect the subagent
+    /// lifecycle.
+    pub fn execute_subagent_hook(
+        &self,
+        event: HookEvent,
+        context: &HookContext,
+        agent_id: &str,
+        summary: &str,
+    ) {
+        debug_assert!(matches!(
+            event,
+            HookEvent::SubagentSpawn | HookEvent::SubagentComplete
+        ));
+        if !self.config.enabled {
+            return;
+        }
+        let hooks = self.config.hooks_for_event(event);
+        if hooks.is_empty() {
+            return;
+        }
+
+        for hook in hooks {
+            if !self.matches_condition(hook, context) {
+                continue;
+            }
+            let env_vars = context.to_env_vars();
+            if hook.background {
+                let _ = self.execute_background(hook, &env_vars);
+                continue;
+            }
+
+            let payload = serde_json::json!({
+                "hook_event_name": event.as_str(),
+                "session_id": context.session_id,
+                "thread_id": context.thread_id,
+                "workspace": context.workspace.as_ref().map(|p| p.display().to_string()),
+                "mode": context.mode,
+                "model": context.model,
+                "agent_id": agent_id,
+                "summary": summary,
+            });
+            let result = self.execute_sync_with_stdin(hook, &env_vars, &payload);
+
+            if !result.success {
+                tracing::warn!(
+                    target: "hooks",
+                    hook = result.name.as_deref().unwrap_or("(unnamed)"),
+                    event = event.as_str(),
+                    exit_code = ?result.exit_code,
+                    duration_ms = result.duration.as_millis() as u64,
+                    error = result.error.as_deref().unwrap_or(""),
+                    stderr_head = %result.stderr.lines().next().unwrap_or(""),
+                    "subagent lifecycle hook failed; ignored (observer-only)"
+                );
+            }
+        }
+    }
+
     /// Run every `ShellEnv` hook for this context and merge their stdout
     /// (`KEY=VALUE\n` lines) into a single env-var map. Used by the
     /// `exec_shell` tool to inject ephemeral credentials, per-skill PATH
@@ -1511,6 +1642,194 @@ esac
         assert_eq!(
             executor.execute_pre_compact_hook(&submit_context(&dir)),
             None
+        );
+    }
+
+    #[test]
+    fn turn_end_hook_without_configured_hooks_is_noop() {
+        let executor = HookExecutor::new(HooksConfig::default(), PathBuf::from("."));
+
+        executor.execute_turn_end_hook(&HookContext::new(), "completed", 1, 2, 0.5);
+    }
+
+    #[test]
+    fn turn_end_hook_disabled_when_global_enabled_false() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = write_hook_script(&dir, "never.sh", "printf 'x' > turn_end_out.txt");
+        let config = HooksConfig {
+            enabled: false,
+            hooks: vec![Hook::new(HookEvent::TurnEnd, &command)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        executor.execute_turn_end_hook(&HookContext::new(), "completed", 1, 2, 0.5);
+
+        assert!(!dir.path().join("turn_end_out.txt").exists());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn turn_end_hook_receives_stdin_payload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Validate the structured payload pair-by-pair (key order agnostic)
+        // and record the verdict in a file — turn_end is observer-only, so
+        // there is no stdout contract to assert on.
+        let command = write_hook_script(
+            &dir,
+            "payload.sh",
+            r#"#!/bin/sh
+payload=$(cat)
+ok=1
+case "$payload" in *'"hook_event_name":"turn_end"'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"status":"interrupted"'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"stop_hook_active":false'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"input_tokens":120'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"output_tokens":80'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"session_id":"sess_test"'*) ;; *) ok=0 ;; esac
+if [ "$ok" = 1 ]; then printf 'ok' > turn_end_out.txt; else printf '%s' "$payload" > turn_end_out.txt; fi
+"#,
+        );
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::TurnEnd, &command).with_timeout(10)],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        executor.execute_turn_end_hook(&submit_context(&dir), "interrupted", 120, 80, 1.25);
+
+        let verdict = std::fs::read_to_string(dir.path().join("turn_end_out.txt"))
+            .expect("hook wrote its verdict");
+        assert_eq!(verdict, "ok");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn turn_end_hook_failure_is_warn_only_and_later_hooks_still_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bad = write_hook_script(&dir, "bad.sh", "exit 3");
+        let marker = write_hook_script(&dir, "marker.sh", "printf 'ran' > marker.txt");
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![
+                Hook::new(HookEvent::TurnEnd, &bad).with_timeout(10),
+                Hook::new(HookEvent::TurnEnd, &marker).with_timeout(10),
+            ],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        // Must not panic, and the hook after the failing one still runs.
+        executor.execute_turn_end_hook(&submit_context(&dir), "failed", 0, 0, 0.0);
+
+        let marker = std::fs::read_to_string(dir.path().join("marker.txt"))
+            .expect("second hook ran despite first failing");
+        assert_eq!(marker, "ran");
+    }
+
+    #[test]
+    fn subagent_hooks_without_configured_hooks_are_noop() {
+        let executor = HookExecutor::new(HooksConfig::default(), PathBuf::from("."));
+
+        executor.execute_subagent_hook(
+            HookEvent::SubagentSpawn,
+            &HookContext::new(),
+            "agent_1",
+            "starting",
+        );
+        executor.execute_subagent_hook(
+            HookEvent::SubagentComplete,
+            &HookContext::new(),
+            "agent_1",
+            "done",
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn subagent_hooks_receive_stdin_payload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let spawn = write_hook_script(
+            &dir,
+            "spawn.sh",
+            r#"#!/bin/sh
+payload=$(cat)
+ok=1
+case "$payload" in *'"hook_event_name":"subagent_spawn"'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"agent_id":"agent_7"'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"summary":"research the repo"'*) ;; *) ok=0 ;; esac
+if [ "$ok" = 1 ]; then printf 'ok' > spawn_out.txt; else printf '%s' "$payload" > spawn_out.txt; fi
+"#,
+        );
+        let complete = write_hook_script(
+            &dir,
+            "complete.sh",
+            r#"#!/bin/sh
+payload=$(cat)
+ok=1
+case "$payload" in *'"hook_event_name":"subagent_complete"'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"agent_id":"agent_7"'*) ;; *) ok=0 ;; esac
+case "$payload" in *'"summary":"found 3 issues"'*) ;; *) ok=0 ;; esac
+if [ "$ok" = 1 ]; then printf 'ok' > complete_out.txt; else printf '%s' "$payload" > complete_out.txt; fi
+"#,
+        );
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![
+                Hook::new(HookEvent::SubagentSpawn, &spawn).with_timeout(10),
+                Hook::new(HookEvent::SubagentComplete, &complete).with_timeout(10),
+            ],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        executor.execute_subagent_hook(
+            HookEvent::SubagentSpawn,
+            &submit_context(&dir),
+            "agent_7",
+            "research the repo",
+        );
+        executor.execute_subagent_hook(
+            HookEvent::SubagentComplete,
+            &submit_context(&dir),
+            "agent_7",
+            "found 3 issues",
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("spawn_out.txt")).expect("spawn verdict"),
+            "ok"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("complete_out.txt")).expect("complete verdict"),
+            "ok"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn subagent_hook_failure_is_warn_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bad = write_hook_script(&dir, "bad.sh", "exit 4");
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::SubagentComplete, &bad).with_timeout(10)],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        // Observer-only: a failing hook must never affect the lifecycle —
+        // the call returns without panicking and nothing is propagated.
+        executor.execute_subagent_hook(
+            HookEvent::SubagentComplete,
+            &submit_context(&dir),
+            "agent_1",
+            "summary",
         );
     }
 

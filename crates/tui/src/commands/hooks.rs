@@ -79,6 +79,18 @@ fn events() -> CommandResult {
             HookEvent::PreCompact,
             "fires before context compaction; stdout is preserved in the summary",
         ),
+        (
+            HookEvent::TurnEnd,
+            "fires after a turn completes with status and usage (read-only observer)",
+        ),
+        (
+            HookEvent::SubagentSpawn,
+            "fires when a sub-agent starts (read-only observer)",
+        ),
+        (
+            HookEvent::SubagentComplete,
+            "fires when a sub-agent finishes (read-only observer)",
+        ),
     ];
     for (event, desc) in ordered {
         out.push_str(&format!("  - `{}` — {desc}\n", event_label(event)));
@@ -158,6 +170,9 @@ fn event_label(event: HookEvent) -> &'static str {
         HookEvent::TaskCreated => "task_created",
         HookEvent::TaskCompleted => "task_completed",
         HookEvent::PreCompact => "pre_compact",
+        HookEvent::TurnEnd => "turn_end",
+        HookEvent::SubagentSpawn => "subagent_spawn",
+        HookEvent::SubagentComplete => "subagent_complete",
     }
 }
 

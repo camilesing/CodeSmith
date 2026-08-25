@@ -234,7 +234,10 @@ pub struct StateStore {
 impl StateStore {
     /// Open (or create) a state store at the given database path.
     ///
-    /// If `path` is `None`, the default location (`~/.deepseek/state.db`) is used.
+    /// If `path` is `None`, the default location (`~/.codesmith/state.db`,
+    /// overridable via `CODESMITH_HOME`/`CODEWHALE_HOME`) is used. A
+    /// pre-rename store at `~/.deepseek/state.db` or `~/.codewhale/state.db`
+    /// is still read when the modern path does not exist yet.
     /// The database schema is created automatically if it does not exist.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let db_path = path.unwrap_or_else(default_state_db_path);
@@ -1239,10 +1242,37 @@ impl StateStore {
 }
 
 fn default_state_db_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".deepseek")
-        .join("state.db")
+    // Same home-override convention as `codesmith_config::codesmith_home`.
+    for name in ["CODESMITH_HOME", "CODEWHALE_HOME"] {
+        if let Ok(val) = std::env::var(name) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("state.db");
+            }
+        }
+    }
+    resolve_state_db_path(dirs::home_dir())
+}
+
+/// Prefer `~/.codesmith/state.db`, but keep reading a pre-rename store
+/// (`~/.deepseek/state.db`, later `~/.codewhale/state.db`) when the modern
+/// path does not exist yet. When neither exists, return the primary path so
+/// a first write lands under `~/.codesmith/`.
+fn resolve_state_db_path(home: Option<PathBuf>) -> PathBuf {
+    let Some(home) = home else {
+        return PathBuf::from(".codesmith").join("state.db");
+    };
+    let primary = home.join(".codesmith").join("state.db");
+    if primary.exists() {
+        return primary;
+    }
+    for legacy in [".deepseek", ".codewhale"] {
+        let candidate = home.join(legacy).join("state.db");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    primary
 }
 
 fn bool_to_i64(value: bool) -> i64 {
@@ -1350,4 +1380,56 @@ fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
         memory_mode: row.get(20)?,
         current_leaf_id: row.get(21)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_prefers_modern_codesmith_path() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(home.path().join(".codesmith")).expect("mkdir modern");
+        std::fs::write(home.path().join(".codesmith/state.db"), b"").expect("touch db");
+        std::fs::create_dir_all(home.path().join(".deepseek")).expect("mkdir legacy");
+
+        let resolved = resolve_state_db_path(Some(home.path().to_path_buf()));
+        assert_eq!(resolved, home.path().join(".codesmith/state.db"));
+    }
+
+    #[test]
+    fn resolve_falls_back_to_deepseek_legacy_store() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(home.path().join(".deepseek")).expect("mkdir legacy");
+        std::fs::write(home.path().join(".deepseek/state.db"), b"").expect("touch db");
+
+        let resolved = resolve_state_db_path(Some(home.path().to_path_buf()));
+        assert_eq!(resolved, home.path().join(".deepseek/state.db"));
+    }
+
+    #[test]
+    fn resolve_falls_back_to_codewhale_legacy_store() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(home.path().join(".codewhale")).expect("mkdir legacy");
+        std::fs::write(home.path().join(".codewhale/state.db"), b"").expect("touch db");
+
+        let resolved = resolve_state_db_path(Some(home.path().to_path_buf()));
+        assert_eq!(resolved, home.path().join(".codewhale/state.db"));
+    }
+
+    #[test]
+    fn resolve_returns_primary_for_fresh_install() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        let resolved = resolve_state_db_path(Some(home.path().to_path_buf()));
+        assert_eq!(resolved, home.path().join(".codesmith/state.db"));
+    }
+
+    #[test]
+    fn resolve_without_home_dir_uses_relative_primary() {
+        assert_eq!(
+            resolve_state_db_path(None),
+            PathBuf::from(".codesmith").join("state.db")
+        );
+    }
 }

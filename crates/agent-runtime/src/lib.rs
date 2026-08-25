@@ -54,6 +54,7 @@ pub mod lsp_diagnostics;
 pub mod lsp_registry;
 pub mod mailbox;
 pub mod mcp;
+pub mod mcp_oauth;
 pub mod memory;
 pub mod mode;
 pub mod network_policy;

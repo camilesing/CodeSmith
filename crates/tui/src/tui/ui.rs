@@ -1873,6 +1873,28 @@ async fn run_event_loop(
                         if queued_to_send.is_none() {
                             queued_to_send = app.pop_queued_message();
                         }
+
+                        // #1364 PR2: fire observer-only `turn_end` hooks after
+                        // app state, usage, cost, notifications, and receipt
+                        // state have all been updated for the finished turn.
+                        if app
+                            .hooks
+                            .has_hooks_for_event(crate::hooks::HookEvent::TurnEnd)
+                        {
+                            let mut context = app
+                                .base_hook_context()
+                                .with_cost(app.session.session_cost);
+                            if let Some(thread_id) = app.current_session_id.clone() {
+                                context = context.with_thread_id(&thread_id);
+                            }
+                            app.hooks.execute_turn_end_hook(
+                                &context,
+                                app.runtime_turn_status.as_deref().unwrap_or("unknown"),
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                turn_elapsed.as_secs_f64(),
+                            );
+                        }
                     }
                     EngineEvent::Error {
                         envelope,
@@ -2041,6 +2063,23 @@ async fn run_event_loop(
                         app.status_message =
                             Some(format!("Sub-agent {id} starting: {prompt_summary}"));
                         let _ = engine_handle.send(Op::ListSubAgents).await;
+
+                        // #1364 PR3: observer-only subagent lifecycle hook.
+                        if app
+                            .hooks
+                            .has_hooks_for_event(crate::hooks::HookEvent::SubagentSpawn)
+                        {
+                            let mut context = app.base_hook_context();
+                            if let Some(thread_id) = app.current_session_id.clone() {
+                                context = context.with_thread_id(&thread_id);
+                            }
+                            app.hooks.execute_subagent_hook(
+                                crate::hooks::HookEvent::SubagentSpawn,
+                                &context,
+                                &id,
+                                &prompt_summary,
+                            );
+                        }
                     }
                     EngineEvent::AgentProgress { id, status } => {
                         let display = friendly_subagent_progress(app, &id, &status);
@@ -2107,6 +2146,23 @@ async fn run_event_loop(
                             app.needs_redraw = true;
                         }
                         let _ = engine_handle.send(Op::ListSubAgents).await;
+
+                        // #1364 PR3: observer-only subagent lifecycle hook.
+                        if app
+                            .hooks
+                            .has_hooks_for_event(crate::hooks::HookEvent::SubagentComplete)
+                        {
+                            let mut context = app.base_hook_context();
+                            if let Some(thread_id) = app.current_session_id.clone() {
+                                context = context.with_thread_id(&thread_id);
+                            }
+                            app.hooks.execute_subagent_hook(
+                                crate::hooks::HookEvent::SubagentComplete,
+                                &context,
+                                &id,
+                                &summarize_tool_output(&result),
+                            );
+                        }
                     }
                     EngineEvent::AgentList { agents } => {
                         let mut sorted = agents.clone();

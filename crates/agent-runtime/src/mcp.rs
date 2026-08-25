@@ -33,8 +33,11 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
 
 use crate::child_env;
+use crate::mcp_oauth::{McpOAuthConfig, OAuthState};
 use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 use crate::utils::write_atomic;
+
+pub use crate::mcp_oauth::{McpOAuthToken, default_secrets as oauth_default_secrets};
 
 // === Error diagnostics helpers (#71) ===
 
@@ -317,6 +320,57 @@ async fn maybe_refresh_claude_headers(
     Ok(true)
 }
 
+/// One OAuth refresh-token round trip after a 401 (#2190). Only touches a
+/// header we injected at connect time — `try_refresh_matching` compares
+/// against the stored access token, so a user-configured Authorization
+/// header is left alone. Returns whether the header was replaced (the
+/// caller retries the request once).
+async fn maybe_refresh_oauth_headers(
+    client: &reqwest::Client,
+    headers: &mut HashMap<String, String>,
+    oauth: &OAuthState,
+) -> bool {
+    let Some(current) = headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.clone())
+    else {
+        return false;
+    };
+    match crate::mcp_oauth::try_refresh_matching(
+        client,
+        &crate::mcp_oauth::default_secrets(),
+        oauth,
+        &current,
+    )
+    .await
+    {
+        Ok(Some(token)) => {
+            tracing::info!(
+                target: "mcp",
+                server = %oauth.server,
+                "oauth token refreshed after 401; retrying request"
+            );
+            headers.insert(
+                "Authorization".to_string(),
+                format!("Bearer {}", token.access_token),
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!(
+                target: "mcp",
+                server = %oauth.server,
+                error = %err,
+                "oauth token refresh failed; re-run `codesmith mcp auth {}` if the server keeps rejecting requests",
+                oauth.server
+            );
+            false
+        }
+    }
+}
+
 /// Mask a URL so any embedded credentials in the userinfo portion (e.g.
 /// `https://user:secret@host`) are replaced with `***`. Failures fall back to
 /// the original string so we don't lose context — we never want masking to
@@ -561,6 +615,14 @@ pub struct McpServerConfig {
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
+    /// OAuth device-flow configuration for URL transports (#2190). When
+    /// set, the stored token (see `codesmith mcp auth`) is injected as the
+    /// `Authorization` header at connect time unless `headers` already
+    /// carries one, and the HTTP transports refresh it once on 401.
+    /// Stdio servers ignore this field — pass credentials via `env`.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<McpOAuthConfig>,
 }
 
 fn default_enabled() -> bool {
@@ -829,6 +891,9 @@ pub struct SseTransport {
     client: reqwest::Client,
     base_url: String,
     headers: HashMap<String, String>,
+    /// OAuth context for the 401 refresh path; `None` for servers without
+    /// an `oauth` config entry.
+    oauth: Option<OAuthState>,
     endpoint_url: Option<String>,
     receiver: tokio::sync::mpsc::UnboundedReceiver<SseInbound>,
     pending_messages: VecDeque<Vec<u8>>,
@@ -844,6 +909,7 @@ struct HttpTransport {
     client: reqwest::Client,
     base_url: String,
     headers: HashMap<String, String>,
+    oauth: Option<OAuthState>,
     cancel_token: tokio_util::sync::CancellationToken,
     endpoint_timeout: Duration,
 }
@@ -861,6 +927,9 @@ struct StreamableHttpTransport {
     /// default. See `apply_custom_headers` for the filtering pass that
     /// runs before each request.
     headers: HashMap<String, String>,
+    /// OAuth context for the 401 refresh path; `None` for servers without
+    /// an `oauth` config entry.
+    oauth: Option<OAuthState>,
     pending_messages: VecDeque<Vec<u8>>,
     /// Per-spec MCP session identifier returned by the server in the
     /// first response (typically the `initialize` response). Attached
@@ -943,6 +1012,7 @@ impl SseTransport {
         headers: HashMap<String, String>,
         cancel_token: tokio_util::sync::CancellationToken,
         endpoint_timeout: Duration,
+        oauth: Option<OAuthState>,
     ) -> Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let client_clone = client.clone();
@@ -986,6 +1056,7 @@ impl SseTransport {
             client,
             base_url: url,
             headers,
+            oauth,
             endpoint_url: None,
             receiver: rx,
             pending_messages: VecDeque::new(),
@@ -1143,16 +1214,19 @@ impl HttpTransport {
         headers: HashMap<String, String>,
         cancel_token: tokio_util::sync::CancellationToken,
         endpoint_timeout: Duration,
+        oauth: Option<OAuthState>,
     ) -> Self {
         Self {
             mode: HttpTransportMode::Streamable(StreamableHttpTransport::new(
                 client.clone(),
                 url.clone(),
                 headers.clone(),
+                oauth.clone(),
             )),
             client,
             base_url: url,
             headers,
+            oauth,
             cancel_token,
             endpoint_timeout,
         }
@@ -1165,6 +1239,7 @@ impl HttpTransport {
             self.headers.clone(),
             self.cancel_token.clone(),
             self.endpoint_timeout,
+            self.oauth.clone(),
         )
         .await?;
         sse.send(msg).await?;
@@ -1287,23 +1362,42 @@ impl McpTransport for HttpTransport {
 }
 
 impl StreamableHttpTransport {
-    fn new(client: reqwest::Client, url: String, headers: HashMap<String, String>) -> Self {
+    fn new(
+        client: reqwest::Client,
+        url: String,
+        headers: HashMap<String, String>,
+        oauth: Option<OAuthState>,
+    ) -> Self {
         Self {
             client,
             url,
             headers,
+            oauth,
             pending_messages: VecDeque::new(),
             session_id: None,
         }
     }
 
+    /// One 401-driven auth refresh: the Claude.ai manual-refresh seam first,
+    /// then a stored OAuth token refresh. Returns whether the caller should
+    /// retry the request.
+    async fn refresh_auth_headers(&mut self, status: StatusCode) -> bool {
+        if let Ok(true) = maybe_refresh_claude_headers(&self.url, status, &mut self.headers).await {
+            return true;
+        }
+        if status == StatusCode::UNAUTHORIZED
+            && let Some(oauth) = self.oauth.clone()
+            && maybe_refresh_oauth_headers(&self.client, &mut self.headers, &oauth).await
+        {
+            return true;
+        }
+        false
+    }
+
     async fn send(&mut self, msg: Vec<u8>) -> std::result::Result<(), StreamableSendError> {
         let response = self.send_once(msg.clone()).await?;
         let status = response.status();
-        if !status.is_success()
-            && let Ok(true) =
-                maybe_refresh_claude_headers(&self.url, status, &mut self.headers).await
-        {
+        if !status.is_success() && self.refresh_auth_headers(status).await {
             let response = self.send_once(msg).await?;
             return self.handle_response(response).await;
         }
@@ -1595,21 +1689,33 @@ impl McpTransport for SseTransport {
         .send()
         .await?;
         let mut status = response.status();
-        if !status.is_success()
-            && maybe_refresh_claude_headers(&endpoint_owned, status, &mut self.headers).await?
-        {
-            response = with_bearer_header(
-                apply_safe_custom_headers(
-                    with_default_mcp_http_headers(self.client.post(&endpoint_owned), true),
+        if !status.is_success() {
+            let refreshed = if let Ok(true) =
+                maybe_refresh_claude_headers(&endpoint_owned, status, &mut self.headers).await
+            {
+                true
+            } else if status == StatusCode::UNAUTHORIZED
+                && let Some(oauth) = self.oauth.clone()
+                && maybe_refresh_oauth_headers(&self.client, &mut self.headers, &oauth).await
+            {
+                true
+            } else {
+                false
+            };
+            if refreshed {
+                response = with_bearer_header(
+                    apply_safe_custom_headers(
+                        with_default_mcp_http_headers(self.client.post(&endpoint_owned), true),
+                        &self.headers,
+                    ),
+                    &endpoint_owned,
                     &self.headers,
-                ),
-                &endpoint_owned,
-                &self.headers,
-            )
-            .body(msg)
-            .send()
-            .await?;
-            status = response.status();
+                )
+                .body(msg)
+                .send()
+                .await?;
+                status = response.status();
+            }
         }
         if !status.is_success() {
             let body_excerpt = bounded_body_excerpt(response, ERROR_BODY_PREVIEW_BYTES).await;
@@ -1740,16 +1846,56 @@ impl McpConnection {
             }
             let client = client_builder.build()?;
             let kind = transport_kind(&config)?;
+            // OAuth (#2190): resolve the stored token and inject it as the
+            // Authorization header unless the user already configured one.
+            // The HTTP transports additionally refresh it once on 401.
+            let oauth_state = config.oauth.as_ref().map(|oauth| OAuthState {
+                server: name.clone(),
+                config: oauth.clone(),
+            });
+            let mut connect_headers = config.headers.clone();
+            if let Some(state) = &oauth_state
+                && !connect_headers
+                    .keys()
+                    .any(|key| key.eq_ignore_ascii_case("authorization"))
+            {
+                match crate::mcp_oauth::resolve_authorization_value(
+                    &client,
+                    &crate::mcp_oauth::default_secrets(),
+                    &state.server,
+                    &state.config,
+                )
+                .await
+                {
+                    Ok(Some(value)) => {
+                        connect_headers.insert("Authorization".to_string(), value);
+                    }
+                    Ok(None) => tracing::warn!(
+                        target: "mcp",
+                        server = %name,
+                        "oauth configured but no token stored; run `codesmith mcp auth {name}` to authorize"
+                    ),
+                    Err(err) => tracing::warn!(
+                        target: "mcp",
+                        server = %name,
+                        error = %err,
+                        "failed to resolve oauth token; connecting without Authorization"
+                    ),
+                }
+            }
             if kind.is_websocket() {
-                Box::new(WebSocketTransport::connect(url.clone(), config.headers.clone()).await?)
+                Box::new(
+                    WebSocketTransport::connect(url.clone(), connect_headers.clone()).await?,
+                )
             } else if kind.is_sse() {
                 Box::new(
                     SseTransport::connect(
                         client,
                         url.clone(),
-                        config.headers.clone(),
+                        connect_headers.clone(),
                         cancel_token.clone(),
                         Duration::from_secs(connect_timeout_secs),
+                        oauth_state.clone(),
                     )
                     .await?,
                 )
@@ -1757,9 +1903,10 @@ impl McpConnection {
                 let mut http = HttpTransport::new(
                     client,
                     url.clone(),
-                    config.headers.clone(),
+                    connect_headers.clone(),
                     cancel_token.clone(),
                     Duration::from_secs(connect_timeout_secs),
+                    oauth_state.clone(),
                 );
                 // Best-effort session preflight for servers that require
                 // a session ID on every POST including `initialize`

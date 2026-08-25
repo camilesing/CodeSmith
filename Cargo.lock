@@ -844,6 +844,7 @@ dependencies = [
  "codesmith-config",
  "codesmith-extensions",
  "codesmith-index",
+ "codesmith-secrets",
  "codesmith-tools",
  "dirs",
  "fd-lock",
@@ -1100,6 +1101,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

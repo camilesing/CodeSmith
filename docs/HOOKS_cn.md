@@ -86,6 +86,9 @@ condition = { type = "mode", mode = "agent" }   # 可选；见条件
 | `task_created` | — | 任务管理器创建任务时 | observer |
 | `task_completed` | — | 被跟踪的任务完成时 | observer |
 | `pre_compact` | — | 上下文压缩之前（手动、自动或紧急） | **stdout 是被保留的上下文** |
+| `turn_end` | — | 回合完成之后（completed / interrupted / failed） | observer |
+| `subagent_spawn` | — | 子代理启动时 | observer |
+| `subagent_complete` | — | 子代理结束时 | observer |
 
 各分组详情：
 
@@ -107,6 +110,13 @@ condition = { type = "mode", mode = "agent" }   # 可选；见条件
 - **`pre_compact`** 在上下文被摘要之前触发。每个匹配的非后台钩子的
   stdout 会被拼接（以 `---` 分隔线隔开）并合并进压缩摘要，因此你
   打印的材料会在摘要化后存活。失败不会造成阻断：压缩总是照常进行。
+- **`turn_end`** 在 TUI 的回合完成处理器中触发，此时应用状态、用量、
+  成本、通知和回执状态均已更新完毕。stdin 负载携带回合状态
+  （`completed` / `interrupted` / `failed`）与用量信息。失败仅告警；
+  钩子无法改变回合状态。`stop_hook_active` 目前恒为 `false`。
+- **子代理。** `subagent_spawn` / `subagent_complete` 在子代理启动或
+  结束时触发。负载携带 `agent_id` 和截断过的 `summary`——绝不包含
+  完整的提示词/结果。失败仅告警，绝不影响子代理生命周期。
 
 ## 条件
 
@@ -177,8 +187,9 @@ condition = { type = "any", conditions = [ ... ] }
 
 ### stdin
 
-只有两个事件会在 stdin 上传递结构化 JSON；所有其他事件在没有 stdin 的
-情况下运行。
+只有结构化 stdin 事件（`message_submit`、`pre_compact`、`turn_end`、
+`subagent_spawn`、`subagent_complete`）会在 stdin 上收到 JSON；所有其他
+事件在没有 stdin 的情况下运行。
 
 `message_submit` 收到：
 
@@ -206,6 +217,42 @@ condition = { type = "any", conditions = [ ... ] }
   "workspace": "/path/to/workspace",
   "model": "deepseek-chat",
   "total_tokens": 1234
+}
+```
+
+`turn_end` 收到同样的信封，外加回合状态与用量：
+
+```json
+{
+  "hook_event_name": "turn_end",
+  "session_id": "sess_12345678",
+  "thread_id": "thread-abc",
+  "workspace": "/path/to/workspace",
+  "mode": "agent",
+  "model": "deepseek-chat",
+  "status": "completed",
+  "input_tokens": 120,
+  "output_tokens": 80,
+  "total_tokens": 1234,
+  "session_cost": 0.0123,
+  "duration_secs": 14.5,
+  "stop_hook_active": false
+}
+```
+
+`subagent_spawn` / `subagent_complete` 收到同样的信封，外加代理 id 和
+截断过的摘要（绝不包含完整提示词/结果）：
+
+```json
+{
+  "hook_event_name": "subagent_spawn",
+  "session_id": "sess_12345678",
+  "thread_id": "thread-abc",
+  "workspace": "/path/to/workspace",
+  "mode": "agent",
+  "model": "deepseek-chat",
+  "agent_id": "agent_7",
+  "summary": "research the repo for RFC references"
 }
 ```
 
@@ -290,9 +337,6 @@ stdout 上每行一个 `KEY=VALUE`；接受可选的 `export ` 前缀。变量�
   Unix-socket 事件汇）。生命周期钩子只存在于 `[hooks]` 之下。
 - **不是扩展系统。** 关于带事件总线的进程内 Rust 扩展，参见
   [docs/EXTENSIONS.md](EXTENSIONS.md)。
-- `turn_end`、`subagent_spawn` 和 `subagent_complete` 钩子事件在
-  [docs/rfcs/1364-hooks-lifecycle.md](rfcs/1364-hooks-lifecycle.md)
-  中有草案，但尚未实现。
 
 ## 配方
 

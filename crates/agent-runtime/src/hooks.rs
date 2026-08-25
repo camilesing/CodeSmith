@@ -43,6 +43,16 @@ pub enum HookEvent {
     /// as "context to preserve" and merged into the compaction summary (#485).
     #[serde(rename = "pre_compact")]
     PreCompact,
+    /// After a turn completes (completed / interrupted / failed). Observer-only:
+    /// payload carries turn status and usage, stdout is ignored (#1364).
+    #[serde(rename = "turn_end")]
+    TurnEnd,
+    /// When a sub-agent starts. Observer-only (#1364).
+    #[serde(rename = "subagent_spawn")]
+    SubagentSpawn,
+    /// When a sub-agent finishes. Observer-only (#1364).
+    #[serde(rename = "subagent_complete")]
+    SubagentComplete,
 }
 
 impl HookEvent {
@@ -60,6 +70,9 @@ impl HookEvent {
             HookEvent::TaskCreated => "task_created",
             HookEvent::TaskCompleted => "task_completed",
             HookEvent::PreCompact => "pre_compact",
+            HookEvent::TurnEnd => "turn_end",
+            HookEvent::SubagentSpawn => "subagent_spawn",
+            HookEvent::SubagentComplete => "subagent_complete",
         }
     }
 }
