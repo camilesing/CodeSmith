@@ -1,8 +1,8 @@
 # RFC: Claude Code Architecture Parity
 
 **Issue:** TBD
-**Status:** Draft
-**Date:** 2026-06-20
+**Status:** Decision record (2026-08 review) — Slice 1 mostly complete, Slices 2 & 5 implemented, Slices 3 & 4 accepted-as-is with revisit triggers, Slice 6 closed
+**Date:** 2026-06-20 · review 2026-08
 
 ## Context
 
@@ -89,7 +89,10 @@ The reference architecture can be summarized as:
 
 ## Design todos
 
-### P0: Define the trust-gated initialization boundary
+> **2026-08 status annotations.** Each todo below records its current
+> disposition after a code-vs-RFC review. Details in “Proposed slices”.
+
+### P0: Define the trust-gated initialization boundary — mostly complete
 
 Document and, if needed, refactor startup into explicit phases:
 
@@ -105,7 +108,15 @@ The first-stage audit is recorded in
 separate implementation slices after the pre-trust/post-trust classification is
 reviewed.
 
-### P1: Confirm or implement tool orchestration concurrency policy
+### P1: Confirm or implement tool orchestration concurrency policy — implemented
+
+Verified in place (2026-08): `ToolMetadata` carries `supports_parallel` /
+`is_read_only` (`crates/agent-runtime/src/tool_dispatch.rs:27`),
+`plan_tool_execution_batches` partitions parallel-safe vs serial batches
+(`crates/agent-runtime/src/engine/dispatch.rs:290`), and
+`execute_tool_with_lock` enforces a read/write lock so non-read-only tools
+are serialized (`crates/agent-runtime/src/engine/tool_execution.rs:248`).
+No further work.
 
 The tool runtime should have an explicit policy for which tools can run in
 parallel and which must run serially. At minimum, inspect and document behavior
@@ -122,7 +133,18 @@ for:
 If the current scheduler does not already encode this, add metadata such as a
 `ToolConcurrency` classification and partition tool calls before execution.
 
-### P1: Decide MCP server parity
+### P1: Decide MCP server parity — decision: accept the dual implementations
+
+2026-08 decision: CodeSmith keeps both surfaces as-is —
+`crates/tui/src/mcp_server.rs` exposes a curated ToolRegistry subset over
+stdio with a coarse `require_approval` switch, and `crates/mcp` remains a
+lifecycle/management server for the CLI. They are intentionally different
+products; unifying their permission models is not justified by any current
+consumer.
+
+**Revisit trigger:** an external MCP consumer needs TUI-equivalent tools
+*with* the full approval/trust/sandbox permission model over MCP. Until
+then, do not expose shell/file-edit tools beyond the existing curated set.
 
 Clarify whether CodeSmith's MCP server is intended to be:
 
@@ -135,7 +157,14 @@ Claude Code parity requires a clear answer here. If internal tools should be
 exposed, the MCP server should reuse the same registry, permission checks, and
 execution contexts as the TUI/agent runtime.
 
-### P1: Decide Remote/Bridge scope
+### P1: Decide Remote/Bridge scope — decision: closed (out of scope)
+
+2026-08 decision: HTTP/SSE runtime API (`serve --http`), ACP, and the
+tmux/iTerm2 pane backends under `crates/tui/src/tools/team/backend/`
+suffice. WebSocket bridges, daemons, and attach/detach session models are
+out of scope. `docs/ARCHITECTURE.md` already records that no model-visible
+swarm tool remains. Reopen only as an explicit product requirement with a
+separate security review — not for parity's sake.
 
 The reference architecture treats remote bridge and background runners as part of
 the platform. CodeSmith should explicitly decide whether this is in scope.
@@ -148,7 +177,18 @@ Questions to settle:
 - Should teams/subagents map to a swarm backend registry, or remain an internal
   runtime concept?
 
-### P2: Extract or document a headless Agent Engine API
+### P2: Extract or document a headless Agent Engine API — decision: accept two stacks short-term
+
+2026-08 decision: the agent-runtime `Engine` (TUI + `exec`) and
+`codesmith-core` `Runtime` + app-server (HTTP/stdio) remain two supported
+stacks. `docs/ARCHITECTURE.md` documents the boundary honestly. A third
+minimal adapter (ACP) stays minimal on purpose.
+
+**Revisit trigger:** app-server or ACP needs engine-level features
+(compaction, capacity management, teams, subagent fan-out) — at that point
+the cost of a duplicated loop exceeds the cost of convergence, and a
+dedicated unification RFC should be written. Until then, do not grow a
+second full agent loop inside `codesmith-core`.
 
 Define a stable boundary that can be reused by:
 
@@ -162,7 +202,11 @@ The boundary should describe session creation, resume/fork, one turn execution,
 streaming events, cancellation, compaction, tool approval, and final usage
 reporting.
 
-### P2: Document memory and session architecture
+### P2: Document memory and session architecture — implemented
+
+2026-08 status: `docs/MEMORY.md`, `docs/ARCHITECTURE.md`, and
+`docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` (all with `_cn` variants) cover the
+memory/session/prompt-injection flow and the startup trust boundary.
 
 Document how these pieces fit together:
 
@@ -179,6 +223,13 @@ Document how these pieces fit together:
 
 ### Slice 1: Initialization and trust boundary audit
 
+**Status (2026-08): mostly complete.** Audit captured; early `.env` loading
+removed, project-config overlay gated pre-trust, `SessionStart` hooks
+deferred behind the trust prompt. The five-helper startup extraction was
+deliberately deferred (see Plan 05 implementation notes in
+`extra-findings-05-telemetry-scaffolding.md`) — the post-trust block is not
+self-contained, so the extraction has no testable seam yet.
+
 Status: first-stage audit captured in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; the first implementation slice removes early implicit `.env` loading, gates project config overlay before trust, and defers `SessionStart` hooks while the workspace trust prompt is active.
 
 Deliverables:
@@ -193,6 +244,10 @@ classification is reviewed.
 
 ### Slice 2: Tool concurrency metadata and scheduler
 
+**Status (2026-08): implemented** — see the P1 todo annotation above
+(`engine/dispatch.rs` batch partitioning + RwLock serialization in
+`engine/tool_execution.rs`).
+
 Deliverables:
 
 - Inspect current tool execution in the turn loop.
@@ -205,6 +260,9 @@ Stop rule: do not parallelize unknown-side-effect tools by default.
 
 ### Slice 3: MCP server parity decision
 
+**Status (2026-08): decided — accept dual implementations.** See the P1
+todo annotation above.
+
 Deliverables:
 
 - Document current `crates/mcp` and TUI MCP server responsibilities.
@@ -216,6 +274,9 @@ and permission behavior.
 
 ### Slice 4: Headless engine API cleanup
 
+**Status (2026-08): decided — accept two stacks short-term.** See the P2
+todo annotation above.
+
 Deliverables:
 
 - Identify the lowest-level reusable engine boundary.
@@ -226,6 +287,8 @@ Stop rule: avoid a second agent loop implementation.
 
 ### Slice 5: Memory/session architecture document
 
+**Status (2026-08): complete.** See the P2 todo annotation above.
+
 Deliverables:
 
 - Diagram transcript, compaction, memory, and prompt injection flow.
@@ -235,6 +298,8 @@ Deliverables:
 Stop rule: document current behavior before changing persistence formats.
 
 ### Slice 6: Remote/bridge/swarm scope decision
+
+**Status (2026-08): closed.** See the P1 Remote/Bridge annotation above.
 
 Deliverables:
 
@@ -259,17 +324,21 @@ This RFC does not require:
   model.
 - Treating Claude Code's implementation as the only acceptable architecture.
 
-## Open questions
+## Open questions — answered (2026-08 review)
 
-- Should this RFC get a tracking issue and be renamed to
-  `<issue>-claude-code-architecture-parity.md`?
-- Should CodeSmith's MCP server expose internal tools, remain a management
-  server, or support both modes?
-- Is Remote/Bridge a product requirement, or are HTTP/mobile and ACP sufficient?
-- Should a headless engine boundary become a public SDK API or remain internal?
-- What telemetry, dotenv, project config, and hook behavior is allowed before
-  workspace trust?
-- Should team/subagent execution eventually map to named swarm backends?
+- *Tracking issue / rename?* — Not pursued; this file is the record.
+- *MCP server exposes internal tools, management, or both?* — Both, as two
+  separate implementations; accepted (see Slice 3).
+- *Remote/Bridge a product requirement?* — No; HTTP/mobile runtime and ACP
+  are sufficient (see Slice 6).
+- *Headless engine a public SDK API?* — Remains internal; two stacks
+  accepted short-term with a defined revisit trigger (see Slice 4).
+- *What runs before workspace trust?* — Classified and enforced in
+  `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` + the implemented Slice 1 items;
+  residual startup-helper extraction deferred by design.
+- *Team/subagent mapped to named swarm backends?* — No; the model-visible
+  swarm tooling was removed and pane backends stay a `team/` implementation
+  detail.
 
 ## References
 
