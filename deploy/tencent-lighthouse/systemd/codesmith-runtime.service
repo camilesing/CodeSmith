@@ -1,0 +1,21 @@
+[Unit]
+Description=CodeSmith Runtime API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=codesmith
+Group=codesmith
+WorkingDirectory=/opt/whalebro
+EnvironmentFile=/etc/codesmith/runtime.env
+ExecStart=/home/codesmith/.cargo/bin/codesmith serve --http --host 127.0.0.1 --port ${CODESMITH_RUNTIME_PORT} --workers ${CODESMITH_RUNTIME_WORKERS} --auth-token ${CODESMITH_RUNTIME_TOKEN}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/codesmith/.codesmith /opt/whalebro
+
+[Install]
+WantedBy=multi-user.target

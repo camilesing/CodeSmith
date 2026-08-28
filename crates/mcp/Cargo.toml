@@ -1,0 +1,16 @@
+[package]
+name = "codesmith-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["mcp", "model-context-protocol", "tools"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "MCP server lifecycle and tool proxy compatibility for the CodeSmith workspace architecture"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true

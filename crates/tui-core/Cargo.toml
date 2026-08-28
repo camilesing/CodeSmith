@@ -1,0 +1,11 @@
+[package]
+name = "codesmith-tui-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["tui", "terminal", "ui"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Event-driven TUI state machine scaffold for the CodeSmith workspace architecture"

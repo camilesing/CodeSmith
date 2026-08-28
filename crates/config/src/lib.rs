@@ -1,0 +1,5040 @@
+use std::collections::BTreeMap;
+use std::fs;
+#[cfg(unix)]
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
+
+use anyhow::{Context, Result, bail};
+use codesmith_secrets::SecretSource;
+pub use codesmith_secrets::Secrets;
+use serde::{Deserialize, Serialize};
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+pub const CONFIG_FILE_NAME: &str = "config.toml";
+const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
+const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
+const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-5";
+const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
+const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_ATLASCLOUD_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
+const DEFAULT_ATLASCLOUD_BASE_URL: &str = "https://api.atlascloud.ai/v1";
+const DEFAULT_WANJIE_ARK_MODEL: &str = "deepseek-reasoner";
+const DEFAULT_WANJIE_ARK_BASE_URL: &str = "https://maas-openapi.wanjiedata.com/api/v1";
+const DEFAULT_VOLCENGINE_MODEL: &str = "DeepSeek-V4-Pro";
+const DEFAULT_VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
+const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
+const DEFAULT_OPENROUTER_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
+const OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL: &str = "arcee-ai/trinity-large-thinking";
+const OPENROUTER_GEMMA_4_31B_MODEL: &str = "google/gemma-4-31b-it";
+const OPENROUTER_GEMMA_4_26B_A4B_MODEL: &str = "google/gemma-4-26b-a4b-it";
+const OPENROUTER_GLM_5_1_MODEL: &str = "z-ai/glm-5.1";
+const OPENROUTER_KIMI_K2_6_MODEL: &str = "moonshotai/kimi-k2.6";
+const OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL: &str =
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
+const OPENROUTER_QWEN_3_7_MAX_MODEL: &str = "qwen/qwen3.7-max";
+const OPENROUTER_QWEN_3_6_35B_A3B_MODEL: &str = "qwen/qwen3.6-35b-a3b";
+const OPENROUTER_QWEN_3_6_27B_MODEL: &str = "qwen/qwen3.6-27b";
+const OPENROUTER_TENCENT_HY3_PREVIEW_MODEL: &str = "tencent/hy3-preview";
+const OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL: &str = "xiaomi/mimo-v2.5-pro";
+const OPENROUTER_XIAOMI_MIMO_V2_5_MODEL: &str = "xiaomi/mimo-v2.5";
+const DEFAULT_XIAOMI_MIMO_MODEL: &str = "mimo-v2.5-pro";
+const DEFAULT_NOVITA_MODEL: &str = "deepseek/deepseek-v4-pro";
+const DEFAULT_NOVITA_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
+const DEFAULT_FIREWORKS_MODEL: &str = "accounts/fireworks/models/deepseek-v4-pro";
+const DEFAULT_SILICONFLOW_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+const DEFAULT_SILICONFLOW_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
+const DEFAULT_MOONSHOT_MODEL: &str = "kimi-k2.6";
+const DEFAULT_MOONSHOT_BASE_URL: &str = "https://api.moonshot.ai/v1";
+const DEFAULT_KIMI_CODE_MODEL: &str = "kimi-for-coding";
+const DEFAULT_KIMI_CODE_BASE_URL: &str = "https://api.kimi.com/coding/v1";
+const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
+const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const DEFAULT_XIAOMI_MIMO_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
+const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
+const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
+const DEFAULT_SILICONFLOW_BASE_URL: &str = "https://api.siliconflow.com/v1";
+const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
+const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
+const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
+const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
+const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderKind {
+    #[default]
+    #[serde(
+        alias = "deepseek-cn",
+        alias = "deepseek_china",
+        alias = "deepseekcn",
+        alias = "deepseek-china"
+    )]
+    Deepseek,
+    NvidiaNim,
+    #[serde(alias = "open-ai")]
+    Openai,
+    Atlascloud,
+    #[serde(
+        alias = "wanjie",
+        alias = "wanjie_ark",
+        alias = "ark-wanjie",
+        alias = "ark_wanjie",
+        alias = "wanjie-maas",
+        alias = "wanjie_maas"
+    )]
+    WanjieArk,
+    #[serde(alias = "volcengine-ark", alias = "volcengine_ark", alias = "ark")]
+    Volcengine,
+    Openrouter,
+    #[serde(alias = "mimo", alias = "xiaomi", alias = "xiaomi_mimo")]
+    XiaomiMimo,
+    Novita,
+    Fireworks,
+    #[serde(alias = "silicon-flow", alias = "silicon_flow")]
+    Siliconflow,
+    Moonshot,
+    Sglang,
+    Vllm,
+    Ollama,
+    #[serde(alias = "claude", alias = "anthropic-claude")]
+    Anthropic,
+}
+
+impl ProviderKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deepseek => "deepseek",
+            Self::NvidiaNim => "nvidia-nim",
+            Self::Openai => "openai",
+            Self::Atlascloud => "atlascloud",
+            Self::WanjieArk => "wanjie-ark",
+            Self::Volcengine => "volcengine",
+            Self::Openrouter => "openrouter",
+            Self::XiaomiMimo => "xiaomi-mimo",
+            Self::Novita => "novita",
+            Self::Fireworks => "fireworks",
+            Self::Siliconflow => "siliconflow",
+            Self::Moonshot => "moonshot",
+            Self::Sglang => "sglang",
+            Self::Vllm => "vllm",
+            Self::Ollama => "ollama",
+            Self::Anthropic => "anthropic",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "deepseek" | "deep-seek" | "deepseek-cn" | "deepseek_china" | "deepseekcn"
+            | "deepseek-china" => Some(Self::Deepseek),
+            "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
+            "openai" | "open-ai" => Some(Self::Openai),
+            "atlascloud" | "atlas-cloud" | "atlas_cloud" | "atlas" => Some(Self::Atlascloud),
+            "wanjie" | "wanjie-ark" | "wanjie_ark" | "ark-wanjie" | "ark_wanjie" | "wanjieark"
+            | "wanjie-maas" | "wanjie_maas" | "wanjiemaas" => Some(Self::WanjieArk),
+            "volcengine" | "volcengine-ark" | "volcengine_ark" | "ark" | "volc-ark"
+            | "volcengineark" => Some(Self::Volcengine),
+            "openrouter" | "open_router" => Some(Self::Openrouter),
+            "xiaomi-mimo" | "xiaomi_mimo" | "xiaomimimo" | "mimo" | "xiaomi" => {
+                Some(Self::XiaomiMimo)
+            }
+            "novita" => Some(Self::Novita),
+            "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
+            "siliconflow" | "silicon-flow" | "silicon_flow" => Some(Self::Siliconflow),
+            "moonshot" | "moonshot-ai" | "kimi" | "kimi-k2" => Some(Self::Moonshot),
+            "sglang" | "sg-lang" => Some(Self::Sglang),
+            "vllm" | "v-llm" => Some(Self::Vllm),
+            "ollama" | "ollama-local" => Some(Self::Ollama),
+            "anthropic" | "claude" | "anthropic-claude" | "claude-ai" => Some(Self::Anthropic),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderConfigToml {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub auth_mode: Option<String>,
+    #[serde(default)]
+    pub http_headers: BTreeMap<String, String>,
+}
+
+/// On-disk schema for a single `[[providers.custom]]` entry (ROADMAP §D2).
+///
+/// A custom provider is any provider id not in the closed `ProviderKind` enum
+/// — e.g. a host-registered factory (`mock`, or a user crate's factory) or an
+/// OpenAI-compatible endpoint the user wants to address by a private id. Each
+/// entry is self-contained (own base_url/model/credentials); the top-level
+/// `custom_provider = "<id>"` field selects which entry is active. Because the
+/// active provider id is open-ended, it lives in [`ConfigToml::custom_provider`]
+/// as a raw string rather than the closed `ProviderKind`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CustomProviderToml {
+    /// The custom provider id. Must match the `custom_provider` selector. Must
+    /// not collide with a builtin `ProviderKind::as_str` (e.g. `"deepseek"`):
+    /// the host rejects that so the builtin selector stays authoritative.
+    pub id: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub auth_mode: Option<String>,
+    #[serde(default)]
+    pub http_headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProvidersToml {
+    #[serde(default)]
+    pub deepseek: ProviderConfigToml,
+    #[serde(default)]
+    pub nvidia_nim: ProviderConfigToml,
+    #[serde(default)]
+    pub openai: ProviderConfigToml,
+    #[serde(default)]
+    pub atlascloud: ProviderConfigToml,
+    #[serde(default)]
+    pub wanjie_ark: ProviderConfigToml,
+    #[serde(default)]
+    pub volcengine: ProviderConfigToml,
+    #[serde(default)]
+    pub openrouter: ProviderConfigToml,
+    #[serde(default)]
+    pub xiaomi_mimo: ProviderConfigToml,
+    #[serde(default)]
+    pub novita: ProviderConfigToml,
+    #[serde(default)]
+    pub fireworks: ProviderConfigToml,
+    #[serde(default)]
+    pub siliconflow: ProviderConfigToml,
+    #[serde(default)]
+    pub moonshot: ProviderConfigToml,
+    #[serde(default)]
+    pub sglang: ProviderConfigToml,
+    #[serde(default)]
+    pub vllm: ProviderConfigToml,
+    #[serde(default)]
+    pub ollama: ProviderConfigToml,
+    #[serde(default)]
+    pub anthropic: ProviderConfigToml,
+    /// Open set of `[[providers.custom]]` entries (ROADMAP §D2). Unlike the
+    /// fixed per-builtin fields above, this is an array table so a user can
+    /// declare multiple custom endpoints and select among them with the
+    /// top-level `custom_provider` selector. Builtin ids are rejected here.
+    #[serde(default)]
+    pub custom: Vec<CustomProviderToml>,
+}
+
+impl ProvidersToml {
+    #[must_use]
+    pub fn for_provider(&self, provider: ProviderKind) -> &ProviderConfigToml {
+        match provider {
+            ProviderKind::Deepseek => &self.deepseek,
+            ProviderKind::NvidiaNim => &self.nvidia_nim,
+            ProviderKind::Openai => &self.openai,
+            ProviderKind::Atlascloud => &self.atlascloud,
+            ProviderKind::WanjieArk => &self.wanjie_ark,
+            ProviderKind::Volcengine => &self.volcengine,
+            ProviderKind::Openrouter => &self.openrouter,
+            ProviderKind::XiaomiMimo => &self.xiaomi_mimo,
+            ProviderKind::Novita => &self.novita,
+            ProviderKind::Fireworks => &self.fireworks,
+            ProviderKind::Siliconflow => &self.siliconflow,
+            ProviderKind::Moonshot => &self.moonshot,
+            ProviderKind::Sglang => &self.sglang,
+            ProviderKind::Vllm => &self.vllm,
+            ProviderKind::Ollama => &self.ollama,
+            ProviderKind::Anthropic => &self.anthropic,
+        }
+    }
+
+    pub fn for_provider_mut(&mut self, provider: ProviderKind) -> &mut ProviderConfigToml {
+        match provider {
+            ProviderKind::Deepseek => &mut self.deepseek,
+            ProviderKind::NvidiaNim => &mut self.nvidia_nim,
+            ProviderKind::Openai => &mut self.openai,
+            ProviderKind::Atlascloud => &mut self.atlascloud,
+            ProviderKind::WanjieArk => &mut self.wanjie_ark,
+            ProviderKind::Volcengine => &mut self.volcengine,
+            ProviderKind::Openrouter => &mut self.openrouter,
+            ProviderKind::XiaomiMimo => &mut self.xiaomi_mimo,
+            ProviderKind::Novita => &mut self.novita,
+            ProviderKind::Fireworks => &mut self.fireworks,
+            ProviderKind::Siliconflow => &mut self.siliconflow,
+            ProviderKind::Moonshot => &mut self.moonshot,
+            ProviderKind::Sglang => &mut self.sglang,
+            ProviderKind::Vllm => &mut self.vllm,
+            ProviderKind::Ollama => &mut self.ollama,
+            ProviderKind::Anthropic => &mut self.anthropic,
+        }
+    }
+}
+
+/// The backing factory kind a built-in provider maps onto (ROADMAP §E4).
+///
+/// `providers.toml` declares a catalog of built-in providers; each entry's
+/// `backend` names which compiled-in factory constructs its client. The set
+/// mirrors the Cargo features of `codesmith-providers` (`mock`, `openai`,
+/// `anthropic`, `deepseek`, `openai-compat`): a runtime manifest can only
+/// select among factories that are compiled in, so a descriptor whose backend
+/// isn't compiled in fails at registry-build time (slice 44 wires that check).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum FactoryBackend {
+    Mock,
+    Openai,
+    Anthropic,
+    Deepseek,
+    OpenaiCompat,
+}
+
+impl FactoryBackend {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Deepseek => "deepseek",
+            Self::OpenaiCompat => "openai-compat",
+        }
+    }
+}
+
+/// One entry in the declarative `providers.toml` catalog (ROADMAP §E4).
+///
+/// Unlike `[[providers.custom]]` (§D2's user escape hatch in `config.toml`),
+/// a descriptor declares a *built-in* provider: its registry id, the backing
+/// factory kind, and optional default base URL / model. Secrets (`api_key`)
+/// stay out of the manifest — they remain in `config.toml` or the environment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderDescriptor {
+    /// Registry id. May equal a builtin `ProviderKind::as_str` (the manifest
+    /// describes how builtins map to backends); duplicates are rejected.
+    pub id: String,
+    pub backend: FactoryBackend,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+}
+
+/// Declarative catalog of built-in providers (ROADMAP §E4), consumed by
+/// `codesmith-providers::default_registry` (wiring lands in slice 44).
+///
+/// ```toml
+/// # providers.toml — bundled catalog of built-in providers.
+/// [[providers]]
+/// id = "deepseek"
+/// backend = "deepseek"
+///
+/// [[providers]]
+/// id = "openrouter"
+/// backend = "openai-compat"
+/// base_url = "https://openrouter.ai/api/v1"
+/// model = "deepseek/deepseek-v4-pro"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProvidersManifest {
+    #[serde(default)]
+    pub providers: Vec<ProviderDescriptor>,
+}
+
+impl ProvidersManifest {
+    /// Parse a `providers.toml` document into a manifest (unvalidated).
+    pub fn parse(toml_str: &str) -> Result<Self> {
+        toml::from_str(toml_str).context("parsing providers.toml manifest")
+    }
+
+    /// Validate the manifest: reject empty/whitespace ids and duplicate ids.
+    /// `backend` is already constrained to [`FactoryBackend`] at parse time.
+    pub fn validate(&self) -> Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        for d in &self.providers {
+            if d.id.trim().is_empty() {
+                bail!("providers.toml entry has an empty id");
+            }
+            if !seen.insert(d.id.trim()) {
+                bail!("providers.toml has a duplicate id: {}", d.id);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Load and validate a `providers.toml` manifest from `path`.
+pub fn load_providers_manifest_from(path: &Path) -> Result<ProvidersManifest> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("reading providers.toml at {}", path.display()))?;
+    let manifest = ProvidersManifest::parse(&text)?;
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+/// Env var overriding the bundled `providers.toml` location (ROADMAP §E4).
+pub const PROVIDERS_MANIFEST_ENV: &str = "CODESMITH_PROVIDERS_MANIFEST";
+
+/// Resolve the manifest path from [`PROVIDERS_MANIFEST_ENV`], if set.
+fn resolve_manifest_path() -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var(PROVIDERS_MANIFEST_ENV).ok()?);
+    (path.as_os_str() != "").then_some(path)
+}
+
+/// Cached accessor for the process-wide providers manifest (ROADMAP §E4).
+///
+/// Resolves the manifest path from [`PROVIDERS_MANIFEST_ENV`] on first access
+/// and reads it once — the "read-once" half of E4's lazy loading. The
+/// `default_registry` cache (the other half) lands in slice 44. When the env
+/// var is unset or the path is absent, returns an empty manifest, so this is
+/// a no-op until slice 44 wires `default_registry` to consume it.
+pub fn providers_manifest() -> &'static ProvidersManifest {
+    static MANIFEST: OnceLock<ProvidersManifest> = OnceLock::new();
+    MANIFEST.get_or_init(|| match resolve_manifest_path() {
+        Some(path) => match load_providers_manifest_from(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("providers.toml manifest load failed; falling back to empty: {e}");
+                ProvidersManifest::default()
+            }
+        },
+        None => ProvidersManifest::default(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConfigToml {
+    /// TUI-compatible DeepSeek API key. Kept at the root so both `deepseek`
+    /// and `codesmith-tui` can share a single config file.
+    pub api_key: Option<String>,
+    /// TUI-compatible DeepSeek base URL.
+    pub base_url: Option<String>,
+    /// Optional extra HTTP headers forwarded to model API requests.
+    #[serde(default)]
+    pub http_headers: BTreeMap<String, String>,
+    /// TUI-compatible default DeepSeek model.
+    pub default_text_model: Option<String>,
+    #[serde(default)]
+    pub provider: ProviderKind,
+    /// Active custom provider id (ROADMAP §D2). When set, this overrides
+    /// `provider` and selects the matching `[[providers.custom]]` entry by id.
+    /// Kept as a raw string (not `ProviderKind`) because the id space is open:
+    /// any host-registered factory (e.g. `mock`) or user-declared endpoint.
+    pub custom_provider: Option<String>,
+    pub model: Option<String>,
+    pub auth_mode: Option<String>,
+    pub output_mode: Option<String>,
+    pub log_level: Option<String>,
+    pub telemetry: Option<bool>,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+    /// Structured sandbox controls shared with the TUI runtime.
+    #[serde(default)]
+    pub sandbox: Option<SandboxToml>,
+    /// Native tool catalog controls shared with `codesmith-tui`.
+    #[serde(default)]
+    pub tools: Option<ToolsToml>,
+    #[serde(default)]
+    pub providers: ProvidersToml,
+    /// Per-domain network policy (#135). When absent, network tools fall back
+    /// to a permissive default that mirrors pre-v0.7.0 behavior.
+    #[serde(default)]
+    pub network: Option<NetworkPolicyToml>,
+    /// Community skill installer settings (#140). Mirrors
+    /// [`SkillsToml`] from the TUI side; the dispatcher consults
+    /// `registry_url` when running `deepseek skill install`.
+    #[serde(default)]
+    pub skills: Option<SkillsToml>,
+    /// Workspace side-git snapshots (#137). The live TUI defaults this to
+    /// enabled with 7-day retention when absent.
+    #[serde(default)]
+    pub snapshots: Option<SnapshotsToml>,
+    /// Post-edit LSP diagnostics injection (#136). When absent, the engine
+    /// applies the defaults documented in [`LspConfigToml`].
+    #[serde(default)]
+    pub lsp: Option<LspConfigToml>,
+    /// App-server hook sink configuration. Kept separate from the TUI
+    /// lifecycle `[hooks]` table so config rewrites preserve existing hooks.
+    #[serde(default)]
+    pub hook_sinks: Option<HookSinksToml>,
+    #[serde(flatten)]
+    pub extras: BTreeMap<String, toml::Value>,
+}
+
+/// On-disk schema for the `[sandbox]` table. This shared crate preserves the
+/// table during config reads/writes; the TUI crate turns it into runtime policy.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxToml {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub fail_if_unavailable: Option<bool>,
+    #[serde(default)]
+    pub enabled_platforms: Option<Vec<String>>,
+    #[serde(default)]
+    pub excluded_commands: Option<Vec<String>>,
+    #[serde(default)]
+    pub auto_allow_bash_if_sandboxed: Option<bool>,
+    #[serde(default)]
+    pub prefer_bwrap: Option<bool>,
+    #[serde(default)]
+    pub filesystem: Option<SandboxFilesystemToml>,
+    #[serde(default)]
+    pub network: Option<SandboxNetworkToml>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxFilesystemToml {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub writable_roots: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_read: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny_read: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_write: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny_write: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude_tmpdir: Option<bool>,
+    #[serde(default)]
+    pub exclude_slash_tmp: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxNetworkToml {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub allow_managed_domains_only: Option<bool>,
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny: Option<Vec<String>>,
+}
+
+/// On-disk schema for the `[hook_sinks]` table.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HookSinksToml {
+    /// Unix domain socket path used by the app-server event sink.
+    ///
+    /// When unset, no Unix socket sink is registered. There is deliberately no
+    /// shared `/tmp` default because socket ownership should be explicit.
+    #[serde(default)]
+    pub unix_socket_path: Option<PathBuf>,
+}
+
+/// On-disk schema for the `[skills]` table (#140). See `config.example.toml`
+/// for documentation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SkillsToml {
+    /// Curated registry index URL. When unset, the TUI falls back to the
+    /// bundled default (community-curated GitHub raw).
+    #[serde(default)]
+    pub registry_url: Option<String>,
+    /// Per-skill maximum *uncompressed* size in bytes. When unset, the TUI
+    /// uses 5 MiB.
+    #[serde(default)]
+    pub max_install_size_bytes: Option<u64>,
+}
+
+/// On-disk schema for the `[tools]` table (#2076).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsToml {
+    /// Native tool names to keep loaded outside the default core catalog.
+    #[serde(default)]
+    pub always_load: Vec<String>,
+}
+
+/// On-disk schema for the `[snapshots]` table (#137). See
+/// `config.example.toml` for documentation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotsToml {
+    #[serde(default = "default_snapshots_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_snapshot_max_age_days")]
+    pub max_age_days: u64,
+}
+
+fn default_snapshots_enabled() -> bool {
+    true
+}
+
+fn default_snapshot_max_age_days() -> u64 {
+    7
+}
+
+impl Default for SnapshotsToml {
+    fn default() -> Self {
+        Self {
+            enabled: default_snapshots_enabled(),
+            max_age_days: default_snapshot_max_age_days(),
+        }
+    }
+}
+
+/// On-disk schema for the `[network]` table (#135). See `config.example.toml`
+/// for documentation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkPolicyToml {
+    /// Decision for hosts that are not in `allow` or `deny`. One of
+    /// `"allow" | "deny" | "prompt"`. Defaults to `"prompt"`.
+    #[serde(default = "default_network_decision")]
+    pub default: String,
+    /// Hosts that are always allowed. Subdomain rules: a leading dot
+    /// (`.example.com`) matches subdomains but not the apex.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Hosts that are always denied. Deny entries win over allow entries.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// Hostnames whose DNS may resolve to fake-IP/private proxy ranges in an
+    /// explicitly trusted proxy setup. Literal IP URLs remain blocked.
+    #[serde(default)]
+    pub proxy: Vec<String>,
+    /// Whether to record one audit-log line per outbound network call.
+    #[serde(default = "default_network_audit")]
+    pub audit: bool,
+}
+
+fn default_network_decision() -> String {
+    "prompt".to_string()
+}
+
+fn default_network_audit() -> bool {
+    true
+}
+
+impl Default for NetworkPolicyToml {
+    fn default() -> Self {
+        Self {
+            default: default_network_decision(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            proxy: Vec::new(),
+            audit: default_network_audit(),
+        }
+    }
+}
+
+/// On-disk schema for the `[lsp]` table (#136). See `config.example.toml`
+/// for documentation. All fields are optional so the TUI runtime can fall
+/// back to its own defaults when keys are absent.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LspConfigToml {
+    /// Master switch.
+    pub enabled: Option<bool>,
+    /// Maximum time to wait for diagnostics after an edit, in milliseconds.
+    pub poll_after_edit_ms: Option<u64>,
+    /// Cap on diagnostics surfaced per file.
+    pub max_diagnostics_per_file: Option<usize>,
+    /// When `true`, warnings (severity 2) are surfaced in addition to errors.
+    pub include_warnings: Option<bool>,
+    /// Optional override for the `language -> [cmd, ...args]` table.
+    pub servers: Option<BTreeMap<String, Vec<String>>>,
+}
+
+impl ConfigToml {
+    /// Merge safe project-level overrides from `$WORKSPACE/.codesmith/config.toml`.
+    ///
+    /// Repo-local config is untrusted input. This helper intentionally ignores
+    /// credentials, endpoints, provider selection, auth/session values, telemetry,
+    /// network policy, skill registry, LSP command tables, and unknown extras.
+    /// Approval and sandbox values may only tighten the existing user/global
+    /// posture.
+    ///
+    /// Notably the `custom_provider` selector and the `[[providers.custom]]`
+    /// table are **not** merged (ROADMAP §D2): both can carry endpoints and
+    /// credentials, and the selector is provider selection — all in the
+    /// ignored category above.
+    pub fn merge_project_overrides(&mut self, project: ConfigToml) {
+        if project.default_text_model.is_some() {
+            self.default_text_model = project.default_text_model;
+        }
+        if project.model.is_some() {
+            self.model = project.model;
+        }
+        if project.output_mode.is_some() {
+            self.output_mode = project.output_mode;
+        }
+        if project.log_level.is_some() {
+            self.log_level = project.log_level;
+        }
+        if let Some(policy) = project.approval_policy
+            && project_approval_policy_is_allowed(self.approval_policy.as_deref(), &policy)
+        {
+            self.approval_policy = Some(policy);
+        }
+        if let Some(mode) = project.sandbox_mode
+            && project_sandbox_mode_is_allowed(self.sandbox_mode.as_deref(), &mode)
+        {
+            self.sandbox_mode = Some(mode);
+        }
+        if project.tools.is_some() {
+            self.tools = project.tools;
+        }
+        merge_project_provider_config(&mut self.providers.deepseek, &project.providers.deepseek);
+        merge_project_provider_config(
+            &mut self.providers.nvidia_nim,
+            &project.providers.nvidia_nim,
+        );
+        merge_project_provider_config(&mut self.providers.openai, &project.providers.openai);
+        merge_project_provider_config(
+            &mut self.providers.atlascloud,
+            &project.providers.atlascloud,
+        );
+        merge_project_provider_config(
+            &mut self.providers.wanjie_ark,
+            &project.providers.wanjie_ark,
+        );
+        merge_project_provider_config(
+            &mut self.providers.openrouter,
+            &project.providers.openrouter,
+        );
+        merge_project_provider_config(
+            &mut self.providers.xiaomi_mimo,
+            &project.providers.xiaomi_mimo,
+        );
+        merge_project_provider_config(&mut self.providers.novita, &project.providers.novita);
+        merge_project_provider_config(&mut self.providers.fireworks, &project.providers.fireworks);
+        merge_project_provider_config(
+            &mut self.providers.siliconflow,
+            &project.providers.siliconflow,
+        );
+        merge_project_provider_config(&mut self.providers.sglang, &project.providers.sglang);
+        merge_project_provider_config(&mut self.providers.vllm, &project.providers.vllm);
+        merge_project_provider_config(&mut self.providers.ollama, &project.providers.ollama);
+        merge_project_provider_config(&mut self.providers.anthropic, &project.providers.anthropic);
+    }
+
+    #[must_use]
+    pub fn get_value(&self, key: &str) -> Option<String> {
+        match key {
+            "provider" => Some(self.provider.as_str().to_string()),
+            "custom_provider" => self.custom_provider.clone(),
+            "api_key" => self.api_key.clone(),
+            "base_url" => self.base_url.clone(),
+            "http_headers" => serialize_http_headers(&self.http_headers),
+            "default_text_model" => self.default_text_model.clone(),
+            "model" => self.model.clone(),
+            "auth.mode" => self.auth_mode.clone(),
+            "output_mode" => self.output_mode.clone(),
+            "log_level" => self.log_level.clone(),
+            "telemetry" => self.telemetry.map(|v| v.to_string()),
+            "approval_policy" => self.approval_policy.clone(),
+            "sandbox_mode" => self.sandbox_mode.clone(),
+            "tools.always_load" => self.tools.as_ref().map(|tools| tools.always_load.join(",")),
+            "hook_sinks.unix_socket_path" => self
+                .hook_sinks
+                .as_ref()
+                .and_then(|sinks| sinks.unix_socket_path.as_ref())
+                .map(|path| path.display().to_string()),
+            "providers.deepseek.api_key" => self.providers.deepseek.api_key.clone(),
+            "providers.deepseek.base_url" => self.providers.deepseek.base_url.clone(),
+            "providers.deepseek.model" => self.providers.deepseek.model.clone(),
+            "providers.deepseek.http_headers" => {
+                serialize_http_headers(&self.providers.deepseek.http_headers)
+            }
+            "providers.nvidia_nim.api_key" => self.providers.nvidia_nim.api_key.clone(),
+            "providers.nvidia_nim.base_url" => self.providers.nvidia_nim.base_url.clone(),
+            "providers.nvidia_nim.model" => self.providers.nvidia_nim.model.clone(),
+            "providers.nvidia_nim.http_headers" => {
+                serialize_http_headers(&self.providers.nvidia_nim.http_headers)
+            }
+            "providers.openai.api_key" => self.providers.openai.api_key.clone(),
+            "providers.openai.base_url" => self.providers.openai.base_url.clone(),
+            "providers.openai.model" => self.providers.openai.model.clone(),
+            "providers.openai.http_headers" => {
+                serialize_http_headers(&self.providers.openai.http_headers)
+            }
+            "providers.atlascloud.api_key" => self.providers.atlascloud.api_key.clone(),
+            "providers.atlascloud.base_url" => self.providers.atlascloud.base_url.clone(),
+            "providers.atlascloud.model" => self.providers.atlascloud.model.clone(),
+            "providers.atlascloud.http_headers" => {
+                serialize_http_headers(&self.providers.atlascloud.http_headers)
+            }
+            "providers.wanjie_ark.api_key" => self.providers.wanjie_ark.api_key.clone(),
+            "providers.wanjie_ark.base_url" => self.providers.wanjie_ark.base_url.clone(),
+            "providers.wanjie_ark.model" => self.providers.wanjie_ark.model.clone(),
+            "providers.volcengine.api_key" => self.providers.volcengine.api_key.clone(),
+            "providers.volcengine.base_url" => self.providers.volcengine.base_url.clone(),
+            "providers.volcengine.model" => self.providers.volcengine.model.clone(),
+            "providers.wanjie_ark.http_headers" => {
+                serialize_http_headers(&self.providers.wanjie_ark.http_headers)
+            }
+            "providers.openrouter.api_key" => self.providers.openrouter.api_key.clone(),
+            "providers.openrouter.base_url" => self.providers.openrouter.base_url.clone(),
+            "providers.openrouter.model" => self.providers.openrouter.model.clone(),
+            "providers.openrouter.http_headers" => {
+                serialize_http_headers(&self.providers.openrouter.http_headers)
+            }
+            "providers.xiaomi_mimo.api_key" => self.providers.xiaomi_mimo.api_key.clone(),
+            "providers.xiaomi_mimo.base_url" => self.providers.xiaomi_mimo.base_url.clone(),
+            "providers.xiaomi_mimo.model" => self.providers.xiaomi_mimo.model.clone(),
+            "providers.xiaomi_mimo.http_headers" => {
+                serialize_http_headers(&self.providers.xiaomi_mimo.http_headers)
+            }
+            "providers.novita.api_key" => self.providers.novita.api_key.clone(),
+            "providers.novita.base_url" => self.providers.novita.base_url.clone(),
+            "providers.novita.model" => self.providers.novita.model.clone(),
+            "providers.novita.http_headers" => {
+                serialize_http_headers(&self.providers.novita.http_headers)
+            }
+            "providers.fireworks.api_key" => self.providers.fireworks.api_key.clone(),
+            "providers.fireworks.base_url" => self.providers.fireworks.base_url.clone(),
+            "providers.fireworks.model" => self.providers.fireworks.model.clone(),
+            "providers.fireworks.http_headers" => {
+                serialize_http_headers(&self.providers.fireworks.http_headers)
+            }
+            "providers.siliconflow.api_key" => self.providers.siliconflow.api_key.clone(),
+            "providers.siliconflow.base_url" => self.providers.siliconflow.base_url.clone(),
+            "providers.siliconflow.model" => self.providers.siliconflow.model.clone(),
+            "providers.siliconflow.http_headers" => {
+                serialize_http_headers(&self.providers.siliconflow.http_headers)
+            }
+            "providers.moonshot.api_key" => self.providers.moonshot.api_key.clone(),
+            "providers.moonshot.base_url" => self.providers.moonshot.base_url.clone(),
+            "providers.moonshot.model" => self.providers.moonshot.model.clone(),
+            "providers.moonshot.auth_mode" => self.providers.moonshot.auth_mode.clone(),
+            "providers.moonshot.http_headers" => {
+                serialize_http_headers(&self.providers.moonshot.http_headers)
+            }
+            "providers.sglang.api_key" => self.providers.sglang.api_key.clone(),
+            "providers.sglang.base_url" => self.providers.sglang.base_url.clone(),
+            "providers.sglang.model" => self.providers.sglang.model.clone(),
+            "providers.sglang.http_headers" => {
+                serialize_http_headers(&self.providers.sglang.http_headers)
+            }
+            "providers.vllm.api_key" => self.providers.vllm.api_key.clone(),
+            "providers.vllm.base_url" => self.providers.vllm.base_url.clone(),
+            "providers.vllm.model" => self.providers.vllm.model.clone(),
+            "providers.vllm.http_headers" => {
+                serialize_http_headers(&self.providers.vllm.http_headers)
+            }
+            "providers.ollama.api_key" => self.providers.ollama.api_key.clone(),
+            "providers.ollama.base_url" => self.providers.ollama.base_url.clone(),
+            "providers.ollama.model" => self.providers.ollama.model.clone(),
+            "providers.ollama.http_headers" => {
+                serialize_http_headers(&self.providers.ollama.http_headers)
+            }
+            "providers.anthropic.api_key" => self.providers.anthropic.api_key.clone(),
+            "providers.anthropic.base_url" => self.providers.anthropic.base_url.clone(),
+            "providers.anthropic.model" => self.providers.anthropic.model.clone(),
+            "providers.anthropic.http_headers" => {
+                serialize_http_headers(&self.providers.anthropic.http_headers)
+            }
+            // The `[[providers.custom]]` array table (ROADMAP §D2). The whole
+            // array is read as a blob, wrapped under a `custom` key because a
+            // root-level bare array of tables is not valid TOML (`[[...]]`
+            // requires a key). Per-entry / per-field reads are supported
+            // (§D2 slice 46): `providers.custom.<id>` returns one entry;
+            // `providers.custom.<id>.<field>` returns the field value.
+            key if key == "providers.custom" || key.starts_with("providers.custom.") => {
+                if key == "providers.custom" {
+                    if self.providers.custom.is_empty() {
+                        None
+                    } else {
+                        let mut wrapper = toml::Table::new();
+                        let arr = toml::Value::try_from(&self.providers.custom).ok()?;
+                        wrapper.insert(String::from("custom"), arr);
+                        toml::to_string(&wrapper).ok()
+                    }
+                } else {
+                    let rest = &key["providers.custom.".len()..];
+                    let (id, field) = split_custom_provider_key(rest);
+                    let entry = self.providers.custom.iter().find(|e| e.id == id)?;
+                    match field {
+                        None => toml::to_string(entry).ok(),
+                        Some("id") => Some(entry.id.clone()),
+                        Some("api_key") => entry.api_key.clone(),
+                        Some("base_url") => entry.base_url.clone(),
+                        Some("model") => entry.model.clone(),
+                        Some("auth_mode") => entry.auth_mode.clone(),
+                        Some("http_headers") => serialize_http_headers(&entry.http_headers),
+                        // split_custom_provider_key only yields known fields.
+                        _ => None,
+                    }
+                }
+            }
+            _ => self.extras.get(key).map(toml::Value::to_string),
+        }
+    }
+
+    #[must_use]
+    pub fn get_display_value(&self, key: &str) -> Option<String> {
+        self.get_value(key).map(|value| {
+            if is_sensitive_config_key(key) {
+                redact_secret(&value)
+            } else {
+                value
+            }
+        })
+    }
+
+    pub fn set_value(&mut self, key: &str, value: &str) -> Result<()> {
+        match key {
+            "provider" => {
+                self.provider = ProviderKind::parse(value)
+                    .with_context(|| format!("unknown provider '{value}'"))?;
+            }
+            // The custom_provider selector is a raw id. An empty value clears
+            // it (matches `unset_value`); a builtin name is rejected so the
+            // builtin `provider` field stays the authoritative selector for
+            // known providers — custom ids must not shadow them.
+            "custom_provider" => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.custom_provider = None;
+                } else if ProviderKind::parse(trimmed).is_some() {
+                    anyhow::bail!(
+                        "custom_provider '{trimmed}' collides with a builtin provider; \
+                         use `provider = \"{trimmed}\"` instead"
+                    );
+                } else {
+                    self.custom_provider = Some(trimmed.to_string());
+                }
+            }
+            "api_key" => self.api_key = Some(value.to_string()),
+            "base_url" => self.base_url = Some(value.to_string()),
+            "http_headers" => self.http_headers = parse_http_headers(value)?,
+            "default_text_model" => self.default_text_model = Some(value.to_string()),
+            "model" => self.model = Some(value.to_string()),
+            "auth.mode" => self.auth_mode = Some(value.to_string()),
+            "output_mode" => self.output_mode = Some(value.to_string()),
+            "log_level" => self.log_level = Some(value.to_string()),
+            "telemetry" => {
+                self.telemetry = Some(parse_bool(value)?);
+            }
+            "approval_policy" => self.approval_policy = Some(value.to_string()),
+            "sandbox_mode" => self.sandbox_mode = Some(value.to_string()),
+            "hook_sinks.unix_socket_path" => {
+                self.hook_sinks
+                    .get_or_insert_with(HookSinksToml::default)
+                    .unix_socket_path = Some(PathBuf::from(value));
+            }
+            "providers.deepseek.api_key" => {
+                let value = value.to_string();
+                self.providers.deepseek.api_key = Some(value.clone());
+                self.api_key = Some(value);
+            }
+            "providers.deepseek.base_url" => {
+                let value = value.to_string();
+                self.providers.deepseek.base_url = Some(value.clone());
+                self.base_url = Some(value);
+            }
+            "providers.deepseek.model" => {
+                let value = value.to_string();
+                self.providers.deepseek.model = Some(value.clone());
+                self.default_text_model = Some(value);
+            }
+            "providers.deepseek.http_headers" => {
+                let headers = parse_http_headers(value)?;
+                self.providers.deepseek.http_headers = headers.clone();
+                self.http_headers = headers;
+            }
+            "providers.openai.api_key" => self.providers.openai.api_key = Some(value.to_string()),
+            "providers.openai.base_url" => self.providers.openai.base_url = Some(value.to_string()),
+            "providers.openai.model" => self.providers.openai.model = Some(value.to_string()),
+            "providers.openai.http_headers" => {
+                self.providers.openai.http_headers = parse_http_headers(value)?;
+            }
+            "providers.atlascloud.api_key" => {
+                self.providers.atlascloud.api_key = Some(value.to_string());
+            }
+            "providers.atlascloud.base_url" => {
+                self.providers.atlascloud.base_url = Some(value.to_string());
+            }
+            "providers.atlascloud.model" => {
+                self.providers.atlascloud.model = Some(value.to_string());
+            }
+            "providers.atlascloud.http_headers" => {
+                self.providers.atlascloud.http_headers = parse_http_headers(value)?;
+            }
+            "providers.wanjie_ark.api_key" => {
+                self.providers.wanjie_ark.api_key = Some(value.to_string());
+            }
+            "providers.wanjie_ark.base_url" => {
+                self.providers.wanjie_ark.base_url = Some(value.to_string());
+            }
+            "providers.wanjie_ark.model" => {
+                self.providers.wanjie_ark.model = Some(value.to_string());
+            }
+            "providers.volcengine.api_key" => {
+                self.providers.volcengine.api_key = Some(value.to_string());
+            }
+            "providers.volcengine.base_url" => {
+                self.providers.volcengine.base_url = Some(value.to_string());
+            }
+            "providers.volcengine.model" => {
+                self.providers.volcengine.model = Some(value.to_string());
+            }
+            "providers.wanjie_ark.http_headers" => {
+                self.providers.wanjie_ark.http_headers = parse_http_headers(value)?;
+            }
+            "providers.nvidia_nim.api_key" => {
+                self.providers.nvidia_nim.api_key = Some(value.to_string());
+            }
+            "providers.nvidia_nim.base_url" => {
+                self.providers.nvidia_nim.base_url = Some(value.to_string());
+            }
+            "providers.nvidia_nim.model" => {
+                self.providers.nvidia_nim.model = Some(value.to_string());
+            }
+            "providers.nvidia_nim.http_headers" => {
+                self.providers.nvidia_nim.http_headers = parse_http_headers(value)?;
+            }
+            "providers.openrouter.api_key" => {
+                self.providers.openrouter.api_key = Some(value.to_string());
+            }
+            "providers.openrouter.base_url" => {
+                self.providers.openrouter.base_url = Some(value.to_string());
+            }
+            "providers.openrouter.model" => {
+                self.providers.openrouter.model = Some(value.to_string());
+            }
+            "providers.openrouter.http_headers" => {
+                self.providers.openrouter.http_headers = parse_http_headers(value)?;
+            }
+            "providers.xiaomi_mimo.api_key" => {
+                self.providers.xiaomi_mimo.api_key = Some(value.to_string());
+            }
+            "providers.xiaomi_mimo.base_url" => {
+                self.providers.xiaomi_mimo.base_url = Some(value.to_string());
+            }
+            "providers.xiaomi_mimo.model" => {
+                self.providers.xiaomi_mimo.model = Some(value.to_string());
+            }
+            "providers.xiaomi_mimo.http_headers" => {
+                self.providers.xiaomi_mimo.http_headers = parse_http_headers(value)?;
+            }
+            "providers.novita.api_key" => {
+                self.providers.novita.api_key = Some(value.to_string());
+            }
+            "providers.novita.base_url" => {
+                self.providers.novita.base_url = Some(value.to_string());
+            }
+            "providers.novita.model" => {
+                self.providers.novita.model = Some(value.to_string());
+            }
+            "providers.novita.http_headers" => {
+                self.providers.novita.http_headers = parse_http_headers(value)?;
+            }
+            "providers.fireworks.api_key" => {
+                self.providers.fireworks.api_key = Some(value.to_string());
+            }
+            "providers.fireworks.base_url" => {
+                self.providers.fireworks.base_url = Some(value.to_string());
+            }
+            "providers.fireworks.model" => {
+                self.providers.fireworks.model = Some(value.to_string());
+            }
+            "providers.fireworks.http_headers" => {
+                self.providers.fireworks.http_headers = parse_http_headers(value)?;
+            }
+            "providers.siliconflow.api_key" => {
+                self.providers.siliconflow.api_key = Some(value.to_string());
+            }
+            "providers.siliconflow.base_url" => {
+                self.providers.siliconflow.base_url = Some(value.to_string());
+            }
+            "providers.siliconflow.model" => {
+                self.providers.siliconflow.model = Some(value.to_string());
+            }
+            "providers.siliconflow.http_headers" => {
+                self.providers.siliconflow.http_headers = parse_http_headers(value)?;
+            }
+            "providers.moonshot.api_key" => {
+                self.providers.moonshot.api_key = Some(value.to_string());
+            }
+            "providers.moonshot.base_url" => {
+                self.providers.moonshot.base_url = Some(value.to_string());
+            }
+            "providers.moonshot.model" => {
+                self.providers.moonshot.model = Some(value.to_string());
+            }
+            "providers.moonshot.auth_mode" => {
+                self.providers.moonshot.auth_mode = Some(value.to_string());
+            }
+            "providers.moonshot.http_headers" => {
+                self.providers.moonshot.http_headers = parse_http_headers(value)?;
+            }
+            "providers.sglang.api_key" => {
+                self.providers.sglang.api_key = Some(value.to_string());
+            }
+            "providers.sglang.base_url" => {
+                self.providers.sglang.base_url = Some(value.to_string());
+            }
+            "providers.sglang.model" => {
+                self.providers.sglang.model = Some(value.to_string());
+            }
+            "providers.sglang.http_headers" => {
+                self.providers.sglang.http_headers = parse_http_headers(value)?;
+            }
+            "providers.vllm.api_key" => {
+                self.providers.vllm.api_key = Some(value.to_string());
+            }
+            "providers.vllm.base_url" => {
+                self.providers.vllm.base_url = Some(value.to_string());
+            }
+            "providers.vllm.model" => {
+                self.providers.vllm.model = Some(value.to_string());
+            }
+            "providers.vllm.http_headers" => {
+                self.providers.vllm.http_headers = parse_http_headers(value)?;
+            }
+            "providers.ollama.api_key" => {
+                self.providers.ollama.api_key = Some(value.to_string());
+            }
+            "providers.ollama.base_url" => {
+                self.providers.ollama.base_url = Some(value.to_string());
+            }
+            "providers.ollama.model" => {
+                self.providers.ollama.model = Some(value.to_string());
+            }
+            "providers.ollama.http_headers" => {
+                self.providers.ollama.http_headers = parse_http_headers(value)?;
+            }
+            "providers.anthropic.api_key" => {
+                self.providers.anthropic.api_key = Some(value.to_string());
+            }
+            "providers.anthropic.base_url" => {
+                self.providers.anthropic.base_url = Some(value.to_string());
+            }
+            "providers.anthropic.model" => {
+                self.providers.anthropic.model = Some(value.to_string());
+            }
+            "providers.anthropic.http_headers" => {
+                self.providers.anthropic.http_headers = parse_http_headers(value)?;
+            }
+            // `[[providers.custom]]` per-entry writes (ROADMAP §D2 slice 46).
+            // Form: `providers.custom.<id>.<field>` finds (or creates) the entry
+            // by id and sets the field. The `id` field is rejected — it is the
+            // entry key, not a value (rename via unset + set). Whole-array /
+            // whole-entry forms bail with a hand-edit pointer: a single string
+            // can't populate a table.
+            key if key == "providers.custom" || key.starts_with("providers.custom.") => {
+                let rest = key.strip_prefix("providers.custom.").unwrap_or("");
+                if rest.is_empty() {
+                    anyhow::bail!(
+                        "'providers.custom' is a [[providers.custom]] array table and can't \
+                         be set as a single value; edit config.toml directly to add \
+                         [[providers.custom]] blocks (id, base_url, model, api_key) and \
+                         select one with `custom_provider`"
+                    );
+                }
+                let (id, field) = split_custom_provider_key(rest);
+                let Some(field) = field else {
+                    anyhow::bail!(
+                        "can't set whole [[providers.custom]] entry '{id}' from one value; \
+                         set individual fields as `providers.custom.{id}.<field>` (base_url, \
+                         model, api_key, auth_mode, http_headers)"
+                    );
+                };
+                if field == "id" {
+                    anyhow::bail!(
+                        "`providers.custom.{id}.id` can't be set — the id is the entry key; \
+                         to rename, `config unset providers.custom.{id}` then add the new entry"
+                    );
+                }
+                let entry = self.providers.custom.iter_mut().find(|e| e.id == id);
+                let entry = match entry {
+                    Some(e) => e,
+                    None => {
+                        self.providers.custom.push(CustomProviderToml {
+                            id: id.to_string(),
+                            ..Default::default()
+                        });
+                        self.providers.custom.last_mut().expect("just pushed")
+                    }
+                };
+                match field {
+                    "api_key" => entry.api_key = Some(value.to_string()),
+                    "base_url" => entry.base_url = Some(value.to_string()),
+                    "model" => entry.model = Some(value.to_string()),
+                    "auth_mode" => entry.auth_mode = Some(value.to_string()),
+                    "http_headers" => entry.http_headers = parse_http_headers(value)?,
+                    // `id` rejected above; split_custom_provider_key only
+                    // yields known fields.
+                    _ => unreachable!("split_custom_provider_key guards the field set"),
+                }
+            }
+            _ => {
+                self.extras
+                    .insert(key.to_string(), toml::Value::String(value.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn unset_value(&mut self, key: &str) -> Result<()> {
+        match key {
+            "provider" => self.provider = ProviderKind::Deepseek,
+            "custom_provider" => self.custom_provider = None,
+            "api_key" => self.api_key = None,
+            "base_url" => self.base_url = None,
+            "http_headers" => self.http_headers.clear(),
+            "default_text_model" => self.default_text_model = None,
+            "model" => self.model = None,
+            "auth.mode" => self.auth_mode = None,
+            "output_mode" => self.output_mode = None,
+            "log_level" => self.log_level = None,
+            "telemetry" => self.telemetry = None,
+            "approval_policy" => self.approval_policy = None,
+            "sandbox_mode" => self.sandbox_mode = None,
+            "hook_sinks.unix_socket_path" => {
+                if let Some(sinks) = self.hook_sinks.as_mut() {
+                    sinks.unix_socket_path = None;
+                }
+            }
+            "providers.deepseek.api_key" => {
+                self.providers.deepseek.api_key = None;
+                self.api_key = None;
+            }
+            "providers.deepseek.base_url" => {
+                self.providers.deepseek.base_url = None;
+                self.base_url = None;
+            }
+            "providers.deepseek.model" => {
+                self.providers.deepseek.model = None;
+                self.default_text_model = None;
+            }
+            "providers.deepseek.http_headers" => {
+                self.providers.deepseek.http_headers.clear();
+                self.http_headers.clear();
+            }
+            "providers.openai.api_key" => self.providers.openai.api_key = None,
+            "providers.openai.base_url" => self.providers.openai.base_url = None,
+            "providers.openai.model" => self.providers.openai.model = None,
+            "providers.openai.http_headers" => self.providers.openai.http_headers.clear(),
+            "providers.atlascloud.api_key" => self.providers.atlascloud.api_key = None,
+            "providers.atlascloud.base_url" => self.providers.atlascloud.base_url = None,
+            "providers.atlascloud.model" => self.providers.atlascloud.model = None,
+            "providers.atlascloud.http_headers" => self.providers.atlascloud.http_headers.clear(),
+            "providers.wanjie_ark.api_key" => self.providers.wanjie_ark.api_key = None,
+            "providers.wanjie_ark.base_url" => self.providers.wanjie_ark.base_url = None,
+            "providers.wanjie_ark.model" => self.providers.wanjie_ark.model = None,
+            "providers.volcengine.api_key" => self.providers.volcengine.api_key = None,
+            "providers.volcengine.base_url" => self.providers.volcengine.base_url = None,
+            "providers.volcengine.model" => self.providers.volcengine.model = None,
+            "providers.wanjie_ark.http_headers" => {
+                self.providers.wanjie_ark.http_headers.clear();
+            }
+            "providers.nvidia_nim.api_key" => self.providers.nvidia_nim.api_key = None,
+            "providers.nvidia_nim.base_url" => self.providers.nvidia_nim.base_url = None,
+            "providers.nvidia_nim.model" => self.providers.nvidia_nim.model = None,
+            "providers.nvidia_nim.http_headers" => self.providers.nvidia_nim.http_headers.clear(),
+            "providers.openrouter.api_key" => self.providers.openrouter.api_key = None,
+            "providers.openrouter.base_url" => self.providers.openrouter.base_url = None,
+            "providers.openrouter.model" => self.providers.openrouter.model = None,
+            "providers.openrouter.http_headers" => self.providers.openrouter.http_headers.clear(),
+            "providers.xiaomi_mimo.api_key" => self.providers.xiaomi_mimo.api_key = None,
+            "providers.xiaomi_mimo.base_url" => self.providers.xiaomi_mimo.base_url = None,
+            "providers.xiaomi_mimo.model" => self.providers.xiaomi_mimo.model = None,
+            "providers.xiaomi_mimo.http_headers" => {
+                self.providers.xiaomi_mimo.http_headers.clear();
+            }
+            "providers.novita.api_key" => self.providers.novita.api_key = None,
+            "providers.novita.base_url" => self.providers.novita.base_url = None,
+            "providers.novita.model" => self.providers.novita.model = None,
+            "providers.novita.http_headers" => self.providers.novita.http_headers.clear(),
+            "providers.fireworks.api_key" => self.providers.fireworks.api_key = None,
+            "providers.fireworks.base_url" => self.providers.fireworks.base_url = None,
+            "providers.fireworks.model" => self.providers.fireworks.model = None,
+            "providers.fireworks.http_headers" => self.providers.fireworks.http_headers.clear(),
+            "providers.siliconflow.api_key" => self.providers.siliconflow.api_key = None,
+            "providers.siliconflow.base_url" => self.providers.siliconflow.base_url = None,
+            "providers.siliconflow.model" => self.providers.siliconflow.model = None,
+            "providers.siliconflow.http_headers" => {
+                self.providers.siliconflow.http_headers.clear();
+            }
+            "providers.moonshot.api_key" => self.providers.moonshot.api_key = None,
+            "providers.moonshot.base_url" => self.providers.moonshot.base_url = None,
+            "providers.moonshot.model" => self.providers.moonshot.model = None,
+            "providers.moonshot.auth_mode" => self.providers.moonshot.auth_mode = None,
+            "providers.moonshot.http_headers" => self.providers.moonshot.http_headers.clear(),
+            "providers.sglang.api_key" => self.providers.sglang.api_key = None,
+            "providers.sglang.base_url" => self.providers.sglang.base_url = None,
+            "providers.sglang.model" => self.providers.sglang.model = None,
+            "providers.sglang.http_headers" => self.providers.sglang.http_headers.clear(),
+            "providers.vllm.api_key" => self.providers.vllm.api_key = None,
+            "providers.vllm.base_url" => self.providers.vllm.base_url = None,
+            "providers.vllm.model" => self.providers.vllm.model = None,
+            "providers.vllm.http_headers" => self.providers.vllm.http_headers.clear(),
+            "providers.ollama.api_key" => self.providers.ollama.api_key = None,
+            "providers.ollama.base_url" => self.providers.ollama.base_url = None,
+            "providers.ollama.model" => self.providers.ollama.model = None,
+            "providers.ollama.http_headers" => self.providers.ollama.http_headers.clear(),
+            "providers.anthropic.api_key" => self.providers.anthropic.api_key = None,
+            "providers.anthropic.base_url" => self.providers.anthropic.base_url = None,
+            "providers.anthropic.model" => self.providers.anthropic.model = None,
+            "providers.anthropic.http_headers" => self.providers.anthropic.http_headers.clear(),
+            // `[[providers.custom]]` per-entry unsets (ROADMAP §D2 slice 46):
+            // `providers.custom.<id>` removes the entry; `providers.custom.<id>.<field>`
+            // clears one field (the `id` field can't be unset — it is the key;
+            // use the whole-entry form to remove it).
+            key if key == "providers.custom" || key.starts_with("providers.custom.") => {
+                if key == "providers.custom" {
+                    self.providers.custom.clear();
+                } else {
+                    let rest = &key["providers.custom.".len()..];
+                    let (id, field) = split_custom_provider_key(rest);
+                    match field {
+                        None => self.providers.custom.retain(|e| e.id != id),
+                        Some("id") => {
+                            anyhow::bail!(
+                                "can't unset `providers.custom.{id}.id` — the id is the \
+                                 entry key; use `config unset providers.custom.{id}` to \
+                                 remove the entry"
+                            );
+                        }
+                        Some("api_key") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
+                                e.api_key = None;
+                            }
+                        }
+                        Some("base_url") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
+                                e.base_url = None;
+                            }
+                        }
+                        Some("model") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
+                                e.model = None;
+                            }
+                        }
+                        Some("auth_mode") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
+                                e.auth_mode = None;
+                            }
+                        }
+                        Some("http_headers") => {
+                            if let Some(e) = self.providers.custom.iter_mut().find(|e| e.id == id) {
+                                e.http_headers.clear();
+                            }
+                        }
+                        // split_custom_provider_key only yields known fields.
+                        _ => {}
+                    }
+                }
+            }
+            _ => {
+                self.extras.remove(key);
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn list_values(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        out.insert("provider".to_string(), self.provider.as_str().to_string());
+
+        if let Some(v) = self.custom_provider.as_ref() {
+            out.insert("custom_provider".to_string(), v.clone());
+        }
+        if let Some(v) = self.api_key.as_ref() {
+            out.insert("api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.base_url.as_ref() {
+            out.insert("base_url".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.http_headers) {
+            out.insert("http_headers".to_string(), v);
+        }
+        if let Some(v) = self.default_text_model.as_ref() {
+            out.insert("default_text_model".to_string(), v.clone());
+        }
+        if let Some(v) = self.model.as_ref() {
+            out.insert("model".to_string(), v.clone());
+        }
+        if let Some(v) = self.auth_mode.as_ref() {
+            out.insert("auth.mode".to_string(), v.clone());
+        }
+        if let Some(v) = self.output_mode.as_ref() {
+            out.insert("output_mode".to_string(), v.clone());
+        }
+        if let Some(v) = self.log_level.as_ref() {
+            out.insert("log_level".to_string(), v.clone());
+        }
+        if let Some(v) = self.telemetry {
+            out.insert("telemetry".to_string(), v.to_string());
+        }
+        if let Some(v) = self.approval_policy.as_ref() {
+            out.insert("approval_policy".to_string(), v.clone());
+        }
+        if let Some(v) = self.sandbox_mode.as_ref() {
+            out.insert("sandbox_mode".to_string(), v.clone());
+        }
+        if let Some(v) = self
+            .hook_sinks
+            .as_ref()
+            .and_then(|sinks| sinks.unix_socket_path.as_ref())
+        {
+            out.insert(
+                "hook_sinks.unix_socket_path".to_string(),
+                v.display().to_string(),
+            );
+        }
+        if let Some(v) = self.providers.deepseek.api_key.as_ref() {
+            out.insert("providers.deepseek.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.deepseek.base_url.as_ref() {
+            out.insert("providers.deepseek.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.deepseek.model.as_ref() {
+            out.insert("providers.deepseek.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.deepseek.http_headers) {
+            out.insert("providers.deepseek.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.openai.api_key.as_ref() {
+            out.insert("providers.openai.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.openai.base_url.as_ref() {
+            out.insert("providers.openai.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.openai.model.as_ref() {
+            out.insert("providers.openai.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.openai.http_headers) {
+            out.insert("providers.openai.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.atlascloud.api_key.as_ref() {
+            out.insert("providers.atlascloud.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.atlascloud.base_url.as_ref() {
+            out.insert("providers.atlascloud.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.atlascloud.model.as_ref() {
+            out.insert("providers.atlascloud.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.atlascloud.http_headers) {
+            out.insert("providers.atlascloud.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.volcengine.api_key.as_ref() {
+            out.insert("providers.volcengine.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.volcengine.base_url.as_ref() {
+            out.insert("providers.volcengine.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.volcengine.model.as_ref() {
+            out.insert("providers.volcengine.model".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.wanjie_ark.api_key.as_ref() {
+            out.insert("providers.wanjie_ark.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.wanjie_ark.base_url.as_ref() {
+            out.insert("providers.wanjie_ark.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.wanjie_ark.model.as_ref() {
+            out.insert("providers.wanjie_ark.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.volcengine.http_headers) {
+            out.insert("providers.volcengine.http_headers".to_string(), v);
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.wanjie_ark.http_headers) {
+            out.insert("providers.wanjie_ark.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.nvidia_nim.api_key.as_ref() {
+            out.insert("providers.nvidia_nim.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.nvidia_nim.base_url.as_ref() {
+            out.insert("providers.nvidia_nim.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.nvidia_nim.model.as_ref() {
+            out.insert("providers.nvidia_nim.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.nvidia_nim.http_headers) {
+            out.insert("providers.nvidia_nim.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.openrouter.api_key.as_ref() {
+            out.insert("providers.openrouter.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.openrouter.base_url.as_ref() {
+            out.insert("providers.openrouter.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.openrouter.model.as_ref() {
+            out.insert("providers.openrouter.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.openrouter.http_headers) {
+            out.insert("providers.openrouter.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.xiaomi_mimo.api_key.as_ref() {
+            out.insert(
+                "providers.xiaomi_mimo.api_key".to_string(),
+                redact_secret(v),
+            );
+        }
+        if let Some(v) = self.providers.xiaomi_mimo.base_url.as_ref() {
+            out.insert("providers.xiaomi_mimo.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.xiaomi_mimo.model.as_ref() {
+            out.insert("providers.xiaomi_mimo.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.xiaomi_mimo.http_headers) {
+            out.insert("providers.xiaomi_mimo.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.novita.api_key.as_ref() {
+            out.insert("providers.novita.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.novita.base_url.as_ref() {
+            out.insert("providers.novita.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.novita.model.as_ref() {
+            out.insert("providers.novita.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.novita.http_headers) {
+            out.insert("providers.novita.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.fireworks.api_key.as_ref() {
+            out.insert("providers.fireworks.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.fireworks.base_url.as_ref() {
+            out.insert("providers.fireworks.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.fireworks.model.as_ref() {
+            out.insert("providers.fireworks.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.fireworks.http_headers) {
+            out.insert("providers.fireworks.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.siliconflow.api_key.as_ref() {
+            out.insert(
+                "providers.siliconflow.api_key".to_string(),
+                redact_secret(v),
+            );
+        }
+        if let Some(v) = self.providers.siliconflow.base_url.as_ref() {
+            out.insert("providers.siliconflow.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.siliconflow.model.as_ref() {
+            out.insert("providers.siliconflow.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.siliconflow.http_headers) {
+            out.insert("providers.siliconflow.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.moonshot.api_key.as_ref() {
+            out.insert("providers.moonshot.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.moonshot.base_url.as_ref() {
+            out.insert("providers.moonshot.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.moonshot.model.as_ref() {
+            out.insert("providers.moonshot.model".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.moonshot.auth_mode.as_ref() {
+            out.insert("providers.moonshot.auth_mode".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.moonshot.http_headers) {
+            out.insert("providers.moonshot.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.sglang.api_key.as_ref() {
+            out.insert("providers.sglang.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.sglang.base_url.as_ref() {
+            out.insert("providers.sglang.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.sglang.model.as_ref() {
+            out.insert("providers.sglang.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.sglang.http_headers) {
+            out.insert("providers.sglang.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.vllm.api_key.as_ref() {
+            out.insert("providers.vllm.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.vllm.base_url.as_ref() {
+            out.insert("providers.vllm.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.vllm.model.as_ref() {
+            out.insert("providers.vllm.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.vllm.http_headers) {
+            out.insert("providers.vllm.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.ollama.api_key.as_ref() {
+            out.insert("providers.ollama.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.ollama.base_url.as_ref() {
+            out.insert("providers.ollama.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.ollama.model.as_ref() {
+            out.insert("providers.ollama.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.ollama.http_headers) {
+            out.insert("providers.ollama.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.anthropic.api_key.as_ref() {
+            out.insert("providers.anthropic.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.anthropic.base_url.as_ref() {
+            out.insert("providers.anthropic.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.anthropic.model.as_ref() {
+            out.insert("providers.anthropic.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.anthropic.http_headers) {
+            out.insert("providers.anthropic.http_headers".to_string(), v);
+        }
+
+        for (k, v) in &self.extras {
+            out.insert(k.clone(), v.to_string());
+        }
+        out
+    }
+
+    /// Resolve runtime options without touching platform credential stores.
+    ///
+    /// This method keeps library callers prompt-free: CLI flag → config file
+    /// → environment. Call `resolve_runtime_options_with_secrets` when a
+    /// user-facing dispatcher should recover credentials from the configured
+    /// secret store.
+    #[must_use]
+    pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
+        let no_keyring = Secrets::new(std::sync::Arc::new(
+            codesmith_secrets::InMemoryKeyringStore::new(),
+        ));
+        self.resolve_runtime_options_with_secrets(cli, &no_keyring)
+    }
+
+    /// Resolve runtime options using an explicit secrets façade.
+    ///
+    /// API-key precedence is **CLI flag → config-file → secret store → environment**.
+    #[must_use]
+    pub fn resolve_runtime_options_with_secrets(
+        &self,
+        cli: &CliRuntimeOverrides,
+        secrets: &Secrets,
+    ) -> ResolvedRuntimeOptions {
+        let env = EnvRuntimeOverrides::load();
+        let provider = cli.provider.or(env.provider).unwrap_or(self.provider);
+
+        let provider_cfg = self.providers.for_provider(provider);
+        let root_deepseek_api_key = (provider == ProviderKind::Deepseek)
+            .then(|| self.api_key.clone())
+            .flatten();
+        let root_deepseek_base_url = (provider == ProviderKind::Deepseek)
+            .then(|| self.base_url.clone())
+            .flatten();
+        let root_deepseek_model = (provider == ProviderKind::Deepseek)
+            .then(|| self.default_text_model.clone())
+            .flatten();
+        let auth_mode = cli
+            .auth_mode
+            .clone()
+            .or_else(|| env.auth_mode.clone())
+            .or_else(|| provider_cfg.auth_mode.clone())
+            .or_else(|| self.auth_mode.clone());
+        let base_url = cli
+            .base_url
+            .clone()
+            .or_else(|| env.base_url_for(provider))
+            .or_else(|| provider_cfg.base_url.clone())
+            .or(root_deepseek_base_url)
+            .unwrap_or_else(|| match provider {
+                ProviderKind::Deepseek => DEFAULT_DEEPSEEK_BASE_URL.to_string(),
+                ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL.to_string(),
+                ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL.to_string(),
+                ProviderKind::Atlascloud => DEFAULT_ATLASCLOUD_BASE_URL.to_string(),
+                ProviderKind::WanjieArk => DEFAULT_WANJIE_ARK_BASE_URL.to_string(),
+                ProviderKind::Volcengine => DEFAULT_VOLCENGINE_BASE_URL.to_string(),
+                ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL.to_string(),
+                ProviderKind::XiaomiMimo => DEFAULT_XIAOMI_MIMO_BASE_URL.to_string(),
+                ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL.to_string(),
+                ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
+                ProviderKind::Siliconflow => DEFAULT_SILICONFLOW_BASE_URL.to_string(),
+                ProviderKind::Moonshot => {
+                    if auth_mode.as_deref().is_some_and(auth_mode_uses_kimi_oauth) {
+                        DEFAULT_KIMI_CODE_BASE_URL.to_string()
+                    } else {
+                        DEFAULT_MOONSHOT_BASE_URL.to_string()
+                    }
+                }
+                ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
+                ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
+                ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL.to_string(),
+                ProviderKind::Anthropic => DEFAULT_ANTHROPIC_BASE_URL.to_string(),
+            });
+        // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
+        // This makes `deepseek auth set` a reliable fix even when the user's
+        // shell still exports an old key. When the file is empty, the injected
+        // secrets façade recovers configured secret-store credentials before
+        // falling back to ambient env.
+        let uses_kimi_oauth = provider == ProviderKind::Moonshot
+            && auth_mode.as_deref().is_some_and(auth_mode_uses_kimi_oauth);
+        let from_file = provider_cfg.api_key.clone().or(root_deepseek_api_key);
+        let (api_key, api_key_source) = if let Some(value) = cli.api_key.clone() {
+            (Some(value), Some(RuntimeApiKeySource::Cli))
+        } else if uses_kimi_oauth {
+            (None, None)
+        } else if let Some(value) = from_file.clone().filter(|v| !v.trim().is_empty()) {
+            (Some(value), Some(RuntimeApiKeySource::ConfigFile))
+        } else if should_skip_secret_store_for_provider(provider, &base_url, auth_mode.as_deref()) {
+            match codesmith_secrets::env_for(provider.as_str()) {
+                Some(value) => (Some(value), Some(RuntimeApiKeySource::Env)),
+                None => (None, None),
+            }
+        } else {
+            match secrets.resolve_with_source(provider.as_str()) {
+                Some((value, source)) => {
+                    let source = match source {
+                        SecretSource::Keyring => RuntimeApiKeySource::Keyring,
+                        SecretSource::Env => RuntimeApiKeySource::Env,
+                    };
+                    (Some(value), Some(source))
+                }
+                None => (None, None),
+            }
+        };
+
+        let env_provider_model = env.model_for(provider, &base_url);
+        let explicit_model = cli.model.is_some()
+            || env.model.is_some()
+            || env_provider_model.is_some()
+            || provider_cfg.model.is_some()
+            || root_deepseek_model.is_some()
+            || self.model.is_some();
+        let model = cli
+            .model
+            .clone()
+            .or_else(|| env.model.clone())
+            .or(env_provider_model)
+            .or_else(|| provider_cfg.model.clone())
+            .or(root_deepseek_model)
+            .or_else(|| self.model.clone())
+            .unwrap_or_else(|| {
+                if provider == ProviderKind::Moonshot
+                    && (auth_mode.as_deref().is_some_and(auth_mode_uses_kimi_oauth)
+                        || moonshot_base_url_uses_kimi_code(&base_url))
+                {
+                    DEFAULT_KIMI_CODE_MODEL.to_string()
+                } else {
+                    default_model_for_provider(provider).to_string()
+                }
+            });
+        let model =
+            if explicit_model && provider_preserves_custom_base_url_model(provider, &base_url) {
+                model.trim().to_string()
+            } else {
+                normalize_model_for_provider(provider, &model)
+            };
+
+        let mut http_headers = self.http_headers.clone();
+        http_headers.extend(provider_cfg.http_headers.clone());
+        if let Some(env_headers) = env.http_headers {
+            http_headers.extend(env_headers);
+        }
+        http_headers.retain(|name, value| !name.trim().is_empty() && !value.trim().is_empty());
+
+        let output_mode = cli
+            .output_mode
+            .clone()
+            .or_else(|| env.output_mode.clone())
+            .or_else(|| self.output_mode.clone());
+        let log_level = cli
+            .log_level
+            .clone()
+            .or_else(|| env.log_level.clone())
+            .or_else(|| self.log_level.clone());
+        let telemetry = cli
+            .telemetry
+            .or(env.telemetry)
+            .or(self.telemetry)
+            .unwrap_or(false);
+        let approval_policy = cli
+            .approval_policy
+            .clone()
+            .or_else(|| env.approval_policy.clone())
+            .or_else(|| self.approval_policy.clone());
+        let sandbox_mode = cli
+            .sandbox_mode
+            .clone()
+            .or_else(|| env.sandbox_mode.clone())
+            .or_else(|| self.sandbox_mode.clone());
+        let yolo = cli.yolo.or(env.yolo);
+
+        ResolvedRuntimeOptions {
+            provider,
+            model,
+            api_key,
+            api_key_source,
+            base_url,
+            auth_mode,
+            output_mode,
+            log_level,
+            telemetry,
+            approval_policy,
+            sandbox_mode,
+            yolo,
+            http_headers,
+        }
+    }
+}
+
+fn merge_project_provider_config(target: &mut ProviderConfigToml, source: &ProviderConfigToml) {
+    if source.model.is_some() {
+        target.model = source.model.clone();
+    }
+}
+
+#[must_use]
+pub fn project_approval_policy_is_allowed(current: Option<&str>, project: &str) -> bool {
+    let Some(project_rank) = approval_policy_rank(project) else {
+        return false;
+    };
+    match current.and_then(approval_policy_rank) {
+        Some(current_rank) => project_rank >= current_rank,
+        None => project_rank >= 2,
+    }
+}
+
+#[must_use]
+pub fn project_sandbox_mode_is_allowed(current: Option<&str>, project: &str) -> bool {
+    let normalized_project = project.trim().to_ascii_lowercase();
+    if normalized_project == "external-sandbox" {
+        return current
+            .map(|value| value.trim().eq_ignore_ascii_case("external-sandbox"))
+            .unwrap_or(false);
+    }
+
+    let Some(project_rank) = sandbox_mode_rank(project) else {
+        return false;
+    };
+    match current.and_then(sandbox_mode_rank) {
+        Some(current_rank) => project_rank >= current_rank,
+        None => project_rank >= 2,
+    }
+}
+
+fn approval_policy_rank(value: &str) -> Option<u8> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(0),
+        "suggest" | "suggested" | "on-request" | "untrusted" => Some(1),
+        "never" | "deny" | "denied" => Some(2),
+        _ => None,
+    }
+}
+
+fn sandbox_mode_rank(value: &str) -> Option<u8> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "danger-full-access" => Some(0),
+        "external-sandbox" => Some(0),
+        "workspace-write" => Some(1),
+        "read-only" => Some(2),
+        _ => None,
+    }
+}
+
+/// Load a project-level config from the workspace.
+///
+/// Reads `$WORKSPACE/.codesmith/config.toml`.
+/// Returns `None` if the file doesn't exist or can't be parsed.
+pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
+    let path = workspace.join(CODESMITH_APP_DIR).join(CONFIG_FILE_NAME);
+    if path.exists()
+        && let Ok(raw) = fs::read_to_string(&path)
+    {
+        return toml::from_str(&raw).ok();
+    }
+    None
+}
+
+fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
+    if matches!(
+        provider,
+        ProviderKind::Atlascloud
+            | ProviderKind::WanjieArk
+            | ProviderKind::Volcengine
+            | ProviderKind::XiaomiMimo
+            | ProviderKind::Ollama
+            | ProviderKind::Anthropic
+    ) {
+        return model.to_string();
+    }
+
+    let normalized = model.trim().to_ascii_lowercase();
+    if provider == ProviderKind::Openrouter
+        && let Some(canonical) = canonical_openrouter_recent_model_id(&normalized)
+    {
+        return canonical.to_string();
+    }
+    match (provider, normalized.as_str()) {
+        (ProviderKind::NvidiaNim, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_NVIDIA_NIM_MODEL.to_string()
+        }
+        (
+            ProviderKind::NvidiaNim,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => DEFAULT_NVIDIA_NIM_FLASH_MODEL.to_string(),
+        (ProviderKind::Openrouter, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_OPENROUTER_MODEL.to_string()
+        }
+        (
+            ProviderKind::Openrouter,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => DEFAULT_OPENROUTER_FLASH_MODEL.to_string(),
+        (ProviderKind::Novita, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_NOVITA_MODEL.to_string()
+        }
+        (
+            ProviderKind::Novita,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => DEFAULT_NOVITA_FLASH_MODEL.to_string(),
+        (ProviderKind::Fireworks, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_FIREWORKS_MODEL.to_string()
+        }
+        (
+            ProviderKind::Siliconflow,
+            "deepseek-v4-pro" | "deepseek-v4pro" | "deepseek-reasoner" | "deepseek-r1",
+        ) => DEFAULT_SILICONFLOW_MODEL.to_string(),
+        (
+            ProviderKind::Siliconflow,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-v3",
+        ) => DEFAULT_SILICONFLOW_FLASH_MODEL.to_string(),
+        (ProviderKind::Moonshot, "kimi-k2.6" | "kimi-k2") => DEFAULT_MOONSHOT_MODEL.to_string(),
+        (ProviderKind::Sglang, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_SGLANG_MODEL.to_string()
+        }
+        (
+            ProviderKind::Sglang,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
+        (ProviderKind::Vllm, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_VLLM_MODEL.to_string()
+        }
+        (
+            ProviderKind::Vllm,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => DEFAULT_VLLM_FLASH_MODEL.to_string(),
+        _ => model.to_string(),
+    }
+}
+
+fn canonical_openrouter_recent_model_id(model: &str) -> Option<&'static str> {
+    let normalized = model.trim().to_ascii_lowercase();
+    let normalized = normalized.replace(['_', ' '], "-");
+    match normalized.as_str() {
+        OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL
+        | "trinity"
+        | "trinity-large-thinking"
+        | "arcee-trinity"
+        | "arcee-trinity-large-thinking" => Some(OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL),
+        OPENROUTER_GEMMA_4_31B_MODEL | "gemma-4-31b" | "gemma-4-31b-it" => {
+            Some(OPENROUTER_GEMMA_4_31B_MODEL)
+        }
+        OPENROUTER_GEMMA_4_26B_A4B_MODEL | "gemma-4-26b-a4b" | "gemma-4-26b-a4b-it" => {
+            Some(OPENROUTER_GEMMA_4_26B_A4B_MODEL)
+        }
+        OPENROUTER_GLM_5_1_MODEL | "glm-5.1" | "glm-5-1" | "zai-glm-5.1" | "zai-glm-5-1" => {
+            Some(OPENROUTER_GLM_5_1_MODEL)
+        }
+        OPENROUTER_KIMI_K2_6_MODEL | "kimi-k2.6" | "kimi-k2-6" | "moonshot-kimi-k2.6" => {
+            Some(OPENROUTER_KIMI_K2_6_MODEL)
+        }
+        OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL
+        | "nemotron-3-nano-omni"
+        | "nemotron-3-nano-omni-reasoning" => Some(OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL),
+        OPENROUTER_QWEN_3_7_MAX_MODEL
+        | "qwen3.7"
+        | "qwen-3.7"
+        | "qwen3-7"
+        | "qwen3.7-max"
+        | "qwen-3.7-max"
+        | "qwen3-7-max" => Some(OPENROUTER_QWEN_3_7_MAX_MODEL),
+        OPENROUTER_QWEN_3_6_35B_A3B_MODEL
+        | "qwen3.6-35b-a3b"
+        | "qwen-3.6-35b-a3b"
+        | "qwen3-6-35b-a3b" => Some(OPENROUTER_QWEN_3_6_35B_A3B_MODEL),
+        OPENROUTER_QWEN_3_6_27B_MODEL | "qwen3.6-27b" | "qwen-3.6-27b" | "qwen3-6-27b" => {
+            Some(OPENROUTER_QWEN_3_6_27B_MODEL)
+        }
+        OPENROUTER_TENCENT_HY3_PREVIEW_MODEL | "hy3-preview" | "tencent-hy3-preview" => {
+            Some(OPENROUTER_TENCENT_HY3_PREVIEW_MODEL)
+        }
+        OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL
+        | "mimo-v2.5-pro"
+        | "mimo-v2-5-pro"
+        | "xiaomi-mimo-v2.5-pro"
+        | "xiaomi-mimo-v2-5-pro" => Some(OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL),
+        OPENROUTER_XIAOMI_MIMO_V2_5_MODEL
+        | "mimo-v2.5"
+        | "mimo-v2-5"
+        | "xiaomi-mimo-v2.5"
+        | "xiaomi-mimo-v2-5" => Some(OPENROUTER_XIAOMI_MIMO_V2_5_MODEL),
+        _ => None,
+    }
+}
+
+fn default_model_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Deepseek => DEFAULT_DEEPSEEK_MODEL,
+        ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
+        ProviderKind::Openai => DEFAULT_OPENAI_MODEL,
+        ProviderKind::Atlascloud => DEFAULT_ATLASCLOUD_MODEL,
+        ProviderKind::WanjieArk => DEFAULT_WANJIE_ARK_MODEL,
+        ProviderKind::Volcengine => DEFAULT_VOLCENGINE_MODEL,
+        ProviderKind::Openrouter => DEFAULT_OPENROUTER_MODEL,
+        ProviderKind::XiaomiMimo => DEFAULT_XIAOMI_MIMO_MODEL,
+        ProviderKind::Novita => DEFAULT_NOVITA_MODEL,
+        ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL,
+        ProviderKind::Siliconflow => DEFAULT_SILICONFLOW_MODEL,
+        ProviderKind::Moonshot => DEFAULT_MOONSHOT_MODEL,
+        ProviderKind::Sglang => DEFAULT_SGLANG_MODEL,
+        ProviderKind::Vllm => DEFAULT_VLLM_MODEL,
+        ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL,
+        ProviderKind::Anthropic => DEFAULT_ANTHROPIC_MODEL,
+    }
+}
+
+fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Deepseek => DEFAULT_DEEPSEEK_BASE_URL,
+        ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
+        ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL,
+        ProviderKind::Atlascloud => DEFAULT_ATLASCLOUD_BASE_URL,
+        ProviderKind::WanjieArk => DEFAULT_WANJIE_ARK_BASE_URL,
+        ProviderKind::Volcengine => DEFAULT_VOLCENGINE_BASE_URL,
+        ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
+        ProviderKind::XiaomiMimo => DEFAULT_XIAOMI_MIMO_BASE_URL,
+        ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL,
+        ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
+        ProviderKind::Siliconflow => DEFAULT_SILICONFLOW_BASE_URL,
+        ProviderKind::Moonshot => DEFAULT_MOONSHOT_BASE_URL,
+        ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL,
+        ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL,
+        ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL,
+        ProviderKind::Anthropic => DEFAULT_ANTHROPIC_BASE_URL,
+    }
+}
+
+fn moonshot_base_url_uses_kimi_code(base_url: &str) -> bool {
+    let normalized = base_url.trim_end_matches('/').to_ascii_lowercase();
+    normalized == DEFAULT_KIMI_CODE_BASE_URL
+        || normalized == "https://api.kimi.com/coding"
+        || normalized.starts_with("https://api.kimi.com/coding/")
+}
+
+fn base_url_is_custom_for_provider(provider: ProviderKind, base_url: &str) -> bool {
+    if provider == ProviderKind::Siliconflow && siliconflow_base_url_is_official(base_url) {
+        return false;
+    }
+    let actual = base_url.trim_end_matches('/');
+    let default = default_base_url_for_provider(provider).trim_end_matches('/');
+    actual != default
+}
+
+fn siliconflow_base_url_is_official(base_url: &str) -> bool {
+    matches!(
+        base_url.trim_end_matches('/').to_ascii_lowercase().as_str(),
+        "https://api.siliconflow.com/v1" | "https://api.siliconflow.cn/v1"
+    )
+}
+
+fn provider_preserves_custom_base_url_model(provider: ProviderKind, base_url: &str) -> bool {
+    base_url_is_custom_for_provider(provider, base_url)
+}
+
+fn should_skip_secret_store_for_provider(
+    provider: ProviderKind,
+    base_url: &str,
+    auth_mode: Option<&str>,
+) -> bool {
+    if auth_mode_requires_api_key(auth_mode) {
+        return false;
+    }
+    if auth_mode_disables_api_key(auth_mode) {
+        return true;
+    }
+
+    matches!(
+        provider,
+        ProviderKind::Sglang | ProviderKind::Vllm | ProviderKind::Ollama
+    ) || base_url_uses_local_host(base_url)
+}
+
+fn auth_mode_requires_api_key(auth_mode: Option<&str>) -> bool {
+    matches!(
+        auth_mode
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase()),
+        Some(value)
+            if matches!(
+                value.as_str(),
+                "api_key" | "api-key" | "apikey" | "bearer" | "bearer-token"
+            )
+    )
+}
+
+fn auth_mode_disables_api_key(auth_mode: Option<&str>) -> bool {
+    matches!(
+        auth_mode
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase()),
+        Some(value)
+            if matches!(
+                value.as_str(),
+                "none" | "off" | "disabled" | "no_auth" | "no-auth" | "anonymous"
+            )
+    )
+}
+
+fn auth_mode_uses_kimi_oauth(auth_mode: &str) -> bool {
+    matches!(
+        auth_mode
+            .trim()
+            .to_ascii_lowercase()
+            .replace('-', "_")
+            .as_str(),
+        "kimi" | "kimi_oauth" | "kimi_cli" | "oauth"
+    )
+}
+
+fn base_url_uses_local_host(base_url: &str) -> bool {
+    let Some(host) = base_url_host(base_url) else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    if matches!(host.as_str(), "localhost" | "0.0.0.0") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
+}
+
+fn base_url_host(base_url: &str) -> Option<&str> {
+    let without_scheme = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    let authority = without_scheme.split('/').next()?.rsplit('@').next()?;
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split_once(']').map(|(host, _)| host);
+    }
+    authority.split(':').next().filter(|host| !host.is_empty())
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CliRuntimeOverrides {
+    pub provider: Option<ProviderKind>,
+    pub model: Option<String>,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub auth_mode: Option<String>,
+    pub output_mode: Option<String>,
+    pub log_level: Option<String>,
+    pub telemetry: Option<bool>,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+    pub yolo: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeApiKeySource {
+    Cli,
+    ConfigFile,
+    Keyring,
+    Env,
+}
+
+impl RuntimeApiKeySource {
+    #[must_use]
+    pub fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::ConfigFile => "config",
+            Self::Keyring => "keyring",
+            Self::Env => "env",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedRuntimeOptions {
+    pub provider: ProviderKind,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub api_key_source: Option<RuntimeApiKeySource>,
+    pub base_url: String,
+    pub auth_mode: Option<String>,
+    pub output_mode: Option<String>,
+    pub log_level: Option<String>,
+    pub telemetry: bool,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+    pub yolo: Option<bool>,
+    pub http_headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigStore {
+    path: PathBuf,
+    pub config: ConfigToml,
+}
+
+impl ConfigStore {
+    pub fn load(path: Option<PathBuf>) -> Result<Self> {
+        let path = resolve_config_path(path)?;
+        if !path.exists() {
+            return Ok(Self {
+                path,
+                config: ConfigToml::default(),
+            });
+        }
+
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        let parsed: ConfigToml = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?;
+
+        Ok(Self {
+            path,
+            config: parsed,
+        })
+    }
+
+    pub fn save(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create config directory {}", parent.display())
+            })?;
+        }
+        let body = toml::to_string_pretty(&self.config).context("failed to serialize config")?;
+        #[cfg(unix)]
+        {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&self.path)
+                .with_context(|| format!("failed to write config at {}", self.path.display()))?;
+            file.write_all(body.as_bytes())
+                .with_context(|| format!("failed to write config at {}", self.path.display()))?;
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .with_context(|| {
+                    format!(
+                        "failed to set config permissions at {}",
+                        self.path.display()
+                    )
+                })?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&self.path, body)
+                .with_context(|| format!("failed to write config at {}", self.path.display()))?;
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Process-wide default [`Secrets`] façade. The first caller wins; the
+/// lock is exposed so test or CLI code can install an explicit
+/// backend (e.g. an [`codesmith_secrets::InMemoryKeyringStore`]) before
+/// any resolver runs.
+pub fn default_secrets() -> &'static Secrets {
+    static SECRETS: OnceLock<Secrets> = OnceLock::new();
+    SECRETS.get_or_init(|| {
+        // Tests should never poke real platform credential stores. Cargo sets the
+        // `RUST_TEST_*` family of env vars (and `CARGO_PKG_NAME` is
+        // always populated), but the `cfg(test)` flag is the canonical
+        // signal here. See `install_test_secrets` for explicit installs.
+        #[cfg(test)]
+        {
+            Secrets::new(std::sync::Arc::new(
+                codesmith_secrets::InMemoryKeyringStore::new(),
+            ))
+        }
+        #[cfg(not(test))]
+        {
+            Secrets::auto_detect()
+        }
+    })
+}
+
+// ── CodeSmith state root ─────────────────────────────────────────────
+//
+// CodeSmith writes product-owned app state to ~/.codesmith/.
+
+/// Canonical CodeSmith app directory name under $HOME.
+pub const CODESMITH_APP_DIR: &str = ".codesmith";
+
+/// Resolve the primary CodeSmith home directory.
+///
+/// `$CODESMITH_HOME` takes precedence when set. Otherwise defaults to
+/// `$HOME/.codesmith`. This is the write target for new product state.
+pub fn codesmith_home() -> Result<PathBuf> {
+    if let Ok(val) = std::env::var("CODESMITH_HOME") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    let home = dirs::home_dir().context("failed to resolve home directory")?;
+    Ok(home.join(CODESMITH_APP_DIR))
+}
+
+/// Resolve a state subdirectory under the CodeSmith root.
+pub fn resolve_state_dir(subdir: &str) -> Result<PathBuf> {
+    Ok(codesmith_home()?.join(subdir))
+}
+
+/// Ensure a state subdirectory exists under the primary CodeSmith root,
+/// creating it if necessary. This is the write-path resolver.
+pub fn ensure_state_dir(subdir: &str) -> Result<PathBuf> {
+    let dir = codesmith_home()?.join(subdir);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create {}/", dir.display()))?;
+    Ok(dir)
+}
+
+/// Resolve a project-local state subdirectory under `.codesmith/`.
+pub fn resolve_project_state_dir(workspace: &Path, subdir: &str) -> PathBuf {
+    workspace.join(CODESMITH_APP_DIR).join(subdir)
+}
+
+/// Ensure a project-local state subdirectory exists under `.codesmith/`,
+/// creating it if necessary. Returns the directory path.
+pub fn ensure_project_state_dir(workspace: &Path, subdir: &str) -> Result<PathBuf> {
+    let dir = workspace.join(CODESMITH_APP_DIR).join(subdir);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create {}/", dir.display()))?;
+    Ok(dir)
+}
+
+pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    let path = if let Some(path) = explicit {
+        path
+    } else if let Ok(path) = std::env::var("CODESMITH_CONFIG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            PathBuf::from(trimmed)
+        } else {
+            return default_config_path();
+        }
+    } else {
+        return default_config_path();
+    };
+    normalize_config_file_path(path)
+}
+
+pub fn default_config_path() -> Result<PathBuf> {
+    Ok(codesmith_home()?.join(CONFIG_FILE_NAME))
+}
+
+fn parse_bool(raw: &str) -> Result<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "enabled" => Ok(true),
+        "0" | "false" | "no" | "off" | "disabled" => Ok(false),
+        _ => bail!("invalid boolean '{raw}'"),
+    }
+}
+
+fn parse_http_headers(raw: &str) -> Result<BTreeMap<String, String>> {
+    let mut headers = BTreeMap::new();
+    for pair in raw.trim().split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = pair.split_once('=') else {
+            bail!("invalid header pair '{pair}', expected name=value");
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() {
+            bail!("header name cannot be empty");
+        }
+        if value.is_empty() {
+            continue;
+        }
+        headers.insert(name.to_string(), value.to_string());
+    }
+    Ok(headers)
+}
+
+fn serialize_http_headers(headers: &BTreeMap<String, String>) -> Option<String> {
+    if headers.is_empty() {
+        return None;
+    }
+    Some(
+        headers
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+fn redact_secret(secret: &str) -> String {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 16 {
+        return "********".to_string();
+    }
+    let prefix: String = chars.iter().take(4).collect();
+    let suffix: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{prefix}***{suffix}")
+}
+
+/// The per-entry fields of a `[[providers.custom]]` entry, recognized by
+/// [`split_custom_provider_key`] when splitting a `providers.custom.<...>`
+/// key. `id` is included so the splitter recognizes it (it is then rejected
+/// as settable / unsettable — the id is the key, not a value).
+const CUSTOM_PROVIDER_FIELDS: &[&str] = &[
+    "id",
+    "api_key",
+    "base_url",
+    "model",
+    "auth_mode",
+    "http_headers",
+];
+
+/// Split the `<rest>` of a `providers.custom.<rest>` key into `(id, field)`.
+///
+/// `<rest>` is split on the LAST `.`: if the trailing segment is a known
+/// per-entry field (`api_key`/`base_url`/`model`/`auth_mode`/`http_headers`,
+/// or `id`), the remainder is the entry id and the field is returned;
+/// otherwise the whole `<rest>` is the id (a whole-entry op, valid only for
+/// `get` / `unset`). This makes dotted ids like `"my.co"` work: the field
+/// segment is always the final one. The one ambiguity — an id whose final
+/// `.`-segment coincides with a field name — is documented as by-design.
+fn split_custom_provider_key(rest: &str) -> (&str, Option<&str>) {
+    match rest.rsplit_once('.') {
+        Some((id, field)) if CUSTOM_PROVIDER_FIELDS.contains(&field) => (id, Some(field)),
+        _ => (rest, None),
+    }
+}
+
+#[must_use]
+pub fn is_sensitive_config_key(key: &str) -> bool {
+    key == "api_key"
+        || key.ends_with(".api_key")
+        // The `[[providers.custom]]` array and a single whole entry both
+        // serialize their `api_key` fields, so the whole blob is treated as
+        // secret for display (ROADMAP §D2). Non-secret per-entry fields
+        // (`base_url`/`model`/`auth_mode`/`http_headers`/`id`) are shown as-is;
+        // per-entry `api_key` is masked by the `.api_key` rule above.
+        || key == "providers.custom"
+        || (key.starts_with("providers.custom.")
+            && !key.ends_with(".base_url")
+            && !key.ends_with(".model")
+            && !key.ends_with(".auth_mode")
+            && !key.ends_with(".http_headers")
+            && !key.ends_with(".id"))
+}
+
+fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        bail!("config path cannot be empty");
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        bail!("config path cannot contain '..' components");
+    }
+    if path.file_name().is_none() {
+        bail!("config path must include a file name");
+    }
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    Ok(std::env::current_dir()
+        .context("failed to resolve current directory for config path")?
+        .join(path))
+}
+
+#[derive(Debug, Clone, Default)]
+struct EnvRuntimeOverrides {
+    provider: Option<ProviderKind>,
+    model: Option<String>,
+    volcengine_model: Option<String>,
+    wanjie_ark_model: Option<String>,
+    moonshot_model: Option<String>,
+    xiaomi_mimo_model: Option<String>,
+    output_mode: Option<String>,
+    auth_mode: Option<String>,
+    log_level: Option<String>,
+    telemetry: Option<bool>,
+    approval_policy: Option<String>,
+    sandbox_mode: Option<String>,
+    yolo: Option<bool>,
+    http_headers: Option<BTreeMap<String, String>>,
+    deepseek_base_url: Option<String>,
+    nvidia_base_url: Option<String>,
+    openai_base_url: Option<String>,
+    atlascloud_base_url: Option<String>,
+    volcengine_base_url: Option<String>,
+    wanjie_ark_base_url: Option<String>,
+    openrouter_base_url: Option<String>,
+    xiaomi_mimo_base_url: Option<String>,
+    novita_base_url: Option<String>,
+    fireworks_base_url: Option<String>,
+    siliconflow_base_url: Option<String>,
+    siliconflow_model: Option<String>,
+    moonshot_base_url: Option<String>,
+    sglang_base_url: Option<String>,
+    vllm_base_url: Option<String>,
+    ollama_base_url: Option<String>,
+    anthropic_base_url: Option<String>,
+}
+
+/// Read an app-level env var by suffix (`CODESMITH_{suffix}`). Empty values
+/// are skipped so a blank shell export does not erase configured settings.
+pub fn codesmith_env(suffix: &str) -> Option<String> {
+    std::env::var(format!("CODESMITH_{suffix}"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+impl EnvRuntimeOverrides {
+    fn load() -> Self {
+        Self {
+            provider: std::env::var("CODESMITH_PROVIDER")
+                .ok()
+                .and_then(|v| ProviderKind::parse(&v)),
+            model: std::env::var("CODESMITH_MODEL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            volcengine_model: std::env::var("VOLCENGINE_MODEL")
+                .or_else(|_| std::env::var("VOLCENGINE_ARK_MODEL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            wanjie_ark_model: std::env::var("WANJIE_ARK_MODEL")
+                .or_else(|_| std::env::var("WANJIE_MODEL"))
+                .or_else(|_| std::env::var("WANJIE_MAAS_MODEL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            moonshot_model: std::env::var("MOONSHOT_MODEL")
+                .or_else(|_| std::env::var("KIMI_MODEL_NAME"))
+                .or_else(|_| std::env::var("KIMI_MODEL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            xiaomi_mimo_model: std::env::var("XIAOMI_MIMO_MODEL")
+                .or_else(|_| std::env::var("MIMO_MODEL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            output_mode: codesmith_env("OUTPUT_MODE"),
+            auth_mode: codesmith_env("AUTH_MODE"),
+            log_level: codesmith_env("LOG_LEVEL"),
+            telemetry: codesmith_env("TELEMETRY").and_then(|v| parse_bool(&v).ok()),
+            approval_policy: codesmith_env("APPROVAL_POLICY"),
+            sandbox_mode: codesmith_env("SANDBOX_MODE"),
+            yolo: codesmith_env("YOLO").and_then(|v| parse_bool(&v).ok()),
+            http_headers: codesmith_env("HTTP_HEADERS")
+                .and_then(|value| parse_http_headers(&value).ok())
+                .filter(|headers| !headers.is_empty()),
+            deepseek_base_url: std::env::var("CODESMITH_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            nvidia_base_url: std::env::var("NVIDIA_NIM_BASE_URL")
+                .or_else(|_| std::env::var("NIM_BASE_URL"))
+                .or_else(|_| std::env::var("NVIDIA_BASE_URL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            openai_base_url: std::env::var("OPENAI_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            atlascloud_base_url: std::env::var("ATLASCLOUD_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            volcengine_base_url: std::env::var("VOLCENGINE_BASE_URL")
+                .or_else(|_| std::env::var("VOLCENGINE_ARK_BASE_URL"))
+                .or_else(|_| std::env::var("ARK_BASE_URL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            wanjie_ark_base_url: std::env::var("WANJIE_ARK_BASE_URL")
+                .or_else(|_| std::env::var("WANJIE_BASE_URL"))
+                .or_else(|_| std::env::var("WANJIE_MAAS_BASE_URL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            openrouter_base_url: std::env::var("OPENROUTER_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            xiaomi_mimo_base_url: std::env::var("XIAOMI_MIMO_BASE_URL")
+                .or_else(|_| std::env::var("MIMO_BASE_URL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            novita_base_url: std::env::var("NOVITA_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            fireworks_base_url: std::env::var("FIREWORKS_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            siliconflow_base_url: std::env::var("SILICONFLOW_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            siliconflow_model: std::env::var("SILICONFLOW_MODEL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            moonshot_base_url: std::env::var("MOONSHOT_BASE_URL")
+                .or_else(|_| std::env::var("KIMI_BASE_URL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            sglang_base_url: std::env::var("SGLANG_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            vllm_base_url: std::env::var("VLLM_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            ollama_base_url: std::env::var("OLLAMA_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            anthropic_base_url: std::env::var("ANTHROPIC_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+        }
+    }
+
+    fn base_url_for(&self, provider: ProviderKind) -> Option<String> {
+        // Defaults belong in the resolver's final fallback so config-file
+        // values (`providers.<name>.base_url`) still win when env is unset.
+        match provider {
+            ProviderKind::Deepseek => self.deepseek_base_url.clone(),
+            ProviderKind::NvidiaNim => self.nvidia_base_url.clone(),
+            ProviderKind::Openai => self.openai_base_url.clone(),
+            ProviderKind::Atlascloud => self.atlascloud_base_url.clone(),
+            ProviderKind::WanjieArk => self.wanjie_ark_base_url.clone(),
+            ProviderKind::Volcengine => self.volcengine_base_url.clone(),
+            ProviderKind::Openrouter => self.openrouter_base_url.clone(),
+            ProviderKind::XiaomiMimo => self.xiaomi_mimo_base_url.clone(),
+            ProviderKind::Novita => self.novita_base_url.clone(),
+            ProviderKind::Fireworks => self.fireworks_base_url.clone(),
+            ProviderKind::Siliconflow => self.siliconflow_base_url.clone(),
+            ProviderKind::Moonshot => self.moonshot_base_url.clone(),
+            ProviderKind::Sglang => self.sglang_base_url.clone(),
+            ProviderKind::Vllm => self.vllm_base_url.clone(),
+            ProviderKind::Ollama => self.ollama_base_url.clone(),
+            ProviderKind::Anthropic => self.anthropic_base_url.clone(),
+        }
+    }
+
+    fn model_for(&self, provider: ProviderKind, base_url: &str) -> Option<String> {
+        let model = match provider {
+            ProviderKind::WanjieArk => self.wanjie_ark_model.clone(),
+            ProviderKind::Volcengine => self.volcengine_model.clone(),
+            ProviderKind::Siliconflow => self.siliconflow_model.clone(),
+            ProviderKind::Moonshot => self.moonshot_model.clone(),
+            ProviderKind::XiaomiMimo => self.xiaomi_mimo_model.clone(),
+            _ => None,
+        }?;
+
+        if provider_preserves_custom_base_url_model(provider, base_url) {
+            Some(model.trim().to_string())
+        } else {
+            Some(normalize_model_for_provider(provider, &model))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn network_policy_toml_deserializes_proxy_hosts() {
+        let policy: NetworkPolicyToml = toml::from_str(
+            r#"
+            default = "allow"
+            proxy = ["github.com", ".githubusercontent.com"]
+            "#,
+        )
+        .expect("network policy toml");
+
+        assert_eq!(policy.default, "allow");
+        assert_eq!(policy.proxy, ["github.com", ".githubusercontent.com"]);
+        assert!(policy.audit);
+    }
+
+    struct EnvGuard {
+        deepseek_api_key: Option<OsString>,
+        codesmith_output_mode: Option<OsString>,
+        codesmith_auth_mode: Option<OsString>,
+        codesmith_log_level: Option<OsString>,
+        codesmith_telemetry: Option<OsString>,
+        codesmith_approval_policy: Option<OsString>,
+        codesmith_sandbox_mode: Option<OsString>,
+        codesmith_yolo: Option<OsString>,
+        codesmith_http_headers: Option<OsString>,
+        nvidia_api_key: Option<OsString>,
+        nvidia_nim_api_key: Option<OsString>,
+        nim_base_url: Option<OsString>,
+        nvidia_base_url: Option<OsString>,
+        nvidia_nim_base_url: Option<OsString>,
+        openrouter_api_key: Option<OsString>,
+        openrouter_base_url: Option<OsString>,
+        xiaomi_mimo_api_key: Option<OsString>,
+        xiaomi_api_key: Option<OsString>,
+        mimo_api_key: Option<OsString>,
+        xiaomi_mimo_base_url: Option<OsString>,
+        mimo_base_url: Option<OsString>,
+        xiaomi_mimo_model: Option<OsString>,
+        mimo_model: Option<OsString>,
+        wanjie_ark_api_key: Option<OsString>,
+        wanjie_ark_base_url: Option<OsString>,
+        wanjie_base_url: Option<OsString>,
+        wanjie_maas_base_url: Option<OsString>,
+        volcengine_model: Option<OsString>,
+        wanjie_ark_model: Option<OsString>,
+        wanjie_model: Option<OsString>,
+        wanjie_maas_model: Option<OsString>,
+        novita_api_key: Option<OsString>,
+        novita_base_url: Option<OsString>,
+        fireworks_api_key: Option<OsString>,
+        fireworks_base_url: Option<OsString>,
+        siliconflow_api_key: Option<OsString>,
+        siliconflow_base_url: Option<OsString>,
+        siliconflow_model: Option<OsString>,
+        moonshot_api_key: Option<OsString>,
+        moonshot_base_url: Option<OsString>,
+        moonshot_model: Option<OsString>,
+        kimi_api_key: Option<OsString>,
+        kimi_base_url: Option<OsString>,
+        kimi_model: Option<OsString>,
+        kimi_model_name: Option<OsString>,
+        sglang_api_key: Option<OsString>,
+        sglang_base_url: Option<OsString>,
+        vllm_api_key: Option<OsString>,
+        vllm_base_url: Option<OsString>,
+        ollama_api_key: Option<OsString>,
+        ollama_base_url: Option<OsString>,
+        codesmith_provider: Option<OsString>,
+        codesmith_model: Option<OsString>,
+        codesmith_base_url: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn without_runtime_overrides() -> Self {
+            let guard = Self {
+                deepseek_api_key: env::var_os("DEEPSEEK_API_KEY"),
+                codesmith_output_mode: env::var_os("CODESMITH_OUTPUT_MODE"),
+                codesmith_auth_mode: env::var_os("CODESMITH_AUTH_MODE"),
+                codesmith_log_level: env::var_os("CODESMITH_LOG_LEVEL"),
+                codesmith_telemetry: env::var_os("CODESMITH_TELEMETRY"),
+                codesmith_approval_policy: env::var_os("CODESMITH_APPROVAL_POLICY"),
+                codesmith_sandbox_mode: env::var_os("CODESMITH_SANDBOX_MODE"),
+                codesmith_yolo: env::var_os("CODESMITH_YOLO"),
+                codesmith_http_headers: env::var_os("CODESMITH_HTTP_HEADERS"),
+                codesmith_provider: env::var_os("CODESMITH_PROVIDER"),
+                codesmith_model: env::var_os("CODESMITH_MODEL"),
+                codesmith_base_url: env::var_os("CODESMITH_BASE_URL"),
+                nvidia_api_key: env::var_os("NVIDIA_API_KEY"),
+                nvidia_nim_api_key: env::var_os("NVIDIA_NIM_API_KEY"),
+                nim_base_url: env::var_os("NIM_BASE_URL"),
+                nvidia_base_url: env::var_os("NVIDIA_BASE_URL"),
+                nvidia_nim_base_url: env::var_os("NVIDIA_NIM_BASE_URL"),
+                openrouter_api_key: env::var_os("OPENROUTER_API_KEY"),
+                openrouter_base_url: env::var_os("OPENROUTER_BASE_URL"),
+                xiaomi_mimo_api_key: env::var_os("XIAOMI_MIMO_API_KEY"),
+                xiaomi_api_key: env::var_os("XIAOMI_API_KEY"),
+                mimo_api_key: env::var_os("MIMO_API_KEY"),
+                xiaomi_mimo_base_url: env::var_os("XIAOMI_MIMO_BASE_URL"),
+                mimo_base_url: env::var_os("MIMO_BASE_URL"),
+                xiaomi_mimo_model: env::var_os("XIAOMI_MIMO_MODEL"),
+                mimo_model: env::var_os("MIMO_MODEL"),
+                wanjie_ark_api_key: env::var_os("WANJIE_ARK_API_KEY"),
+                wanjie_ark_base_url: env::var_os("WANJIE_ARK_BASE_URL"),
+                wanjie_base_url: env::var_os("WANJIE_BASE_URL"),
+                wanjie_maas_base_url: env::var_os("WANJIE_MAAS_BASE_URL"),
+                volcengine_model: env::var_os("VOLCENGINE_MODEL"),
+                wanjie_ark_model: env::var_os("WANJIE_ARK_MODEL"),
+                wanjie_model: env::var_os("WANJIE_MODEL"),
+                wanjie_maas_model: env::var_os("WANJIE_MAAS_MODEL"),
+                novita_api_key: env::var_os("NOVITA_API_KEY"),
+                novita_base_url: env::var_os("NOVITA_BASE_URL"),
+                fireworks_api_key: env::var_os("FIREWORKS_API_KEY"),
+                fireworks_base_url: env::var_os("FIREWORKS_BASE_URL"),
+                siliconflow_api_key: env::var_os("SILICONFLOW_API_KEY"),
+                siliconflow_base_url: env::var_os("SILICONFLOW_BASE_URL"),
+                siliconflow_model: env::var_os("SILICONFLOW_MODEL"),
+                moonshot_api_key: env::var_os("MOONSHOT_API_KEY"),
+                moonshot_base_url: env::var_os("MOONSHOT_BASE_URL"),
+                moonshot_model: env::var_os("MOONSHOT_MODEL"),
+                kimi_api_key: env::var_os("KIMI_API_KEY"),
+                kimi_base_url: env::var_os("KIMI_BASE_URL"),
+                kimi_model: env::var_os("KIMI_MODEL"),
+                kimi_model_name: env::var_os("KIMI_MODEL_NAME"),
+                sglang_api_key: env::var_os("SGLANG_API_KEY"),
+                sglang_base_url: env::var_os("SGLANG_BASE_URL"),
+                vllm_api_key: env::var_os("VLLM_API_KEY"),
+                vllm_base_url: env::var_os("VLLM_BASE_URL"),
+                ollama_api_key: env::var_os("OLLAMA_API_KEY"),
+                ollama_base_url: env::var_os("OLLAMA_BASE_URL"),
+            };
+            // Safety: test-only environment mutation guarded by a module mutex.
+            unsafe {
+                env::remove_var("DEEPSEEK_API_KEY");
+                env::remove_var("CODESMITH_OUTPUT_MODE");
+                env::remove_var("CODESMITH_AUTH_MODE");
+                env::remove_var("CODESMITH_LOG_LEVEL");
+                env::remove_var("CODESMITH_TELEMETRY");
+                env::remove_var("CODESMITH_APPROVAL_POLICY");
+                env::remove_var("CODESMITH_SANDBOX_MODE");
+                env::remove_var("CODESMITH_YOLO");
+                env::remove_var("CODESMITH_HTTP_HEADERS");
+                env::remove_var("CODESMITH_PROVIDER");
+                env::remove_var("CODESMITH_MODEL");
+                env::remove_var("CODESMITH_BASE_URL");
+                env::remove_var("NVIDIA_API_KEY");
+                env::remove_var("NVIDIA_NIM_API_KEY");
+                env::remove_var("NIM_BASE_URL");
+                env::remove_var("NVIDIA_BASE_URL");
+                env::remove_var("NVIDIA_NIM_BASE_URL");
+                env::remove_var("OPENROUTER_API_KEY");
+                env::remove_var("OPENROUTER_BASE_URL");
+                env::remove_var("XIAOMI_MIMO_API_KEY");
+                env::remove_var("XIAOMI_API_KEY");
+                env::remove_var("MIMO_API_KEY");
+                env::remove_var("XIAOMI_MIMO_BASE_URL");
+                env::remove_var("MIMO_BASE_URL");
+                env::remove_var("XIAOMI_MIMO_MODEL");
+                env::remove_var("MIMO_MODEL");
+                env::remove_var("WANJIE_ARK_API_KEY");
+                env::remove_var("WANJIE_ARK_BASE_URL");
+                env::remove_var("WANJIE_BASE_URL");
+                env::remove_var("WANJIE_MAAS_BASE_URL");
+                env::remove_var("WANJIE_ARK_MODEL");
+                env::remove_var("WANJIE_MODEL");
+                env::remove_var("WANJIE_MAAS_MODEL");
+                env::remove_var("NOVITA_API_KEY");
+                env::remove_var("NOVITA_BASE_URL");
+                env::remove_var("FIREWORKS_API_KEY");
+                env::remove_var("FIREWORKS_BASE_URL");
+                env::remove_var("SILICONFLOW_API_KEY");
+                env::remove_var("SILICONFLOW_BASE_URL");
+                env::remove_var("SILICONFLOW_MODEL");
+                env::remove_var("MOONSHOT_API_KEY");
+                env::remove_var("MOONSHOT_BASE_URL");
+                env::remove_var("MOONSHOT_MODEL");
+                env::remove_var("KIMI_API_KEY");
+                env::remove_var("KIMI_BASE_URL");
+                env::remove_var("KIMI_MODEL");
+                env::remove_var("KIMI_MODEL_NAME");
+                env::remove_var("SGLANG_API_KEY");
+                env::remove_var("SGLANG_BASE_URL");
+                env::remove_var("VLLM_API_KEY");
+                env::remove_var("VLLM_BASE_URL");
+                env::remove_var("OLLAMA_API_KEY");
+                env::remove_var("OLLAMA_BASE_URL");
+            }
+            guard
+        }
+
+        unsafe fn restore_var(key: &str, value: Option<OsString>) {
+            if let Some(value) = value {
+                unsafe { env::set_var(key, value) };
+            } else {
+                unsafe { env::remove_var(key) };
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // Safety: test-only environment mutation guarded by a module mutex.
+            unsafe {
+                Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
+                Self::restore_var("CODESMITH_OUTPUT_MODE", self.codesmith_output_mode.take());
+                Self::restore_var("CODESMITH_AUTH_MODE", self.codesmith_auth_mode.take());
+                Self::restore_var("CODESMITH_LOG_LEVEL", self.codesmith_log_level.take());
+                Self::restore_var("CODESMITH_TELEMETRY", self.codesmith_telemetry.take());
+                Self::restore_var(
+                    "CODESMITH_APPROVAL_POLICY",
+                    self.codesmith_approval_policy.take(),
+                );
+                Self::restore_var("CODESMITH_SANDBOX_MODE", self.codesmith_sandbox_mode.take());
+                Self::restore_var("CODESMITH_YOLO", self.codesmith_yolo.take());
+                Self::restore_var("CODESMITH_HTTP_HEADERS", self.codesmith_http_headers.take());
+                Self::restore_var("CODESMITH_PROVIDER", self.codesmith_provider.take());
+                Self::restore_var("CODESMITH_MODEL", self.codesmith_model.take());
+                Self::restore_var("CODESMITH_BASE_URL", self.codesmith_base_url.take());
+                Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
+                Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
+                Self::restore_var("NIM_BASE_URL", self.nim_base_url.take());
+                Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
+                Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
+                Self::restore_var("OPENROUTER_API_KEY", self.openrouter_api_key.take());
+                Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
+                Self::restore_var("XIAOMI_MIMO_API_KEY", self.xiaomi_mimo_api_key.take());
+                Self::restore_var("XIAOMI_API_KEY", self.xiaomi_api_key.take());
+                Self::restore_var("MIMO_API_KEY", self.mimo_api_key.take());
+                Self::restore_var("XIAOMI_MIMO_BASE_URL", self.xiaomi_mimo_base_url.take());
+                Self::restore_var("MIMO_BASE_URL", self.mimo_base_url.take());
+                Self::restore_var("XIAOMI_MIMO_MODEL", self.xiaomi_mimo_model.take());
+                Self::restore_var("MIMO_MODEL", self.mimo_model.take());
+                Self::restore_var("WANJIE_ARK_API_KEY", self.wanjie_ark_api_key.take());
+                Self::restore_var("WANJIE_ARK_BASE_URL", self.wanjie_ark_base_url.take());
+                Self::restore_var("WANJIE_BASE_URL", self.wanjie_base_url.take());
+                Self::restore_var("WANJIE_MAAS_BASE_URL", self.wanjie_maas_base_url.take());
+                Self::restore_var("VOLCENGINE_MODEL", self.volcengine_model.take());
+                Self::restore_var("WANJIE_ARK_MODEL", self.wanjie_ark_model.take());
+                Self::restore_var("WANJIE_MODEL", self.wanjie_model.take());
+                Self::restore_var("WANJIE_MAAS_MODEL", self.wanjie_maas_model.take());
+                Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
+                Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
+                Self::restore_var("FIREWORKS_API_KEY", self.fireworks_api_key.take());
+                Self::restore_var("FIREWORKS_BASE_URL", self.fireworks_base_url.take());
+                Self::restore_var("SILICONFLOW_API_KEY", self.siliconflow_api_key.take());
+                Self::restore_var("SILICONFLOW_BASE_URL", self.siliconflow_base_url.take());
+                Self::restore_var("SILICONFLOW_MODEL", self.siliconflow_model.take());
+                Self::restore_var("MOONSHOT_API_KEY", self.moonshot_api_key.take());
+                Self::restore_var("MOONSHOT_BASE_URL", self.moonshot_base_url.take());
+                Self::restore_var("MOONSHOT_MODEL", self.moonshot_model.take());
+                Self::restore_var("KIMI_API_KEY", self.kimi_api_key.take());
+                Self::restore_var("KIMI_BASE_URL", self.kimi_base_url.take());
+                Self::restore_var("KIMI_MODEL", self.kimi_model.take());
+                Self::restore_var("KIMI_MODEL_NAME", self.kimi_model_name.take());
+                Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
+                Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
+                Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
+                Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
+                Self::restore_var("OLLAMA_API_KEY", self.ollama_api_key.take());
+                Self::restore_var("OLLAMA_BASE_URL", self.ollama_base_url.take());
+            }
+        }
+    }
+
+    struct RecordingSecretsStore {
+        gets: Mutex<Vec<String>>,
+        value: Option<String>,
+    }
+
+    impl RecordingSecretsStore {
+        fn with_value(value: &str) -> Self {
+            Self {
+                gets: Mutex::new(Vec::new()),
+                value: Some(value.to_string()),
+            }
+        }
+    }
+
+    impl codesmith_secrets::KeyringStore for RecordingSecretsStore {
+        fn get(&self, key: &str) -> Result<Option<String>, codesmith_secrets::SecretsError> {
+            self.gets.lock().unwrap().push(key.to_string());
+            Ok(self.value.clone())
+        }
+
+        fn set(&self, _key: &str, _value: &str) -> Result<(), codesmith_secrets::SecretsError> {
+            Ok(())
+        }
+
+        fn delete(&self, _key: &str) -> Result<(), codesmith_secrets::SecretsError> {
+            Ok(())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    #[test]
+    fn root_deepseek_fields_are_runtime_fallbacks() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            api_key: Some("root-key".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.api_key.as_deref(), Some("root-key"));
+        assert_eq!(resolved.base_url, "https://api.deepseek.com");
+        assert_eq!(resolved.model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn deepseek_runtime_defaults_to_beta_endpoint() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml::default();
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.base_url, DEFAULT_DEEPSEEK_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_DEEPSEEK_MODEL);
+    }
+
+    #[test]
+    fn provider_specific_deepseek_fields_override_tui_compat_fields() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            api_key: Some("root-key".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.deepseek.api_key = Some("provider-key".to_string());
+        config.providers.deepseek.base_url = Some("https://gateway.example/v1".to_string());
+        config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
+        assert_eq!(resolved.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn provider_http_headers_override_root_headers() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            api_key: Some("root-key".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.deepseek.api_key = Some("provider-key".to_string());
+        config.providers.deepseek.base_url = Some("https://gateway.example/v1".to_string());
+        config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
+        config
+            .http_headers
+            .insert("X-Shared".to_string(), "root".to_string());
+        config
+            .providers
+            .deepseek
+            .http_headers
+            .insert("X-Model-Provider-Id".to_string(), "tongyi".to_string());
+        config
+            .providers
+            .deepseek
+            .http_headers
+            .insert("X-Shared".to_string(), "provider".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
+        assert_eq!(resolved.model, "deepseek-v4-flash");
+        assert_eq!(
+            resolved
+                .http_headers
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("tongyi")
+        );
+        assert_eq!(
+            resolved.http_headers.get("X-Shared").map(String::as_str),
+            Some("provider")
+        );
+    }
+
+    #[test]
+    fn http_headers_env_overrides_config() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml::default();
+        config
+            .http_headers
+            .insert("X-Model-Provider-Id".to_string(), "from-file".to_string());
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
+        }
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(
+            resolved
+                .http_headers
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("from-env")
+        );
+    }
+
+    #[test]
+    fn nvidia_nim_provider_defaults_to_catalog_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::NvidiaNim,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.base_url, DEFAULT_NVIDIA_NIM_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_MODEL);
+    }
+
+    #[test]
+    fn nvidia_nim_provider_uses_provider_specific_credentials() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::NvidiaNim,
+            ..ConfigToml::default()
+        };
+        config.providers.nvidia_nim.api_key = Some("nim-key".to_string());
+        config.providers.nvidia_nim.base_url = Some("https://nim.example/v1".to_string());
+        config.providers.nvidia_nim.model = Some("deepseek-ai/deepseek-v4-pro".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.api_key.as_deref(), Some("nim-key"));
+        assert_eq!(resolved.base_url, "https://nim.example/v1");
+        assert_eq!(resolved.model, "deepseek-ai/deepseek-v4-pro");
+    }
+
+    #[test]
+    fn nvidia_nim_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::NvidiaNim),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_FLASH_MODEL);
+    }
+
+    #[test]
+    fn nvidia_nim_provider_uses_nvidia_env_credentials() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
+            env::set_var("NVIDIA_API_KEY", "nim-env-key");
+            env::set_var("NVIDIA_NIM_BASE_URL", "https://nim-env.example/v1");
+        }
+
+        let config = ConfigToml::default();
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.api_key.as_deref(), Some("nim-env-key"));
+        assert_eq!(resolved.base_url, "https://nim-env.example/v1");
+        assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_MODEL);
+    }
+
+    #[test]
+    fn nvidia_nim_provider_accepts_short_nim_base_url_alias() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
+            env::set_var("NVIDIA_API_KEY", "nim-env-key");
+            env::set_var("NIM_BASE_URL", "https://short-nim.example/v1");
+        }
+
+        let config = ConfigToml::default();
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.base_url, "https://short-nim.example/v1");
+    }
+
+    #[test]
+    fn codesmith_env_knobs_override_deepseek_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_YOLO", "false");
+            env::set_var("CODESMITH_YOLO", "true");
+            env::set_var("CODESMITH_APPROVAL_POLICY", "never");
+            env::set_var("CODESMITH_APPROVAL_POLICY", "on-request");
+        }
+
+        let overrides = EnvRuntimeOverrides::load();
+
+        assert_eq!(overrides.yolo, Some(true));
+        assert_eq!(overrides.approval_policy.as_deref(), Some("on-request"));
+    }
+
+    #[test]
+    fn blank_codesmith_env_knobs_are_skipped() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_YOLO", "true");
+            env::set_var("CODESMITH_SANDBOX_MODE", "   ");
+        }
+
+        let overrides = EnvRuntimeOverrides::load();
+
+        assert_eq!(overrides.yolo, Some(true));
+        assert_eq!(overrides.sandbox_mode, None);
+    }
+
+    #[test]
+    fn nvidia_nim_provider_can_fallback_to_deepseek_api_key_env() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "nvidia-nim");
+            env::set_var("DEEPSEEK_API_KEY", "deepseek-compat-key");
+        }
+
+        let config = ConfigToml::default();
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.api_key.as_deref(), Some("deepseek-compat-key"));
+    }
+
+    #[test]
+    fn list_values_redacts_root_api_key() {
+        let config = ConfigToml {
+            api_key: Some("sk-deepseek-secret".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let values = config.list_values();
+
+        assert_eq!(
+            values.get("api_key").map(String::as_str),
+            Some("sk-d***cret")
+        );
+    }
+
+    #[test]
+    fn list_values_fully_redacts_short_api_key() {
+        let config = ConfigToml {
+            api_key: Some("short-key".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let values = config.list_values();
+
+        assert_eq!(values.get("api_key").map(String::as_str), Some("********"));
+    }
+
+    #[test]
+    fn get_display_value_redacts_sensitive_keys() {
+        let mut config = ConfigToml {
+            api_key: Some("sk-deepseek-secret".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.openrouter.api_key = Some("openrouter-secret-value".to_string());
+        config.model = Some("deepseek-v4-pro".to_string());
+
+        assert_eq!(
+            config.get_display_value("api_key").as_deref(),
+            Some("sk-d***cret")
+        );
+        assert_eq!(
+            config
+                .get_display_value("providers.openrouter.api_key")
+                .as_deref(),
+            Some("open***alue")
+        );
+        assert_eq!(
+            config.get_display_value("model").as_deref(),
+            Some("deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn hook_sinks_config_uses_separate_table_from_lifecycle_hooks() -> Result<()> {
+        let raw = r#"
+[hooks]
+enabled = true
+default_timeout_secs = 20
+
+[[hooks.hooks]]
+event = "message_submit"
+command = "echo ok"
+
+[hook_sinks]
+unix_socket_path = "/tmp/cw-hooks.sock"
+"#;
+
+        let config: ConfigToml = toml::from_str(raw)?;
+
+        assert_eq!(
+            config.get_value("hook_sinks.unix_socket_path").as_deref(),
+            Some("/tmp/cw-hooks.sock")
+        );
+        assert!(
+            config.extras.contains_key("hooks"),
+            "legacy lifecycle hooks table must remain an opaque extra"
+        );
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: ConfigToml = toml::from_str(&serialized)?;
+        let hooks = round_tripped
+            .extras
+            .get("hooks")
+            .and_then(toml::Value::as_table)
+            .expect("hooks table preserved");
+
+        assert_eq!(
+            hooks.get("enabled").and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            hooks
+                .get("default_timeout_secs")
+                .and_then(toml::Value::as_integer),
+            Some(20)
+        );
+        assert!(
+            hooks.get("hooks").and_then(toml::Value::as_array).is_some(),
+            "nested lifecycle hooks array must survive config rewrites"
+        );
+        assert_eq!(
+            round_tripped
+                .get_value("hook_sinks.unix_socket_path")
+                .as_deref(),
+            Some("/tmp/cw-hooks.sock")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn hook_sinks_unix_socket_path_round_trips_through_key_value_api() -> Result<()> {
+        let mut config = ConfigToml::default();
+
+        config.set_value("hook_sinks.unix_socket_path", "/tmp/cw-events.sock")?;
+
+        assert_eq!(
+            config.get_value("hook_sinks.unix_socket_path").as_deref(),
+            Some("/tmp/cw-events.sock")
+        );
+        assert_eq!(
+            config
+                .list_values()
+                .get("hook_sinks.unix_socket_path")
+                .map(String::as_str),
+            Some("/tmp/cw-events.sock")
+        );
+
+        config.unset_value("hook_sinks.unix_socket_path")?;
+        assert_eq!(config.get_value("hook_sinks.unix_socket_path"), None);
+
+        Ok(())
+    }
+
+    /// End-to-end smoke for the preferred Kimi Code setup path:
+    ///   1. Start from a fresh root config that uses DeepSeek defaults.
+    ///   2. Mutate it through the same key-value setters the
+    ///      `codesmith config set providers.moonshot.*` CLI invokes.
+    ///   3. Switch the active provider through `CODESMITH_PROVIDER`.
+    ///   4. Resolve the runtime and confirm the doctor/runtime values.
+    ///
+    /// No real API key is required; the `api_key` here is just a
+    /// non-empty placeholder.
+    #[test]
+    fn moonshot_kimi_code_smoke_config_set_then_resolve() -> Result<()> {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+
+        let mut config = ConfigToml {
+            provider: ProviderKind::Deepseek,
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..ConfigToml::default()
+        };
+
+        // Same key paths a user would run via `codesmith config set`.
+        config.set_value("providers.moonshot.api_key", "kimi-code-key-placeholder")?;
+        config.set_value("providers.moonshot.auth_mode", "api_key")?;
+        config.set_value("providers.moonshot.base_url", DEFAULT_KIMI_CODE_BASE_URL)?;
+        config.set_value("providers.moonshot.model", DEFAULT_KIMI_CODE_MODEL)?;
+
+        // Public env alias for the active-provider switch.
+        // Safety: test-only env mutation guarded by env_lock().
+        unsafe { env::set_var("CODESMITH_PROVIDER", "moonshot") };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Moonshot);
+        assert_eq!(resolved.base_url, DEFAULT_KIMI_CODE_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_KIMI_CODE_MODEL);
+        assert_eq!(resolved.auth_mode.as_deref(), Some("api_key"));
+        assert_eq!(
+            resolved.api_key.as_deref(),
+            Some("kimi-code-key-placeholder")
+        );
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn moonshot_provider_config_values_round_trip() -> Result<()> {
+        let mut config = ConfigToml::default();
+
+        config.set_value("providers.moonshot.api_key", "moonshot-secret-value")?;
+        config.set_value("providers.moonshot.base_url", DEFAULT_KIMI_CODE_BASE_URL)?;
+        config.set_value("providers.moonshot.model", DEFAULT_KIMI_CODE_MODEL)?;
+        config.set_value("providers.moonshot.auth_mode", "api_key")?;
+        config.set_value("providers.moonshot.http_headers", "X-Test=ok")?;
+
+        assert_eq!(
+            config
+                .get_display_value("providers.moonshot.api_key")
+                .as_deref(),
+            Some("moon***alue")
+        );
+        assert_eq!(
+            config.get_value("providers.moonshot.base_url").as_deref(),
+            Some(DEFAULT_KIMI_CODE_BASE_URL)
+        );
+        assert_eq!(
+            config.get_value("providers.moonshot.model").as_deref(),
+            Some(DEFAULT_KIMI_CODE_MODEL)
+        );
+        assert_eq!(
+            config.get_value("providers.moonshot.auth_mode").as_deref(),
+            Some("api_key")
+        );
+        assert_eq!(
+            config
+                .list_values()
+                .get("providers.moonshot.api_key")
+                .map(String::as_str),
+            Some("moon***alue")
+        );
+
+        config.unset_value("providers.moonshot.auth_mode")?;
+        config.unset_value("providers.moonshot.base_url")?;
+        config.unset_value("providers.moonshot.model")?;
+
+        assert_eq!(config.get_value("providers.moonshot.auth_mode"), None);
+        assert_eq!(config.get_value("providers.moonshot.base_url"), None);
+        assert_eq!(config.get_value("providers.moonshot.model"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn project_merge_denies_credentials_endpoints_and_provider_selection() {
+        let mut base = ConfigToml {
+            provider: ProviderKind::Deepseek,
+            api_key: Some("user-key".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some("deepseek-v4-flash".to_string()),
+            ..ConfigToml::default()
+        };
+        base.providers.openrouter.api_key = Some("user-openrouter-key".to_string());
+
+        let mut project = ConfigToml {
+            provider: ProviderKind::Openrouter,
+            api_key: Some("attacker-key".to_string()),
+            base_url: Some("https://evil.example/v1".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            auth_mode: Some("oauth".to_string()),
+            telemetry: Some(true),
+            ..ConfigToml::default()
+        };
+        project.providers.openrouter.api_key = Some("attacker-openrouter-key".to_string());
+        project.providers.openrouter.base_url = Some("https://evil.example/openrouter".to_string());
+        project.providers.openrouter.model = Some("deepseek/deepseek-v4-pro".to_string());
+
+        base.merge_project_overrides(project);
+
+        assert_eq!(base.provider, ProviderKind::Deepseek);
+        assert_eq!(base.api_key.as_deref(), Some("user-key"));
+        assert_eq!(base.base_url.as_deref(), Some("https://api.deepseek.com"));
+        assert_eq!(base.auth_mode, None);
+        assert_eq!(base.telemetry, None);
+        assert_eq!(
+            base.providers.openrouter.api_key.as_deref(),
+            Some("user-openrouter-key")
+        );
+        assert_eq!(base.providers.openrouter.base_url, None);
+        assert_eq!(base.default_text_model.as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(
+            base.providers.openrouter.model.as_deref(),
+            Some("deepseek/deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn project_merge_only_tightens_approval_and_sandbox_policy() {
+        let mut strict = ConfigToml {
+            approval_policy: Some("never".to_string()),
+            sandbox_mode: Some("read-only".to_string()),
+            ..ConfigToml::default()
+        };
+        strict.merge_project_overrides(ConfigToml {
+            approval_policy: Some("on-request".to_string()),
+            sandbox_mode: Some("workspace-write".to_string()),
+            ..ConfigToml::default()
+        });
+        assert_eq!(strict.approval_policy.as_deref(), Some("never"));
+        assert_eq!(strict.sandbox_mode.as_deref(), Some("read-only"));
+
+        let mut permissive = ConfigToml {
+            approval_policy: Some("auto".to_string()),
+            sandbox_mode: Some("workspace-write".to_string()),
+            ..ConfigToml::default()
+        };
+        permissive.merge_project_overrides(ConfigToml {
+            approval_policy: Some("never".to_string()),
+            sandbox_mode: Some("read-only".to_string()),
+            ..ConfigToml::default()
+        });
+        assert_eq!(permissive.approval_policy.as_deref(), Some("never"));
+        assert_eq!(permissive.sandbox_mode.as_deref(), Some("read-only"));
+
+        let mut unset = ConfigToml::default();
+        unset.merge_project_overrides(ConfigToml {
+            approval_policy: Some("on-request".to_string()),
+            sandbox_mode: Some("workspace-write".to_string()),
+            ..ConfigToml::default()
+        });
+        assert_eq!(unset.approval_policy, None);
+        assert_eq!(unset.sandbox_mode, None);
+    }
+
+    #[test]
+    fn list_values_redacts_unicode_api_key_without_byte_slicing() {
+        let config = ConfigToml {
+            api_key: Some("密钥密钥密钥密钥123456789".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let values = config.list_values();
+
+        assert_eq!(
+            values.get("api_key").map(String::as_str),
+            Some("密钥密钥***6789")
+        );
+    }
+
+    #[test]
+    fn normalize_config_file_path_rejects_traversal() {
+        let err = normalize_config_file_path(PathBuf::from("../config.toml"))
+            .expect_err("traversal path should fail");
+        assert!(format!("{err:#}").contains("cannot contain '..'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_clamps_existing_config_permissions() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "deepseek-config-perms-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join(CONFIG_FILE_NAME);
+        fs::write(&path, "api_key = \"old\"\n").expect("seed config");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("chmod seed");
+
+        let store = ConfigStore {
+            path: path.clone(),
+            config: ConfigToml {
+                api_key: Some("new-secret".to_string()),
+                ..ConfigToml::default()
+            },
+        };
+        store.save().expect("save");
+
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn provider_kind_parses_openrouter_and_novita_aliases() {
+        assert_eq!(
+            ProviderKind::parse("openrouter"),
+            Some(ProviderKind::Openrouter)
+        );
+        assert_eq!(
+            ProviderKind::parse("OPEN_ROUTER"),
+            Some(ProviderKind::Openrouter)
+        );
+        assert_eq!(
+            ProviderKind::parse("xiaomi-mimo"),
+            Some(ProviderKind::XiaomiMimo)
+        );
+        assert_eq!(
+            ProviderKind::parse("xiaomi"),
+            Some(ProviderKind::XiaomiMimo)
+        );
+        assert_eq!(ProviderKind::parse("novita"), Some(ProviderKind::Novita));
+        assert_eq!(ProviderKind::parse("Novita"), Some(ProviderKind::Novita));
+        assert_eq!(
+            ProviderKind::parse("fireworks-ai"),
+            Some(ProviderKind::Fireworks)
+        );
+        assert_eq!(
+            ProviderKind::parse("silicon-flow"),
+            Some(ProviderKind::Siliconflow)
+        );
+        assert_eq!(
+            ProviderKind::parse("silicon_flow"),
+            Some(ProviderKind::Siliconflow)
+        );
+        assert_eq!(ProviderKind::parse("kimi"), Some(ProviderKind::Moonshot));
+        assert_eq!(
+            ProviderKind::parse("moonshot-ai"),
+            Some(ProviderKind::Moonshot)
+        );
+        assert_eq!(ProviderKind::parse("sg-lang"), Some(ProviderKind::Sglang));
+        assert_eq!(ProviderKind::parse("v-llm"), Some(ProviderKind::Vllm));
+        assert_eq!(ProviderKind::parse("vllm"), Some(ProviderKind::Vllm));
+        assert_eq!(ProviderKind::parse("ollama"), Some(ProviderKind::Ollama));
+        assert_eq!(
+            ProviderKind::parse("ollama-local"),
+            Some(ProviderKind::Ollama)
+        );
+        assert_eq!(
+            ProviderKind::parse("wanjie-ark"),
+            Some(ProviderKind::WanjieArk)
+        );
+        assert_eq!(
+            ProviderKind::parse("ark_wanjie"),
+            Some(ProviderKind::WanjieArk)
+        );
+
+        let parsed: ConfigToml =
+            toml::from_str("provider = \"ark-wanjie\"").expect("wanjie provider alias");
+        assert_eq!(parsed.provider, ProviderKind::WanjieArk);
+
+        let parsed: ConfigToml =
+            toml::from_str("provider = \"silicon-flow\"").expect("siliconflow provider alias");
+        assert_eq!(parsed.provider, ProviderKind::Siliconflow);
+    }
+
+    #[test]
+    fn provider_kind_accepts_legacy_deepseek_cn_aliases() {
+        for alias in [
+            "deepseek-cn",
+            "deepseek_china",
+            "deepseekcn",
+            "deepseek-china",
+        ] {
+            assert_eq!(ProviderKind::parse(alias), Some(ProviderKind::Deepseek));
+
+            let parsed: ConfigToml =
+                toml::from_str(&format!("provider = \"{alias}\"")).expect("legacy provider alias");
+            assert_eq!(parsed.provider, ProviderKind::Deepseek);
+        }
+    }
+
+    #[test]
+    fn openrouter_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Openrouter,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Openrouter);
+        assert_eq!(resolved.base_url, DEFAULT_OPENROUTER_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_OPENROUTER_MODEL);
+    }
+
+    #[test]
+    fn xiaomi_mimo_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::XiaomiMimo,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::XiaomiMimo);
+        assert_eq!(resolved.base_url, DEFAULT_XIAOMI_MIMO_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_XIAOMI_MIMO_MODEL);
+    }
+
+    #[test]
+    fn novita_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Novita,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Novita);
+        assert_eq!(resolved.base_url, DEFAULT_NOVITA_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_NOVITA_MODEL);
+    }
+
+    #[test]
+    fn fireworks_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Fireworks,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Fireworks);
+        assert_eq!(resolved.base_url, DEFAULT_FIREWORKS_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_FIREWORKS_MODEL);
+    }
+
+    #[test]
+    fn siliconflow_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Siliconflow,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.base_url, DEFAULT_SILICONFLOW_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_SILICONFLOW_MODEL);
+    }
+
+    #[test]
+    fn moonshot_provider_defaults_to_kimi_k2() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Moonshot,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Moonshot);
+        assert_eq!(resolved.base_url, DEFAULT_MOONSHOT_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_MOONSHOT_MODEL);
+    }
+
+    #[test]
+    fn moonshot_kimi_oauth_uses_kimi_code_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Moonshot,
+            ..ConfigToml::default()
+        };
+        config.providers.moonshot.auth_mode = Some("kimi_oauth".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Moonshot);
+        assert_eq!(resolved.auth_mode.as_deref(), Some("kimi_oauth"));
+        assert_eq!(resolved.base_url, DEFAULT_KIMI_CODE_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_KIMI_CODE_MODEL);
+        assert_eq!(resolved.api_key, None);
+        assert_eq!(resolved.api_key_source, None);
+    }
+
+    #[test]
+    fn moonshot_kimi_code_api_key_endpoint_defaults_to_kimi_for_coding() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Moonshot,
+            ..ConfigToml::default()
+        };
+        config.providers.moonshot.api_key = Some("kimi-code-key".to_string());
+        config.providers.moonshot.base_url = Some(DEFAULT_KIMI_CODE_BASE_URL.to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Moonshot);
+        assert_eq!(resolved.auth_mode, None);
+        assert_eq!(resolved.base_url, DEFAULT_KIMI_CODE_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_KIMI_CODE_MODEL);
+        assert_eq!(resolved.api_key.as_deref(), Some("kimi-code-key"));
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
+    }
+
+    /// `CODESMITH_PROVIDER` is the user-facing env alias for switching the
+    /// active provider. It must be honored by the runtime resolver and win
+    /// over a root `provider = "deepseek"` config entry.
+    #[test]
+    fn codesmith_provider_env_switches_active_provider() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only env mutation guarded by env_lock().
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
+        }
+        let mut config = ConfigToml {
+            provider: ProviderKind::Deepseek,
+            ..ConfigToml::default()
+        };
+        config.providers.moonshot.api_key = Some("kimi-code-key".to_string());
+        config.providers.moonshot.base_url = Some(DEFAULT_KIMI_CODE_BASE_URL.to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Moonshot);
+        assert_eq!(resolved.base_url, DEFAULT_KIMI_CODE_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_KIMI_CODE_MODEL);
+        assert_eq!(resolved.api_key.as_deref(), Some("kimi-code-key"));
+    }
+
+    /// `CODESMITH_MODEL` is the user-facing env alias for picking a model
+    /// against the active provider. It must be honored by the runtime
+    /// resolver.
+    #[test]
+    fn codesmith_model_env_alias_overrides_default_for_active_provider() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only env mutation guarded by env_lock().
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_MODEL", "custom-kimi-test-model");
+        }
+        let config = ConfigToml::default();
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Moonshot);
+        assert_eq!(resolved.model, "custom-kimi-test-model");
+    }
+
+    #[test]
+    fn blank_codesmith_model_env_alias_does_not_override_default_for_active_provider() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only env mutation guarded by env_lock().
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "moonshot");
+            env::set_var("CODESMITH_MODEL", "   ");
+        }
+        let config = ConfigToml::default();
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Moonshot);
+        assert_eq!(resolved.model, DEFAULT_MOONSHOT_MODEL);
+    }
+
+    #[test]
+    fn wanjie_ark_provider_defaults_to_openai_compatible_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::WanjieArk,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::WanjieArk);
+        assert_eq!(resolved.base_url, DEFAULT_WANJIE_ARK_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_WANJIE_ARK_MODEL);
+    }
+
+    #[test]
+    fn sglang_provider_defaults_to_local_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Sglang,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Sglang);
+        assert_eq!(resolved.base_url, DEFAULT_SGLANG_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_SGLANG_MODEL);
+    }
+
+    #[test]
+    fn vllm_provider_defaults_to_local_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Vllm,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Vllm);
+        assert_eq!(resolved.base_url, DEFAULT_VLLM_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_VLLM_MODEL);
+    }
+
+    #[test]
+    fn ollama_provider_defaults_to_local_endpoint_and_small_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Ollama,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.base_url, DEFAULT_OLLAMA_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_OLLAMA_MODEL);
+        assert_eq!(resolved.api_key, None);
+    }
+
+    #[test]
+    fn self_hosted_providers_do_not_probe_secret_store_by_default() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let store = Arc::new(RecordingSecretsStore::with_value("secret-store-key"));
+        let secrets = Secrets::new(store.clone());
+
+        for provider in [
+            ProviderKind::Sglang,
+            ProviderKind::Vllm,
+            ProviderKind::Ollama,
+        ] {
+            let config = ConfigToml {
+                provider,
+                ..ConfigToml::default()
+            };
+
+            let resolved = config
+                .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+
+            assert_eq!(resolved.provider, provider);
+            assert_eq!(resolved.api_key, None);
+        }
+
+        assert!(
+            store.gets.lock().unwrap().is_empty(),
+            "self-hosted providers should not read the secret store by default"
+        );
+    }
+
+    #[test]
+    fn self_hosted_api_key_auth_can_use_secret_store_when_requested() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let store = Arc::new(RecordingSecretsStore::with_value("secret-store-key"));
+        let secrets = Secrets::new(store.clone());
+        let config = ConfigToml {
+            provider: ProviderKind::Ollama,
+            auth_mode: Some("api_key".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+
+        assert_eq!(resolved.api_key.as_deref(), Some("secret-store-key"));
+        assert_eq!(store.gets.lock().unwrap().as_slice(), ["ollama"]);
+    }
+
+    #[test]
+    fn moonshot_api_key_mode_can_use_secret_store_by_default() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let store = Arc::new(RecordingSecretsStore::with_value("secret-store-key"));
+        let secrets = Secrets::new(store.clone());
+        let config = ConfigToml {
+            provider: ProviderKind::Moonshot,
+            ..ConfigToml::default()
+        };
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+
+        assert_eq!(resolved.api_key.as_deref(), Some("secret-store-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
+        assert_eq!(store.gets.lock().unwrap().as_slice(), ["moonshot"]);
+    }
+
+    #[test]
+    fn loopback_custom_deepseek_base_url_does_not_probe_secret_store_by_default() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let store = Arc::new(RecordingSecretsStore::with_value("stale-deepseek-key"));
+        let secrets = Secrets::new(store.clone());
+        let config = ConfigToml {
+            base_url: Some("http://127.0.0.1:8000/v1".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+
+        assert_eq!(resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.base_url, "http://127.0.0.1:8000/v1");
+        assert_eq!(resolved.api_key, None);
+        assert!(
+            store.gets.lock().unwrap().is_empty(),
+            "loopback custom endpoints should not read macOS Keychain or any secret store"
+        );
+    }
+
+    #[test]
+    fn ollama_provider_preserves_model_tags() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Ollama),
+            model: Some("deepseek-coder-v2:16b".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.model, "deepseek-coder-v2:16b");
+    }
+
+    #[test]
+    fn ollama_env_overrides_provider_base_url_and_optional_key() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "ollama-local");
+            env::set_var("OLLAMA_BASE_URL", "http://ollama.example/v1");
+            env::set_var("OLLAMA_API_KEY", "ollama-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.base_url, "http://ollama.example/v1");
+        assert_eq!(resolved.api_key.as_deref(), Some("ollama-env-key"));
+    }
+
+    #[test]
+    fn openrouter_env_api_key_falls_back_when_config_missing() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "openrouter");
+            env::set_var("OPENROUTER_API_KEY", "or-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Openrouter);
+        assert_eq!(resolved.api_key.as_deref(), Some("or-env-key"));
+        assert_eq!(resolved.base_url, DEFAULT_OPENROUTER_BASE_URL);
+    }
+
+    #[test]
+    fn xiaomi_mimo_env_overrides_provider_key_base_url_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "xiaomi-mimo");
+            env::set_var("MIMO_API_KEY", "mimo-env-key");
+            env::set_var("MIMO_BASE_URL", "https://mimo-gateway.example/v1");
+            env::set_var("MIMO_MODEL", "mimo-v2.5");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::XiaomiMimo);
+        assert_eq!(resolved.api_key.as_deref(), Some("mimo-env-key"));
+        assert_eq!(resolved.base_url, "https://mimo-gateway.example/v1");
+        assert_eq!(resolved.model, "mimo-v2.5");
+    }
+
+    #[test]
+    fn novita_env_api_key_falls_back_when_config_missing() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "novita");
+            env::set_var("NOVITA_API_KEY", "novita-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Novita);
+        assert_eq!(resolved.api_key.as_deref(), Some("novita-env-key"));
+        assert_eq!(resolved.base_url, DEFAULT_NOVITA_BASE_URL);
+    }
+
+    #[test]
+    fn fireworks_env_api_key_falls_back_when_config_missing() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "fireworks");
+            env::set_var("FIREWORKS_API_KEY", "fw-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Fireworks);
+        assert_eq!(resolved.api_key.as_deref(), Some("fw-env-key"));
+        assert_eq!(resolved.base_url, DEFAULT_FIREWORKS_BASE_URL);
+    }
+
+    #[test]
+    fn siliconflow_env_overrides_key_base_url_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "siliconflow");
+            env::set_var("SILICONFLOW_API_KEY", "sf-env-key");
+            env::set_var("SILICONFLOW_BASE_URL", "https://sf-mirror.example/v1");
+            env::set_var("SILICONFLOW_MODEL", "deepseek-v4-flash");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.api_key.as_deref(), Some("sf-env-key"));
+        assert_eq!(resolved.base_url, "https://sf-mirror.example/v1");
+        assert_eq!(resolved.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn siliconflow_cn_base_url_env_normalizes_model_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "siliconflow");
+            env::set_var("SILICONFLOW_API_KEY", "sf-env-key");
+            env::set_var("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1");
+        }
+
+        for (alias, expected) in [
+            ("deepseek-v4-flash", DEFAULT_SILICONFLOW_FLASH_MODEL),
+            ("deepseek-reasoner", DEFAULT_SILICONFLOW_MODEL),
+        ] {
+            // Safety: test-only environment mutation guarded by a module mutex.
+            unsafe {
+                env::set_var("SILICONFLOW_MODEL", alias);
+            }
+
+            let resolved =
+                ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+            assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+            assert_eq!(resolved.base_url, "https://api.siliconflow.cn/v1");
+            assert_eq!(resolved.model, expected);
+        }
+    }
+
+    #[test]
+    fn wanjie_ark_env_api_key_and_base_url_fall_back_when_config_missing() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "wanjie-ark");
+            env::set_var("WANJIE_ARK_API_KEY", "wanjie-env-key");
+            env::set_var("WANJIE_ARK_BASE_URL", "https://wanjie.example/api/v1");
+            env::set_var("WANJIE_ARK_MODEL", "account-model-id");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::WanjieArk);
+        assert_eq!(resolved.api_key.as_deref(), Some("wanjie-env-key"));
+        assert_eq!(resolved.base_url, "https://wanjie.example/api/v1");
+        assert_eq!(resolved.model, "account-model-id");
+    }
+
+    #[test]
+    fn openrouter_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Openrouter),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Openrouter);
+        assert_eq!(resolved.model, DEFAULT_OPENROUTER_FLASH_MODEL);
+    }
+
+    #[test]
+    fn openrouter_provider_normalizes_recent_large_model_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+
+        for (alias, expected) in [
+            (
+                "trinity-large-thinking",
+                OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL,
+            ),
+            ("qwen3.7", OPENROUTER_QWEN_3_7_MAX_MODEL),
+            ("qwen3.7-max", OPENROUTER_QWEN_3_7_MAX_MODEL),
+            ("qwen3.6-35b-a3b", OPENROUTER_QWEN_3_6_35B_A3B_MODEL),
+            ("mimo-v2.5-pro", OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL),
+            ("kimi-k2.6", OPENROUTER_KIMI_K2_6_MODEL),
+            ("gemma-4-31b-it", OPENROUTER_GEMMA_4_31B_MODEL),
+            ("glm-5.1", OPENROUTER_GLM_5_1_MODEL),
+        ] {
+            let cli = CliRuntimeOverrides {
+                provider: Some(ProviderKind::Openrouter),
+                model: Some(alias.to_string()),
+                ..CliRuntimeOverrides::default()
+            };
+
+            let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+            assert_eq!(resolved.provider, ProviderKind::Openrouter);
+            assert_eq!(resolved.model, expected);
+        }
+    }
+
+    #[test]
+    fn novita_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Novita),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Novita);
+        assert_eq!(resolved.model, DEFAULT_NOVITA_FLASH_MODEL);
+    }
+
+    #[test]
+    fn siliconflow_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Siliconflow),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.model, DEFAULT_SILICONFLOW_FLASH_MODEL);
+    }
+
+    #[test]
+    fn siliconflow_provider_normalizes_reasoning_aliases_to_pro() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+
+        for alias in ["deepseek-reasoner", "deepseek-r1"] {
+            let cli = CliRuntimeOverrides {
+                provider: Some(ProviderKind::Siliconflow),
+                model: Some(alias.to_string()),
+                ..CliRuntimeOverrides::default()
+            };
+
+            let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+            assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+            assert_eq!(resolved.model, DEFAULT_SILICONFLOW_MODEL);
+        }
+    }
+
+    #[test]
+    fn siliconflow_provider_preserves_deepseek_v3_2_alias() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Siliconflow),
+            model: Some("deepseek-v3.2".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.model, "deepseek-v3.2");
+    }
+
+    #[test]
+    fn sglang_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Sglang),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Sglang);
+        assert_eq!(resolved.model, DEFAULT_SGLANG_FLASH_MODEL);
+    }
+
+    #[test]
+    fn vllm_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Vllm),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Vllm);
+        assert_eq!(resolved.model, DEFAULT_VLLM_FLASH_MODEL);
+    }
+
+    #[test]
+    fn openrouter_provider_specific_config_overrides_env() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Openrouter,
+            ..ConfigToml::default()
+        };
+        config.providers.openrouter.api_key = Some("file-key".to_string());
+        config.providers.openrouter.base_url = Some("https://or-mirror.example/v1".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+        assert_eq!(resolved.base_url, "https://or-mirror.example/v1");
+    }
+
+    #[test]
+    fn openrouter_custom_base_url_preserves_provider_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Openrouter,
+            ..ConfigToml::default()
+        };
+        config.providers.openrouter.base_url = Some("https://gateway.example.com/v1".to_string());
+        config.providers.openrouter.model = Some("DeepSeek-V4-Pro".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Openrouter);
+        assert_eq!(resolved.base_url, "https://gateway.example.com/v1");
+        assert_eq!(resolved.model, "DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn fireworks_custom_base_url_preserves_provider_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Fireworks,
+            ..ConfigToml::default()
+        };
+        config.providers.fireworks.base_url = Some("https://my-gateway.example/v1".to_string());
+        config.providers.fireworks.model = Some("DeepSeek-V4-Pro".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Fireworks);
+        assert_eq!(resolved.base_url, "https://my-gateway.example/v1");
+        // Custom base URL skips provider-specific model prefixing.
+        assert_eq!(resolved.model, "DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn siliconflow_custom_base_url_preserves_provider_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Siliconflow,
+            ..ConfigToml::default()
+        };
+        config.providers.siliconflow.base_url = Some("https://my-gateway.example/v1".to_string());
+        config.providers.siliconflow.model = Some("DeepSeek-V4-Pro".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.base_url, "https://my-gateway.example/v1");
+        assert_eq!(resolved.model, "DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn config_file_resolves_above_env_and_keyring() {
+        use codesmith_secrets::KeyringStore;
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
+
+        let store = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
+        store.set("deepseek", "ring-key").unwrap();
+        let secrets = Secrets::new(store);
+
+        let mut config = ConfigToml::default();
+        config.providers.deepseek.api_key = Some("file-key".to_string());
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    }
+
+    #[test]
+    fn env_resolves_when_config_file_and_keyring_empty() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
+
+        let secrets = Secrets::new(std::sync::Arc::new(
+            codesmith_secrets::InMemoryKeyringStore::new(),
+        ));
+        let config = ConfigToml::default();
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("env-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    }
+
+    #[test]
+    fn config_file_resolves_when_keyring_and_env_empty() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+
+        let secrets = Secrets::new(std::sync::Arc::new(
+            codesmith_secrets::InMemoryKeyringStore::new(),
+        ));
+        let mut config = ConfigToml::default();
+        config.providers.deepseek.api_key = Some("file-key".to_string());
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
+    }
+
+    #[test]
+    fn keyring_resolves_when_config_file_empty_even_if_env_is_set() {
+        use codesmith_secrets::KeyringStore;
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key") };
+
+        let store = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
+        store.set("deepseek", "ring-key").unwrap();
+        let secrets = Secrets::new(store);
+
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    }
+
+    #[test]
+    fn cli_flag_still_overrides_keyring() {
+        use codesmith_secrets::KeyringStore;
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+
+        let store = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
+        store.set("deepseek", "ring-key").unwrap();
+        let secrets = Secrets::new(store);
+
+        let cli = CliRuntimeOverrides {
+            api_key: Some("cli-key".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+        let resolved = ConfigToml::default().resolve_runtime_options_with_secrets(&cli, &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("cli-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Cli));
+    }
+
+    // === §D2 — custom provider escape hatch ===
+
+    #[test]
+    fn custom_provider_table_round_trips() {
+        let toml_src = r#"
+custom_provider = "acme"
+
+[[providers.custom]]
+id = "acme"
+base_url = "https://api.acme.dev/v1"
+model = "acme-pro"
+api_key = "sk-acme"
+
+[[providers.custom]]
+id = "backup"
+base_url = "https://api.backup.dev/v1"
+model = "b-1"
+"#;
+        let parsed: ConfigToml = toml::from_str(toml_src).expect("parses");
+        assert_eq!(parsed.custom_provider.as_deref(), Some("acme"));
+        assert_eq!(parsed.providers.custom.len(), 2);
+        assert_eq!(parsed.providers.custom[0].id, "acme");
+        assert_eq!(
+            parsed.providers.custom[0].base_url.as_deref(),
+            Some("https://api.acme.dev/v1")
+        );
+        assert!(parsed.providers.custom[1].api_key.is_none());
+
+        // Round-trip back to a string and re-parse to confirm symmetry.
+        let reserialized = toml::to_string(&parsed).expect("serializes");
+        let reparsed: ConfigToml = toml::from_str(&reserialized).expect("reparses");
+        assert_eq!(reparsed.custom_provider, parsed.custom_provider);
+        assert_eq!(reparsed.providers.custom.len(), 2);
+    }
+
+    #[test]
+    fn custom_provider_get_set_unset_list() {
+        let mut config = ConfigToml::default();
+
+        // set / get
+        config.set_value("custom_provider", "acme").expect("set");
+        assert_eq!(config.get_value("custom_provider").as_deref(), Some("acme"));
+        assert!(config.list_values().contains_key("custom_provider"));
+
+        // builtin collision is rejected
+        let err = config
+            .set_value("custom_provider", "deepseek")
+            .expect_err("builtin collision rejected");
+        assert!(err.to_string().contains("collides with a builtin provider"));
+        // the rejected write did not clobber the prior value
+        assert_eq!(config.get_value("custom_provider").as_deref(), Some("acme"));
+
+        // empty string clears (matches unset)
+        config
+            .set_value("custom_provider", "")
+            .expect("empty clears");
+        assert!(config.get_value("custom_provider").is_none());
+
+        // explicit unset
+        config.set_value("custom_provider", "acme2").expect("set2");
+        config.unset_value("custom_provider").expect("unset");
+        assert!(config.get_value("custom_provider").is_none());
+        assert!(!config.list_values().contains_key("custom_provider"));
+    }
+
+    #[test]
+    fn custom_provider_array_table_get_unset_and_secret() {
+        let mut config = ConfigToml {
+            custom_provider: Some("acme".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.custom.push(CustomProviderToml {
+            id: "acme".to_string(),
+            api_key: Some("sk-acme".to_string()),
+            base_url: Some("https://api.acme.dev/v1".to_string()),
+            model: Some("acme-pro".to_string()),
+            auth_mode: None,
+            http_headers: BTreeMap::new(),
+        });
+
+        // get returns the serialized array (non-empty)
+        let blob = config
+            .get_value("providers.custom")
+            .expect("array is readable");
+        assert!(blob.contains("acme"));
+        assert!(blob.contains("sk-acme"));
+
+        // display redacts the whole blob (it carries api_keys)
+        assert!(is_sensitive_config_key("providers.custom"));
+        let display = config
+            .get_display_value("providers.custom")
+            .expect("display value");
+        assert!(
+            !display.contains("sk-acme"),
+            "api_key leaked in display: {display}"
+        );
+
+        // whole-array set still bails with a hand-edit pointer (a single
+        // string can't populate a table); per-entry sets are covered by the
+        // slice-46 per-entry tests below.
+        let err = config
+            .set_value("providers.custom", "https://x")
+            .expect_err("whole-array set rejected");
+        assert!(err.to_string().contains("array table"));
+        assert!(err.to_string().contains("edit config.toml directly"));
+
+        // unset clears the array
+        config.unset_value("providers.custom").expect("unset array");
+        assert!(config.providers.custom.is_empty());
+        assert!(config.get_value("providers.custom").is_none());
+    }
+
+    // §D2 slice 46 — per-entry `config set` / `get` / `unset` for
+    // `[[providers.custom]]` entries, keyed by id.
+
+    fn custom_acme_entry() -> ConfigToml {
+        let mut config = ConfigToml::default();
+        config.providers.custom.push(CustomProviderToml {
+            id: "acme".to_string(),
+            api_key: Some("sk-acme".to_string()),
+            base_url: Some("https://api.acme.dev/v1".to_string()),
+            model: Some("acme-pro".to_string()),
+            auth_mode: None,
+            http_headers: BTreeMap::new(),
+        });
+        config
+    }
+
+    #[test]
+    fn set_providers_custom_field_updates_existing_entry() {
+        let mut config = custom_acme_entry();
+        config
+            .set_value("providers.custom.acme.base_url", "https://new.acme.dev/v1")
+            .expect("per-entry set");
+        assert_eq!(
+            config.providers.custom[0].base_url.as_deref(),
+            Some("https://new.acme.dev/v1"),
+        );
+        // untouched fields stay
+        assert_eq!(
+            config.providers.custom[0].api_key.as_deref(),
+            Some("sk-acme")
+        );
+        assert_eq!(
+            config.providers.custom[0].model.as_deref(),
+            Some("acme-pro")
+        );
+    }
+
+    #[test]
+    fn set_providers_custom_field_creates_missing_entry() {
+        let mut config = ConfigToml::default();
+        assert!(config.providers.custom.is_empty());
+        config
+            .set_value("providers.custom.beta.base_url", "https://api.beta.dev/v1")
+            .expect("per-entry set creates entry");
+        assert_eq!(config.providers.custom.len(), 1);
+        let entry = &config.providers.custom[0];
+        assert_eq!(entry.id, "beta");
+        assert_eq!(entry.base_url.as_deref(), Some("https://api.beta.dev/v1"));
+        assert!(entry.api_key.is_none(), "unset fields default to None");
+        assert!(entry.model.is_none());
+    }
+
+    #[test]
+    fn set_providers_custom_field_rejects_id_field() {
+        let mut config = custom_acme_entry();
+        let err = config
+            .set_value("providers.custom.acme.id", "renamed")
+            .expect_err("setting id field rejected");
+        assert!(
+            err.to_string().contains("the id is the entry key"),
+            "unexpected message: {err}",
+        );
+        // entry id unchanged
+        assert_eq!(config.providers.custom[0].id, "acme");
+    }
+
+    #[test]
+    fn set_providers_custom_whole_entry_bails() {
+        let mut config = custom_acme_entry();
+        let err = config
+            .set_value("providers.custom.acme", "ignored")
+            .expect_err("whole-entry set rejected");
+        assert!(
+            err.to_string()
+                .contains("can't set whole [[providers.custom]] entry"),
+            "unexpected message: {err}",
+        );
+    }
+
+    #[test]
+    fn set_providers_custom_http_headers_field() {
+        let mut config = ConfigToml::default();
+        config
+            .set_value("providers.custom.gamma.http_headers", "X-A=1,X-B=2")
+            .expect("http_headers set creates entry");
+        let entry = &config.providers.custom[0];
+        assert_eq!(entry.id, "gamma");
+        assert_eq!(entry.http_headers.get("X-A").map(String::as_str), Some("1"));
+        assert_eq!(entry.http_headers.get("X-B").map(String::as_str), Some("2"));
+    }
+
+    #[test]
+    fn get_providers_custom_entry_and_field() {
+        let config = custom_acme_entry();
+        // whole entry
+        let entry = config
+            .get_value("providers.custom.acme")
+            .expect("entry is readable");
+        assert!(entry.contains("acme"));
+        assert!(entry.contains("https://api.acme.dev/v1"));
+        // per-field
+        assert_eq!(
+            config
+                .get_value("providers.custom.acme.base_url")
+                .as_deref(),
+            Some("https://api.acme.dev/v1"),
+        );
+        assert_eq!(
+            config.get_value("providers.custom.acme.model").as_deref(),
+            Some("acme-pro"),
+        );
+        assert_eq!(
+            config.get_value("providers.custom.acme.id").as_deref(),
+            Some("acme"),
+        );
+        // missing entry / missing field
+        assert!(config.get_value("providers.custom.no-such").is_none());
+        // missing field on an existing entry resolves to None
+        assert!(
+            config
+                .get_value("providers.custom.acme.auth_mode")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn unset_providers_custom_field_clears() {
+        let mut config = custom_acme_entry();
+        config
+            .unset_value("providers.custom.acme.api_key")
+            .expect("per-field unset");
+        assert!(config.providers.custom[0].api_key.is_none());
+        // entry still present, other fields intact
+        assert_eq!(config.providers.custom.len(), 1);
+        assert_eq!(
+            config.providers.custom[0].base_url.as_deref(),
+            Some("https://api.acme.dev/v1"),
+        );
+    }
+
+    #[test]
+    fn unset_providers_custom_entry_removes() {
+        let mut config = custom_acme_entry();
+        config
+            .unset_value("providers.custom.acme")
+            .expect("whole-entry unset removes entry");
+        assert!(config.providers.custom.is_empty());
+    }
+
+    #[test]
+    fn unset_providers_custom_id_field_bails() {
+        let mut config = custom_acme_entry();
+        let err = config
+            .unset_value("providers.custom.acme.id")
+            .expect_err("unsetting id field rejected");
+        assert!(
+            err.to_string().contains("the id is the entry key"),
+            "unexpected message: {err}",
+        );
+        // entry still present
+        assert_eq!(config.providers.custom.len(), 1);
+    }
+
+    #[test]
+    fn is_sensitive_masks_custom_api_key_and_whole_entry() {
+        // per-entry api_key is masked
+        assert!(is_sensitive_config_key("providers.custom.acme.api_key"));
+        // a whole custom entry serializes api_key, so it is masked
+        assert!(is_sensitive_config_key("providers.custom.acme"));
+        // non-secret per-entry fields are shown as-is
+        assert!(!is_sensitive_config_key("providers.custom.acme.base_url"));
+        assert!(!is_sensitive_config_key("providers.custom.acme.model"));
+        assert!(!is_sensitive_config_key("providers.custom.acme.auth_mode"));
+        assert!(!is_sensitive_config_key(
+            "providers.custom.acme.http_headers"
+        ));
+        assert!(!is_sensitive_config_key("providers.custom.acme.id"));
+        // display path: a whole custom entry serializes api_key, so it is
+        // redacted as a blob (neither api_key nor base_url leaks). Non-secret
+        // per-entry fields are visible via the per-field get (not masked).
+        let config = custom_acme_entry();
+        let display = config
+            .get_display_value("providers.custom.acme")
+            .expect("whole-entry display value");
+        assert!(!display.contains("sk-acme"), "api_key leaked: {display}");
+        assert!(
+            !display.contains("https://api.acme.dev/v1"),
+            "whole-entry display should be redacted as a blob, got: {display}",
+        );
+        let base_url_display = config
+            .get_display_value("providers.custom.acme.base_url")
+            .expect("base_url display value");
+        assert_eq!(base_url_display, "https://api.acme.dev/v1");
+        let api_key_display = config
+            .get_display_value("providers.custom.acme.api_key")
+            .expect("api_key display value");
+        assert!(
+            !api_key_display.contains("sk-acme"),
+            "api_key leaked: {api_key_display}"
+        );
+    }
+
+    #[test]
+    fn merge_project_overrides_ignores_custom_provider() {
+        // Untrusted repo config tries to inject a custom provider + entry.
+        let mut project = ConfigToml {
+            custom_provider: Some("evil".to_string()),
+            ..ConfigToml::default()
+        };
+        project.providers.custom.push(CustomProviderToml {
+            id: "evil".to_string(),
+            base_url: Some("https://exfil.example/v1".to_string()),
+            api_key: Some("sk-exfil".to_string()),
+            model: None,
+            auth_mode: None,
+            http_headers: BTreeMap::new(),
+        });
+
+        let mut user = ConfigToml {
+            custom_provider: Some("acme".to_string()),
+            ..ConfigToml::default()
+        };
+        user.providers.custom.push(CustomProviderToml {
+            id: "acme".to_string(),
+            base_url: Some("https://api.acme.dev/v1".to_string()),
+            api_key: None,
+            model: Some("acme-pro".to_string()),
+            auth_mode: None,
+            http_headers: BTreeMap::new(),
+        });
+        user.merge_project_overrides(project);
+
+        // Neither the selector nor the array entry were merged.
+        assert_eq!(user.custom_provider.as_deref(), Some("acme"));
+        assert_eq!(user.providers.custom.len(), 1);
+        assert_eq!(user.providers.custom[0].id, "acme");
+    }
+
+    // ----- ROADMAP §E4 (slice 43): declarative providers.toml manifest -----
+
+    const SAMPLE_MANIFEST: &str = r#"
+[[providers]]
+id = "deepseek"
+backend = "deepseek"
+
+[[providers]]
+id = "openrouter"
+backend = "openai-compat"
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-v4-pro"
+"#;
+
+    #[test]
+    fn manifest_round_trip() {
+        let manifest = ProvidersManifest::parse(SAMPLE_MANIFEST).expect("parse sample");
+        assert_eq!(manifest.providers.len(), 2);
+        assert_eq!(
+            manifest.providers[0],
+            ProviderDescriptor {
+                id: "deepseek".to_string(),
+                backend: FactoryBackend::Deepseek,
+                base_url: None,
+                model: None,
+            }
+        );
+        assert_eq!(manifest.providers[1].backend, FactoryBackend::OpenaiCompat);
+        assert_eq!(
+            manifest.providers[1].base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(
+            manifest.providers[1].model.as_deref(),
+            Some("deepseek/deepseek-v4-pro")
+        );
+        // Serialize + re-parse stays equal.
+        let again = ProvidersManifest::parse(&toml::to_string(&manifest).expect("serialize"))
+            .expect("reparse");
+        assert_eq!(manifest, again);
+    }
+
+    #[test]
+    fn manifest_rejects_unknown_backend() {
+        let bad = r#"
+[[providers]]
+id = "acme"
+backend = "openai-compt"
+"#;
+        let err = ProvidersManifest::parse(bad).unwrap_err();
+        // The serde/toml cause names the unknown variant; anyhow's Debug shows
+        // the full chain, so the typo surfaces there.
+        let chain = err.chain().map(|e| e.to_string()).collect::<String>();
+        assert!(
+            chain.contains("openai-compt"),
+            "expected the unknown variant in the error chain: {chain}"
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_duplicate_ids() {
+        let dup = r#"
+[[providers]]
+id = "openrouter"
+backend = "openai-compat"
+[[providers]]
+id = "openrouter"
+backend = "openai-compat"
+"#;
+        let manifest = ProvidersManifest::parse(dup).expect("parse");
+        let err = manifest.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate id"),
+            "expected duplicate-id error: {err}"
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_empty_id() {
+        let empty = r#"
+[[providers]]
+id = "   "
+backend = "openai"
+"#;
+        let manifest = ProvidersManifest::parse(empty).expect("parse");
+        let err = manifest.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("empty id"),
+            "expected empty-id error: {err}"
+        );
+    }
+
+    #[test]
+    fn manifest_minimal_entry_ok() {
+        let minimal = r#"
+[[providers]]
+id = "ollama"
+backend = "openai-compat"
+"#;
+        let manifest = ProvidersManifest::parse(minimal).expect("parse");
+        manifest.validate().expect("valid");
+        assert_eq!(manifest.providers.len(), 1);
+        assert!(manifest.providers[0].base_url.is_none());
+        assert!(manifest.providers[0].model.is_none());
+    }
+
+    #[test]
+    fn resolve_manifest_path_reads_env() {
+        let _guard = env_lock();
+        unsafe {
+            env::remove_var(PROVIDERS_MANIFEST_ENV);
+        }
+        assert!(resolve_manifest_path().is_none());
+        unsafe {
+            env::set_var(PROVIDERS_MANIFEST_ENV, "/some/path/to/providers.toml");
+        }
+        assert_eq!(
+            resolve_manifest_path().as_deref(),
+            Some(std::path::Path::new("/some/path/to/providers.toml"))
+        );
+        unsafe {
+            env::remove_var(PROVIDERS_MANIFEST_ENV);
+        }
+    }
+
+    #[test]
+    fn load_providers_manifest_from_reads_file() {
+        let path = std::env::temp_dir().join(format!(
+            "codesmith-manifest-test-{}-load.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, SAMPLE_MANIFEST).expect("write fixture");
+        let manifest = load_providers_manifest_from(&path).expect("load");
+        assert_eq!(manifest.providers.len(), 2);
+        assert_eq!(manifest.providers[0].backend, FactoryBackend::Deepseek);
+        assert_eq!(manifest.providers[1].backend, FactoryBackend::OpenaiCompat);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn providers_manifest_is_cached() {
+        // Reference stability holds regardless of init order: two calls
+        // return the same &'static ref. No env is set, so the manifest is
+        // the empty default. This is the "read-once" half of E4 lazy loading.
+        let _guard = env_lock();
+        unsafe {
+            env::remove_var(PROVIDERS_MANIFEST_ENV);
+        }
+        let a = providers_manifest();
+        let b = providers_manifest();
+        assert!(std::ptr::eq(a, b));
+        assert!(a.providers.is_empty());
+    }
+}

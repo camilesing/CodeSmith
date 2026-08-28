@@ -1,0 +1,38 @@
+[package]
+name = "codesmith-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["agent", "llm", "cli", "terminal", "coding"]
+categories = ["command-line-utilities", "development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Agentic terminal facade for open-source and open-weight coding models"
+
+[[bin]]
+name = "codesmith"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+codesmith-agent = { path = "../agent", version = "0.1.0" }
+codesmith-app-server = { path = "../app-server", version = "0.1.0" }
+codesmith-config = { path = "../config", version = "0.1.0" }
+codesmith-execpolicy = { path = "../execpolicy", version = "0.1.0" }
+codesmith-mcp = { path = "../mcp", version = "0.1.0" }
+codesmith-release = { path = "../release", version = "0.1.0" }
+codesmith-secrets = { path = "../secrets", version = "0.1.0" }
+codesmith-state = { path = "../state", version = "0.1.0" }
+chrono.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+semver.workspace = true
+tokio.workspace = true
+sha2.workspace = true
+tempfile = "3.16"
+tracing.workspace = true

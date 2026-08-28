@@ -1,0 +1,549 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package/release version to publish to npm, without the leading v'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  parity:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Compile check
+        run: cargo check --workspace --all-targets --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Workspace tests
+        run: cargo test --workspace --all-features --locked
+      - name: TUI snapshot parity
+        run: cargo test -p codesmith-tui-core --test snapshot --locked
+      - name: Protocol schema parity
+        run: cargo test -p codesmith-protocol --test parity_protocol --locked
+      - name: State persistence parity
+        run: cargo test -p codesmith-state --test parity_state --locked
+      - name: Lockfile drift guard
+        run: git diff --exit-code -- Cargo.lock
+
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      source_ref: ${{ steps.release.outputs.source_ref }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve release source
+        id: release
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="v${{ inputs.version }}"
+            if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+              sha="$(git rev-list -n 1 "${tag}")"
+              source_ref="${tag}"
+            else
+              # Tag doesn't exist yet — build from HEAD
+              sha="${GITHUB_SHA}"
+              source_ref="${GITHUB_SHA}"
+              echo "Tag ${tag} not found; building from ${source_ref} @ ${sha}"
+            fi
+          else
+            tag="${GITHUB_REF_NAME}"
+            sha="${GITHUB_SHA}"
+            source_ref="${GITHUB_REF_NAME}"
+          fi
+
+          if [ -z "${sha}" ]; then
+            echo "Unable to resolve release source for ${tag}" >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [parity, resolve]
+    # `parity` is gated to tag-push events. On manual `workflow_dispatch`,
+    # parity is skipped, so let `build` proceed when parity either succeeded
+    # or was skipped — but never when it actually failed or the run was
+    # cancelled. Operators using dispatch are expected to have already run
+    # the same gates locally / via ci.yml on `main`.
+    if: ${{ !cancelled() && (needs.parity.result == 'success' || needs.parity.result == 'skipped') }}
+    strategy:
+      matrix:
+        include:
+          # --- codesmith (cli dispatcher, canonical) ---
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: codesmith
+            artifact_name: codesmith-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: codesmith
+            artifact_name: codesmith-linux-arm64
+          - os: ubuntu-latest
+            target: riscv64gc-unknown-linux-gnu
+            binary: codesmith
+            artifact_name: codesmith-linux-riscv64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: codesmith
+            artifact_name: codesmith-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: codesmith
+            artifact_name: codesmith-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: codesmith.exe
+            artifact_name: codesmith-windows-x64.exe
+          # --- codesmith-tui (TUI runtime, canonical) ---
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-linux-arm64
+          - os: ubuntu-latest
+            target: riscv64gc-unknown-linux-gnu
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-linux-riscv64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: codesmith-tui
+            artifact_name: codesmith-tui-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: codesmith-tui.exe
+            artifact_name: codesmith-tui-windows-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install RISC-V cross-compilation toolchain
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          # Install cross-compiler (available in standard repos)
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
+
+          # Add Ubuntu ports for riscv64 packages
+          . /etc/os-release
+          sudo tee /etc/apt/sources.list.d/riscv64.sources <<SRC
+          Types: deb
+          URIs: http://ports.ubuntu.com/
+          Suites: ${UBUNTU_CODENAME} ${UBUNTU_CODENAME}-updates
+          Components: main universe
+          Architectures: riscv64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          SRC
+          sudo dpkg --add-architecture riscv64
+          sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/riscv64.sources -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+          sudo apt-get install -y libdbus-1-dev:riscv64
+      - name: Build
+        shell: bash
+        env:
+          CODESMITH_BUILD_SHA: ${{ needs.resolve.outputs.sha }}
+          CC_riscv64gc_unknown_linux_gnu: riscv64-linux-gnu-gcc
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: 1
+          PKG_CONFIG_LIBDIR_riscv64gc_unknown_linux_gnu: /usr/lib/riscv64-linux-gnu/pkgconfig
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Rename binary
+        shell: bash
+        run: |
+          BIN_PATH="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          if [ ! -f "${BIN_PATH}" ]; then
+            echo "Binary not at ${BIN_PATH}; searching target/ for ${{ matrix.binary }}:"
+            find target -name "${{ matrix.binary }}" -type f
+            exit 1
+          fi
+          cp "${BIN_PATH}" "${{ matrix.artifact_name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
+  bundle:
+    needs: [build, resolve]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: 'codesmith*'
+      - name: Create platform archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundles/checksums
+          MANIFEST="bundles/checksums/codesmith-bundles-sha256.txt"
+          : > "$MANIFEST"
+
+          bundle() {
+            local platform="$1"   # linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64
+            local cli_src="$2"    # artifact name for codesmith binary
+            local tui_src="$3"    # artifact name for codesmith-tui binary
+            local ext="$4"        # tar.gz or zip
+            local variant="$5"    # '' (standard) or 'portable' (Windows only, no install script)
+            shift 5
+
+            local dir="bundles/codesmith-${platform}${variant:+-}${variant}"
+            mkdir -p "$dir"
+
+            # Copy binaries, stripping platform suffixes
+            local cli_dst="codesmith"
+            local tui_dst="codesmith-tui"
+            if [[ "$platform" == windows-* ]]; then
+              cli_dst="codesmith.exe"
+              tui_dst="codesmith-tui.exe"
+            fi
+            cp "artifacts/${cli_src}/${cli_src}" "$dir/${cli_dst}"
+            cp "artifacts/${tui_src}/${tui_src}" "$dir/${tui_dst}"
+
+            # Add install script (standard variant only)
+            if [[ "$variant" != "portable" ]]; then
+              if [[ "$platform" == windows-* ]]; then
+                cp scripts/release/install.bat "$dir/"
+                # Convert line endings to CRLF for Windows
+                sed -i 's/$/\r/' "$dir/install.bat" 2>/dev/null || true
+              else
+                cp scripts/release/install.sh "$dir/"
+                chmod +x "$dir/install.sh"
+              fi
+            fi
+
+            if [[ "$ext" == "zip" ]]; then
+              (cd bundles && zip -r "codesmith-${platform}${variant:+-}${variant}.zip" "codesmith-${platform}${variant:+-}${variant}/")
+            else
+              tar -czf "bundles/codesmith-${platform}${variant:+-}${variant}.tar.gz" -C bundles "codesmith-${platform}${variant:+-}${variant}/"
+            fi
+
+            local archive="codesmith-${platform}${variant:+-}${variant}.${ext}"
+            sha256sum "bundles/${archive}" | awk '{printf "%s  %s\n", $1, $2}' >> "$MANIFEST"
+            echo "  Created bundles/${archive}"
+          }
+
+          # Platform: linux-x64
+          bundle linux-x64 \
+            codesmith-linux-x64 codesmith-tui-linux-x64 tar.gz ""
+
+          # Platform: linux-arm64
+          bundle linux-arm64 \
+            codesmith-linux-arm64 codesmith-tui-linux-arm64 tar.gz ""
+
+          # Platform: linux-riscv64
+          bundle linux-riscv64 \
+            codesmith-linux-riscv64 codesmith-tui-linux-riscv64 tar.gz ""
+
+          # Platform: macos-x64
+          bundle macos-x64 \
+            codesmith-macos-x64 codesmith-tui-macos-x64 tar.gz ""
+
+          # Platform: macos-arm64
+          bundle macos-arm64 \
+            codesmith-macos-arm64 codesmith-tui-macos-arm64 tar.gz ""
+
+          # Platform: windows-x64 (standard + portable)
+          bundle windows-x64 \
+            codesmith-windows-x64.exe codesmith-tui-windows-x64.exe zip ""
+          bundle windows-x64 \
+            codesmith-windows-x64.exe codesmith-tui-windows-x64.exe zip "portable"
+
+          echo ""
+          echo "=== Archive checksums ==="
+          cat "$MANIFEST"
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codesmith-bundles
+          path: bundles/*
+          if-no-files-found: error
+
+  docker:
+    needs: [build, resolve]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_ref }}
+          path: source
+      - name: Checkout release infrastructure
+        uses: actions/checkout@v4
+        with:
+          path: infra
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ steps.image.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            type=ref,event=tag
+            type=semver,pattern={{version}},value=${{ needs.resolve.outputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.resolve.outputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=semver,pattern=v{{major}},value=${{ needs.resolve.outputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=v${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        env:
+          # The build record is useful in CI, but it is uploaded as a
+          # `.dockerbuild` artifact. The release job intentionally downloads
+          # all binary artifacts, so suppress the extra record artifact there.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          DOCKER_BUILD_SUMMARY: false
+        with:
+          context: source
+          file: infra/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            CODESMITH_BUILD_SHA=${{ needs.resolve.outputs.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: [build, bundle, docker, resolve]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.bundle.result == 'success' && needs.docker.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: '*'
+      - name: List artifacts
+        run: find artifacts -type f
+      - name: Generate checksum manifest
+        shell: bash
+        run: |
+          mkdir -p artifacts/checksums
+          # Canonical manifest used by codesmith's `codesmith update` flow.
+          manifest="artifacts/checksums/codesmith-artifacts-sha256.txt"
+          : > "${manifest}"
+          while IFS= read -r -d '' file; do
+            hash="$(sha256sum "${file}" | awk '{print $1}')"
+            base="$(basename "${file}")"
+            printf '%s  %s\n' "${hash}" "${base}" >> "${manifest}"
+          done < <(find artifacts -type f ! -path 'artifacts/checksums/*' -print0 | sort -z)
+          cat "${manifest}"
+      - uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          files: artifacts/*/*
+          prerelease: false
+          body: |
+            ## Install
+
+            ### Recommended — npm (one command, both binaries)
+
+            ```bash
+            npm install -g codesmith
+            ```
+
+            The wrapper downloads both binaries from this Release and places them in the same directory.
+
+            ### Docker / GHCR
+
+            ```bash
+            docker run --rm -it \
+              -e CODESMITH_API_KEY="$CODESMITH_API_KEY" \
+              -v ~/.codesmith:/home/codesmith/.codesmith \
+              ghcr.io/camilesing/codesmith:${{ needs.resolve.outputs.tag }}
+            ```
+
+            The image ships the `codesmith` dispatcher and `codesmith-tui` runtime. The `latest` tag is also updated on release.
+
+            ### Cargo (Linux / macOS)
+
+            ```bash
+            cargo install codesmith-cli codesmith-tui --locked
+            ```
+
+            Both crates are required — `codesmith-cli` produces the `codesmith` dispatcher and `codesmith-tui` produces the interactive runtime that the dispatcher delegates to. Installing only one binary will fail at runtime with a `MISSING_COMPANION_BINARY` error.
+
+            ### Manual download — platform archives (recommended)
+
+            Each archive below contains **both** the `codesmith` dispatcher and `codesmith-tui` runtime, plus an install script:
+
+            | Platform | Archive | Install script |
+            |---|---|---|
+            | Linux x64 | `codesmith-linux-x64.tar.gz` | `install.sh` |
+            | Linux ARM64 | `codesmith-linux-arm64.tar.gz` | `install.sh` |
+            | Linux RISC-V | `codesmith-linux-riscv64.tar.gz` | `install.sh` |
+            | macOS x64 | `codesmith-macos-x64.tar.gz` | `install.sh` |
+            | macOS ARM | `codesmith-macos-arm64.tar.gz` | `install.sh` |
+            | Windows x64 | `codesmith-windows-x64.zip` | `install.bat` |
+            | Windows x64 (portable) | `codesmith-windows-x64-portable.zip` | — |
+
+            **Unix (Linux / macOS):**
+            ```bash
+            tar xzf codesmith-<platform>.tar.gz
+            cd codesmith-<platform>
+            ./install.sh
+            ```
+
+            **Windows:**
+            - Extract `codesmith-windows-x64.zip`
+            - Run `install.bat` (copies to `%USERPROFILE%\bin`)
+            - Add `%USERPROFILE%\bin` to your PATH
+
+            The **portable** Windows archive skips the install script — extract and run from any directory.
+
+            Individual binaries are also attached below for scripting and the npm wrapper.
+
+            ### Verify (recommended)
+
+            Download the checksum manifests from this Release and verify:
+
+            ```bash
+            # Linux — archive bundles
+            sha256sum -c codesmith-bundles-sha256.txt
+
+            # Linux — individual binaries
+            sha256sum -c codesmith-artifacts-sha256.txt
+
+            # macOS
+            shasum -a 256 -c codesmith-bundles-sha256.txt
+            shasum -a 256 -c codesmith-artifacts-sha256.txt
+            ```
+
+            ## Changelog
+
+            See [CHANGELOG.md](https://github.com/camilesing/CodeSmith/blob/main/CHANGELOG.md) for the full notes for this release.
+
+  homebrew:
+    needs: [release, resolve]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check Homebrew tap token
+        id: homebrew-token
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_PAT || secrets.RELEASE_TAG_PAT }}
+        run: |
+          if [ -z "${TOKEN:-}" ]; then
+            echo "No Homebrew tap token configured; skipping tap update."
+            echo "available=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "available=true" >> "${GITHUB_OUTPUT}"
+          fi
+      # Checkout main (not the tag) so the release-infra script is always
+      # available, even for tags created before this workflow was added.
+      - uses: actions/checkout@v4
+        if: steps.homebrew-token.outputs.available == 'true'
+        with:
+          ref: main
+      - name: Download checksum manifest
+        if: steps.homebrew-token.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download ${{ needs.resolve.outputs.tag }} \
+            --repo ${{ github.repository }} \
+            --pattern 'codesmith-artifacts-sha256.txt' \
+            --dir /tmp
+      - name: Update Homebrew tap
+        if: steps.homebrew-token.outputs.available == 'true'
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          MANIFEST: /tmp/codesmith-artifacts-sha256.txt
+          TAP_REPO: camilesing/homebrew-codesmith
+          TOKEN: ${{ secrets.HOMEBREW_TAP_PAT || secrets.RELEASE_TAG_PAT }}
+        run: bash .github/scripts/update-homebrew-tap.sh
+
+# npm publish is intentionally not automated. The npm account requires 2FA OTP
+# on every publish, and a granular automation token that bypasses 2FA has not
+# been provisioned. Release the npm wrapper manually from a developer machine
+# after the GitHub Release has been created — see CLAUDE.md "Releases" for the
+# exact commands.

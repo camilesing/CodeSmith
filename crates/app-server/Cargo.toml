@@ -1,0 +1,34 @@
+[package]
+name = "codesmith-app-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["agent", "llm", "server", "api", "coding"]
+categories = ["command-line-utilities", "development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "App-server transport for the CodeSmith workspace architecture"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+codesmith-agent = { path = "../agent", version = "0.1.0" }
+codesmith-config = { path = "../config", version = "0.1.0" }
+codesmith-core = { path = "../core", version = "0.1.0" }
+codesmith-execpolicy = { path = "../execpolicy", version = "0.1.0" }
+codesmith-hooks = { path = "../hooks", version = "0.1.0" }
+codesmith-mcp = { path = "../mcp", version = "0.1.0" }
+codesmith-protocol = { path = "../protocol", version = "0.1.0" }
+codesmith-state = { path = "../state", version = "0.1.0" }
+codesmith-tools = { path = "../tools", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3.16"
+tower = "0.5"

@@ -1,0 +1,16 @@
+[package]
+name = "codesmith-execpolicy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["policy", "starlark", "sandbox", "security"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Execution policy and approval model parity for the CodeSmith workspace architecture"
+
+[dependencies]
+anyhow.workspace = true
+codesmith-protocol = { path = "../protocol", version = "0.1.0" }
+serde.workspace = true

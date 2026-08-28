@@ -1,0 +1,21 @@
+[package]
+name = "codesmith-hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["hooks", "agent", "automation"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Hook dispatch and notifications parity for the CodeSmith workspace architecture"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+codesmith-protocol = { path = "../protocol", version = "0.1.0" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

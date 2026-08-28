@@ -1,0 +1,4577 @@
+use crate::core::capacity::{
+    CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
+    GuardrailAction, ReplayOutcome, RiskBand, TargetedRefreshOutcome,
+};
+use crate::core::capacity_memory::load_last_k_capacity_records;
+use crate::core::turn::{TurnContext, TurnToolCall};
+use crate::llm_client::LlmClientHandle;
+use crate::llm_client::mock::{MockLlmClient, canned};
+use crate::tools::spec::ToolContext;
+use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
+use crate::tui::approval::ApprovalMode;
+use codesmith_agent_runtime::telemetry::TelemetrySink;
+
+use super::*;
+
+use super::{
+    TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
+    effective_max_output_tokens,
+};
+use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL, UtilityModelConfig};
+use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, ToolCaller};
+use crate::test_support::lock_test_env;
+use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs, new_shared_plan_state};
+use crate::tools::spec::{ToolCapability, ToolError, ToolResult};
+use crate::tools::todo::{TodoStatus, new_shared_todo_list};
+use serde_json::json;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::Instant;
+use tempfile::tempdir;
+
+const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
+static CAPACITY_MEMORY_ENV_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+struct ScopedCapacityMemoryDir {
+    previous: Option<OsString>,
+}
+
+impl ScopedCapacityMemoryDir {
+    fn set(path: &Path) -> Self {
+        let previous = std::env::var_os("CODESMITH_CAPACITY_MEMORY_DIR");
+        // Safety: capacity-memory tests serialize access with CAPACITY_MEMORY_ENV_LOCK
+        // and restore the original value in Drop.
+        unsafe {
+            std::env::set_var("CODESMITH_CAPACITY_MEMORY_DIR", path);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedCapacityMemoryDir {
+    fn drop(&mut self) {
+        // Safety: capacity-memory tests serialize access with CAPACITY_MEMORY_ENV_LOCK.
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("CODESMITH_CAPACITY_MEMORY_DIR", previous);
+            } else {
+                std::env::remove_var("CODESMITH_CAPACITY_MEMORY_DIR");
+            }
+        }
+    }
+}
+
+struct ScopedDeepSeekApiKey {
+    previous: Option<OsString>,
+}
+
+impl ScopedDeepSeekApiKey {
+    fn set(value: &str) -> Self {
+        let previous = std::env::var_os("DEEPSEEK_API_KEY");
+        // Safety: tests using this helper serialize with lock_test_env() and
+        // restore the original value in Drop.
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", value);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedDeepSeekApiKey {
+    fn drop(&mut self) {
+        // Safety: tests using this helper serialize with lock_test_env().
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("DEEPSEEK_API_KEY", previous);
+            } else {
+                std::env::remove_var("DEEPSEEK_API_KEY");
+            }
+        }
+    }
+}
+
+fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
+    let engine_config = EngineConfig {
+        capacity,
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(engine_config, &Config::default());
+    engine
+}
+
+/// Plan 06 / 6.1: an `Engine` whose `EngineConfig.telemetry_sink` is set must
+/// route `CapacityDecision` events to the local jsonl sink (the core emission
+/// routing deliverable). The sink is `Arc`-shared, so the clone handed to the
+/// engine writes through the same `attached`/`enabled` state the host holds.
+#[tokio::test]
+async fn capacity_decision_routes_to_telemetry_sink() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let sink_path = tmp.path().join("events.jsonl");
+    let sink = TelemetrySink::new_skeleton(true, Some(sink_path.clone()));
+    // Post-trust: writes go straight to disk (no queueing).
+    sink.attach();
+
+    let engine_config = EngineConfig {
+        capacity: CapacityControllerConfig::default(),
+        telemetry_sink: Some(sink),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+
+    let turn = TurnContext::new(100);
+    let snapshot = CapacitySnapshot {
+        turn_index: 1,
+        h_hat: 100.0,
+        c_hat: 50.0,
+        slack: 50.0,
+        profile: DynamicSlackProfile {
+            min_slack: 40.0,
+            violation_ratio: 0.1,
+            ..Default::default()
+        },
+        p_fail: 0.05,
+        risk_band: RiskBand::Low,
+        severe: false,
+    };
+    let decision = CapacityDecision {
+        action: GuardrailAction::NoIntervention,
+        reason: "test-reason".to_string(),
+        cooldown_blocked: false,
+    };
+    engine
+        .emit_capacity_decision(&turn, Some(&snapshot), &decision)
+        .await;
+
+    let contents = fs::read_to_string(&sink_path).expect("jsonl should be written");
+    assert!(
+        contents.contains("\"type\":\"capacity_decision\""),
+        "expected capacity_decision line, got: {contents}"
+    );
+    assert!(
+        contents.contains("\"risk_band\":\"low\""),
+        "got: {contents}"
+    );
+    assert!(
+        contents.contains("\"action\":\"no_intervention\""),
+        "got: {contents}"
+    );
+    assert!(
+        contents.contains("\"reason\":\"test-reason\""),
+        "got: {contents}"
+    );
+    assert!(contents.contains("\"h_hat\":100.0"), "got: {contents}");
+}
+
+#[test]
+fn env_only_auth_error_gets_recovery_hint() {
+    let _guard = lock_test_env();
+    let _env = ScopedDeepSeekApiKey::set("stale-env-key");
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    let message =
+        engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
+
+    assert!(message.contains("DEEPSEEK_API_KEY"));
+    assert!(message.contains("no saved config key is present"));
+    assert!(message.contains("codesmith auth status"));
+    assert!(message.contains("codesmith auth set --provider deepseek"));
+}
+
+#[test]
+fn config_auth_error_does_not_blame_env() {
+    let _guard = lock_test_env();
+    let _env = ScopedDeepSeekApiKey::set("stale-env-key");
+    let cfg = Config {
+        api_key: Some("fresh-config-key".to_string()),
+        ..Config::default()
+    };
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &cfg);
+
+    let message =
+        engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
+
+    assert_eq!(message, "Authentication failed: invalid API key");
+}
+
+/// Step 2: `resolve_llm_client` routes construction through the
+/// `ProviderRegistry` — the engine never names a concrete client type.
+/// With a config-supplied API key (client construction makes no network call),
+/// the registry must dispatch to the registered factory and return a built
+/// handle, proving the pluggability seam is wired into `build_engine`.
+/// The default `Config` selects the DeepSeek provider, so this also proves
+/// DeepSeek now resolves through the rig `DeepSeekFactory` (ROADMAP §A1 / §D1).
+#[tokio::test]
+async fn resolve_llm_client_builds_via_registry() {
+    let client = {
+        let _guard = lock_test_env();
+        let cfg = Config {
+            api_key: Some("test-registry-key".to_string()),
+            ..Config::default()
+        };
+        super::resolve_llm_client(&cfg)
+            .expect("registry should build a client when an API key is configured")
+        // `_guard` drops here — env restored, lock released before the await.
+    };
+    assert_eq!(client.provider_name(), "deepseek");
+    // The rig `RigLlmClient` does not override `health_check`, so it uses the
+    // trait default (`Ok(true)`, no network probe) — a network-free proof that
+    // the rig factory won the dispatch (the deleted tui-local client would
+    // have probed `{base_url}/models`).
+    let healthy = client
+        .health_check()
+        .await
+        .expect("health_check on the rig-backed client must not error");
+    assert!(
+        healthy,
+        "rig-backed deepseek client must report healthy without a network probe"
+    );
+}
+
+/// `resolve_llm_client` must route a non-DeepSeek provider (here: anthropic)
+/// to the rig-backed factory from `codesmith_providers::default_registry()`.
+/// The rig `RigLlmClient` does not override `health_check`, so it uses the
+/// trait default (`Ok(true)`, no network probe). Thus `health_check() == Ok(true)`
+/// is a network-free proof that the rig factory won the dispatch for the
+/// anthropic family (native `/v1/messages` path, not the OpenAI-shaped shim).
+#[tokio::test]
+async fn resolve_llm_client_routes_anthropic_to_rig_factory() {
+    // Build under the sync test-env lock, then drop the guard BEFORE awaiting
+    // — clippy::await_holding_lock forbids holding a std MutexGuard across
+    // `.await`. The rig client's `health_check` (default impl) reads no env
+    // and makes no network call, so restoring env before the await is safe.
+    let client = {
+        let _guard = lock_test_env();
+        let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+        let cfg = Config {
+            provider: Some("anthropic".to_string()),
+            ..Config::default()
+        };
+        super::resolve_llm_client(&cfg)
+            .expect("registry should build an anthropic client via the rig factory")
+        // `_key` and `_guard` drop here — env restored, lock released.
+    };
+    assert_eq!(client.provider_name(), "anthropic");
+    let healthy = client
+        .health_check()
+        .await
+        .expect("health_check on the rig-backed client must not error");
+    assert!(
+        healthy,
+        "rig-backed anthropic client must report healthy without a network probe"
+    );
+}
+
+/// `resolve_utility_llm` returns `None` when no `[utility_model]` is
+/// configured — every assist then falls back to the main model.
+#[test]
+fn resolve_utility_llm_none_when_unconfigured() {
+    let cfg = Config::default();
+    assert!(super::resolve_utility_llm(&cfg, None).is_none());
+}
+
+/// Same-provider `[utility_model]` (no dedicated base_url/api_key) must reuse
+/// the main client handle and only swap the per-request model id — no second
+/// client is built.
+#[test]
+fn resolve_utility_llm_reuses_main_client_same_provider() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "deepseek-v4-flash".to_string(),
+            provider: None,
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main))
+        .expect("same-provider utility reuses the main client");
+    assert_eq!(utility.model, "deepseek-v4-flash");
+    assert!(
+        std::sync::Arc::ptr_eq(&utility.client, &main),
+        "same-provider utility must share the main client handle"
+    );
+}
+
+/// A same-provider `[utility_model]` with no main client available (registry
+/// failure upstream) yields `None` — there is nothing to reuse.
+#[test]
+fn resolve_utility_llm_same_provider_without_main_client_is_none() {
+    let cfg = Config {
+        utility_model: Some(UtilityModelConfig {
+            model: "deepseek-v4-flash".to_string(),
+            provider: None,
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    assert!(super::resolve_utility_llm(&cfg, None).is_none());
+}
+
+/// A cross-provider `[utility_model]` builds a dedicated second client through
+/// the provider registry (anthropic factory wins the dispatch, proven by
+/// `provider_name` without a network call).
+#[test]
+fn resolve_utility_llm_builds_cross_provider_client() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let utility = super::resolve_utility_llm(&cfg, None)
+        .expect("cross-provider utility builds a dedicated client");
+    assert_eq!(utility.model, "claude-haiku-4-5");
+    assert_eq!(utility.client.provider_name(), "anthropic");
+}
+
+/// Seam resolution keeps the built-in Flash default when neither
+/// `[context] seam_model` nor a utility model is configured.
+#[test]
+fn seam_resolution_defaults_to_flash_without_any_config() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main));
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &utility);
+    assert_eq!(model, crate::seam_manager::DEFAULT_SEAM_MODEL);
+    assert!(std::sync::Arc::ptr_eq(&client, &main));
+}
+
+/// A configured utility model supplies the seam default; same-provider setups
+/// reuse the main client, cross-provider setups switch to the utility client.
+#[test]
+fn seam_resolution_uses_utility_model_default() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility =
+        super::resolve_utility_llm(&cfg, Some(&main)).expect("cross-provider utility builds");
+
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
+    assert_eq!(model, "claude-haiku-4-5");
+    assert_eq!(client.provider_name(), "anthropic");
+    assert!(
+        std::sync::Arc::ptr_eq(&client, &utility.client),
+        "cross-provider seam must use the utility client"
+    );
+}
+
+/// An explicit `[context] seam_model` always wins and keeps the main client —
+/// even when a cross-provider utility model is configured (the explicit id
+/// belongs to the main provider).
+#[test]
+fn seam_resolution_explicit_model_wins_over_utility() {
+    let _guard = lock_test_env();
+    let _key = ScopedMaxOutputTokens::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "claude-haiku-4-5".to_string(),
+            provider: Some(crate::config::ApiProvider::Anthropic),
+            api_key: None,
+            base_url: None,
+        }),
+        context: crate::config::ContextConfig {
+            seam_model: Some("deepseek-v4-flash".to_string()),
+            ..crate::config::ContextConfig::default()
+        },
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let utility =
+        super::resolve_utility_llm(&cfg, Some(&main)).expect("cross-provider utility builds");
+
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
+    assert_eq!(model, "deepseek-v4-flash");
+    assert!(
+        std::sync::Arc::ptr_eq(&client, &main),
+        "explicit seam model keeps the main client"
+    );
+}
+
+/// §D2 — `resolve_llm_client` routes a `custom_provider` selection to
+/// `ProviderId::Custom(id)`, which reaches `default_registry().build()`. Since
+/// "acme" is not a registered factory, the build fails with the registry's
+/// "no provider factory registered for 'acme'" error — a network-free proof that
+/// the custom id flows all the way to the registry (not silently mapped to a
+/// builtin). The entry supplies a remote base_url + api_key so accessor
+/// resolution succeeds and the failure is squarely at registry dispatch.
+#[test]
+fn resolve_llm_client_custom_provider_routes_by_id_to_registry() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        custom_provider: Some("acme".to_string()),
+        providers: Some(crate::config::ProvidersConfig {
+            custom: vec![crate::config::CustomProviderConfig {
+                id: "acme".to_string(),
+                api_key: Some("acme-key".to_string()),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                model: Some("acme-flagship".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+    // `.err()` (not `expect_err`) — `LlmClientHandle` is `Arc<dyn LlmClient>`
+    // and the trait has no `Debug` supertrait, so the `Ok` variant isn't Debug.
+    let err = super::resolve_llm_client(&cfg)
+        .err()
+        .expect("an unregistered custom provider should not build");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("no provider factory registered for 'acme'"),
+        "expected the custom id to reach the registry; got: {msg}"
+    );
+}
+
+#[test]
+fn plugin_tools_dir_honors_missing_custom_directory_without_fallback() {
+    let missing = PathBuf::from("definitely-missing-codesmith-plugin-dir");
+    let tools_config = crate::config::ToolsConfig {
+        plugin_dir: Some(missing.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    assert_eq!(plugin_tools_dir(Some(&tools_config)), missing);
+}
+
+#[test]
+fn configure_plugin_tools_applies_overrides_after_discovered_plugins() {
+    let tmp = tempdir().expect("tempdir");
+    let plugin_dir = tmp.path().join("tools");
+    fs::create_dir(&plugin_dir).expect("plugin dir");
+    fs::write(
+        plugin_dir.join("same-name.sh"),
+        "# name: same_tool\n# description: discovered plugin\n",
+    )
+    .expect("plugin script");
+
+    let mut overrides = HashMap::new();
+    overrides.insert(
+        "same_tool".to_string(),
+        crate::config::ToolOverride::Command {
+            command: "configured-command".to_string(),
+            args: None,
+        },
+    );
+    let tools_config = crate::config::ToolsConfig {
+        plugin_dir: Some(plugin_dir.to_string_lossy().to_string()),
+        overrides: Some(overrides),
+        ..Default::default()
+    };
+
+    let ctx = crate::tools::ToolContext::new(tmp.path().to_path_buf());
+    let mut registry = crate::tools::ToolRegistry::new(ctx);
+
+    let plugin_names = configure_plugin_tools(&mut registry, Some(&tools_config));
+
+    let tool = registry.get("same_tool").expect("same_tool registered");
+    assert!(tool.description().contains("configured-command"));
+    assert!(plugin_names.contains("same_tool"));
+}
+
+fn make_plan(
+    read_only: bool,
+    supports_parallel: bool,
+    approval_required: bool,
+    interactive: bool,
+) -> ToolExecutionPlan {
+    make_plan_at(
+        0,
+        read_only,
+        supports_parallel,
+        approval_required,
+        interactive,
+    )
+}
+
+fn make_plan_at(
+    index: usize,
+    read_only: bool,
+    supports_parallel: bool,
+    approval_required: bool,
+    interactive: bool,
+) -> ToolExecutionPlan {
+    ToolExecutionPlan {
+        index,
+        id: format!("tool-{index}"),
+        name: "grep_files".to_string(),
+        input: json!({"pattern": "test"}),
+        caller: None,
+        interactive,
+        approval_required,
+        approval_description: "desc".to_string(),
+        supports_parallel,
+        read_only,
+        stream_early_start_safe: false,
+        blocked_error: None,
+        guard_result: None,
+    }
+}
+
+fn api_tool(name: &str) -> Tool {
+    Tool {
+        tool_type: Some("function".to_string()),
+        name: name.to_string(),
+        description: format!("Test tool {name}"),
+        input_schema: json!({"type": "object"}),
+        output_schema: None,
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: None,
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }
+}
+
+#[test]
+fn engine_handle_cancel_tracks_latest_turn_token() {
+    let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let stale_token = engine.cancel_token.clone();
+
+    engine.reset_cancel_token();
+    handle.cancel();
+
+    assert!(engine.cancel_token.is_cancelled());
+    assert!(handle.is_cancelled());
+    assert!(!stale_token.is_cancelled());
+}
+
+#[test]
+fn engine_initial_prompt_includes_configured_goal() {
+    let config = EngineConfig {
+        goal_objective: Some("Fix goal handoff".to_string()),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+    let prompt = match engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text,
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+
+    assert!(prompt.contains("<session_goal>"));
+    assert!(prompt.contains("Fix goal handoff"));
+    assert!(
+        engine
+            .config
+            .goal_state
+            .lock()
+            .expect("goal lock")
+            .is_active()
+    );
+}
+
+#[test]
+fn refresh_system_prompt_uses_runtime_goal_state() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut goal = engine.config.goal_state.lock().expect("goal lock");
+        goal.create("Close the runtime goal loop".to_string(), None);
+    }
+
+    engine.refresh_system_prompt(AppMode::Agent);
+    let prompt = match engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text,
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+
+    assert!(prompt.contains("<session_goal>"));
+    assert!(prompt.contains("Close the runtime goal loop"));
+}
+
+#[test]
+fn parallel_batch_requires_read_only_parallel_tools() {
+    let plans = vec![make_plan(true, true, false, false)];
+    assert!(should_parallelize_tool_batch(&plans));
+
+    let plans = vec![
+        make_plan(true, true, false, false),
+        make_plan(true, true, false, false),
+    ];
+    assert!(should_parallelize_tool_batch(&plans));
+
+    let plans = vec![make_plan(false, true, false, false)];
+    assert!(!should_parallelize_tool_batch(&plans));
+
+    let plans = vec![make_plan(true, false, false, false)];
+    assert!(!should_parallelize_tool_batch(&plans));
+
+    let plans = vec![make_plan(true, true, true, false)];
+    assert!(!should_parallelize_tool_batch(&plans));
+
+    let plans = vec![make_plan(true, true, false, true)];
+    assert!(!should_parallelize_tool_batch(&plans));
+}
+
+#[test]
+fn tool_execution_batches_use_serial_barriers() {
+    let batches = plan_tool_execution_batches(vec![
+        make_plan_at(0, true, true, false, false),
+        make_plan_at(1, true, true, false, false),
+        make_plan_at(2, false, false, true, false),
+        make_plan_at(3, true, true, false, false),
+        make_plan_at(4, true, false, false, false),
+        make_plan_at(5, true, true, false, false),
+        make_plan_at(6, true, true, false, false),
+    ]);
+
+    assert_eq!(batches.len(), 5);
+
+    match &batches[0] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![0, 1]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("first batch should be parallel"),
+    }
+    match &batches[1] {
+        ToolExecutionBatch::Serial(plan) => assert_eq!(plan.index, 2),
+        ToolExecutionBatch::Parallel(_) => panic!("second batch should be serial"),
+    }
+    match &batches[2] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![3]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("third batch should be parallel"),
+    }
+    match &batches[3] {
+        ToolExecutionBatch::Serial(plan) => assert_eq!(plan.index, 4),
+        ToolExecutionBatch::Parallel(_) => panic!("fourth batch should be serial"),
+    }
+    match &batches[4] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![5, 6]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("fifth batch should be parallel"),
+    }
+}
+
+#[test]
+fn successful_update_plan_ends_plan_mode_turn_immediately() {
+    assert!(should_stop_after_plan_tool(
+        AppMode::Plan,
+        "update_plan",
+        &Ok(ToolResult::success("planned"))
+    ));
+    assert!(!should_stop_after_plan_tool(
+        AppMode::Agent,
+        "update_plan",
+        &Ok(ToolResult::success("planned"))
+    ));
+    assert!(!should_stop_after_plan_tool(
+        AppMode::Plan,
+        "request_user_input",
+        &Ok(ToolResult::success("input"))
+    ));
+    assert!(!should_stop_after_plan_tool(
+        AppMode::Plan,
+        "update_plan",
+        &Err(ToolError::execution_failed("failed".to_string()))
+    ));
+}
+
+#[test]
+fn quick_plan_requests_force_update_plan_on_first_step() {
+    assert!(should_force_update_plan_first(
+        AppMode::Plan,
+        "Give me a quick 3-step plan to verify the UI changes."
+    ));
+    assert!(should_force_update_plan_first(
+        AppMode::Plan,
+        "Make a high-level plan for the footer work."
+    ));
+    assert!(!should_force_update_plan_first(
+        AppMode::Plan,
+        "Inspect the repo and then give me a quick plan."
+    ));
+    assert!(!should_force_update_plan_first(
+        AppMode::Agent,
+        "Give me a quick 3-step plan."
+    ));
+}
+
+#[test]
+fn quick_plan_turn_can_narrow_first_step_tools_to_update_plan() {
+    let catalog = vec![
+        Tool {
+            tool_type: Some("function".to_string()),
+            name: "read_file".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: json!({"type": "object"}),
+            output_schema: None,
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+        Tool {
+            tool_type: Some("function".to_string()),
+            name: "update_plan".to_string(),
+            description: "Publish a plan".to_string(),
+            input_schema: json!({"type": "object"}),
+            output_schema: None,
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+    ];
+    let active = initial_active_tools(&catalog);
+
+    let forced = active_tools_for_step(&catalog, &active, true);
+    assert_eq!(forced.len(), 1);
+    assert_eq!(forced[0].name, "update_plan");
+
+    let default = active_tools_for_step(&catalog, &active, false);
+    assert_eq!(default.len(), 2);
+}
+
+#[test]
+fn tool_error_messages_include_actionable_hints() {
+    let path_error = ToolError::path_escape(PathBuf::from("../escape.txt"));
+    let formatted = format_tool_error(&path_error, "read_file");
+    assert!(formatted.contains("escapes workspace"));
+
+    let missing_field = ToolError::missing_field("path");
+    let formatted = format_tool_error(&missing_field, "read_file");
+    assert!(formatted.contains("missing required field"));
+
+    let timeout = ToolError::Timeout { seconds: 5 };
+    let formatted = format_tool_error(&timeout, "exec_shell");
+    assert!(formatted.contains("timed out"));
+}
+
+#[test]
+fn tool_exec_outcome_tracks_duration() {
+    let outcome = ToolExecOutcome {
+        index: 0,
+        id: "tool-1".to_string(),
+        name: "grep_files".to_string(),
+        input: json!({"pattern": "test"}),
+        context_patch: None,
+        started_at: Instant::now(),
+        result: Ok(ToolResult::success("ok")),
+    };
+
+    assert!(outcome.started_at.elapsed().as_nanos() > 0);
+}
+
+#[test]
+fn core_native_tools_stay_loaded_in_yolo_mode() {
+    let always_load = HashSet::new();
+    assert!(!should_default_defer_tool(
+        "exec_shell",
+        AppMode::Yolo,
+        &always_load
+    ));
+    assert!(should_default_defer_tool(
+        "git_show",
+        AppMode::Yolo,
+        &always_load
+    ));
+}
+
+#[test]
+fn non_yolo_mode_retains_default_defer_policy() {
+    let always_load = HashSet::new();
+    assert!(!should_default_defer_tool(
+        "exec_shell",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "edit_file",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "apply_patch",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "fetch_url",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "git_diff",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "git_status",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "run_tests",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "agent_open",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "read_file",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "web_search",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "write_file",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "task_shell_start",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "task_shell_wait",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(should_default_defer_tool(
+        "git_show",
+        AppMode::Agent,
+        &always_load
+    ));
+}
+
+#[test]
+fn model_tool_catalog_applies_native_and_mcp_deferral() {
+    let always_load = HashSet::new();
+    let catalog = build_model_tool_catalog(
+        vec![
+            api_tool("read_file"),
+            api_tool("write_file"),
+            api_tool("exec_shell"),
+            api_tool("edit_file"),
+            api_tool("project_map"),
+        ],
+        vec![
+            api_tool("list_mcp_resources"),
+            api_tool("mcp__server__write"),
+        ],
+        AppMode::Agent,
+        &always_load,
+    );
+
+    let defer_loading = |name: &str| {
+        catalog
+            .iter()
+            .find(|tool| tool.name == name)
+            .and_then(|tool| tool.defer_loading)
+    };
+
+    assert_eq!(defer_loading("read_file"), Some(false));
+    assert_eq!(defer_loading("write_file"), Some(false));
+    assert_eq!(defer_loading("exec_shell"), Some(false));
+    assert_eq!(defer_loading("edit_file"), Some(false));
+    assert_eq!(defer_loading("project_map"), Some(true));
+    assert_eq!(defer_loading("list_mcp_resources"), Some(false));
+    assert_eq!(defer_loading("mcp__server__write"), Some(true));
+}
+
+#[test]
+fn agent_catalog_keeps_edit_file_loaded_when_fuzz_is_omitted() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let registry = engine
+        .build_turn_tool_registry_builder(
+            AppMode::Agent,
+            engine.config.todos.clone(),
+            engine.config.plan_state.clone(),
+        )
+        .build(engine.build_tool_context(AppMode::Agent, false));
+    let always_load = HashSet::new();
+    let catalog = build_model_tool_catalog(
+        registry.to_api_tools_with_cache(true),
+        vec![],
+        AppMode::Agent,
+        &always_load,
+    );
+    let edit = catalog
+        .iter()
+        .find(|tool| tool.name == "edit_file")
+        .expect("edit_file registered");
+
+    assert_eq!(edit.defer_loading, Some(false));
+    let required = edit.input_schema["required"]
+        .as_array()
+        .expect("edit_file schema should include required fields");
+    assert!(required.iter().any(|field| field.as_str() == Some("path")));
+    assert!(
+        required
+            .iter()
+            .any(|field| field.as_str() == Some("search"))
+    );
+    assert!(
+        required
+            .iter()
+            .any(|field| field.as_str() == Some("replace"))
+    );
+    assert!(!required.iter().any(|field| field.as_str() == Some("fuzz")));
+    assert_eq!(
+        edit.input_schema["properties"]["fuzz"]["type"].as_str(),
+        Some("boolean")
+    );
+
+    let active_at_batch_start = initial_active_tools(&catalog);
+    assert!(active_at_batch_start.contains("edit_file"));
+    let mut hydrated_this_batch = HashSet::new();
+    assert!(
+        maybe_hydrate_requested_deferred_tool(
+            "edit_file",
+            &json!({
+                "path": "src/foo.rs",
+                "search": "before",
+                "replace": "after"
+            }),
+            &catalog,
+            &active_at_batch_start,
+            &mut hydrated_this_batch,
+        )
+        .is_none(),
+        "loaded edit_file calls without fuzz should execute instead of hydrating the schema"
+    );
+    assert!(hydrated_this_batch.is_empty());
+}
+
+#[test]
+fn tools_always_load_overrides_default_native_deferral() {
+    let always_load = HashSet::from(["git_show".to_string()]);
+    assert!(!should_default_defer_tool(
+        "git_show",
+        AppMode::Agent,
+        &always_load
+    ));
+}
+
+#[test]
+#[ignore = "one-shot metric for scripts/measure-tool-catalog.py"]
+#[allow(clippy::print_stderr)]
+fn print_agent_tool_catalog_metrics() {
+    let tmp = tempdir().expect("tempdir");
+    let context = crate::tools::ToolContext::new(tmp.path().to_path_buf());
+    let client = super::resolve_llm_client(&Config {
+        api_key: Some("test-key".to_string()),
+        ..Config::default()
+    })
+    .expect("stub client");
+    let client: crate::llm_client::LlmClientHandle = client;
+    let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 8);
+    let runtime = crate::tools::subagent::SubAgentRuntime::new(
+        client,
+        DEFAULT_TEXT_MODEL.to_string(),
+        context.clone(),
+        true,
+        None,
+        manager.clone(),
+    );
+    let registry = crate::tools::ToolRegistryBuilder::new()
+        .with_agent_tools(true)
+        .with_todo_tool(new_shared_todo_list())
+        .with_plan_tool(new_shared_plan_state())
+        .with_review_tool(None, DEFAULT_TEXT_MODEL.to_string())
+        .with_rlm_tool(None, DEFAULT_TEXT_MODEL.to_string())
+        .with_recall_archive_tool()
+        .with_notify_tool()
+        .with_subagent_tools(manager, runtime)
+        .build(context);
+    let baseline_catalog = registry.to_api_tools_with_cache(true);
+    let baseline_json = serde_json::to_vec(&baseline_catalog).expect("serialize baseline");
+
+    let always_load = HashSet::new();
+    let mut catalog = build_model_tool_catalog(
+        baseline_catalog.clone(),
+        vec![],
+        AppMode::Agent,
+        &always_load,
+    );
+    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
+    let active = initial_active_tools(&catalog);
+    let active_catalog = active_tools_for_step(&catalog, &active, false);
+    let active_json = serde_json::to_vec(&active_catalog).expect("serialize active");
+    let reduction_percent = if baseline_json.is_empty() {
+        0.0
+    } else {
+        100.0 * (baseline_json.len().saturating_sub(active_json.len())) as f64
+            / baseline_json.len() as f64
+    };
+
+    eprintln!(
+        "TOOL_CATALOG_METRICS {}",
+        serde_json::json!({
+            "baseline_tools": baseline_catalog.len(),
+            "baseline_bytes": baseline_json.len(),
+            "baseline_tokens_est": baseline_json.len().div_ceil(4),
+            "active_tools": active_catalog.len(),
+            "active_bytes": active_json.len(),
+            "active_tokens_est": active_json.len().div_ceil(4),
+            "reduction_percent": reduction_percent,
+            "active_tool_names": active_catalog.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
+        })
+    );
+}
+
+#[test]
+fn deferred_edit_file_first_use_hydrates_schema_without_execution() {
+    let mut edit = api_tool("edit_file");
+    edit.defer_loading = Some(true);
+    edit.input_schema = json!({
+        "type": "object",
+        "properties": {
+            "path": { "type": "string" },
+            "search": { "type": "string" },
+            "replace": { "type": "string" }
+        },
+        "required": ["path", "search", "replace"]
+    });
+
+    let catalog = vec![edit];
+    let active_at_batch_start = HashSet::new();
+    let mut hydrated_this_batch = HashSet::new();
+    let result = maybe_hydrate_requested_deferred_tool(
+        "edit_file",
+        &json!({
+            "path": "src/foo.rs",
+            "old_string": "before",
+            "new_string": "after"
+        }),
+        &catalog,
+        &active_at_batch_start,
+        &mut hydrated_this_batch,
+    )
+    .expect("first deferred use should hydrate");
+
+    assert!(!active_at_batch_start.contains("edit_file"));
+    assert!(hydrated_this_batch.contains("edit_file"));
+    assert!(result.success);
+    assert!(result.content.contains("Tool `edit_file` was deferred"));
+    assert!(result.content.contains("path: string"));
+    assert!(result.content.contains("search: string"));
+    assert!(result.content.contains("replace: string"));
+    assert!(result.content.contains("old_string -> search"));
+    assert!(result.content.contains("new_string -> replace"));
+    assert!(result.content.contains("The tool was not executed"));
+
+    let metadata = result.metadata.expect("metadata");
+    assert_eq!(metadata["event"], "tool.schema_hydrated");
+    assert_eq!(metadata["executed"], false);
+    assert_eq!(metadata["retry_required"], true);
+
+    let second_result = maybe_hydrate_requested_deferred_tool(
+        "edit_file",
+        &json!({"path": "src/bar.rs", "old_string": "before", "new_string": "after"}),
+        &catalog,
+        &active_at_batch_start,
+        &mut hydrated_this_batch,
+    )
+    .expect("later calls in the same batch should hydrate instead of executing");
+    assert_eq!(second_result.metadata.unwrap()["executed"], false);
+    assert_eq!(hydrated_this_batch.len(), 1);
+
+    let mut active_next_batch = active_at_batch_start.clone();
+    active_next_batch.extend(hydrated_this_batch);
+    let mut hydrated_next_batch = HashSet::new();
+    assert!(
+        maybe_hydrate_requested_deferred_tool(
+            "edit_file",
+            &json!({"path": "src/foo.rs", "search": "before", "replace": "after"}),
+            &catalog,
+            &active_next_batch,
+            &mut hydrated_next_batch,
+        )
+        .is_none(),
+        "tools hydrated in a previous batch should execute normally"
+    );
+}
+
+#[test]
+fn model_tool_catalog_defers_non_core_native_tools_in_yolo_mode() {
+    let always_load = HashSet::new();
+    let catalog = build_model_tool_catalog(
+        vec![api_tool("read_file"), api_tool("project_map")],
+        vec![api_tool("mcp__server__write")],
+        AppMode::Yolo,
+        &always_load,
+    );
+
+    let defer_loading = |name: &str| {
+        catalog
+            .iter()
+            .find(|tool| tool.name == name)
+            .and_then(|tool| tool.defer_loading)
+    };
+
+    assert_eq!(defer_loading("read_file"), Some(false));
+    assert_eq!(defer_loading("project_map"), Some(true));
+    assert_eq!(defer_loading("mcp__server__write"), Some(false));
+}
+
+#[test]
+fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
+    // Regression for #263: deterministic byte order of the tools array is a
+    // hard requirement for DeepSeek's KV prefix cache. Built-ins stay as a
+    // contiguous prefix; MCP tools follow. Within each partition: alphabetical.
+    let always_load = HashSet::new();
+    let catalog = build_model_tool_catalog(
+        vec![
+            api_tool("read_file"),
+            api_tool("apply_patch"),
+            api_tool("exec_shell"),
+        ],
+        vec![api_tool("mcp__zoo__b"), api_tool("mcp__aardvark__a")],
+        AppMode::Yolo,
+        &always_load,
+    );
+
+    let names: Vec<&str> = catalog.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "apply_patch",
+            "exec_shell",
+            "read_file",
+            "mcp__aardvark__a",
+            "mcp__zoo__b",
+        ],
+        "built-ins must be alphabetical and contiguous; MCP tools follow, alphabetical",
+    );
+}
+
+#[test]
+fn active_tool_list_pushes_deferred_activations_to_the_tail() {
+    // Regression for #263: when ToolSearch activates a deferred tool mid-
+    // session, it must NOT be inserted at its catalog index — that would
+    // shift every later tool's byte offset and bust the cached prefix.
+    // Deferred-but-now-active tools belong at the tail.
+    let mut a = api_tool("a_load_now");
+    a.defer_loading = Some(false);
+    let mut search = api_tool("search_via_toolsearch");
+    search.defer_loading = Some(true);
+    let mut b = api_tool("b_load_now");
+    b.defer_loading = Some(false);
+
+    let catalog = vec![a, search, b];
+    let active: HashSet<String> = ["a_load_now", "search_via_toolsearch", "b_load_now"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+    let listed = active_tools_for_step(&catalog, &active, false);
+    let names: Vec<&str> = listed.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["a_load_now", "b_load_now", "search_via_toolsearch"],
+        "deferred-but-active tools must come after always-loaded tools",
+    );
+}
+
+#[test]
+fn model_tool_catalog_deduplicates_with_native_priority() {
+    let always_load = HashSet::new();
+    let catalog = build_model_tool_catalog(
+        vec![api_tool("read_file"), api_tool("mcp__server__search")],
+        vec![
+            api_tool("mcp__server__search"),
+            api_tool("mcp__server__write"),
+        ],
+        AppMode::Agent,
+        &always_load,
+    );
+
+    let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["mcp__server__search", "read_file", "mcp__server__write"]
+    );
+}
+
+#[test]
+fn deferred_tool_preflight_loads_edit_schema_without_executing_bad_aliases() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let registry = engine
+        .build_turn_tool_registry_builder(
+            AppMode::Agent,
+            engine.config.todos.clone(),
+            engine.config.plan_state.clone(),
+        )
+        .build(engine.build_tool_context(AppMode::Agent, false));
+    let always_load = HashSet::new();
+    let mut catalog = build_model_tool_catalog(
+        registry.to_api_tools_with_cache(true),
+        vec![],
+        AppMode::Agent,
+        &always_load,
+    );
+    catalog
+        .iter_mut()
+        .find(|tool| tool.name == "edit_file")
+        .expect("edit_file registered")
+        .defer_loading = Some(true);
+    let mut active = initial_active_tools(&catalog);
+    assert!(!active.contains("edit_file"));
+
+    let result = preflight_requested_deferred_tool(
+        "edit_file",
+        &json!({
+            "path": "src/foo.rs",
+            "old_string": "before",
+            "new_string": "after"
+        }),
+        &catalog,
+        &mut active,
+    )
+    .expect("deferred edit_file should preflight");
+
+    assert!(active.contains("edit_file"));
+    assert!(result.success);
+    assert!(result.content.contains("Tool `edit_file` was deferred"));
+    assert!(result.content.contains("The tool was not executed"));
+    assert!(result.content.contains("path: string required"));
+    assert!(result.content.contains("search: string required"));
+    assert!(result.content.contains("replace: string required"));
+    assert!(result.content.contains("old_string -> search"));
+    assert!(result.content.contains("new_string -> replace"));
+    assert_eq!(
+        result.metadata.as_ref().unwrap()["deferred_tool_loaded"],
+        json!(true)
+    );
+}
+
+#[test]
+fn deferred_tool_preflight_guides_checklist_update_list_replacement() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let registry = engine
+        .build_turn_tool_registry_builder(
+            AppMode::Agent,
+            engine.config.todos.clone(),
+            engine.config.plan_state.clone(),
+        )
+        .build(engine.build_tool_context(AppMode::Agent, false));
+    let always_load = HashSet::new();
+    let catalog = build_model_tool_catalog(
+        registry.to_api_tools_with_cache(true),
+        vec![],
+        AppMode::Agent,
+        &always_load,
+    );
+    let mut active = initial_active_tools(&catalog);
+    assert!(!active.contains("checklist_update"));
+
+    let result = preflight_requested_deferred_tool(
+        "checklist_update",
+        &json!({
+            "todos": [
+                { "content": "wire preflight", "status": "completed" }
+            ]
+        }),
+        &catalog,
+        &mut active,
+    )
+    .expect("deferred checklist_update should preflight");
+
+    assert!(active.contains("checklist_update"));
+    assert!(result.success);
+    assert!(
+        result
+            .content
+            .contains("Tool `checklist_update` was deferred")
+    );
+    assert!(result.content.contains("id: integer required"));
+    assert!(result.content.contains("status: string"));
+    assert!(result.content.contains("Missing required fields:"));
+    assert!(result.content.contains("id, status"));
+    assert!(result.content.contains("Unexpected fields:"));
+    assert!(result.content.contains("todos"));
+    assert!(result.content.contains("Use checklist_write"));
+}
+
+#[test]
+fn deferred_tool_preflight_skips_already_active_tools() {
+    let mut tool = api_tool("deferred_tool");
+    tool.defer_loading = Some(true);
+    let catalog = vec![tool];
+    let mut active = HashSet::from(["deferred_tool".to_string()]);
+
+    assert!(
+        preflight_requested_deferred_tool("deferred_tool", &json!({}), &catalog, &mut active,)
+            .is_none(),
+        "already active tools should execute normally"
+    );
+}
+
+#[test]
+fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let registry = engine
+        .build_turn_tool_registry_builder(
+            AppMode::Plan,
+            engine.config.todos.clone(),
+            engine.config.plan_state.clone(),
+        )
+        .build(engine.build_tool_context(AppMode::Plan, false));
+
+    assert!(registry.contains("read_file"));
+    assert!(registry.contains("list_dir"));
+    assert!(!registry.contains("write_file"));
+    assert!(!registry.contains("edit_file"));
+    assert!(!registry.contains("exec_shell"));
+    assert!(!registry.contains("exec_shell_wait"));
+    assert!(!registry.contains("exec_shell_interact"));
+    assert!(!registry.contains("task_shell_start"));
+    assert!(!registry.contains("task_create"));
+    assert!(!registry.contains("task_gate_run"));
+    assert!(!registry.contains("rlm"));
+    assert!(!registry.contains("fim_edit"));
+    assert!(registry.contains("update_plan"));
+    assert!(registry.contains("create_goal"));
+    assert!(registry.contains("get_goal"));
+    assert!(registry.contains("update_goal"));
+    assert!(registry.contains("task_list"));
+    assert!(registry.contains("task_read"));
+    assert!(registry.contains("handle_read"));
+    assert!(registry.contains("recall_archive"));
+
+    let plan_state_tools = [
+        "checklist_add",
+        "checklist_update",
+        "checklist_write",
+        "todo_add",
+        "todo_update",
+        "todo_write",
+        "update_plan",
+        // #plan-mode-v2: the sole permitted write tool in plan mode
+        "write_plan_file",
+    ];
+    let mut write_or_exec_tools: Vec<String> = registry
+        .all()
+        .into_iter()
+        .filter(|tool| !plan_state_tools.contains(&tool.name()))
+        .filter(|tool| {
+            let capabilities = tool.capabilities();
+            capabilities.contains(&ToolCapability::WritesFiles)
+                || capabilities.contains(&ToolCapability::ExecutesCode)
+        })
+        .map(|tool| tool.name().to_string())
+        .collect();
+    write_or_exec_tools.sort();
+    assert!(
+        write_or_exec_tools.is_empty(),
+        "Plan mode must not register file-writing or code-execution tools: {write_or_exec_tools:?}"
+    );
+}
+
+#[test]
+fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Yolo] {
+        let registry = engine
+            .build_turn_tool_registry_builder(
+                mode,
+                engine.config.todos.clone(),
+                engine.config.plan_state.clone(),
+            )
+            .build(engine.build_tool_context(mode, false));
+
+        assert!(
+            registry.contains("recall_archive"),
+            "parent {mode:?} registry should expose recall_archive"
+        );
+    }
+}
+
+#[test]
+fn parent_turn_registry_includes_goal_tools_for_all_modes() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Yolo] {
+        let registry = engine
+            .build_turn_tool_registry_builder(
+                mode,
+                engine.config.todos.clone(),
+                engine.config.plan_state.clone(),
+            )
+            .build(engine.build_tool_context(mode, false));
+
+        for name in ["create_goal", "get_goal", "update_goal"] {
+            assert!(
+                registry.contains(name),
+                "parent {mode:?} registry should expose {name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn agent_mode_can_build_auto_approved_tool_context() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    assert!(
+        !engine
+            .build_tool_context(AppMode::Agent, false)
+            .auto_approve
+    );
+    assert!(engine.build_tool_context(AppMode::Agent, true).auto_approve);
+    assert!(engine.build_tool_context(AppMode::Yolo, false).auto_approve);
+}
+
+#[test]
+fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
+    // Regression for #273: the seatbelt-default policy denies all outbound
+    // network (including DNS), which broke `curl`, `yt-dlp`, package managers,
+    // and similar shell commands in Agent mode. Elevation must include
+    // network access so the application-level NetworkPolicy stays the only
+    // outbound boundary.
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    let agent_ctx = engine.build_tool_context(AppMode::Agent, false);
+    let agent_policy = agent_ctx
+        .elevated_sandbox_policy
+        .as_ref()
+        .expect("Agent mode should elevate the sandbox policy");
+    assert!(
+        agent_policy.has_network_access(),
+        "Agent mode must allow shell network access; got {agent_policy:?}",
+    );
+
+    let yolo_ctx = engine.build_tool_context(AppMode::Yolo, false);
+    let yolo_policy = yolo_ctx
+        .elevated_sandbox_policy
+        .as_ref()
+        .expect("Yolo mode should elevate the sandbox policy");
+    assert!(yolo_policy.has_network_access());
+    // v0.8.11: YOLO drops to DangerFullAccess (no sandbox) so the user
+    // is not bounced through approval round-trips for legitimate
+    // outside-workspace writes (package installs, sub-agent
+    // workspaces, ~/.cache mutations, etc.). YOLO is opt-in and
+    // already enables trust mode + auto-approve; the sandbox was the
+    // last guardrail and contradicts the contract.
+    assert!(
+        matches!(yolo_policy, crate::sandbox::SandboxPolicy::DangerFullAccess),
+        "Yolo mode must use DangerFullAccess (no sandbox); got {yolo_policy:?}",
+    );
+
+    // Plan mode (#1077): the sandbox must actually deny workspace writes.
+    // The previous WorkspaceWrite-with-empty-network policy whitelisted the
+    // workspace as writable, so `python -c "open('f','w').write('x')"`
+    // mutated files inside the workspace despite Plan-mode's intent. Lock
+    // it to ReadOnly: no writes anywhere, no network. The shell tool stays
+    // exposed for read-only inspection (`ls`, `git log`, `grep`, …) and
+    // the per-platform sandbox enforces the rest.
+    let plan_ctx = engine.build_tool_context(AppMode::Plan, false);
+    let plan_policy = plan_ctx
+        .elevated_sandbox_policy
+        .as_ref()
+        .expect("Plan mode should make the shell sandbox policy explicit");
+    assert!(
+        matches!(plan_policy, crate::sandbox::SandboxPolicy::ReadOnly),
+        "Plan mode must use ReadOnly sandbox to deny workspace writes (#1077); got {plan_policy:?}",
+    );
+    assert!(!plan_policy.has_network_access());
+    assert!(!plan_policy.has_full_disk_write_access());
+    assert!(
+        plan_policy
+            .get_writable_roots(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .is_empty(),
+        "ReadOnly policy must enumerate zero writable roots; got {plan_policy:?}",
+    );
+    assert!(
+        plan_ctx
+            .shell_network_denied_hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("Plan mode") && hint.contains("read-only")),
+    );
+}
+
+#[test]
+fn sandbox_policy_for_mode_returns_correct_policy_per_mode() {
+    use super::tool_setup::sandbox_policy_for_mode;
+    use crate::sandbox::SandboxPolicy;
+
+    let workspace = PathBuf::from("/tmp/example-workspace");
+
+    // Plan: ReadOnly. The whole point of #1077.
+    assert!(matches!(
+        sandbox_policy_for_mode(AppMode::Plan, &workspace),
+        SandboxPolicy::ReadOnly
+    ));
+
+    // Agent: WorkspaceWrite with workspace as writable root, network on.
+    match sandbox_policy_for_mode(AppMode::Agent, &workspace) {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access,
+            ..
+        } => {
+            assert_eq!(writable_roots, vec![workspace.clone()]);
+            assert!(network_access, "Agent mode must allow shell network access");
+        }
+        other => panic!("Agent mode should be WorkspaceWrite; got {other:?}"),
+    }
+
+    // YOLO: DangerFullAccess.
+    assert!(matches!(
+        sandbox_policy_for_mode(AppMode::Yolo, &workspace),
+        SandboxPolicy::DangerFullAccess
+    ));
+}
+
+#[tokio::test]
+async fn session_update_preserves_reasoning_tool_only_turn() {
+    let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let assistant = Message {
+        role: "assistant".to_string(),
+        content: vec![
+            ContentBlock::Thinking {
+                thinking: "Need a tool before answering.".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "tool-1".to_string(),
+                name: "read_file".to_string(),
+                input: json!({"path": "Cargo.toml"}),
+                caller: None,
+            },
+        ],
+    };
+
+    engine.add_session_message(assistant.clone()).await;
+
+    let event = {
+        let mut rx = handle.rx_event.write().await;
+        rx.recv().await.expect("session update event")
+    };
+    let Event::SessionUpdated { messages, .. } = event else {
+        panic!("expected session update event");
+    };
+
+    assert_eq!(messages, vec![assistant]);
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_appends_plan_todo_and_read_file_reminders() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Implement context parity".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Add provider-neutral compaction".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.add("Run targeted tests".to_string(), TodoStatus::Pending);
+    }
+    engine.session.record_read_file_result(
+        &json!({"path": "src/lib.rs", "limit": 20}),
+        "pub fn library() {}",
+    );
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+
+    assert_eq!(injected, 3);
+    assert_eq!(engine.session.messages.len(), 3);
+    let duplicate_injected = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(duplicate_injected, 0);
+    assert_eq!(engine.session.messages.len(), 3);
+    let combined = engine
+        .session
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(combined.contains("Active plan resumed"));
+    assert!(combined.contains("Implement context parity"));
+    assert!(combined.contains("Add provider-neutral compaction"));
+    assert!(combined.contains("Active todos resumed"));
+    assert!(combined.contains("Run targeted tests"));
+    assert!(combined.contains("Recent read_file outputs retained"));
+    assert!(combined.contains("src/lib.rs"));
+    assert!(combined.contains("pub fn library() {}"));
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_includes_live_subagents() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let assignment = crate::tools::subagent::SubAgentAssignment {
+        objective: "Inspect context management".to_string(),
+        role: Some("researcher".to_string()),
+    };
+    let agent_id = {
+        let mut manager = engine.host_concrete().subagent_manager.write().await;
+        manager.insert_test_live_agent("agent_live".to_string(), assignment)
+    };
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+
+    assert_eq!(injected, 1);
+    let combined = engine
+        .session
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(combined.contains("Running subagents resumed"));
+    assert!(combined.contains("Inspect context management"));
+    assert!(combined.contains("researcher"));
+    assert!(combined.contains(&agent_id));
+    engine
+        .host_concrete()
+        .subagent_manager
+        .write()
+        .await
+        .abort_test_agent(&agent_id);
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_skips_messages_that_exceed_budget() {
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Keep this plan".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Stay under budget".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+
+    let before = engine.estimated_input_tokens();
+    let injected = engine
+        .reinject_compaction_attachments(Some(before.saturating_sub(1)))
+        .await;
+
+    assert_eq!(injected, 0);
+    assert!(engine.session.messages.is_empty());
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_prepends_turn_meta_block() {
+    // Slice 24 §E: re-inject messages now carry a leading `<turn_meta>` block
+    // (date / model route / working-set summary / conditional skills), giving
+    // the model orientation immediately post-compaction — consistent with the
+    // [turn_meta, content] pattern used for user / steer / LSP messages.
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Restore after compaction".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Continue the work".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.add("Finish slice".to_string(), TodoStatus::Pending);
+    }
+    engine.session.record_read_file_result(
+        &json!({"path": "src/lib.rs", "limit": 20}),
+        "pub fn library() {}",
+    );
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(injected, 3);
+    assert_eq!(engine.session.messages.len(), 3);
+
+    // Every re-inject message: first block is `<turn_meta>`, second is the
+    // `<system-reminder>`-wrapped restoration content.
+    for message in &engine.session.messages {
+        assert!(
+            message.content.len() >= 2,
+            "re-inject message should carry turn_meta + system-reminder blocks"
+        );
+        let ContentBlock::Text { text, .. } = &message.content[0] else {
+            panic!("first block should be the <turn_meta> text block");
+        };
+        assert!(
+            text.starts_with("<turn_meta>\n"),
+            "first block should start with <turn_meta>; got: {text}"
+        );
+        let ContentBlock::Text { text, .. } = &message.content[1] else {
+            panic!("second block should be the <system-reminder> text block");
+        };
+        assert!(
+            text.contains("<system-reminder>"),
+            "second block should wrap the restoration in <system-reminder>"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_turn_meta_reflects_working_set() {
+    // Slice 24 §E: the <turn_meta> block prepended to a re-inject message
+    // re-reads the working-set summary at enrich-time, so a just-observed path
+    // surfaces in the re-inject's leading block (matching the user-message
+    // behavior in `working_set_reaches_model_as_turn_metadata`).
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("please inspect src/lib.rs", tmp.path());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Restore after compaction".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Continue".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+
+    let injected = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(injected, 1);
+    assert_eq!(engine.session.messages.len(), 1);
+
+    let message = &engine.session.messages[0];
+    let ContentBlock::Text { text, .. } = &message.content[0] else {
+        panic!("first block should be the <turn_meta> text block");
+    };
+    assert!(
+        text.starts_with("<turn_meta>\n"),
+        "first block should start with <turn_meta>; got: {text}"
+    );
+    assert!(
+        text.contains(WORKING_SET_SUMMARY_MARKER),
+        "turn_meta block should reflect the observed working-set path; got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn reinject_compaction_attachments_dedup_still_works_with_enrichment() {
+    // Slice 24 §E regression guard: the byte-stable <turn_meta> block
+    // (working-set summary_block is byte-stable; date + model route stable
+    // within a session; enrich-only means no observe between calls) keeps the
+    // dedup check (`message == &candidate`) working — a second consecutive
+    // reinject injects nothing.
+    let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    {
+        let mut plan_state = engine.config.plan_state.lock().await;
+        plan_state.update(UpdatePlanArgs {
+            explanation: Some("Plan".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Step".to_string(),
+                status: StepStatus::InProgress,
+            }],
+        });
+    }
+
+    let first = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(first, 1);
+    let len_after_first = engine.session.messages.len();
+
+    let second = engine.reinject_compaction_attachments(None).await;
+    assert_eq!(
+        second, 0,
+        "enriched dedup should skip already-injected messages"
+    );
+    assert_eq!(
+        engine.session.messages.len(),
+        len_after_first,
+        "second reinject should not add messages"
+    );
+}
+
+#[test]
+fn detects_context_length_errors_from_provider_payloads() {
+    let msg = r#"SSE stream request failed: HTTP 400 Bad Request: {"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 153056 tokens (148960 in the messages, 4096 in the completion).","type":"invalid_request_error"}}"#;
+    assert!(is_context_length_error_message(msg));
+    assert!(!is_context_length_error_message(
+        "SSE stream request failed: HTTP 400 Bad Request: model not found"
+    ));
+}
+
+#[test]
+fn context_budget_reserves_output_and_headroom() {
+    // Serialize with other tests that mutate output-token env vars so
+    // the internal effective_max_output_tokens() call sees a stable env.
+    let _lock = lock_test_env();
+    // V4 has a 1M context window — the only family that comfortably hosts
+    // a 256K output reservation without saturating the input budget to 0.
+    let budget = context_input_budget("deepseek-v4-pro")
+        .expect("deepseek-v4-pro should have a known context window");
+    let v4_window: usize = 1_000_000;
+    let expected = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
+    assert_eq!(budget, expected);
+}
+
+#[test]
+fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
+    // Serialize with other tests that mutate output-token env vars so
+    // v4_cap and flash_cap below see the same env state.
+    let _lock = lock_test_env();
+    // V4 models have a 1M context window but the API request cap must stay
+    // well below common provider limits (e.g., 131K total on self-hosted
+    // vLLM/SGLang). The cap should never exceed 65K.
+    let v4_cap = effective_max_output_tokens("deepseek-v4-pro");
+    assert!(
+        v4_cap <= 65_536,
+        "V4 API request cap should be ≤64K, got {v4_cap}"
+    );
+    assert!(
+        v4_cap > 0,
+        "V4 API request cap should be positive, got {v4_cap}"
+    );
+
+    let flash_cap = effective_max_output_tokens("deepseek-v4-flash");
+    assert_eq!(v4_cap, flash_cap);
+}
+
+struct ScopedMaxOutputTokens {
+    var: &'static str,
+    previous: Option<OsString>,
+}
+
+impl ScopedMaxOutputTokens {
+    fn set(var: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(var);
+        // Safety: tests using this helper serialize with lock_test_env() and
+        // restore the original value in Drop.
+        unsafe {
+            std::env::set_var(var, value);
+        }
+        Self { var, previous }
+    }
+
+    fn unset(var: &'static str) -> Self {
+        let previous = std::env::var_os(var);
+        // Safety: see set().
+        unsafe {
+            std::env::remove_var(var);
+        }
+        Self { var, previous }
+    }
+}
+
+impl Drop for ScopedMaxOutputTokens {
+    fn drop(&mut self) {
+        // Safety: tests using this helper serialize with lock_test_env().
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(self.var, previous);
+            } else {
+                std::env::remove_var(self.var);
+            }
+        }
+    }
+}
+
+#[test]
+fn effective_max_output_tokens_env_override_returns_positive_value() {
+    let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
+    let _guard = ScopedMaxOutputTokens::set("CODESMITH_MAX_OUTPUT_TOKENS", "16384");
+
+    // Legacy override applies regardless of model — V4 hosted, V4 flash,
+    // sub-500K self-hosted all return the env value verbatim.
+    assert_eq!(effective_max_output_tokens("deepseek-v4-pro"), 16_384);
+    assert_eq!(effective_max_output_tokens("deepseek-v4-flash"), 16_384);
+    assert_eq!(effective_max_output_tokens("qwen3-32b-256k"), 16_384);
+}
+
+#[test]
+fn effective_max_output_tokens_for_provider_uses_anthropic_cap() {
+    let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
+
+    assert_eq!(
+        effective_max_output_tokens_for_provider(
+            ApiProvider::Anthropic,
+            "claude-sonnet-4-20250514"
+        ),
+        8_192
+    );
+}
+
+#[test]
+fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
+    let _lock = lock_test_env();
+    let _codesmith_guard = ScopedMaxOutputTokens::unset("CODESMITH_MAX_OUTPUT_TOKENS");
+    // Establish the heuristic baseline with the env unset.
+    let baseline = effective_max_output_tokens("deepseek-v4-pro");
+    assert!(baseline > 0);
+
+    // 0, non-numeric, and empty values must all fall through to the heuristic
+    // rather than producing a zero/garbage cap that would silently break
+    // request budgeting.
+    for raw in ["0", "abc", "", "  ", "-1"] {
+        let _guard = ScopedMaxOutputTokens::set("CODESMITH_MAX_OUTPUT_TOKENS", raw);
+        assert_eq!(
+            effective_max_output_tokens("deepseek-v4-pro"),
+            baseline,
+            "env={raw:?} should fall through to heuristic"
+        );
+    }
+}
+
+#[test]
+fn provider_aware_context_budget_uses_provider_capability_window_and_output() {
+    let _lock = lock_test_env();
+    let anthropic_budget =
+        context_input_budget_for_provider(ApiProvider::Anthropic, "claude-sonnet-4-20250514")
+            .expect("Anthropic capability should provide a window");
+    assert_eq!(anthropic_budget, 200_000 - 8_192 - 1_024);
+
+    let ollama_budget = context_input_budget_for_provider(ApiProvider::Ollama, "llama3")
+        .expect("Ollama capability should provide a window");
+    // 8K windows are below the small-window cutoff, so the budget reserves
+    // the extra proportional preflight headroom (1% of 8,192 = 81) on top of
+    // the plain 1,024.
+    assert_eq!(ollama_budget, 8_192 - 4_096 - 1_024 - 81);
+}
+
+#[test]
+fn internal_context_budget_tiers_reserved_output_by_window() {
+    // Serialize with other tests that mutate output-token env vars so
+    // both branches below see a stable env.
+    let _lock = lock_test_env();
+    // Large-context (>=500K) models reserve the full TURN_MAX_OUTPUT_TOKENS
+    // headroom so long V4 sessions don't compact prematurely.
+    let internal_budget =
+        context_input_budget("deepseek-v4-pro").expect("V4 should have a known context window");
+    let v4_window: usize = 1_000_000;
+    let expected_internal = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
+    assert_eq!(internal_budget, expected_internal);
+
+    // Sub-500K windows cross into the effective-cap branch: a 256K self-hosted
+    // deployment must yield a usable positive budget rather than None. The
+    // previous formula reserved the full 262K and computed 256K - 262K - 1K,
+    // which underflowed to None and silently disabled preflight/recovery.
+    let small_window_budget = context_input_budget("qwen3-32b-256k")
+        .expect("a 256K-suffix model must yield Some budget via the effective-cap branch");
+    let effective_output = effective_max_output_tokens("qwen3-32b-256k") as usize;
+    let expected_small = 256_000 - effective_output - 1_024;
+    assert_eq!(small_window_budget, expected_small);
+}
+
+#[test]
+fn v4_tool_outputs_keep_large_file_reads_in_context() {
+    let content = "0123456789abcdef\n".repeat(2_000);
+    let output = ToolResult::success(content.clone());
+
+    let v4_context = compact_tool_result_for_context("deepseek-v4-pro", "exec_shell", &output);
+    assert_eq!(v4_context, content.trim());
+
+    let legacy_context =
+        compact_tool_result_for_context("deepseek-v3.2-128k", "exec_shell", &output);
+    assert!(legacy_context.contains("output compacted to protect context"));
+    assert!(legacy_context.len() < v4_context.len());
+}
+
+#[test]
+fn subagent_results_are_summarized_before_parent_context_insertion() {
+    let long_result = "verified detail\n".repeat(1_000);
+    let output = ToolResult::success(
+        json!({
+            "agent_id": "agent_1234abcd",
+            "agent_type": "explore",
+            "assignment": {
+                "objective": "Inspect the RLM rendering path and report the smallest fix."
+            },
+            "model": "deepseek-v4-flash",
+            "status": "Completed",
+            "result": long_result,
+            "steps_taken": 12,
+            "duration_ms": 3456
+        })
+        .to_string(),
+    );
+
+    let context = compact_tool_result_for_context("deepseek-v4-pro", "agent_eval", &output);
+
+    assert!(context.contains("[sub-agent result summarized for parent context]"));
+    assert!(context.contains("agent_1234abcd (explore) status=Completed"));
+    assert!(context.contains("Inspect the RLM rendering path"));
+    assert!(context.contains("steps=12"));
+    assert!(context.len() < output.content.len());
+    assert!(context.contains("self-report"));
+    assert!(context.contains("verify side effects"));
+    assert!(context.contains("read_file") && context.contains("list_dir"));
+    assert!(context.contains("handle_read"));
+}
+
+#[test]
+fn refresh_system_prompt_leaves_working_set_out_of_system_prompt() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("please inspect src/lib.rs", tmp.path());
+
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    let prompt = match &engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text.clone(),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+    assert!(!prompt.contains(WORKING_SET_SUMMARY_MARKER));
+}
+
+#[test]
+fn working_set_reaches_model_as_turn_metadata() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("please inspect src/lib.rs", tmp.path());
+    let user_msg =
+        engine.user_text_message_with_turn_metadata("please inspect src/lib.rs".to_string());
+    engine.session.add_message(user_msg);
+
+    let messages = engine.messages_with_turn_metadata();
+    let first_block = messages
+        .last()
+        .and_then(|message| message.content.first())
+        .expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+    assert!(text.starts_with("<turn_meta>\n"));
+    assert!(text.contains(WORKING_SET_SUMMARY_MARKER));
+    assert!(text.contains("src/lib.rs"));
+}
+
+#[test]
+fn turn_metadata_includes_current_local_date_without_working_set() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    let user_msg = engine.user_text_message_with_turn_metadata("what is today's date?".to_string());
+    engine.session.add_message(user_msg);
+
+    let messages = engine.messages_with_turn_metadata();
+    let first_block = messages
+        .last()
+        .and_then(|message| message.content.first())
+        .expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(text.starts_with("<turn_meta>\n"));
+    assert!(text.contains(&format!("Current local date: {today}")));
+}
+
+#[test]
+fn turn_metadata_includes_auto_model_route() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+
+    let user_msg = engine.user_text_message_with_turn_metadata_for_route(
+        "debug this regression".to_string(),
+        "deepseek-v4-pro",
+        true,
+        Some("max"),
+        true,
+    );
+    let first_block = user_msg.content.first().expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+
+    assert!(text.contains("Auto model route: deepseek-v4-pro"));
+    assert!(text.contains("Auto reasoning effort: max"));
+    assert!(!text.contains("debug this regression"));
+}
+
+#[test]
+fn user_text_message_keeps_current_turn_input_after_turn_metadata() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+
+    let user_msg =
+        engine.user_text_message_with_turn_metadata("explain the cache metrics".to_string());
+
+    let last_text = user_msg
+        .content
+        .iter()
+        .rev()
+        .find_map(|block| {
+            if let ContentBlock::Text { text, .. } = block {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .expect("user text block");
+    assert_eq!(last_text, "explain the cache metrics");
+}
+
+#[test]
+fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("inspect src/lib.rs", tmp.path());
+
+    let first_user = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
+    engine.session.add_message(first_user.clone());
+    let first_request = engine.messages_with_turn_metadata();
+    assert_eq!(first_request, engine.session.messages);
+
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "I inspected it.".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("now summarize it", tmp.path());
+    let second_user = engine.user_text_message_with_turn_metadata("now summarize it".to_string());
+    engine.session.add_message(second_user);
+
+    let second_request = engine.messages_with_turn_metadata();
+    assert_eq!(second_request, engine.session.messages);
+    assert_eq!(second_request.first(), Some(&first_user));
+}
+
+/// v0.8.11 regression: tool-result messages serialize to role="tool" on
+/// the wire but are stored as role="user" internally. `<turn_meta>` must
+/// be stored only on actual user-text messages, not retroactively added
+/// to tool-result messages at request time.
+#[test]
+fn turn_metadata_skips_tool_result_messages() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("inspect src/lib.rs", tmp.path());
+
+    // Real user message — should be eligible for injection.
+    let user_msg = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
+    engine.session.add_message(user_msg);
+    // Assistant tool-call.
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::ToolUse {
+            id: "call_42".to_string(),
+            name: "read_file".to_string(),
+            input: serde_json::json!({"path": "src/lib.rs"}),
+            caller: None,
+        }],
+    });
+    // Tool result, stored as role="user" internally.
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_42".to_string(),
+            content: "pub fn sample() {}".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+
+    let messages = engine.messages_with_turn_metadata();
+
+    // The trailing message is the tool result and MUST be untouched —
+    // no Text block sneaking in front of the ToolResult block.
+    let trailing = messages.last().expect("trailing message");
+    assert_eq!(trailing.role, "user");
+    assert_eq!(trailing.content.len(), 1);
+    assert!(matches!(
+        trailing.content.first(),
+        Some(ContentBlock::ToolResult { .. })
+    ));
+
+    // The earlier real user message already carries the turn_meta prefix.
+    let real_user = messages.first().expect("first user message");
+    assert_eq!(real_user.role, "user");
+    let ContentBlock::Text { text, .. } = real_user.content.first().expect("user text content")
+    else {
+        panic!("expected Text block on real user message");
+    };
+    assert!(text.starts_with("<turn_meta>\n"));
+    assert!(text.contains("src/lib.rs"));
+}
+
+/// When the turn is mid-execution and the trailing user message is a
+/// tool result, no turn_meta is injected at request time. The working_set
+/// surfaces again on the next stored user-text message.
+#[test]
+fn turn_metadata_skips_when_only_tool_results_trail() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("inspect src/lib.rs", tmp.path());
+
+    // Only a tool-result message in history — simulates the corner case
+    // where the prior real user message has already been compacted away
+    // but a tool-result is still pending. We must not retroactively
+    // inject.
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_42".to_string(),
+            content: "pub fn sample() {}".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+
+    let messages = engine.messages_with_turn_metadata();
+
+    // Returned unchanged: the single tool-result message, no Text
+    // prefix, content length == 1.
+    let only = messages.last().expect("trailing message");
+    assert_eq!(only.content.len(), 1);
+    assert!(matches!(
+        only.content.first(),
+        Some(ContentBlock::ToolResult { .. })
+    ));
+}
+
+#[test]
+fn refresh_system_prompt_is_noop_when_unchanged() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    engine.refresh_system_prompt(AppMode::Agent);
+    let first_hash = engine.session.last_system_prompt_hash;
+    let first_prompt = engine.session.system_prompt.clone();
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    assert_eq!(engine.session.last_system_prompt_hash, first_hash);
+    assert_eq!(engine.session.system_prompt, first_prompt);
+}
+
+#[test]
+fn engine_prompt_respects_hidden_thinking_config() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        locale_tag: "zh-Hans".to_string(),
+        show_thinking: false,
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+    let prompt = match engine.session.system_prompt.as_ref() {
+        Some(SystemPrompt::Text(text)) => text,
+        Some(SystemPrompt::Blocks(_)) => panic!("expected text system prompt"),
+        None => panic!("expected system prompt"),
+    };
+
+    assert!(prompt.contains("## Hidden Thinking Language"));
+    assert!(prompt.contains("reasoning_content"));
+    assert!(prompt.contains("English"));
+    assert!(!prompt.contains("## 语言再次提醒"));
+}
+
+fn sync_runtime_system_prompt_override(engine: &mut Engine, system_prompt: SystemPrompt) {
+    engine.session.compaction_summary_prompt =
+        extract_compaction_summary_prompt(Some(system_prompt.clone()));
+    engine.session.system_prompt = Some(system_prompt);
+    engine.session.system_prompt_override = true;
+}
+
+#[test]
+fn text_system_prompt_override_via_runtime_sync_survives_refresh() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    let prompt = SystemPrompt::Text("TANGERINE-7".to_string());
+    let expected = Some(prompt.clone());
+
+    sync_runtime_system_prompt_override(&mut engine, prompt);
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    assert_eq!(engine.session.system_prompt, expected);
+}
+
+#[test]
+fn blocks_system_prompt_override_via_runtime_sync_survives_mode_change_refresh() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    let prompt = SystemPrompt::Blocks(vec![SystemBlock {
+        block_type: "text".to_string(),
+        text: "TANGERINE-7".to_string(),
+        cache_control: None,
+    }]);
+    let expected = Some(prompt.clone());
+
+    sync_runtime_system_prompt_override(&mut engine, prompt);
+    engine.refresh_system_prompt(AppMode::Plan);
+
+    assert_eq!(engine.session.system_prompt, expected);
+}
+
+#[test]
+fn compaction_summary_stays_in_stable_system_prompt() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/main.rs"), "fn main() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .lock()
+        .expect("working_set poisoned")
+        .observe_user_message("continue in src/main.rs", tmp.path());
+    engine.refresh_system_prompt(AppMode::Agent);
+    engine.merge_compaction_summary(Some(SystemPrompt::Blocks(vec![SystemBlock {
+        block_type: "text".to_string(),
+        text: format!("{COMPACTION_SUMMARY_MARKER}\nsummary"),
+        cache_control: None,
+    }])));
+
+    let prompt = match &engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text.clone(),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+
+    assert!(prompt.contains(COMPACTION_SUMMARY_MARKER));
+    assert!(!prompt.contains(WORKING_SET_SUMMARY_MARKER));
+}
+
+#[tokio::test]
+async fn pre_request_refresh_skips_compaction_below_normal_threshold() {
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 1.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 5;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+    engine.session.model = "deepseek-v4-pro".to_string();
+    engine.config.model = "deepseek-v4-pro".to_string();
+
+    for i in 0..20 {
+        engine.session.messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!("small message {i}"),
+                cache_control: None,
+            }],
+        });
+    }
+
+    let before = engine.estimated_input_tokens();
+    let before_len = engine.session.messages.len();
+    let turn = TurnContext::new(10);
+    let applied = engine
+        .run_capacity_pre_request_checkpoint(&turn, None, AppMode::Agent)
+        .await;
+    let after = engine.estimated_input_tokens();
+
+    assert!(!applied);
+    assert_eq!(after, before);
+    assert_eq!(engine.session.messages.len(), before_len);
+}
+
+#[tokio::test]
+async fn pre_request_refresh_invoked_when_medium_risk() {
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 1.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 5;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    // Pin the model to an explicit 128k-context variant so the pressure ratio stays
+    // stable regardless of changes to the workspace-wide default model.
+    engine.session.model = "deepseek-v3.2-128k".to_string();
+    engine.config.model = "deepseek-v3.2-128k".to_string();
+
+    let long = "x".repeat(5_000);
+    for _ in 0..900 {
+        engine.session.messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: long.clone(),
+                cache_control: None,
+            }],
+        });
+    }
+
+    let before = engine.estimated_input_tokens();
+    let turn = TurnContext::new(10);
+    let applied = engine
+        .run_capacity_pre_request_checkpoint(&turn, None, AppMode::Agent)
+        .await;
+    let after = engine.estimated_input_tokens();
+
+    assert!(applied);
+    assert!(after < before);
+}
+
+#[tokio::test]
+async fn post_tool_replay_invoked_when_high_non_severe_risk() {
+    let tmp = tempdir().expect("tempdir");
+    fs::write(tmp.path().join("sample.txt"), "hello replay").expect("write");
+
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        severe_min_slack: -10.0,
+        severe_violation_ratio: 2.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.session.workspace = tmp.path().to_path_buf();
+    engine.config.workspace = tmp.path().to_path_buf();
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 4;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    let mut turn = TurnContext::new(10);
+    let mut tool_call = TurnToolCall::new(
+        "tool_read_1".to_string(),
+        "read_file".to_string(),
+        json!({ "path": "sample.txt" }),
+    );
+    tool_call.set_result(
+        "hello replay".to_string(),
+        std::time::Duration::from_millis(1),
+    );
+    turn.record_tool_call(tool_call);
+
+    let registry = ToolRegistryBuilder::new()
+        .with_read_only_file_tools()
+        .build(engine.build_tool_context(AppMode::Agent, false));
+
+    let restarted = engine
+        .run_capacity_post_tool_checkpoint(
+            &turn,
+            AppMode::Agent,
+            Some(&registry),
+            Arc::new(RwLock::new(())),
+            None,
+            0,
+            0,
+        )
+        .await;
+
+    assert!(!restarted);
+    let has_verification_note = engine.session.messages.iter().any(|msg| {
+        msg.content.iter().any(|block| match block {
+            ContentBlock::ToolResult { content, .. } => content.contains("[verification replay]"),
+            _ => false,
+        })
+    });
+    assert!(has_verification_note);
+}
+
+#[tokio::test]
+async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    for i in 0..10 {
+        engine.session.messages.push(Message {
+            role: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!("noise message {i}"),
+                cache_control: None,
+            }],
+        });
+    }
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Please finish task".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let before_len = engine.session.messages.len();
+    let turn = TurnContext::new(10);
+    let restarted = engine
+        .run_capacity_error_escalation_checkpoint(&turn, AppMode::Agent, 2, 2, &[])
+        .await;
+
+    assert!(restarted);
+    assert!(engine.session.messages.len() < before_len);
+    assert!(engine.session.messages.len() <= 2);
+
+    let records = load_last_k_capacity_records(&engine.session.id, 1).expect("load memory");
+    assert!(!records.is_empty());
+    assert!(!records[0].canonical_state.goal.is_empty());
+}
+
+/// v0.8.11: `CapacityControllerConfig::default()` ships with
+/// `enabled = false`. The capacity controller's destructive
+/// interventions (TargetedContextRefresh silently runs compaction;
+/// VerifyAndReplan clears the session message log) silently rewrote
+/// or nuked the user's transcript ("resetting plan" footer +
+/// black-screen symptom). v0.8.11 commits to "trust the model with
+/// the full 1M-token context, only compact on explicit user
+/// /compact" — auto-managing the prefix contradicts that posture.
+/// Power users can still opt in via `capacity.enabled = true`.
+#[tokio::test]
+async fn capacity_disabled_by_default_keeps_messages_intact() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    // Default config — what real users get.
+    let mut engine = build_engine_with_capacity(CapacityControllerConfig::default());
+    assert!(
+        !engine.config.capacity.enabled,
+        "capacity controller must be off by default in v0.8.11+"
+    );
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    for i in 0..10 {
+        engine.session.messages.push(Message {
+            role: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!("noise message {i}"),
+                cache_control: None,
+            }],
+        });
+    }
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Please finish task".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let before_len = engine.session.messages.len();
+    let turn = TurnContext::new(10);
+    let restarted = engine
+        .run_capacity_error_escalation_checkpoint(&turn, AppMode::Agent, 2, 2, &[])
+        .await;
+
+    // Capacity is disabled → no replan, no message clear.
+    assert!(!restarted);
+    assert_eq!(engine.session.messages.len(), before_len);
+}
+
+/// §E slice 3a: `apply_verify_and_replan(skip_transcript = true)` runs only the
+/// state work (canonical persist, system-prompt fold, emit, mark) and does
+/// NOT re-wipe the transcript. The executor already reset the transcript
+/// mid-loop via `ChatHistory` (`reset_history_to_latest_user_and_verified`);
+/// re-running the `clear`+`push(latest_user)`+`push(latest_verified)` post-`run`
+/// would discard the model's post-reset replanning work. This proves the
+/// post-`run` path preserves the grown transcript.
+#[tokio::test]
+async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    // A grown transcript representing the model's post-reset replanning work:
+    // the mid-loop reset left `{latest_user, latest_verified}`, then the model
+    // added an assistant turn + a tool result on top.
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "redo the task".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine.session.messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "here is my replan".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "post_reset_tool".to_string(),
+            content: "post-reset tool output".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+
+    let before_messages = engine.session.messages.clone();
+    let before_len = before_messages.len();
+    let turn = TurnContext::new(10);
+
+    let applied = engine
+        .apply_verify_and_replan(&turn, AppMode::Agent, None, "test skip_transcript", true)
+        .await;
+
+    // State work ran to completion (canonical persist, system-prompt fold,
+    // emit, `mark_intervention_applied`).
+    assert!(applied);
+    // The transcript is untouched — `skip_transcript = true` skipped the
+    // `clear`+`push` reset, so the model's post-reset replanning survives into
+    // the next turn (this is the crux of sub-slice 3a: the post-`run` path must
+    // not wipe the growth the model produced after the mid-loop reset).
+    assert_eq!(engine.session.messages.len(), before_len);
+    assert_eq!(engine.session.messages, before_messages);
+}
+
+/// §E slice 3b: `apply_verify_with_tool_replay(skip_transcript = true)` runs
+/// only the state work (canonical persist, system-prompt fold, emit, mark)
+/// using the carried `ReplayOutcome`, and does NOT re-execute the replay
+/// candidate or re-push the `[verification replay]` note. The executor already
+/// pushed the note mid-loop via `ChatHistory`; re-running the transcript
+/// portion would double-inject the note. This proves the post-`run` path
+/// preserves the grown transcript + the existing note (mirrors slice 3a's
+/// `apply_verify_and_replan_skip_transcript_preserves_messages`).
+#[tokio::test]
+async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    // A grown transcript representing the post-replay state: the executor's
+    // mid-loop replay already pushed the `[verification replay]` note (the
+    // existing ToolResult below), then the model added an assistant turn on
+    // top. Re-running the transcript portion post-`run` would wipe this growth
+    // and double-inject the note.
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "replay_tool".to_string(),
+            content: "[verification replay] tool=read_file pass=true details=output_match"
+                .to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+    engine.session.messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "replay passed; continuing".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let before_messages = engine.session.messages.clone();
+    let before_len = before_messages.len();
+    let turn = TurnContext::new(10);
+
+    let outcome = ReplayOutcome {
+        tool_id: "replay_tool".to_string(),
+        tool_name: "read_file".to_string(),
+        pass: true,
+        replay_outcome: "pass".to_string(),
+        diff_summary: "output_match".to_string(),
+        verification_note: "[verification replay] tool=read_file pass=true details=output_match"
+            .to_string(),
+    };
+
+    let applied = engine
+        .apply_verify_with_tool_replay(
+            &turn,
+            AppMode::Agent,
+            None,
+            None,
+            Arc::new(RwLock::new(())),
+            None,
+            true,
+            Some(outcome),
+        )
+        .await;
+
+    // State work ran to completion (canonical persist, system-prompt fold,
+    // emit, `mark_intervention_applied`).
+    assert!(applied);
+    // The transcript is untouched — `skip_transcript = true` skipped the
+    // candidate select + re-execute + note push, so the existing
+    // `[verification replay]` note + the model's post-replay turn survive
+    // (this is the crux of sub-slice 3b: the post-`run` path must not
+    // double-inject the note the executor already pushed mid-loop).
+    assert_eq!(engine.session.messages.len(), before_len);
+    assert_eq!(engine.session.messages, before_messages);
+    // Exactly one `[verification replay]` note (the seeded one) — no
+    // double-push from the `skip_transcript` path.
+    let replay_notes = engine
+        .session
+        .messages
+        .iter()
+        .filter(|m| {
+            m.content.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolResult { content, .. }
+                        if content.contains("[verification replay]")
+                )
+            })
+        })
+        .count();
+    assert_eq!(replay_notes, 1, "skip_transcript must not re-push the note");
+}
+
+/// §E slice 3c: `apply_targeted_context_refresh(skip_transcript = true,
+/// Some(outcome))` runs only the state work (canonical persist,
+/// system-prompt fold, emit, mark) using the carried `TargetedRefreshOutcome`,
+/// and does NOT re-compact / re-reinject. The executor already compacted the
+/// transcript mid-loop via `ChatHistory` (`refresh_targeted_context_mid_loop`
+/// at seam-1); re-running the transcript portion post-`run` would
+/// double-mutate it. This proves the post-`run` path preserves the compacted
+/// transcript (mirrors slice 3a's
+/// `apply_verify_and_replan_skip_transcript_preserves_messages` + slice 3b's
+/// `apply_verify_with_tool_replay_skip_transcript_uses_outcome`).
+#[tokio::test]
+async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    // A grown transcript representing the post-refresh state: the executor's
+    // mid-loop compaction already replaced the transcript with the compacted
+    // tail + summary, then the model added an assistant turn on top. Re-running
+    // the transcript portion post-`run` would re-compact + re-reinject,
+    // discarding this growth.
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "compacted tail".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine.session.messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "post-compaction assistant turn".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let before_messages = engine.session.messages.clone();
+    let before_len = before_messages.len();
+    let turn = TurnContext::new(10);
+
+    let outcome = TargetedRefreshOutcome {
+        refreshed: true,
+        before_tokens: 12_345,
+    };
+
+    let applied = engine
+        .apply_targeted_context_refresh(&turn, None, AppMode::Agent, None, true, Some(outcome))
+        .await;
+
+    // State work ran to completion (canonical persist, system-prompt fold,
+    // emit, `mark_intervention_applied`) using the carried outcome.
+    assert!(applied);
+    // The transcript is untouched — `skip_transcript = true` skipped the
+    // should_compact → compact_messages_safe → reinject + local-trim cascade,
+    // so the compacted tail + the model's post-refresh turn survive (this is
+    // the crux of sub-slice 3c: the post-`run` path must not re-compact the
+    // transcript the executor already compacted mid-loop).
+    assert_eq!(engine.session.messages.len(), before_len);
+    assert_eq!(engine.session.messages, before_messages);
+}
+
+#[tokio::test]
+async fn controller_disabled_keeps_behavior_unchanged() {
+    let capacity = CapacityControllerConfig {
+        enabled: false,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = Arc::new(StdMutex::new(CapacityController::new(capacity)));
+    engine.turn_counter = 3;
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    let long = "y".repeat(5_000);
+    for _ in 0..120 {
+        engine.session.messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: long.clone(),
+                cache_control: None,
+            }],
+        });
+    }
+
+    let before = engine.estimated_input_tokens();
+    let before_len = engine.session.messages.len();
+    let turn = TurnContext::new(10);
+    let applied = engine
+        .run_capacity_pre_request_checkpoint(&turn, None, AppMode::Agent)
+        .await;
+    let after = engine.estimated_input_tokens();
+    let after_len = engine.session.messages.len();
+
+    assert!(!applied);
+    assert_eq!(before, after);
+    assert_eq!(before_len, after_len);
+}
+
+#[test]
+fn caller_policy_defaults_to_direct() {
+    let tool = Tool {
+        tool_type: None,
+        name: "read_file".to_string(),
+        description: "Read".to_string(),
+        input_schema: json!({"type":"object"}),
+        output_schema: None,
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: Some(false),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    };
+    let direct = ToolCaller {
+        caller_type: "direct".to_string(),
+        tool_id: None,
+    };
+    let code = ToolCaller {
+        caller_type: "code_execution_20250825".to_string(),
+        tool_id: Some("srvtoolu_1".to_string()),
+    };
+    assert!(caller_allowed_for_tool(Some(&direct), Some(&tool)));
+    assert!(!caller_allowed_for_tool(Some(&code), Some(&tool)));
+    assert!(caller_allowed_for_tool(None, Some(&tool)));
+}
+
+#[test]
+fn tool_search_activates_discovered_deferred_tools() {
+    let mut catalog = vec![
+        Tool {
+            tool_type: None,
+            name: "read_file".to_string(),
+            description: "Read files".to_string(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            output_schema: None,
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(true),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+        Tool {
+            tool_type: None,
+            name: "grep_files".to_string(),
+            description: "Search files".to_string(),
+            input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"}}}),
+            output_schema: None,
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(true),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+    ];
+    let always_load = HashSet::new();
+    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
+    let mut active = initial_active_tools(&catalog);
+    let result = execute_tool_search(
+        TOOL_SEARCH_BM25_NAME,
+        &json!({"query":"read file"}),
+        &catalog,
+        &mut active,
+    )
+    .expect("search succeeds");
+    assert!(result.success);
+    assert!(active.contains("read_file"));
+}
+
+fn tool_search_catalog_with_matches(count: usize) -> Vec<Tool> {
+    let mut catalog = (0..count)
+        .map(|idx| Tool {
+            tool_type: None,
+            name: format!("matching_tool_{idx:03}"),
+            description: "Matching deferred test tool".to_string(),
+            input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
+            output_schema: None,
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(true),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        })
+        .collect::<Vec<_>>();
+    let always_load = HashSet::new();
+    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
+    catalog
+}
+
+fn tool_search_reference_count(result: &ToolResult) -> usize {
+    result
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("tool_references"))
+        .and_then(|references| references.as_array())
+        .map_or(0, Vec::len)
+}
+
+#[test]
+fn tool_search_defaults_to_twenty_results_for_regex_and_bm25() {
+    let catalog = tool_search_catalog_with_matches(25);
+
+    for tool_name in [TOOL_SEARCH_REGEX_NAME, TOOL_SEARCH_BM25_NAME] {
+        let mut active = initial_active_tools(&catalog);
+        let result = execute_tool_search(
+            tool_name,
+            &json!({"query":"matching"}),
+            &catalog,
+            &mut active,
+        )
+        .expect("search succeeds");
+
+        assert_eq!(tool_search_reference_count(&result), 20);
+    }
+}
+
+#[test]
+fn tool_search_respects_and_caps_max_results() {
+    let catalog = tool_search_catalog_with_matches(120);
+
+    let mut active = initial_active_tools(&catalog);
+    let limited = execute_tool_search(
+        TOOL_SEARCH_BM25_NAME,
+        &json!({"query":"matching","max_results":7}),
+        &catalog,
+        &mut active,
+    )
+    .expect("search succeeds");
+    assert_eq!(tool_search_reference_count(&limited), 7);
+
+    let mut active = initial_active_tools(&catalog);
+    let capped = execute_tool_search(
+        TOOL_SEARCH_REGEX_NAME,
+        &json!({"query":"matching","max_results":999}),
+        &catalog,
+        &mut active,
+    )
+    .expect("search succeeds");
+    assert_eq!(tool_search_reference_count(&capped), 100);
+}
+
+#[test]
+fn tool_search_schema_exposes_max_results_default_and_cap() {
+    let mut catalog = Vec::new();
+    let always_load = HashSet::new();
+    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
+
+    for tool_name in [TOOL_SEARCH_REGEX_NAME, TOOL_SEARCH_BM25_NAME] {
+        let tool = catalog
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .expect("tool search definition exists");
+        let schema = &tool.input_schema["properties"]["max_results"];
+
+        assert_eq!(schema["default"], 20);
+        assert_eq!(schema["maximum"], 100);
+        assert_eq!(schema["minimum"], 1);
+    }
+}
+
+#[tokio::test]
+async fn code_execution_runs_python_and_returns_result_payload() {
+    let tmp = tempdir().expect("tempdir");
+    let result =
+        execute_code_execution_tool(&json!({"code":"print('hello from code exec')"}), tmp.path())
+            .await
+            .expect("code execution should run");
+    assert!(result.content.contains("hello from code exec"));
+    assert!(result.content.contains("return_code"));
+}
+
+#[test]
+fn plan_mode_catalog_skips_code_execution_tool_but_agent_keeps_it() {
+    let mut plan_catalog = vec![api_tool("read_file")];
+    let always_load = HashSet::new();
+    ensure_advanced_tooling(&mut plan_catalog, AppMode::Plan, &always_load);
+    assert!(
+        !plan_catalog
+            .iter()
+            .any(|tool| tool.name == CODE_EXECUTION_TOOL_NAME),
+        "Plan mode must not expose code_execution"
+    );
+
+    let mut agent_catalog = vec![api_tool("read_file")];
+    ensure_advanced_tooling(&mut agent_catalog, AppMode::Agent, &always_load);
+    assert!(
+        agent_catalog
+            .iter()
+            .any(|tool| tool.name == CODE_EXECUTION_TOOL_NAME),
+        "Agent mode should still expose code_execution"
+    );
+}
+
+#[test]
+fn deferred_tool_requests_are_auto_activated() {
+    use std::collections::HashSet;
+
+    let catalog = vec![Tool {
+        tool_type: None,
+        name: "exec_shell".to_string(),
+        description: "Run shell commands".to_string(),
+        input_schema: json!({"type":"object","properties":{"cmd":{"type":"string"}}}),
+        output_schema: None,
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: Some(true),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }];
+
+    let mut active = HashSet::new();
+    assert!(!active.contains("exec_shell"));
+    assert!(maybe_activate_requested_deferred_tool(
+        "exec_shell",
+        &catalog,
+        &mut active
+    ));
+    assert!(active.contains("exec_shell"));
+}
+
+#[test]
+fn missing_tool_error_message_offers_suggestions() {
+    let catalog = vec![
+        Tool {
+            tool_type: None,
+            name: "read_file".to_string(),
+            description: "Read file contents".to_string(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            output_schema: None,
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+        Tool {
+            tool_type: None,
+            name: "grep_files".to_string(),
+            description: "Search file contents".to_string(),
+            input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"}}}),
+            output_schema: None,
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+    ];
+
+    let message = missing_tool_error_message("reed_file", &catalog);
+    assert!(message.contains("Did you mean:"));
+    assert!(message.contains("read_file"));
+    assert!(message.contains(TOOL_SEARCH_BM25_NAME));
+}
+
+#[test]
+fn missing_tool_error_message_includes_discovery_guidance_when_no_match() {
+    let catalog = vec![Tool {
+        tool_type: None,
+        name: "read_file".to_string(),
+        description: "Read file contents".to_string(),
+        input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+        output_schema: None,
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: Some(false),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }];
+
+    let message = missing_tool_error_message("totally_unknown_tool", &catalog);
+    assert!(message.contains("not available in the current tool catalog"));
+    assert!(message.contains(TOOL_SEARCH_BM25_NAME));
+}
+
+#[test]
+fn missing_shell_tool_error_message_names_allow_shell_gate() {
+    let catalog = vec![api_tool("read_file")];
+
+    for tool_name in [
+        "exec_shell",
+        "exec_shell_wait",
+        "exec_shell_interact",
+        "task_shell_start",
+        "task_shell_wait",
+    ] {
+        let message = missing_tool_error_message(tool_name, &catalog);
+        assert!(message.contains("not available in the current tool catalog"));
+        assert!(message.contains("allow_shell"), "{tool_name}: {message}");
+        assert!(
+            message.contains("trusted workspaces"),
+            "{tool_name}: {message}"
+        );
+        assert!(
+            message.contains(TOOL_SEARCH_BM25_NAME),
+            "{tool_name}: {message}"
+        );
+    }
+}
+
+#[test]
+fn missing_shell_tool_error_message_keeps_allow_shell_hint_with_suggestions() {
+    let catalog = vec![api_tool("exec")];
+
+    let message = missing_tool_error_message("exec_shell", &catalog);
+
+    assert!(message.contains("Did you mean:"));
+    assert!(message.contains("exec"));
+    assert!(message.contains("allow_shell"));
+    assert!(message.contains("trusted workspaces"));
+    assert!(message.contains(TOOL_SEARCH_BM25_NAME));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_bracket_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "intro [TOOL_CALL]\n{\"tool\":\"x\"}\n[/TOOL_CALL] outro",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    assert!(!visible.contains("[TOOL_CALL]"));
+    assert!(!visible.contains("[/TOOL_CALL]"));
+    assert!(!visible.contains("\"tool\":\"x\""));
+    assert!(visible.contains("intro"));
+    assert!(visible.contains("outro"));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_deepseek_xml_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "before <codesmith:tool_call name=\"x\">payload</codesmith:tool_call> after",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    for marker in TOOL_CALL_START_MARKERS {
+        assert!(
+            !visible.contains(marker),
+            "visible text leaked start marker `{marker}`: {visible:?}"
+        );
+    }
+    assert!(visible.contains("before"));
+    assert!(visible.contains("after"));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_generic_tool_call_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "lead <tool_call>\n{\"name\":\"do\"}\n</tool_call> tail",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    assert!(!visible.contains("<tool_call"));
+    assert!(!visible.contains("</tool_call>"));
+    assert!(visible.contains("lead"));
+    assert!(visible.contains("tail"));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_invoke_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "alpha <invoke name=\"x\"><parameter name=\"k\">v</parameter></invoke> beta",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    assert!(!visible.contains("<invoke "));
+    assert!(!visible.contains("</invoke>"));
+    assert!(visible.contains("alpha"));
+    assert!(visible.contains("beta"));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_function_calls_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "head <function_calls>\n{\"name\":\"x\"}\n</function_calls> tail",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    assert!(!visible.contains("<function_calls>"));
+    assert!(!visible.contains("</function_calls>"));
+    assert!(visible.contains("head"));
+    assert!(visible.contains("tail"));
+}
+
+#[test]
+fn filter_tool_call_delta_handles_chunk_split_marker() {
+    let mut in_block = false;
+    // First chunk opens the wrapper but does not close it.
+    let visible_a = filter_tool_call_delta("hello <tool_call>partial", &mut in_block);
+    assert!(in_block, "filter must remember it is mid-wrapper");
+    assert_eq!(visible_a, "hello ");
+
+    // Second chunk continues inside the wrapper, then closes it and adds tail.
+    let visible_b = filter_tool_call_delta("payload</tool_call> tail", &mut in_block);
+    assert!(!in_block);
+    assert_eq!(visible_b, " tail");
+}
+
+#[test]
+fn filter_tool_call_delta_unmatched_open_suppresses_remainder() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta("ok [TOOL_CALL]rest of stream", &mut in_block);
+    assert_eq!(visible, "ok ");
+    assert!(
+        in_block,
+        "unmatched open must leave filter in tool-call mode"
+    );
+}
+
+#[test]
+fn filter_tool_call_delta_passes_through_clean_text() {
+    let mut in_block = false;
+    let input = "no markers here, just prose with code `<not a tag>`.";
+    let visible = filter_tool_call_delta(input, &mut in_block);
+    assert!(!in_block);
+    assert_eq!(visible, input);
+}
+
+#[test]
+fn contains_fake_tool_wrapper_detects_each_marker() {
+    for marker in TOOL_CALL_START_MARKERS {
+        let needle = format!("noise {marker} more noise");
+        assert!(
+            contains_fake_tool_wrapper(&needle),
+            "marker `{marker}` should be detected"
+        );
+    }
+}
+
+#[test]
+fn contains_fake_tool_wrapper_returns_false_on_clean_text() {
+    assert!(!contains_fake_tool_wrapper(
+        "plain assistant text without wrappers"
+    ));
+    assert!(!contains_fake_tool_wrapper(
+        "`<tool` lookalike but not a real start marker"
+    ));
+}
+
+#[test]
+fn fake_wrapper_notice_is_compact_and_actionable() {
+    // Keep this short so it fits cleanly in a single status line.
+    assert!(FAKE_WRAPPER_NOTICE.len() < 120);
+    assert!(FAKE_WRAPPER_NOTICE.contains("API tool channel"));
+}
+
+// ---- final_tool_input: bug-class regression for "<command>" placeholder ----
+//
+// Background: a streamed tool block carries its `input` in two pieces — an
+// initial value at `ContentBlockStart` (often `{}`), then `InputJsonDelta`
+// chunks that build up `input_buffer`. The TUI used to fire `ToolCallStarted`
+// from `ContentBlockStart` with the empty initial input and never re-emit
+// once args were known, so cells rendered the literal text `<command>` /
+// `<file>` placeholders. The fix relocates the emission to `ContentBlockStop`
+// and routes the input through `final_tool_input`, which prefers the parsed
+// buffer over a stale empty placeholder.
+fn tool_state(initial: serde_json::Value, buffer: &str) -> ToolUseState {
+    ToolUseState {
+        id: "t1".into(),
+        name: "exec_shell".into(),
+        input: initial,
+        caller: None,
+        input_buffer: buffer.into(),
+    }
+}
+
+#[test]
+fn final_tool_input_prefers_parsed_buffer_over_empty_initial() {
+    // The exact regression: ContentBlockStart delivered `{}`, then args
+    // streamed in via InputJsonDelta. The emitted ToolCallStarted must
+    // carry the parsed buffer, not the placeholder.
+    let state = tool_state(json!({}), r#"{"command": "ls -la"}"#);
+    assert_eq!(final_tool_input(&state), json!({"command": "ls -la"}));
+}
+
+#[test]
+fn final_tool_input_falls_back_to_initial_when_buffer_empty() {
+    // Models occasionally embed args directly in the start frame and never
+    // send any InputJsonDelta. We must still report those args.
+    let state = tool_state(json!({"command": "echo hi"}), "");
+    assert_eq!(final_tool_input(&state), json!({"command": "echo hi"}));
+}
+
+#[test]
+fn final_tool_input_repairs_unparseable_buffer() {
+    // The arg_repair module converts unparseable input to an empty object
+    // {} so dispatch always proceeds. The buffer wins over the initial input.
+    let state = tool_state(json!({"command": "echo hi"}), "{not json");
+    assert_eq!(final_tool_input(&state), json!({}));
+}
+
+// === #103 transparent stream-retry policy =====================================
+
+#[test]
+fn stream_retry_zero_content_then_error_is_transparently_retried() {
+    // Case 2 from issue #103: stream yielded ZERO content then errored.
+    // The decoder hit Err on the very first poll → engine should retry
+    // because DeepSeek hasn't billed and the user has seen nothing.
+    assert!(
+        super::should_transparently_retry_stream(false, 0, false),
+        "first attempt with no content must be eligible for transparent retry"
+    );
+    assert!(
+        super::should_transparently_retry_stream(false, 1, false),
+        "second attempt (one prior retry) with no content must still be eligible"
+    );
+}
+
+#[test]
+fn stream_retry_after_content_received_surfaces_error() {
+    // Case 3 from issue #103: stream yielded content then errored. We must
+    // NOT transparently retry — the model has emitted billed output tokens
+    // and the UI has streamed deltas; resending would double-bill and the
+    // user would see the same prefix twice.
+    assert!(
+        !super::should_transparently_retry_stream(true, 0, false),
+        "any content received → no transparent retry, even with full budget"
+    );
+    assert!(
+        !super::should_transparently_retry_stream(true, 1, false),
+        "any content received → no transparent retry on subsequent attempts"
+    );
+}
+
+#[test]
+fn stream_retry_budget_caps_transparent_retries_at_two() {
+    // Case 4 from issue #103: after MAX_TRANSPARENT_STREAM_RETRIES attempts
+    // we stop trying transparently and let the outer error path surface.
+    // (The outer per-turn `stream_retry_attempts` retry is a separate layer
+    // and is still in effect at the whole-turn level.)
+    assert!(
+        super::should_transparently_retry_stream(
+            false,
+            super::MAX_TRANSPARENT_STREAM_RETRIES - 1,
+            false,
+        ),
+        "one short of the cap should still retry"
+    );
+    assert!(
+        !super::should_transparently_retry_stream(
+            false,
+            super::MAX_TRANSPARENT_STREAM_RETRIES,
+            false,
+        ),
+        "at the cap, no further transparent retries"
+    );
+    assert!(
+        !super::should_transparently_retry_stream(
+            false,
+            super::MAX_TRANSPARENT_STREAM_RETRIES + 5,
+            false,
+        ),
+        "well past the cap, definitely no transparent retries"
+    );
+}
+
+#[test]
+fn stream_retry_respects_cancellation() {
+    // Cancellation overrides every other condition. If the user pressed
+    // Esc / Ctrl-C, do not silently re-issue the request behind their back.
+    assert!(
+        !super::should_transparently_retry_stream(false, 0, true),
+        "cancelled turn must not be transparently retried"
+    );
+    assert!(
+        !super::should_transparently_retry_stream(false, 1, true),
+        "cancelled turn must not be transparently retried even with budget"
+    );
+}
+
+#[test]
+fn stream_retry_threshold_relaxed_to_five() {
+    // Case 1+4 from issue #103: the consecutive-error threshold for marking
+    // the turn failed was relaxed from 3 → 5 in v0.6.7 because the new
+    // HTTP/2 keepalive defaults make spurious decode errors rarer.
+    // This test pins the constant so a future regression to 3 fails loudly.
+    assert_eq!(
+        super::MAX_STREAM_ERRORS_BEFORE_FAIL,
+        5,
+        "the consecutive-stream-error threshold should be 5; \
+         lowering it back to 3 will fail mid-turn under transient flakiness"
+    );
+    // And a regression guard on the transparent-retry cap.
+    assert_eq!(
+        super::MAX_TRANSPARENT_STREAM_RETRIES,
+        2,
+        "transparent-retry cap should be 2; raising it risks hammering the \
+         provider on real outages"
+    );
+}
+
+// === Issue #66: error taxonomy wired through engine + audit + capacity ===
+
+/// A failed-tool audit entry must carry the typed `category` and `severity`
+/// fields derived from the underlying `ToolError`. This is what makes
+/// downstream tooling able to bucket failures without scraping the message
+/// string.
+#[test]
+fn tool_failure_audit_payload_carries_category_and_severity() {
+    use crate::error_taxonomy::ErrorEnvelope;
+    use crate::tools::spec::ToolError;
+
+    let error = ToolError::Timeout { seconds: 30 };
+    let envelope: ErrorEnvelope = error.clone().into();
+    let payload = json!({
+        "event": "tool.result",
+        "tool_id": "tool-1",
+        "tool_name": "exec_shell",
+        "success": false,
+        "error": error.to_string(),
+        "category": envelope.category.to_string(),
+        "severity": envelope.severity.to_string(),
+    });
+
+    assert_eq!(payload["category"], "timeout");
+    assert_eq!(payload["severity"], "warning");
+    assert_eq!(payload["success"], false);
+}
+
+/// Capacity escalation sees `ErrorCategory::InvalidInput` as a context-overflow
+/// signal that must escalate even on the first failure (no consecutive
+/// requirement). The previous string-matching path scanned the message for
+/// "context length" — categories give us a typed contract instead.
+#[test]
+fn capacity_escalation_treats_invalid_input_as_overflow_signal() {
+    use crate::error_taxonomy::ErrorCategory;
+
+    // Replays the categorization branches inside
+    // `run_capacity_error_escalation_checkpoint`. Keeping the assertions on
+    // the typed surface (slice of `ErrorCategory`) means this test fails
+    // loudly if a future refactor reverts to substring matching.
+    let categories: &[ErrorCategory] = &[ErrorCategory::InvalidInput];
+    let has_context_overflow = categories.contains(&ErrorCategory::InvalidInput);
+    assert!(has_context_overflow);
+
+    let only_transient = !categories.is_empty()
+        && categories.iter().all(|c| {
+            matches!(
+                c,
+                ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
+            )
+        });
+    assert!(!only_transient);
+}
+
+/// Transient categories (network / rate limit / timeout) must NOT escalate by
+/// themselves — those resolve via the existing retry loop and shouldn't
+/// trigger a capacity-driven replan.
+#[test]
+fn capacity_escalation_skips_pure_transient_categories() {
+    use crate::error_taxonomy::ErrorCategory;
+
+    let categories: &[ErrorCategory] = &[
+        ErrorCategory::Network,
+        ErrorCategory::RateLimit,
+        ErrorCategory::Timeout,
+    ];
+    let has_context_overflow = categories.contains(&ErrorCategory::InvalidInput);
+    assert!(!has_context_overflow);
+
+    let only_transient = !categories.is_empty()
+        && categories.iter().all(|c| {
+            matches!(
+                c,
+                ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
+            )
+        });
+    assert!(only_transient);
+}
+
+// ── #136: post-edit LSP diagnostics hook ─────────────────────────────────
+
+#[test]
+fn edited_paths_for_edit_file_returns_path() {
+    let input = json!({ "path": "src/foo.rs", "search": "x", "replace": "y" });
+    let paths = edited_paths_for_tool("edit_file", &input, &EngineHost::default());
+    assert_eq!(paths, vec![PathBuf::from("src/foo.rs")]);
+}
+
+#[test]
+fn edited_paths_for_write_file_returns_path() {
+    let input = json!({ "path": "src/bar.rs", "content": "fn main() {}" });
+    let paths = edited_paths_for_tool("write_file", &input, &EngineHost::default());
+    assert_eq!(paths, vec![PathBuf::from("src/bar.rs")]);
+}
+
+#[test]
+fn edited_paths_for_apply_patch_with_changes_returns_each_path() {
+    let input = json!({
+        "changes": [
+            { "path": "a.rs", "content": "" },
+            { "path": "b.rs", "content": "" }
+        ]
+    });
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
+    assert_eq!(paths, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
+}
+
+#[test]
+fn edited_paths_for_apply_patch_with_diff_text_extracts_paths() {
+    let input = json!({
+        "patch": "--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-let x: i32 = 0;\n+let x: i32 = \"oops\";\n"
+    });
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
+    assert_eq!(paths, vec![PathBuf::from("foo.rs")]);
+}
+
+#[test]
+fn edited_paths_for_apply_patch_with_invalid_diff_returns_empty() {
+    let input = json!({
+        "patch": "@@ -1 +1 @@\n-old\n+new\n"
+    });
+    let paths = edited_paths_for_tool("apply_patch", &input, &EngineHost::default());
+    assert!(paths.is_empty());
+}
+
+#[test]
+fn edited_paths_for_unknown_tool_returns_empty() {
+    let input = json!({ "path": "irrelevant.rs" });
+    let paths = edited_paths_for_tool("read_file", &input, &EngineHost::default());
+    assert!(paths.is_empty());
+    let paths = edited_paths_for_tool("grep_files", &input, &EngineHost::default());
+    assert!(paths.is_empty());
+}
+
+#[test]
+fn parse_patch_paths_skips_dev_null() {
+    let patch = "--- a/keep.rs\n+++ b/keep.rs\n@@ -1 +1 @@\n-old\n+new\n--- a/deleted.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-delete me\n";
+    let paths = edited_paths_for_tool(
+        "apply_patch",
+        &json!({ "patch": patch }),
+        &EngineHost::default(),
+    );
+    assert_eq!(paths, vec![PathBuf::from("keep.rs")]);
+}
+
+#[tokio::test]
+async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
+    use crate::lsp::{Diagnostic, Language, Severity};
+    use std::sync::Arc;
+
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let target = workspace.join("src").join("main.rs");
+    fs::create_dir_all(workspace.join("src")).unwrap();
+    fs::write(&target, "let x: i32 = \"not a number\";").unwrap();
+
+    let lsp_config = crate::lsp::LspConfig::default();
+    let engine_config = EngineConfig {
+        workspace: workspace.clone(),
+        lsp_config: Some(lsp_config),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+
+    // Install a fake transport that always reports a type error.
+    let fake = Arc::new(crate::lsp::tests::FakeTransport::new(vec![Diagnostic {
+        line: 1,
+        column: 14,
+        severity: Severity::Error,
+        message: "expected i32, found &str".to_string(),
+    }]));
+    engine
+        .host_concrete()
+        .lsp_manager
+        .install_test_transport(Language::Rust, fake)
+        .await;
+
+    // Simulate the success path of an edit_file tool call.
+    let input = json!({ "path": "src/main.rs", "search": "0", "replace": "\"not a number\"" });
+    engine.run_post_edit_lsp_hook("edit_file", &input).await;
+    assert_eq!(engine.pending_lsp_blocks.len(), 1);
+
+    // Flush prepares the synthetic message.
+    let messages_before = engine.session.messages.len();
+    engine.flush_pending_lsp_diagnostics().await;
+    assert_eq!(engine.session.messages.len(), messages_before + 1);
+
+    let last = engine.session.messages.last().expect("message appended");
+    assert_eq!(last.role, "user");
+    let meta = match &last.content[0] {
+        crate::models::ContentBlock::Text { text, .. } => text.clone(),
+        other => panic!("expected text block, got {other:?}"),
+    };
+    assert!(meta.starts_with("<turn_meta>\n"));
+    let diagnostic_text = last
+        .content
+        .iter()
+        .find_map(|block| match block {
+            crate::models::ContentBlock::Text { text, .. }
+                if text.contains("<diagnostics file=\"") =>
+            {
+                Some(text)
+            }
+            _ => None,
+        })
+        .expect("diagnostics text block");
+    assert!(diagnostic_text.contains("ERROR [1:14] expected i32, found &str"));
+}
+
+#[tokio::test]
+async fn post_edit_hook_is_silent_when_lsp_disabled() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let target = workspace.join("src").join("main.rs");
+    fs::create_dir_all(workspace.join("src")).unwrap();
+    fs::write(&target, "fn main() {}").unwrap();
+
+    let lsp_config = crate::lsp::LspConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let engine_config = EngineConfig {
+        workspace: workspace.clone(),
+        lsp_config: Some(lsp_config),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+
+    let input = json!({ "path": "src/main.rs", "search": "x", "replace": "y" });
+    engine.run_post_edit_lsp_hook("edit_file", &input).await;
+    assert!(engine.pending_lsp_blocks.is_empty());
+
+    let messages_before = engine.session.messages.len();
+    engine.flush_pending_lsp_diagnostics().await;
+    assert_eq!(engine.session.messages.len(), messages_before);
+}
+
+#[tokio::test]
+async fn post_edit_hook_skips_unknown_tool_names() {
+    use crate::lsp::{Diagnostic, Language, Severity};
+    use std::sync::Arc;
+
+    let tmp = tempdir().expect("tempdir");
+    let engine_config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        lsp_config: Some(crate::lsp::LspConfig::default()),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+    let fake = Arc::new(crate::lsp::tests::FakeTransport::new(vec![Diagnostic {
+        line: 1,
+        column: 1,
+        severity: Severity::Error,
+        message: "should not be reported".to_string(),
+    }]));
+    engine
+        .host_concrete()
+        .lsp_manager
+        .install_test_transport(Language::Rust, fake.clone())
+        .await;
+
+    let input = json!({ "path": "src/main.rs" });
+    engine.run_post_edit_lsp_hook("read_file", &input).await;
+    assert!(engine.pending_lsp_blocks.is_empty());
+    assert_eq!(fake.call_count(), 0);
+}
+
+// === Engine-level integration tests with injected MockLlmClient ===
+//
+// These tests exercise the engine's full turn loop by injecting
+// MockLlmClient through Engine::new_with_client. The mock replays
+// canned streaming responses so the engine processes them as if they
+// came from a real LLM provider.
+
+/// Build an EngineConfig suitable for integration tests (no snapshots,
+/// no shell, trust mode so tool calls auto-approve).
+fn test_engine_config(workspace: &Path) -> EngineConfig {
+    EngineConfig {
+        workspace: workspace.to_path_buf(),
+        allow_shell: false,
+        trust_mode: true,
+        snapshots_enabled: false,
+        ..Default::default()
+    }
+}
+
+/// Construct an `Op::SendMessage` for a simple agent-mode turn.
+fn make_send_op(content: &str) -> Op {
+    Op::SendMessage {
+        content: content.to_string(),
+        image_paths: Vec::new(),
+        mode: AppMode::Agent,
+        model: "mock-model".to_string(),
+        goal_objective: None,
+        reasoning_effort: None,
+        reasoning_effort_auto: false,
+        auto_model: false,
+        allow_shell: false,
+        trust_mode: true,
+        auto_approve: true,
+        approval_mode: ApprovalMode::Auto,
+        translation_enabled: false,
+        show_thinking: true,
+        is_simple: false,
+        allowed_tools: None,
+    }
+}
+
+/// Spawn the engine with an injected MockLlmClient and return
+/// (EngineHandle, Arc<MockLlmClient>) for driving and asserting.
+fn spawn_engine_with_mock(
+    config: EngineConfig,
+    mock: MockLlmClient,
+) -> (EngineHandle, Arc<MockLlmClient>) {
+    let mock_arc = Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+    let (engine, handle) = Engine::new_with_client(config, &Config::default(), client);
+    tokio::spawn(async move { engine.run().await });
+    (handle, mock_arc)
+}
+
+/// Collect events from the engine until TurnComplete is received.
+async fn collect_until_turn_complete(handle: &EngineHandle) -> Vec<Event> {
+    let mut events = Vec::new();
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = rx.recv().await {
+        events.push(event.clone());
+        if matches!(event, Event::TurnComplete { .. }) {
+            break;
+        }
+    }
+    events
+}
+
+// === Test 1: Simple text turn ===============================================
+
+#[tokio::test]
+async fn engine_injects_mock_client_and_completes_text_turn() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    let turn = vec![canned::simple_text_turn("Hello from mock!")];
+    let mock = MockLlmClient::new(turn);
+
+    let config = test_engine_config(tmp.path());
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle.send(make_send_op("hello")).await.expect("send op");
+
+    let events = collect_until_turn_complete(&handle).await;
+
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::MessageDelta { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("Hello from mock!"),
+        "expected mock text in events, got: {text}"
+    );
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Completed,
+                ..
+            }
+        )),
+        "expected TurnComplete::Completed"
+    );
+
+    assert_eq!(mock_arc.call_count(), 1);
+}
+
+// === context-engineering §3 acceptance: 128K-window model ==================
+
+/// Acceptance test for capacity adaptivity (docs/plans/context-engineering.md
+/// §3): a long session on a 128K-window model ("test-128k") must compact
+/// through the tightened automatic trigger and complete the turn without any
+/// request a real 128K provider would reject as prompt-too-long.
+///
+/// The compaction threshold mirrors the TUI's production assembly
+/// (`compaction_threshold_for_model`), whose tightened small-window formula
+/// yields 63,333 raw tokens — below the preflight trip point, so clean
+/// auto-compaction runs before any budget gate or provider rejection.
+#[tokio::test]
+async fn engine_128k_window_long_session_compacts_without_prompt_too_long() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    let threshold = crate::models::compaction_threshold_for_model("test-128k");
+    assert_eq!(threshold, 63_333);
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        allow_shell: false,
+        trust_mode: true,
+        snapshots_enabled: false,
+        model: "test-128k".to_string(),
+        compaction: crate::compaction::CompactionConfig {
+            enabled: true,
+            token_threshold: threshold,
+            model: "test-128k".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let turn = vec![canned::simple_text_turn("ok")];
+    let mock = MockLlmClient::new(turn).with_model("test-128k");
+    // Non-streaming summary served to `compact_messages_safe`.
+    mock.push_message_response(crate::models::MessageResponse {
+        id: "summary".to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "session summary".to_string(),
+            cache_control: None,
+        }],
+        model: "test-128k".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        usage: Default::default(),
+    });
+
+    let mock_arc = Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+    let (mut engine, handle) = Engine::new_with_client(config, &Config::default(), client);
+
+    // Seed a long session: 70 × 3,150-char messages ≈ 69,300 summarizable
+    // raw tokens — over the 63,333 trigger, under the preflight budget
+    // (121,600 conservative), and under a real provider's raw limit.
+    let body = "x".repeat(3_150);
+    for i in 0..70 {
+        engine
+            .add_session_message(Message {
+                role: if i % 2 == 0 {
+                    "user".to_string()
+                } else {
+                    "assistant".to_string()
+                },
+                content: vec![ContentBlock::Text {
+                    text: body.clone(),
+                    cache_control: None,
+                }],
+            })
+            .await;
+    }
+    tokio::spawn(async move { engine.run().await });
+
+    let mut op = make_send_op("continue");
+    if let Op::SendMessage { model, .. } = &mut op {
+        *model = "test-128k".to_string();
+    }
+    handle.send(op).await.expect("send op");
+
+    let events = collect_until_turn_complete(&handle).await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Completed,
+                ..
+            }
+        )),
+        "expected TurnComplete::Completed"
+    );
+
+    // Provider side of the acceptance: no streamed request may exceed what a
+    // 128K provider accepts (raw chars/3 estimate ≤ 128,000 − 4,096) — that
+    // is exactly the request a real provider would reject prompt-too-long.
+    let provider_raw_limit: usize = 128_000 - 4_096;
+    for request in mock_arc.captured_requests() {
+        let raw: usize = request
+            .messages
+            .iter()
+            .map(|m| {
+                m.content
+                    .iter()
+                    .map(|b| match b {
+                        ContentBlock::Text { text, .. } => text.chars().count().div_ceil(3),
+                        _ => 0,
+                    })
+                    .sum::<usize>()
+            })
+            .sum();
+        assert!(
+            raw <= provider_raw_limit,
+            "a request would hit prompt-too-long ({raw} > {provider_raw_limit} raw tokens)"
+        );
+    }
+    // Compaction ran before the request: the first streamed request carries
+    // a compacted transcript, not the 70 seeded + turn messages.
+    let captured = mock_arc.captured_requests();
+    let first = captured.first().expect("at least one streamed request");
+    assert!(
+        first.messages.len() < 30,
+        "expected compacted transcript, got {} messages",
+        first.messages.len()
+    );
+}
+
+// === Test 2: Tool call round-trip ============================================
+
+#[tokio::test]
+async fn engine_tool_call_round_trip_with_mock_client() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    // Create a file that read_file will find.
+    let test_file = tmp.path().join("test.txt");
+    fs::write(&test_file, "Hello from file!").expect("write test file");
+    let test_path_str = test_file.display().to_string();
+
+    // Turn 1: read_file tool call
+    let turn1 = canned::tool_call_turn(
+        "call_1",
+        "read_file",
+        &serde_json::json!({ "path": test_path_str }).to_string(),
+    );
+    // Turn 2: text response after tool result
+    let turn2 = canned::simple_text_turn("I read the file.");
+
+    let mock = MockLlmClient::new(vec![turn1, turn2]);
+
+    let config = test_engine_config(tmp.path());
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle
+        .send(make_send_op("read the test file"))
+        .await
+        .expect("send op");
+
+    let events = collect_until_turn_complete(&handle).await;
+
+    // Verify tool call was initiated
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::ToolCallStarted { name, .. } if name == "read_file"
+        )),
+        "expected ToolCallStarted for read_file"
+    );
+
+    // Verify tool call completed
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::ToolCallComplete { name, .. } if name == "read_file"
+        )),
+        "expected ToolCallComplete for read_file"
+    );
+
+    // Verify follow-up text arrived
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::MessageDelta { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("I read the file."),
+        "expected follow-up text, got: {text}"
+    );
+
+    assert_eq!(
+        mock_arc.call_count(),
+        2,
+        "mock should be called twice (tool_call + follow-up)"
+    );
+}
+
+// === §F2b T5 — engine-level lifecycle events ================================
+//
+// Proves `Engine::run()` emits `SessionStart` (at entry, before the op loop),
+// `AgentSettled` (post-turn drain, before `TurnComplete`), and `SessionShutdown`
+// (at exit, after the op loop + MCP shutdown) to a bound `ExtensionRunner`.
+// Mirrors `spawn_engine_with_mock`, but splits build-from-spawn so a recording
+// extension can be loaded onto the shared runner BEFORE `run()` fires
+// `SessionStart` at entry; then drives one turn + `Op::Shutdown`. The handler
+// records only the three engine-level variants (host lifecycle variants are
+// dropped — they're covered by the `agent-runtime` §F2b T4 round-trip test).
+
+struct EngineLifecycleRecHandler {
+    seen: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait::async_trait]
+impl codesmith_agent::extension::Handler for EngineLifecycleRecHandler {
+    async fn handle(
+        &self,
+        event: &codesmith_agent::extension::ExtensionEvent,
+        _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+    ) -> Result<
+        codesmith_agent::extension::HandlerOutcome,
+        codesmith_agent::extension::ExtensionError,
+    > {
+        let label = match event {
+            codesmith_agent::extension::ExtensionEvent::SessionStart { .. } => "SessionStart",
+            codesmith_agent::extension::ExtensionEvent::AgentSettled => "AgentSettled",
+            codesmith_agent::extension::ExtensionEvent::SessionShutdown => "SessionShutdown",
+            _ => return Ok(codesmith_agent::extension::HandlerOutcome::Continue),
+        };
+        self.seen.lock().unwrap().push(label);
+        Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+    }
+}
+
+struct EngineLifecycleRecExt {
+    seen: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait::async_trait]
+impl codesmith_agent::extension::Extension for EngineLifecycleRecExt {
+    fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+        static M: codesmith_agent::extension::ExtensionMetadata =
+            codesmith_agent::extension::ExtensionMetadata::new("engine-lifecycle-rec");
+        &M
+    }
+    async fn configure(
+        &self,
+        api: &dyn codesmith_agent::extension::ExtensionApi,
+    ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+        api.on(Arc::new(EngineLifecycleRecHandler {
+            seen: self.seen.clone(),
+        }))?;
+        Ok(())
+    }
+}
+
+/// §F2b T5 — the bound runner observes the engine-level lifecycle:
+/// `SessionStart` → `AgentSettled` → `SessionShutdown`, in order.
+#[tokio::test]
+async fn f2b_engine_emits_session_start_settled_shutdown() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    let turn = vec![canned::simple_text_turn("Hello from mock!")];
+    let mock = MockLlmClient::new(turn);
+    let config = test_engine_config(tmp.path());
+
+    // Build WITHOUT spawning so the recording extension can be loaded onto the
+    // shared runner before `run()` fires `SessionStart` at entry.
+    let mock_arc = Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+    let (engine, handle) = Engine::new_with_client(config, &Config::default(), client);
+
+    let seen: Arc<std::sync::Mutex<Vec<&'static str>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    if let Some(runner) = &handle.extension_runner {
+        runner
+            .load(&EngineLifecycleRecExt { seen: seen.clone() })
+            .await
+            .expect("load rec ext");
+        // Re-bind to flush the new pending handler into the live registry.
+        // The ctx mirrors `build_extension_runtime` (same generation Arc so
+        // no stale-context rejection).
+        let idle = Arc::new(std::sync::Mutex::new(true));
+        let ctx = Arc::new(codesmith_extensions::HostExtensionContext::new(
+            tmp.path().to_path_buf(),
+            codesmith_agent::extension::ExtensionMode::Tui,
+            idle,
+            Arc::new(std::sync::Mutex::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
+            runner.generation_arc(),
+        ));
+        runner.bind_core(ctx);
+    }
+
+    // `SessionStart` fires at `run()` entry, before the op loop.
+    let join = tokio::spawn(async move { engine.run().await });
+
+    // Drive one turn — `AgentSettled` fires in the post-run drain (before
+    // `TurnComplete`, so it's recorded by the time `collect_until_turn_complete`
+    // returns).
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    // `Op::Shutdown` breaks the op loop → MCP shutdown → `SessionShutdown`
+    // fires at `run()` exit. Wait for the task to finish so the emit lands.
+    handle.send(Op::Shutdown).await.expect("send shutdown");
+    tokio::time::timeout(std::time::Duration::from_secs(2), join)
+        .await
+        .expect("engine shutdown timed out")
+        .expect("engine task panicked");
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec!["SessionStart", "AgentSettled", "SessionShutdown"],
+        "engine must emit SessionStart → AgentSettled → SessionShutdown in order"
+    );
+}
+
+// === §F2b T7 — live reload ==================================================
+//
+// Proves `/extension reload` (`reload_extension_runtime`) re-discovers +
+// re-loads + re-binds on the SHARED runner `Arc`: a handler bound before reload
+// stops observing after (cleared, not duplicated) + generation bumps so stale
+// captured contexts reject. Reuses the §F2b T5 `EngineLifecycleRecExt`
+// (records `SessionShutdown`) as the observer.
+
+#[tokio::test]
+async fn f2b_extension_reload_clears_and_rebinds_live() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    assert_eq!(
+        runner.generation(),
+        0,
+        "fresh runner starts at generation 0"
+    );
+
+    // Load a recording ext + bind_core so its handler is live.
+    let seen: Arc<std::sync::Mutex<Vec<&'static str>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    runner
+        .load(&EngineLifecycleRecExt { seen: seen.clone() })
+        .await
+        .expect("load rec ext");
+    runner.bind_core(Arc::new(codesmith_extensions::HostExtensionContext::new(
+        workspace.clone(),
+        codesmith_agent::extension::ExtensionMode::Tui,
+        Arc::new(std::sync::Mutex::new(true)),
+        Arc::new(std::sync::Mutex::new(
+            tokio_util::sync::CancellationToken::new(),
+        )),
+        runner.generation_arc(),
+    )));
+
+    // The handler observes `SessionShutdown` before reload.
+    let _ = runner
+        .emit(codesmith_agent::extension::ExtensionEvent::SessionShutdown)
+        .await;
+    assert_eq!(*seen.lock().unwrap(), vec!["SessionShutdown"]);
+
+    // Reload: clear → invalidate → re-discover (empty) → re-bind. The handler
+    // is cleared (it wasn't discovered via `discover_static`, so it isn't
+    // re-bound); generation bumps.
+    let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
+    super::reload_extension_runtime(
+        &runner,
+        &workspace,
+        &state,
+        std::sync::Arc::new(std::sync::Mutex::new(
+            tokio_util::sync::CancellationToken::new(),
+        )),
+    );
+    assert_eq!(runner.generation(), 1, "reload must bump generation");
+
+    // Post-reload emit does NOT reach the cleared handler (no duplication).
+    let _ = runner
+        .emit(codesmith_agent::extension::ExtensionEvent::SessionShutdown)
+        .await;
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec!["SessionShutdown"],
+        "reload must clear the previously-bound handler (no duplication)"
+    );
+}
+
+// === Test 3: Capacity controller decision ====================================
+//
+// Verify that the capacity controller decides on TargetedContextRefresh
+// when the session is loaded beyond the threshold. This tests the
+// observation-and-decision path directly (no full compaction round-trip,
+// which would require both streaming and non-streaming mock responses).
+
+#[tokio::test]
+async fn engine_capacity_controller_decides_compaction_for_loaded_session() {
+    let _guard = lock_test_env();
+    let _cap_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let cap_dir = tmp.path().join("capacity_mem");
+    fs::create_dir_all(&cap_dir).expect("capacity dir");
+    let _env = ScopedCapacityMemoryDir::set(&cap_dir);
+
+    // Enable capacity controller with aggressive thresholds.
+    let capacity_config = CapacityControllerConfig {
+        enabled: true,
+        // With fallback_default=0.01 the slack is negative → p_fail ≈0.90.
+        // Set thresholds so p_fail falls in Medium band (0.50–1.0) → TargetedContextRefresh.
+        low_risk_max: 0.50,
+        medium_risk_max: 1.0,
+        // Make severe impossible so High+severe never triggers VerifyAndReplan.
+        severe_min_slack: -10.0,
+        severe_violation_ratio: 1.0,
+        refresh_cooldown_turns: 0,
+        replan_cooldown_turns: 5,
+        max_replay_per_turn: 1,
+        min_turns_before_guardrail: 0,
+        profile_window: 8,
+        model_priors: HashMap::new(),
+        fallback_default: 0.01,
+    };
+
+    let turn = vec![canned::simple_text_turn("ok")];
+    let mock = MockLlmClient::new(turn);
+    let mock_arc = Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        // Use a model that maps to 128K context window so 100 messages
+        // easily exceed the 1% threshold. "mock-model" is unrecognized
+        // and falls back to LEGACY_MODEL_CONTEXT_WINDOW_TOKENS (128K).
+        model: "mock-model".to_string(),
+        capacity: capacity_config,
+        snapshots_enabled: false,
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new_with_client(config, &Config::default(), client);
+
+    // Pre-fill the session with many messages to exceed the very low threshold.
+    // Each message is ~200 chars ≈ ~50 tokens; 100 msgs ≈ 5000 estimated
+    // tokens, well above 1% of the 128K context window (= 1280 tokens).
+    for i in 0..100 {
+        let msg = Message {
+            role: if i % 2 == 0 {
+                "user".to_string()
+            } else {
+                "assistant".to_string()
+            },
+            content: vec![ContentBlock::Text {
+                text: format!(
+                    "message {i} with enough text to occupy tokens — padding to ensure the estimated token count exceeds the 1% threshold of the 128K context window for the mock-model"
+                ),
+                cache_control: None,
+            }],
+        };
+        engine.add_session_message(msg).await;
+    }
+
+    // Create a turn context and observe capacity.
+    let turn_ctx = TurnContext::new(engine.config.max_steps);
+    engine.turn_counter = engine.turn_counter.saturating_add(1);
+    engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .mark_turn_start(engine.turn_counter);
+
+    let snapshot = engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .observe_pre_turn(engine.capacity_observation(&turn_ctx));
+
+    let decision = engine
+        .capacity_controller
+        .lock()
+        .expect("capacity_controller poisoned")
+        .decide(engine.turn_counter, snapshot.as_ref());
+
+    // With a 0.01 low_risk_max and 100 messages, the controller should
+    // decide that context pressure requires TargetedContextRefresh.
+    assert_eq!(
+        decision.action,
+        GuardrailAction::TargetedContextRefresh,
+        "expected TargetedContextRefresh for loaded session, got {:?}",
+        decision.action
+    );
+}
+
+// === Test 4: SubAgent injection seam =========================================
+//
+// Verify SubAgentRuntime can be constructed with MockLlmClient.
+// This tests the Arc<dyn LlmClient> injection seam for sub-agents
+// without driving the full engine round-trip.
+
+#[test]
+fn engine_sub_agent_runtime_constructs_with_mock_client() {
+    let tmp = tempdir().expect("tempdir");
+    let mock = Arc::new(MockLlmClient::new(vec![])) as LlmClientHandle;
+
+    let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+    let tool_ctx = ToolContext::new(tmp.path().to_path_buf());
+
+    let sub = SubAgentRuntime::new(
+        mock.clone(),
+        "mock-model".to_string(),
+        tool_ctx,
+        false,
+        None,
+        manager,
+    );
+
+    // Verify the sub-agent holds the mock client and its model matches.
+    assert_eq!(sub.model, "mock-model");
+    // The client is an Arc<dyn LlmClient>; verify it's usable.
+    assert_eq!(mock.provider_name(), "mock");
+    assert_eq!(mock.model(), "mock-model");
+}

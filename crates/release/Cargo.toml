@@ -1,0 +1,18 @@
+[package]
+name = "codesmith-release"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["release", "updater", "github"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Shared CodeSmith release discovery and version comparison helpers"
+
+[dependencies]
+anyhow.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true

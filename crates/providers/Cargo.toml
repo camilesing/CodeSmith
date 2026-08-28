@@ -1,0 +1,56 @@
+[package]
+name = "codesmith-providers"
+version.workspace = true
+edition.workspace = true
+readme.workspace = true
+keywords = ["llm", "providers", "ai", "openai", "deepseek"]
+categories = ["development-tools"]
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Provider implementations for the CodeSmith framework — pluggable LLM clients assembled via Cargo features"
+
+[dependencies]
+codesmith-agent = { path = "../agent", version = "0.1.0" }
+# codesmith-config holds the declarative providers.toml schema + the
+# `providers_manifest()` env-override accessor (ROADMAP §E4). Already in the
+# build graph transitively via codesmith-agent; declared directly so
+# `default_registry` can name `FactoryBackend` / `ProvidersManifest` /
+# `providers_manifest()`. No cycle — config has no providers/agent edge.
+codesmith-config = { path = "../config", version = "0.1.0" }
+anyhow.workspace = true
+futures-util = "0.3.31"
+serde_json.workspace = true
+# rig powers the OpenAI/Anthropic/DeepSeek/OpenAI-compat providers. Optional so a
+# `--no-default-features` build stays provider-less (the Lego `mock`-only build).
+rig-core = { workspace = true, optional = true }
+# reqwest is the HTTP stack for the FIM/translate shim. It is the same workspace
+# `reqwest 0.13.x` rig and `codesmith-agent` already pull in, so enabling it
+# under `rig` adds no extra compile — Cargo unifies the features into one build.
+reqwest = { workspace = true, optional = true }
+# Image content blocks are base64-encoded at request-build time in
+# `rig_adapter::convert`. Optional with the `rig` aggregate so a
+# `--no-default-features` build stays lean.
+base64 = { version = "0.22.1", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[features]
+# Default Lego assembly pulls in the no-network mock provider. Disable it with
+# `--no-default-features` to ship a provider-less build, then add only the
+# providers you want with `--features ...`.
+default = ["mock"]
+# Echo / no-network provider — useful for tests, offline demos, and as the
+# reference `ProviderFactory` sample. The LangChain `FakeListLLM` analog.
+mock = []
+# Internal aggregate: enables the `rig_adapter` module + the `rig-core`/reqwest
+# deps. The four provider features below each pull this in, so the adapter is
+# compiled exactly when at least one rig-backed provider is selected. rig
+# compiles all its provider modules unconditionally, so these features select
+# only which CodeSmith factory glue is linked — not which rig providers exist.
+rig = ["dep:rig-core", "dep:reqwest", "dep:base64"]
+openai = ["rig"]
+anthropic = ["rig"]
+deepseek = ["rig"]
+openai-compat = ["rig"]

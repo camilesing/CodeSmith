@@ -1,0 +1,40 @@
+# Opt-in CodeSmith toolbox workflow.
+#
+# Usage:
+#   CODESMITH_IMAGE=ghcr.io/camilesing/codesmith:vX.Y.Z \
+#   CODESMITH_TOOLBOX_IMAGE=codesmith-toolbox:my-project \
+#   CODESMITH_HOME_VOLUME=codesmith-my-project-home \
+#   CODESMITH_WORKSPACE="$PWD" \
+#   docker compose -f docs/examples/compose.toolbox.yml run --rm codesmith
+#
+# Keep CODESMITH_HOME_VOLUME distinct per project so sessions, config, skills,
+# memory, and queued work do not bleed across workspaces.
+
+services:
+  codesmith:
+    image: ${CODESMITH_TOOLBOX_IMAGE:-codesmith-toolbox:local}
+    build:
+      context: ../..
+      dockerfile: docs/examples/Dockerfile.toolbox
+      args:
+        CODESMITH_IMAGE: ${CODESMITH_IMAGE:-ghcr.io/camilesing/codesmith:latest}
+        TOOLBOX_PACKAGES: ${TOOLBOX_PACKAGES:-git openssh-client curl build-essential pkg-config python3 python3-pip nodejs npm}
+    environment:
+      - CODESMITH_API_KEY=${CODESMITH_API_KEY:?set CODESMITH_API_KEY}
+      - CODESMITH_BASE_URL
+      - DEEPSEEK_NO_COLOR
+    volumes:
+      - codesmith-home:/home/codesmith/.codesmith
+      - ${CODESMITH_WORKSPACE:?set CODESMITH_WORKSPACE to the project directory}:/workspace
+      # Mount SSH material only for projects that need it, and prefer read-only.
+      # - ${HOME}/.ssh:/home/codesmith/.ssh:ro
+      # Mount local CA certificates only when starting through a command that
+      # runs `sudo update-ca-certificates` inside this toolbox image.
+      # - ${CODESMITH_CERTS_DIR:-../../docker/certs}:/usr/local/share/ca-certificates/local:ro
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+
+volumes:
+  codesmith-home:
+    name: ${CODESMITH_HOME_VOLUME:-codesmith-toolbox-home}

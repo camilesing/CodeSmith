@@ -1,0 +1,56 @@
+{
+  "name": "codesmith",
+  "version": "0.1.0",
+  "codesmithBinaryVersion": "0.1.0",
+  "description": "Install and run CodeSmith, the agentic terminal for open-source and open-weight coding models, from GitHub release artifacts.",
+  "author": "camilesing",
+  "license": "MIT",
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/camilesing"
+    }
+  ],
+  "homepage": "https://github.com/camilesing/CodeSmith",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/camilesing/CodeSmith.git"
+  },
+  "bugs": {
+    "url": "https://github.com/camilesing/CodeSmith/issues"
+  },
+  "keywords": [
+    "codesmith",
+    "cli",
+    "tui",
+    "rust",
+    "binary",
+    "terminal"
+  ],
+  "type": "commonjs",
+  "bin": {
+    "codesmith": "bin/codesmith.js",
+    "codesmith-tui": "bin/codesmith-tui.js"
+  },
+  "scripts": {
+    "release:check": "node scripts/verify-release-assets.js",
+    "postinstall": "node scripts/install.js --optional",
+    "prepublishOnly": "node scripts/verify-release-assets.js",
+    "prepack": "node scripts/install.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "preferGlobal": true,
+  "files": [
+    "bin/*.js",
+    "scripts/*.js",
+    "test/*.js",
+    "README.md",
+    "package.json"
+  ]
+}

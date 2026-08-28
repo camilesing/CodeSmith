@@ -1,0 +1,32 @@
+[package]
+name = "codesmith-extensions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["extensions", "plugins", "agent"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Extension runtime: discovery, loading, event dispatch, stale-context guard for CodeSmith extensions"
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+futures-util = "0.3.31"
+codesmith-agent = { path = "../agent", version = "0.1.0" }
+codesmith-tools = { path = "../tools", version = "0.1.0" }
+inventory = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = "3.16"
+toml.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7.16" }
+tracing.workspace = true
+libloading = "0.9.0"
+
+[dev-dependencies]
+extensions-fixture-dylib = { path = "../extensions-fixture-dylib" }

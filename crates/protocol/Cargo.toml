@@ -1,0 +1,15 @@
+[package]
+name = "codesmith-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["protocol", "agent", "api"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "App-server protocol frames for the CodeSmith workspace architecture"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

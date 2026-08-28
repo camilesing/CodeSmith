@@ -1,0 +1,17 @@
+# Project toolchain pin.
+#
+# CodeSmith targets stable Rust (MSRV 1.88, edition 2024) and uses no nightly
+# features, so a stable channel is the correct, reproducible target. This pin
+# also unblocks the `rig-core` integration: rig's transitive dep `zmij`
+# (via serde_json 1.0.150) needs `core::hint::select_unpredictable`, and the
+# codebase uses `let`-chains — both stabilized in 1.88 stable but absent from
+# the older `nightly-2025-04-04` that was the previous system default. Pinning
+# 1.90.0 here makes the build reproducible for all contributors and CI without
+# touching anyone's global `rustup default`.
+#
+# To use a newer stable, bump this version (MSRV 1.88 still applies). To
+# develop on nightly instead, replace with e.g. `channel = "nightly-2025-12-11"`
+# (a verified-working nightly for this crate graph).
+
+[toolchain]
+channel = "1.90.0"

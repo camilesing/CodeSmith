@@ -1,0 +1,53 @@
+[package]
+name = "codesmith-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+keywords = ["index", "tree-sitter", "search"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Pluggable per-workspace code index: symbol index, file inventory cache, and a reserved semantic seam"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+ignore.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+# Grammar crates are optional and enabled together via the `tree-sitter`
+# feature so the agent-runtime kernel (which depends on this crate with
+# default features) never pulls the parser stack.
+tree-sitter = { workspace = true, optional = true }
+tree-sitter-rust = { workspace = true, optional = true }
+tree-sitter-python = { workspace = true, optional = true }
+tree-sitter-javascript = { workspace = true, optional = true }
+tree-sitter-typescript = { workspace = true, optional = true }
+tree-sitter-go = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Self dev-dependency: enables the tree-sitter feature for this crate's own
+# test builds so grammar tests run under plain `cargo test -p
+# codesmith-index`; downstream default-feature builds stay grammar-free.
+codesmith-index = { path = ".", features = ["tree-sitter"] }
+tempfile = "3"
+toml.workspace = true
+
+[features]
+default = []
+tree-sitter = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-go",
+]
