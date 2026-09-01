@@ -31,7 +31,7 @@ reqwest = { workspace = true, optional = true }
 # Image content blocks are base64-encoded at request-build time in
 # `rig_adapter::convert`. Optional with the `rig` aggregate so a
 # `--no-default-features` build stays lean.
-base64 = { version = "0.22.1", optional = true }
+base64 = { version = "0.23.1", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
