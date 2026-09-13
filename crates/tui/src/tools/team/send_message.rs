@@ -15,8 +15,56 @@ use crate::tools::team::protocol_handlers::{
     handle_shutdown_request,
 };
 use crate::tools::team::{
-    SharedTeamContext, TeammateMessage, read_team_file, team_lead_name, write_to_mailbox,
+    SharedTeamContext, TeammateMessage, find_member_by_name, read_team_file, team_lead_name,
+    write_to_mailbox,
 };
+
+/// Attribution used when a calling context has no runtime-injected team
+/// identity. Such contexts must never be treated as the lead.
+const UNKNOWN_SENDER: &str = "unknown-sender";
+
+/// Protocol actions only the team lead may exercise.
+const LEAD_ONLY_ACTIONS: [&str; 4] = [
+    "shutdown_request",
+    "plan_approval_response",
+    "team_permission_update",
+    "mode_set_request",
+];
+
+/// Verify `sender` may exercise `action` against the team roster.
+///
+/// `team_sender` is injected by the runtime at spawn time (teammates) or at
+/// App construction (the lead), so the model cannot forge it through tool
+/// input. Plain mailbox files remain the underlying transport trust
+/// boundary — this check governs the tool path.
+fn authorize_protocol_action(
+    action: &str,
+    sender: &str,
+    team_name: &str,
+) -> Result<(), ToolError> {
+    if sender == UNKNOWN_SENDER {
+        return Err(ToolError::invalid_input(format!(
+            "Refusing '{action}' from an unidentified sender: this context has no team identity"
+        )));
+    }
+    let team_file = read_team_file(team_name).map_err(|e| {
+        ToolError::execution_failed(format!("Failed to read team roster: {}", e))
+    })?;
+    let is_lead = sender == team_lead_name();
+    let is_member =
+        find_member_by_name(&team_file, sender).is_some_and(|member| member.is_active);
+    if !is_lead && !is_member {
+        return Err(ToolError::invalid_input(format!(
+            "Sender '{sender}' is not an active member of team '{team_name}'"
+        )));
+    }
+    if LEAD_ONLY_ACTIONS.contains(&action) && !is_lead {
+        return Err(ToolError::invalid_input(format!(
+            "'{action}' is a lead-only protocol action; sender '{sender}' is not the team lead"
+        )));
+    }
+    Ok(())
+}
 
 pub struct SendMessageTool {
     team_context: SharedTeamContext,
@@ -136,11 +184,13 @@ impl ToolSpec for SendMessageTool {
             match tc.as_ref() {
                 Some(ctx) => (
                     ctx.team_name.clone(),
+                    // Runtime-injected identity. A missing identity is
+                    // attributed as unknown — never silently as the lead.
                     context
                         .runtime
                         .team_sender
                         .clone()
-                        .unwrap_or_else(|| team_lead_name().to_string()),
+                        .unwrap_or_else(|| UNKNOWN_SENDER.to_string()),
                 ),
                 None => {
                     return Err(ToolError::invalid_input(
@@ -169,6 +219,11 @@ impl ToolSpec for SendMessageTool {
             .get("type")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("type in message object"))?;
+
+        // Protocol actions carry privilege (plan approvals, shutdowns,
+        // permission grants) — authorize the sender against the roster
+        // before dispatching.
+        authorize_protocol_action(type_str, &sender_name, &team_name)?;
 
         match type_str {
             "shutdown_request" => {
@@ -436,26 +491,41 @@ impl SendMessageTool {
         };
 
         if recipient == "*" {
-            // Broadcast to all non-lead teammates.
+            // Broadcast to all non-lead teammates. Partial failures are
+            // collected and reported — earlier deliveries stand, and the
+            // caller sees exactly who did and did not receive the message.
             let team_file = read_team_file(team_name).map_err(|e| {
                 ToolError::execution_failed(format!("Failed to read team file: {}", e))
             })?;
 
             let mut delivered = Vec::new();
+            let mut failed = serde_json::Map::new();
             for member in &team_file.members {
                 if member.name != team_lead_name() && member.is_active {
-                    write_to_mailbox(&member.name, team_name, team_msg.clone()).map_err(|e| {
-                        ToolError::execution_failed(format!(
-                            "Failed to deliver to {}: {}",
-                            member.name, e
-                        ))
-                    })?;
-                    delivered.push(member.name.clone());
+                    match write_to_mailbox(&member.name, team_name, team_msg.clone()) {
+                        Ok(()) => delivered.push(member.name.clone()),
+                        Err(e) => {
+                            failed.insert(member.name.clone(), json!(e.to_string()));
+                        }
+                    }
                 }
             }
 
-            return ToolResult::json(&json!({"broadcast": true, "delivered_to": delivered}))
-                .map_err(|e| ToolError::execution_failed(e.to_string()));
+            if delivered.is_empty() && !failed.is_empty() {
+                return Err(ToolError::execution_failed(format!(
+                    "Broadcast failed for all recipients: {:?}",
+                    failed
+                )));
+            }
+
+            let mut payload = json!({"broadcast": true, "delivered_to": delivered});
+            if !failed.is_empty() {
+                payload
+                    .as_object_mut()
+                    .expect("payload is an object")
+                    .insert("failed".to_string(), serde_json::Value::Object(failed));
+            }
+            return ToolResult::json(&payload).map_err(|e| ToolError::execution_failed(e.to_string()));
         }
 
         // Single recipient DM.
@@ -465,5 +535,195 @@ impl SendMessageTool {
 
         ToolResult::json(&json!({"delivered_to": recipient}))
             .map_err(|e| ToolError::execution_failed(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+    use crate::tools::team::team_file::{
+        TeamFile, TeamMember, create_team_file, format_lead_agent_id,
+    };
+    use crate::tools::team::teammate_mailbox::read_mailbox;
+    use crate::tools::spec::RuntimeToolServices;
+
+    fn make_team(name: &str) -> TeamFile {
+        TeamFile {
+            name: name.to_string(),
+            description: None,
+            created_at: 1234567890,
+            lead_agent_id: format_lead_agent_id(name),
+            lead_session_id: None,
+            team_allowed_paths: None,
+            members: vec![TeamMember {
+                agent_id: "worker@t".to_string(),
+                name: "worker1".to_string(),
+                agent_type: None,
+                model: None,
+                prompt: None,
+                color: None,
+                joined_at: 1234567890,
+                cwd: "/tmp".to_string(),
+                worktree_path: None,
+                session_id: None,
+                is_active: true,
+            }],
+        }
+    }
+
+    async fn setup() -> (SendMessageTool, SharedTeamContext) {
+        // Caller must hold lock_test_env() — the env lock is not reentrant.
+        let team_context = crate::tools::team::new_shared_team_context();
+        {
+            let mut slot = team_context.lock().await;
+            *slot = Some(crate::tools::team::TeamContext {
+                team_name: "auth-test".to_string(),
+                team_file_path: std::path::PathBuf::new(),
+                lead_agent_id: format_lead_agent_id("auth-test"),
+                task_v2_manager: crate::tools::task_v2::new_shared_task_v2_manager("auth-test")
+                    .expect("task manager"),
+                teammates: std::collections::HashMap::new(),
+                teammate_cancel_tokens: std::collections::HashMap::new(),
+            });
+        }
+        (SendMessageTool::new(team_context.clone()), team_context)
+    }
+
+    fn context_with_sender(sender: Option<String>) -> ToolContext {
+        let mut runtime = RuntimeToolServices::default();
+        runtime.team_sender = sender;
+        let mut ctx = ToolContext::new("/tmp");
+        ctx.runtime = runtime;
+        ctx.features.enable(Feature::AgentTeams);
+        ctx
+    }
+
+    fn shutdown_request_input() -> serde_json::Value {
+        json!({
+            "to": "worker1",
+            "message": {"type": "shutdown_request", "reason": "done"}
+        })
+    }
+
+    #[tokio::test]
+    async fn unknown_sender_cannot_exercise_protocol_actions() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        let err = tool
+            .execute(
+                shutdown_request_input(),
+                &context_with_sender(None),
+            )
+            .await
+            .expect_err("unknown sender must be denied");
+        assert!(
+            err.to_string().contains("unidentified sender"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn teammate_cannot_exercise_lead_only_actions() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        let err = tool
+            .execute(
+                shutdown_request_input(),
+                &context_with_sender(Some("worker1".to_string())),
+            )
+            .await
+            .expect_err("teammate must be denied lead-only action");
+        assert!(
+            err.to_string().contains("lead-only"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn lead_can_exercise_lead_only_actions() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        let result = tool
+            .execute(
+                shutdown_request_input(),
+                &context_with_sender(Some(team_lead_name().to_string())),
+            )
+            .await
+            .expect("lead must be allowed");
+        assert!(result.content.contains("Shutdown request sent"));
+    }
+
+    #[tokio::test]
+    async fn non_member_and_inactive_member_are_denied() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let mut tf = make_team("auth-test");
+        tf.members[0].is_active = false;
+        create_team_file(&tf).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        for sender in ["stranger".to_string(), "worker1".to_string()] {
+            let err = tool
+                .execute(
+                    json!({
+                        "to": "worker1",
+                        "message": {"type": "sandbox_permission_request", "tool_name": "t"}
+                    }),
+                    &context_with_sender(Some(sender)),
+                )
+                .await
+                .expect_err("non-member/inactive must be denied");
+            assert!(
+                err.to_string().contains("not an active member"),
+                "got: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn plain_text_from_unknown_sender_is_attributed_as_unknown() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        tool.execute(
+            json!({"to": "worker1", "message": "hello there"}),
+            &context_with_sender(None),
+        )
+        .await
+        .expect("plain text from unknown sender still delivers");
+
+        let msgs = read_mailbox("worker1", "auth-test").expect("mailbox");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].from, "unknown-sender");
+    }
+
+    #[tokio::test]
+    async fn active_member_can_send_member_protocol_messages() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        tool.execute(
+            json!({
+                "to": team_lead_name(),
+                "message": {"type": "sandbox_permission_request", "tool_name": "web_search"}
+            }),
+            &context_with_sender(Some("worker1".to_string())),
+        )
+        .await
+        .expect("active member must be allowed");
     }
 }

@@ -76,6 +76,12 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long)]
     profile: Option<String>,
+    /// Named runtime mode (minimal | balanced | maximal | plan | <custom>).
+    /// Modes are shareable delta bundles of dials from
+    /// ~/.codesmith/modes/ or .codesmith/modes/. Forwarded to the TUI;
+    /// overrides `mode` in config.toml.
+    #[arg(long, value_name = "NAME")]
+    mode: Option<String>,
     #[arg(
         long,
         value_enum,
@@ -657,33 +663,15 @@ fn resolve_runtime_for_dispatch_with_secrets(
     runtime_overrides: &CliRuntimeOverrides,
     secrets: &Secrets,
 ) -> ResolvedRuntimeOptions {
-    let mut resolved = store
+    // Deliberately no keyring→config "self-heal": persisting a key from the
+    // OS secret store into the plaintext TOML config is a silent downgrade
+    // the user never asked for. Keyring-sourced keys are instead bridged to
+    // the dispatched TUI via CODESMITH_API_KEY (see the env bridge in
+    // `dispatch_tui`), and `codesmith login` remains the explicit way to
+    // write a key into the config file.
+    store
         .config
-        .resolve_runtime_options_with_secrets(runtime_overrides, secrets);
-
-    if resolved.api_key_source == Some(RuntimeApiKeySource::Keyring)
-        && !provider_config_set(store, resolved.provider)
-        && let Some(api_key) = resolved.api_key.clone()
-    {
-        write_provider_api_key_to_config(store, resolved.provider, &api_key);
-        match store.save() {
-            Ok(()) => {
-                eprintln!(
-                    "info: recovered API key from secret store and saved it to {}",
-                    store.path().display()
-                );
-                resolved.api_key_source = Some(RuntimeApiKeySource::ConfigFile);
-            }
-            Err(err) => {
-                eprintln!(
-                    "warning: recovered API key from secret store but failed to save {}: {err}",
-                    store.path().display()
-                );
-            }
-        }
-    }
-
-    resolved
+        .resolve_runtime_options_with_secrets(runtime_overrides, secrets)
 }
 
 fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
@@ -1499,6 +1487,9 @@ fn build_tui_command(
     }
     if let Some(profile) = cli.profile.as_ref() {
         cmd.arg("--profile").arg(profile);
+    }
+    if let Some(mode) = cli.mode.as_ref() {
+        cmd.arg("--mode").arg(mode);
     }
     if let Some(workspace) = cli.workspace.as_ref() {
         cmd.arg("--workspace").arg(workspace);
@@ -2553,7 +2544,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_keyring_recovery_self_heals_into_config_file() {
+    fn dispatch_keyring_key_stays_out_of_config_file() {
         use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
@@ -2573,30 +2564,17 @@ mod tests {
             &secrets,
         );
 
+        // The key resolves from the keyring and must NOT be persisted into
+        // the plaintext config file (no keyring→config self-heal); the
+        // dispatched TUI receives it via the CODESMITH_API_KEY env bridge.
         assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
-        assert_eq!(
-            resolved.api_key_source,
-            Some(RuntimeApiKeySource::ConfigFile)
-        );
-        assert_eq!(store.config.api_key.as_deref(), Some("ring-key"));
-        assert_eq!(
-            store.config.providers.deepseek.api_key.as_deref(),
-            Some("ring-key")
-        );
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
+        assert_eq!(store.config.api_key, None);
+        assert_eq!(store.config.providers.deepseek.api_key, None);
 
-        let saved = std::fs::read_to_string(&path).expect("config should be written");
-        assert!(saved.contains("api_key = \"ring-key\""));
-
-        let resolved_again = resolve_runtime_for_dispatch_with_secrets(
-            &mut store,
-            &CliRuntimeOverrides::default(),
-            &no_keyring_secrets(),
-        );
-        assert_eq!(resolved_again.api_key.as_deref(), Some("ring-key"));
-        assert_eq!(
-            resolved_again.api_key_source,
-            Some(RuntimeApiKeySource::ConfigFile)
-        );
+        assert!(!path.exists() || !std::fs::read_to_string(&path)
+            .map(|saved| saved.contains("ring-key"))
+            .unwrap_or(false));
 
         let _ = std::fs::remove_file(path);
     }

@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+pub mod modes;
+
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
 const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";

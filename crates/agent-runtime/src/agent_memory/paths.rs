@@ -113,9 +113,9 @@ pub fn ensure_agent_memory_dir(memory_dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(memory_dir)?;
     let entrypoint = resolve_agent_memory_entrypoint(memory_dir);
     if !entrypoint.exists() {
-        fs::write(
+        crate::utils::write_atomic(
             &entrypoint,
-            "# Agent Memory\n\nAdd links to durable memory topic files here.\n",
+            b"# Agent Memory\n\nAdd links to durable memory topic files here.\n",
         )?;
     }
     Ok(())
@@ -150,6 +150,62 @@ pub fn scoped_path_within_memory(memory_dir: &Path, raw: &str) -> Result<PathBuf
             candidate.display(),
             base.display()
         ));
+    }
+    // Symlink-escape hardening: the lexical prefix check above is not enough
+    // when a component under the memory root is itself a symlink pointing
+    // outside it (e.g. a planted `topics -> /etc`). Verify against the real
+    // filesystem using the canonical base: an existing candidate (read or
+    // rewrite target) canonicalizes directly — a symlinked leaf resolves to
+    // its target and then fails containment — while a write target that does
+    // not exist yet is covered by canonicalizing its deepest existing
+    // ancestor, with the not-yet-existing final component required to be a
+    // single segment (no separators). Legitimate paths are unaffected: the
+    // candidate is returned exactly as before; only the containment decision
+    // gains the canonical re-check.
+    if let Ok(canonical_base) = memory_dir.canonicalize() {
+        if let Ok(canonical) = candidate.canonicalize() {
+            if !canonical.starts_with(&canonical_base) {
+                return Err(format!(
+                    "path {} escapes agent memory directory {}",
+                    canonical.display(),
+                    canonical_base.display()
+                ));
+            }
+        } else {
+            // Write target not on disk yet: the final component must be a
+            // single safe segment — a separator inside it would mean the
+            // lexical component scan above was bypassed (e.g. a backslash
+            // smuggled on a Unix host targeting a Windows-style path).
+            let leaf_is_single_segment = candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| !name.contains('/') && !name.contains('\\'));
+            // Walk to the deepest existing ancestor — the parent for a
+            // simple `dir/file.md` write — and canonicalize that.
+            let mut existing = candidate.as_path();
+            while !existing.exists() && existing.file_name().is_some() {
+                match existing.parent() {
+                    Some(parent) => existing = parent,
+                    None => break,
+                }
+            }
+            if !leaf_is_single_segment {
+                return Err(format!(
+                    "path {} is not a single safe segment within agent memory directory {}",
+                    candidate.display(),
+                    canonical_base.display()
+                ));
+            }
+            if let Ok(canonical) = existing.canonicalize()
+                && !canonical.starts_with(&canonical_base)
+            {
+                return Err(format!(
+                    "path {} escapes agent memory directory {}",
+                    canonical.display(),
+                    canonical_base.display()
+                ));
+            }
+        }
     }
     Ok(candidate)
 }
@@ -213,5 +269,59 @@ mod tests {
         let tmp = tempdir().unwrap();
         let path = scoped_path_within_memory(tmp.path(), "topics/foo.md").unwrap();
         assert!(path.ends_with("topics/foo.md"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn scoped_path_rejects_symlinked_directory_escape() {
+        // A symlink planted inside the memory dir pointing outside must be
+        // rejected even though the lexical component check passes — the
+        // canonicalized ancestor resolves outside the memory root.
+        let tmp = tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&memory_dir).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, memory_dir.join("topics")).unwrap();
+
+        let err = scoped_path_within_memory(&memory_dir, "topics/secret.md").unwrap_err();
+        assert!(
+            err.contains("escapes"),
+            "symlinked directory escape must be rejected; got: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn scoped_path_rejects_symlinked_leaf_escape() {
+        // An existing symlinked leaf file resolves outside the memory root
+        // and must be rejected by the canonical containment re-check.
+        let tmp = tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+        let outside_file = tmp.path().join("outside-secret.md");
+        fs::write(&outside_file, "secret").unwrap();
+        std::os::unix::fs::symlink(&outside_file, memory_dir.join("leaked.md")).unwrap();
+
+        let err = scoped_path_within_memory(&memory_dir, "leaked.md").unwrap_err();
+        assert!(
+            err.contains("escapes"),
+            "symlinked leaf escape must be rejected; got: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn scoped_path_allows_real_files_after_canonical_check() {
+        // Legitimate existing nested paths keep working under the canonical
+        // containment re-check (both sides canonicalize consistently, so
+        // e.g. macOS `/var` -> `/private/var` does not cause false hits).
+        let tmp = tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(memory_dir.join("topics")).unwrap();
+        fs::write(memory_dir.join("topics/notes.md"), "x").unwrap();
+
+        let path = scoped_path_within_memory(&memory_dir, "topics/notes.md").unwrap();
+        assert!(path.ends_with("topics/notes.md"));
     }
 }

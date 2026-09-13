@@ -231,6 +231,35 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Returns true if `component` is safe to join as a single path component:
+/// non-empty, no path separators, no `..`/`.`, and only `[A-Za-z0-9._-]`
+/// (plus non-ASCII word chars are REJECTED — keep it strict). Prevents
+/// traversal via ids/names that reach `Path::join`.
+///
+/// The whitelist is deliberately conservative: ASCII alphanumerics, `_`,
+/// `-`, and `.` in a non-leading, non-trailing position. A leading dot
+/// rejects `.`, `..`, and dotfiles; a trailing dot is stripped by Windows
+/// APIs (`foo..` aliases `foo.`); separators, control characters,
+/// whitespace, and non-ASCII are all outside the whitelist and rejected.
+#[must_use]
+pub fn is_safe_path_component(component: &str) -> bool {
+    if component.is_empty() {
+        return false;
+    }
+    // Leading/trailing dot gate first — this alone rejects "", ".", "..",
+    // ".hidden", and "foo.." before the per-character scan runs.
+    let bytes = component.as_bytes();
+    if bytes[0] == b'.' || bytes[bytes.len() - 1] == b'.' {
+        return false;
+    }
+    // Strict per-character whitelist. `char` iteration keeps multi-byte
+    // sequences intact so non-ASCII like 'é' fails cleanly instead of
+    // slipping through as a lucky byte sequence.
+    component
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
 /// Open or create a file for appending at `path`, optionally syncing after
 /// every write. Use this for append-only logs like `audit.log`.
 ///
@@ -459,6 +488,66 @@ pub fn url_encode(input: &str) -> String {
     encoded
 }
 
+// === Prompt-Framing Escape Helpers ===
+
+/// Escape untrusted text for use inside a double-quoted XML-ish attribute
+/// value in prompt framing markup (e.g. `<instructions source="…">`).
+///
+/// Escapes `&`, `"`, `<`, `>`, and `'` to entities so an untrusted value
+/// cannot terminate the attribute early (`x"><injected …`) or smuggle
+/// markup into the framing. `&` must be escaped for entity output to be
+/// well-formed; the emitted entities contain no bare metacharacters, so
+/// a single pass cannot double-escape.
+///
+/// Values without any metacharacter (the common case for ids, slugs, and
+/// file paths) pass through unchanged via a scan-first fast path.
+#[must_use]
+pub fn escape_prompt_attr(value: &str) -> String {
+    if !value
+        .bytes()
+        .any(|b| matches!(b, b'&' | b'"' | b'<' | b'>' | b'\''))
+    {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 8);
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Neutralize closing-tag sequences of `tag` in untrusted prompt body text.
+///
+/// Only the literal `</{tag}` sequence (case-sensitive, with any trailing
+/// characters — so `</knowledge_memory>` and `</knowledge_memoryfoo>` are
+/// both defused) is replaced with `&lt;/{tag}`, so the body can no longer
+/// close the framing tag early while staying readable for the model.
+/// Occurrences of other tags (e.g. `</other>`) are left untouched.
+///
+/// `tag` is always a literal tag name from our own code; an empty `tag` is
+/// degenerate (it would match every `</`) and returns the input unchanged.
+/// Allocation-free when `text` contains no match: the needle and the
+/// replacement are only built after `text` is known to contain `</`.
+#[must_use]
+pub fn defuse_closing_tag(text: &str, tag: &str) -> String {
+    if tag.is_empty() || !text.contains("</") {
+        return text.to_string();
+    }
+    let needle = format!("</{tag}");
+    if !text.contains(&needle) {
+        return text.to_string();
+    }
+    let replacement = format!("&lt;/{tag}");
+    text.replace(&needle, &replacement)
+}
+
 /// Render a path for **user-facing display** with the home directory
 /// contracted to `~`. Use this in the TUI, doctor/setup stdout, and any
 /// other place a viewer might see the output (screenshot, video,
@@ -545,6 +634,114 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod prompt_escape_tests {
+    use super::{defuse_closing_tag, escape_prompt_attr};
+
+    // ── escape_prompt_attr ─────────────────────────────────────────────
+
+    #[test]
+    fn escape_attr_passes_plain_text_through() {
+        assert_eq!(escape_prompt_attr("MEMORY.md"), "MEMORY.md");
+        assert_eq!(escape_prompt_attr("/tmp/a/b.md"), "/tmp/a/b.md");
+        assert_eq!(escape_prompt_attr(""), "");
+    }
+
+    #[test]
+    fn escape_attr_escapes_all_metacharacters() {
+        assert_eq!(escape_prompt_attr("a&b"), "a&amp;b");
+        assert_eq!(escape_prompt_attr("a\"b"), "a&quot;b");
+        assert_eq!(escape_prompt_attr("a<b"), "a&lt;b");
+        assert_eq!(escape_prompt_attr("a>b"), "a&gt;b");
+        assert_eq!(escape_prompt_attr("a'b"), "a&#39;b");
+    }
+
+    #[test]
+    fn escape_attr_blocks_early_attribute_termination() {
+        // A value trying to close the attribute and open injected markup.
+        let escaped = escape_prompt_attr("x\"><injected attr=\"1");
+        assert_eq!(
+            escaped, "x&quot;&gt;&lt;injected attr=&quot;1",
+            "no raw `\"` or `<>` may survive"
+        );
+    }
+
+    #[test]
+    fn escape_attr_does_not_double_escape_entities() {
+        // Pre-existing entity-looking text is escaped once, as raw text.
+        assert_eq!(escape_prompt_attr("&amp;"), "&amp;amp;");
+    }
+
+    // ── defuse_closing_tag ─────────────────────────────────────────────
+
+    #[test]
+    fn defuse_neutralizes_exact_closing_tag() {
+        assert_eq!(
+            defuse_closing_tag("body with </knowledge_memory> inside", "knowledge_memory"),
+            "body with &lt;/knowledge_memory> inside"
+        );
+    }
+
+    #[test]
+    fn defuse_neutralizes_extended_tag_names() {
+        // `</knowledge_memoryfoo>` does not close `<knowledge_memory>` in
+        // strict XML, but the model may read it as a close — defuse the
+        // `</{tag}` prefix so neither variant can.
+        assert_eq!(
+            defuse_closing_tag("x</knowledge_memoryfoo>", "knowledge_memory"),
+            "x&lt;/knowledge_memoryfoo>"
+        );
+        // Spaced / attribute-suffixed closers share the same prefix.
+        assert_eq!(
+            defuse_closing_tag("</knowledge_memory >", "knowledge_memory"),
+            "&lt;/knowledge_memory >"
+        );
+    }
+
+    #[test]
+    fn defuse_leaves_other_tags_and_plain_text_alone() {
+        assert_eq!(
+            defuse_closing_tag(
+                "has </other> and <knowledge_memory> tags",
+                "knowledge_memory"
+            ),
+            "has </other> and <knowledge_memory> tags"
+        );
+        assert_eq!(
+            defuse_closing_tag("plain text", "knowledge_memory"),
+            "plain text"
+        );
+        assert_eq!(defuse_closing_tag("", "knowledge_memory"), "");
+    }
+
+    #[test]
+    fn defuse_is_case_sensitive() {
+        // Only the exact-case sequence is defused.
+        assert_eq!(
+            defuse_closing_tag("</Knowledge_Memory>", "knowledge_memory"),
+            "</Knowledge_Memory>"
+        );
+    }
+
+    #[test]
+    fn defuse_empty_tag_returns_input_unchanged() {
+        assert_eq!(
+            defuse_closing_tag("</knowledge_memory>", ""),
+            "</knowledge_memory>"
+        );
+    }
+
+    #[test]
+    fn defuse_is_idempotent() {
+        let once = defuse_closing_tag("a</knowledge_memory>b", "knowledge_memory");
+        assert_eq!(
+            defuse_closing_tag(&once, "knowledge_memory"),
+            once,
+            "escaped form must not be re-escaped"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -703,6 +900,62 @@ mod atomic_write_tests {
         }
         let content = fs::read_to_string(&path).expect("read");
         assert_eq!(content, "line 1\nline 2\n");
+    }
+}
+
+#[cfg(test)]
+mod safe_path_component_tests {
+    use super::is_safe_path_component;
+
+    #[test]
+    fn accepts_plain_alphanumeric() {
+        assert!(is_safe_path_component("abc123"));
+    }
+
+    #[test]
+    fn accepts_inner_dots_underscores_dashes() {
+        assert!(is_safe_path_component("a-b_c.d"));
+        assert!(is_safe_path_component("2024-01-02T03.04.05Z"));
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(!is_safe_path_component(""));
+    }
+
+    #[test]
+    fn rejects_dot_and_dotdot() {
+        assert!(!is_safe_path_component("."));
+        assert!(!is_safe_path_component(".."));
+    }
+
+    #[test]
+    fn rejects_traversal_and_separators() {
+        assert!(!is_safe_path_component("../foo"));
+        assert!(!is_safe_path_component("a/b"));
+        // Backslash is a separator on Windows and a smuggle vector elsewhere.
+        assert!(!is_safe_path_component(r"a\b"));
+        assert!(!is_safe_path_component("a\\b"));
+    }
+
+    #[test]
+    fn rejects_leading_and_trailing_dots() {
+        assert!(!is_safe_path_component(".hidden"));
+        // Trailing dots are stripped by Windows APIs — reject outright.
+        assert!(!is_safe_path_component("foo.."));
+    }
+
+    #[test]
+    fn rejects_non_ascii() {
+        assert!(!is_safe_path_component("café"));
+    }
+
+    #[test]
+    fn rejects_control_chars_and_whitespace() {
+        assert!(!is_safe_path_component("a b"));
+        assert!(!is_safe_path_component("a\tb"));
+        assert!(!is_safe_path_component("a\nb"));
+        assert!(!is_safe_path_component("a\0b"));
     }
 }
 

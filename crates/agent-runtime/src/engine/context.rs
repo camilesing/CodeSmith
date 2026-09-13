@@ -551,12 +551,13 @@ mod tests {
             estimate_input_tokens_conservative(&messages, system.as_ref()),
             crate::compaction::estimate_input_tokens_conservative(&messages, system.as_ref()),
         );
-        // Heuristic-counter regression: chars/3 + 3/2 scale + framing for one
-        // message ("hello world" = 11 chars → 4 tokens → 6; system 13 chars →
-        // 5 tokens; framing 12 + 48).
+        // Heuristic-counter regression: CJK-aware heuristic (ASCII counts
+        // chars.div_ceil(4)) + 3/2 scale + framing for one message
+        // ("hello world" = 11 chars → 3 tokens → 5 after scale; system 13
+        // chars → 4 tokens; framing 12 + 48).
         assert_eq!(
             estimate_input_tokens_conservative(&messages, system.as_ref()),
-            6 + 5 + 12 + 48
+            5 + 4 + 12 + 48
         );
     }
 

@@ -32,7 +32,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::tool_setup::{build_tool_context_for, build_turn_tool_registry_builder_for};
-use super::{Event, Op, build_model_tool_catalog, configure_plugin_tools};
+use super::{Event, Op, apply_tool_selection, build_model_tool_catalog, configure_plugin_tools};
 use crate::background_task::SharedBackgroundTaskRegistry;
 use crate::cycle_manager::StructuredState;
 use crate::features::Feature;
@@ -466,6 +466,11 @@ impl HostServices for super::EngineHost {
                     tool.defer_loading = Some(false);
                 }
             }
+            apply_tool_selection(
+                &mut catalog,
+                config.allowed_tools.as_deref(),
+                &config.blocked_tools,
+            );
             catalog
         });
 

@@ -116,19 +116,18 @@ pub async fn run_prefetch(
 ) -> Result<PrefetchResult, RelevanceError> {
     let started = std::time::Instant::now();
 
-    // Ensure directory exists (may have been created by RememberTool).
-    if ensure_memory_dir_exists(memory_dir).is_err() {
-        // Directory creation failure is non-critical for prefetch.
-        // Just return empty result.
-        return Ok(PrefetchResult {
-            surfaced: vec![],
-            scan_headers: vec![],
-            duration_ms: started.elapsed().as_millis() as u64,
-        });
-    }
-
-    // 1. Scan memory files.
-    let headers = scan_memory_files(memory_dir);
+    // Ensure directory exists (may have been created by RememberTool), then
+    // scan memory files — both blocking, so run off the async worker.
+    let scan_dir = memory_dir.to_path_buf();
+    let headers = tokio::task::spawn_blocking(move || {
+        if ensure_memory_dir_exists(&scan_dir).is_err() {
+            // Directory creation failure is non-critical for prefetch.
+            return Vec::new();
+        }
+        scan_memory_files(&scan_dir)
+    })
+    .await
+    .unwrap_or_default();
     if headers.is_empty() {
         return Ok(PrefetchResult {
             surfaced: vec![],
@@ -173,17 +172,24 @@ pub async fn run_prefetch(
     }
 
     // 3. Read selected memory files with truncation and staleness headers.
-    let selected_headers: Vec<&MemoryHeader> = unsurfaced_headers
+    let selected_headers: Vec<MemoryHeader> = unsurfaced_headers
         .iter()
         .filter(|h| selected_filenames.contains(&h.filename))
+        .cloned()
         .collect();
 
-    let mut surfaced_memories = Vec::new();
-    for header in selected_headers.iter().take(MAX_MEMORIES_PER_TURN) {
-        if let Some(mem) = read_memory_for_surfacing(header, memory_dir) {
-            surfaced_memories.push(mem);
+    let read_dir = memory_dir.to_path_buf();
+    let surfaced_memories = tokio::task::spawn_blocking(move || {
+        let mut memories = Vec::new();
+        for header in selected_headers.iter().take(MAX_MEMORIES_PER_TURN) {
+            if let Some(mem) = read_memory_for_surfacing(header, &read_dir) {
+                memories.push(mem);
+            }
         }
-    }
+        memories
+    })
+    .await
+    .unwrap_or_default();
 
     // 4. Enforce session byte budget.
     let budget = session_budget.lock().await;

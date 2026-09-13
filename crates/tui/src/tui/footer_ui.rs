@@ -484,7 +484,7 @@ pub(crate) fn render_footer_from(
         balance,
     );
     if !has(S::Mode) {
-        props.mode_label = "";
+        props.mode_label.clear();
     }
     if !has(S::Model) {
         props.model.clear();

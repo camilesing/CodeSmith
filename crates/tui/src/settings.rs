@@ -226,6 +226,13 @@ pub struct Settings {
     pub transcript_spacing: String,
     /// Default mode: "agent", "plan", "yolo"
     pub default_mode: String,
+    /// Last named runtime mode selected via `/mode <name>` or `--mode`
+    /// (e.g. "minimal", "maximal", or a user/project mode). Restored on
+    /// the next launch unless `--mode` or `mode = "..."` in config.toml
+    /// overrides it. `None` means no named mode is active and every dial
+    /// keeps its individual setting. Free-form: validated against the
+    /// mode catalog at use time, not at save time.
+    pub active_mode: Option<String>,
     /// Sidebar width as percentage of terminal width
     pub sidebar_width_percent: u16,
     /// Sidebar focus mode: auto, work, tasks, agents, context, hidden
@@ -309,6 +316,7 @@ impl Default for Settings {
             composer_vim_mode: "normal".to_string(),
             transcript_spacing: "comfortable".to_string(),
             default_mode: "agent".to_string(),
+            active_mode: None,
             sidebar_width_percent: 28,
             sidebar_focus: "auto".to_string(),
             context_panel: false,
@@ -606,6 +614,14 @@ impl Settings {
                     );
                 }
                 self.default_mode = normalized.to_string();
+            }
+            "active_mode" | "named_mode" => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.active_mode = None;
+                } else {
+                    self.active_mode = Some(trimmed.to_string());
+                }
             }
             "sidebar_width" | "sidebar" => {
                 let width: u16 = value

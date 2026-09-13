@@ -98,15 +98,37 @@ pub fn set_test_artifact_sessions_root(root: Option<PathBuf>) -> Option<PathBuf>
     std::mem::replace(&mut *guard, root)
 }
 
+/// Reject Windows-only absolute forms that std only parses into
+/// `Component::Prefix`/`Component::RootDir` when running *on* Windows:
+/// `C:evil.txt` (drive-relative prefix) and `\evil.txt` (root-relative).
+/// On other hosts these arrive as plain `Normal` components, so the text
+/// has to be scanned as well as the components.
+fn is_windows_absolute_form(relative_path: &Path) -> bool {
+    let Some(text) = relative_path.to_str() else {
+        // Artifact relative paths are always generated as UTF-8; anything
+        // else is not a form we produced and is rejected.
+        return true;
+    };
+    if text.starts_with('\\') || text.starts_with('/') {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
 #[must_use]
 pub fn session_artifact_absolute_path(session_id: &str, relative_path: &Path) -> Option<PathBuf> {
     if !is_valid_session_id(session_id) {
         return None;
     }
     if relative_path.is_absolute()
-        || relative_path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
+        || is_windows_absolute_form(relative_path)
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
     {
         return None;
     }
@@ -312,6 +334,46 @@ mod tests {
                 .join("session-123")
                 .join("artifacts")
                 .join("art_call-big.txt")
+        );
+    }
+
+    #[test]
+    fn session_artifact_absolute_path_rejects_windows_prefix_forms() {
+        // `C:evil.txt` (drive-relative) and `\evil.txt` (root-relative) are
+        // absolute on Windows but parse as plain `Normal` components
+        // elsewhere — both must reject on every host.
+        let _guard = TEST_ARTIFACT_SESSIONS_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = set_test_sessions_root(tmp.path().join("sessions"));
+
+        assert!(
+            session_artifact_absolute_path("session-123", Path::new("C:evil.txt")).is_none(),
+            "drive-relative prefix must reject"
+        );
+        assert!(
+            session_artifact_absolute_path("session-123", Path::new("\\evil.txt")).is_none(),
+            "root-relative backslash form must reject"
+        );
+        assert!(
+            session_artifact_absolute_path("session-123", Path::new(r"C:\Windows\system32"))
+                .is_none(),
+            "full drive-absolute form must reject"
+        );
+    }
+
+    #[test]
+    fn session_artifact_absolute_path_rejects_parent_traversal() {
+        let _guard = TEST_ARTIFACT_SESSIONS_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = set_test_sessions_root(tmp.path().join("sessions"));
+
+        assert!(
+            session_artifact_absolute_path("session-123", Path::new("../../etc/passwd")).is_none(),
+            "`..` traversal must reject"
         );
     }
 }

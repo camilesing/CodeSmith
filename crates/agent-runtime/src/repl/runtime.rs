@@ -988,13 +988,28 @@ fn truncate_stdout(stdout: &str, limit: usize) -> String {
     if stdout.len() <= limit {
         return stdout.to_string();
     }
-    let take = limit.saturating_sub(80);
-    let mut out: String = stdout.chars().take(take).collect();
+    // Byte budget aligned down to a char boundary: the old
+    // `chars().take(limit - 80)` cut kept ~3x the byte cap for CJK
+    // output (3 bytes per char).
+    let take = previous_char_boundary(stdout, limit.saturating_sub(80));
+    let mut out: String = stdout[..take].to_string();
     let omitted = stdout.len().saturating_sub(out.len());
     out.push_str(&format!(
         "\n\n[... REPL output truncated: {omitted} bytes omitted ...]\n"
     ));
     out
+}
+
+/// Largest index `<= idx` that falls on a UTF-8 char boundary.
+///
+/// Mirrors the helper in `knowledge::entrypoint`, kept local to avoid a
+/// cross-module dependency.
+fn previous_char_boundary(s: &str, mut idx: usize) -> usize {
+    idx = idx.min(s.len());
+    while !s.is_char_boundary(idx) && idx > 0 {
+        idx -= 1;
+    }
+    idx
 }
 
 // ---------------------------------------------------------------------------
@@ -1482,5 +1497,27 @@ mod tests {
         let out = truncate_stdout(&long, 1024);
         assert!(out.len() < 1500);
         assert!(out.contains("truncated"));
+    }
+
+    #[test]
+    fn truncate_cjk_output_respects_byte_limit() {
+        // 3 bytes per char: the old `chars().take(limit - 80)` version
+        // kept ~3x the byte cap for CJK output.
+        let long = "汉".repeat(4_000); // 12_000 bytes
+        let out = truncate_stdout(&long, 1024);
+        assert!(
+            out.len() <= 1024,
+            "truncated CJK output should respect the byte limit, got {} bytes",
+            out.len()
+        );
+        assert!(out.contains("truncated"));
+        // Every char before the notice marker is a 3-byte 汉, so a body
+        // length divisible by 3 means the cut landed on a char boundary.
+        let body_end = out.find("\n\n[").expect("notice marker");
+        assert_eq!(
+            body_end % 3,
+            0,
+            "cut must land on a char boundary, body is {body_end} bytes"
+        );
     }
 }

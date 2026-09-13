@@ -5,9 +5,80 @@ codesmith has two related concepts:
 - **TUI mode**: what kind of visible interaction you're in (Plan/Agent/YOLO).
 - **Approval mode**: how aggressively the UI asks before executing tools.
 
+On top of both sits the **named mode layer**: one command (`/mode minimal`)
+that bundles every dial below — tools, thinking, memory, approvals,
+sub-agents, model — into a shareable TOML file.
+
 Model selection is separate. `--model auto` and `/model auto` route each turn to
 a concrete model and thinking level; they are not TUI modes and are not part of
 the `Tab` cycle.
+
+## Named Modes (`/mode <name>`)
+
+A *mode* is a delta bundle of dials in a single TOML file. Anything the file
+leaves out keeps its current value, so a mode composes with your existing
+config instead of replacing it.
+
+```bash
+codesmith --mode minimal   # tiny surface, thinking off, no memory
+codesmith --mode maximal   # everything on
+/mode list                 # see every mode visible to this workspace
+/mode plan                 # switch mid-session (hot)
+/mode export my-setup      # snapshot current dials to a shareable file
+/mode off                  # drop the mode layer, keep current dials
+```
+
+Built-in modes:
+
+| Mode | Thinking | Tools | Memory | Sub-agents |
+|---|---|---|---|---|
+| `minimal` | off | core file + shell only (`tools.include`) | goldfish (none) | off |
+| `balanced` | inherits | inherits | inherits | inherits |
+| `maximal` | max | full surface | elephant (auto + decay) | 20 |
+| `plan` | inherits | read-only + plan tooling | notebook (explicit only) | inherits |
+
+Mode files live in two scanned directories, later layers overriding built-ins
+by name:
+
+1. `~/.codesmith/modes/*.toml` — your modes, everywhere
+2. `<workspace>/.codesmith/modes/*.toml` — project modes (commit these)
+
+A mode file's full schema (every field optional):
+
+```toml
+name = "review"
+description = "Read-only code review posture"
+app_mode = "agent"              # agent | yolo | plan | coordinator
+reasoning_effort = "high"       # off | low | medium | high | max | auto
+approval_policy = "never"       # suggest | auto | never
+sandbox_mode = "read-only"      # read-only | workspace-write | danger-full-access
+memory_level = "notebook"       # goldfish | notebook | elephant
+max_subagents = 2
+model = "deepseek-v4-pro"
+provider = "deepseek"           # startup-only; needs a restart to change
+
+[tools]
+include = ["read_file", "grep_files", "list_dir"]  # allowlist when set
+exclude = ["exec_shell"]                            # trimmed after include
+
+[features]
+subagents = false
+web_search = false
+```
+
+**Memory dials** (`memory_level`) map onto the existing multi-layer memory
+system ([docs/MEMORY.md](MEMORY.md)): `goldfish` disables cross-session
+memory, `notebook` keeps only what you explicitly save (`# note`,
+`/remember`), `elephant` turns on Knowledge On Demand with budget and decay.
+
+**Hot vs. restart.** App mode, thinking, approvals, tool allow/denylists,
+sub-agent cap, and model switch on the next turn. Provider, feature flags,
+and memory injection are read at engine startup — switching to a mode that
+sets them prints what will apply after restart.
+
+**Precedence for the active mode:** `--mode name` (CLI) > `mode = "name"` in
+config.toml > the last mode picked in the TUI (persisted in settings.toml).
+Unsetting is `/mode off`.
 
 ## TUI Modes
 
@@ -119,6 +190,7 @@ Run `codesmith --help` for the canonical list. Common flags:
 - `--max-subagents <N>`: clamp to `1..=20`
 - `--mouse-capture` / `--no-mouse-capture`: opt in or out of internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. Mouse capture is enabled by default on non-Windows terminals and on Windows Terminal/ConEmu/Cmder so drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and stays scoped to the transcript pane; hold Shift while dragging or use `--no-mouse-capture` for raw terminal selection. It defaults off on legacy Windows console (CMD without `WT_SESSION` / `ConEmuPID`) and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where the terminal advertises mouse support but forwards SGR mouse events as raw text (#878, #898). Use `--mouse-capture` to opt in anywhere it's defaulted off. Raw terminal selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
 - `--profile <NAME>`: select config profile
+- `--mode <NAME>`: apply a named mode (minimal | balanced | maximal | plan | custom); see [Named Modes](#named-modes-mode-name)
 - `--config <PATH>`: config file path
 - `-v, --verbose`: verbose logging
 

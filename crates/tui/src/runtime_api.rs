@@ -606,6 +606,11 @@ async fn require_runtime_token(
 }
 
 fn request_has_runtime_token(req: &Request, expected: &str) -> bool {
+    // Header-only: a `?token=` query variant used to be accepted here, but
+    // query strings land in server/proxy access logs and EventSource-style
+    // clients re-send them on every reconnect. The one exception is the
+    // static `/mobile` page bootstrap (see `mobile_page`), which strips the
+    // token from the URL immediately after load.
     req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -616,7 +621,6 @@ fn request_has_runtime_token(req: &Request, expected: &str) -> bool {
             .get("x-codesmith-runtime-token")
             .and_then(|value| value.to_str().ok())
             .is_some_and(|token| token == expected)
-        || token_from_query(req.uri().query()).is_some_and(|token| token == expected)
 }
 
 fn runtime_token_required_response() -> Response {
@@ -680,6 +684,11 @@ async fn mobile_page(State(state): State<RuntimeApiState>, req: Request) -> Resp
     }
     if let Some(expected) = state.runtime_token.as_deref()
         && !request_has_runtime_token(&req, expected)
+        // The static page itself may bootstrap via `?token=` — a browser
+        // address-bar navigation cannot set headers. The client strips the
+        // token from the URL immediately after load and every subsequent
+        // `/v1/*` call uses the Authorization header instead.
+        && !token_from_query(req.uri().query()).is_some_and(|token| token == expected)
     {
         return runtime_token_required_response();
     }
@@ -688,33 +697,36 @@ async fn mobile_page(State(state): State<RuntimeApiState>, req: Request) -> Resp
 
 fn print_mobile_urls(addr: SocketAddr, token: Option<&str>, auth_enabled: bool, show_qr: bool) {
     println!("Mobile control page enabled.");
-    let token_query = if auth_enabled {
-        token
-            .filter(|token| !token.trim().is_empty())
-            .map(|token| format!("?token={}", url_query_component(token)))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-
+    // URLs are printed without the token embedded: terminal scrollback and
+    // shared logs would otherwise capture a live bearer credential. When
+    // auth is on, the page is opened via the one-time `?token=` bootstrap
+    // (the client strips it from the address bar immediately) or by pasting
+    // the token into the page's token box.
     let port = addr.port();
     let qr_url = if addr.ip().is_unspecified() {
-        println!("  Local: http://127.0.0.1:{port}/mobile{token_query}");
+        println!("  Local: http://127.0.0.1:{port}/mobile");
         if let Some(ip) = detect_lan_ip() {
-            let lan_url = format!("http://{ip}:{port}/mobile{token_query}");
+            let lan_url = format!("http://{ip}:{port}/mobile");
             println!("  LAN:   {lan_url}");
             lan_url
         } else {
-            println!(
-                "  LAN:   bind is 0.0.0.0; open http://<this-machine-ip>:{port}/mobile{token_query}"
-            );
-            format!("http://127.0.0.1:{port}/mobile{token_query}")
+            println!("  LAN:   bind is 0.0.0.0; open http://<this-machine-ip>:{port}/mobile");
+            format!("http://127.0.0.1:{port}/mobile")
         }
     } else {
-        let url = format!("http://{addr}/mobile{token_query}");
+        let url = format!("http://{addr}/mobile");
         println!("  URL:   {url}");
         url
     };
+    if auth_enabled {
+        if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+            println!(
+                "  Auth:  open /mobile?token={} once, or paste this token into the page:",
+                url_query_component(token)
+            );
+            println!("         {token}");
+        }
+    }
     println!("Mobile security: use only on a trusted LAN/VPN; this server does not provide TLS.");
 
     if show_qr {
@@ -2635,12 +2647,14 @@ mod tests {
             .error_for_status()?;
         assert_eq!(bearer.status(), StatusCode::OK);
 
+        // Query-string tokens must be rejected on /v1/* routes: they leak
+        // into server/proxy access logs and are re-sent by reconnecting
+        // stream clients.
         let query_token = client
             .get(format!("http://{addr}/v1/threads/summary?token={token}"))
             .send()
-            .await?
-            .error_for_status()?;
-        assert_eq!(query_token.status(), StatusCode::OK);
+            .await?;
+        assert_eq!(query_token.status(), StatusCode::UNAUTHORIZED);
 
         handle.abort();
         Ok(())

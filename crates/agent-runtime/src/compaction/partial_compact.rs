@@ -250,17 +250,26 @@ pub async fn partial_compact(
 }
 
 /// Conservative token estimate for a single message.
+///
+/// Routes through the shared [`crate::tokenizer`] counter, mirroring the
+/// estimation helpers in `compaction::mod` (the historical bytes/4
+/// arithmetic under-counted CJK text by ~3x).
 fn estimate_tokens_for_message(msg: &Message) -> usize {
+    let counter = crate::tokenizer::default_counter();
     msg.content
         .iter()
         .map(|block| match block {
-            ContentBlock::Text { text, .. } => text.len() / 4,
-            ContentBlock::Thinking { thinking } => thinking.len() / 4,
+            ContentBlock::Text { text, .. } => counter.count_text(text),
+            ContentBlock::Thinking { thinking } => counter.count_text(thinking),
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
-                .map(|s| s.len() / 4)
+                .map(|s| counter.count_text(&s))
                 .unwrap_or(100),
-            ContentBlock::ToolResult { content, .. } => content.len() / 4,
+            ContentBlock::ToolResult { content, .. } => counter.count_text(content),
             ContentBlock::Image { .. } => crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS,
+            // These blocks are dropped at the wire layer
+            // (crates/providers/src/rig_adapter/convert.rs) before the
+            // request is serialized, so 0 is deliberate for request-size
+            // estimation.
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => 0,

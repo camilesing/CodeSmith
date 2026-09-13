@@ -7,8 +7,12 @@
 //! JSON-heavy tool output. This module provides one [`TokenCounter`] with
 //! two implementations:
 //!
-//! - [`TokenCounter::Heuristic`] — the historical `chars.div_ceil(3)`
-//!   estimate. Always available; the default. Conservative by design.
+//! - [`TokenCounter::Heuristic`] — a CJK-aware estimate: one token per
+//!   CJK codepoint and `chars.div_ceil(4)` for everything else. Always
+//!   available; the default. Coarse, not conservative: real BPE spends
+//!   roughly 1-2 tokens per CJK character and about one token per four
+//!   ASCII characters, so this slightly under-counts rare ideographs and
+//!   dense ASCII, and over-counts Hiragana-heavy text.
 //! - `TokenCounter::Hf` (feature `hf-tokenizer`) — an exact count from a
 //!   HuggingFace `tokenizer.json` (BPE/Unigram) loaded from
 //!   `[context].tokenizer_path`.
@@ -26,7 +30,8 @@ use std::sync::{Arc, OnceLock};
 /// Token counter with pluggable backends.
 #[derive(Clone)]
 pub enum TokenCounter {
-    /// `chars.div_ceil(3)` — the historical conservative estimate.
+    /// CJK-aware heuristic: one token per CJK codepoint, one token per
+    /// four non-CJK characters.
     Heuristic,
     /// Exact counts from a loaded HuggingFace tokenizer (feature
     /// `hf-tokenizer`).
@@ -38,7 +43,7 @@ impl TokenCounter {
     /// Count tokens in `text`.
     pub fn count_text(&self, text: &str) -> usize {
         match self {
-            Self::Heuristic => text.chars().count().div_ceil(3),
+            Self::Heuristic => heuristic_count(text),
             #[cfg(feature = "hf-tokenizer")]
             Self::Hf(tokenizer) => tokenizer
                 .encode(text, false)
@@ -47,7 +52,7 @@ impl TokenCounter {
                     tracing::warn!(
                         "tokenizer encode failed ({err}); falling back to heuristic count"
                     );
-                    text.chars().count().div_ceil(3)
+                    heuristic_count(text)
                 }),
         }
     }
@@ -86,6 +91,41 @@ impl std::fmt::Debug for TokenCounter {
 
 static DEFAULT: OnceLock<TokenCounter> = OnceLock::new();
 
+/// CJK-aware heuristic token estimate.
+///
+/// Real BPE tokenizers spend roughly 1-2 tokens per CJK character but only
+/// about one token per four ASCII characters, so the historical flat
+/// `chars.div_ceil(3)` over-counted plain prose while under-counting
+/// CJK-heavy text by ~3x. This heuristic charges one token per CJK
+/// codepoint and one token per four remaining characters.
+fn heuristic_count(text: &str) -> usize {
+    let mut cjk_tokens = 0usize;
+    let mut other_chars = 0usize;
+    for ch in text.chars() {
+        if is_cjk(ch) {
+            cjk_tokens += 1;
+        } else {
+            other_chars += 1;
+        }
+    }
+    cjk_tokens + other_chars.div_ceil(4)
+}
+
+/// Whether `ch` belongs to a block that tokenizes at roughly one token
+/// per character under real BPE tokenizers.
+fn is_cjk(ch: char) -> bool {
+    matches!(ch as u32,
+        0x3000..=0x303F   // CJK symbols and punctuation
+        | 0x3040..=0x309F // Hiragana
+        | 0x30A0..=0x30FF // Katakana
+        | 0x3400..=0x4DBF // CJK Unified Ideographs Extension A
+        | 0x4E00..=0x9FFF // CJK Unified Ideographs
+        | 0xAC00..=0xD7AF // Hangul syllables
+        | 0xF900..=0xFAFF // CJK Compatibility Ideographs
+        | 0xFF00..=0xFFEF // Halfwidth and Fullwidth Forms
+    )
+}
+
 /// The process-wide default counter (heuristic until [`set_default`]).
 pub fn default_counter() -> TokenCounter {
     DEFAULT.get().cloned().unwrap_or(TokenCounter::Heuristic)
@@ -119,13 +159,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heuristic_matches_div_ceil_three() {
+    fn heuristic_charges_one_token_per_four_other_chars() {
         let counter = TokenCounter::Heuristic;
         assert_eq!(counter.count_text(""), 0);
         assert_eq!(counter.count_text("123456789"), 3);
-        assert_eq!(counter.count_text("1234567890"), 4);
-        // CJK chars count as chars, not bytes.
-        assert_eq!(counter.count_text("冰糖葫芦"), 2);
+        assert_eq!(counter.count_text("1234567890"), 3);
+        assert_eq!(counter.count_text("hello world"), 3);
+    }
+
+    #[test]
+    fn heuristic_charges_one_token_per_cjk_char() {
+        let counter = TokenCounter::Heuristic;
+        // 4 CJK chars -> 4 tokens (the old chars/3 estimate reported 2;
+        // real BPE spends 1-2 tokens per ideograph).
+        assert_eq!(counter.count_text("冰糖葫芦"), 4);
+        // Hiragana, Katakana, Hangul syllables, and fullwidth forms all
+        // count 1:1 as well.
+        assert_eq!(counter.count_text("あい"), 2);
+        assert_eq!(counter.count_text("アイ"), 2);
+        assert_eq!(counter.count_text("한국"), 2);
+        assert_eq!(counter.count_text("ＡＢ"), 2);
+    }
+
+    #[test]
+    fn heuristic_mixed_cjk_and_ascii() {
+        let counter = TokenCounter::Heuristic;
+        // 2 CJK chars (2 tokens) + 8 ASCII chars (8.div_ceil(4) = 2).
+        assert_eq!(counter.count_text("冰糖abcdefg"), 4);
     }
 
     #[test]

@@ -315,9 +315,7 @@ pub fn clear_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
-    use crate::tools::team::team_file::{
-        TeamFile, TeamMember, create_team_file, format_lead_agent_id, team_lead_name,
-    };
+    use crate::tools::team::team_file::{TeamFile, create_team_file, format_lead_agent_id};
 
     fn make_team_file(name: &str) -> TeamFile {
         TeamFile {

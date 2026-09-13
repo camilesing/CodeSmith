@@ -131,9 +131,14 @@ fn write_kod_memory(
     });
     let file_path = memory_dir.join(format!("{filename}.md"));
 
-    // Build frontmatter.
-    let fm_name = name.as_deref().unwrap_or(&filename);
-    let fm_description = description.as_deref().unwrap_or(note.trim());
+    // Build frontmatter. `name` / `description` are model-supplied and are
+    // sanitized to a single-line YAML scalar so they cannot forge a
+    // `\n---\n` document boundary, inject extra frontmatter keys, or break
+    // out of the MEMORY.md pointer line below. `filename` (slug) and
+    // `memory_type` (internally controlled enum) are already structurally
+    // safe and pass through the sanitizer unchanged.
+    let fm_name = sanitize_frontmatter_value(name.as_deref().unwrap_or(&filename));
+    let fm_description = sanitize_frontmatter_value(description.as_deref().unwrap_or(note.trim()));
 
     let content = format!(
         "---\nname: {}\ndescription: {}\ntype: {}\n---\n{}",
@@ -152,9 +157,11 @@ fn write_kod_memory(
     })?;
 
     // Write file.
-    std::fs::write(&file_path, &content).map_err(|err| {
-        ToolError::execution_failed(format!("failed to write {}: {err}", file_path.display()))
-    })?;
+    codesmith_agent_runtime::utils::write_atomic(&file_path, content.as_bytes()).map_err(
+        |err| {
+            ToolError::execution_failed(format!("failed to write {}: {err}", file_path.display()))
+        },
+    )?;
 
     // Append pointer line to MEMORY.md entrypoint.
     let entrypoint_path = resolve_memory_entrypoint(memory_dir);
@@ -169,6 +176,52 @@ fn write_kod_memory(
         "remembered as {memory_type} memory: {}",
         note.trim().chars().take(60).collect::<String>()
     )))
+}
+
+/// Sanitize a model-supplied scalar for use as a YAML frontmatter value.
+///
+/// Newlines / carriage returns are replaced with spaces so a value can
+/// never spill onto its own frontmatter line — this defuses both extra-key
+/// injection and the `\n---\n` document-boundary forgery, because the value
+/// is guaranteed single-line afterwards. When the single-line result would
+/// not parse safely as a plain scalar (it contains any of
+/// ``:#{}[],&*?|-<>=!%@\``` or `'` — a leading quote would open a quoted
+/// scalar — or it has leading/trailing whitespace), it is emitted in YAML
+/// single-quoted style with embedded `'` doubled, which parses back to the
+/// exact same string.
+fn sanitize_frontmatter_value(value: &str) -> String {
+    let single_line = value.replace(['\n', '\r'], " ");
+    let needs_quoting = single_line.starts_with(' ')
+        || single_line.ends_with(' ')
+        || single_line.chars().any(|c| {
+            matches!(
+                c,
+                ':' | '#'
+                    | '{'
+                    | '}'
+                    | '['
+                    | ']'
+                    | ','
+                    | '&'
+                    | '*'
+                    | '?'
+                    | '|'
+                    | '-'
+                    | '<'
+                    | '>'
+                    | '='
+                    | '!'
+                    | '%'
+                    | '@'
+                    | '`'
+                    | '\''
+            )
+        });
+    if needs_quoting {
+        format!("'{}'", single_line.replace('\'', "''"))
+    } else {
+        single_line
+    }
 }
 
 /// Append a pointer line to the MEMORY.md entrypoint.
@@ -338,5 +391,108 @@ mod tests {
         assert_eq!(slugify("User Role"), "user_role");
         assert_eq!(slugify("build/config"), "build_config");
         assert_eq!(slugify("  spaced  out  "), "spaced_out");
+    }
+
+    // ── frontmatter sanitization ────────────────────────────────────────
+
+    #[test]
+    fn sanitize_keeps_plain_values_verbatim() {
+        assert_eq!(
+            sanitize_frontmatter_value("concise preference"),
+            "concise preference"
+        );
+        assert_eq!(sanitize_frontmatter_value("user_role"), "user_role");
+    }
+
+    #[test]
+    fn sanitize_strips_newlines_to_single_line() {
+        assert_eq!(
+            sanitize_frontmatter_value("evil\n---\ninjected: yes"),
+            "'evil --- injected: yes'",
+            "newline strip removes the --- boundary; `:`/`-` force quoting"
+        );
+        // CRLF collapses to two spaces (one per replaced line-break char) —
+        // still a single line, which is the structural guarantee.
+        assert_eq!(sanitize_frontmatter_value("a\r\nb"), "a  b");
+    }
+
+    #[test]
+    fn sanitize_quotes_special_characters_and_doubles_quotes() {
+        assert_eq!(sanitize_frontmatter_value("a: b"), "'a: b'");
+        assert_eq!(sanitize_frontmatter_value("#comment"), "'#comment'");
+        assert_eq!(sanitize_frontmatter_value("it's"), "'it''s'");
+        assert_eq!(sanitize_frontmatter_value(" padded "), "' padded '");
+    }
+
+    #[test]
+    fn frontmatter_injection_stays_single_document() {
+        // Model-supplied name tries to forge a `\n---\n` document boundary
+        // and an extra `injected: yes` key. The written file must still be
+        // a single frontmatter document with exactly one `name` key whose
+        // value round-trips to the sanitized expectation.
+        let tmp = tempdir().unwrap();
+        let result = write_kod_memory(
+            tmp.path(),
+            "note body",
+            Some("evil\n---\ninjected: yes".to_string()),
+            None,
+            MemoryType::Feedback,
+        )
+        .expect("write");
+
+        assert!(result.success);
+        // Filename comes from the slugified name — newlines/dashes collapse.
+        let file_path = tmp.path().join("evil_injected_yes.md");
+        let content = std::fs::read_to_string(&file_path).expect("memory file");
+
+        // Single document: exactly two `---` delimiter lines, nothing after
+        // the closing delimiter that re-opens frontmatter.
+        assert_eq!(
+            content.lines().filter(|l| l.trim() == "---").count(),
+            2,
+            "no forged document boundary; got:\n{content}"
+        );
+
+        // Frontmatter body: exactly the three expected keys, one per line.
+        let lines: Vec<&str> = content.lines().collect();
+        let fm: Vec<&&str> = lines[1..].iter().take_while(|l| **l != "---").collect();
+        assert_eq!(fm.len(), 3, "frontmatter keys: {fm:?}");
+        assert_eq!(fm.iter().filter(|l| l.starts_with("name:")).count(), 1);
+        assert_eq!(fm.iter().filter(|l| l.starts_with("injected:")).count(), 0);
+
+        // The name value is single-quoted with the injected newline folded
+        // to a space; unquoting (strip quotes, undouble `''`) yields the
+        // expected single value.
+        let name_line = *fm.iter().find(|l| l.starts_with("name:")).unwrap();
+        let raw = name_line.strip_prefix("name: ").unwrap();
+        let unquoted = raw
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .map(|s| s.replace("''", "'"))
+            .unwrap_or_else(|| raw.to_string());
+        assert_eq!(unquoted, "evil --- injected: yes");
+
+        // The note body stays intact below the closing delimiter.
+        assert!(content.ends_with("---\nnote body"));
+    }
+
+    #[test]
+    fn kod_pointer_line_stays_single_line_for_hostile_description() {
+        // The MEMORY.md pointer line interpolates the sanitized name /
+        // description — a hostile description must not add lines there.
+        let tmp = tempdir().unwrap();
+        write_kod_memory(
+            tmp.path(),
+            "note",
+            Some("ptr".to_string()),
+            Some("desc\n---\nname: forged".to_string()),
+            MemoryType::User,
+        )
+        .expect("write");
+
+        let entry = std::fs::read_to_string(tmp.path().join("MEMORY.md")).expect("MEMORY.md");
+        let lines: Vec<&str> = entry.lines().collect();
+        assert_eq!(lines.len(), 1, "pointer stays a single line: {entry}");
+        assert!(lines[0].starts_with("- [ptr](ptr.md) —"));
     }
 }

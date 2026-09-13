@@ -265,7 +265,9 @@
       threadId: "",
       activeTurnId: "",
       source: null,
-      eventCount: 0
+      eventCount: 0,
+      sinceSeq: 0,
+      reconnectMs: 500
     };
 
     function setStatus(message, tone = "") {
@@ -451,41 +453,92 @@
       state.threadId = id;
       state.activeTurnId = "";
       state.eventCount = 0;
+      state.sinceSeq = 0;
+      state.reconnectMs = 500;
       $("event-count").textContent = "0 events";
       $("active-title").textContent = title || id;
       $("events").innerHTML = "";
-      if (state.source) state.source.close();
-      const qs = "?since_seq=0" + (token() ? "&token=" + encodeURIComponent(token()) : "");
-      const source = new EventSource("/v1/threads/" + encodeURIComponent(id) + "/events" + qs);
-      state.source = source;
-      const names = [
-        "thread.started",
-        "turn.started",
-        "turn.lifecycle",
-        "turn.steered",
-        "turn.interrupt_requested",
-        "turn.completed",
-        "item.started",
-        "item.delta",
-        "item.completed",
-        "item.failed",
-        "approval.required",
-        "approval.decided",
-        "approval.timeout",
-        "sandbox.denied",
-        "coherence.state"
-      ];
-      for (const name of names) {
-        source.addEventListener(name, (ev) => {
-          let data = {};
-          try { data = JSON.parse(ev.data || "{}"); } catch (_) {}
-          if (data.turn_id) state.activeTurnId = data.turn_id;
-          appendEvent(name, data);
-        });
-      }
-      source.onopen = () => setStatus("Connected", "ok");
-      source.onerror = () => setStatus("Event stream disconnected", "warn");
+      if (state.source) state.source.abort();
+      connectEvents(id);
       await loadThreads();
+    }
+
+    // SSE over fetch instead of EventSource: EventSource cannot set the
+    // Authorization header, so it forced a `?token=` query param that leaked
+    // the bearer token into server/proxy access logs on every auto-reconnect.
+    // Here the token travels in the header and reconnects resume from the
+    // last seen event seq.
+    // Same event-name filter the EventSource listeners used to register.
+    const EVENT_NAMES = [
+      "thread.started", "turn.started", "turn.lifecycle", "turn.steered",
+      "turn.interrupt_requested", "turn.completed", "item.started",
+      "item.delta", "item.completed", "item.failed", "approval.required",
+      "approval.decided", "approval.timeout", "sandbox.denied",
+      "coherence.state"
+    ];
+
+    function handleEventFrame(name, dataStr) {
+      if (!EVENT_NAMES.includes(name)) return;
+      let data = {};
+      try { data = JSON.parse(dataStr || "{}"); } catch (_) {}
+      if (typeof data.seq === "number" && data.seq > state.sinceSeq) {
+        state.sinceSeq = data.seq;
+      }
+      if (data.turn_id) state.activeTurnId = data.turn_id;
+      appendEvent(name, data);
+    }
+
+    async function connectEvents(id) {
+      const controller = new AbortController();
+      state.source = controller;
+      const streamHeaders = {};
+      if (token()) streamHeaders.Authorization = "Bearer " + token();
+      let delay = state.reconnectMs || 500;
+      try {
+        const res = await fetch(
+          "/v1/threads/" + encodeURIComponent(id) +
+            "/events?since_seq=" + (state.sinceSeq || 0),
+          { headers: streamHeaders, signal: controller.signal }
+        );
+        if (!res.ok || !res.body) throw new Error("event stream HTTP " + res.status);
+        setStatus("Connected", "ok");
+        delay = 500;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value: chunk } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(chunk, { stream: true });
+          let sep;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const frame = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            let eventName = "message";
+            const dataLines = [];
+            for (const line of frame.split("\n")) {
+              if (line.startsWith(":")) continue;
+              const colon = line.indexOf(":");
+              const field = colon === -1 ? line : line.slice(0, colon);
+              const fieldValue = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "");
+              if (field === "event") eventName = fieldValue;
+              else if (field === "data") dataLines.push(fieldValue);
+            }
+            if (dataLines.length) handleEventFrame(eventName, dataLines.join("\n"));
+          }
+        }
+        // Stream ended cleanly (server-side timeout) — reconnect.
+        throw new Error("event stream ended");
+      } catch (err) {
+        if (controller.signal.aborted || state.threadId !== id) return;
+        setStatus("Event stream disconnected — reconnecting", "warn");
+        state.reconnectMs = Math.min(delay * 2, 15000);
+        setTimeout(() => {
+          if (!controller.signal.aborted && state.threadId === id) {
+            connectEvents(id).catch(() => {});
+          }
+        }, state.reconnectMs);
+      }
     }
 
     async function sendPrompt() {

@@ -960,15 +960,21 @@ fn agent_catalog_keeps_edit_file_loaded_when_fuzz_is_omitted() {
     // P2-7: `search` is no longer schema-required (anchor mode replaces it
     // with search_start + search_end); the anchor fields exist as optional
     // properties.
-    assert!(!required
-        .iter()
-        .any(|field| field.as_str() == Some("search")));
-    assert!(edit.input_schema["properties"]["search_start"]["type"]
-        .as_str()
-        .is_some_and(|t| t == "string"));
-    assert!(edit.input_schema["properties"]["search_end"]["type"]
-        .as_str()
-        .is_some_and(|t| t == "string"));
+    assert!(
+        !required
+            .iter()
+            .any(|field| field.as_str() == Some("search"))
+    );
+    assert!(
+        edit.input_schema["properties"]["search_start"]["type"]
+            .as_str()
+            .is_some_and(|t| t == "string")
+    );
+    assert!(
+        edit.input_schema["properties"]["search_end"]["type"]
+            .as_str()
+            .is_some_and(|t| t == "string")
+    );
     assert!(
         required
             .iter()
@@ -3988,6 +3994,7 @@ fn make_send_op(content: &str) -> Op {
         show_thinking: true,
         is_simple: false,
         allowed_tools: None,
+        blocked_tools: Vec::new(),
     }
 }
 
@@ -4116,10 +4123,11 @@ async fn engine_128k_window_long_session_compacts_without_prompt_too_long() {
     let client: LlmClientHandle = mock_arc.clone();
     let (mut engine, handle) = Engine::new_with_client(config, &Config::default(), client);
 
-    // Seed a long session: 70 × 3,150-char messages ≈ 69,300 summarizable
-    // raw tokens — over the 63,333 trigger, under the preflight budget
-    // (121,600 conservative), and under a real provider's raw limit.
-    let body = "x".repeat(3_150);
+    // Seed a long session: 70 × 4,200-char messages ≈ 73,500 summarizable
+    // raw tokens (chars/4 heuristic) — over the 63,333 trigger, under the
+    // preflight budget (121,600 conservative), and under a real provider's
+    // raw limit.
+    let body = "x".repeat(4_200);
     for i in 0..70 {
         engine
             .add_session_message(Message {

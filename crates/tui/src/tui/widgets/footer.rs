@@ -30,7 +30,7 @@ pub struct FooterProps {
     /// The current model identifier shown after the mode chip.
     pub model: String,
     /// `"agent"` / `"yolo"` / `"plan"` — the canonical setting label.
-    pub mode_label: &'static str,
+    pub mode_label: String,
     /// Color used for the mode chip.
     pub mode_color: Color,
     /// Color used for small separators between chips.
@@ -305,13 +305,16 @@ impl FooterProps {
     }
 }
 
-fn mode_style(app: &App) -> (&'static str, Color) {
+fn mode_style(app: &App) -> (String, Color) {
     let label = match app.mode {
         AppMode::Agent => "agent",
         AppMode::Yolo => "yolo",
         AppMode::Plan => "plan",
         AppMode::Coordinator => "coordinator",
     };
+    // A named mode (`/mode minimal`) owns the chip; its app mode still
+    // picks the color so plan-ish modes stay visually distinct.
+    let label = app.active_mode.clone().unwrap_or_else(|| label.to_string());
     let color = match app.mode {
         AppMode::Agent => app.ui_theme.mode_agent,
         AppMode::Yolo => app.ui_theme.mode_yolo,
@@ -389,7 +392,7 @@ impl FooterWidget {
             return Vec::new();
         }
 
-        let mode_label = self.props.mode_label;
+        let mode_label = self.props.mode_label.as_str();
         let sep = " \u{00B7} ";
         let model = self.props.model.as_str();
         let show_status = self.props.state_label != "ready";
@@ -499,7 +502,7 @@ impl FooterWidget {
 
     fn build_status_line_spans(
         &self,
-        mode_label: &'static str,
+        mode_label: &str,
         model_label: String,
         balance: Option<String>,
         cost: Option<String>,

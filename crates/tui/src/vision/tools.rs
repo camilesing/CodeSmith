@@ -175,6 +175,21 @@ impl ToolSpec for ImageAnalyzeTool {
             ));
         }
         let resolved_path = context.workspace.join(image_path_buf);
+        // Symlink-escape hardening: the component scan above is lexical only,
+        // so a path whose components (or the file itself) are symlinks
+        // pointing outside the workspace would sail through it. Canonicalize
+        // both sides and re-verify containment — mirrors the guard pattern in
+        // `tool_result_retrieval`. If either side can't be canonicalized
+        // (workspace missing is a caller bug; file missing fails the read
+        // below), fall back to the lexical check that already ran.
+        if let Ok(canonical_workspace) = tokio::fs::canonicalize(&context.workspace).await
+            && let Ok(canonical_resolved) = tokio::fs::canonicalize(&resolved_path).await
+            && !canonical_resolved.starts_with(&canonical_workspace)
+        {
+            return Err(ToolError::execution_failed(
+                "image_path must be a relative path within the workspace and cannot escape it.",
+            ));
+        }
         let (image_data, mime_type) = Self::read_image_file(&resolved_path).await?;
 
         let payload = self.request_payload(prompt, &image_data, &mime_type);
@@ -377,6 +392,32 @@ mod tests {
             .execute(json!({"image_path": "../escape.png"}), &ctx)
             .await
             .expect_err("`..`-traversal must reject");
+        assert!(
+            err.to_string()
+                .contains("relative path within the workspace"),
+            "error must call out the workspace boundary; got {err}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn execute_rejects_symlink_escape() {
+        // Lexically the path stays inside the workspace, but the leaf is a
+        // symlink to a file outside it — the canonicalize containment
+        // re-check must reject before any file bytes are read.
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("mkdir workspace");
+        let outside = tmp.path().join("outside-secret.png");
+        std::fs::write(&outside, b"secret").expect("write outside file");
+        std::os::unix::fs::symlink(&outside, workspace.join("leak.png")).expect("symlink");
+
+        let ctx = ToolContext::new(workspace.to_path_buf());
+        let tool = ImageAnalyzeTool::new(fake_config());
+        let err = tool
+            .execute(json!({"image_path": "leak.png"}), &ctx)
+            .await
+            .expect_err("symlink escape must reject");
         assert!(
             err.to_string()
                 .contains("relative path within the workspace"),

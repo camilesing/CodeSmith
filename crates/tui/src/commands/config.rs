@@ -704,14 +704,60 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
     set_config_value(app, &key, value, should_save)
 }
 
-/// Select the TUI operating mode.
+/// Select the TUI operating mode, or apply a named runtime mode.
+///
+/// - `/mode` — open the picker (app modes + catalog modes)
+/// - `/mode agent|plan|yolo|1|2|3` — legacy app-mode switch
+/// - `/mode list` — list the mode catalog (built-in + user + project)
+/// - `/mode <name>` — apply a named mode (minimal, maximal, …)
+/// - `/mode off` — clear the mode layer (dials keep current values)
+/// - `/mode export [name]` — write current dials to a shareable mode file
 pub fn mode(app: &mut App, arg: Option<&str>) -> CommandResult {
     let Some(arg) = arg.filter(|value| !value.trim().is_empty()) else {
         return CommandResult::action(AppAction::OpenModePicker);
     };
-    match parse_mode_arg(arg) {
-        Some(mode) => CommandResult::message(switch_mode(app, mode)),
-        None => CommandResult::error("Usage: /mode [agent|plan|yolo|1|2|3]"),
+
+    match arg.trim() {
+        "list" | "ls" => {
+            let catalog = crate::modes::catalog_for(app);
+            CommandResult::message(crate::modes::describe(&catalog, app.active_mode.as_deref()))
+        }
+        "off" | "none" => {
+            let summary = crate::modes::clear(app);
+            CommandResult::message(summary.render())
+        }
+        sub if sub.starts_with("export") => {
+            let name = sub
+                .strip_prefix("export")
+                .map(str::trim)
+                .filter(|n| !n.is_empty());
+            let (name, force) = match name {
+                Some(rest) => match rest.strip_prefix('!') {
+                    Some(stripped) => (Some(stripped.trim()), true),
+                    None => (Some(rest), false),
+                },
+                None => (None, false),
+            };
+            match crate::modes::export(app, name, force) {
+                Ok(msg) => CommandResult::message(msg),
+                Err(err) => CommandResult::error(err.to_string()),
+            }
+        }
+        legacy => {
+            // Catalog modes win over legacy app-mode tokens so `/mode plan`
+            // applies the full mode delta (app mode + memory + any tools),
+            // not just the AppMode switch. Unknown names fall through to
+            // the legacy parser for agent/yolo/1/2/3, then error.
+            match crate::modes::apply(app, legacy) {
+                Ok(summary) => CommandResult::message(summary.render()),
+                Err(_) => match parse_mode_arg(legacy) {
+                    Some(mode) => CommandResult::message(switch_mode(app, mode)),
+                    None => CommandResult::error(format!(
+                        "unknown mode '{legacy}'. Usage: /mode [list|agent|plan|yolo|<name>|off|export <name>]"
+                    )),
+                },
+            }
+        }
     }
 }
 
@@ -1519,6 +1565,112 @@ mod tests {
         let result = mode(&mut app, Some("fast"));
         assert!(result.is_error);
         assert!(result.message.unwrap().contains("Usage: /mode"));
+    }
+
+    /// Guards + redirects settings/config persistence so mode switches in
+    /// tests never write to the real user home.
+    fn guard_settings_env() -> (
+        std::sync::MutexGuard<'static, ()>,
+        crate::test_support::EnvVarGuard,
+        tempfile::TempDir,
+    ) {
+        let lock = lock_test_env();
+        let dir = tempfile::tempdir().unwrap();
+        let guard = crate::test_support::EnvVarGuard::set(
+            "CODESMITH_CONFIG_PATH",
+            dir.path().join("config.toml"),
+        );
+        (lock, guard, dir)
+    }
+
+    #[test]
+    fn test_mode_list_describes_catalog() {
+        let mut app = create_test_app();
+        let result = mode(&mut app, Some("list"));
+        assert!(!result.is_error);
+        let msg = result.message.unwrap();
+        assert!(msg.contains("minimal"), "{msg}");
+        assert!(msg.contains("maximal"), "{msg}");
+        assert!(msg.contains("built-in"), "{msg}");
+    }
+
+    #[test]
+    fn test_mode_applies_named_mode_minimal() {
+        let _env = guard_settings_env();
+        let mut app = create_test_app();
+        app.reasoning_effort = crate::tui::app::ReasoningEffort::Max;
+        let result = mode(&mut app, Some("minimal"));
+        assert!(!result.is_error);
+        assert_eq!(app.active_mode.as_deref(), Some("minimal"));
+        assert_eq!(app.reasoning_effort, crate::tui::app::ReasoningEffort::Off);
+        assert!(app.active_allowed_tools.is_some());
+    }
+
+    #[test]
+    fn test_mode_off_clears_layer() {
+        let _env = guard_settings_env();
+        let mut app = create_test_app();
+        let _ = mode(&mut app, Some("minimal"));
+        let result = mode(&mut app, Some("off"));
+        assert!(!result.is_error);
+        assert!(app.active_mode.is_none());
+        assert!(app.active_allowed_tools.is_none());
+    }
+
+    #[test]
+    fn test_mode_plan_applies_catalog_not_legacy_switch() {
+        let _env = guard_settings_env();
+        let mut app = create_test_app();
+        let _ = mode(&mut app, Some("agent"));
+        let result = mode(&mut app, Some("plan"));
+        assert!(!result.is_error);
+        // The catalog plan mode wins over the bare AppMode switch: the
+        // mode layer is recorded and notebook memory is dialled in.
+        assert_eq!(app.mode, AppMode::Plan);
+        assert_eq!(app.active_mode.as_deref(), Some("plan"));
+        assert!(app.use_memory);
+        assert!(!app.kod_enabled);
+    }
+
+    #[test]
+    fn test_mode_legacy_names_still_work() {
+        let _env = guard_settings_env();
+        let mut app = create_test_app();
+        let _ = mode(&mut app, Some("agent"));
+        assert_eq!(app.mode, AppMode::Agent);
+        let result = mode(&mut app, Some("yolo"));
+        assert!(result.message.unwrap().contains("YOLO"));
+        assert_eq!(app.mode, AppMode::Yolo);
+        assert!(
+            app.active_mode.is_none(),
+            "legacy switch must not set a named mode"
+        );
+    }
+
+    #[test]
+    fn test_mode_export_writes_shareable_file() {
+        let _env = guard_settings_env();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = create_test_app();
+        app.workspace = dir.path().to_path_buf();
+        let result = mode(&mut app, Some("export my-focus"));
+        assert!(!result.is_error, "{:?}", result.message);
+        let path = dir.path().join(".codesmith/modes/my-focus.toml");
+        assert!(path.exists());
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(body.contains("name = \"my-focus\""), "{body}");
+
+        // The exported file becomes a switchable project mode.
+        let result = mode(&mut app, Some("my-focus"));
+        assert!(!result.is_error, "{:?}", result.message);
+        assert_eq!(app.active_mode.as_deref(), Some("my-focus"));
+    }
+
+    #[test]
+    fn test_mode_export_requires_name() {
+        let mut app = create_test_app();
+        let result = mode(&mut app, Some("export"));
+        assert!(result.is_error);
     }
 
     #[test]

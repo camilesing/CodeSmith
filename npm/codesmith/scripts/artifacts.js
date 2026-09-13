@@ -91,7 +91,7 @@ function releaseBaseUrl(version, repo = "camilesing/CodeSmith") {
   // When CODESMITH_USE_CNB_MIRROR is set, use the CNB (China-friendly)
   // mirror that already builds and publishes binary release assets.
   if (process.env.CODESMITH_USE_CNB_MIRROR) {
-    return `https://cnb.cool/camilesing/CodeSmith/-/releases/v${version}/`;
+    return `https://cnb.cool/${repo}/-/releases/v${version}/`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/`;
 }

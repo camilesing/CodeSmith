@@ -198,7 +198,7 @@ Tool implementations are split between the TUI (host-coupled tools) and
 - **`purge.rs`** - Agent-driven context purging (surgical message removal/rewriting)
 - **`pricing.rs`** - Cost estimation
 - **`prompts.rs`** - Prompt loading shims (assembled system prompts live in `crates/agent-runtime/src/prompts.rs` + `prompts/` assets: base constitution, mode deltas, personality overlays, approval policies)
-- **`project_doc.rs`** / **`project_context.rs`** - Project documentation handling
+- **`project_context.rs`** - Project documentation handling
 - **`session_manager.rs`** - Session serialization
 - **`runtime_api.rs`** - HTTP/SSE runtime API (`codesmith serve --http`)
 - **`runtime_threads.rs`** - Durable thread/turn/item store + replayable event timeline

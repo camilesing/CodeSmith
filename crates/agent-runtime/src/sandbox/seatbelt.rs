@@ -48,6 +48,10 @@ const SEATBELT_BASE_POLICY: &str = r#"
 (deny default)
 
 ; Core process operations
+; process-exec is intentionally unrestricted: Agent mode runs arbitrary
+; developer tooling (cargo, npm, git, curl-style helpers) inside the
+; sandbox, and any subpath/literal filter would break that contract. The
+; filesystem-write rules remain the actual containment boundary.
 (allow process-exec)
 (allow process-fork)
 (allow signal (target same-sandbox))
@@ -82,17 +86,22 @@ const SEATBELT_BASE_POLICY: &str = r#"
 (allow file-read* (literal "/dev/random"))
 (allow file-ioctl (literal "/dev/dtracehelper"))
 
-; Mach IPC (needed by many system services)
+; Mach IPC — intentionally unrestricted: macOS CLI tools have hard-to-enumerate
+; implicit Mach dependencies (DNS resolution, os_log, system configuration).
+; Tightening this to a service whitelist is a known follow-up that requires
+; real-world regression testing on macOS.
 (allow mach-lookup)
 "#;
 
 /// Network access policy additions.
+///
+/// Outbound-only by design: `SandboxPolicy::has_network_access` is documented
+/// as "whether outbound network connections are permitted", so inbound
+/// listeners and port binds are never granted here.
 const SEATBELT_NETWORK_POLICY: &str = r"
-; Network access
+; Network access (outbound only — matches the policy's contract)
 (allow network-outbound)
-(allow network-inbound)
 (allow system-socket)
-(allow network-bind)
 ";
 
 /// Check if sandbox-exec is available and permitted on this system.
@@ -440,7 +449,10 @@ mod tests {
         let result = generate_policy(&policy, cwd);
 
         assert!(result.contains("network-outbound"));
-        assert!(result.contains("network-inbound"));
+        // The policy only promises outbound connectivity; inbound listeners
+        // and port binds must never be granted.
+        assert!(!result.contains("network-inbound"));
+        assert!(!result.contains("network-bind"));
     }
 
     #[test]

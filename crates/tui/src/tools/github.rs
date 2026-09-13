@@ -1,7 +1,8 @@
 //! GitHub context and guarded write tools backed by the `gh` CLI.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use tokio::process::Command;
 
 use crate::dependencies::ExternalTool;
 use async_trait::async_trait;
@@ -71,8 +72,8 @@ impl ToolSpec for GithubIssueContextTool {
             "number,title,state,author,labels,assignees,milestone,body,url,createdAt,updatedAt"
         };
         let number_s = number.to_string();
-        let raw = run_gh_json(context, &["issue", "view", &number_s, "--json", fields])?;
-        let shaped = shape_large_text(context, raw, "issue_body", BODY_ARTIFACT_THRESHOLD)?;
+        let raw = run_gh_json(context, &["issue", "view", &number_s, "--json", fields]).await?;
+        let shaped = shape_large_text(context, raw, "issue_body", BODY_ARTIFACT_THRESHOLD).await?;
         let mut result = ToolResult::json(&json!({
             "summary": format!("Issue #{number}: {}", shaped["title"].as_str().unwrap_or("")),
             "issue": shaped,
@@ -129,12 +130,14 @@ impl ToolSpec for GithubPrContextTool {
                 "--json",
                 "number,title,state,author,body,comments,reviews,reviewDecision,statusCheckRollup,baseRefName,headRefName,headRefOid,baseRefOid,files,url,createdAt,updatedAt",
             ],
-        )?;
-        let mut shaped = shape_large_text(context, raw, "pr_body", BODY_ARTIFACT_THRESHOLD)?;
+        )
+        .await?;
+        let mut shaped = shape_large_text(context, raw, "pr_body", BODY_ARTIFACT_THRESHOLD).await?;
         if optional_bool(&input, "include_diff", false) {
-            let diff = run_gh_text(context, &["pr", "diff", &number_s, "--patch"])?;
+            let diff = run_gh_text(context, &["pr", "diff", &number_s, "--patch"]).await?;
             let diff_ref =
-                write_artifact_if_needed(context, "pr_diff", &diff, DIFF_ARTIFACT_THRESHOLD)?;
+                write_artifact_if_needed(context, "pr_diff", &diff, DIFF_ARTIFACT_THRESHOLD)
+                    .await?;
             shaped["diff_summary"] = json!(summarize(&diff, 900));
             shaped["diff_artifact"] = json!(diff_ref);
         }
@@ -200,14 +203,15 @@ impl ToolSpec for GithubCommentTool {
         }
         let subcmd = if target == "pr" { "pr" } else { "issue" };
         let number_s = number.to_string();
-        run_gh_text(context, &[subcmd, "comment", &number_s, "--body", body])?;
+        run_gh_text(context, &[subcmd, "comment", &number_s, "--body", body]).await?;
         let metadata = github_event_metadata(
             "comment",
             target,
             number,
             summarize(body, 240),
             None,
-            write_artifact_if_needed(context, "github_comment", body, BODY_ARTIFACT_THRESHOLD)?,
+            write_artifact_if_needed(context, "github_comment", body, BODY_ARTIFACT_THRESHOLD)
+                .await?,
         );
         Ok(
             ToolResult::success(format!("Commented on {target} #{number}."))
@@ -239,7 +243,7 @@ impl ToolSpec for GithubCloseIssueTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        close_github_thread(input, context, GithubCloseTarget::Issue)
+        close_github_thread(input, context, GithubCloseTarget::Issue).await
     }
 }
 
@@ -266,7 +270,7 @@ impl ToolSpec for GithubClosePrTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        close_github_thread(input, context, GithubCloseTarget::Pr)
+        close_github_thread(input, context, GithubCloseTarget::Pr).await
     }
 }
 
@@ -331,7 +335,7 @@ fn close_input_schema() -> Value {
     })
 }
 
-fn close_github_thread(
+async fn close_github_thread(
     input: Value,
     context: &ToolContext,
     target: GithubCloseTarget,
@@ -357,13 +361,25 @@ fn close_github_thread(
     let subcmd = target.cli_subcommand();
     let number_s = number.to_string();
     if let Some(comment) = optional_str(&input, "comment") {
-        run_gh_text(context, &[subcmd, "comment", &number_s, "--body", comment])?;
+        run_gh_text(context, &[subcmd, "comment", &number_s, "--body", comment]).await?;
     }
     let close_args: Vec<&str> = match target {
         GithubCloseTarget::Issue => vec!["issue", "close", &number_s, "--reason", "completed"],
         GithubCloseTarget::Pr => vec!["pr", "close", &number_s],
     };
-    run_gh_text(context, &close_args)?;
+    run_gh_text(context, &close_args).await?;
+    let comment_artifact = match optional_str(&input, "comment") {
+        Some(comment) => write_artifact_if_needed(
+            context,
+            "github_close_comment",
+            comment,
+            BODY_ARTIFACT_THRESHOLD,
+        )
+        .await
+        .ok()
+        .flatten(),
+        None => None,
+    };
     let metadata = github_event_metadata(
         "close",
         target.metadata_target(),
@@ -373,17 +389,7 @@ fn close_github_thread(
             target.summary_subject()
         ),
         None,
-        optional_str(&input, "comment")
-            .and_then(|comment| {
-                write_artifact_if_needed(
-                    context,
-                    "github_close_comment",
-                    comment,
-                    BODY_ARTIFACT_THRESHOLD,
-                )
-                .ok()
-            })
-            .flatten(),
+        comment_artifact,
     );
     Ok(
         ToolResult::success(format!("Closed {} #{number}.", target.display()))
@@ -403,11 +409,12 @@ fn gh_bin() -> String {
     DEFAULT_GH.to_string()
 }
 
-fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, ToolError> {
+async fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, ToolError> {
     let out = Command::new(gh_bin())
         .args(args)
         .current_dir(&context.workspace)
         .output()
+        .await
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 ToolError::not_available("gh CLI not found; install it or set DEEPSEEK_GH_BIN")
@@ -425,8 +432,8 @@ fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, ToolError
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-fn run_gh_json(context: &ToolContext, args: &[&str]) -> Result<Value, ToolError> {
-    let text = run_gh_text(context, args)?;
+async fn run_gh_json(context: &ToolContext, args: &[&str]) -> Result<Value, ToolError> {
+    let text = run_gh_text(context, args).await?;
     serde_json::from_str(&text).map_err(|e| ToolError::execution_failed(e.to_string()))
 }
 
@@ -451,7 +458,7 @@ fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-fn shape_large_text(
+async fn shape_large_text(
     context: &ToolContext,
     mut value: Value,
     label: &str,
@@ -464,7 +471,7 @@ fn shape_large_text(
     if let Some(body) = body
         && body.len() > threshold
     {
-        let artifact = write_artifact_if_needed(context, label, &body, threshold)?;
+        let artifact = write_artifact_if_needed(context, label, &body, threshold).await?;
         value["body_summary"] = json!(summarize(&body, 900));
         value["body_artifact"] = json!(artifact);
         value["body"] = json!(summarize(&body, 1200));
@@ -472,7 +479,7 @@ fn shape_large_text(
     Ok(value)
 }
 
-fn write_artifact_if_needed(
+async fn write_artifact_if_needed(
     context: &ToolContext,
     label: &str,
     content: &str,
@@ -494,14 +501,16 @@ fn write_artifact_if_needed(
         return Ok(None);
     };
     let dir = data_dir.join("artifacts").join(task_id);
-    std::fs::create_dir_all(&dir)
+    tokio::fs::create_dir_all(&dir)
+        .await
         .map_err(|e| ToolError::execution_failed(format!("create artifact dir: {e}")))?;
     let absolute = dir.join(format!(
         "{}_{}.txt",
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
         sanitize_filename(label)
     ));
-    std::fs::write(&absolute, content)
+    tokio::fs::write(&absolute, content)
+        .await
         .map_err(|e| ToolError::execution_failed(format!("write artifact: {e}")))?;
     Ok(Some(
         absolute

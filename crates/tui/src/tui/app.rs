@@ -1023,6 +1023,14 @@ pub struct App {
     /// Active tool restriction from custom slash command frontmatter.
     /// `None` means the current turn may use the normal tool set.
     pub active_allowed_tools: Option<Vec<String>>,
+    /// Active tool denylist from the current mode's `tools.exclude`.
+    /// Applied after `active_allowed_tools`; empty/`None` excludes nothing.
+    pub active_blocked_tools: Option<Vec<String>>,
+    /// Name of the active runtime mode (`/mode <name>` / `--mode <name>`),
+    /// if any. Modes are named delta bundles defined in
+    /// `codesmith_config::modes`; `None` means no mode layer is active and
+    /// every dial keeps its individual setting.
+    pub active_mode: Option<String>,
     pub history: Vec<HistoryCell>,
     pub history_version: u64,
     /// Per-cell revision counter, kept in lockstep with `history`.
@@ -1840,6 +1848,8 @@ impl App {
             hunt: HuntState::default(),
             session: SessionState::default(),
             active_allowed_tools: None,
+            active_blocked_tools: None,
+            active_mode: None,
             history: Vec::new(),
             history_version: 0,
             history_revisions: Vec::new(),
@@ -1952,6 +1962,13 @@ impl App {
             shell_manager: shell_manager.clone(),
             runtime_services: RuntimeToolServices {
                 shell_manager: Some(wrap_shell_manager(shell_manager)),
+                // The interactive session IS the team lead whenever a team
+                // exists. Identity is set explicitly so team protocol tools
+                // can authorize lead-only actions; contexts that genuinely
+                // have no identity (background threads, UI helper contexts)
+                // keep `team_sender: None` and are treated as unknown
+                // senders rather than silently attributed to the lead.
+                team_sender: Some(crate::tools::team::team_lead_name().to_string()),
                 ..RuntimeToolServices::default()
             },
             index_service: None,

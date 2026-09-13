@@ -127,7 +127,7 @@ pub fn read_team_file(team_name: &str) -> anyhow::Result<TeamFile> {
 pub fn write_team_file(team_file: &TeamFile) -> anyhow::Result<()> {
     let path = team_config_path(&team_file.name)?;
     let json = serde_json::to_string_pretty(team_file)?;
-    fs::write(&path, json)?;
+    crate::utils::write_atomic(&path, json.as_bytes())?;
     Ok(())
 }
 

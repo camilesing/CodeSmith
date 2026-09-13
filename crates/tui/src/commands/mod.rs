@@ -375,7 +375,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "mode",
         aliases: &["jihua", "zidong"],
-        usage: "/mode [agent|plan|yolo|1|2|3]",
+        usage: "/mode [list|agent|plan|yolo|<name>|off|export <name>]",
         description_id: MessageId::CmdModeDescription,
     },
     CommandInfo {

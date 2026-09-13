@@ -22,11 +22,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_RS = ROOT / "crates" / "config" / "src" / "lib.rs"
 TUI_CONFIG_RS = ROOT / "crates" / "tui" / "src" / "config.rs"
+# The ApiProvider enum/impl moved to agent-runtime during the engine-closure
+# extraction; crates/tui/src/config.rs only re-exports it now.
+AGENT_RUNTIME_CONFIG_RS = ROOT / "crates" / "agent-runtime" / "src" / "config_types.rs"
 AGENT_RS = ROOT / "crates" / "agent" / "src" / "lib.rs"
 PROVIDERS_MD = ROOT / "docs" / "PROVIDERS.md"
 
 
-API_PROVIDER_ONLY_IDS = {"deepseek-cn"}
+# ApiProvider IDs that legitimately exist outside ProviderKind. Empty since the
+# legacy `deepseek-cn` variant was folded onto `deepseek` (§B3 slice 52); the
+# `deepseek-cn` spellings survive only as parse aliases, not as an enum variant.
+API_PROVIDER_ONLY_IDS: set[str] = set()
 
 
 def read(path: Path) -> str:
@@ -81,14 +87,16 @@ def provider_kind_ids(config_rs: str) -> dict[str, str]:
     return {variant: provider_id for variant, provider_id in pairs}
 
 
-def api_provider_ids(tui_config_rs: str) -> dict[str, str]:
+def api_provider_ids(config_types_rs: str) -> dict[str, str]:
     impl_start = require_index(
-        tui_config_rs, "impl ApiProvider", "crates/tui/src/config.rs"
+        config_types_rs,
+        "impl ApiProvider",
+        "crates/agent-runtime/src/config_types.rs",
     )
     block = extract_match_block(
-        tui_config_rs,
+        config_types_rs,
         "pub fn as_str(self) -> &'static str",
-        "crates/tui/src/config.rs",
+        "crates/agent-runtime/src/config_types.rs",
         impl_start,
     )
     pairs = re.findall(r"Self::(\w+)\s*=>\s*\"([^\"]+)\"", block)
@@ -199,12 +207,13 @@ def main() -> int:
     try:
         config_rs = read(CONFIG_RS)
         tui_config_rs = read(TUI_CONFIG_RS)
+        agent_runtime_config_rs = read(AGENT_RUNTIME_CONFIG_RS)
         agent_rs = read(AGENT_RS)
         providers_md = read(PROVIDERS_MD)
 
         variant_to_id = provider_kind_ids(config_rs)
         canonical_ids = set(variant_to_id.values())
-        live_api_provider_ids = set(api_provider_ids(tui_config_rs).values())
+        live_api_provider_ids = set(api_provider_ids(agent_runtime_config_rs).values())
         expected_tables = {provider_id.replace("-", "_") for provider_id in canonical_ids}
 
         errors: list[str] = []

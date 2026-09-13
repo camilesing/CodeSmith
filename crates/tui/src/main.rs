@@ -54,12 +54,12 @@ mod mcp;
 mod mcp_server;
 mod memory;
 mod models;
+mod modes;
 mod network_policy;
 mod palette;
 mod prefix_cache;
 mod pricing;
 mod project_context;
-mod project_doc;
 mod prompts;
 mod purge;
 pub mod repl;
@@ -155,6 +155,12 @@ struct Cli {
     /// Config profile name
     #[arg(long)]
     profile: Option<String>,
+
+    /// Named runtime mode (minimal | balanced | maximal | plan | <custom>).
+    /// Modes are delta bundles of dials defined in ~/.codesmith/modes/ or
+    /// .codesmith/modes/; see /mode list. Overrides `mode` in config.toml.
+    #[arg(long)]
+    mode: Option<String>,
 
     /// Workspace directory for file operations
     #[arg(short, long)]
@@ -861,15 +867,23 @@ enum SandboxCommand {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     configure_windows_console_utf8();
 
     // ── Process hardening (#2183) ─────────────────────────────────────────
-    // MUST run before Tokio is booted and before any threads are spawned.
-    // See crates/tui/src/sandbox/process_hardening.rs for ordering rationale.
+    // MUST run before Tokio is booted and before any threads are spawned:
+    // `#[tokio::main]` builds the multi-thread runtime (and its worker
+    // threads) before the async body runs, so hardening from inside the
+    // async fn would be too late. See
+    // crates/agent-runtime/src/sandbox/process_hardening.rs for ordering
+    // rationale.
     crate::sandbox::process_hardening::apply_process_hardening();
 
+    real_main()
+}
+
+#[tokio::main]
+async fn real_main() -> Result<()> {
     // Set up process panic hook before anything else — writes crash dumps
     // to ~/.codesmith/crashes/ even if the panic happens before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's
@@ -5146,6 +5160,13 @@ async fn run_interactive(
     if should_load_project_config(cli.no_project_config, &boundary) {
         merge_project_config(&mut merged_config, &workspace);
     }
+    // Named mode: CLI --mode wins over `mode = "..."` in config.toml. Fold
+    // config-bound dials (provider/features/memory/sandbox) in before the
+    // engine is built; the TUI applies the live dials after App creation.
+    if cli.mode.is_some() {
+        merged_config.mode = cli.mode.clone();
+    }
+    let mode_definition = crate::modes::apply_config_mode(&mut merged_config, &workspace);
     let config = &merged_config;
     // Re-apply the `telemetry` flag from the merged (user + project) config so
     // the durable `enabled` state honours the project overlay (Plan 06 / 6.2).
@@ -5165,10 +5186,21 @@ async fn run_interactive(
     }
 
     let model = config.default_model();
+    let mut model = model;
     let max_subagents = cli.max_subagents.map_or_else(
         || config.max_subagents(),
         |value| value.clamp(1, MAX_SUBAGENTS),
     );
+    let mut max_subagents = max_subagents;
+
+    if let Some(definition) = &mode_definition {
+        if let Some(mode_model) = &definition.model {
+            model = mode_model.clone();
+        }
+        if let Some(cap) = definition.max_subagents {
+            max_subagents = cap.clamp(0, MAX_SUBAGENTS);
+        }
+    }
     let use_alt_screen = should_use_alt_screen(cli, config);
     let use_mouse_capture = should_use_mouse_capture(cli, config, use_alt_screen);
     let use_bracketed_paste = crate::settings::Settings::load()
@@ -5629,6 +5661,7 @@ async fn run_exec_agent(
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
         allowed_tools: None,
+        blocked_tools: Vec::new(),
         locale_tag: crate::localization::resolve_locale(&settings.locale)
             .tag()
             .to_string(),
@@ -5695,6 +5728,7 @@ async fn run_exec_agent(
             model: effective_model.clone(),
             goal_objective: None,
             allowed_tools: None,
+            blocked_tools: Vec::new(),
             reasoning_effort: effective_reasoning_effort,
             reasoning_effort_auto: auto_model,
             auto_model,
@@ -6202,6 +6236,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
         allowed_tools: allowed_tools.clone(),
+        blocked_tools: Vec::new(),
         locale_tag: crate::localization::resolve_locale(&settings.locale)
             .tag()
             .to_string(),
@@ -6237,6 +6272,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
             model: effective_model.clone(),
             goal_objective: None,
             allowed_tools: None,
+            blocked_tools: Vec::new(),
             reasoning_effort: effective_reasoning_effort,
             reasoning_effort_auto: route.auto_model,
             auto_model: route.auto_model,

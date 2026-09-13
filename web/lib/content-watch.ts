@@ -10,10 +10,11 @@
  *                      whether any specific claims on the site look out of
  *                      date, writes review-required drafts.
  *
- * Both surface as drafts in CURATED_KV under `draft:linkcheck:<...>` and
- * `draft:semantic-drift:<...>`, picked up by the existing /admin listing.
+ * Both surface as drafts in CURATED_KV under `draft:triage:<...>` (they reuse
+ * the existing "triage" draft type via saveDraft), picked up by the /admin listing.
  */
-import { agentChat, saveDraft, type AgentDraft, type LlmEnv, VOICE_CONSTRAINTS } from "./community-agent";
+import { agentChat, draftKey, saveDraft, type AgentDraft, type LlmEnv, VOICE_CONSTRAINTS } from "./community-agent";
+import { GITHUB_REPO, GITHUB_REPO_URL } from "./constants";
 
 interface KVNamespace {
   get(k: string): Promise<string | null>;
@@ -42,16 +43,16 @@ function dsEnv(env: WatchEnv): LlmEnv {
 // Targets to probe daily. For registries that block bot HEAD/GET (npm, crates.io)
 // we hit the public JSON API instead — same upstream, doesn't 403.
 const LINK_TARGETS: { url: string; label: string }[] = [
-  { url: "https://github.com/camilesing/CodeSmith", label: "Main repo" },
-  { url: "https://github.com/camilesing/CodeSmith/issues", label: "Issues" },
-  { url: "https://github.com/camilesing/CodeSmith/pulls", label: "Pull Requests" },
-  { url: "https://github.com/camilesing/CodeSmith/discussions", label: "Discussions" },
-  { url: "https://github.com/camilesing/CodeSmith/releases", label: "Releases" },
-  { url: "https://github.com/camilesing/CodeSmith/blob/main/LICENSE", label: "License file" },
-  { url: "https://github.com/camilesing/CodeSmith/blob/main/CODE_OF_CONDUCT.md", label: "Code of Conduct" },
-  { url: "https://github.com/camilesing/CodeSmith/blob/main/SECURITY.md", label: "Security policy" },
-  { url: "https://github.com/camilesing/CodeSmith/blob/main/CONTRIBUTING.md", label: "Contributing guide" },
-  { url: "https://github.com/camilesing/CodeSmith/blob/main/.github/PULL_REQUEST_TEMPLATE.md", label: "PR template" },
+  { url: GITHUB_REPO_URL, label: "Main repo" },
+  { url: `${GITHUB_REPO_URL}/issues`, label: "Issues" },
+  { url: `${GITHUB_REPO_URL}/pulls`, label: "Pull Requests" },
+  { url: `${GITHUB_REPO_URL}/discussions`, label: "Discussions" },
+  { url: `${GITHUB_REPO_URL}/releases`, label: "Releases" },
+  { url: `${GITHUB_REPO_URL}/blob/main/LICENSE`, label: "License file" },
+  { url: `${GITHUB_REPO_URL}/blob/main/CODE_OF_CONDUCT.md`, label: "Code of Conduct" },
+  { url: `${GITHUB_REPO_URL}/blob/main/SECURITY.md`, label: "Security policy" },
+  { url: `${GITHUB_REPO_URL}/blob/main/CONTRIBUTING.md`, label: "Contributing guide" },
+  { url: `${GITHUB_REPO_URL}/blob/main/.github/PULL_REQUEST_TEMPLATE.md`, label: "PR template" },
   { url: "https://github.com/camilesing/homebrew-codesmith", label: "Homebrew tap" },
   { url: "https://github.com/sponsors/camilesing", label: "Support link (GitHub Sponsors)" },
   { url: "https://registry.npmjs.org/codesmith", label: "npm package (registry API)" },
@@ -97,13 +98,9 @@ export async function runLinkCheck(env: WatchEnv): Promise<{ ok: boolean; checke
     results,
   }), { expirationTtl: 60 * 60 * 24 * 14 });
 
-  // Write drafts ONLY for new breakages — dedup by URL on the open-draft list.
+  // Write drafts ONLY for new breakages — dedup on the exact key saveDraft writes.
   for (const b of broken) {
     const id = b.url.replace(/[^a-z0-9]+/gi, "-").slice(0, 80);
-    const key = `draft:linkcheck:${id}`;
-    const existing = await env.CURATED_KV.get(key);
-    if (existing) continue; // already flagged; don't churn
-
     const draft: AgentDraft = {
       id,
       type: "triage", // reuse existing draft type so /admin renders it
@@ -113,6 +110,9 @@ export async function runLinkCheck(env: WatchEnv): Promise<{ ok: boolean; checke
       generatedAt: new Date().toISOString(),
       posted: false,
     };
+    const existing = await env.CURATED_KV.get(draftKey(draft.type, draft.id));
+    if (existing) continue; // already flagged; don't churn
+
     await saveDraft(env.CURATED_KV, draft);
   }
 
@@ -228,8 +228,8 @@ export async function runSemanticDrift(env: WatchEnv): Promise<{ ok: boolean; dr
 
   // Fetch CHANGELOG (truncated), recent commits, and live homepage HTML.
   const [changelog, commits, homepageHtml, docsHtml] = await Promise.all([
-    fetch("https://raw.githubusercontent.com/camilesing/CodeSmith/main/CHANGELOG.md", { headers: ghHeaders }).then((r) => r.ok ? r.text() : "").catch(() => ""),
-    fetch("https://api.github.com/repos/camilesing/CodeSmith/commits?per_page=30", { headers: ghHeaders }).then((r) => r.ok ? r.json() as Promise<{ commit: { message: string }; sha: string }[]> : []).catch(() => []),
+    fetch(`https://raw.githubusercontent.com/${GITHUB_REPO}/main/CHANGELOG.md`, { headers: ghHeaders }).then((r) => r.ok ? r.text() : "").catch(() => ""),
+    fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits?per_page=30`, { headers: ghHeaders }).then((r) => r.ok ? r.json() as Promise<{ commit: { message: string }; sha: string }[]> : []).catch(() => []),
     fetch("https://codesmith.net/en", { headers: { "User-Agent": "codesmith-watch" } }).then((r) => r.ok ? r.text() : "").catch(() => ""),
     fetch("https://codesmith.net/en/docs", { headers: { "User-Agent": "codesmith-watch" } }).then((r) => r.ok ? r.text() : "").catch(() => ""),
   ]);
@@ -283,10 +283,6 @@ ${docsText}`;
   let drafted = 0;
   for (const d of drifts) {
     const id = `${d.page}-${d.claim.slice(0, 40).replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`.slice(0, 80);
-    const key = `draft:semantic-drift:${id}`;
-    const existing = await env.CURATED_KV.get(key);
-    if (existing) continue;
-
     const body = `Page: **${d.page}**\n\nClaim that may be drifted:\n> ${d.claim}\n\nEvidence:\n> ${d.evidence}\n\nSuggested replacement:\n> ${d.suggested_replacement}\n\n— drafted by community assistant, pending maintainer review`;
     const draft: AgentDraft = {
       id,
@@ -297,6 +293,10 @@ ${docsText}`;
       generatedAt: new Date().toISOString(),
       posted: false,
     };
+    // Dedup on the exact key saveDraft writes.
+    const existing = await env.CURATED_KV.get(draftKey(draft.type, draft.id));
+    if (existing) continue;
+
     await saveDraft(env.CURATED_KV, draft);
     drafted++;
   }

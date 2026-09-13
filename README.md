@@ -31,6 +31,19 @@ codesmith                                # interactive TUI
 
 Modes — **Plan** (read-only) / **Agent** (default, gated) / **YOLO** (auto-approve): [docs/MODES.md](docs/MODES.md) · other providers: [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
+## One Binary, Many Modes
+
+Don't write extensions to get the tool you want — turn dials. A *mode* is one TOML file bundling tool surface, thinking depth, memory persistence, approval posture, sub-agent cap, and model into a switchable preset:
+
+```bash
+codesmith --mode minimal   # core file+shell tools, thinking off, zero memory
+codesmith --mode maximal   # full surface, deepest thinking, 20 sub-agents
+/mode plan                 # switch mid-session, no restart
+/mode export my-setup      # snapshot your dials into a shareable file
+```
+
+Four modes ship built-in (`minimal` / `balanced` / `maximal` / `plan`); yours live in `~/.codesmith/modes/` and per-project `.codesmith/modes/` — commit the project ones, that's the sharing story. Memory is a dial like everything else: `goldfish` (no cross-session memory) / `notebook` (only what you explicitly save) / `elephant` (auto memory with budget + decay). Full schema and semantics: [docs/MODES.md](docs/MODES.md).
+
 ## Documentation
 
 Get started: [user guide](docs/GUIDE.md) · [modes & approvals](docs/MODES.md) · [keybindings](docs/KEYBINDINGS.md) · [skills](docs/SKILLS.md) · [memory](docs/MEMORY.md) · [localization](docs/LOCALIZATION.md) · [full command catalog](docs/CLI.md)

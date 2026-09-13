@@ -1,0 +1,14 @@
+# 全能模式 — everything on. / Maximal mode — everything on.
+# 全工具面、最深思考、20 并发子代理、自动记忆。
+name = "maximal"
+description = "Everything on: full tool surface, deepest thinking, 20 sub-agents, auto memory."
+app_mode = "agent"
+reasoning_effort = "max"
+memory_level = "elephant"
+max_subagents = 20
+
+[features]
+subagents = true
+web_search = true
+apply_patch = true
+mcp = true

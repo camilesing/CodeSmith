@@ -5,8 +5,6 @@
 //! sub-agents can maintain their own MEMORY.md without gaining workspace write
 //! privileges.
 
-use std::fs;
-
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -54,7 +52,7 @@ impl ToolSpec for AgentMemoryReadTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path = resolve_agent_memory_tool_path(context, required_str(&input, "path")?)?;
-        let contents = fs::read_to_string(&path).map_err(|err| {
+        let contents = tokio::fs::read_to_string(&path).await.map_err(|err| {
             ToolError::execution_failed(format!("failed to read {}: {err}", path.display()))
         })?;
         let start_line = optional_u64(&input, "start_line", 1).max(1) as usize;
@@ -116,13 +114,13 @@ impl ToolSpec for AgentMemoryWriteTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path = resolve_agent_memory_tool_path(context, required_str(&input, "path")?)?;
         let content = required_str(&input, "content")?;
-        let prior = fs::read_to_string(&path).unwrap_or_default();
+        let prior = tokio::fs::read_to_string(&path).await.unwrap_or_default();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|err| {
+            tokio::fs::create_dir_all(parent).await.map_err(|err| {
                 ToolError::execution_failed(format!("failed to create {}: {err}", parent.display()))
             })?;
         }
-        fs::write(&path, content).map_err(|err| {
+        crate::utils::write_atomic(&path, content.as_bytes()).map_err(|err| {
             ToolError::execution_failed(format!("failed to write {}: {err}", path.display()))
         })?;
         let diff = make_unified_diff(&path.display().to_string(), &prior, content);
@@ -177,7 +175,7 @@ impl ToolSpec for AgentMemoryEditTool {
         if search == replace {
             return Err(ToolError::invalid_input("search and replace are identical"));
         }
-        let contents = fs::read_to_string(&path).map_err(|err| {
+        let contents = tokio::fs::read_to_string(&path).await.map_err(|err| {
             ToolError::execution_failed(format!("failed to read {}: {err}", path.display()))
         })?;
         let count = contents.matches(search).count();
@@ -188,7 +186,7 @@ impl ToolSpec for AgentMemoryEditTool {
             )));
         }
         let updated = contents.replace(search, replace);
-        fs::write(&path, &updated).map_err(|err| {
+        tokio::fs::write(&path, &updated).await.map_err(|err| {
             ToolError::execution_failed(format!("failed to write {}: {err}", path.display()))
         })?;
         let diff = make_unified_diff(&path.display().to_string(), &contents, &updated);

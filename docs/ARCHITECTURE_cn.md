@@ -197,7 +197,7 @@ Chat Completions 驱动 turn。
 - **`purge.rs`** - Agent 驱动的上下文清除（精准的消息移除/改写）
 - **`pricing.rs`** - 成本估算
 - **`prompts.rs`** - 提示词加载 shim（组装后的系统提示词位于 `crates/agent-runtime/src/prompts.rs` + `prompts/` 资产：基础宪法、模式增量、性格叠加、审批策略）
-- **`project_doc.rs`** / **`project_context.rs`** - 项目文档处理
+- **`project_context.rs`** - 项目文档处理
 - **`session_manager.rs`** - 会话序列化
 - **`runtime_api.rs`** - HTTP/SSE 运行时 API（`codesmith serve --http`）
 - **`runtime_threads.rs`** - 持久线程/turn/条目存储 + 可重放的事件时间线

@@ -112,6 +112,46 @@ pub fn build_model_tool_catalog(
     native_tools
 }
 
+/// Apply an allowlist/denylist pair to a built catalog, in place.
+///
+/// `allowed` — when `Some`, only tools whose (case-insensitive) name is
+/// listed survive; `None` keeps the full surface. `blocked` then removes
+/// names regardless of the allowlist, so a mode can express "the default
+/// set minus web tools" without enumerating everything. Core
+/// infrastructure tools (`multi_tool_use.parallel`, tool-search) are never
+/// filtered: they are dispatch machinery the model needs to drive whatever
+/// surface remains, not capabilities of their own.
+pub fn apply_tool_selection(
+    catalog: &mut Vec<Tool>,
+    allowed: Option<&[String]>,
+    blocked: &[String],
+) {
+    if allowed.is_none() && blocked.is_empty() {
+        return;
+    }
+    let allowed_set = allowed.map(|names| {
+        names
+            .iter()
+            .map(|name| name.trim().to_ascii_lowercase())
+            .collect::<HashSet<_>>()
+    });
+    let blocked_set = blocked
+        .iter()
+        .map(|name| name.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    catalog.retain(|tool| {
+        if is_tool_search_tool(&tool.name) || tool.name == MULTI_TOOL_PARALLEL_NAME {
+            return true;
+        }
+        if blocked_set.contains(&tool.name.to_ascii_lowercase()) {
+            return false;
+        }
+        allowed_set
+            .as_ref()
+            .is_none_or(|set| set.contains(&tool.name.to_ascii_lowercase()))
+    });
+}
+
 pub fn ensure_advanced_tooling(
     catalog: &mut Vec<Tool>,
     mode: AppMode,
@@ -793,4 +833,91 @@ pub async fn execute_code_execution_tool(
         success,
         metadata: Some(payload),
     })
+}
+
+#[cfg(test)]
+mod apply_tool_selection_tests {
+    use super::*;
+    use crate::models::Tool;
+
+    fn tool(name: &str) -> Tool {
+        Tool {
+            tool_type: Some("function".to_string()),
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }
+    }
+
+    fn names(catalog: &[Tool]) -> Vec<String> {
+        catalog.iter().map(|t| t.name.clone()).collect()
+    }
+
+    #[test]
+    fn no_selection_is_noop() {
+        let mut catalog = vec![tool("read_file"), tool("exec_shell")];
+        apply_tool_selection(&mut catalog, None, &[]);
+        assert_eq!(names(&catalog), vec!["read_file", "exec_shell"]);
+    }
+
+    #[test]
+    fn allowlist_keeps_only_listed_tools() {
+        let mut catalog = vec![tool("read_file"), tool("exec_shell"), tool("web_search")];
+        let allowed = vec!["read_file".to_string(), "EXEC_SHELL".to_string()];
+        apply_tool_selection(&mut catalog, Some(&allowed), &[]);
+        assert_eq!(names(&catalog), vec!["read_file", "exec_shell"]);
+    }
+
+    #[test]
+    fn denylist_removes_after_allowlist() {
+        let mut catalog = vec![tool("read_file"), tool("exec_shell"), tool("web_search")];
+        let allowed = vec!["read_file".to_string(), "exec_shell".to_string()];
+        let blocked = vec!["exec_shell".to_string()];
+        apply_tool_selection(&mut catalog, Some(&allowed), &blocked);
+        // "the default set minus web tools" pattern: allowlist picks the
+        // base surface, blocked trims within it.
+        assert_eq!(names(&catalog), vec!["read_file"]);
+    }
+
+    #[test]
+    fn denylist_alone_works_without_allowlist() {
+        let mut catalog = vec![tool("read_file"), tool("web_search"), tool("fetch_url")];
+        let blocked = vec!["web_search".to_string(), "fetch_url".to_string()];
+        apply_tool_selection(&mut catalog, None, &blocked);
+        assert_eq!(names(&catalog), vec!["read_file"]);
+    }
+
+    #[test]
+    fn infrastructure_tools_survive_everything() {
+        let mut catalog = vec![
+            tool(MULTI_TOOL_PARALLEL_NAME),
+            tool(TOOL_SEARCH_REGEX_NAME),
+            tool(TOOL_SEARCH_BM25_NAME),
+            tool("read_file"),
+            tool("web_search"),
+        ];
+        let allowed = vec!["read_file".to_string()];
+        // Even an explicit block cannot remove dispatch machinery — it is
+        // exempt from both lists by design.
+        let blocked = vec![MULTI_TOOL_PARALLEL_NAME.to_string()];
+        apply_tool_selection(&mut catalog, Some(&allowed), &blocked);
+        assert!(names(&catalog).contains(&MULTI_TOOL_PARALLEL_NAME.to_string()));
+        assert!(names(&catalog).contains(&"tool_search_tool_regex".to_string()));
+        assert!(names(&catalog).contains(&"read_file".to_string()));
+        assert!(!names(&catalog).contains(&"web_search".to_string()));
+        assert_eq!(names(&catalog).len(), 4);
+    }
+
+    #[test]
+    fn empty_allowlist_clears_surface_except_infrastructure() {
+        let mut catalog = vec![tool("read_file"), tool(MULTI_TOOL_PARALLEL_NAME)];
+        apply_tool_selection(&mut catalog, Some(&[]), &[]);
+        assert_eq!(names(&catalog), vec![MULTI_TOOL_PARALLEL_NAME]);
+    }
 }

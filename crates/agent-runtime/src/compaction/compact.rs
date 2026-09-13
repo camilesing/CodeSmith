@@ -904,9 +904,15 @@ pub async fn compact_messages_safe(
     // is available on every return path (local-prune early return,
     // session-memory early return, and the LLM summary). Hooks are
     // non-blocking: failures log a warning and contribute nothing (#485).
-    let preserve_context: Option<String> = enhancements
-        .and_then(|e| e.hooks.as_ref())
-        .and_then(|(executor, context)| executor.execute_pre_compact_hook(context));
+    let preserve_context: Option<String> = match enhancements.and_then(|e| e.hooks.clone()) {
+        Some((executor, context)) => tokio::task::spawn_blocking(move || {
+            executor.execute_pre_compact_hook(&context)
+        })
+        .await
+        .ok()
+        .flatten(),
+        None => None,
+    };
 
     let mut pruned_messages = messages.to_vec();
     let mut now_under_threshold = false;

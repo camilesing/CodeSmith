@@ -75,7 +75,8 @@ fn write_anchors(app: &App, anchors: &[String]) -> Result<(), String> {
     }
 
     let content = anchors.join("\n---\n");
-    fs::write(&path, content).map_err(|e| format!("Failed to write anchors file: {e}"))
+    crate::utils::write_atomic(&path, content.as_bytes())
+        .map_err(|e| format!("Failed to write anchors file: {e}"))
 }
 
 fn add_anchor(app: &mut App, text: &str) -> CommandResult {

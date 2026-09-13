@@ -288,7 +288,8 @@ mod tests {
     /// "HELLO OCR" rendered in Helvetica) and is committed for the
     /// happy-path round-trip below.
     fn ocr_fixture_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr_hello.png")
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tui/tests/fixtures/ocr_hello.png")
     }
 
     #[test]
@@ -325,11 +326,6 @@ mod tests {
             return;
         }
         let fixture = ocr_fixture_path();
-        if !fixture.exists() {
-            // Fixture not committed (sparse / shallow checkout). Skip
-            // silently rather than failing the suite.
-            return;
-        }
         let tmp = tempdir().expect("tempdir");
         // Stage the fixture under the workspace so the path resolver
         // accepts the relative input — keeps the test independent of

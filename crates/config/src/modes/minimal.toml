@@ -1,0 +1,26 @@
+# 极简模式 — small, fast, quiet. / Minimal mode — small, fast, quiet.
+# 核心文件与 shell 工具、思考关闭、无子代理、无跨会话记忆。
+name = "minimal"
+description = "Tiny and fast: core file + shell tools, thinking off, no sub-agents, no cross-session memory."
+app_mode = "agent"
+reasoning_effort = "off"
+memory_level = "goldfish"
+max_subagents = 0
+
+[tools]
+include = [
+  "read_file",
+  "write_file",
+  "edit_file",
+  "grep_files",
+  "list_dir",
+  "file_search",
+  "exec_shell",
+  "exec_shell_wait",
+  "update_plan",
+]
+
+[features]
+subagents = false
+web_search = false
+mcp = false

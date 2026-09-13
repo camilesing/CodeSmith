@@ -2,6 +2,8 @@
  * zh-CN dictionary — written for native mainland-Chinese developers.
  * Full-width punctuation in CJK paragraphs. Natural phrasing, not calques from English.
  */
+import { GITHUB_REPO_URL } from "@/lib/constants";
+
 const zh = {
   nav: {
     links: [
@@ -25,16 +27,16 @@ const zh = {
           { label: "安装指南", href: "/zh/install" },
           { label: "使用文档", href: "/zh/docs" },
           { label: "路线图", href: "/zh/roadmap" },
-          { label: "版本发布", href: "https://github.com/camilesing/CodeSmith/releases" },
+          { label: "版本发布", href: `${GITHUB_REPO_URL}/releases` },
         ],
       },
       {
         title: "社区",
         cn: "",
         items: [
-          { label: "议题", href: "https://github.com/camilesing/CodeSmith/issues" },
-          { label: "合并请求", href: "https://github.com/camilesing/CodeSmith/pulls" },
-          { label: "讨论区", href: "https://github.com/camilesing/CodeSmith/discussions" },
+          { label: "议题", href: `${GITHUB_REPO_URL}/issues` },
+          { label: "合并请求", href: `${GITHUB_REPO_URL}/pulls` },
+          { label: "讨论区", href: `${GITHUB_REPO_URL}/discussions` },
           { label: "参与贡献", href: "/zh/contribute" },
         ],
       },
@@ -43,9 +45,9 @@ const zh = {
         cn: "",
         items: [
           { label: "活动动态", href: "/zh/feed" },
-          { label: "行为准则", href: "https://github.com/camilesing/CodeSmith/blob/main/CODE_OF_CONDUCT.md" },
-          { label: "安全策略", href: "https://github.com/camilesing/CodeSmith/blob/main/SECURITY.md" },
-          { label: "MIT 许可证", href: "https://github.com/camilesing/CodeSmith/blob/main/LICENSE" },
+          { label: "行为准则", href: `${GITHUB_REPO_URL}/blob/main/CODE_OF_CONDUCT.md` },
+          { label: "安全策略", href: `${GITHUB_REPO_URL}/blob/main/SECURITY.md` },
+          { label: "MIT 许可证", href: `${GITHUB_REPO_URL}/blob/main/LICENSE` },
         ],
       },
     ],

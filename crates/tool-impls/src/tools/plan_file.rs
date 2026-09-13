@@ -55,9 +55,10 @@ pub fn plan_file_path(slug: &str) -> Result<PathBuf> {
 /// Write plan content to the file for the given slug.
 ///
 /// Creates the plans directory if it doesn't exist.
-pub fn write_plan_file(slug: &str, content: &str) -> Result<PathBuf> {
+pub async fn write_plan_file(slug: &str, content: &str) -> Result<PathBuf> {
     let path = plan_file_path(slug)?;
-    fs::write(&path, content)
+    tokio::fs::write(&path, content)
+        .await
         .with_context(|| format!("failed to write plan file at {}", path.display()))?;
     Ok(path)
 }
@@ -65,14 +66,13 @@ pub fn write_plan_file(slug: &str, content: &str) -> Result<PathBuf> {
 /// Read plan content from the file for the given slug.
 ///
 /// Returns `Ok(None)` if the plan file does not exist.
-pub fn read_plan_file(slug: &str) -> Result<Option<String>> {
+pub async fn read_plan_file(slug: &str) -> Result<Option<String>> {
     let path = plan_file_path(slug)?;
-    if !path.exists() {
-        return Ok(None);
+    match tokio::fs::read_to_string(&path).await {
+        Ok(content) => Ok(Some(content)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("failed to read plan file at {}", path.display())),
     }
-    let content = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read plan file at {}", path.display()))?;
-    Ok(Some(content))
 }
 
 /// Delete the plan file for the given slug.
@@ -149,32 +149,32 @@ mod tests {
         assert_ne!(s1, s2);
     }
 
-    #[test]
-    fn write_plan_file_creates_and_reads_back() {
+    #[tokio::test]
+    async fn write_plan_file_creates_and_reads_back() {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
         let slug = generate_plan_slug().expect("slug");
-        write_plan_file(&slug, "# My plan\nStep 1").expect("write");
-        let content = read_plan_file(&slug).expect("read");
+        write_plan_file(&slug, "# My plan\nStep 1").await.expect("write");
+        let content = read_plan_file(&slug).await.expect("read");
         assert_eq!(content, Some("# My plan\nStep 1".to_string()));
     }
 
-    #[test]
-    fn read_plan_file_returns_none_for_missing() {
+    #[tokio::test]
+    async fn read_plan_file_returns_none_for_missing() {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
-        let result = read_plan_file("plan_nonexistent").expect("read");
+        let result = read_plan_file("plan_nonexistent").await.expect("read");
         assert_eq!(result, None);
     }
 
-    #[test]
-    fn delete_plan_file_removes_file() {
+    #[tokio::test]
+    async fn delete_plan_file_removes_file() {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
         let slug = generate_plan_slug().expect("slug");
-        write_plan_file(&slug, "content").expect("write");
+        write_plan_file(&slug, "content").await.expect("write");
         delete_plan_file(&slug).expect("delete");
-        assert_eq!(read_plan_file(&slug).expect("read"), None);
+        assert_eq!(read_plan_file(&slug).await.expect("read"), None);
     }
 
     #[test]

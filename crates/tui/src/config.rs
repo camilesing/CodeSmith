@@ -1088,6 +1088,12 @@ pub struct Config {
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub yolo: Option<bool>,
+    /// Active named runtime mode (`minimal`, `maximal`, a user mode, …).
+    /// Applied after profile merging: config-bound dials (provider,
+    /// features, memory, sandbox) are folded into this config before the
+    /// engine is built, and the TUI applies the remaining live dials on
+    /// startup. Overridden by `--mode` on the CLI.
+    pub mode: Option<String>,
     /// Enable local-only telemetry: capacity-decision analytics events are
     /// written to `~/.codesmith/telemetry/events.jsonl`. Off by default; the
     /// sink is constructed pre-trust (events queue in-memory) and only
@@ -4020,6 +4026,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         personality: override_cfg.personality.or(base.personality),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         yolo: override_cfg.yolo.or(base.yolo),
+        mode: override_cfg.mode.or(base.mode),
         telemetry: override_cfg.telemetry.or(base.telemetry),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
